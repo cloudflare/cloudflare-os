@@ -61,8 +61,7 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
     if (!auth) return
     setConnecting(true)
     try {
-      const { url } = await auth.authenticatedApi.connectAccount('cloudflare', [])
-      openConnectWindow(url)
+      openConnectWindow(await auth.authenticatedApi.connectAccount('cloudflare', []))
     } catch (err) {
       toasts.add({
         title: 'Failed to start Cloudflare connection',

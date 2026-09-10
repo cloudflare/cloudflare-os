@@ -587,8 +587,7 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      openConnectWindow(result.url)
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
@@ -608,13 +607,13 @@ export default function GatekeeperModal({
     if (missing.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const result = await authenticatedApi.ensureAccountResources(accountId, missing)
-      if (result.url) {
-        openConnectWindow(result.url)
+      const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
+      if (flow) {
+        openConnectWindow(flow)
         toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
-      // The new grant arrives via subscribeConnectedAccounts(); the account's flag then clears and
-      // the configurator loads automatically.
+      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
       console.error('Failed to request additional access:', error)
       reportIssue('gatekeeper.resource-grant', error, {
@@ -629,8 +628,7 @@ export default function GatekeeperModal({
   const handleReconnectAccount = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      const result = await authenticatedApi.reconnectAccount(accountId)
-      openConnectWindow(result.url)
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
       toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)

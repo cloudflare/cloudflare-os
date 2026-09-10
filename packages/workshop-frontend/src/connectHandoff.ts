@@ -1,15 +1,11 @@
 // The browser half of the gatekeeper connect handoff (see `GatekeeperVendor.connectAccount` in
-// workshop-shared). A connect URL is a bearer capability, so the Workshop opens it as a popup; when
-// the flow finishes, the gatekeeper's page delivers a single-use ticket back here — over a
-// same-origin BroadcastChannel, or by postMessage to its opener where one is kept — and redeeming it
-// over our authenticated session is what activates the grant.
+// workshop-shared). A connect URL is a bearer capability, so the Workshop opens it as a disowned
+// popup carrying the flow's nonce in the popup's own sessionStorage. When the flow finishes, the
+// gatekeeper's final page navigates that popup to HANDOFF_PATH on this origin with the single-use
+// ticket in the URL fragment, and ConnectHandoffPage redeems ticket and nonce together over the
+// popup's own session. Redeeming is what activates the grant.
 
-import { useEffect } from 'react'
-import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
-import {
-  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
-} from '@gadgets/workshop-shared/gatekeeper'
+import type { ConnectFlowStart } from '@gadgets/workshop-shared/api'
 
 /** Host the backend (and, through the router, every gatekeeper) is served from. */
 export function getBackendHost(): string {
@@ -22,165 +18,125 @@ export function getBackendHost(): string {
 }
 
 /**
- * Origin the handoff message arrives from: the gatekeeper connect pages are served under
- * `/gatekeeper/*` on the backend host, so in production this is the Workshop's own origin.
+ * Path on the Workshop origin a finished connect / sign-in popup lands on, with the ticket in the
+ * URL fragment. gatekeeper-kit duplicates the literal, since it must not depend on this package;
+ * each package pins it with a test.
  */
-export function gatekeeperOrigin(): string {
-  return `${window.location.protocol}//${getBackendHost()}`
-}
+export const HANDOFF_PATH = '/connect/handoff'
 
-const TICKET_PATTERN = /^[0-9a-f]{64}$/
+const HEX_256_PATTERN = /^[0-9a-f]{64}$/
 
 /**
- * The ticket a handoff envelope carries, or null unless `data` is a well-formed one. Origin is the
- * caller's business: a `message` event's must be checked (`connectHandoffTicket`), a BroadcastChannel
- * is same-origin by construction.
+ * The ticket a handoff URL fragment carries (`window.location.hash`, with or without its leading
+ * '#', percent-encoded or not), or null unless it decodes to 64 lowercase hex characters.
  */
-export function parseHandoffEnvelope(data: unknown): string | null {
-  if (typeof data !== 'object' || data === null) return null
-  const { type, ticket } = data as { type?: unknown; ticket?: unknown }
-  if (type !== CONNECT_HANDOFF_MESSAGE_TYPE) return null
-  if (typeof ticket !== 'string' || !TICKET_PATTERN.test(ticket)) return null
-  return ticket
+export function ticketFromHandoffFragment(hash: string): string | null {
+  const encoded = hash.startsWith('#') ? hash.slice(1) : hash
+  let ticket: string
+  try {
+    ticket = decodeURIComponent(encoded)
+  } catch {
+    return null
+  }
+  return HEX_256_PATTERN.test(ticket) ? ticket : null
 }
 
-/**
- * The ticket a `message` event carries, or null unless it came from the gatekeeper origin with a
- * well-formed handoff envelope. Shared by the connect listener and the sign-in buttons, so both apply
- * exactly the same checks.
- */
-export function connectHandoffTicket(event: MessageEvent): string | null {
-  if (event.origin !== gatekeeperOrigin()) return null
-  return parseHandoffEnvelope(event.data)
-}
+/** sessionStorage key under which the Workshop writes a `PopupHandoff` into a popup it opened. */
+export const HANDOFF_KEY = 'gadgets.handoff'
 
 /**
- * Opens a connect / reconnect / ensure-resources URL as a popup. The popup is opened empty, disowned,
- * and only then navigated, so the provider's pages never hold `window.opener`: a connect flow can
- * land on pages the deployment does not vouch for — notably an MCP server the user pasted — and an
+ * The record the Workshop tab writes into a popup's own sessionStorage before navigating it: which
+ * kind of flow the popup runs, and the flow's nonce, which the handoff page presents with the
+ * ticket (`completeConnectHandoff` for a connect, `confirmLogin` for a sign-in).
+ */
+export type PopupHandoff = { kind: 'connect' | 'login'; nonce: string }
+
+/**
+ * Opens `url` as a popup that holds `handoff` and nothing else of this tab. The popup is opened
+ * empty (a same-origin about:blank, so its sessionStorage is ours to write), disowned, given the
+ * nonce, and only then navigated, so no page in the flow ever holds `window.opener`: a connect flow
+ * can land on pages the deployment does not vouch for (an MCP server the user pasted, say), and an
  * opener handle would let such a page navigate this authenticated tab to a phishing page (reverse
- * tabnabbing). Disowning is done by hand rather than with the `noopener` feature because that makes
- * `window.open()` return null even on success, which is indistinguishable from a pop-up block. The
- * completion page reaches us over a same-origin BroadcastChannel instead (`useConnectHandoffListener`).
+ * tabnabbing). With no opener in play the flow is also indifferent to a provider isolating its
+ * pages with COOP.
  *
- * Under the Vite dev server the Workshop and the gatekeepers are on different origins, so a channel
- * could not reach us; there the popup keeps its opener and the page falls back to `postMessage`. A
- * provider that isolates its pages with COOP severs that opener too, and no channel crosses origins,
- * so such a connect ends in dev on "couldn't reach the Workshop"; production is unaffected, the
- * popup being disowned there anyway. Throws when the browser blocked the popup.
+ * The nonce goes into the popup's storage, not this tab's: it then exists only on the server and
+ * in that popup, nothing opened from this tab inherits it, and a handoff link opened any other way
+ * (a fresh tab, a pasted URL, a link an attacker sends) holds none and redeems nothing.
+ *
+ * Disowning is done by hand rather than with the `noopener` feature, which makes `window.open()`
+ * return null even on success, indistinguishable from a pop-up block. `name` must be fresh per
+ * flow: `window.open('', existingName)` returns an existing window without navigating it, and one
+ * parked on a provider page is cross-origin, so the storage write would throw.
+ *
+ * Throws when the browser blocked the popup, or refused the storage write: without the nonce the
+ * flow could never complete, so it is not started, and the popup is closed again.
  */
-export function openConnectWindow(url: string): Window {
-  const popup = window.open('', 'gadgets-connect', 'popup,width=520,height=680')
+export function openDisownedPopup(url: string, name: string, handoff: PopupHandoff): Window {
+  const popup = window.open('', name, 'popup,width=520,height=680')
   if (!popup) throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
-  if (gatekeeperOrigin() === window.location.origin) popup.opener = null
-  markConnectPending()
+  popup.opener = null
+  try {
+    popup.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(handoff))
+  } catch {
+    popup.close()
+    throw new Error('This browser blocks storage in pop-ups, so the flow cannot complete. Allow site data for this site and try again.')
+  }
   popup.location.replace(url)
   return popup
 }
 
-/**
- * Set in this tab's `sessionStorage` by `openConnectWindow`, so `useConnectHandoffListener` knows a
- * broadcast ticket is one this tab asked for. Per-tab and reload-stable, which is exactly the scope
- * wanted: the tab that opened the popup redeems, its siblings stay quiet. Holds the time it was
- * set, so an abandoned popup's marker ages out instead of racing sibling tabs forever.
- */
-const CONNECT_PENDING_KEY = 'gadgets.connectPending'
+let popupCounter = 0
 
-/**
- * How long a marker counts. A ticket can legitimately arrive up to the sum of the gatekeepers'
- * initiation-nonce lifetime (10 min, e.g. spent on an endpoint form), the fresh OAuth-nonce lifetime
- * (10 min, spent at the consent screen) and the Workshop's handoff lifetime (2 min) after the popup
- * opened; anything later cannot be this tab's. Rounded up: the bound exists only so an abandoned
- * popup's marker does not race sibling tabs forever.
- */
-const CONNECT_PENDING_LIFETIME_MS = 30 * 60 * 1000
-
-// Storage can be unavailable (a disabled cookie jar, a sandboxed frame); every access degrades to
-// today's behaviour of redeeming whatever arrives rather than failing the connect.
-function markConnectPending(): void {
-  try { sessionStorage.setItem(CONNECT_PENDING_KEY, String(Date.now())) } catch { /* fall back to redeeming all */ }
+/** A window name no earlier call in this document produced: `<prefix>-<n>`. */
+export function uniquePopupName(prefix: string): string {
+  popupCounter += 1
+  return `${prefix}-${popupCounter}`
 }
 
-function hasPendingConnect(): boolean {
-  try {
-    const marked = sessionStorage.getItem(CONNECT_PENDING_KEY)
-    return marked !== null && Date.now() - Number(marked) < CONNECT_PENDING_LIFETIME_MS
-  } catch {
-    return true
+// The connect popup this document opened last, closed before the next one opens: a stale popup
+// still parked on a provider page is otherwise left behind the new one.
+let lastConnectPopup: Window | null = null
+
+/**
+ * Opens a connect / reconnect / ensure-resources flow as a disowned popup carrying the flow's
+ * nonce (see `openDisownedPopup`). The popup redeems the ticket itself on ConnectHandoffPage; the
+ * account arrives in this tab through `subscribeConnectedAccounts()`. Throws when the browser
+ * blocked the popup.
+ */
+export function openConnectWindow(flow: ConnectFlowStart): Window {
+  if (lastConnectPopup) {
+    try { lastConnectPopup.close() } catch { /* cross-origin or already gone */ }
   }
-}
-
-function clearPendingConnect(): void {
-  try { sessionStorage.removeItem(CONNECT_PENDING_KEY) } catch { /* nothing to clear */ }
+  const popup = openDisownedPopup(
+    flow.url, uniquePopupName('gadgets-connect'), { kind: 'connect', nonce: flow.nonce })
+  lastConnectPopup = popup
+  return popup
 }
 
 /**
- * Listens for the ticket a connect popup delivers and redeems it on the user's session. Two
- * transports are watched: a BroadcastChannel named `CONNECT_HANDOFF_MESSAGE_TYPE` (a disowned popup
- * on our own origin; the browser scopes the channel to that origin) and `message` events from the
- * gatekeeper origin (a popup that kept its opener, as under the dev server). Only well-formed
- * envelopes are considered; anything else is ignored silently. A popup that posted is closed once
- * the Workshop has accepted the ticket. A broadcast has no source, so that page repeats its
- * envelope (a tab whose session is mid-reconnect would miss a one-shot) until this tab answers with
- * a `CONNECT_HANDOFF_ACK_MESSAGE_TYPE` envelope once the redemption succeeded, then closes itself.
- *
- * Security rests on the ticket being scoped server-side to the user who started the flow, not on
- * which window sent it. The `sessionStorage` marker `openConnectWindow` sets only decides *which of
- * that user's tabs* redeems a broadcast: the one that opened the popup, surviving a reload, since
- * the storage is per-tab and reload-stable; its siblings stay silent instead of racing it and
- * toasting "expired". The marker is spent only by a successful redemption, so a sibling's or a
- * sign-in ticket heard first (which the server rejects) does not cost this tab its own, and it ages
- * out after the connect-nonce lifetime so an abandoned popup's marker stops racing siblings. A
- * connect whose tab was closed expires and is revoked like an abandoned one. A phished handoff page
- * opened directly in the victim's own browser broadcasts to tabs none of which holds a marker, so
- * nothing even reaches the server; a `message` event needs no marker, its source being the popup
- * this tab itself holds.
- *
- * Pass `null` to listen for nothing: a ticket must be redeemed exactly once, so only one listener may
- * be live per window (see `ConnectHandoffListener` and the blueprint page).
+ * The `PopupHandoff` the Workshop tab wrote into this document's sessionStorage, removed as it is
+ * read (single-use on the client as well as the server), or null when there is none, it is
+ * malformed, or storage is unavailable.
  */
-export function useConnectHandoffListener(
-  authenticatedApi: RpcStub<AuthenticatedApi> | null,
-  onError: (message: string) => void,
-): void {
-  useEffect(() => {
-    if (!authenticatedApi) return
-    const channel = 'BroadcastChannel' in globalThis
-      ? new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
-      : null
-    // `source` is the popup that posted the ticket, or null for a broadcast, whose page is told to
-    // close by the ack instead.
-    const redeem = (ticket: string, source: Window | null) => {
-      authenticatedApi.completeConnectHandoff(ticket).then(
-        () => {
-          if (source) {
-            source.close?.()
-            return
-          }
-          clearPendingConnect()
-          // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
-          channel?.postMessage({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket })
-        },
-        (err: unknown) => { onError(err instanceof Error ? err.message : String(err)) },
-      )
-    }
-    const onMessage = (event: MessageEvent) => {
-      const ticket = connectHandoffTicket(event)
-      if (ticket !== null) redeem(ticket, event.source as Window | null)
-    }
-    window.addEventListener('message', onMessage)
-    // Tickets already tried on this session: the page repeats its broadcast until acked, and a
-    // sibling tab's page may repeat too, so a ticket is redeemed (and a failure toasted) once.
-    const attempted = new Set<string>()
-    channel?.addEventListener('message', (event: MessageEvent) => {
-      const ticket = parseHandoffEnvelope(event.data)
-      if (ticket === null || attempted.has(ticket) || !hasPendingConnect()) return
-      attempted.add(ticket)
-      redeem(ticket, null)
-    })
-    return () => {
-      window.removeEventListener('message', onMessage)
-      channel?.close()
-    }
-  }, [authenticatedApi, onError])
+export function readPopupHandoff(): PopupHandoff | null {
+  let raw: string | null
+  try {
+    raw = sessionStorage.getItem(HANDOFF_KEY)
+    sessionStorage.removeItem(HANDOFF_KEY)
+  } catch {
+    return null
+  }
+  if (raw === null) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const { kind, nonce } = parsed as { kind?: unknown; nonce?: unknown }
+  if (kind !== 'connect' && kind !== 'login') return null
+  if (typeof nonce !== 'string' || !HEX_256_PATTERN.test(nonce)) return null
+  return { kind, nonce }
 }

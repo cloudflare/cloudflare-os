@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ReactElement } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -38,9 +38,6 @@ vi.mock('./useAuth', () => ({
 }))
 
 import BlueprintLandingPage from './BlueprintLandingPage'
-import { AuthProvider } from './AuthContext'
-import { CONNECT_HANDOFF_MESSAGE_TYPE } from '@gadgets/workshop-shared/gatekeeper'
-import { gatekeeperOrigin } from './connectHandoff'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const originalInnerWidth = window.innerWidth
@@ -134,70 +131,5 @@ describe('BlueprintLandingPage model configuration', () => {
     const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Save connection')!
     expect(save.disabled).toBe(false)
-  })
-})
-
-// A signed-out visitor who logs in on this page does so through the page's own useAuth(): the root
-// route stays standalone, with no AuthProvider and so no app-shell ConnectHandoffListener. The page
-// must then redeem connect tickets itself, and must not when the shell is already doing so.
-describe('BlueprintLandingPage connect handoff', () => {
-  let root: Root | undefined
-  let rootContainer: HTMLDivElement | undefined
-  const completeConnectHandoff = vi.fn<(ticket: string) => Promise<void>>()
-
-  afterEach(() => {
-    act(() => root?.unmount())
-    rootContainer?.remove()
-    testState.authenticatedApi = null
-    completeConnectHandoff.mockReset()
-  })
-
-  function apiWithHandoff(): RpcStub<AuthenticatedApi> {
-    return {
-      ...(authenticatedApi() as object),
-      completeConnectHandoff,
-      whoami: async () => ({ type: 'user', id: 'alice', name: 'Alice' }),
-      amIAdmin: async () => false,
-    } as unknown as RpcStub<AuthenticatedApi>
-  }
-
-  async function render(element: ReactElement) {
-    rootContainer = document.createElement('div')
-    document.body.appendChild(rootContainer)
-    root = createRoot(rootContainer)
-    await act(async () => root!.render(element))
-    await act(async () => { await Promise.resolve() })
-  }
-
-  async function postTicket() {
-    window.dispatchEvent(new MessageEvent('message', {
-      data: { type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: 'c'.repeat(64) },
-      origin: gatekeeperOrigin(),
-    }))
-    await act(async () => { await Promise.resolve(); await Promise.resolve() })
-  }
-
-  it('redeems a connect ticket itself after an inline login', async () => {
-    completeConnectHandoff.mockResolvedValue(undefined)
-    testState.authenticatedApi = apiWithHandoff()
-    await render(<BlueprintLandingPage rpcStub={publicApi()} />)
-
-    await postTicket()
-
-    expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith('c'.repeat(64))
-  })
-
-  it('leaves redemption to the app shell when rendered inside it', async () => {
-    testState.authenticatedApi = apiWithHandoff()
-    await render(
-      <AuthProvider authenticatedApi={testState.authenticatedApi} onLogout={() => {}}>
-        <BlueprintLandingPage rpcStub={publicApi()} />
-      </AuthProvider>,
-    )
-
-    await postTicket()
-
-    // The shell's own ConnectHandoffListener (not mounted here) is the one that would redeem it.
-    expect(completeConnectHandoff).not.toHaveBeenCalled()
   })
 })

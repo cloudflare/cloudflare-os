@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   AuthenticatedApi,
+  ConnectFlowStart,
   ConnectedAccountsSubscriber,
   ObserverAccountChoice,
   ObserverBindingNeed,
@@ -82,12 +83,12 @@ type ApiOverrides = {
   subscribeConnectedAccounts?: Mock<(
     subscriber: ConnectedAccountsSubscriber,
   ) => Promise<{ [Symbol.dispose](): void }>>
-  connectAccount?: Mock<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>>
+  connectAccount?: Mock<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>>
   ensureAccountResources?: Mock<(
     accountId: number,
     resourceUrlPatterns: string[],
-  ) => Promise<{ url?: string }>>
-  reconnectAccount?: Mock<(accountId: number) => Promise<{ url: string }>>
+  ) => Promise<ConnectFlowStart | null>>
+  reconnectAccount?: Mock<(accountId: number) => Promise<ConnectFlowStart>>
 }
 
 function fakeApi(
@@ -111,17 +112,25 @@ function fakeApi(
     }],
     listAddableGatekeepers: async () => [],
     connectAccount: overrides.connectAccount ??
-      vi.fn<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>>(),
+      vi.fn<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>>(),
     ensureAccountResources: overrides.ensureAccountResources ??
-      vi.fn<(accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>>(),
+      vi.fn<(accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>>(),
     reconnectAccount: overrides.reconnectAccount ??
-      vi.fn<(accountId: number) => Promise<{ url: string }>>(),
+      vi.fn<(accountId: number) => Promise<ConnectFlowStart>>(),
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
-// The popup openConnectWindow gets back: opened blank, then navigated to the connect URL.
+// The flow a connect / ensure-resources fake starts: the URL to open and the nonce the popup carries.
+const FLOW: ConnectFlowStart = { url: 'https://accounts.google.test/oauth', nonce: 'a'.repeat(64) }
+
+// The popup openConnectWindow gets back: opened blank, given the nonce, then navigated to the URL.
 function mockConnectPopup() {
-  const popup = { close() {}, opener: window as Window | null, location: { replace: vi.fn<(url: string) => void>() } }
+  const popup = {
+    close() {},
+    opener: window as Window | null,
+    sessionStorage: { setItem: vi.fn<(key: string, value: string) => void>() },
+    location: { replace: vi.fn<(url: string) => void>() },
+  }
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window)
   return popup
 }
@@ -196,8 +205,8 @@ describe('ObserverConfigModal account selection', () => {
 
   it('requests the resource scope when connecting a new account', async () => {
     const connectAccount = vi.fn<
-      (vendorId: string, resourceUrlPatterns?: string[]) => Promise<{ url: string }>
-    >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
+      (vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>
+    >().mockResolvedValue(FLOW)
     const popup = mockConnectPopup()
     const rendered = await render([], {
       api: fakeApi([], { connectAccount }),
@@ -209,15 +218,14 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => connect!.click())
 
     expect(connectAccount).toHaveBeenCalledWith('google', [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(window.open).toHaveBeenCalledWith('', expect.stringMatching(/^gadgets-connect-/), 'popup,width=520,height=680')
     expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
   })
 
   it('expands an existing account grant before allowing verification', async () => {
     const ensureAccountResources = vi.fn<
-      (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
-    >()
-      .mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
+      (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>
+    >().mockResolvedValue(FLOW)
     const popup = mockConnectPopup()
     const underScoped = account(1, 'dan@cloudflare.com', [GMAIL_RESOURCE_PATTERN])
     const rendered = await render([underScoped], {
@@ -235,7 +243,7 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => grant!.click())
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(window.open).toHaveBeenCalledWith('', expect.stringMatching(/^gadgets-connect-/), 'popup,width=520,height=680')
     expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
     expect(rendered.textContent).not.toContain('Ready')
     expect(verify?.disabled).toBe(true)
@@ -243,8 +251,8 @@ describe('ObserverConfigModal account selection', () => {
 
   it('checks the resource grant when legacy account metadata omits it', async () => {
     const ensureAccountResources = vi.fn<
-      (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
-    >().mockResolvedValue({ url: 'https://accounts.google.test/oauth' })
+      (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>
+    >().mockResolvedValue(FLOW)
     const popup = mockConnectPopup()
     const legacy = account(1, 'dan@cloudflare.com')
     const rendered = await render([legacy], {
@@ -261,14 +269,14 @@ describe('ObserverConfigModal account selection', () => {
     await act(async () => grant!.click())
 
     expect(ensureAccountResources).toHaveBeenCalledWith(1, [DOC_RESOURCE.urlPattern])
-    expect(window.open).toHaveBeenCalledWith('', 'gadgets-connect', 'popup,width=520,height=680')
+    expect(window.open).toHaveBeenCalledWith('', expect.stringMatching(/^gadgets-connect-/), 'popup,width=520,height=680')
     expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
   })
 
   it('allows verification when the gatekeeper confirms an unknown grant needs no OAuth', async () => {
     const ensureAccountResources = vi.fn<
-      (accountId: number, resourceUrlPatterns: string[]) => Promise<{ url?: string }>
-    >().mockResolvedValue({})
+      (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>
+    >().mockResolvedValue(null)
     const legacy = account(1, 'dan@cloudflare.com')
     const rendered = await render([legacy], {
       api: fakeApi([legacy], { ensureAccountResources }),

@@ -3,19 +3,19 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { AuthVendorInfo, LoginAttempt, PublicApi } from '@gadgets/workshop-shared/api'
-import {
-  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
-} from '@gadgets/workshop-shared/gatekeeper'
-import { gatekeeperOrigin } from '../../connectHandoff'
+import { HANDOFF_KEY } from '../../connectHandoff'
 import OAuthButtons from './OAuthButtons'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const VENDORS: AuthVendorInfo[] = [{ vendorId: 'github', displayName: 'GitHub' }]
-const TICKET = 'b'.repeat(64)
+const NONCE = 'b'.repeat(64)
+const URL = 'https://gk.example/login'
+const FEATURES = 'popup,width=520,height=680'
+const TOKEN = 'alice@example.com:secret'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -25,159 +25,238 @@ function deferred<T>() {
 
 // Lets pending promises and React flush.
 const settle = () => act(async () => { await Promise.resolve(); await Promise.resolve() })
+// One receive() poll tick.
+const tick = () => act(() => vi.advanceTimersByTimeAsync(1000))
+
+// A popup as window.open returns it: opened blank with its own storage, disowned, then navigated.
+function fakePopup() {
+  const store = new Map<string, string>()
+  const popup = {
+    closed: false,
+    close: vi.fn<() => void>(),
+    opener: window as Window | null,
+    openerAtReplace: undefined as Window | null | undefined,
+    sessionStorage: {
+      store,
+      setItem: vi.fn<(key: string, value: string) => void>((key, value) => { store.set(key, value) }),
+    },
+    location: {
+      replace: vi.fn<(url: string) => void>(() => { popup.openerAtReplace = popup.opener }),
+    },
+  }
+  return popup
+}
 
 describe('OAuthButtons', () => {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
-  const claim = vi.fn<(ticket: string) => Promise<string | null>>()
-  const attempt = { claim, [Symbol.dispose]() {} } as unknown as RpcStub<LoginAttempt>
-  const popup = { closed: false, close: vi.fn<() => void>() } as unknown as Window
+  const receive = vi.fn<() => Promise<string | null>>()
+  const attempt = { receive, [Symbol.dispose]() {} } as unknown as RpcStub<LoginAttempt>
+  const rpcStub = {
+    startGatekeeperLogin: async () => ({ url: URL, nonce: NONCE, attempt }),
+  } as unknown as RpcStub<PublicApi>
 
-  function mount(rpcStub: RpcStub<PublicApi>, onSuccess = vi.fn<() => void>()) {
+  function mount(stub: RpcStub<PublicApi> = rpcStub, onSuccess = vi.fn<() => void>()) {
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
-    act(() => root!.render(<OAuthButtons rpcStub={rpcStub} vendors={VENDORS} onSuccess={onSuccess} />))
+    act(() => root!.render(<OAuthButtons rpcStub={stub} vendors={VENDORS} onSuccess={onSuccess} />))
     return onSuccess
   }
 
-  const clickSignIn = () => act(async () => { container!.querySelector('button')!.click() })
+  const button = () => container!.querySelector('button')!
+  const clickSignIn = () => act(async () => { button().click() })
 
-  const deliver = (source: Window | null, ticket = TICKET) => window.dispatchEvent(
-    new MessageEvent('message', {
-      data: { type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket }, origin: gatekeeperOrigin(), source,
-    }))
+  beforeEach(() => { vi.useFakeTimers() })
 
   afterEach(() => {
     act(() => root?.unmount())
     container?.remove()
     vi.restoreAllMocks()
     vi.useRealTimers()
-    claim.mockReset()
+    receive.mockReset()
     localStorage.clear()
   })
 
-  it('claims only the ticket its own popup posts', async () => {
-    vi.spyOn(window, 'open').mockReturnValue(popup)
-    claim.mockResolvedValue('alice@example.com:secret')
-    const rpcStub = {
-      startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
-    } as unknown as RpcStub<PublicApi>
-    const onSuccess = mount(rpcStub)
+  it('opens a fresh disowned popup carrying the nonce, then navigates it', async () => {
+    const popup = fakePopup()
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    receive.mockResolvedValue(null)
+    mount()
 
     await clickSignIn()
     await settle()
-    expect(window.open).toHaveBeenCalledWith(
-      'https://gk.example/login', 'gatekeeper-login', 'popup,width=520,height=680')
 
-    // A ticket from some other window (an account-connect popup, say) is not this attempt's.
-    deliver({ close() {} } as unknown as Window)
-    await settle()
-    expect(claim).not.toHaveBeenCalled()
-
-    deliver(popup)
-    await settle()
-    expect(claim).toHaveBeenCalledExactlyOnceWith(TICKET)
-    expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
-    expect(onSuccess).toHaveBeenCalledOnce()
-    expect(popup.close).toHaveBeenCalled()
-  })
-
-  it('keeps listening after the popup handle dies, and claims a broadcast ticket', async () => {
-    // A provider that isolates its pages with COOP severs the opener mid-flow: the handle reports
-    // closed while the flow is still running, and the handoff page reaches us over the channel.
-    const severed = { closed: false, close: vi.fn<() => void>() } as unknown as Window
-    vi.spyOn(window, 'open').mockReturnValue(severed)
-    claim.mockResolvedValue('alice@example.com:secret')
-    const rpcStub = {
-      startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
-    } as unknown as RpcStub<PublicApi>
-    const onSuccess = mount(rpcStub)
-    const button = () => container!.querySelector('button')!
-
-    await clickSignIn()
-    await settle()
+    expect(open).toHaveBeenCalledExactlyOnceWith('', expect.stringMatching(/^gatekeeper-login-/), FEATURES)
+    expect(open.mock.calls[0][2]).not.toContain('noopener')
+    expect(popup.openerAtReplace).toBeNull()
+    expect(popup.sessionStorage.setItem).toHaveBeenCalledExactlyOnceWith(
+      HANDOFF_KEY, JSON.stringify({ kind: 'login', nonce: NONCE }))
+    expect(popup.location.replace).toHaveBeenCalledExactlyOnceWith(URL)
+    // The nonce is written while the popup is still our about:blank, before the navigation.
+    expect(popup.sessionStorage.setItem.mock.invocationCallOrder[0])
+      .toBeLessThan(popup.location.replace.mock.invocationCallOrder[0])
     expect(button().disabled).toBe(true)
-
-    ;(severed as { closed: boolean }).closed = true
-    await act(() => new Promise(resolve => setTimeout(resolve, 600)))
-    // Not treated as a cancellation: the buttons come back, the attempt stays live.
-    expect(button().disabled).toBe(false)
-    expect(container!.textContent).not.toContain('cancelled')
-    expect(claim).not.toHaveBeenCalled()
-
-    const sender = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
-    // The page repeats its broadcast until a Workshop window acknowledges the ticket.
-    const acked = new Promise<unknown>(resolve => {
-      sender.addEventListener('message', (event: MessageEvent) => resolve(event.data), { once: true })
-    })
-    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
-    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
-    await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(TICKET))
-    await settle()
-    expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
-    expect(onSuccess).toHaveBeenCalledOnce()
-    expect(await acked).toEqual({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket: TICKET })
-    sender.close()
   })
 
-  it('keeps waiting when a broadcast ticket belongs to another attempt', async () => {
-    // A broadcast has no source to filter on, so the channel may carry another tab's sign-in ticket
-    // or an account-connect ticket first. The server answers null for those; ours still lands.
-    const own = { closed: false, close: vi.fn<() => void>() } as unknown as Window
-    vi.spyOn(window, 'open').mockReturnValue(own)
-    const FOREIGN = 'f'.repeat(64)
-    claim.mockImplementation(async ticket => ticket === TICKET ? 'alice@example.com:secret' : null)
-    const rpcStub = {
-      startGatekeeperLogin: async () => ({ url: 'https://gk.example/login', attempt }),
-    } as unknown as RpcStub<PublicApi>
-    const onSuccess = mount(rpcStub)
-    const button = () => container!.querySelector('button')!
+  it('keeps the button pending while receive() answers null', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(fakePopup() as unknown as Window)
+    receive.mockResolvedValue(null)
+    const onSuccess = mount()
 
     await clickSignIn()
     await settle()
-    const sender = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
-    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
-    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: FOREIGN })
-    await vi.waitFor(() => expect(claim).toHaveBeenCalledExactlyOnceWith(FOREIGN))
-    await settle()
+    await tick()
+    await tick()
+
+    expect(receive).toHaveBeenCalledTimes(2)
+    expect(button().disabled).toBe(true)
     expect(localStorage.getItem('authToken')).toBeNull()
     expect(onSuccess).not.toHaveBeenCalled()
-    expect(container!.textContent).not.toMatch(/expired|verified|Could not/)
+  })
+
+  it('stores the token receive() releases, closes the popup and stops polling', async () => {
+    const popup = fakePopup()
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    receive.mockResolvedValueOnce(null).mockResolvedValueOnce(TOKEN)
+    const onSuccess = mount()
+
+    await clickSignIn()
+    await settle()
+    await tick()
+    expect(onSuccess).not.toHaveBeenCalled()
+    await tick()
+
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
+    expect(onSuccess).toHaveBeenCalledOnce()
+    expect(popup.close).toHaveBeenCalled()
+    await tick()
+    await tick()
+    expect(receive).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the failure and hands the buttons back when receive() rejects', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(fakePopup() as unknown as Window)
+    receive.mockRejectedValue(new Error('This sign-in attempt has expired.'))
+    const onSuccess = mount()
+
+    await clickSignIn()
+    await settle()
+    await tick()
+
+    expect(container!.textContent).toContain('This sign-in attempt has expired.')
+    expect(button().disabled).toBe(false)
+    expect(onSuccess).not.toHaveBeenCalled()
+    await tick()
+    expect(receive).toHaveBeenCalledOnce()
+  })
+
+  it('hands the buttons back when the popup reports closed, but keeps polling', async () => {
+    // The popup closes itself after confirming, and a provider that swaps browsing context groups
+    // (COOP) reports it closed while the flow is still running: neither is a cancellation.
+    const popup = fakePopup()
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+    receive.mockResolvedValue(null)
+    const onSuccess = mount()
+
+    await clickSignIn()
+    await settle()
     expect(button().disabled).toBe(true)
 
-    // The foreign claim paused the popup-closed poll; closing the popup now must still hand the
-    // buttons back rather than leave them stuck until the right ticket arrives.
-    ;(own as { closed: boolean }).closed = true
-    await act(() => new Promise(resolve => setTimeout(resolve, 600)))
+    popup.closed = true
+    await tick()
     expect(button().disabled).toBe(false)
-    expect(container!.textContent).not.toContain('cancelled')
+    expect(container!.textContent).not.toMatch(/cancelled|Could not/)
 
-    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
-    sender.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: TICKET })
-    sender.close()
-    await vi.waitFor(() => expect(claim).toHaveBeenCalledWith(TICKET))
+    receive.mockResolvedValue(TOKEN)
+    await tick()
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
+    expect(onSuccess).toHaveBeenCalledOnce()
+  })
+
+  it('tears down the first attempt when a second sign-in starts after its popup reported closed', async () => {
+    // The buttons come back while the first attempt still polls, so a second click is the natural
+    // next move; only the newest attempt may then be listening, or the abandoned one could land a
+    // token behind the user's back.
+    const first = fakePopup()
+    const second = fakePopup()
+    vi.spyOn(window, 'open')
+      .mockReturnValueOnce(first as unknown as Window)
+      .mockReturnValueOnce(second as unknown as Window)
+    const receiveFirst = vi.fn<() => Promise<string | null>>().mockResolvedValue(null)
+    const receiveSecond = vi.fn<() => Promise<string | null>>().mockResolvedValue(null)
+    const disposeFirst = vi.fn<() => void>()
+    const attempts = [
+      { receive: receiveFirst, [Symbol.dispose]: disposeFirst },
+      { receive: receiveSecond, [Symbol.dispose]() {} },
+    ]
+    const stub = {
+      startGatekeeperLogin: async () => ({ url: URL, nonce: NONCE, attempt: attempts.shift() }),
+    } as unknown as RpcStub<PublicApi>
+    const onSuccess = mount(stub)
+
+    await clickSignIn()
     await settle()
-    expect(claim).toHaveBeenCalledTimes(2)
-    expect(localStorage.getItem('authToken')).toBe('alice@example.com:secret')
+    first.closed = true
+    await tick()
+    expect(button().disabled).toBe(false)
+    expect(receiveFirst).toHaveBeenCalledOnce()
+
+    await clickSignIn()
+    await settle()
+    expect(disposeFirst).toHaveBeenCalledOnce()
+    expect(second.location.replace).toHaveBeenCalledExactlyOnceWith(URL)
+
+    receiveFirst.mockResolvedValue(TOKEN)
+    await tick()
+    await tick()
+    expect(receiveFirst).toHaveBeenCalledOnce()
+    expect(receiveSecond).toHaveBeenCalledTimes(2)
+    expect(localStorage.getItem('authToken')).toBeNull()
+    expect(onSuccess).not.toHaveBeenCalled()
+
+    receiveSecond.mockResolvedValue(TOKEN)
+    await tick()
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
+    expect(onSuccess).toHaveBeenCalledOnce()
+    expect(second.close).toHaveBeenCalled()
+  })
+
+  it('does not re-enter a receive() still in flight', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(fakePopup() as unknown as Window)
+    const slow = deferred<string | null>()
+    receive.mockReturnValue(slow.promise)
+    const onSuccess = mount()
+
+    await clickSignIn()
+    await settle()
+    await tick()
+    await tick()
+    await tick()
+    expect(receive).toHaveBeenCalledOnce()
+
+    slow.resolve(TOKEN)
+    await settle()
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
     expect(onSuccess).toHaveBeenCalledOnce()
   })
 
   it('opens nothing if it was unmounted while the sign-in was starting', async () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(popup)
-    const start = deferred<{ url: string; attempt: RpcStub<LoginAttempt> }>()
+    const open = vi.spyOn(window, 'open').mockReturnValue(fakePopup() as unknown as Window)
+    const start = deferred<{ url: string; nonce: string; attempt: RpcStub<LoginAttempt> }>()
     const dispose = vi.fn<() => void>()
-    const rpcStub = {
+    const stub = {
       startGatekeeperLogin: () => start.promise,
     } as unknown as RpcStub<PublicApi>
-    mount(rpcStub)
+    mount(stub)
 
     await clickSignIn()
     act(() => root?.unmount())
     root = undefined
     start.resolve({
-      url: 'https://gk.example/login',
-      attempt: { claim, [Symbol.dispose]: dispose } as unknown as RpcStub<LoginAttempt>,
+      url: URL,
+      nonce: NONCE,
+      attempt: { receive, [Symbol.dispose]: dispose } as unknown as RpcStub<LoginAttempt>,
     })
     await settle()
 

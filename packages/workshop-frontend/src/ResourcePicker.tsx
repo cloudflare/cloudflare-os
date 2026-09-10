@@ -399,8 +399,7 @@ export default function ResourcePicker({
   const handleConnectNew = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      openConnectWindow(result.url)
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
@@ -415,9 +414,9 @@ export default function ResourcePicker({
     if (resourceUrlPatterns.length === 0) return
     setGrantingAccount(accountId)
     try {
-      const result = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
-      if (result.url) {
-        openConnectWindow(result.url)
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      if (flow) {
+        openConnectWindow(flow)
         toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
     } catch (error) {
@@ -433,10 +432,9 @@ export default function ResourcePicker({
   const handleReconnect = useCallback(async (accountId: number) => {
     setReconnectingAccount(accountId)
     try {
-      const result = await authenticatedApi.reconnectAccount(accountId)
-      openConnectWindow(result.url)
-      // The subscription will fire add() with credentialsValid: true when reconnect completes.
-      // The reconnectingAccount state is cleared at that point.
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      // The popup redeems the ticket itself; the account arrives through the accounts subscription,
+      // whose add() with credentialsValid: true clears the reconnectingAccount state.
     } catch (error) {
       console.error('Failed to initiate reconnection:', error)
       toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
