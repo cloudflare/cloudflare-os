@@ -1,0 +1,72 @@
+packages/workshop-frontend/src/ConnectHandoffPage.test.tsx
+  s_3fd32ba9d290d1::t_fa0b1775477184 1-3,5-70,89-92,94-103,105-206
+  s_3fd32ba9d290d1::t_6acb7e7e06a006 4
+  s_3fd32ba9d290d1::t_d68abc8cd3a609 104
+  s_3fd32ba9d290d1::t_63835323be550f 73-75,80-88,93
+  s_3fd32ba9d290d1::t_4bbc37d51a3f3f 71-72,76-79
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_3fd32ba9d290d1::t_e00811ca631285 96-98
+  s_3fd32ba9d290d1::t_29165e056d7e70 6,9,15-18,28-48,53-57,59,63,67-68,70,77,81-85,90-95,99-107,109-110,112-124,126-130,133-135,138-141,145,147,149-152,154-162,164-173,225-236,238,240,245-246,248,251,257-259
+  s_3fd32ba9d290d1::t_424e84e33ae7d5 177-194,196,200-205,207-214,218-224
+packages/workshop-frontend/src/rootRoute.test.tsx
+  s_3fd32ba9d290d1::t_f473fd8a3cf464 13-15
+  s_3fd32ba9d290d1::t_c0a46b4471c0f0 1-12,16-29,32-59,61-87,101-123
+  s_3fd32ba9d290d1::t_a950400cea1350 30-31
+  s_3fd32ba9d290d1::t_26ee057061e7f9 88-100
+  s_3fd32ba9d290d1::t_db977e3d394b2b 60
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_3fd32ba9d290d1::t_63b07bf54330b1 92-94,99-102
+  s_3fd32ba9d290d1::t_6b3d3e08614e95 51-53
+  s_3fd32ba9d290d1::t_558706d1c83439 3-4,7-8,11-28,30-31,33,39-41,43-50,56-57,60,62-65,68-73,75-77,79-82,85-86,88-89,95-97,104,106-107,109-110,112-114,117-126,128-129,132-133,137-140,143-145,148-156,158,160-163
+packages/workshop-frontend/src/routes/connect.handoff.tsx
+  s_3fd32ba9d290d1::t_36d61b84600208 1-6
+packages/workshop-frontend/src/ConnectHandoffPage.tsx
+  s_3fd32ba9d290d1::t_e55f5f91cb35c5 1-95
+  s_3fd32ba9d290d1::t_2a8dcd4aff3bf9 96
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_3fd32ba9d290d1::t_aa31a308c7cc76 5,17-19,21-29,35-38,62-63,73-79,81,83,86-89,93-103,108,114
+  s_3fd32ba9d290d1::t_282b0a2fdb3e63 90-92
+packages/workshop-frontend/src/connectHandoff.ts
+  s_3fd32ba9d290d1::t_4812396aee6605 2-6,8,21-23,25,27,30-31,33-41,44-46,48-50,52,55-58,60-70,75-76,78-80,89,91-94,97-99,101-114,118-120,122-141
+  s_3fd32ba9d290d1::t_7eaac7e68e2633 72-73,81-84
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_3fd32ba9d290d1::t_b3cfc60f8140f0 4
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_3fd32ba9d290d1::t_cd6f7c2bc89a5b 25,197,211
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_3fd32ba9d290d1::t_1583875273da82 590,610-612,615-616,631
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_3fd32ba9d290d1::t_03a0944dfc02a8 10,86,90-91,115,117,119,123-126,128-133,208-209,221,227-228,246,254-255,272,278-279
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_3fd32ba9d290d1::t_07a3a0cc17b0ff 215,218,231-233,251-252
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_3fd32ba9d290d1::t_66ed7459e0674c 255
+packages/workshop-frontend/src/ResourcePicker.tsx
+  s_3fd32ba9d290d1::t_d2152bfd9a61d3 402,417-419,435-437
+packages/workshop-frontend/src/components/billing/OutOfCreditsModal.tsx
+  s_3fd32ba9d290d1::t_5ffa2bb06dc733 64
+packages/workshop-frontend/src/components/billing/UsageSettings.tsx
+  s_3fd32ba9d290d1::t_ae743b934432c5 63-65
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_3fd32ba9d290d1::t_dd9d645be94197 24,89-93,123,141,160,180,198,216,235,327-333,371
+packages/workshop-frontend/src/routes/__root.tsx
+  s_3fd32ba9d290d1::t_29eaa59cf5ffb1 10,31-33,35-38,93
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_3fd32ba9d290d1::t_1c85a964104f0a 580,595,599-601,634
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3b7f37234e530f84805491c98708e381c6ca0b29",
+  "prompts": {},
+  "sessions": {
+    "s_3fd32ba9d290d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54cfef4d-a815-4b29-b293-946cabbd7fae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
