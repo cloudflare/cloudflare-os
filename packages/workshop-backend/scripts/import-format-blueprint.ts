@@ -1,30 +1,33 @@
 // Extracts a `.gadget` archive exported from a running Workshop into the repo's reviewable bundled
-// format-blueprint source. See format-blueprints/README.md for the workflow this belongs to.
+// format-blueprint source, in `@gadgets/format-blueprints` or in the `FORMAT_BLUEPRINTS_DIR` tree
+// (resolved against this package's root, as build-format-blueprints.ts resolves it). See that
+// package's README for the workflow this belongs to.
 
 import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import {
-  extractFiles,
-  findInterruptedImportBackups,
-  parseArchive,
-  readSourceFiles,
-  validatePortablePaths,
-} from "./format-blueprint-files.ts";
 import type {
   FormatBlueprintManifest,
   FormatBlueprintPresentation,
-} from "./format-blueprint-manifest.ts";
+} from "@gadgets/format-blueprints";
 import {
+  BUNDLED_BLUEPRINTS_DIR,
+  extractFiles,
+  findInterruptedImportBackups,
+  parseArchive,
   parseFormatBlueprintManifest,
   parseFormatBlueprintPresentation,
-} from "./format-blueprint-manifest.ts";
+  readSourceFiles,
+  validatePortablePaths,
+} from "@gadgets/format-blueprints";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
-const sourceDir = resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints");
+const sourceDir = process.env.FORMAT_BLUEPRINTS_DIR
+    ? resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR)
+    : BUNDLED_BLUEPRINTS_DIR;
 type BlueprintPresentation = FormatBlueprintPresentation & {
   name: string;
   source: string;

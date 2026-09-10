@@ -1,0 +1,44 @@
+// Type-checks the unit tests each bundled blueprint and each library keeps beside its sources
+// (`blueprints/<name>/__tests__/**`, `libraries/<name>/__tests__/**`), and with them the `lib/**`
+// or `src/**` modules they import. Run by the `build` task in vite.config.ts.
+//
+// Separate from `tsconfig.client.json` for one reason: a test is Node code and a gadget module is
+// not. Tests load fixtures (`node:fs`) and run under vitest, so this program declares `node`
+// types; the client program declares none, so a gadget module that reached for a Node global
+// fails there even though its own test compiles.
+//
+// Vitest's own types come from the `vitest` import, and DOM is present because the tests run in
+// jsdom by default (see vitest.config.ts). A test of the server side -- `server.test.ts` or
+// `<topic>.server.test.ts` -- is excluded here and checked by `tsconfig.server-tests.json` instead:
+// it imports a Durable Object, which needs the Workers types and must not be judged under the DOM
+// lib's. `vite/client` is deliberately absent: it is not resolvable from this package, so a fixture
+// is loaded with `readFileSync` rather than a `?raw` import.
+//
+// `files: []` alongside `include`: a blueprint set with no tests at all is a valid state, and
+// without it tsc reports "no inputs found" as an error.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Gadget modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive; a test imports them the same way.
+    "allowImportingTsExtensions": true,
+    // Each entry is bundled alone, so an entry with no import or export must still be a module here
+    // rather than a global script sharing its declarations with another blueprint's.
+    "moduleDetection": "force",
+    // `gadgets:<name>/<side>` names a library in `libraries/`, which the build inlines into the
+    // bundle (see src/files.ts); a test that imports a module reaching one reads the same entry.
+    "paths": {
+      "gadgets:*/client": ["./libraries/*/client.ts"],
+      "gadgets:*/server": ["./libraries/*/server.ts"]
+    },
+    "types": ["node"],
+    "noEmit": true
+  },
+  "files": [],
+  "include": ["blueprints/*/__tests__/**/*.ts", "libraries/*/__tests__/**/*.ts"],
+  "exclude": ["**/server.test.ts", "**/*.server.test.ts"]
+}

@@ -21,7 +21,7 @@ it.each([
   "packages/workshop-backend/wrangler.jsonc",
   "packages/workshop-shared/src/api.ts",
   // Inlined into the blueprint archives the Worker ships.
-  "packages/gadget-libraries/ui/client.ts",
+  "packages/format-blueprints/libraries/ui/client.ts",
   "packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc",
   "packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts",
   "pnpm-lock.yaml",
@@ -57,13 +57,11 @@ it("watches a root covering every entry in the table", () => {
     "packages/backend-utils",
     "packages/error-reporting",
     "packages/typed-storage",
-    // The one entry the environment can move, resolved as the blueprint generator resolves it.
-    resolve(
-      WORKSPACE_DIR,
-      "packages/workshop-backend",
-      process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints",
-    ),
-    "packages/gadget-libraries",
+    "packages/format-blueprints",
+    // The one entry the environment can add, resolved as the blueprint generator resolves it.
+    ...(process.env.FORMAT_BLUEPRINTS_DIR
+      ? [resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.FORMAT_BLUEPRINTS_DIR)]
+      : []),
     "packages/integration-tests/fixtures",
     "packages/integration-tests/fixtures/gatekeeper-test",
     "tsconfig.json",
