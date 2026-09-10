@@ -1114,6 +1114,12 @@
             "PendingLogin"
           ],
           "tag": "v2"
+        },
+        {
+          "new_sqlite_classes": [
+            "UserDirectoryDurableObject"
+          ],
+          "tag": "v3"
         }
       ],
       "modules": [
