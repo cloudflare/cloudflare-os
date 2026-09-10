@@ -1,11 +1,24 @@
 import { useNavigate } from '@tanstack/react-router'
+import { useEffect, useState } from 'react'
+import type { AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import { useAvatar } from '../useAvatar'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
 
 export default function UserMenu() {
-  const { authenticatedApi, logout, currentUser, isAdmin } = useAuthenticatedApi()
+  const { authenticatedApi, logout, currentUser, isAdmin, switchIdentity } = useAuthenticatedApi()
+  const [identities, setIdentities] = useState<AiChatAuthorInfo[]>([])
+  const [switchError, setSwitchError] = useState<string | null>(null)
+  const [switching, setSwitching] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setIdentities([])
+    authenticatedApi.listAccountIdentities().then(profiles => {
+      if (!cancelled) setIdentities(profiles)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [authenticatedApi])
   const navigate = useNavigate()
 
   const avatarUrl = useAvatar(authenticatedApi, currentUser?.id)
@@ -53,6 +66,20 @@ export default function UserMenu() {
           </DropdownMenu.Item>
         )}
         <DropdownMenu.Separator />
+        {switchIdentity && identities.filter(profile => profile.id !== currentUser?.id).map(profile => (
+          <DropdownMenu.Item key={profile.id} className={MENU_ITEM} disabled={switching}
+            onClick={() => {
+              setSwitching(true)
+              setSwitchError(null)
+              void switchIdentity(profile.id).then(() => navigate({ to: '/' })).catch(error => {
+                setSwitchError(error instanceof Error ? error.message : 'Could not switch account')
+                setSwitching(false)
+              })
+            }}>
+            Switch to {profile.id}
+          </DropdownMenu.Item>
+        ))}
+        {switchError && <p role="alert" className="px-3 text-sm text-kumo-danger">{switchError}</p>}
         <DropdownMenu.Item
           variant="danger"
           onClick={logout}

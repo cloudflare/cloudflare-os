@@ -1190,6 +1190,62 @@ describe("organization-scoped observation sharing policy", () => {
     }
   });
 
+  describe.each(["use", "build"] as const)("migration internal %s-link redemption", role => {
+    it.each([
+      { enabled: true, passwordLogin: false, allowed: true },
+      { enabled: false, passwordLogin: false, allowed: false },
+      { enabled: true, passwordLogin: true, allowed: false },
+    ])("enabled=$enabled password=$passwordLogin", async ({ enabled, passwordLogin, allowed }) => {
+      const local = `collision-${crypto.randomUUID()}`;
+      const owner = await createSsoUser(`owner-${crypto.randomUUID()}@totango.com`);
+      const legacy = await createSsoUser(`${local}@totango.com`);
+      const member = await (passwordLogin ? createPasswordUser : createSsoUser)(`${local}@heyodie.ai`);
+      const workspaceId = env.TEST_OVERSEER.newUniqueId();
+      const workspace = env.TEST_OVERSEER.get(workspaceId);
+      await owner.user.newGadget(workspaceId.toString(), "Migration internal link");
+      const ownerSession = await workspace.open(owner.id.toString(), owner.profileId, () => {});
+      let originalEnv: unknown;
+      try {
+        // Persist the old policy and issue the link before enabling the migration.
+        await authorizeDomainObservation(workspace, TOTANGO_POLICY);
+        const { key, recipientPolicy } = await ownerSession.createShareLink(role);
+        expect(recipientPolicy).toEqual(TOTANGO_POLICY);
+        await runInDurableObject(workspace, async instance => {
+          const impl = Reflect.get(instance, "impl");
+          originalEnv = Reflect.get(impl, "env");
+          Reflect.set(impl, "env", {
+            ...Reflect.get(impl, "env"),
+            AUTH_EMAIL_DOMAIN_ALIASES: enabled ? { "heyodie.ai": "totango.com" } : undefined,
+          });
+        });
+
+        if (allowed) {
+          using opened = await workspace.open(member.id.toString(), member.profileId, () => {}, key);
+          expect((await opened.getMetadata()).role).toBe(role);
+          using reopened = await workspace.open(member.id.toString(), member.profileId, () => {});
+          expect((await reopened.getMetadata()).role).toBe(role);
+          expect((await ownerSession.listCollaborators()).map(entry => entry.profile.id))
+              .toEqual([member.profileId]);
+          // Redemption grants the existing collision identity, not its legacy sibling.
+          await expectOpenDenied(() => workspace.open(legacy.id.toString(), legacy.profileId, () => {}));
+        } else {
+          await expectOpenDenied(() => workspace.open(member.id.toString(), member.profileId, () => {}, key));
+          await expectOpenDenied(() => workspace.open(member.id.toString(), member.profileId, () => {}));
+          expect(await ownerSession.listCollaborators()).toEqual([]);
+        }
+        await runInDurableObject(workspace, async (_instance, state) => {
+          expect(state.storage.kv.get("domainSharingPolicy")).toEqual(TOTANGO_POLICY);
+        });
+      } finally {
+        if (originalEnv) await runInDurableObject(workspace, async instance => {
+          Reflect.set(Reflect.get(instance, "impl"), "env", originalEnv);
+        });
+        ownerSession[Symbol.dispose]();
+        await owner.user.deleteGadget(workspaceId.toString());
+      }
+    });
+  });
+
   it.each(["use", "build"] as const)(
       "does not persist an internal %s-link grant when observer authorization fails", async role => {
     let owner = await createSsoUser(`observer-${role}-owner-${crypto.randomUUID()}@totango.com`);

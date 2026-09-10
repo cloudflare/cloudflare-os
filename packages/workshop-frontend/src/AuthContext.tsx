@@ -5,6 +5,8 @@ import { AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api
 interface AuthContextType {
   authenticatedApi: RpcStub<AuthenticatedApi>
   logout: () => void
+  /** Switch to another existing identity authorized by fresh SSO. */
+  switchIdentity?: (identity: string) => Promise<void>
   /** Current user verified by this exact API. Null while its identity is unresolved. */
   currentUser: AiChatAuthorInfo | null
   /** Whether the current user is a deployment admin. False while loading / for non-admins. */
@@ -17,9 +19,10 @@ interface AuthProviderProps {
   children: ReactNode
   authenticatedApi: RpcStub<AuthenticatedApi>
   onLogout: () => void
+  onSwitchIdentity?: (identity: string) => Promise<void>
 }
 
-export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProviderProps) {
+export function AuthProvider({ children, authenticatedApi, onLogout, onSwitchIdentity }: AuthProviderProps) {
   const [identity, setIdentity] = useState<{ api: RpcStub<AuthenticatedApi>; user: AiChatAuthorInfo }>()
   const currentUser = identity?.api === authenticatedApi ? identity.user : null
   const [isAdmin, setIsAdmin] = useState(false)
@@ -41,7 +44,7 @@ export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProvi
   }, [authenticatedApi])
 
   return (
-    <AuthContext.Provider value={{ authenticatedApi, logout: onLogout, currentUser, isAdmin }}>
+    <AuthContext.Provider value={{ authenticatedApi, logout: onLogout, switchIdentity: onSwitchIdentity, currentUser, isAdmin }}>
       {children}
     </AuthContext.Provider>
   )

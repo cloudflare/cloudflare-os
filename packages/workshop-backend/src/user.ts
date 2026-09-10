@@ -203,6 +203,7 @@ export type UserChatContext = {
 type LoginSessionRecord = {
   tokenId: string,  // sha256 hash of token, hex-formatted
   created: Date,
+  verifiedEmail?: string,
 }
 
 // Blueprint record stored in the user's `blueprints` collection.
@@ -505,7 +506,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       .GATEKEEPER_SESSIONS;
   }
 
-  async authenticate(token: string): Promise<void> {
+  /** Validate an account-local token and return its verified SSO provenance, if recorded. */
+  async authenticate(token: string): Promise<string | undefined> {
     let tokenBytes: Uint8Array;
     try {
       tokenBytes = Uint8Array.fromBase64(token);
@@ -520,6 +522,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!session) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    return session.verifiedEmail;
   }
 
   /**
@@ -545,12 +548,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
-  async #newSessionToken(): Promise<string> {
+  async #newSessionToken(verifiedEmail?: string): Promise<string> {
     let sessionToken = new Uint8Array(32);
     crypto.getRandomValues(sessionToken);
 
     let tokenId = new Uint8Array(await crypto.subtle.digest('SHA-256', sessionToken)).toHex();
-    this.storage.sessions.put({ tokenId, created: new Date() });
+    this.storage.sessions.put({ tokenId, created: new Date(), verifiedEmail });
 
     return sessionToken.toBase64();
   }
@@ -605,10 +608,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Log in via an authentication gatekeeper, creating the account on first use. The user DO is keyed
-   * by the verified email (this DO's id derives from idFromName(email)), so `email` is also used as
+   * by the resolved stable identity (this DO's id derives from idFromName(email)), so `email` is also used as
    * the profile id and the initial display name is the email's local-part — consistent with the
    * Cloudflare Access flow. Password login is left disabled for these accounts. Returns the session
-   * secret to store client-side.
+   * secret to store client-side. `verifiedEmail` records the actual verified sign-in address,
+   * independently of the stable identity; only trusted authentication entrypoints call this method.
    *
    * The profile is written only on first sign-in. We intentionally do NOT refresh the display name
    * on later logins: once set, the name is the user's to change (via setOwnDisplayName), so we don't
@@ -617,7 +621,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * When the account doesn't yet exist and `allowCreate` is false (deployment signups are closed),
    * returns null instead of creating one — existing users can still sign in.
    */
-  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean): Promise<string | null> {
+  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean,
+      verifiedEmail: string = email): Promise<string | null> {
     if (!this.storage.created.get()) {
       if (!allowCreate) return null;
       this.storage.created.put(true);
@@ -627,7 +632,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         id: email,
       });
     }
-    return this.#newSessionToken();
+    return this.#newSessionToken(verifiedEmail);
   }
 
   /** Whether this account has a password set (false for gatekeeper sign-in accounts). */
@@ -736,6 +741,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return isTeamPiCodexEligibleUser(
       this.storage.profile.get().id,
       this.storage.passwordHashHash.get() !== null,
+      this.env,
     );
   }
 
@@ -1935,7 +1941,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Return whether the current account satisfies the internal SSO-only feedback policy. */
   async productFeedbackAvailable(): Promise<boolean> {
     const profile = await this.whoami();
-    return isTeamPiCodexEligibleUser(profile.id, this.storage.passwordHashHash.get() !== null);
+    return isTeamPiCodexEligibleUser(profile.id, this.storage.passwordHashHash.get() !== null, this.env);
   }
 
   async #assertProductFeedbackEligible(): Promise<void> {

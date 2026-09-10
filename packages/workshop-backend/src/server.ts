@@ -6,8 +6,9 @@ import type { CodingSessionActivity } from "@gadgets/workshop-shared/coding-sess
 import type { ProductFeedbackStatus, ProductFeedbackSubmissionResult, SubmitProductFeedbackRequest } from "@gadgets/workshop-shared/product-feedback";
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
-import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
+import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist, accountEmailIdentities } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
+import { existingAccountIdentities, resolveAuthIdentity } from "./auth/identity.js";
 import { getUsageInfo } from "./ai-gateway-billing/limits/usage-checker.js";
 import { listConnectedAccounts, selectAccount } from "./ai-gateway-billing/cloudflare/connection-service.js";
 import { PendingLogin, LoginConnectCallbackImpl, NativeLoginConnectCallbackImpl } from "./auth/login-flow.js";
@@ -348,7 +349,8 @@ type Env = Cloudflare.Env & {
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       userId: DurableObjectId,
-      private abortSession: (reason: Error) => void) {
+      private abortSession: (reason: Error) => void,
+      private verifiedEmail?: string) {
     super();
 
     this.#userId = userId;
@@ -391,6 +393,21 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   whoami(): Promise<AiChatAuthorInfo> {
     // Pure-read delegations retry once across a user-DO reset (see retryOnDoReset); writes never do.
     return retryOnDoReset(() => this.#user.whoami());
+  }
+  listAccountIdentities(): Promise<AiChatAuthorInfo[]> {
+    // A token issued while aliasing was enabled still opens its original DO after opt-out,
+    // but must not use the recorded alias to cross to a different account after opt-out.
+    if (!this.verifiedEmail || !accountEmailIdentities(this.verifiedEmail, this.env)
+        .includes(this.#userId.name!)) return Promise.resolve([]);
+    return existingAccountIdentities(this.verifiedEmail, this.env, this.users);
+  }
+  async switchAccountIdentity(identity: string): Promise<AuthenticatedApi> {
+    const identities = await this.listAccountIdentities();
+    if (!identities.some(profile => profile.id === identity)) {
+      throw new Error("Account identity unavailable. A fresh SSO sign-in is required.");
+    }
+    return new AuthenticatedApiImpl(this.ctx, this.env, this.users.idFromName(identity),
+        this.abortSession, this.verifiedEmail);
   }
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
@@ -1188,8 +1205,9 @@ class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
   }
 }
 
+/** Public RPC entrypoint; Access provenance is supplied only after JWT verification by fetch(). */
 @validateRpc()
-class PublicApiImpl extends RpcTarget implements PublicApi {
+export class PublicApiImpl extends RpcTarget implements PublicApi {
   users: DurableObjectNamespace<UserDurableObject>;
 
   constructor(private ctx: ExecutionContext, private env: Env,
@@ -1269,25 +1287,26 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     }
 
     let userId = this.users.idFromName(split[0]);
-    await this.users.get(userId).authenticate(split[1]);
+    const verifiedEmail = await this.users.get(userId).authenticate(split[1]);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
       source: "session_token",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession, verifiedEmail);
   }
 
   async authenticateFromCfAccess(): Promise<AuthenticatedApi> {
-    if (!this.accessPayload) {
+    if (typeof this.accessPayload?.email !== "string" || !this.accessPayload.email) {
       throw createAuthError(AUTH_ERROR_CODES.notAuthenticatedWithAccess);
     }
 
-    let email = this.accessPayload.email as string;
-    let userId = this.users.idFromName(email);
+    let email = this.accessPayload.email;
+    let identity = await resolveAuthIdentity(email, this.env, this.users);
+    let userId = this.users.idFromName(identity);
     let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
     let accountCreated =
-        await this.users.get(userId).authenticateFromCfAccess(email, signupsEnabled);
+        await this.users.get(userId).authenticateFromCfAccess(identity, signupsEnabled);
     if (accountCreated) {
       recordAnalytics(this.ctx, this.env, {
         event_name: "account_created",
@@ -1300,7 +1319,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession, email);
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -1466,7 +1485,7 @@ export default {
         const payload = await verifyCfAccessJwt(req, env);
         if (!payload) return new Response("Invalid CF access JWT.", { status: 403 });
 
-        if (!payload.email) {
+        if (typeof payload.email !== "string" || !payload.email) {
           return new Response("Access JWT didn't specify email address.", { status: 403 });
         }
 

@@ -26,7 +26,7 @@ export const Route = createRootRoute({
 function RootComponent() {
   const rpcStub = useRpcStub()
   const connectionLost = useConnectionLost()
-  const { isAuthenticated, authenticatedApi, isLoading, error, logout, login } = useAuth(rpcStub)
+  const { isAuthenticated, authenticatedApi, isLoading, error, logout, login, switchIdentity, identityRevision } = useAuth(rpcStub)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
   // Routes that don't require auth (public routes)
@@ -98,8 +98,10 @@ function RootComponent() {
       <Activity mode={isLoading ? 'hidden' : 'visible'}>
         <Suspense fallback={null}>
           <CurrentAuthenticatedContent
+            key={identityRevision ?? 0}
             authenticatedApi={isLoading ? null : authenticatedApi}
             logout={logout}
+            switchIdentity={switchIdentity}
             isWorkspaceEditor={isWorkspaceEditor}
             pathname={pathname}
           />
@@ -114,15 +116,16 @@ function RootComponent() {
 // Hidden Activities still render, so returning null here would discard the preserved subtree.
 const waitingForAuthenticatedApi = new Promise<never>(() => {})
 
-function CurrentAuthenticatedContent({ authenticatedApi, logout, isWorkspaceEditor, pathname }: {
+function CurrentAuthenticatedContent({ authenticatedApi, logout, switchIdentity, isWorkspaceEditor, pathname }: {
   authenticatedApi: RpcStub<AuthenticatedApi> | null
   logout: () => void
+  switchIdentity: (identity: string) => Promise<void>
   isWorkspaceEditor: boolean
   pathname: string
 }) {
   if (!authenticatedApi) throw waitingForAuthenticatedApi
   return (
-    <AuthProvider authenticatedApi={authenticatedApi} onLogout={logout}>
+    <AuthProvider authenticatedApi={authenticatedApi} onLogout={logout} onSwitchIdentity={switchIdentity}>
       <FeatureFlagsProvider>
         <TooltipProvider>
           <Toasty>

@@ -1,5 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
+import { matchesAuthEmailDomain } from "./auth/config";
+import { resolveInviteIdentity } from "./auth/identity";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, CodeUpdate, CodeSubscriber, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, FINANCE_OPERATIONS_WORKBENCH_BLUEPRINT_ID, isFinanceOperationsWorkbenchBlueprintId, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, type ObservationDomainSharingPolicy } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -790,10 +792,11 @@ function formatDomainSharingPolicy(policy: ObservationDomainSharingPolicy): stri
 export async function isProfileAllowedByDomainSharingPolicy(
     profileId: string,
     hasPasswordLogin: () => Promise<boolean>,
-    policy: ObservationDomainSharingPolicy): Promise<boolean> {
+    policy: ObservationDomainSharingPolicy,
+    env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES"> = {}): Promise<boolean> {
   const domain = normalizeSharingDomain(policy.emailDomain);
   const lowerProfileId = profileId.trim().toLowerCase();
-  if (!lowerProfileId.endsWith(`@${domain}`)) return false;
+  if (!matchesAuthEmailDomain(lowerProfileId, domain, env)) return false;
   return !(await hasPasswordLogin());
 }
 
@@ -801,8 +804,8 @@ async function assertProfileAllowedByDomainSharingPolicy(
     profileId: string,
     hasPasswordLogin: () => Promise<boolean>,
     policy: ObservationDomainSharingPolicy,
-    context: string): Promise<void> {
-  if (await isProfileAllowedByDomainSharingPolicy(profileId, hasPasswordLogin, policy)) return;
+    context: string, env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES">): Promise<void> {
+  if (await isProfileAllowedByDomainSharingPolicy(profileId, hasPasswordLogin, policy, env)) return;
   throw new Error(
       `${context} requires an explicitly invited, verified ${formatDomainSharingPolicy(policy)} collaborator.`);
 }
@@ -3220,7 +3223,7 @@ class OverseerImpl implements AgentHooks {
             collaborator.profile.id,
             () => this.users.get(this.users.idFromName(collaborator.profile.id)).hasPasswordLogin(),
             policy,
-            "This observation");
+            "This observation", this.env);
       }
     } catch (error) {
       // The policy was already latched synchronously. Disconnect capabilities issued under the old
@@ -7568,7 +7571,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             fetchProfile: () => clientUser.whoami(),
             hasPasswordLogin: () => clientUser.hasPasswordLogin(),
             getActivePolicy: () => this.impl.storage.domainSharingPolicy.get(),
-            isProfileAllowedByPolicy: isProfileAllowedByDomainSharingPolicy,
+            isProfileAllowedByPolicy: (id, hasPassword, policy) =>
+                isProfileAllowedByDomainSharingPolicy(id, hasPassword, policy, this.impl.env),
             beforeStore: async candidateRole => {
               await ensureCapsules;
               await this.impl.ensureObserver(
@@ -7602,7 +7606,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
             profileId,
             () => clientUser.hasPasswordLogin(),
             domainSharingPolicy,
-            "This workspace");
+            "This workspace", this.impl.env);
       }
 
       // Ambient reconciliation may attach Gatekeepers after open() starts. Finish it before taking
@@ -7727,7 +7731,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         if (role !== "build") throw new Error("Build access is required.");
         if (policy) {
           await assertProfileAllowedByDomainSharingPolicy(
-              callerProfile.id, () => caller.hasPasswordLogin(), policy, "This workspace");
+              callerProfile.id, () => caller.hasPasswordLogin(), policy, "This workspace", this.impl.env);
         }
         await this.impl.ensureObserver(callerProfile.id, caller, "build");
       } catch {
@@ -8446,7 +8450,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               profileId,
               () => user.hasPasswordLogin(),
               requiredPolicy,
-              profileId === this.clientProfileId ? "This workspace" : "Collaborators");
+              profileId === this.clientProfileId ? "This workspace" : "Collaborators", this.impl.env);
         }
       }
 
@@ -9980,7 +9984,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async addCollaborator(username: string, role: CollaboratorRole, note?: string)
       : Promise<CollaboratorInfo | null> {
     assertCollaboratorInviteAllowed(await this.#isFinanceWorkspace(), this.isOwner, role);
-    // Look up the user DO to check if the account exists.
+    // Explicit existing collision identities remain addressable. Only absent aliases fall back
+    // to the canonical existing identity; an invite never creates an account.
+    username = await resolveInviteIdentity(username, this.impl.env, this.impl.users);
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
     let profile = await userDo.whoamiIfExists();
@@ -9996,7 +10002,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           profile.id,
           () => userDo.hasPasswordLogin(),
           domainSharingPolicy,
-          "This workspace");
+          "This workspace", this.impl.env);
     }
 
     // authorizeObservation() can latch a policy while the identity check above is awaiting. The
@@ -10008,7 +10014,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           profile.id,
           () => userDo.hasPasswordLogin(),
           activeDomainSharingPolicy,
-          "This workspace");
+          "This workspace", this.impl.env);
     }
 
     if (this.impl.storage.prohibitAllSharing.get()) {

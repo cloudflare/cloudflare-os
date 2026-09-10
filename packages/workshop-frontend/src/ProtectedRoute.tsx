@@ -12,7 +12,7 @@ interface ProtectedRouteProps {
 }
 
 export default function ProtectedRoute({ children, rpcStub }: ProtectedRouteProps) {
-  const { isAuthenticated, authenticatedApi, isLoading, error, logout, login } = useAuth(rpcStub)
+  const { isAuthenticated, authenticatedApi, isLoading, error, logout, login, switchIdentity, identityRevision } = useAuth(rpcStub)
 
   const handleLoginSuccess = () => {
     // Trigger re-authentication by calling login with stored token
@@ -94,7 +94,8 @@ export default function ProtectedRoute({ children, rpcStub }: ProtectedRouteProp
   }
 
   return (
-    <AuthProvider authenticatedApi={authenticatedApi!} onLogout={logout}>
+    <AuthProvider key={identityRevision ?? 0} authenticatedApi={authenticatedApi!}
+      onLogout={logout} onSwitchIdentity={switchIdentity}>
       {children}
     </AuthProvider>
   )

@@ -2,6 +2,7 @@ import { SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig }
   from "@gadgets/workshop-shared/api";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
+import { matchesAuthEmailDomain } from "./auth/config";
 
 /** Prefix for deployment-provided Team PI Codex model profile IDs. */
 export const TEAM_PI_CODEX_PROFILE_PREFIX = "team-pi-codex/";
@@ -37,16 +38,18 @@ function modelName(modelId: string): string {
 }
 
 /** Return true when the authenticated user can use the internal Team PI model route. */
-export function isTeamPiCodexUserId(userId: string): boolean {
-  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@totango\.com$/.test(userId.toLowerCase());
+export function isTeamPiCodexUserId(userId: string,
+    env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES"> = {}): boolean {
+  return matchesAuthEmailDomain(userId, "totango.com", env);
 }
 
 /** Return true when a verified internal account can use the Team PI model route. */
 export function isTeamPiCodexEligibleUser(
   userId: string,
   passwordLoginEnabled: boolean,
+  env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES"> = {},
 ): boolean {
-  return !passwordLoginEnabled && isTeamPiCodexUserId(userId);
+  return !passwordLoginEnabled && isTeamPiCodexUserId(userId, env);
 }
 
 /** List deployment-provided Team PI Codex models as public model profiles. */
@@ -64,7 +67,7 @@ export function getDefaultTeamPiCodexModel(
   env: Cloudflare.Env,
   userId: string,
 ): TeamPiCodexModelRecord | undefined {
-  if (!isTeamPiCodexUserId(userId)) return undefined;
+  if (!isTeamPiCodexUserId(userId, env)) return undefined;
   const profile = getTeamPiCodexModelList(env)[0];
   return profile ? resolveTeamPiCodexModel(env, profile.id) : undefined;
 }

@@ -24,6 +24,7 @@ import { GatekeeperConnectCallback, GatekeeperUser } from "@gadgets/workshop-sha
 import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
+import { resolveAuthIdentity } from "./identity.js";
 
 const logger = createWorkshopLogger("workshop.auth");
 
@@ -99,9 +100,10 @@ async function completeGatekeeperLogin(
       await fail("This account has no verified email, so it can't be used to sign in.");
       return;
     }
-    const userStub = ctx.exports.UserDurableObject.get(ctx.exports.UserDurableObject.idFromName(email));
+    const identity = await resolveAuthIdentity(email, env, ctx.exports.UserDurableObject);
+    const userStub = ctx.exports.UserDurableObject.getByName(identity);
     const signupsEnabled = (await readAdminConfig(env)).signupsEnabled;
-    const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled);
+    const secret = await userStub.loginOrCreateViaGatekeeper(identity, signupsEnabled, email);
     if (secret === null) {
       loginLogger.info("gatekeeper login finished", {
         event: "gatekeeper.login.finished", outcome: "signups_disabled",
@@ -112,7 +114,7 @@ async function completeGatekeeperLogin(
     if (vendorId === CLOUDFLARE_VENDOR_ID) {
       await userStub.linkConnectedAccountFromLogin(account, vendorId, expiresAt);
     }
-    await deliver(`${email}:${secret}`);
+    await deliver(`${identity}:${secret}`);
     loginLogger.info("gatekeeper login finished", {
       event: "gatekeeper.login.finished", outcome: "ok",
     });
