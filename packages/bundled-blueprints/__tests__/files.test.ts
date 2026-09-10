@@ -459,6 +459,48 @@ describe("bundled blueprint TypeScript sources", () => {
       .toThrow("lib/helpers.js imports ./shared.js, which names lib/shared.ts");
   });
 
+  // A library is inlined by the build into a TypeScript entry; a JavaScript module is copied into
+  // the archive as written, and the runtime has nothing to resolve the package name against, so
+  // the Durable Object would fail to load. The same class as any bare import in a JavaScript
+  // blueprint, but the README advertises libraries, so the build says why this one is refused.
+  it("rejects a library import from a JavaScript module, which ships as written", async () => {
+    let server = [
+      `import { MutationQueue } from "${LIBRARY}/sync/server";`,
+      "export class Gadget { queue = new MutationQueue(); }",
+    ].join("\n");
+    let message = `example/files: server.js imports ${LIBRARY}/sync/server: a gadget library is ` +
+        "inlined by the build into a TypeScript entry only; server.js ships as written, and the " +
+        "runtime has nothing to resolve the package name against";
+
+    // A JavaScript-only tree, which the build otherwise leaves untouched.
+    let untouched = await sourceTree({"client.js": "document.title = 'hi';", "server.js": server});
+    await expect(readSourceFiles(untouched, "example/files")).rejects.toThrow(message);
+
+    // A half-migrated one, where the client's own library import is fine.
+    let mixed = await sourceTree({
+      "client.ts": `import { el } from "${LIBRARY}/ui/client"; document.body.append(el("p"));`,
+      "server.js": server,
+    });
+    await expect(readSourceFiles(mixed, "example/files")).rejects.toThrow(message);
+  });
+
+  // The scan reads a specifier as spelled, so an escape in one would name nothing it can compare
+  // with the archive's paths -- and slip a dropped module, or the package name, past the checks
+  // above. Nobody spells an import path with an escape, so the spelling is refused outright.
+  it("rejects an import spelled with an escape in a shipped module", async () => {
+    let directory = await sourceTree({
+      "client.ts": 'import { shared } from "./lib/shared.js";\ndocument.title = shared();',
+      "server.js": [
+        'import { shared } from "./lib/sh\\u0061red.js";',
+        "export class Gadget { hi() { return shared(); } }",
+      ].join("\n"),
+      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
+    });
+    await expect(readSourceFiles(directory, "example/files")).rejects
+      .toThrow("example/files: server.js imports ./lib/sh\\u0061red.js, spelled with an escape; " +
+          "write the path plainly so the build can read it");
+  });
+
   // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
   // throws when called, without a warning, and for a computed path without a metafile import
   // either.

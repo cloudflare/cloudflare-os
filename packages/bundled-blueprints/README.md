@@ -43,8 +43,10 @@ shipped `client.js` / `server.js`, as it does a `lib/` module, so the archive st
 and a gadget created from the blueprint carries its own copy of the library as of its
 instantiation. A client may not import a library's server side (it would drag a Durable Object into
 the iframe), and a library, reached by that subpath, is the one thing an import may reach outside
-`files/` for. The Docs, Sheets and Slides blueprints are built on the `ui` and `sync` libraries,
-with their own domain code in `files/`.
+`files/` for. The importer has to be TypeScript: a JavaScript module ships as written, with nothing
+at runtime to resolve the package name against, so it cannot import a library, and the build rejects
+the attempt. The Docs, Sheets and Slides blueprints are built on the `ui` and `sync` libraries, with
+their own domain code in `files/`.
 
 ### TypeScript sources
 
@@ -78,8 +80,9 @@ import that reaches outside `files/` by any path other than a library's exported
 or absolute path into `libraries/`, a `src/` module, the package root, a bare specifier some
 `node_modules` resolves), a library import of the wrong side or of a library that does not exist, a
 dynamic `import()` of a computed path or of a template literal (the bundler cannot check the one and
-expands the other into every file the pattern matches), or a shipped JavaScript module that imports
-a `lib/*.ts` module, which is not in the archive.
+expands the other into every file the pattern matches), a shipped JavaScript module that imports a
+`lib/*.ts` module, which is not in the archive, or a library, which only the bundle can inline, or
+an import specifier spelled with an escape in a shipped module, which the build could not read.
 
 ### Type checks and tests
 
