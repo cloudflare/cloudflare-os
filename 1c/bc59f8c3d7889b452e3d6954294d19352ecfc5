@@ -1,0 +1,25 @@
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/server.test.ts
+  s_e1dd627472f56c::t_dd8fb028f05d58 1-52
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/comments-model.ts
+  s_e1dd627472f56c::t_fc45bd6c6c3ef1 88-92
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/protocol.ts
+  s_e1dd627472f56c::t_7674af1337a372 43-45
+packages/workshop-backend/format-blueprints/workspace-pages/files/server.ts
+  s_e1dd627472f56c::t_9c39176be69db4 27,99-116,242-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1cbc59f8c3d7889b452e3d6954294d19352ecfc5",
+  "prompts": {},
+  "sessions": {
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

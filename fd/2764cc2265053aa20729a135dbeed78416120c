@@ -1,0 +1,29 @@
+packages/wiki-import/README.md
+  s_f74476d0cbb433::t_8774980270ac67 457-464
+packages/wiki-import/__tests__/fixtures/images.xhtml
+  s_f74476d0cbb433::t_bc53b70fc8575d 7-13
+packages/wiki-import/__tests__/fixtures/inline.xhtml
+  s_f74476d0cbb433::t_cdf14731b98005 9-14
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_f74476d0cbb433::t_5d425115fb8325 206-214,316,322-334,1198-1202
+packages/wiki-import/src/storage-to-blocks.ts
+  s_f74476d0cbb433::t_029d88c0c06314 60-63,85,109,111,114-115,125,127,754-755,817-820,822-823,827-907,1032-1033,1387,1389,1413-1423,1431,1746-1747,1752,1760,1774-1775,1783,1792
+packages/wiki-import/src/vocabulary.ts
+  s_f74476d0cbb433::t_587b1284d0242a 36-38,40-43,79-86,89-103,197-198,368,393-398,402-403,407-445
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fd2764cc2265053aa20729a135dbeed78416120c",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+packages/workshop-frontend/package.json
+  s_7a202c3e505e2e::t_04f47e615b9eaa 41
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_7a202c3e505e2e::t_3e1441eb22ed86 201-228
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_7a202c3e505e2e::t_7dbfdad6b51651 6-7,203-206,215,243,246-248,280-281,441-448,455
+packages/workshop-frontend/src/features/diagrams/mermaidRenderer.test.ts
+  s_7a202c3e505e2e::t_95f033df1e9e02 1-93
+packages/workshop-frontend/src/features/diagrams/mermaidRenderer.ts
+  s_7a202c3e505e2e::t_17748515763e75 1-288
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_7a202c3e505e2e::t_eb8742a4b8ed53 42-51,122-123,210-262
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_7a202c3e505e2e::t_8b1e98d5cb42b2 1,3,16-17,19-20,61,118-147,226
+packages/workshop-frontend/src/features/wiki/pageHostNavigation.test.ts
+  s_7a202c3e505e2e::t_dcb1b3a4b6ffea 1-42
+packages/workshop-frontend/src/features/wiki/pageHostNavigation.ts
+  s_7a202c3e505e2e::t_0422fc9f0317eb 1-44
+packages/workshop-frontend/src/features/wiki/personalSpaceLookup.ts
+  s_7a202c3e505e2e::t_b83f27739488df 1-32
+packages/workshop-frontend/src/features/wiki/useSpaceNames.ts
+  s_7a202c3e505e2e::t_9da184271ef205 11-16
+packages/workshop-frontend/src/gadgetHostServices.test.ts
+  s_7a202c3e505e2e::t_db5ad4e3ed13e8 1-114
+packages/workshop-frontend/src/gadgetHostServices.ts
+  s_7a202c3e505e2e::t_3c8ba11ab20f80 1-146
+packages/workshop-frontend/src/utils/base64.ts
+  s_7a202c3e505e2e::t_2dfe1849243cdf 1-15
+pnpm-lock.yaml
+  s_7a202c3e505e2e::t_1a3dd199060daa 1151-1153,1244-1246,1489-1494,1901-1906,2139-2141,2898-2990,3003-3005,3176-3178,3690-3697,3711-3716,3743-3759,3764-3816,3821-3898,3917-3919,3947-3949,4039-4041,4116-4118,4219-4221,4286-4288,4295-4297,4407-4413,4418-4423,4577-4579,4606-4610,4660-4662,4904-4906,4922-4924,4961-4966,5084-5086,5092-5094,5098-5100,5206-5208,5232-5234,5333-5336,5447-5450,5730-5734,6117-6120,6553-6560,6779-6782,7363-7479,7492-7493,7606-7610,8014-8017,8026-8033,8061-8076,8081-8131,8136-8244,8258-8259,8288-8291,8371-8372,8460-8463,8572-8573,8662-8663,8668-8669,8782-8787,8790-8793,8896-8897,8918-8919,9075-9099,9484-9485,9506-9507,9528-9534,9692-9693,9725-9731,9734-9735,9875-9876,9906-9907,10015-10016,10124-10125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4da1098ae715d7a769dbcaa832e8f596ffd53132",
+  "prompts": {},
+  "sessions": {
+    "s_7a202c3e505e2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4225223-4234-4106-a074-f38a4f4dcd30",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

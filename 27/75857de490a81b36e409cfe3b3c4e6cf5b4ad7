@@ -1,0 +1,73 @@
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/anchors.test.ts
+  s_d78fe856f76a3c::t_4bbca464b3ead9 5,100-112
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/blocks.test.ts
+  s_d78fe856f76a3c::t_b4c088a76d30b9 423-430
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/document-model.test.ts
+  s_d78fe856f76a3c::t_e397d4d8eeef30 13,18,270-307
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor-harness.ts
+  s_d78fe856f76a3c::t_09655f284ea33a 131-139,141,143-147,149-156
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor.test.ts
+  s_d78fe856f76a3c::t_c49f0510b2b993 5,274-302,715,721-737,809-875,950-986
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/mini-dom.test.ts
+  s_d78fe856f76a3c::t_ade0d077f5582b 92-106
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/presence.test.ts
+  s_d78fe856f76a3c::t_eea8c405c4ee43 1-90
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/read-only.test.ts
+  s_d78fe856f76a3c::t_56f01761630d4d 5,32-40,75-89,191-216
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/session.test.ts
+  s_d78fe856f76a3c::t_e43b7f8d43571e 117-118,138-145
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/sync.test.ts
+  s_d78fe856f76a3c::t_a819c22edc8162 1,4-5,8-11,16-17,23,27-28,124-162,179-192
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_d78fe856f76a3c::t_fb9c5ccbcdffed 27-29,147-149,193-197,213-214,264-273,310-313,348-352,359-369,374-388,401-405
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/blocks.ts
+  s_d78fe856f76a3c::t_5a2746b9c23a6b 152-158,668,842-847,905,909,923,927,936,940
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/document-model.ts
+  s_d78fe856f76a3c::t_149fe665ce561f 6-9,29-30,219-242
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/editor.ts
+  s_d78fe856f76a3c::t_e1d51f6bded0f2 22,127-129,140,691-699,714-715,719,971,1009-1013,1017,1019,1023,1033,1038,1043-1046,1050-1051,1054,1064-1066,1068-1069,1077-1090,1097-1098,1101,1221-1222,1226-1230,1232-1233,1235-1237,1239-1240,1244,1247-1257,1261-1276,1465-1483,1501-1505,1508,1515-1531,1537,1541-1548,1590-1602
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/history.ts
+  s_d78fe856f76a3c::t_4a05cb09da694f 10-19,30,33,35,39,42,85,102-112,146-147,152
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/mini-dom.ts
+  s_d78fe856f76a3c::t_3e8e839660d84e 77-84,465-469,471,602-603
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/protocol.ts
+  s_d78fe856f76a3c::t_fafafde78573c6 109-110
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/session.ts
+  s_d78fe856f76a3c::t_723ca881516bde 10-14,48-49
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/sync.ts
+  s_d78fe856f76a3c::t_f4d03e4152f3ac 39-52,90-91,134-135,152-153,155,215,240,245
+packages/workshop-backend/format-blueprints/workspace-pages/files/server.ts
+  s_d78fe856f76a3c::t_7b792bd4616fca 25,54,192,306-309,311,316-319,322-334
+packages/workshop-backend/format-blueprints/workspace-pages/files/client.ts
+  s_096afb66e2a854::t_779978fff6460a 10-14,271,326-328,405,413,433,437-439,474-482,502
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/anchors.ts
+  s_096afb66e2a854::t_357152d6095879 77-85,328-329,332,340
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/identity.ts
+  s_096afb66e2a854::t_6fbdc5ae244854 9-13,25-27,29,31-32,35,38,42-44
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/presence.ts
+  s_096afb66e2a854::t_2c5098358c7674 140-149,155,158,162,167,174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2775857de490a81b36e409cfe3b3c4e6cf5b4ad7",
+  "prompts": {},
+  "sessions": {
+    "s_096afb66e2a854": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab78f5043d19c1a12",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

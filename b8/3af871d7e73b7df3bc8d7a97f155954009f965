@@ -1,0 +1,33 @@
+AGENTS.md
+  s_f26907ac192965::t_b047ddad53180a 22
+packages/workshop-backend/format-blueprints/README.md
+  s_f26907ac192965::t_f5a9e120a4774a 47-50
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_f26907ac192965::t_ec618e9d22a0a9 12-14,16-18
+  s_f26907ac192965::t_f5a9e120a4774a 15
+docs/blueprints.md
+  s_f26907ac192965::t_d1c96c048bfe90 139
+  s_f26907ac192965::t_71a52cf2e88893 137
+docs/wiki.md
+  s_f26907ac192965::t_b23e7c11b45713 56-60,293-296
+  s_f26907ac192965::t_201d04fc989dc3 52-55
+  s_f26907ac192965::t_bfdbbcf40cda86 51,61,104
+  s_f26907ac192965::t_19ad25484193ea 772
+  s_f26907ac192965::t_f5a9e120a4774a 94-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b83af871d7e73b7df3bc8d7a97f155954009f965",
+  "prompts": {},
+  "sessions": {
+    "s_f26907ac192965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "991e3e14-e334-4041-8756-261ee6241c79",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

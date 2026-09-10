@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/features/wiki/wikiPaths.ts
+  s_47c456ca6ea293::t_095f1056df3377 1-2
+packages/workshop-shared/src/api.ts
+  s_47c456ca6ea293::t_40d1a84dca3267 538-564,4877-4889,4970-5233
+packages/workshop-shared/src/gatekeeper.ts
+  s_47c456ca6ea293::t_6ea5e1918bee2d 258-264,902-1181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ca552078eeb932248b8bb9071ed5dfabbb0b7081",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

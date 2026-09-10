@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_3402201043bce4::t_8434468fcde7e1 1-105
+packages/workshop-frontend/src/connectHandoff.ts
+  s_3402201043bce4::t_d1d843150bb1e8 66-68,71,75
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_3402201043bce4::t_59583a3a769fc5 4,164
+  s_3402201043bce4::t_4e83d863db69c3 41-43,139-163,165-202
+  s_3402201043bce4::t_08f6e3ddcd1b79 203
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_3402201043bce4::t_d1d843150bb1e8 63-68,104-107
+packages/workshop-frontend/src/components/billing/OutOfCreditsModal.tsx
+  s_3402201043bce4::t_d1d843150bb1e8 66-71
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_3402201043bce4::t_d1d843150bb1e8 11,26,44-52
+  s_3402201043bce4::t_af806cc0a81be6 53
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_3402201043bce4::t_6eb183670e172e 101-102
+  s_3402201043bce4::t_8434468fcde7e1 16,91-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d85f36bfda62e9f9d3ffd8d347a668c609f56eca",
+  "prompts": {},
+  "sessions": {
+    "s_3402201043bce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a32aae8a-81f3-4288-a8db-4d09adf37f7c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

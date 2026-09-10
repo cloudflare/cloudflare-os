@@ -1,0 +1,35 @@
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_f74476d0cbb433::t_2770cfe40d2686 215-216
+packages/gadget-libraries/page/__tests__/table-picker.test.ts
+  s_f74476d0cbb433::t_eebe932cd028d0 45,57,60,65,72,77-98
+packages/gadget-libraries/page/__tests__/toolbar.test.ts
+  s_f74476d0cbb433::t_5d660a05eaa53a 208-210,212-213,219-284
+packages/gadget-libraries/page/client.ts
+  s_f74476d0cbb433::t_15a29187773c4c 307
+packages/gadget-libraries/page/src/dropdown-menu.ts
+  s_f74476d0cbb433::t_85beb2e1d826a3 6-7,75,88,108,117,120,125,129,135-139,141-143,146,152-166
+packages/gadget-libraries/page/src/palette-menu.ts
+  s_f74476d0cbb433::t_d5dca0fb056142 7-8,12,81,112,146,154-155,158,162
+packages/gadget-libraries/page/src/styles.ts
+  s_f74476d0cbb433::t_de6c287e6fc0e8 87,117-118
+packages/gadget-libraries/page/src/table-picker.ts
+  s_f74476d0cbb433::t_47f83523d5ae03 7-9,16,37-40,55,86,117-123,125-130,135-157,162-168
+packages/gadget-libraries/page/src/toolbar.ts
+  s_f74476d0cbb433::t_d7e72fdb6df87d 86-87,120-121,179-187,194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "82f813aa334af32c31568e7a547d20586ea7a004",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

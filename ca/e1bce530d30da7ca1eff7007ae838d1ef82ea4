@@ -1,0 +1,23 @@
+packages/workshop-backend/__tests__/wiki-sync-steps.test.ts
+  s_47c456ca6ea293::t_ecd9f6e521de77 122-127,483-516
+packages/workshop-backend/src/wiki-sync-steps.ts
+  s_47c456ca6ea293::t_9eead7491f758c 753-758
+packages/workshop-shared/src/api.ts
+  s_47c456ca6ea293::t_8d2d0ed8935f97 5061-5065
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cae1bce530d30da7ca1eff7007ae838d1ef82ea4",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

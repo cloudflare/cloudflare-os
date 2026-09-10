@@ -1,0 +1,143 @@
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_d78fe856f76a3c::t_26ef0f782f1d65 43,49-50,65,807-808,1415-1416,1440-1443,1591-1609,1756,1848
+packages/workshop-frontend/src/ShareModal.tsx
+  s_d78fe856f76a3c::t_4c6ee65691a999 4,21,290-350,438-461,1032-1040
+packages/workshop-frontend/src/features/chat/WorkspaceChatPanel.test.tsx
+  s_d78fe856f76a3c::t_95f96369087fa6 1-182
+packages/workshop-frontend/src/features/wiki/Breadcrumbs.tsx
+  s_d78fe856f76a3c::t_404ec386b3ad25 1-59
+packages/workshop-frontend/src/features/wiki/MovePageDialog.tsx
+  s_d78fe856f76a3c::t_190ceb9c29cf2d 1-138
+packages/workshop-frontend/src/features/wiki/NewPageButton.tsx
+  s_d78fe856f76a3c::t_99a1340ef7973f 1-24
+packages/workshop-frontend/src/features/wiki/NewTeamSpaceDialog.tsx
+  s_d78fe856f76a3c::t_cafa18a1e0f885 1-136
+packages/workshop-frontend/src/features/wiki/PageRoute.test.tsx
+  s_d78fe856f76a3c::t_c124af9488edd1 1-71
+packages/workshop-frontend/src/features/wiki/PageRoute.tsx
+  s_d78fe856f76a3c::t_fbbf464270a3c5 1-41
+packages/workshop-frontend/src/features/wiki/PageTree.test.tsx
+  s_d78fe856f76a3c::t_4edc11187e2eeb 1-189
+packages/workshop-frontend/src/features/wiki/PageTree.tsx
+  s_d78fe856f76a3c::t_470db4d8fdea70 1-101
+packages/workshop-frontend/src/features/wiki/PageTreeNode.tsx
+  s_d78fe856f76a3c::t_8bc83547155247 1-224
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_d78fe856f76a3c::t_a2d87e27a7e267 1-197
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_d78fe856f76a3c::t_a4d9e1820a7793 1-260
+packages/workshop-frontend/src/features/wiki/PublishDialog.test.tsx
+  s_d78fe856f76a3c::t_771ec59cd9fdcf 1-174
+packages/workshop-frontend/src/features/wiki/PublishDialog.tsx
+  s_d78fe856f76a3c::t_3e3a58e6ecb84e 1-280
+packages/workshop-frontend/src/features/wiki/PublishedChip.test.tsx
+  s_d78fe856f76a3c::t_a8d7bd706f2a60 1-63
+packages/workshop-frontend/src/features/wiki/SpaceDirectory.tsx
+  s_d78fe856f76a3c::t_f1b25b94ae7a53 1-194
+packages/workshop-frontend/src/features/wiki/SpaceHome.tsx
+  s_d78fe856f76a3c::t_3cd869df8bbcf0 1-100
+packages/workshop-frontend/src/features/wiki/SpaceSettingsDialog.tsx
+  s_d78fe856f76a3c::t_b1d56c09dbbf36 1-215
+packages/workshop-frontend/src/features/wiki/WikiShell.tsx
+  s_d78fe856f76a3c::t_b8301bd1e23843 1-98
+packages/workshop-frontend/src/features/wiki/WikiSwitcher.tsx
+  s_d78fe856f76a3c::t_d5cf39060e6d6f 1-42
+packages/workshop-frontend/src/features/wiki/pageTreeModel.ts
+  s_d78fe856f76a3c::t_763c92e6f879b0 1-134
+packages/workshop-frontend/src/features/wiki/useCreatePage.ts
+  s_d78fe856f76a3c::t_0b05f5396569b5 1-56
+packages/workshop-frontend/src/features/wiki/useDefaultGadget.ts
+  s_d78fe856f76a3c::t_37aea08a43f372 1-107
+packages/workshop-frontend/src/features/wiki/usePageResolution.ts
+  s_d78fe856f76a3c::t_0d7dce2ef368a1 1-44
+packages/workshop-frontend/src/features/wiki/useSpace.ts
+  s_d78fe856f76a3c::t_1391c2b6918b1f 1-173
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_d78fe856f76a3c::t_158f7192fab547 22,27-28,30-31,83-87,108-117,123-132,145,150,152-154,172-174,188,193,195-197,212,217,219-221,239-241,254,259,261-263,277,357-363,392-405,413-426,430-455,467
+packages/workshop-frontend/src/routes/__root.tsx
+  s_d78fe856f76a3c::t_009e564669a4c3 16,39-40,42
+packages/workshop-frontend/src/routes/wiki/$space/$slug.tsx
+  s_d78fe856f76a3c::t_69bc37ab9d4c0c 1-15
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_9d08f5c2d42b47::t_79dd8fb72a6a18 71-74,108,126,183,193,295-330
+packages/workshop-frontend/src/components/AppShell/AppShell.test.tsx
+  s_9d08f5c2d42b47::t_5d6a882801b9d6 16
+packages/workshop-frontend/src/components/AppShell/AppShell.tsx
+  s_9d08f5c2d42b47::t_9967227aab1dc8 10,163
+packages/workshop-frontend/src/components/AppShell/Sidebar.tsx
+  s_9d08f5c2d42b47::t_cad41950e01bb3 5,17,51,147-155
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_9d08f5c2d42b47::t_15b89361e1c98d 15,32-33,301,310,314-320,414-443
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_9d08f5c2d42b47::t_cb34c3b90f262e 2,14-15,115-125,185-186,340,344,364-365,378-392,412,414
+packages/workshop-frontend/src/features/chat/WorkspaceChatPanel.tsx
+  s_4afeeb87f78883::t_553df805d130c5 1-76
+packages/workshop-frontend/src/features/chat/useWorkspaceConsoleLogs.ts
+  s_4afeeb87f78883::t_5fb8098d0d5d8e 1-123
+packages/workshop-frontend/src/features/wiki/NewPageDialog.tsx
+  s_9d08f5c2d42b47::t_41ca2a2fd531fd 1-87
+packages/workshop-frontend/src/features/wiki/PageNotFound.tsx
+  s_9d08f5c2d42b47::t_167e6eed68eaac 1-27
+packages/workshop-frontend/src/features/wiki/PublishedChip.tsx
+  s_9d08f5c2d42b47::t_92fb8b62417187 1-66
+packages/workshop-frontend/src/features/wiki/RenameSlugDialog.tsx
+  s_9d08f5c2d42b47::t_1785f32a844b33 1-109
+packages/workshop-frontend/src/features/wiki/SpaceContext.tsx
+  s_9d08f5c2d42b47::t_b7b6ebf26d6bdb 1-72
+packages/workshop-frontend/src/features/wiki/SpaceLayout.tsx
+  s_9d08f5c2d42b47::t_a6fbec5a7fed95 1-156
+packages/workshop-frontend/src/features/wiki/WikiWorkspaceActions.tsx
+  s_9d08f5c2d42b47::t_bb613529b979a0 1-140
+packages/workshop-frontend/src/features/wiki/pageTreeModel.test.ts
+  s_9d08f5c2d42b47::t_ca2a8358bf4ddb 1-93
+packages/workshop-frontend/src/features/wiki/usePageResolution.test.tsx
+  s_9d08f5c2d42b47::t_456d464f955afa 1-68
+packages/workshop-frontend/src/features/wiki/useSpaceNames.ts
+  s_9d08f5c2d42b47::t_ee21eec097b8cd 1-40
+packages/workshop-frontend/src/features/wiki/wikiPaths.ts
+  s_9d08f5c2d42b47::t_18992613947ba9 1-7
+packages/workshop-frontend/src/features/wiki/wikiTestUtils.tsx
+  s_9d08f5c2d42b47::t_9b91f9785f97b4 1-84
+packages/workshop-frontend/src/rootChrome.test.tsx
+  s_9d08f5c2d42b47::t_ba0735308b40b6 1-129
+packages/workshop-frontend/src/routes/wiki.tsx
+  s_9d08f5c2d42b47::t_8d6f468d71c74e 1-21
+packages/workshop-frontend/src/routes/wiki/$space.tsx
+  s_9d08f5c2d42b47::t_59a328d477df8f 1-18
+packages/workshop-frontend/src/routes/wiki/$space/index.tsx
+  s_9d08f5c2d42b47::t_e4df8e7687a4d9 1-28
+packages/workshop-frontend/src/routes/wiki/index.tsx
+  s_9d08f5c2d42b47::t_8e1e72ffba275b 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13b970456686f66d00de2ef3ac871a7c4bd71abf",
+  "prompts": {},
+  "sessions": {
+    "s_4afeeb87f78883": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-acde88982fd1486de",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_9d08f5c2d42b47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a66c240c70b53037c",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

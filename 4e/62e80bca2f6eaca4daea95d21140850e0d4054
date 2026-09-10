@@ -1,0 +1,21 @@
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_7a202c3e505e2e::t_6a8023ffb05b32 1248-1271,1548-1549
+packages/wiki-import/src/vocabulary.ts
+  s_7a202c3e505e2e::t_d2c8dd9b7f262a 378-379,384-385,387-391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4e62e80bca2f6eaca4daea95d21140850e0d4054",
+  "prompts": {},
+  "sessions": {
+    "s_7a202c3e505e2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4225223-4234-4106-a074-f38a4f4dcd30",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

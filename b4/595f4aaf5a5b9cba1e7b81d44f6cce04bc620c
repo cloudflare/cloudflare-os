@@ -1,0 +1,95 @@
+packages/gadget-libraries/README.md
+  s_fe30841bd8390c::t_1ac033c94d403a 1-94
+packages/gadget-libraries/package.json
+  s_fe30841bd8390c::t_26f79917ec2aad 1-25
+packages/gadget-libraries/page/README.md
+  s_fe30841bd8390c::t_e10dbf621af3e4 1-430
+packages/gadget-libraries/page/__tests__/anchors.test.ts
+  s_fe30841bd8390c::t_22a315afa0a0cb 13
+packages/gadget-libraries/page/__tests__/blocks.test.ts
+  s_fe30841bd8390c::t_4864bb9ae3e7ff 14
+packages/gadget-libraries/page/__tests__/comments-model.test.ts
+  s_fe30841bd8390c::t_516a592b72829a 15
+packages/gadget-libraries/page/__tests__/comments.test.ts
+  s_fe30841bd8390c::t_e2b8aafa1e7dfc 3-4
+packages/gadget-libraries/page/__tests__/document-model.test.ts
+  s_fe30841bd8390c::t_52213f696a5f3e 17-18
+packages/gadget-libraries/page/__tests__/editor-harness.ts
+  s_fe30841bd8390c::t_86870f59da572e 7-9
+packages/gadget-libraries/page/__tests__/editor.test.ts
+  s_fe30841bd8390c::t_94a7b2db3f34ae 3-4
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_fe30841bd8390c::t_a7af705c671aa7 3
+packages/gadget-libraries/page/__tests__/mini-dom.test.ts
+  s_fe30841bd8390c::t_65e6ce12a1632b 6-8
+packages/gadget-libraries/page/__tests__/paste.test.ts
+  s_fe30841bd8390c::t_97e426ff2fc0cc 6,15
+packages/gadget-libraries/page/__tests__/presence.test.ts
+  s_fe30841bd8390c::t_005df63907d08e 3-4
+packages/gadget-libraries/page/__tests__/read-only.test.ts
+  s_fe30841bd8390c::t_102be8af0b0cca 3-8
+packages/gadget-libraries/page/__tests__/serialize.test.ts
+  s_fe30841bd8390c::t_b4fd9969933db8 6-8
+packages/gadget-libraries/page/__tests__/server.test.ts
+  s_fe30841bd8390c::t_0fcd96ab60b5da 18
+packages/gadget-libraries/page/__tests__/session.test.ts
+  s_fe30841bd8390c::t_4cc1ae2419aec8 4-7
+packages/gadget-libraries/page/__tests__/shortcuts.test.ts
+  s_fe30841bd8390c::t_65c5b97c244695 4-6
+packages/gadget-libraries/page/__tests__/sync.test.ts
+  s_fe30841bd8390c::t_46c4782fd09e3c 3-5
+packages/gadget-libraries/page/client.ts
+  s_fe30841bd8390c::t_bfbd9abe030f02 1-542
+packages/gadget-libraries/page/library.json
+  s_fe30841bd8390c::t_a29eb796db0cfd 1-5
+packages/gadget-libraries/page/server.ts
+  s_fe30841bd8390c::t_2c651e159fa277 1-419
+packages/gadget-libraries/page/src/anchors.ts
+  s_fe30841bd8390c::t_49ad3319c21abc 346-348,353,355
+packages/gadget-libraries/page/src/blocks.ts
+  s_fe30841bd8390c::t_0942b8a1732287 136,140
+packages/gadget-libraries/page/src/dom-types.ts
+  s_fe30841bd8390c::t_9eb511c9a6a1d6 34-37
+packages/gadget-libraries/page/src/images.ts
+  s_fe30841bd8390c::t_f4ceaa45f4024e 97-99,107-109
+packages/gadget-libraries/page/src/paste.ts
+  s_fe30841bd8390c::t_c6acec1461a104 569,572,575,784,949
+packages/gadget-libraries/tsconfig.client.json
+  s_fe30841bd8390c::t_a49a95c59cac31 1-30
+packages/gadget-libraries/tsconfig.server.json
+  s_fe30841bd8390c::t_ba00efbb16f5f9 1-22
+packages/gadget-libraries/tsconfig.tests.json
+  s_fe30841bd8390c::t_1d38814b8f4a35 1-25
+packages/gadget-libraries/vite.config.ts
+  s_fe30841bd8390c::t_ee6176338a2de2 1-24
+packages/gadget-libraries/vitest.config.ts
+  s_fe30841bd8390c::t_ca95c2744be967 1-14
+packages/workshop-backend/format-blueprints/workspace-pages/blueprint.json
+  s_fe30841bd8390c::t_8d47142633140d 17-18,20-21
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_fe30841bd8390c::t_4f64835a8a550a 1-14
+packages/workshop-backend/format-blueprints/workspace-pages/files/client.ts
+  s_fe30841bd8390c::t_c805128711963b 1-5,7,10
+packages/workshop-backend/format-blueprints/workspace-pages/files/gadget.json
+  s_fe30841bd8390c::t_8a6125e4df0875 1-5
+packages/workshop-backend/format-blueprints/workspace-pages/files/server.ts
+  s_fe30841bd8390c::t_78722049becdb4 1-3
+pnpm-lock.yaml
+  s_fe30841bd8390c::t_b220fa5a5ed3d7 109-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b4595f4aaf5a5b9cba1e7b81d44f6cce04bc620c",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+packages/gadget-libraries/page/__tests__/editor.test.ts
+  s_f74476d0cbb433::t_7ecb1ac27800cd 1445-1472
+packages/gadget-libraries/page/src/editor.ts
+  s_f74476d0cbb433::t_6343cc2ceb9808 66,76,601-602,632-634,1519-1522
+packages/gadget-libraries/page/src/image-controls.ts
+  s_f74476d0cbb433::t_190cf9297a4836 54,101,109-110,209,219-222,236-237,243-247
+packages/gadget-libraries/page/src/table-controls.ts
+  s_f74476d0cbb433::t_3b7eaea0cdb7af 67-68,285-289,292-295,298-300,394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4e8a64638bd6a7554e2253784220601a805ca96",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

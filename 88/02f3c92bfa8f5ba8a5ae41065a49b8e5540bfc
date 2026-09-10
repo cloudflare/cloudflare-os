@@ -1,0 +1,55 @@
+packages/gatekeeper-confluence/README.md
+  s_47c456ca6ea293::t_c3264020eaf4dd 1,3-8,10-13,30-37,41-43,104-232,235-252,282-326,345-357,366-367,372
+packages/gatekeeper-confluence/__tests__/configurator-url.test.ts
+  s_47c456ca6ea293::t_96da4e810bc231 1-99
+packages/gatekeeper-confluence/__tests__/connect-flow.test.ts
+  s_47c456ca6ea293::t_6b9b2e9cd178b8 1-591
+packages/gatekeeper-confluence/__tests__/observers.test.ts
+  s_47c456ca6ea293::t_e5dc157e9bc8fa 274-329
+packages/gatekeeper-confluence/__tests__/self-hosted-api.test.ts
+  s_47c456ca6ea293::t_9b3e2b1a72d5f0 1-566
+packages/gatekeeper-confluence/__tests__/url-parsing.test.ts
+  s_47c456ca6ea293::t_7d679701107aae 4-6,9,13-165,209-237
+packages/gatekeeper-confluence/__tests__/wiki-source-session.test.ts
+  s_47c456ca6ea293::t_2a6956aeb4ce98 1-478
+packages/gatekeeper-confluence/package.json
+  s_47c456ca6ea293::t_079d799dd9e71e 13
+packages/gatekeeper-confluence/src/configurator/confluence-page-configurator-ui.tsx
+  s_47c456ca6ea293::t_6724886e445b54 7-42,47,55,62,67
+packages/gatekeeper-confluence/src/configurator/confluence-space-configurator-ui.tsx
+  s_47c456ca6ea293::t_c1f5f228e28c8f 7-42,47,55,60
+packages/gatekeeper-confluence/src/confluence-api.ts
+  s_47c456ca6ea293::t_3f44abc5bca299 1-6,8,11-13,18-20,22-31,50-55,215-293,295-299,308-310,312-326,328-346,349-350,353-365,443-444,455-456,458-459,468-475,495-523,555-557,561,682-1140,1145-1146,1148-1149,1192,1461-1614,1633-1637
+packages/gatekeeper-confluence/src/confluence-configurators.ts
+  s_47c456ca6ea293::t_dcf97922bb2fc1 3,11-22,35,37,41,46,50,54-55,59,67-72,74,76-77,79-86
+packages/gatekeeper-confluence/src/confluence-observers.ts
+  s_47c456ca6ea293::t_62a53f52fbae52 16,18,25-26,29-33,43-52,59-62,68,73-76,82,87-92,95-98,100-107,117,128
+packages/gatekeeper-confluence/src/confluence.ts
+  s_47c456ca6ea293::t_be0859e4feedc2 1,4-8,31,37-38,42,49-50,66-68,70-98,163-168,175-192,214-215,220,226,232,236-255,257-285,287-291,293-313,316,329-339,388,397-398,402,406,412-413,418-434,436,438,444-474,492,495-496,503,510-511,523-544,547-557,561-562,566,568-569,575,581-589,591-597,600-603,605-606,610-615,617-619,624,627,629,646,648,652-655,673,680-693,696-704,706-716,718-730,734,737,740-744,749,751-752,754-756,762-777,808-814,816-819,821-829,833-834,837-838,841-842,849-862,867-913,916-917,921-941,944-948,975-978,1000-1004,1028-1032,1054-1058,1083-1087
+packages/gatekeeper-confluence/src/connect-flow.ts
+  s_47c456ca6ea293::t_38fa3dd2d2c809 1-565
+packages/gatekeeper-confluence/src/self-hosted-api.ts
+  s_47c456ca6ea293::t_167db7f332c0eb 1-801
+packages/gatekeeper-confluence/src/wiki-source-session.ts
+  s_47c456ca6ea293::t_cd6df29ef4f39b 1-327
+packages/gatekeeper-confluence/wrangler.jsonc
+  s_47c456ca6ea293::t_fa887fd50c6fae 24-37
+scripts/run-dev-server.ts
+  s_47c456ca6ea293::t_d4324ff9d6eaf6 484-486,495-497
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8802f3c92bfa8f5ba8a5ae41065a49b8e5540bfc",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

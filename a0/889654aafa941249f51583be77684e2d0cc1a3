@@ -1,0 +1,20 @@
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_63b0fe54e7628b::t_12016fbb0c9962 395-399,428-431,444-445,448-451,459,503-509
+  s_63b0fe54e7628b::t_7f3efe84f1380f 510-511
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0889654aafa941249f51583be77684e2d0cc1a3",
+  "prompts": {},
+  "sessions": {
+    "s_63b0fe54e7628b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f668d1c-c56c-4f30-91cc-4fbd3f633870",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
