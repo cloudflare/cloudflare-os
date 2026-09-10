@@ -5,21 +5,24 @@
 // mode) with a `LoginConnectCallbackImpl` as the callback and a `PendingLogin` DO to bridge the
 // result back to the waiting browser:
 //
-//   1. PublicApi.startGatekeeperLogin(vendorId) creates a PendingLogin DO (keyed by a random DO id),
-//      hands the gatekeeper a LoginConnectCallbackImpl, and returns {url, attempt}, where `attempt`
-//      is an RpcStub wrapping the DO (so the client awaits via a capability, never a guessable id).
-//   2. The browser opens `url` as a popup, keeping itself as the popup's opener.
+//   1. PublicApi.startGatekeeperLogin(vendorId) creates a PendingLogin DO (named by the hash of a
+//      fresh nonce), hands the gatekeeper a LoginConnectCallbackImpl, and returns {url, nonce,
+//      attempt}, where `attempt` is an RpcStub wrapping the DO (so the client awaits via a
+//      capability, never a guessable id).
+//   2. The browser opens `url` as a disowned popup, after writing the flow's nonce into the popup's
+//      own sessionStorage.
 //   3. When the gatekeeper finishes, it calls LoginConnectCallbackImpl.complete(user). We read the
 //      verified email, resolve/create the email-keyed user DO, mint a session, and deliver the token
-//      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns for
-//      the gatekeeper's final page to post to its opener (see connect-handoff.ts).
-//   4. The opener calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
-//      a matching ticket; a ticket for some other attempt is answered with null and changes nothing,
-//      whether it arrives before or after this attempt's result has been delivered.
+//      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns; the
+//      gatekeeper's final page navigates the popup to the Workshop's /connect/handoff page with the
+//      ticket in the URL fragment (see connect-handoff.ts).
+//   4. That page calls PublicApi.confirmLogin(ticket, nonce), which finds the DO by the nonce's hash
+//      and marks the delivered result confirmed. The login tab polls `attempt.receive()`, which
+//      releases the token once the result is confirmed.
 //
 // The sign-in URL is a bearer capability, so step 4 is what binds the session to the browser that
-// started the attempt: whoever holds `attempt` but never receives the ticket — an attacker who
-// phished a victim into finishing the flow — gets nothing, and the unclaimed token expires.
+// started the attempt: whoever holds `attempt` without a popup holding the nonce — an attacker who
+// phished a victim into finishing the flow — gets nothing, and the unreceived token expires.
 //
 // Sign-in only requests minimal scopes and the gatekeeper grant is transient (it self-destructs
 // shortly after we read the email) — so login does NOT create a persistent connected account.
@@ -37,15 +40,19 @@ import { createWorkshopLogger } from "../observability";
 import { CLOUDFLARE_VENDOR_ID, type UserDurableObject } from "../user.js";
 import { readAdminConfig } from "../admin-config.js";
 import {
-  handoffTargetOrigin, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS,
+  handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS,
 } from "../connect-handoff.js";
 
 const logger = createWorkshopLogger("workshop.auth");
 
 // `pending` is the attempt as started, before the OAuth callback has delivered anything: it lets
-// claim() tell "not this attempt's ticket, yet" from an expired or never-started attempt.
-type PendingOutcome = { pending: true } | { token: string; ticketHash: string } | { error: string };
-// `expiresAt` bounds the result absolutely: the alarm wipes it too, but claim() must not depend on
+// receive() tell "not delivered yet" from an expired or never-started attempt. A delivered token is
+// `confirmed` once the popup has presented the matching ticket, and released only then.
+type PendingOutcome =
+  | { pending: true }
+  | { token: string; ticketHash: string; confirmed: boolean }
+  | { error: string };
+// `expiresAt` bounds the result absolutely: the alarm wipes it too, but receive() must not depend on
 // the alarm having fired on time.
 type PendingResult = PendingOutcome & { expiresAt: number };
 
@@ -61,16 +68,18 @@ type AccountLink = { userId: string; accountId: number };
 
 const RESULT_KEY = "result";
 const LINK_KEY = "link";
-const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
+/** What confirmLogin() and LoginAttempt.receive() throw for an attempt that cannot complete. */
+export const EXPIRED_MESSAGE = "This sign-in attempt has expired. Please try again.";
 
 /**
  * Bridges a login result from the (separate) OAuth-callback invocation back to the browser that
  * started the attempt. Everything is written to storage, since nothing keeps this DO in memory
  * between the calls: begin() marks the attempt as started (for LOGIN_PENDING_LIFETIME_MS), so that
- * a foreign ticket the browser hears in the meantime is answered with null rather than mistaken for
+ * receive() answers null while the user is still at the provider rather than mistaking the wait for
  * an expired attempt; deliver()/fail() replace the marker with the result, which lives for
- * PENDING_HANDOFF_LIFETIME_MS at most. An alarm then wipes whatever is left unclaimed. An account
- * link (`link`) is kept for as long as the account exists.
+ * PENDING_HANDOFF_LIFETIME_MS at most; confirm() marks a delivered token as confirmed by the popup
+ * holding its ticket, and receive() releases it only then. An alarm wipes whatever is left
+ * unreceived. An account link (`link`) is kept for as long as the account exists.
  */
 export class PendingLogin extends DurableObject<Cloudflare.Env> {
   /** Called by PublicApi.startGatekeeperLogin before the gatekeeper flow starts. */
@@ -78,12 +87,15 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
     await this.#store({ pending: true }, LOGIN_PENDING_LIFETIME_MS);
   }
 
-  /** Called by LoginConnectCallbackImpl on success, with the hash of the ticket that may claim it. */
+  /** Called by LoginConnectCallbackImpl on success, with the hash of the ticket that confirms it. */
   async deliver(token: string, ticketHash: string): Promise<void> {
-    await this.#store({ token, ticketHash });
+    await this.#store({ token, ticketHash, confirmed: false });
   }
 
-  /** Called by LoginConnectCallbackImpl when the sign-in cannot complete; claim() reports `reason`. */
+  /**
+   * Called by LoginConnectCallbackImpl when the sign-in cannot complete; confirm() and receive()
+   * report `reason`.
+   */
   async fail(reason: string): Promise<void> {
     await this.#store({ error: reason });
   }
@@ -96,8 +108,8 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
 
   /**
    * Records the connected account this sign-in persisted, so the callback the gatekeeper holds for
-   * it can reach the account's user DO. Independent of the login result: a sign-in whose ticket is
-   * never claimed still linked the (owner's own) account.
+   * it can reach the account's user DO. Independent of the login result: a sign-in whose token is
+   * never received still linked the (owner's own) account.
    */
   async link(userId: string, accountId: number): Promise<void> {
     this.ctx.storage.kv.put<AccountLink>(LINK_KEY, { userId, accountId });
@@ -108,27 +120,45 @@ export class PendingLogin extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Release the token to the holder of the matching ticket. A ticket that is not this attempt's
-   * (the window may hear every same-origin broadcast) yields null and leaves the result — or the
-   * still-pending attempt, whose ticket hash is not known yet — in place. Single use otherwise: the
-   * ticket is hashed before the read, so the read, check and removal of a matching result happen in
-   * one step under the input gate and a repeat gets no second try.
+   * Called by PublicApiImpl.confirmLogin from the popup: marks the delivered token as confirmed by
+   * the holder of the matching ticket, so receive() releases it. A wrong or malformed ticket, or one
+   * arriving before delivery (a ticket cannot precede the delivery that minted it, so this is a
+   * guess), throws EXPIRED_MESSAGE without touching the result: it must not consume what the right
+   * ticket is about to confirm. The ticket is hashed before the read, so the read, check and rewrite
+   * happen in one step under the input gate.
    */
-  async claim(ticket: string): Promise<string | null> {
-    const hash = /^[0-9a-f]{64}$/.test(ticket) ? await hashSecret(Uint8Array.fromHex(ticket)) : null;
+  async confirm(ticket: string): Promise<void> {
+    const hash = await hashPresentedSecret(ticket);
+    const result = await this.#result();
+    if ("pending" in result || hash !== result.ticketHash) throw new Error(EXPIRED_MESSAGE);
+    this.ctx.storage.kv.put<PendingResult>(RESULT_KEY, { ...result, confirmed: true });
+  }
+
+  /**
+   * Release the token to the holder of the attempt once the popup has confirmed it; null while the
+   * attempt is still pending or the token is delivered but unconfirmed, so the caller polls. Single
+   * use: the result is removed with the read, so a repeat gets no second try.
+   */
+  async receive(): Promise<string | null> {
+    const result = await this.#result();
+    if ("pending" in result || !result.confirmed) return null;
+    await this.#clear();
+    return result.token;
+  }
+
+  // The live result, or a throw for an attempt that cannot complete: none (never begun, wiped, or
+  // already received), expired, or failed; the latter two are cleared as they are reported.
+  async #result(): Promise<Exclude<PendingResult, { error: string }>> {
     const result = this.ctx.storage.kv.get<PendingResult>(RESULT_KEY);
     if (!result || Date.now() >= result.expiresAt) {
       await this.#clear();
       throw new Error(EXPIRED_MESSAGE);
     }
-    if ("pending" in result) return null;
     if ("error" in result) {
       await this.#clear();
       throw new Error(result.error);
     }
-    if (hash !== result.ticketHash) return null;
-    await this.#clear();
-    return result.token;
+    return result;
   }
 
   async #clear(): Promise<void> {
@@ -153,7 +183,7 @@ export class LoginConnectCallbackImpl
 
   /**
    * Mints the session and parks it in the PendingLogin DO under a fresh ticket's hash; returns the
-   * handoff whose ticket `LoginAttempt.claim()` must present to receive it.
+   * handoff whose ticket the popup's page must present to confirmLogin().
    */
   async complete(account: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<ConnectHandoff> {
     const targetOrigin = handoffTargetOrigin(this.env);

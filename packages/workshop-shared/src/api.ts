@@ -33,22 +33,35 @@ export const SERVICE_SALT = new Uint8Array([
 ]);
 
 /**
+ * How a connect, reconnect, ensure-resources or sign-in flow starts, as returned by
+ * `AuthenticatedApi.connectAccount()` and its siblings. `url` is the gatekeeper's flow URL, which
+ * the Workshop opens as a disowned popup. `nonce` is a 64-lowercase-hex secret minted for this
+ * flow, which the Workshop writes into that popup's own sessionStorage before navigating it and
+ * nowhere else: sessionStorage is per top-level browsing context and per origin, so it survives the
+ * trip through the gatekeeper and the provider and is readable again once the popup is back on the
+ * Workshop's origin. When the flow finishes, the popup lands on the Workshop's /connect/handoff
+ * page, which presents the ticket from its URL fragment together with the nonce
+ * (`AuthenticatedApi.completeConnectHandoff()` / `PublicApi.confirmLogin()`). A handoff page opened
+ * any other way holds no nonce and redeems nothing. The nonce is single-use and dies with the flow:
+ * a connect's after CONNECT_FLOW_LIFETIME_MS (30 minutes, server-side), a sign-in's with its
+ * `PendingLogin` attempt.
+ */
+export type ConnectFlowStart = { url: string; nonce: string };
+
+/**
  * A pending gatekeeper sign-in attempt, returned by `PublicApi.startGatekeeperLogin()`. Holding this
  * stub is the capability to receive the resulting session token; dispose it to abandon the attempt.
  */
 export interface LoginAttempt extends RpcTarget {
   /**
-   * Redeem the handoff ticket the sign-in popup posted to this window (the `ticket` of a
-   * `CONNECT_HANDOFF_MESSAGE_TYPE` message, exactly as for `AuthenticatedApi.completeConnectHandoff`)
-   * for a session token (to store and pass to `authenticate()`, same format as `login()`). Resolves
-   * null when the ticket belongs to a different attempt (a broadcast can carry another window's),
-   * including one that arrives before this attempt has finished; in either case the attempt is
-   * untouched and the caller keeps listening. Rejects if the gatekeeper
-   * reported a failure or the attempt has expired or was already claimed. Holding this stub alone
-   * never yields a token: the sign-in URL is a bearer capability, and only the browser that finished
-   * it receives the ticket.
+   * The session token (same format as `login()`; store it and pass it to `authenticate()`) once the
+   * sign-in popup has confirmed the attempt's ticket via `PublicApi.confirmLogin()`; null until
+   * then, so the caller polls. Throws with a user-facing message once the attempt has expired, the
+   * gatekeeper reported a failure, or the token was already received. Holding this stub alone never
+   * yields a token: the sign-in URL is a bearer capability, and only the popup this browser opened
+   * holds the nonce that confirms it.
    */
-  claim(ticket: string): Promise<string | null>;
+  receive(): Promise<string | null>;
 }
 
 /** Public API exposed to the internet. */
@@ -64,15 +77,27 @@ export interface PublicApi extends RpcTarget {
 
   /**
    * Begin a sign-in via an authentication gatekeeper (e.g. "google", "github", "cloudflare").
-   * Returns a `url` the client opens as a popup with the opener retained (unlike
-   * `AuthenticatedApi.connectAccount`, whose popup is disowned) and an `attempt` stub whose `claim()`
-   * exchanges the ticket the popup posts back for the session token. The vendor must be
-   * auth-capable and allowlisted (see ServerConfig.authVendors); throws otherwise.
+   * Returns the `url` the client opens as a disowned popup, the `nonce` it writes into that popup's
+   * sessionStorage before navigating it (see `ConnectFlowStart`), and an `attempt` stub the client
+   * polls with `receive()` for the session token. When the flow finishes, the popup lands on the
+   * Workshop's own /connect/handoff page, which calls `confirmLogin(ticket, nonce)`. The vendor must
+   * be auth-capable and allowlisted (see ServerConfig.authVendors); throws otherwise.
    *
    * Dispose `attempt` to abandon the sign-in (e.g. the user closed the popup). Nothing is cancelled
-   * server-side: the browser just stops listening, and an unclaimed token expires on its own.
+   * server-side: the browser just stops polling, and an unreceived token expires on its own.
    */
-  startGatekeeperLogin(vendorId: string): Promise<{ url: string; attempt: RpcStub<LoginAttempt> }>;
+  startGatekeeperLogin(vendorId: string): Promise<{ url: string; nonce: string; attempt: RpcStub<LoginAttempt> }>;
+
+  /**
+   * Confirm a finished sign-in flow. Called by the /connect/handoff page in the sign-in popup, which
+   * has no session: `ticket` is the handoff ticket from the page's URL fragment and `nonce` the one
+   * `startGatekeeperLogin()` returned for the same flow, read from the popup's own sessionStorage.
+   * Marks the attempt's delivered result as confirmed, so that `LoginAttempt.receive()` releases the
+   * token to whoever holds the attempt stub; the popup itself never sees a token. Throws with a
+   * user-facing message when the attempt is unknown, expired, or failed, or the ticket is not the
+   * attempt's.
+   */
+  confirmLogin(ticket: string, nonce: string): Promise<void>;
 
   /** Authenticates the user using an auth token (typically stored in localStorage). */
   authenticate(token: string): Promise<AuthenticatedApi>;
@@ -533,12 +558,12 @@ export interface AuthenticatedApi extends RpcTarget {
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
   /**
-   * Connect this account to a specific account on a third-party service. Returns the URL which
-   * should be opened as a popup in the user's browser to complete the authorization; the Workshop
-   * disowns the popup before navigating it (see `openConnectWindow`), so the flow's final page
-   * delivers a handoff ticket over a same-origin `BroadcastChannel` (`CONNECT_HANDOFF_MESSAGE_TYPE`),
-   * which the client redeems with completeConnectHandoff(); only then is the account added to the
-   * list, which can be observed through subscribeConnectedAccounts().
+   * Connect this account to a specific account on a third-party service. Returns the URL which the
+   * Workshop opens as a disowned popup to complete the authorization, plus the flow's nonce (see
+   * `ConnectFlowStart`). When the flow finishes, the popup lands on the Workshop's own
+   * /connect/handoff page, which redeems the handoff with completeConnectHandoff() over its own
+   * session; only then is the account added to the list, which can be observed through
+   * subscribeConnectedAccounts().
    *
    * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
@@ -547,26 +572,29 @@ export interface AuthenticatedApi extends RpcTarget {
    * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
    * grant data access it will never use.
    */
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}>;
+  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart>;
 
   /**
-   * Redeem the handoff ticket a connect popup delivered to this window (the `ticket` of a
-   * `CONNECT_HANDOFF_MESSAGE_TYPE` message, over the broadcast channel or, where the popup kept
-   * its opener, by `postMessage`). Activates the pending connect / reconnect /
-   * ensure-resources grant if it was started by this user, after which the account (or its
-   * restored credentials) appears via subscribeConnectedAccounts(). Throws if the ticket is
-   * unknown to this user, already redeemed, or expired.
+   * Redeem a finished connect flow's handoff. Called by the Workshop's own /connect/handoff page
+   * running in the popup, over the popup's session, which is the initiating user's (the SPA
+   * authenticates as any Workshop tab does: from the shared localStorage token, or from the
+   * Cloudflare Access identity in an Access deployment). `ticket` is the handoff ticket from the
+   * page's URL fragment; `nonce` must be the one connectAccount() / reconnectAccount() /
+   * ensureAccountResources() returned for the flow that produced the ticket, read from the popup's
+   * own sessionStorage. Both are single-use. Activates the pending connect / reconnect /
+   * ensure-resources grant, after which the account (or its restored credentials) appears via
+   * subscribeConnectedAccounts(). Throws with a user-facing message if the ticket or nonce is
+   * unknown to this user, already used, or expired, or they belong to different flows.
    */
-  completeConnectHandoff(ticket: string): Promise<void>;
+  completeConnectHandoff(ticket: string, nonce: string): Promise<void>;
 
   /**
    * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
-   * on a connected account, expanding if needed. Returns a URL to open as a popup (disowned, as for
-   * connectAccount()) to authorize them, or no url if nothing was needed. Completion is
-   * confirmed via completeConnectHandoff(); the updated grant is then observable via
-   * subscribeConnectedAccounts().
+   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
+   * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
+   * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
    */
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}>;
+  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
 
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now: those set to
@@ -694,11 +722,12 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Re-authenticate a connected account whose credentials have expired (or may be about to
-   * expire). Returns the URL to open as a popup (disowned, as for connectAccount()). Once
-   * the OAuth flow completes and the client redeems the handoff via completeConnectHandoff(), the
-   * account is updated and subscribers are notified with credentialsValid: true.
+   * expire). Returns a flow to open as a disowned popup (as for connectAccount()). Once the OAuth
+   * flow completes and the popup's /connect/handoff page redeems the handoff via
+   * completeConnectHandoff(), the account is updated and subscribers are notified with
+   * credentialsValid: true.
    */
-  reconnectAccount(accountId: number): Promise<{url: string}>;
+  reconnectAccount(accountId: number): Promise<ConnectFlowStart>;
 
   // --- Gatekeeper management apps ---
 

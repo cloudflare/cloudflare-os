@@ -48,6 +48,21 @@ export class FakeGatekeeperAccount
     this.#record(`commitReconnect(${stageId})`);
   }
 
+  async reconnect(): Promise<{ url: string }> {
+    this.#record("reconnect");
+    return { url: `https://gk.example/reconnect/${this.ctx.props.name}` };
+  }
+
+  /**
+   * Nothing to grant for an empty list, as a real gatekeeper answers when the grant already covers
+   * every requested resource.
+   */
+  async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+    this.#record(`ensureResources(${resourceUrlPatterns.join(",")})`);
+    if (resourceUrlPatterns.length === 0) return {};
+    return { url: `https://gk.example/expand/${this.ctx.props.name}` };
+  }
+
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
   }

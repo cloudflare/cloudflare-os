@@ -1,9 +1,9 @@
 // The connect handoff: how a finished gatekeeper connect flow is bound to the browser that started
-// it. A connect URL is a bearer capability, so the gatekeeper's final page delivers a single-use
-// ticket to the Workshop — over a same-origin BroadcastChannel for a connect popup (which the
-// Workshop disowns before navigating, so the provider never holds its window), or by postMessage to
-// its opener for sign-in — and the Workshop activates the staged grant only when that ticket is
-// redeemed over the initiating user's own session (UserDurableObject.completeConnectHandoff).
+// it. A connect URL is a bearer capability, so the gatekeeper's final page navigates the popup to the
+// Workshop's own /connect/handoff page with a single-use ticket in the URL fragment. That page
+// redeems the ticket over the popup's own authenticated session
+// (UserDurableObject.completeConnectHandoff) together with the nonce the Workshop tab put into the
+// popup's sessionStorage when the flow started, and only then is the staged grant activated.
 
 /**
  * How long a staged connect / reconnect waits for its ticket. The handoff page delivers the ticket
@@ -13,9 +13,18 @@
 export const PENDING_HANDOFF_LIFETIME_MS = 2 * 60 * 1000;
 
 /**
- * The Workshop origin the handoff page must post its ticket to. Comes from deployment configuration
- * only: a request's `Origin` header or anything the client asserts could route the ticket to an
- * attacker-controlled opener, so neither is consulted. Fails closed when unset.
+ * How long a started flow's nonce stays redeemable. A ticket can legitimately arrive up to the
+ * gatekeepers' initiation-nonce lifetime (10 minutes, e.g. spent on an endpoint form) plus the fresh
+ * OAuth-nonce lifetime (10 minutes, at the consent screen) plus the handoff lifetime (2 minutes)
+ * after the flow started; rounded up.
+ */
+export const CONNECT_FLOW_LIFETIME_MS = 30 * 60 * 1000;
+
+/**
+ * The Workshop origin the completion page navigates the popup to with its ticket. Comes from
+ * deployment configuration only: a request's `Origin` header or anything the client asserts could
+ * route the ticket to an attacker-controlled origin, so neither is consulted. Fails closed when
+ * unset.
  */
 export function handoffTargetOrigin(env: Cloudflare.Env): string {
   if (!env.PUBLIC_BASE_URL) {
@@ -26,7 +35,7 @@ export function handoffTargetOrigin(env: Cloudflare.Env): string {
 
 /**
  * Mint a 256-bit bearer secret plus the SHA-256 (hex) under which it is stored, so a leaked storage
- * dump reveals nothing redeemable. Shared by session tokens and handoff tickets.
+ * dump reveals nothing redeemable. Shared by session tokens, handoff tickets and flow nonces.
  */
 export async function newSecretToken(): Promise<{ secret: Uint8Array; hash: string }> {
   let secret = new Uint8Array(32);
@@ -37,4 +46,12 @@ export async function newSecretToken(): Promise<{ secret: Uint8Array; hash: stri
 /** SHA-256 hex of a secret, the form in which secrets are looked up at rest. */
 export async function hashSecret(secret: Uint8Array): Promise<string> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", secret)).toHex();
+}
+
+/**
+ * The hash under which a secret presented by a client is looked up, or undefined when the value is
+ * not the 64 lowercase hex characters a ticket or nonce takes (nothing is stored under such a key).
+ */
+export function hashPresentedSecret(hex: string): Promise<string> | undefined {
+  return /^[0-9a-f]{64}$/.test(hex) ? hashSecret(Uint8Array.fromHex(hex)) : undefined;
 }
