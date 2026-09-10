@@ -156,7 +156,7 @@ Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underl
 
 ## Architecture
 
-Both sides are built on the shared gadget libraries in `packages/format-blueprints/libraries`, which the build
+Both sides are built on the shared gadget libraries in `packages/bundled-blueprints/libraries`, which the build
 inlines into the `client.js` and `server.js` it ships.
 
 `gadgets:ui/client` draws the chrome: the element builder, the shared toolbar icons and controls

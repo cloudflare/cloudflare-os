@@ -7,13 +7,13 @@ import { afterEach, describe, it } from "node:test";
 import {
   buildContent,
   serializeArchive,
-} from "../packages/format-blueprints/src/files.ts";
+} from "../packages/bundled-blueprints/src/files.ts";
 
 const temporaryDirectories: string[] = [];
 const workspaceRoot = join(import.meta.dirname, "..");
 const packageRoot = join(workspaceRoot, "packages/workshop-backend");
-const buildScript = join(packageRoot, "scripts/build-format-blueprints.ts");
-const importScript = join(packageRoot, "scripts/import-format-blueprint.ts");
+const buildScript = join(packageRoot, "scripts/build-bundled-blueprints.ts");
+const importScript = join(packageRoot, "scripts/import-bundled-blueprint.ts");
 
 const presentation = {
   blueprintId: "format.example",
@@ -49,7 +49,7 @@ async function writeArchive(
 }
 
 // Throwaway output for the generator. Its default is
-// `packages/workshop-backend/src/generated/format-blueprints.ts` -- the module that package
+// `packages/workshop-backend/src/generated/bundled-blueprints.ts` -- the module that package
 // compiles, and which its `build:integration-worker` and `test` tasks read concurrently with this
 // suite under `vp run`. Writing there races them for a real blueprint set, and this suite's
 // fixtures are one fake blueprint or none.
@@ -60,7 +60,7 @@ async function writeArchive(
 // window. `scripts/vite.config.ts` has the longer note.
 //
 // Two kinds of spawn need it: every `buildScript` spawn, and the `importScript` spawns that
-// succeed -- import-format-blueprint.ts regenerates the module in-process when it finishes, and
+// succeed -- import-bundled-blueprint.ts regenerates the module in-process when it finishes, and
 // forwards `--out` to do it. The `importScript` spawns that assert `status === 1` exit before
 // reaching that point, so they need nothing; if one ever stopped failing, its own assertion is
 // what catches it.
@@ -69,9 +69,9 @@ async function writeArchive(
 // reject unexpected files in a blueprint directory, so the output must not land in the set being
 // scanned.
 async function temporaryOutFile(): Promise<string> {
-  let directory = await mkdtemp(join(tmpdir(), "format-blueprints-out-"));
+  let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-out-"));
   temporaryDirectories.push(directory);
-  return join(directory, "format-blueprints.ts");
+  return join(directory, "bundled-blueprints.ts");
 }
 
 afterEach(async () => {
@@ -79,9 +79,9 @@ afterEach(async () => {
     rm(path, {recursive: true, force: true})));
 });
 
-describe("format blueprint scripts", () => {
+describe("bundled blueprint scripts", () => {
   it("ignores dot-prefixed files and interrupted-import directories", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, ".DS_Store"), "ignored");
     await mkdir(join(directory, ".example.import-123", "files"), {recursive: true});
@@ -89,7 +89,7 @@ describe("format blueprint scripts", () => {
 
     let result = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
       cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
     });
 
@@ -98,7 +98,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("ignores hidden duplicate manifests when importing an update", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     for (let name of ["example", ".example.backup-123"]) {
       await mkdir(join(directory, name, "files"), {recursive: true});
@@ -118,7 +118,7 @@ describe("format blueprint scripts", () => {
     let result = spawnSync(process.execPath,
       [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -134,7 +134,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("builds and recovers a blueprint left only in an interrupted-import backup", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     let name = "example format";
     await mkdir(join(directory, name, "files"), {recursive: true});
@@ -146,7 +146,7 @@ describe("format blueprint scripts", () => {
     let generatedModule = await temporaryOutFile();
     let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
       cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
     });
     assert.equal(build.status, 0, build.stderr);
@@ -157,7 +157,7 @@ describe("format blueprint scripts", () => {
     let imported = spawnSync(process.execPath,
       [importScript, archivePath, "format.example", "--out", generatedModule], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -169,13 +169,13 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects dot-prefixed new blueprint names", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
 
     let result = spawnSync(process.execPath,
       [importScript, join(directory, "missing.gadget"), "--new", ".hidden"], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -184,7 +184,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects manifest fields that override the trusted directory name", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "example", "files"), {recursive: true});
     await writeFile(join(directory, "example", "blueprint.json"),
@@ -194,7 +194,7 @@ describe("format blueprint scripts", () => {
     let result = spawnSync(process.execPath,
       [importScript, join(directory, "missing.gadget"), "format.example"], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -205,7 +205,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("validates imported metadata before replacing existing source", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "example", "files"), {recursive: true});
     await writeFile(join(directory, "example", "blueprint.json"),
@@ -217,7 +217,7 @@ describe("format blueprint scripts", () => {
 
     let result = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
       cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
     });
 
@@ -230,7 +230,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects extracted files ignored by Git", async () => {
-    let directory = await mkdtemp(join(packageRoot, "format-blueprints-test-"));
+    let directory = await mkdtemp(join(packageRoot, "bundled-blueprints-test-"));
     temporaryDirectories.push(directory);
     let archivePath = join(directory, ".ignored.gadget");
     await writeArchive(archivePath, 1, new Map([["dist/client.js", "// ignored\n"]]));
@@ -238,7 +238,7 @@ describe("format blueprint scripts", () => {
     let result = spawnSync(process.execPath,
       [importScript, archivePath, "--new", "example"], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -249,7 +249,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects a generated manifest ignored by Git", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     let initialized = spawnSync("git", ["init", "-q", directory], {encoding: "utf8"});
     assert.equal(initialized.status, 0, initialized.stderr);
@@ -260,7 +260,7 @@ describe("format blueprint scripts", () => {
     let result = spawnSync(process.execPath,
       [importScript, archivePath, "--new", "example"], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -271,7 +271,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects non-portable blueprint directory names", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "CON", "files"), {recursive: true});
     await writeFile(join(directory, "CON", "blueprint.json"),
@@ -280,7 +280,7 @@ describe("format blueprint scripts", () => {
 
     let result = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
       cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
     });
 
@@ -289,7 +289,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("rejects duplicate blueprint IDs before adding new source", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "example", "files"), {recursive: true});
     await writeFile(join(directory, "example", "blueprint.json"),
@@ -301,7 +301,7 @@ describe("format blueprint scripts", () => {
     let result = spawnSync(process.execPath,
       [importScript, archivePath, "--new", "format.example"], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 
@@ -312,7 +312,7 @@ describe("format blueprint scripts", () => {
   });
 
   it("builds legacy archives and migrates them on import", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprints-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, "example.json"), `${JSON.stringify(presentation, null, 2)}\n`);
     await writeArchive(join(directory, "example.gadget"), 1,
@@ -321,7 +321,7 @@ describe("format blueprint scripts", () => {
     let generatedModule = await temporaryOutFile();
     let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
       cwd: packageRoot,
-      env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
       encoding: "utf8",
     });
     assert.equal(build.status, 0, build.stderr);
@@ -335,7 +335,7 @@ describe("format blueprint scripts", () => {
     let imported = spawnSync(process.execPath,
       [importScript, incoming, "format.example", "--out", generatedModule], {
         cwd: packageRoot,
-        env: {...process.env, FORMAT_BLUEPRINTS_DIR: directory},
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
       });
 

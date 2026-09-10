@@ -1,6 +1,6 @@
 // Extracts a `.gadget` archive exported from a running Workshop into the repo's reviewable bundled
-// format-blueprint source, in `@gadgets/format-blueprints` or in the `FORMAT_BLUEPRINTS_DIR` tree
-// (resolved against this package's root, as build-format-blueprints.ts resolves it). See that
+// bundled-blueprint source, in `@gadgets/bundled-blueprints` or in the `BUNDLED_BLUEPRINTS_DIR` tree
+// (resolved against this package's root, as build-bundled-blueprints.ts resolves it). See that
 // package's README for the workflow this belongs to.
 
 import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
@@ -9,30 +9,30 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import type {
-  FormatBlueprintManifest,
-  FormatBlueprintPresentation,
-} from "@gadgets/format-blueprints";
+  BundledBlueprintManifest,
+  BundledBlueprintPresentation,
+} from "@gadgets/bundled-blueprints";
 import {
   BUNDLED_BLUEPRINTS_DIR,
   extractFiles,
   findInterruptedImportBackups,
   parseArchive,
-  parseFormatBlueprintManifest,
-  parseFormatBlueprintPresentation,
+  parseBundledBlueprintManifest,
+  parseBundledBlueprintPresentation,
   readSourceFiles,
   validatePortablePaths,
-} from "@gadgets/format-blueprints";
+} from "@gadgets/bundled-blueprints";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
-const sourceDir = process.env.FORMAT_BLUEPRINTS_DIR
-    ? resolve(pkgRoot, process.env.FORMAT_BLUEPRINTS_DIR)
+const sourceDir = process.env.BUNDLED_BLUEPRINTS_DIR
+    ? resolve(pkgRoot, process.env.BUNDLED_BLUEPRINTS_DIR)
     : BUNDLED_BLUEPRINTS_DIR;
-type BlueprintPresentation = FormatBlueprintPresentation & {
+type BlueprintPresentation = BundledBlueprintPresentation & {
   name: string;
   source: string;
 };
-type BlueprintManifest = FormatBlueprintManifest & {name: string; source: string};
+type BlueprintManifest = BundledBlueprintManifest & {name: string; source: string};
 type BlueprintEntry = (BlueprintManifest & {layout: "extracted"}) |
     (BlueprintPresentation & {layout: "legacy"});
 
@@ -93,7 +93,7 @@ for (const dirent of directoryEntries
     if (isErrorCode(err, "ENOENT")) continue;
     throw err;
   }
-  let manifest = parseFormatBlueprintManifest(dirent.name, source);
+  let manifest = parseBundledBlueprintManifest(dirent.name, source);
   manifests.push({...manifest, name: dirent.name, source, layout: "extracted"});
 }
 for (const dirent of directoryEntries
@@ -109,13 +109,13 @@ for (const dirent of directoryEntries
     throw err;
   }
   const source = await readFile(join(sourceDir, dirent.name), "utf8");
-  let presentation = parseFormatBlueprintPresentation(`${name}.json`, source);
+  let presentation = parseBundledBlueprintPresentation(`${name}.json`, source);
   manifests.push({...presentation, name, source, layout: "legacy"});
 }
 
 const rawArgs = process.argv.slice(2);
 const args = [...rawArgs];
-// `--out <path>` is not this script's flag: it belongs to build-format-blueprints.ts, which the
+// `--out <path>` is not this script's flag: it belongs to build-bundled-blueprints.ts, which the
 // last line of this file loads in-process to regenerate the bundled module. Taken out of the
 // positional arguments here and deliberately left on `process.argv`, which is where that script
 // reads it from. Tests pass it so importing a fixture does not overwrite the module the package
@@ -131,8 +131,8 @@ const newName = newAt === -1 ? undefined : args.splice(newAt, 2)[1];
 const [archivePath, blueprintId] = args;
 
 if (!archivePath || (!blueprintId && !newName)) {
-  console.error("usage: pnpm import:format-blueprint <export.gadget> <blueprintId>");
-  console.error("       pnpm import:format-blueprint <export.gadget> --new <name>");
+  console.error("usage: pnpm import:bundled-blueprint <export.gadget> <blueprintId>");
+  console.error("       pnpm import:bundled-blueprint <export.gadget> --new <name>");
   console.error("");
   console.error(`formats in ${sourceDir}:`);
   for (const entry of manifests) {
@@ -224,7 +224,7 @@ const manifest = scaffold ? {
   lastUpdated: String(incoming.metadata.lastUpdated),
   bindings: (incoming.metadata.bindings as Record<string, unknown> | undefined) ?? {},
 };
-parseFormatBlueprintManifest(entry.name, JSON.stringify(manifest));
+parseBundledBlueprintManifest(entry.name, JSON.stringify(manifest));
 const duplicate = manifests.find(candidate => candidate.name !== entry.name &&
     candidate.blueprintId === manifest.blueprintId);
 if (duplicate) {
@@ -289,4 +289,4 @@ if (scaffold) {
 }
 
 console.log("");
-await import("./build-format-blueprints.ts");
+await import("./build-bundled-blueprints.ts");

@@ -11,8 +11,8 @@ import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.j
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
-import { formatBlueprintsManifestVersion, installFormatBlueprints } from './format-blueprints.js';
-import { FORMAT_BLUEPRINTS } from './generated/format-blueprints.js';
+import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
+import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
 
@@ -30,8 +30,8 @@ function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // connect/login/agent hot paths can read it without touching this singleton DO.
       adminConfig: DEFAULT_ADMIN_CONFIG as AdminConfig,
 
-      // Which set of bundled format blueprints has been installed (see
-      // formatBlueprintsManifestVersion). Empty means none yet; a mismatch means the repo shipped
+      // Which set of bundled blueprints has been installed (see
+      // bundledBlueprintsManifestVersion). Empty means none yet; a mismatch means the repo shipped
       // new or updated ones and they should be reinstalled.
       installedFormatBlueprints: "",
 
@@ -76,7 +76,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Install the format blueprints bundled with this deployment, if that hasn't already happened
+   * Install the bundled blueprints bundled with this deployment, if that hasn't already happened
    * for this exact manifest. Idempotent and cheap: an up-to-date deployment does one string
    * comparison and returns.
    *
@@ -86,8 +86,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * Callers are coalesced onto one run, or two isolates racing on a fresh deployment both promote
    * the same blueprints, and a duplicated id makes setFormatOrder() reject every reordering.
    */
-  ensureFormatBlueprintsInstalled(): Promise<boolean> {
-    return this.#installInFlight ??= this.#installFormatBlueprints()
+  ensureBundledBlueprintsInstalled(): Promise<boolean> {
+    return this.#installInFlight ??= this.#installBundledBlueprints()
         .finally(() => { this.#installInFlight = undefined; });
   }
 
@@ -95,11 +95,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   // Resolves true once every bundled blueprint is live. A partial install resolves false rather
   // than throwing: the caller has nothing to handle, but it does need to know to ask again.
-  async #installFormatBlueprints(): Promise<boolean> {
+  async #installBundledBlueprints(): Promise<boolean> {
     let complete = true;
-    let manifestVersion = formatBlueprintsManifestVersion();
+    let manifestVersion = bundledBlueprintsManifestVersion();
     if (this.storage.installedFormatBlueprints.get() !== manifestVersion) {
-      let installed = await installFormatBlueprints(this.env);
+      let installed = await installBundledBlueprints(this.env);
 
       if (installed.length > 0) {
         for (let publicInfo of installed) {
@@ -111,14 +111,14 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       // Stamped only once the whole manifest is live, so a crash or a single bad archive retries
       // next time. Recording a partial install as complete would strand the entries that failed
       // until the manifest happened to change again.
-      complete = installed.length === FORMAT_BLUEPRINTS.length;
+      complete = installed.length === BUNDLED_BLUEPRINTS.length;
       if (complete) {
         this.storage.installedFormatBlueprints.put(manifestVersion);
       }
-      logger.info("installed bundled format blueprints", {
+      logger.info("installed bundled blueprints", {
         event: "formats.install.complete",
         size: installed.length,
-        failureCount: FORMAT_BLUEPRINTS.length - installed.length,
+        failureCount: BUNDLED_BLUEPRINTS.length - installed.length,
       });
     }
 
@@ -139,7 +139,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // bundled set ever changes.
   async #promoteBundledFormats(): Promise<void> {
     let promoted = new Set(this.storage.promotedFormatBlueprints.get());
-    let pending = FORMAT_BLUEPRINTS.filter(entry => !promoted.has(entry.blueprintId));
+    let pending = BUNDLED_BLUEPRINTS.filter(entry => !promoted.has(entry.blueprintId));
     if (pending.length === 0) return;
 
     let config = this.#config();
@@ -211,7 +211,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         id: blueprintId,
         metadata: kvRecord.metadata,
       },
-      // A deployment-installed blueprint (see format-blueprints.ts) has no owning User DO to hold
+      // A deployment-installed blueprint (see bundled-blueprints.ts) has no owning User DO to hold
       // the authoritative featured bit, so the owner-anchored toggle doesn't apply -- the same
       // answer as an uploaded blueprint. It reaches users through the deployment's curation.
       featureable: !!kvRecord.gadgetId && !!kvRecord.ownerId,
@@ -327,7 +327,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // Admin view of the promoted formats: the deployment's curation joined with each blueprint, so
   // the panel can show what is being curated and flag entries whose blueprint has been deleted.
   async #listFormatConfig(config: AdminConfig): Promise<AdminFormat[]> {
-    let bundled = new Set(FORMAT_BLUEPRINTS.map(entry => entry.blueprintId));
+    let bundled = new Set(BUNDLED_BLUEPRINTS.map(entry => entry.blueprintId));
 
     // Every entry, not just the offered ones: the panel exists to show what is disabled and what
     // points at a deleted blueprint.
@@ -382,7 +382,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     // Enforced here, not just in the panel: this is an RPC an admin session can call directly.
     // Withdrawing a bundled entry is `enabled: false`, which keeps its overrides, hint and
     // position.
-    if (FORMAT_BLUEPRINTS.some(entry => entry.blueprintId === blueprintId)) {
+    if (BUNDLED_BLUEPRINTS.some(entry => entry.blueprintId === blueprintId)) {
       throw new Error(
           "This format ships with the deployment, so it can't be removed. Turn it off instead.");
     }

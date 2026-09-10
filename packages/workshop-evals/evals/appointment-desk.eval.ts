@@ -40,7 +40,7 @@ function samePeople(left: readonly string[], right: readonly string[]): boolean 
 
 /**
  * Durable Object RPC calls can interleave at each `await`. A count check followed by an awaited
- * insert can therefore oversell. Both shipped format blueprints guard this race, so the task probes
+ * insert can therefore oversell. Both shipped bundled blueprints guard this race, so the task probes
  * a platform-relevant capability rather than prompt recall.
  *
  * The prompt states the capacity invariant without prescribing synchronization. In a measured GLM

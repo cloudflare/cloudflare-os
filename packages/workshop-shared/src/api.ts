@@ -911,8 +911,8 @@ export type AdminFormat = {
   missing: boolean;
 
   /**
-   * The blueprint ships with the deployment (see packages/format-blueprints and the
-   * FORMAT_BLUEPRINTS the backend's build generates from it), so an upgrade can replace its contents. Curation stays the admin's: an upgrade never re-promotes something they
+   * The blueprint ships with the deployment (see packages/bundled-blueprints and the
+   * BUNDLED_BLUEPRINTS the backend's build generates from it), so an upgrade can replace its contents. Curation stays the admin's: an upgrade never re-promotes something they
    * removed, nor resets their overrides.
    */
   bundled: boolean;

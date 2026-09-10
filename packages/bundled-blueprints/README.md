@@ -1,13 +1,15 @@
-# Bundled format blueprints
+# Bundled blueprints
 
-This package holds the output-format blueprints that ship with this repo, the gadget libraries they
-import, and the build that turns a blueprint directory into the archives the Workshop backend
-installs. A fresh deployment installs the blueprints into BLUEPRINTS KV and BLUEPRINT_CONTENT R2 on
-its first `/api` request, after which they are ordinary blueprints.
+This package holds the blueprints that ship with this repo, the gadget libraries they import, and
+the build that turns a blueprint directory into the archives the Workshop backend installs. A fresh
+deployment installs the blueprints into BLUEPRINTS KV and BLUEPRINT_CONTENT R2 on its first `/api`
+request, after which they are ordinary blueprints, and promotes them as its standard output formats.
+"Bundled" is what this package holds; "format" is a curation state an admin controls at runtime --
+a bundled blueprint can be taken out of the formats menu, and an unbundled one promoted into it.
 
-Nothing here is deployed on its own. The Workshop backend's `scripts/build-format-blueprints.ts`
-imports `src/` to generate the gitignored `src/generated/format-blueprints.ts` it compiles the
-archives into, and `pnpm import:format-blueprint` (the same package) writes into `blueprints/`.
+Nothing here is deployed on its own. The Workshop backend's `scripts/build-bundled-blueprints.ts`
+imports `src/` to generate the gitignored `src/generated/bundled-blueprints.ts` it compiles the
+archives into, and `pnpm import:bundled-blueprint` (the same package) writes into `blueprints/`.
 
 ## Layout
 
@@ -75,9 +77,9 @@ side or of a library that does not exist.
 ### Type checks and tests
 
 ```
-pnpm exec vp run -F @gadgets/format-blueprints build   # the five type-check programs
-pnpm --filter @gadgets/format-blueprints test:run      # the blueprints', libraries' and build's tests
-pnpm --filter @gadgets/format-blueprints test:watch
+pnpm exec vp run -F @gadgets/bundled-blueprints build   # the five type-check programs
+pnpm --filter @gadgets/bundled-blueprints test:run      # the blueprints', libraries' and build's tests
+pnpm --filter @gadgets/bundled-blueprints test:watch
 ```
 
 `pnpm build` type-checks all of it, through one config per set of globals -- the sets must not see
@@ -110,7 +112,9 @@ Workshop backend's suite. Only `blueprint.json` and `files/` are read by the bui
 (and anything else beside them) is repo-only and never part of the archive.
 
 `blueprintId` is the install key. Never change it after deployment: the new ID would install a
-second format while the old one remained. `version` is the blueprint's published content version
+second blueprint while the old one remained. (TODO: the bundled IDs keep the historical `format.`
+prefix -- `format.document`, `format.spreadsheet`, `format.slides` -- for that reason; renaming them
+needs an install-time migration keyed on the old id.) `version` is the blueprint's published content version
 and R2 key. The build fingerprints the generated archive, so direct edits under `files/` reinstall
 automatically. `revision` remains an explicit reinstall trigger and is bumped by the importer.
 
@@ -124,11 +128,11 @@ the install fingerprint and do not need a `revision` bump.
 Build the blueprint in a Workshop, export it, then import the export, from `packages/workshop-backend`:
 
 ```
-pnpm import:format-blueprint ~/Downloads/Gadgets-Doc-v4.gadget format.document
+pnpm import:bundled-blueprint ~/Downloads/Gadgets-Doc-v4.gadget format.document
 ```
 
 The importer replaces `files/`, updates archive-owned metadata (`created`, `version`, `lastUpdated`,
-and `bindings`), bumps `revision`, rebuilds the backend's `src/generated/format-blueprints.ts`, and
+and `bindings`), bumps `revision`, rebuilds the backend's `src/generated/bundled-blueprints.ts`, and
 reports changed files and bindings. Review the resulting source diff normally.
 
 An export contains the bundled JavaScript, so importing one over a TypeScript blueprint replaces its
@@ -138,7 +142,7 @@ and use the Workshop only to try the result.
 ## Adding a format
 
 ```
-pnpm import:format-blueprint ~/Downloads/Brief.gadget --new acme-brief
+pnpm import:bundled-blueprint ~/Downloads/Brief.gadget --new acme-brief
 ```
 
 This extracts the files and writes a valid scaffolded `blueprint.json`. Before deploying, replace
@@ -147,18 +151,20 @@ Outputs page uses it to group related formats.
 
 ## Shipping your own formats
 
-`FORMAT_BLUEPRINTS_DIR` points the build at another directory in this same extracted layout. It is
-resolved against `packages/workshop-backend`, where the build runs:
+`BUNDLED_BLUEPRINTS_DIR` points the build at another directory in this same extracted layout. It is
+resolved against `packages/workshop-backend`, where the build runs (the variable used to be called
+`FORMAT_BLUEPRINTS_DIR`; that name is no longer read, so a deployment setting it builds the bundled
+set instead):
 
 ```
-FORMAT_BLUEPRINTS_DIR=../../acme-formats pnpm exec vp run build
+BUNDLED_BLUEPRINTS_DIR=../../acme-formats pnpm exec vp run build
 ```
 
 The named directory replaces this set rather than extending it. It can be empty to ship no bundled
 formats. The import command honors the same variable. Keeping deployment-owned formats outside this
 repo avoids modifying it when it is consumed as a submodule.
 
-A `FORMAT_BLUEPRINTS_DIR` tree may be written in TypeScript like the blueprints here, and the build
+A `BUNDLED_BLUEPRINTS_DIR` tree may be written in TypeScript like the blueprints here, and the build
 bundles it the same way: a syntax error or an import that does not resolve fails the build, and its
 `gadgets:` imports resolve to this package's `libraries/`. It is not type-checked, though. This
 package's `tsconfig.*.json` programs are static and cover only `blueprints/` and `libraries/`, so a

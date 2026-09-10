@@ -463,7 +463,7 @@ async function bundleTypeScriptSources(
         metafile: true,
         logLevel: "silent",
         // A blueprint's compile must not pick up whichever tsconfig sits above its directory --
-        // FORMAT_BLUEPRINTS_DIR can name a tree anywhere.
+        // BUNDLED_BLUEPRINTS_DIR can name a tree anywhere.
         tsconfigRaw: {},
       });
       metafile = result.metafile;

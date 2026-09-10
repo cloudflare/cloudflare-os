@@ -20,7 +20,7 @@ afterEach(async () => {
 
 /** Writes `files` (archive-style relative paths) into a fresh temporary files/ tree. */
 async function sourceTree(files: Record<string, string>): Promise<string> {
-  let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+  let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
   temporaryDirectories.push(directory);
   for (let [path, source] of Object.entries(files)) {
     await mkdir(dirname(join(directory, path)), {recursive: true});
@@ -32,7 +32,7 @@ async function sourceTree(files: Record<string, string>): Promise<string> {
 /** This package's `libraries/`, where the build resolves `gadgets:<name>/<side>`. */
 const gadgetLibraries = resolve(dirname(fileURLToPath(import.meta.url)), "..", "libraries");
 
-describe("format blueprint source", () => {
+describe("bundled blueprint source", () => {
   it("reconstructs files deterministically", () => {
     let files = new Map([
       ["server.js", "export default {};\n"],
@@ -60,7 +60,7 @@ describe("format blueprint source", () => {
   });
 
   it("reads nested source files as archive paths", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "lib"));
     await writeFile(join(directory, "client.js"), "client\n");
@@ -129,7 +129,7 @@ describe("format blueprint source", () => {
   });
 
   it("preserves a leading UTF-8 BOM", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, "client.js"),
       Uint8Array.of(0xef, 0xbb, 0xbf, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65));
@@ -139,7 +139,7 @@ describe("format blueprint source", () => {
   });
 
   it("rejects non-UTF-8 source", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, "client.js"), Uint8Array.of(0xff));
 
@@ -148,7 +148,7 @@ describe("format blueprint source", () => {
   });
 
   it("rejects symlinks", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     await writeFile(join(directory, "source.js"), "source");
     await symlink(join(directory, "source.js"), join(directory, "client.js"));
@@ -158,9 +158,9 @@ describe("format blueprint source", () => {
   });
 
   it("rejects nested directory symlinks", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
-    let outside = await mkdtemp(join(tmpdir(), "format-blueprint-outside-"));
+    let outside = await mkdtemp(join(tmpdir(), "bundled-blueprint-outside-"));
     temporaryDirectories.push(outside);
     await writeFile(join(outside, "secret.js"), "secret");
     await symlink(outside, join(directory, "lib"));
@@ -170,7 +170,7 @@ describe("format blueprint source", () => {
   });
 
   it("rejects a symlink used as the source root", async () => {
-    let directory = await mkdtemp(join(tmpdir(), "format-blueprint-"));
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     let link = `${directory}-link`;
     temporaryDirectories.push(link);
@@ -181,7 +181,7 @@ describe("format blueprint source", () => {
   });
 });
 
-describe("format blueprint TypeScript sources", () => {
+describe("bundled blueprint TypeScript sources", () => {
   it("bundles each entry with its lib imports into one JavaScript file", async () => {
     let directory = await sourceTree({
       "README.md": "# Example\n",
@@ -372,7 +372,7 @@ describe("format blueprint TypeScript sources", () => {
   it("rejects imports that reach outside the blueprint", async () => {
     // A per-test parent, so the out-of-tree file is private to this run rather than a fixed path
     // in the shared tmpdir root that a concurrent run would race on.
-    let parent = await mkdtemp(join(tmpdir(), "format-blueprint-outside-"));
+    let parent = await mkdtemp(join(tmpdir(), "bundled-blueprint-outside-"));
     temporaryDirectories.push(parent);
     let directory = join(parent, "files");
     await mkdir(directory);

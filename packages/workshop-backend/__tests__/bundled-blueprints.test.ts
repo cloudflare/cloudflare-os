@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import { parseBlueprintArchive, parseBlueprintKvRecord, sanitizeBlueprintOutput } from "../src/blueprint-archive.js";
-import { formatBlueprintsManifestVersion, installFormatBlueprints } from "../src/format-blueprints.js";
-import { FORMAT_BLUEPRINTS } from "../src/generated/format-blueprints.js";
+import { bundledBlueprintsManifestVersion, installBundledBlueprints } from "../src/bundled-blueprints.js";
+import { BUNDLED_BLUEPRINTS } from "../src/generated/bundled-blueprints.js";
 
 async function readBlueprintFile(
-  entry: (typeof FORMAT_BLUEPRINTS)[number],
+  entry: (typeof BUNDLED_BLUEPRINTS)[number],
   filename: string,
 ): Promise<string> {
   let archive = new Response(Uint8Array.fromBase64(entry.archive) as BufferSource).body!;
@@ -57,14 +57,14 @@ function makeEnv() {
   };
 }
 
-describe("bundled format blueprints", () => {
+describe("bundled blueprints", () => {
   it("installs every manifest entry as an ordinary blueprint", async () => {
     let {kv, r2, env} = makeEnv();
 
-    let installed = await installFormatBlueprints(env);
+    let installed = await installBundledBlueprints(env);
 
-    expect(installed).toHaveLength(FORMAT_BLUEPRINTS.length);
-    for (let entry of FORMAT_BLUEPRINTS) {
+    expect(installed).toHaveLength(BUNDLED_BLUEPRINTS.length);
+    for (let entry of BUNDLED_BLUEPRINTS) {
       let raw = kv.get(entry.blueprintId);
       expect(raw, `${entry.blueprintId} metadata`).toBeDefined();
 
@@ -91,14 +91,14 @@ describe("bundled format blueprints", () => {
   });
 
   it("ships print layouts for every standard output format", async () => {
-    for (let entry of FORMAT_BLUEPRINTS) {
+    for (let entry of BUNDLED_BLUEPRINTS) {
       expect(await readBlueprintFile(entry, "client.js"), entry.blueprintId)
         .toContain("@media print");
     }
   });
 
   it("renders document HTML and PDF exports without the editor chrome", async () => {
-    let entry = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
+    let entry = BUNDLED_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
     let client = await readBlueprintFile(entry, "client.js");
 
     // The TypeScript build rewrites the source; what survives is the export-mode check itself.
@@ -130,7 +130,7 @@ describe("bundled format blueprints", () => {
       ],
     };
 
-    for (let entry of FORMAT_BLUEPRINTS) {
+    for (let entry of BUNDLED_BLUEPRINTS) {
       let serverCode = await readBlueprintFile(entry, "server.js");
       expect(exportsName(serverCode, "ExportHandler"),
         `${entry.blueprintId}: server.js exports ExportHandler`).toBe(true);
@@ -152,31 +152,31 @@ describe("bundled format blueprints", () => {
     expect(exportsName(code, "ExportHandler")).toBe(expected);
   });
 
-  // Skipped when the deployment bundles nothing, which FORMAT_BLUEPRINTS_DIR makes a supported
+  // Skipped when the deployment bundles nothing, which BUNDLED_BLUEPRINTS_DIR makes a supported
   // configuration rather than a broken checkout.
-  it.skipIf(FORMAT_BLUEPRINTS.length === 0)(
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
       "changes the manifest version when an entry's revision changes", () => {
-    let entry = FORMAT_BLUEPRINTS[0];
-    let before = formatBlueprintsManifestVersion();
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
     expect(before).toContain(entry.blueprintId);
 
     let original = entry.revision;
     try {
       entry.revision = original + 1;
-      expect(formatBlueprintsManifestVersion()).not.toBe(before);
+      expect(bundledBlueprintsManifestVersion()).not.toBe(before);
     } finally {
       entry.revision = original;
     }
   });
 
-  it.skipIf(FORMAT_BLUEPRINTS.length === 0)(
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
       "changes the manifest version when bundled source changes", () => {
-    let entry = FORMAT_BLUEPRINTS[0];
-    let before = formatBlueprintsManifestVersion();
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
     let original = entry.contentHash;
     try {
       entry.contentHash = `${original}-changed`;
-      expect(formatBlueprintsManifestVersion()).not.toBe(before);
+      expect(bundledBlueprintsManifestVersion()).not.toBe(before);
     } finally {
       entry.contentHash = original;
     }
@@ -185,10 +185,10 @@ describe("bundled format blueprints", () => {
   // Curated text is the input most likely to be edited -- it is the whole point of keeping it in a
   // text file -- and an edit that doesn't reach deployments which already installed would be
   // invisible: the build succeeds and the old wording stays put.
-  it.skipIf(FORMAT_BLUEPRINTS.length === 0)(
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
       "changes the manifest version when curated presentation changes, with no revision bump", () => {
-    let entry = FORMAT_BLUEPRINTS[0];
-    let before = formatBlueprintsManifestVersion();
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
 
     for (let mutate of [
       () => { entry.description += " Now with more detail."; },
@@ -198,13 +198,13 @@ describe("bundled format blueprints", () => {
       let restore = {...entry};
       try {
         mutate();
-        expect(formatBlueprintsManifestVersion()).not.toBe(before);
+        expect(bundledBlueprintsManifestVersion()).not.toBe(before);
         expect(entry.revision).toBe(restore.revision);
       } finally {
         Object.assign(entry, restore);
       }
     }
 
-    expect(formatBlueprintsManifestVersion()).toBe(before);
+    expect(bundledBlueprintsManifestVersion()).toBe(before);
   });
 });

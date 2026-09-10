@@ -1,7 +1,7 @@
 // Type-checks the build (`src/`) and its tests (`__tests__/`) as the Node programs they are.
 //
-// Nothing here is compiled: the Workshop backend's `scripts/build-format-blueprints.ts` and
-// `scripts/import-format-blueprint.ts` import `src/` and run directly under `node`, which strips
+// Nothing here is compiled: the Workshop backend's `scripts/build-bundled-blueprints.ts` and
+// `scripts/import-bundled-blueprint.ts` import `src/` and run directly under `node`, which strips
 // the types. `erasableSyntaxOnly` is what keeps that a guarantee, and `nodenext` resolution is
 // what `node` actually does with the imports, so a specifier that only a bundler could resolve
 // fails here rather than at the command line. Same settings as the repo's `scripts/tsconfig.json`,
