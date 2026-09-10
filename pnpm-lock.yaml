@@ -192,6 +192,9 @@ importers:
       '@gadgets/typed-storage':
         specifier: workspace:*
         version: link:../typed-storage
+      '@gadgets/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared

@@ -29,6 +29,8 @@ type DragAutoScrollOptions = {
 export type HierarchicalListDragAndDropOptions = {
   /** Enables edge-triggered scrolling during mouse and touch dragging. */
   autoScroll?: boolean;
+  /** Returns whether an item may move under a parent. `null` represents the list root. */
+  canMoveTo?: (item: HierarchicalListItem, parent: HierarchicalListItem | null) => boolean;
   /** Applies a move to the supplied post-removal destination. */
   onMove: (item: HierarchicalListItem, destination: HierarchicalListDropDestination) => void;
 };

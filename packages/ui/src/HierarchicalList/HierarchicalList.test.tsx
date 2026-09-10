@@ -171,6 +171,50 @@ describe("HierarchicalList", () => {
     });
   });
 
+  it("rejects prohibited parents without showing a drop target", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    const collectionItems: HierarchicalListItem[] = [
+      {
+        id: "collection-a",
+        name: "Collection A",
+        droppable: true,
+        children: [{ id: "source", name: "Source", draggable: true }],
+      },
+      {
+        id: "collection-b",
+        name: "Collection B",
+        droppable: true,
+        children: [],
+      },
+    ];
+    render(
+      <HierarchicalList
+        items={collectionItems}
+        label="Skills"
+        expandAll
+        dragAndDrop={{
+          canMoveTo: (_item, parent) => parent?.id === "collection-a",
+          onMove,
+        }}
+      />,
+    );
+    const source = rowFor("Source")!;
+    const prohibitedCollection = rowFor("Collection B")!;
+    setRect(source, { top: 0, height: 60 });
+    setRect(prohibitedCollection, { top: 60, height: 60 });
+    const transfer = dataTransfer();
+
+    dispatchDrag(source, "dragstart", transfer);
+    dispatchDrag(prohibitedCollection, "dragover", transfer, 90);
+    expect(transfer.dropEffect).toBe("none");
+    expect(prohibitedCollection.getAttribute("data-drop-target")).toBeNull();
+    dispatchDrag(prohibitedCollection, "drop", transfer, 90);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
   it("uses the row midpoint for before and after insertion", () => {
     const onMove = vi.fn<(
       item: HierarchicalListItem,
