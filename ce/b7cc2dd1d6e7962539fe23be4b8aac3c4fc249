@@ -1,0 +1,25 @@
+docs/connect-handoff.md
+  s_3fd32ba9d290d1::t_47668c6ad54b6e 1-244,249-256
+  s_3fd32ba9d290d1::t_68bc1285b1febd 246-248
+  s_3fd32ba9d290d1::t_6d902c09cb7a14 245
+AGENTS.md
+  s_3fd32ba9d290d1::t_c3c4a656bcc8f9 25
+docs/oauth-signin.md
+  s_3fd32ba9d290d1::t_182570e98df029 37-45,49-58,89-92,104-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ceb7cc2dd1d6e7962539fe23be4b8aac3c4fc249",
+  "prompts": {},
+  "sessions": {
+    "s_3fd32ba9d290d1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54cfef4d-a815-4b29-b293-946cabbd7fae",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
