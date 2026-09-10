@@ -118,7 +118,7 @@ const PrimitiveDropZone = ({
   depth,
   edge,
   controller,
-  onMove,
+  dragAndDrop,
   inset,
   slot,
 }: {
@@ -127,12 +127,17 @@ const PrimitiveDropZone = ({
   depth: number;
   edge: "before" | "after";
   controller: HierarchicalListDragAndDropController;
-  onMove?: HierarchicalListDragAndDropOptions["onMove"];
+  dragAndDrop?: HierarchicalListDragAndDropOptions;
   inset: (depth: number) => number;
   slot?: HierarchicalListPrimitiveSlotProps<HTMLDivElement>;
 }) => {
   const { draggedItem, dropTargetId, setDraggedItem, setDropTargetId, updateDropIndicator } = controller;
-  if (!draggedItem || !onMove || !canInsertInto(draggedItem, parent)) return null;
+  if (
+    !draggedItem
+    || !dragAndDrop
+    || !canInsertInto(draggedItem, parent)
+    || dragAndDrop.canMoveTo?.(draggedItem, parent) === false
+  ) return null;
   const targetId = insertionTargetId(parent, index);
 
   return (
@@ -158,7 +163,7 @@ const PrimitiveDropZone = ({
       onDrop={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        onMove(draggedItem, { parent, index });
+        dragAndDrop.onMove(draggedItem, { parent, index });
         setDraggedItem(null);
         setDropTargetId(null);
       }}
@@ -249,7 +254,7 @@ const PrimitiveBranch = ({
         depth={depth}
         edge="before"
         controller={dragController}
-        onMove={dragAndDrop?.onMove}
+        dragAndDrop={dragAndDrop}
         inset={getDropIndicatorInset}
         slot={slots?.dropZone}
       />
@@ -294,7 +299,7 @@ const PrimitiveBranch = ({
           depth={depth}
           edge="after"
           controller={dragController}
-          onMove={dragAndDrop?.onMove}
+          dragAndDrop={dragAndDrop}
           inset={getDropIndicatorInset}
           slot={slots?.dropZone}
         />

@@ -96,11 +96,16 @@ export const useHierarchicalListRowInteractions = ({
   });
   const dragging = draggedItem?.id === item.id;
   const insideDropTarget = dropTargetId === insideTargetId(item)
-    && Boolean(item.droppable && draggedItem && canDrop(draggedItem, item));
+    && Boolean(
+      item.droppable
+      && draggedItem
+      && canDrop(draggedItem, item)
+      && (dragAndDrop?.canMoveTo?.(draggedItem, item) ?? true),
+    );
 
   const rowDropTarget = (clientY: number, row: HTMLElement) => {
     const rect = row.getBoundingClientRect();
-    return getRowDropTarget({
+    const target = getRowDropTarget({
       source: draggedItem,
       item,
       parent,
@@ -111,6 +116,10 @@ export const useHierarchicalListRowInteractions = ({
       rowTop: rect.top,
       rowHeight: rect.height,
     });
+    return target && draggedItem
+      && (dragAndDrop?.canMoveTo?.(draggedItem, target.destination.parent) ?? true)
+      ? target
+      : null;
   };
 
   const rowProps: HierarchicalListPrimitiveRowProps = {
@@ -199,7 +208,7 @@ export const useHierarchicalListRowInteractions = ({
       if (!direction) return;
       event.preventDefault();
       const destination = getKeyboardMoveDestination(rootItems, item, direction);
-      if (!destination) return;
+      if (!destination || dragAndDrop?.canMoveTo?.(item, destination.parent) === false) return;
       onSelectionClear?.();
       dragAndDrop?.onMove(item, destination);
     },
@@ -211,8 +220,18 @@ export const useHierarchicalListRowInteractions = ({
       if (event.defaultPrevented) return;
       const target = rowDropTarget(event.clientY, event.currentTarget);
       if (!target) {
-        dragController.setDropTargetId(null);
-        dragController.updateDropIndicator(event.currentTarget, 0, "center", false);
+        if (draggedItem) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "none";
+          dragController.setDropTargetId(null);
+          dragController.updateDropIndicator(
+            event.currentTarget,
+            getDropIndicatorInset(depth),
+            "top",
+            false,
+          );
+        }
         return;
       }
       event.preventDefault();
@@ -229,7 +248,12 @@ export const useHierarchicalListRowInteractions = ({
     onDrop: (event) => {
       if (event.defaultPrevented || !draggedItem) return;
       const target = rowDropTarget(event.clientY, event.currentTarget);
-      if (!target) return;
+      if (!target) {
+        event.preventDefault();
+        event.stopPropagation();
+        dragController.setDropTargetId(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       dragAndDrop?.onMove(draggedItem, target.destination);
