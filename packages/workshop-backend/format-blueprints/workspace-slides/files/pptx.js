@@ -1,7 +1,6 @@
 import { createZip, crc32 } from "./zip.js";
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const PML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
 const DML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -25,7 +24,10 @@ const MAX_SLIDES = 500;
 const MAX_BLOCKS_PER_SLIDE = 1000;
 const MAX_TOTAL_BLOCKS = 10000;
 const MAX_TEXT_LENGTH = 1000000;
-const MAX_TOTAL_TEXT_LENGTH = 8000000;
+// deckToPptx rejects a deck whose text props total more than this. Exported so an adapter that
+// pre-processes text (measuring a wordmark, say) can stop once a deck is bound to be rejected,
+// rather than spend unbounded work ahead of the renderer's own limits.
+export const MAX_TOTAL_TEXT_LENGTH = 8000000;
 const MAX_LINE_BREAKS = 10000;
 const MAX_TOTAL_LINE_BREAKS = 50000;
 const MAX_HIGHLIGHT_TERMS = 128;
@@ -41,9 +43,6 @@ const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_ENCODED_BYTES = 48 * 1024 * 1024;
 const MAX_MEDIA_DECODED_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_DECODED_BYTES = 32 * 1024 * 1024;
-// An uploaded SVG is text: it is decoded to a string, scanned and re-encoded, so while it is
-// prepared it is held several times over. Pasted markup is bounded as text (MAX_TEXT_LENGTH).
-const MAX_SVG_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 8192;
 const MAX_IMAGE_PIXELS = 16777216;
 const MAX_TOTAL_IMAGE_PIXELS = 67108864;
@@ -277,7 +276,8 @@ function lineXml(color, widthPixels = 0, dashed = false, shapeOpacity = 1, arrow
     xml += '<a:prstDash val="solid"/>';
   }
   xml += join;
-  if (arrow) xml += '<a:headEnd type="none"/><a:tailEnd type="triangle" w="sm" len="sm"/>';
+  // The browser's marker is a 9x6 triangle in stroke widths; PowerPoint's largest preset is 5x5.
+  if (arrow) xml += '<a:headEnd type="none"/><a:tailEnd type="triangle" w="lg" len="lg"/>';
   return xml + "</a:ln>";
 }
 
@@ -647,7 +647,9 @@ function jpegDimensions(bytes) {
     const segmentLength = bytes[offset] << 8 | bytes[offset + 1];
     if (segmentLength < 2 || offset + segmentLength > bytes.length) return null;
     if (startOfFrame.has(marker)) {
-      if (segmentLength < 8) return null;
+      // One frame header per image: a second could declare different dimensions from the first,
+      // so whichever a consumer trusts, the pixel limits were checked against the other.
+      if (dimensions || segmentLength < 8) return null;
       const height = bytes[offset + 3] << 8 | bytes[offset + 4];
       const width = bytes[offset + 5] << 8 | bytes[offset + 6];
       if (!width || !height) return null;
@@ -687,22 +689,10 @@ function jpegDimensions(bytes) {
   return null;
 }
 
-function equalBytes(left, right) {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let i = 0; i < left.byteLength; ++i) if (left[i] !== right[i]) return false;
-  return true;
-}
-
-// `media` describes the part: {extension, mime, aspect, pixels}. Raster images account their pixels
-// against the aggregate limit; SVG has no pixels (its size is bounded as text) and may have no
-// usable aspect ratio, in which case it fills its frame.
-function findOrAddMedia(bytes, media, mediaState) {
-  const checksum = crc32(bytes);
-  const key = `${bytes.byteLength}:${checksum}`;
-  const candidates = mediaState.byChecksum.get(key) || [];
-  for (const existing of candidates) {
-    if (equalBytes(existing.bytes, bytes)) return existing;
-  }
+// `media` describes the part: {extension, mime, aspect, pixels}. Images are deduplicated by their
+// source string (prepareImageSource), not by content: comparing bytes would let colliding
+// checksums force quadratic work.
+function addMedia(bytes, media, mediaState) {
   if (mediaState.media.length >= MAX_MEDIA_COUNT) {
     throw new Error(`Deck contains too many embedded images for PowerPoint export (maximum ${MAX_MEDIA_COUNT}).`);
   }
@@ -713,8 +703,6 @@ function findOrAddMedia(bytes, media, mediaState) {
   mediaState.totalPixels = totalPixels;
   const entry = {...media, index: mediaState.media.length + 1, bytes};
   mediaState.media.push(entry);
-  candidates.push(entry);
-  mediaState.byChecksum.set(key, candidates);
   return entry;
 }
 
@@ -761,150 +749,21 @@ function tagAttribute(tag, name) {
   }
 }
 
-// The SVG's intrinsic aspect ratio from its viewBox, so `fit: "contain"` can letterbox the frame
-// the way the browser's preserveAspectRatio does. The browser overrides the root's width and
-// height with 100%, so a drawing without a viewBox has no aspect ratio and fills its frame: null.
-function svgAspect(rootTag) {
-  const viewBox = tagAttribute(rootTag, "viewBox");
-  if (viewBox == null) return null;
-  const parts = viewBox.trim().split(/[\s,]+/);
-  const width = Number(parts[2]);
-  const height = Number(parts[3]);
-  return parts.length === 4 && width > 0 && height > 0 && Number.isFinite(width / height) ? width / height : null;
-}
-
-// Index just past the `>` closing the tag that opens at `index`, skipping quoted attribute values;
-// -1 if the tag is unterminated.
-function tagEnd(markup, index) {
-  let quote = "";
-  for (let i = index; i < markup.length; ++i) {
-    const char = markup[i];
-    if (quote) {
-      if (char === quote) quote = "";
-    } else if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === ">") {
-      return i + 1;
-    }
-  }
-  return -1;
-}
-
-// Whether the tag name starting at `index` is exactly `svg`: followed by a name terminator, not
-// by more name characters or the end of the markup (a tag cut off there is dropped by the parser).
-function svgNameAt(markup, index) {
-  if (!markup.startsWith("svg", index)) return false;
-  const next = markup.charCodeAt(index + 3);
-  return isXmlSpace(next) || next === 62 || next === 47;
-}
-
-// The first `<svg>` element within `markup` -- the one the browser renders (`querySelector`)
-// when the paste has wrapper markup or siblings around it -- or null when there is none. One
-// linear pass over the markup's tags tracks svg nesting so a sibling element is not swept in, and
-// steps over the constructs whose content cannot open or close an element: quoted attribute
-// values, comments, CDATA sections and other `<!`/`<?` declarations. An unterminated element runs
-// to the end of the markup.
-function svgElement(markup) {
-  let start = -1;
-  let rootTag = null;
-  let depth = 0;
-  for (let i = markup.indexOf("<"); i >= 0; i = markup.indexOf("<", i)) {
-    let end;
-    if (markup.startsWith("<!--", i)) {
-      end = markup.indexOf("-->", i + 4);
-      if (end >= 0) end += 3;
-    } else if (markup.startsWith("<![CDATA[", i)) {
-      end = markup.indexOf("]]>", i + 9);
-      if (end >= 0) end += 3;
-    } else if (markup[i + 1] === "!" || markup[i + 1] === "?") {
-      end = markup.indexOf(">", i + 2);
-      if (end >= 0) end += 1;
-    } else {
-      const closing = markup[i + 1] === "/";
-      const nameStart = closing ? i + 2 : i + 1;
-      if (!isAsciiLetter(markup.charCodeAt(nameStart))) {
-        ++i; // a literal "<"
-        continue;
-      }
-      end = tagEnd(markup, i);
-      if (svgNameAt(markup, nameStart)) {
-        if (closing) {
-          if (start >= 0 && end >= 0 && --depth === 0) return {rootTag, source: markup.slice(start, end)};
-        } else {
-          if (start < 0) {
-            start = i;
-            rootTag = markup.slice(i, end < 0 ? markup.length : end);
-          }
-          if (end >= 0 && markup[end - 2] === "/") {
-            if (depth === 0) return {rootTag, source: markup.slice(start, end)};
-          } else if (end >= 0) {
-            ++depth;
-          }
-        }
-      }
-    }
-    if (end < 0) break;
-    i = end;
-  }
-  return start < 0 ? null : {rootTag, source: markup.slice(start)};
-}
-
-function svgMedia(element, mediaState) {
-  return findOrAddMedia(encoder.encode(element.source), {
-    extension: "svg", mime: "image/svg+xml", aspect: svgAspect(element.rootTag), pixels: 0,
-  }, mediaState);
-}
-
-const SVG_NAMESPACE_DECLARATION = ' xmlns="http://www.w3.org/2000/svg"';
-
-// Embeds pasted markup's first <svg> element as an SVG media part. The browser parses the paste as
-// HTML, which puts a bare <svg> in the SVG namespace; a standalone image/svg+xml part needs that
-// declaration spelled out, and a root without one gets it. Otherwise the element is copied as
-// authored: nothing here validates or rewrites it, so scripts, external references and the like
-// reach the consumer, and the browser's render-time cleanup is the only line of defence there.
-// The seed decks' brand bar is recognized here so its check shares the per-source cache.
+// SVG blocks are not carried into PowerPoint: consumers that matter here (Google Slides import,
+// Quick Look, older PowerPoint) render an svgBlip as an empty frame, and the exporter cannot
+// rasterize a fallback, so the block is a visible placeholder instead. The seed decks' brand bar
+// is the one exception, drawn as a native gradient; its check is cached per source.
 function prepareSvgSource(markup, mediaState) {
   if (!markup) return {placeholder: "Paste SVG markup"};
-  const cached = mediaState.bySource.get(markup);
-  if (cached) return cached;
-  let result = {placeholder: "Invalid SVG"};
-  if (isBrandBar(markup)) {
-    result = {brandBar: true};
-  } else {
-    const element = svgElement(markup);
-    if (element) {
-      if (tagAttribute(element.rootTag, "xmlns") == null) {
-        element.rootTag = `<svg${SVG_NAMESPACE_DECLARATION}${element.rootTag.slice(4)}`;
-        element.source = `<svg${SVG_NAMESPACE_DECLARATION}${element.source.slice(4)}`;
-      }
-      result = {media: svgMedia(element, mediaState)};
-    }
+  let result = mediaState.bySource.get(markup);
+  if (!result) {
+    result = isBrandBar(markup) ? {brandBar: true} : {placeholder: "SVG not included"};
+    mediaState.bySource.set(markup, result);
   }
-  mediaState.bySource.set(markup, result);
   return result;
 }
 
-// The text of an XML document, decoded by its byte-order mark or XML declaration (XML 1.0,
-// appendix F) and otherwise as UTF-8; null when the encoding is unknown or the bytes are not
-// valid in it, which the browser's XML parser rejects too.
-function decodeXml(bytes) {
-  let label = "utf-8";
-  if ((bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0 && bytes[1] === 0x3c)) {
-    label = "utf-16be";
-  } else if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0)) {
-    label = "utf-16le";
-  } else if (!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
-    const declaration = /^<\?xml\s[^>]*\sencoding\s*=\s*["']([^"']+)["']/.exec(decoder.decode(bytes.subarray(0, 256)));
-    if (declaration) label = declaration[1];
-  }
-  try {
-    return new TextDecoder(label, {fatal: true}).decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-const IMAGE_DATA_URL = /^data:image\/(png|jpeg|svg\+xml);base64,([A-Za-z0-9+/]*={0,2})$/;
+const IMAGE_DATA_URL = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]*={0,2})$/;
 
 function prepareImageSource(value, label, limits, mediaState) {
   if (typeof value !== "string" || value === "") return {placeholder: "No image"};
@@ -923,6 +782,7 @@ function prepareImageData(value, label, limits, mediaState) {
   const match = IMAGE_DATA_URL.exec(value);
   if (!match) {
     boundedText(value, label, limits);
+    if (value.startsWith("data:image/svg+xml")) return {placeholder: "SVG not included"};
     return {placeholder: value.startsWith("data:") ? "Unsupported or malformed image" : "Remote image not included"};
   }
   const payload = match[2];
@@ -935,10 +795,6 @@ function prepareImageData(value, label, limits, mediaState) {
   }
   const decodedLength = decodedBase64Length(payload);
   if (decodedLength == null) return {placeholder: "Malformed image data"};
-  const svg = match[1] === "svg+xml";
-  if (svg && decodedLength > MAX_SVG_DECODED_BYTES) {
-    throw new Error(`${label} expands beyond the ${MAX_SVG_DECODED_BYTES}-byte SVG upload limit.`);
-  }
   if (decodedLength > MAX_MEDIA_DECODED_BYTES) {
     throw new Error(`${label} expands beyond the ${MAX_MEDIA_DECODED_BYTES}-byte decoded-image limit.`);
   }
@@ -948,12 +804,6 @@ function prepareImageData(value, label, limits, mediaState) {
   }
   const bytes = decodeBase64(payload, decodedLength);
   if (!bytes) return {placeholder: "Malformed image data"};
-  if (svg) {
-    // The image control passes uploaded SVG files through verbatim (client.js fileToImageDataURL);
-    // the file's element is embedded as UTF-8, whatever the file's own encoding.
-    const element = svgElement(decodeXml(bytes) ?? "");
-    return element ? {media: svgMedia(element, mediaState)} : {placeholder: "Malformed image data"};
-  }
   const mime = `image/${match[1]}`;
   const dimensions = mime === "image/png" ? pngDimensions(bytes) : jpegDimensions(bytes);
   if (!dimensions) return {placeholder: "Malformed image data"};
@@ -963,7 +813,7 @@ function prepareImageData(value, label, limits, mediaState) {
   if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
     throw new Error(`${label} is ${dimensions.width} x ${dimensions.height}; images may contain at most ${MAX_IMAGE_PIXELS} pixels.`);
   }
-  return {media: findOrAddMedia(bytes, {
+  return {media: addMedia(bytes, {
     extension: mime === "image/png" ? "png" : "jpeg", mime,
     aspect: dimensions.width / dimensions.height, pixels: dimensions.width * dimensions.height,
   }, mediaState)};
@@ -1097,7 +947,7 @@ function prepareDeck(deck) {
     totalText: 0, totalLineBreaks: 0, totalHighlightWork: 0, totalHighlightTransitions: 0,
     encodedBytes: 0, decodedBytes: 0,
   };
-  const mediaState = {media: [], bySource: new Map(), byChecksum: new Map(), totalPixels: 0};
+  const mediaState = {media: [], bySource: new Map(), totalPixels: 0};
   const validDeck = isRecord(deck) && Array.isArray(deck.slides) && deck.slides.length > 0;
   const sourceSlides = validDeck ? deck.slides : [{}];
   if (sourceSlides.length > MAX_SLIDES) {
@@ -1497,24 +1347,15 @@ function renderShape(state, block, name) {
   });
 }
 
-// Office 2016+ reads the SVG from the svgBlip extension; the blip itself is normally a raster
-// fallback for older consumers, which this exporter cannot rasterize, so it points at the SVG too.
-const SVG_BLIP_EXT_URI = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}";
-const SVG_BLIP_NS = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
-
-function pictureXml(state, name, box, media, relationshipId, alt, radius, crop) {
+function pictureXml(state, name, box, relationshipId, alt, radius, crop) {
   const id = nextShapeId(state);
   const sourceRectangle = crop
     ? `<a:srcRect l="${crop.left}" t="${crop.top}" r="${crop.right}" b="${crop.bottom}"/>`
     : "";
   const preset = radius > 0 ? "roundRect" : "rect";
-  const svgBlip = media.extension === "svg"
-    ? `<a:extLst><a:ext uri="${SVG_BLIP_EXT_URI}"><asvg:svgBlip xmlns:asvg="${SVG_BLIP_NS}" ` +
-      `r:embed="${relationshipId}"/></a:ext></a:extLst>`
-    : "";
   return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}" descr="${xmlAttribute(alt)}"/>` +
     '<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>' +
-    `<p:blipFill><a:blip r:embed="${relationshipId}" cstate="print">${svgBlip}</a:blip>${sourceRectangle}` +
+    `<p:blipFill><a:blip r:embed="${relationshipId}" cstate="print"/>${sourceRectangle}` +
     '<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>' + transformXml(box) +
     presetGeometry(preset, radius, box.width / PX_TO_EMU, box.height / PX_TO_EMU) +
     '<a:ln><a:noFill/></a:ln></p:spPr></p:pic>';
@@ -1577,7 +1418,7 @@ function* renderImage(state, block, name) {
   // The radius clips the block's box in the browser; a letterboxed picture is inset from the box's
   // corners, so only a picture that fills the box is rounded.
   const radius = box === target ? cssNumber(props.radius, 0, 0, 100000) : 0;
-  yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), media,
+  yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height),
     props.relationshipId, props.alt, radius, crop);
 }
 
@@ -1593,22 +1434,7 @@ function* renderSvg(state, block, name) {
     });
     return;
   }
-  const media = props.image.media;
-  if (!media) {
-    yield* renderPlaceholder(state, name, block, props.image.placeholder, props.background, 600, 337.5);
-    return;
-  }
-  const target = pixelBox(block, 600, 337.5);
-  if (props.background) {
-    yield shapeXml(state, `${name} background`,
-      boxFromPixels(target.x, target.y, target.width, target.height),
-      {fill: solidFill(parseColor(props.background))});
-  }
-  // The browser forces preserveAspectRatio from `fit`; consumers stretch the SVG viewport over the
-  // frame, so the same letterboxing is done by sizing the frame.
-  const box = props.fit === "stretch" || media.aspect == null ? target : containBox(target, media.aspect);
-  yield pictureXml(state, name, boxFromPixels(box.x, box.y, box.width, box.height), media,
-    props.relationshipId, undefined, 0, null);
+  yield* renderPlaceholder(state, name, block, props.image.placeholder, props.background, 600, 337.5);
 }
 
 function arrowColor(value) {
@@ -1815,7 +1641,7 @@ function viewProperties() {
     '<p:normalViewPr><p:restoredLeft sz="15620"/><p:restoredTop sz="94660"/></p:normalViewPr>' +
     `<p:slideViewPr><p:cSldViewPr><p:cViewPr varScale="1">${scale}</p:cViewPr><p:guideLst/></p:cSldViewPr></p:slideViewPr>` +
     `<p:notesTextViewPr><p:cViewPr>${scale}</p:cViewPr></p:notesTextViewPr>` +
-    '<p:gridSpacing cx="78028800" cy="78028800"/></p:viewPr>';
+    '<p:gridSpacing cx="76200" cy="76200"/></p:viewPr>';
 }
 
 function tableStyles() {

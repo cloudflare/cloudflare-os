@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { deckToPptx, measureText } from "./pptx.js";
+import { MAX_TOTAL_TEXT_LENGTH, deckToPptx, measureText } from "./pptx.js";
 
 /**
  * The Gadget stores a single "deck" document under the "deck" key:
@@ -551,15 +551,17 @@ export class ExportHandler extends WorkerEntrypoint {
  * renderer does not know -- into the generic blocks it does: a text block for the wordmark and an
  * ellipse for the accent dot, in the logo's z-order position, laid out as client.js draws it.
  * Pure: the deck is not modified, and every slide without a logo (or the whole deck) is returned
- * as is. Malformed decks pass through to deckToPptx()'s own validation.
+ * as is. Malformed decks pass through to deckToPptx()'s own validation, and the work done here
+ * ahead of it is bounded by its total-text limit.
  */
 export function normalizeDeckForPptx(deck) {
   if (!Array.isArray(deck?.slides)) return deck;
+  const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
   let changed = false;
   const slides = deck.slides.map(slide => {
     if (!Array.isArray(slide?.blocks) || !slide.blocks.some(isLogo)) return slide;
     changed = true;
-    return { ...slide, blocks: slide.blocks.flatMap(block => isLogo(block) ? logoBlocks(block) : block) };
+    return { ...slide, blocks: slide.blocks.flatMap(block => isLogo(block) ? logoBlocks(block, budget) : block) };
   });
   return changed ? { ...deck, slides } : deck;
 }
@@ -582,15 +584,19 @@ function logoScale(value) {
   return scale && Number.isFinite(scale) ? Math.max(0.01, Math.min(20, scale)) : 1;
 }
 
-function logoBlocks(block) {
+function logoBlocks(block, budget) {
   const props = block.props !== null && typeof block.props === "object" ? block.props : {};
   const scale = logoScale(props.scale);
   const x = Number(block.x);
   const y = Number(block.y);
   const fontSize = LOGO_FONT_PX * scale;
   const tracking = LOGO_TRACKING_EM * fontSize;
-  // A nowrap element: runs of spaces and line breaks collapse to one space.
   const raw = props.text == null ? "Workspace" : typeof props.text === "object" ? "" : String(props.text);
+  // Once the wordmarks alone exceed the renderer's total-text limit the deck is bound to be
+  // rejected, so the rest are handed over unmeasured for that error rather than measured first.
+  budget.remaining -= raw.length;
+  if (budget.remaining < 0) return [{ type: "text", x, y, props: { text: raw } }];
+  // A nowrap element: runs of spaces and line breaks collapse to one space.
   const text = raw.replace(/[\t\n\r ]+/g, " ").trim();
   const { width, ascent, lineHeight } = measureText(text, fontSize, 700, tracking);
   // At line-height 1 the browser trims half the natural leading above the line, raising the

@@ -412,6 +412,8 @@ describe("Workspace Slides PPTX package", () => {
     const presentationRels = partText(zip, "ppt/_rels/presentation.xml.rels");
     expect(presentationRels).toContain('Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"');
     expect(presentationRels).toContain('Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"');
+    // A usable grid: PowerPoint's default 1/12 inch, not the 85-inch spacing that broke snapping.
+    expect(partText(zip, "ppt/viewProps.xml")).toContain('<p:gridSpacing cx="76200" cy="76200"/>');
   });
 });
 
@@ -548,7 +550,8 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(shapeByName(xml, "Block 13 shape")).toContain('<a:gd name="adj" fmla="val 20000"/>');
     const arrow = shapeByName(xml, "Block 16 arrow");
     expect(arrow).toContain('<a:custDash><a:ds d="200000" sp="200000"/></a:custDash>');
-    expect(arrow).toContain('<a:tailEnd type="triangle" w="sm" len="sm"/>');
+    // The browser's marker is a 9x6 triangle in stroke widths; the largest preset comes closest.
+    expect(arrow).toContain('<a:tailEnd type="triangle" w="lg" len="lg"/>');
   });
 
   it("highlights terms in order across line breaks, as the browser's sequential wrapping does", async () => {
@@ -663,15 +666,16 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(relationships).not.toContain("TargetMode");
   });
 
-  it("uses visible native placeholders for unavailable images, empty or invalid SVG, and unknown blocks", async () => {
+  it("uses visible native placeholders for unavailable images, SVG, and unknown blocks", async () => {
     const zip = await readZip(deckToPptx(oneSlide([
       block("image", {}),
       block("image", {src: "https://example.com/image.png"}),
       block("image", {src: "data:image/png;base64,AAAA"}),
       block("image", {src: dataUrl("jpeg", jpegWithoutScan(2, 4))}),
       block("image", {src: "data:image/gif;base64,R0lGODlh"}),
+      block("image", {src: `data:image/svg+xml;base64,${base64(encoder.encode("<svg/>"))}`}),
       block("svg", {markup: "", background: "#fff4e6"}),
-      block("svg", {markup: "<div>not svg</div>"}),
+      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><rect/></svg>', background: "#123456"}),
       block("not-a-real-block", {}),
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
@@ -682,165 +686,67 @@ describe("Workspace Slides PPTX rendering", () => {
       "Malformed image data",
       "Unsupported or malformed image",
       "Paste SVG markup",
-      "Invalid SVG",
+      "SVG not included",
       "?: not-a-real-block",
     ]) expect(xml).toContain(placeholder);
     expect(occurrences(xml, "Malformed image data")).toBe(2);
+    // SVG is left out whether pasted or uploaded: consumers such as Google Slides show an svgBlip
+    // as an empty frame and there is no raster to fall back to. The block's background is kept.
+    expect(occurrences(xml, "SVG not included")).toBe(2);
+    expect(shapeByName(xml, "Block 8 svg")).toContain('<a:srgbClr val="123456">');
     expect(xml).not.toContain("<a:gradFill");
     expect(xml).not.toContain("<p:pic>");
+    expect(xml).not.toContain("svgBlip");
     expect(zip.names.some(name => name.startsWith("ppt/media/"))).toBe(false);
+    expect(partText(zip, "[Content_Types].xml")).not.toContain("svg");
     expect(partText(zip, "ppt/slides/_rels/slide1.xml.rels")).not.toContain("/image");
     for (const name of zip.names.filter(entryName => entryName.endsWith(".rels"))) {
       expect(partText(zip, name)).not.toContain("TargetMode");
     }
   });
 
-  it("embeds authored SVG as svgBlip pictures, letterboxed by its viewBox", async () => {
-    const chart = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">' +
-      '<script>alert(1)</script><text x="0" y="50">Q3 &amp; Q4</text></svg>';
+  it("rejects a JPEG that declares a second frame header", async () => {
+    const jpeg = jpegFixture(2, 4);
+    // SOI and APP0 are the first 20 bytes; a 9000x9000 SOF0 ahead of the real one could carry the
+    // dimensions a consumer trusts while the pixel limits were checked against the other.
+    const twoFrames = concat(jpeg.subarray(0, 20), new Uint8Array([
+      0xff, 0xc0, 0x00, 0x11, 0x08, 9_000 >>> 8, 9_000 & 0xff, 9_000 >>> 8, 9_000 & 0xff,
+      0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00,
+    ]), jpeg.subarray(20));
+    const zip = await readZip(deckToPptx(oneSlide([block("image", {src: dataUrl("jpeg", twoFrames)})])));
+    expect(partText(zip, "ppt/slides/slide1.xml")).toContain("Malformed image data");
+    expect(zip.names.some(name => name.startsWith("ppt/media/"))).toBe(false);
+  });
+
+  it("recognizes only the exact brand bar, in linear time, and consults the source cache first", async () => {
     // Brand-bar size and palette, but not its structure (an extra rect): the seed decks' plain
-    // bar is the only SVG replaced natively.
+    // bar is the only SVG drawn natively.
     const notBrandBar = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
       '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs>' +
       '<rect width="1200" height="12" fill="url(#g)"/><rect width="10" height="12" fill="#fff"/></svg>';
+    // Attribute-like text inside another attribute's value is not the viewBox.
+    const decoyBar = `<svg aria-label='viewBox="0 0 1200 12"' viewBox="0 0 1200 13"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>` +
+      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs><rect fill="url(#g)"/></svg>';
+    // Unquoted values run to the next whitespace or ">", as the HTML parser reads them.
+    const unquotedBar = '<svg viewBox=0,0,1200,12><defs><linearGradient id=g><stop stop-color=#ff6633 />' +
+      '<stop stop-color=#F6821F /><stop stop-color=#FBAD41 /></linearGradient></defs><rect fill=url(#g) /></svg>';
     const zip = await readZip(deckToPptx(oneSlide([
-      block("svg", {markup: chart, fit: "contain", background: "#fff4e6"}, {x: 0, y: 0, w: 400, h: 400}),
-      block("svg", {markup: chart, fit: "stretch"}, {x: 0, y: 0, w: 400, h: 400}),
-      block("svg", {markup: '<svg width="300" height="100px"><rect/></svg>'}, {x: 0, y: 0, w: 300, h: 300}),
-      block("svg", {markup: "<svg><rect/></svg>"}, {x: 0, y: 0, w: 300, h: 100}),
       block("svg", {markup: notBrandBar}, {x: 0, y: 663, w: 1200, h: 12}),
+      block("svg", {markup: decoyBar}, {x: 0, y: 663, w: 1200, h: 12}),
+      block("svg", {markup: unquotedBar}, {x: 0, y: 663, w: 1200, h: 12}),
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
+    expect(shapeByName(xml, "Block 1 svg")).toContain("SVG not included");
+    expect(shapeByName(xml, "Block 2 svg")).toContain("SVG not included");
+    expect(shapeByName(xml, "Block 3 svg")).toContain("<a:gradFill");
 
-    // As authored: the exporter neither validates nor rewrites the markup, except to declare the
-    // SVG namespace the browser's HTML parser implied on a root that lacks it.
-    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
-      "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
-    ]);
-    expect(partText(zip, "ppt/media/image1.svg")).toBe(chart);
-    expect(partText(zip, "ppt/media/image2.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100px"><rect/></svg>');
-    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
-    expect(partText(zip, "ppt/media/image4.svg")).toBe(notBrandBar);
-    expect(partText(zip, "[Content_Types].xml")).toContain('<Default Extension="svg" ContentType="image/svg+xml"/>');
-    expect(partText(zip, "ppt/slides/_rels/slide1.xml.rels")).toContain('Target="../media/image1.svg"');
-
-    const contain = shapeByName(xml, "Block 1 svg");
-    expect(contain).toContain('<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" r:embed="rId2"/>');
-    expect(contain).toContain('<a:blip r:embed="rId2" cstate="print">');
-    expect(contain).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${400 * 10160}" cy="${200 * 10160}"/>`);
-    expect(shapeByName(xml, "Block 1 svg background")).toContain('<a:srgbClr val="FFF4E6">');
-    expect(shapeByName(xml, "Block 2 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${400 * 10160}" cy="${400 * 10160}"/>`);
-    expect(shapeByName(xml, "Block 2 svg")).toContain('r:embed="rId2"');
-    // The browser overrides the root's width/height with 100%, so without a viewBox the drawing
-    // has no aspect ratio and fills its block.
-    expect(shapeByName(xml, "Block 3 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${300 * 10160}" cy="${300 * 10160}"/>`);
-    expect(shapeByName(xml, "Block 4 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
-    expect(shapeByName(xml, "Block 5 svg")).toContain("<p:blipFill>");
-    expect(xml).not.toContain("<a:gradFill");
-    expect(xml).not.toContain("SVG not included");
-  });
-
-  it("embeds the first <svg> element from wrapped markup and SVG files uploaded through the image control", async () => {
-    const inner = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 20"><rect width="10" height="20"/></svg>';
-    const uploaded = `data:image/svg+xml;base64,${base64(encoder.encode(inner))}`;
-    const nested = '<svg viewBox="0 0 4 4" data-x="a>b"><svg><rect/></svg><svg/></svg>';
-    const zip = await readZip(deckToPptx(oneSlide([
-      // A wrapper, a trailer and a sibling element: only the first <svg> is what the browser shows.
-      block("svg", {markup: `<div class="wrap">${inner}</div><p>trailer</p><svg><circle/></svg>`}, {x: 0, y: 0, w: 200, h: 200}),
-      block("svg", {markup: `${nested}<svg><text>sibling</text></svg>`}),
-      block("svg", {markup: '<svg width="8" height="4"/><svg><text>sibling</text></svg>'}),
-      block("svg", {markup: "<svg><rect/>"}),
-      block("image", {src: uploaded, fit: "contain", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
-      block("image", {src: uploaded, fit: "cover", radius: 50}, {x: 0, y: 0, w: 200, h: 200}),
-      block("image", {src: `data:image/svg+xml;base64,${base64(encoder.encode("<p>not svg</p>"))}`}),
-    ])));
-    const xml = partText(zip, "ppt/slides/slide1.xml");
-
-    // The wrapper markup is dropped, and the pasted and uploaded copies of the element share a part.
-    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
-      "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
-    ]);
-    const xmlns = ' xmlns="http://www.w3.org/2000/svg"';
-    expect(partText(zip, "ppt/media/image1.svg")).toBe(inner);
-    expect(partText(zip, "ppt/media/image2.svg")).toBe(`<svg${xmlns}${nested.slice(4)}`);
-    expect(partText(zip, "ppt/media/image3.svg")).toBe(`<svg${xmlns} width="8" height="4"/>`);
-    expect(partText(zip, "ppt/media/image4.svg")).toBe(`<svg${xmlns}><rect/>`);
-    expect(shapeByName(xml, "Block 1 svg")).toContain(`<a:off x="${50 * 10160}" y="0"/><a:ext cx="${100 * 10160}" cy="${200 * 10160}"/>`);
-    // A letterboxed picture never reaches the block's rounded corners, so only a filling one is rounded.
-    const contain = shapeByName(xml, "Block 5 image");
-    expect(contain).toContain(`<a:off x="${50 * 10160}" y="0"/>`);
-    expect(contain).toContain('<a:prstGeom prst="rect">');
-    const cover = shapeByName(xml, "Block 6 image");
-    expect(cover).toContain('<a:srcRect l="0" t="25000" r="0" b="25000"/>');
-    expect(cover).toContain('<a:prstGeom prst="roundRect">');
-    expect(xml).toContain("Malformed image data");
-  });
-
-  it("scans SVG markup as the HTML parser does: comments, CDATA, declarations and quoted values", async () => {
-    const zip = await readZip(deckToPptx(oneSlide([
-      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect/></svg><svg/>'}),
-      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg"><![CDATA[</svg><svg>]]><rect/></svg><svg/>'}),
-      block("svg", {markup: '<!-- <svg><a/></svg> --><?xml-stylesheet href="<svg>"?><!DOCTYPE svg [<!ENTITY x "<svg>">]>' +
-        '<div title="<svg>x</svg>"><svg xmlns="http://www.w3.org/2000/svg"><c/></svg></div>'}),
-      // A stray end tag is ignored; "<" before a non-letter is text; "svga" is another element.
-      block("svg", {markup: '</svg> a < b <svga/><svg xmlns="http://www.w3.org/2000/svg"><d/></svg>'}),
-      // Attribute-like text inside another attribute's value is not an attribute: this is square.
-      block("svg", {markup: `<svg xmlns="http://www.w3.org/2000/svg" aria-label='chart viewBox = "0 0 200 100"' viewBox="0 0 100 100"><e/></svg>`},
-        {x: 0, y: 0, w: 400, h: 400}),
-      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg" viewBox=0,0,300,100 data-viewBox="1 1 1 1"><f/></svg>'},
-        {x: 0, y: 0, w: 300, h: 300}),
-    ])));
-    const xml = partText(zip, "ppt/slides/slide1.xml");
-
-    expect(partText(zip, "ppt/media/image1.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect/></svg>');
-    expect(partText(zip, "ppt/media/image2.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><![CDATA[</svg><svg>]]><rect/></svg>');
-    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><c/></svg>');
-    expect(partText(zip, "ppt/media/image4.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><d/></svg>');
-    expect(shapeByName(xml, "Block 5 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${400 * 10160}" cy="${400 * 10160}"/>`);
-    expect(shapeByName(xml, "Block 6 svg")).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
-    expect(xml).not.toContain("Invalid SVG");
-  });
-
-  it("decodes uploaded SVG files by their declared encoding and bounds their size", async () => {
-    const element = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><text>café</text></svg>';
-    const utf16 = new Uint8Array(2 + element.length * 2);
-    utf16.set([0xff, 0xfe]);
-    for (let i = 0; i < element.length; ++i) {
-      utf16[2 + 2 * i] = element.charCodeAt(i) & 0xff;
-      utf16[3 + 2 * i] = element.charCodeAt(i) >>> 8;
-    }
-    const latin1 = Uint8Array.from(`<?xml version="1.0" encoding="ISO-8859-1"?>\n${element}`, char => char.charCodeAt(0));
-    const upload = (bytes: Uint8Array) => block("image", {src: `data:image/svg+xml;base64,${base64(bytes)}`}, {w: 200, h: 100});
-    const zip = await readZip(deckToPptx(oneSlide([
-      upload(utf16),
-      upload(latin1),
-      upload(encoder.encode(`\ufeff<?xml version="1.0"?>${element}\n`)),
-      upload(new Uint8Array([0xc3, 0x28, 0x3c, 0x73, 0x76, 0x67, 0x3e])), // invalid UTF-8 before "<svg>"
-    ])));
-    const xml = partText(zip, "ppt/slides/slide1.xml");
-
-    // All three spell the same element, so they share one UTF-8 part, letterboxed by its viewBox.
-    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual(["ppt/media/image1.svg"]);
-    expect(partText(zip, "ppt/media/image1.svg")).toBe(element);
-    for (const name of ["Block 1 image", "Block 2 image", "Block 3 image"]) {
-      expect(shapeByName(xml, name)).toContain(`<a:ext cx="${200 * 10160}" cy="${100 * 10160}"/>`);
-    }
-    expect(occurrences(xml, "Malformed image data")).toBe(1);
-
-    // An upload is text that is decoded, scanned and re-encoded, so it has a budget of its own.
-    const oversized = `data:image/svg+xml;base64,${"A".repeat(4 * Math.ceil((4 * 1024 * 1024 + 1) / 3))}`;
-    expect(() => deckToPptx(oneSlide([block("image", {src: oversized})])))
-      .toThrow("Slide 1, block 1 image expands beyond the 4194304-byte SVG upload limit.");
-  });
-
-  it("parses SVG dimensions in linear time and consults the source cache before scanning", () => {
     const hostile = `<svg viewBox="${"1".repeat(100_000)}"><rect/></svg>`;
     let started = performance.now();
     deckToPptx(oneSlide([block("svg", {markup: hostile})]));
     expect(performance.now() - started).toBeLessThan(500);
 
-    // Brand-bar recognition compares tags as they are found, so a near-miss the size of the text
-    // limit is rejected at its eighth tag rather than after collecting a quarter-million of them.
+    // Tags are compared as they are found, so a near-miss the size of the text limit is rejected
+    // at its eighth tag rather than after collecting a quarter-million of them.
     const almostBar = '<svg viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
       '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs><rect fill="url(#g)"/>' +
       "<g/>".repeat(249_000) + "</svg>";
@@ -1185,6 +1091,22 @@ describe("Workspace Slides logo normalization", () => {
       w: 6 * 0.62, h: 6 * 0.62,
       props: {kind: "ellipse", fill: "#F6821F"},
     });
+  });
+
+  it("stops measuring once the wordmarks alone exceed the renderer's text limit", () => {
+    // One aliased 1 MB logo repeated: measuring every copy would be work the renderer never
+    // accepts. Eight fill the 8 MB total-text limit; the ninth is handed over unmeasured, and the
+    // renderer rejects the deck on the total either way.
+    const huge = block("logo", {text: "x".repeat(1_000_000)});
+    const started = performance.now();
+    const normalized = normalizeDeckForPptx(oneSlide(Array.from({length: 1_000}, () => huge)));
+    expect(performance.now() - started).toBeLessThan(2_000);
+    const blocks = normalized.slides[0].blocks;
+    expect(blocks.length).toBe(8 * 2 + 992);
+    expect(blocks[15]).toMatchObject({type: "shape"});
+    expect(blocks[16]).toEqual({type: "text", x: 0, y: 0, props: {text: huge.props.text}});
+    expect(() => deckToPptx(normalizeDeckForPptx(oneSlide(Array.from({length: 9}, () => huge)))))
+      .toThrow("Deck text is too large for PowerPoint export (maximum 8000000 characters total)");
   });
 
   it("applies the component's defaults, variants and whitespace collapsing", () => {

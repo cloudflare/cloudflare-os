@@ -383,25 +383,17 @@ limit checks. Identical image data is stored once. `fill`, `contain`, and
 never fetched or emitted as external relationships; they receive a visible
 placeholder instead.
 
-SVG blocks are embedded as pictures through Office's `svgBlip` extension, which
-PowerPoint 2016 and later render natively. The first `<svg>` element of the pasted
-markup is copied as authored -- scanned as the browser's HTML parser reads it,
-past comments, CDATA sections and quoted attribute values -- and given an
-`xmlns` declaration if its root lacks one, since the HTML parser implies the SVG
-namespace but a standalone `image/svg+xml` part does not. SVG files uploaded
-through the image control are decoded by their BOM or XML declaration and
-embedded as UTF-8, with a 4 MiB budget of their own. Nothing else is validated
-or sanitized: scripts, external references, and other active content in a block
-reach the consumer (the browser's render-time cleanup applies only to HTML and
-PDF export). The exporter cannot rasterize, so there is no PNG fallback;
-consumers without SVG support (Google Slides import, macOS Quick Look, older
-PowerPoint) show an empty frame. `contain` letterboxes the frame by the SVG's
-`viewBox` aspect ratio (a root without one fills the block, as the browser
-overrides its `width`/`height` with 100%) and `stretch` fills the block. The
-known bottom brand-bar SVG is still replaced with a native gradient.
+SVG is not carried into PowerPoint. Office 2016+ could embed it through the
+`svgBlip` extension, but the consumers this export is round-tripped through
+(Google Slides import, macOS Quick Look, older PowerPoint) render that as an
+empty frame, and the exporter has no rasterizer to produce the PNG fallback such
+a picture needs. Pasted `svg` blocks and SVG files uploaded through the image
+control therefore become a visible "SVG not included" placeholder (keeping the
+block's background color), the same way remote images do. The known bottom
+brand-bar SVG is the one exception, drawn as a native gradient.
 
-The following are intentionally deferred: SVG validation and rasterized
-fallbacks, pixel-perfect browser layout, embedded fonts, remote images, native
-charts and tables, animations and transitions, speaker notes and comments, audio
-and video, hyperlinks, rounded-image clipping beyond a safe approximation, and
-PPTX import or edited-PPTX round trips.
+The following are intentionally deferred: SVG (rasterized fallbacks or native
+shape conversion), pixel-perfect browser layout, embedded fonts, remote images,
+native charts and tables, animations and transitions, speaker notes and
+comments, audio and video, hyperlinks, rounded-image clipping beyond a safe
+approximation, and PPTX import or edited-PPTX round trips.
