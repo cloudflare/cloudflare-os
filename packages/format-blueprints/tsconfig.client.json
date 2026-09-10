@@ -1,0 +1,46 @@
+// Type-checks the browser side of the bundled blueprints and of the libraries they import: each
+// `blueprints/<name>/files/client.ts` and `libraries/<name>/client.ts`, with the `lib/**` or `src/**`
+// modules it imports, under the DOM lib the gadget iframe provides. Run by the `build` task in
+// vite.config.ts.
+//
+// Only the entries are listed, and tsc follows their imports from there, the same way
+// `tsconfig.server.json` does for the server entries: a `lib/` or `src/` module is then checked
+// under the globals of the side that imports it, and a module both sides import under both. That
+// is the point of the split -- a client-only editor module may reach for `document` and a
+// server-only module for `DurableObjectStorage`, and listing all of `lib/` here would put the
+// latter under the DOM program that has no Workers types. Nothing is lost by not listing it: a
+// blueprint's `lib/` module no entry imports fails the build in the bundler, which has nothing to
+// compile it into, and a library's `src/` module no entry imports is checked by the tests program.
+//
+// This program declares no `types` at all, because a gadget module must not compile against Node
+// globals it will not have in the iframe (the tests are Node code and are checked by
+// `tsconfig.tests.json`).
+//
+// `files: []` alongside `include`: a blueprint set with no TypeScript is a valid state (every
+// blueprint may be plain JavaScript), and without it tsc reports "no inputs found" as an error.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Gadget modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive.
+    "allowImportingTsExtensions": true,
+    // Each entry is bundled alone, so an entry with no import or export must still be a module here
+    // rather than a global script sharing its declarations with another blueprint's.
+    "moduleDetection": "force",
+    // `gadgets:<name>/<side>` names a library in `libraries/`, which the build inlines into the
+    // bundle (see src/files.ts); tsc reads the same entry. A library's import of another
+    // (`gadgets:ui/client`) resolves the same way.
+    "paths": {
+      "gadgets:*/client": ["./libraries/*/client.ts"],
+      "gadgets:*/server": ["./libraries/*/server.ts"]
+    },
+    "types": [],
+    "noEmit": true
+  },
+  "files": [],
+  "include": ["blueprints/*/files/client.ts", "libraries/*/client.ts"]
+}

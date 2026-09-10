@@ -37,22 +37,24 @@ type WorkerInput =
 const BUILT = ["dist", "node_modules"];
 
 /**
+ * The blueprint set a deployment points the build at instead of the bundled one, when it does.
  * `FORMAT_BLUEPRINTS_DIR` may point outside the workspace, so this can be a `../` path. Resolved
- * exactly as `workshop-backend/scripts/build-format-blueprints.ts` resolves it. When it is unset
- * the default lands inside the `packages/workshop-backend` entry below, and the duplicate coverage
- * is harmless.
+ * exactly as `workshop-backend/scripts/build-format-blueprints.ts` resolves it: against that
+ * package's root. Unset, the build reads `packages/format-blueprints/blueprints`, which the entry
+ * for that package below already covers.
  *
  * Read here only to build the watch-mode lists; a cached `vp run` strips it, and the suite it runs
  * (`vitest run`) never consults these exports.
  */
-const formatBlueprintsDir = relative(
-  WORKSPACE_DIR,
-  resolve(
-    WORKSPACE_DIR,
-    "packages/workshop-backend",
-    process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints",
-  ),
-).replaceAll("\\", "/");
+const externalBlueprintsDir: WorkerInput[] = process.env.FORMAT_BLUEPRINTS_DIR
+  ? [{
+    kind: "dir",
+    path: relative(
+      WORKSPACE_DIR,
+      resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.FORMAT_BLUEPRINTS_DIR),
+    ).replaceAll("\\", "/"),
+  }]
+  : [];
 
 const WORKER_INPUTS: WorkerInput[] = [
   // Split in two so the one nested exclusion, `src/generated`, stays a direct child of its entry.
@@ -66,10 +68,10 @@ const WORKER_INPUTS: WorkerInput[] = [
   // output here like anywhere else, and it is the package's config -- not just its source -- that
   // decides what gets emitted.
   { kind: "dir", path: "packages/typed-storage", excludeDirs: BUILT },
-  { kind: "dir", path: formatBlueprintsDir },
-  // Inlined into the blueprints' archives by the blueprint build, so a library edit is a Worker
-  // change too.
-  { kind: "dir", path: "packages/gadget-libraries", excludeDirs: BUILT },
+  // The bundled blueprints, the libraries the blueprint build inlines into their archives, and the
+  // build itself: an edit to any of them changes the generated module the Worker ships.
+  { kind: "dir", path: "packages/format-blueprints", excludeDirs: BUILT },
+  ...externalBlueprintsDir,
   // The fixture gatekeeper the harness boots beside the Workshop. Split for the same reason the
   // backend is: `build:test-gatekeeper` validates this fixture into its own `.wrangler`, which is
   // a grandchild of `fixtures/` and so cannot be a direct-child exclusion there.

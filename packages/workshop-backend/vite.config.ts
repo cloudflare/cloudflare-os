@@ -19,6 +19,9 @@ export default {
        *
        * `cache: false` rather than `env: ['FORMAT_BLUEPRINTS_DIR']`: `env` fingerprints the value,
        * not the contents of the directory it names, so edits inside it would replay a stale module.
+       *
+       * The generator itself, and the blueprints it bundles by default, are `@gadgets/format-blueprints`;
+       * the script here is the command line around it, because the module it writes is this package's.
        */
       'build:format-blueprints': {
         command: 'node scripts/build-format-blueprints.ts',
@@ -59,29 +62,14 @@ export default {
         output: ['.wrangler/validate/**'],
       },
       /**
-       * The three `tsconfig.blueprints-*` configs type-check the TypeScript under
-       * `format-blueprints/<name>/`, so a type error in a bundled gadget fails the build the way
-       * one in `src/` does: each `client.ts` under the DOM lib, each `server.ts` under the Workers
-       * types, the blueprints' own tests under Node's, and every `lib/` module under whichever of
-       * those imports it. Each is its own command so each reports on its own; the reason there are
-       * three rather than one is that the three sets of globals must not see each other, and is
-       * written out in the configs.
-       *
-       * The server config is its own program rather than this package's plus the blueprint servers,
-       * and the bare `tsc` (this package's `src/`) runs beside it: the generated Workers types would
-       * hand a gadget's Durable Object the backend's bindings, which it never receives at runtime.
-       * The config says why.
-       *
-       * `build:format-blueprints` has already bundled the same sources by the time these run, so a
-       * module esbuild cannot resolve fails there first.
+       * Two programs: this package's `src/` under its generated Workers types, and `browser/` under
+       * the DOM lib. The bundled blueprints' TypeScript is type-checked by `@gadgets/format-blueprints`'s
+       * own `build`, not here -- a gadget's Durable Object must not see this Worker's bindings.
        */
       build: {
         command: [
           'tsc',
           'tsc --project tsconfig.browser.json',
-          'tsc --project tsconfig.blueprints-server.json',
-          'tsc --project tsconfig.blueprints-client.json',
-          'tsc --project tsconfig.blueprints-tests.json',
         ],
         dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
         cache: false,
@@ -92,15 +80,12 @@ export default {
        * fleets), and vitest prints only as files complete, so a healthy run's silences stretch past
        * the default once the machine is contended. The wall-clock backstop still bounds a real hang.
        *
-       * The integration config is one file and keeps the default, as does the blueprints config:
-       * its two Node projects (the blueprints' own lib tests and the bundling tests of
-       * `scripts/format-blueprint-files.ts`) are small and import nothing heavy.
+       * The integration config is one file and keeps the default.
        */
       test: {
         ...vitestTask([
           { command: 'vitest run', idleSeconds: 120 },
           'vitest run --config vitest.integration.config.ts',
-          'vitest run --config vitest.blueprints.config.ts',
         ]),
         dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
       },

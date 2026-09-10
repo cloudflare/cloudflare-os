@@ -1,0 +1,49 @@
+// Type-checks the tests of a server side: `server.test.ts` and `<topic>.server.test.ts` under a
+// blueprint's or a library's `__tests__/`, and with them the `server.ts` and `lib/**` or `src/**`
+// modules they import. Run by the `build` task in vite.config.ts.
+//
+// Separate from `tsconfig.tests.json` because of what such a test imports: a gadget's Durable
+// Object, whose `cloudflare:workers` import and `DurableObjectState` need the Workers types, and
+// which must be judged under those types rather than the DOM lib's -- lib.dom types `Crypto` and
+// `CompressionStream` differently from workerd, and a server module has no business compiling
+// against `document` anyway. So this program has the server program's types plus Node's, and no
+// DOM, and `tsconfig.tests.json` excludes the same files. The name is the switch: a test of a
+// server side says so in its filename, and gets these globals.
+//
+// The Workers types come from `@cloudflare/workers-types/experimental`, as `tsconfig.server.json`
+// gets them, and for the same reason: a gadget's Durable Object never sees the Workshop backend's
+// bindings. At run time the tests get `cloudflare:workers` as a stub of its base classes (see
+// vitest.config.ts); the types here are the real ones.
+//
+// `files: []` alongside `include`: a blueprint set with no server tests is a valid state, and
+// without it tsc reports "no inputs found" as an error.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Gadget modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive; a test imports them the same way.
+    "allowImportingTsExtensions": true,
+    // Each entry is bundled alone, so an entry with no import or export must still be a module here
+    // rather than a global script sharing its declarations with another blueprint's.
+    "moduleDetection": "force",
+    // `gadgets:<name>/<side>` names a library in `libraries/`, which the build inlines into the
+    // bundle (see src/files.ts); a test that imports a module reaching one reads the same entry.
+    "paths": {
+      "gadgets:*/client": ["./libraries/*/client.ts"],
+      "gadgets:*/server": ["./libraries/*/server.ts"]
+    },
+    "types": ["node", "@cloudflare/workers-types/experimental"],
+    "noEmit": true
+  },
+  "files": [],
+  "include": [
+    "blueprints/*/__tests__/**/server.test.ts",
+    "blueprints/*/__tests__/**/*.server.test.ts",
+    "libraries/*/__tests__/**/server.test.ts",
+    "libraries/*/__tests__/**/*.server.test.ts"
+  ]
+}

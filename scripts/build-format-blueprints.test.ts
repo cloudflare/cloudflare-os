@@ -7,7 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   buildContent,
   serializeArchive,
-} from "../packages/workshop-backend/scripts/format-blueprint-files.ts";
+} from "../packages/format-blueprints/src/files.ts";
 
 const temporaryDirectories: string[] = [];
 const workspaceRoot = join(import.meta.dirname, "..");
