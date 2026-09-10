@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { type Harness, startHarness } from "../src/harness.js";
 import { mockChatCompletion } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
+import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
 
 let harness: Harness | undefined;
 const network = new NetworkInterceptor({ handlers: [mockChatCompletion("Test chat")] });
@@ -33,8 +33,9 @@ function username(): string {
 }
 
 it.concurrent("lists workspace metadata after activity and removes it after deletion", async () => {
+  const owner = username();
   using publicApi = connect(requireHarness().url);
-  using authenticated = await signUp(publicApi, username());
+  using authenticated = await signUp(publicApi, owner);
   using workspace = await authenticated.newGadget();
   const { id } = await workspace.getMetadata();
   expect(await authenticated.listGadgets()).not.toContainEqual(expect.objectContaining({ id }));
@@ -55,8 +56,16 @@ it.concurrent("lists workspace metadata after activity and removes it after dele
 
   await workspace.deleteSelf();
   workspace[Symbol.dispose]();
+  // Deleting schedules the workspace DO's abort about 100ms out (Overseer.scheduleAccessRestart),
+  // and an abort severs every session that still has the workspace open: the session's
+  // `notifyClosed` stub is dropped uncalled, which AuthenticatedApiImpl reads as a lost DO and
+  // answers by closing the WebSocket. The dispose above usually reaches the DO first, but not
+  // always, so nothing below may depend on `authenticated` surviving. A browser would reconnect
+  // and log in again; so does this.
+  using reconnected = connect(requireHarness().url);
+  using relisted = await logIn(reconnected, owner);
   await waitFor("the deleted workspace to disappear from the user's list", async () =>
-    (await authenticated.listGadgets()).some(entry => entry.id === id) ? null : true);
+    (await relisted.listGadgets()).some(entry => entry.id === id) ? null : true);
 });
 
 it.concurrent("persists an ordered human-only chat without starting an agent", async () => {
