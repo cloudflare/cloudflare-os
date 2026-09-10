@@ -1,0 +1,23 @@
+docs/connect-handoff.md
+  s_27cfb07ae86a96::t_bd7ac183969365 64-67
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_27cfb07ae86a96::t_69eccd692af00d 6,106-115
+packages/workshop-frontend/src/connectHandoff.ts
+  s_27cfb07ae86a96::t_56636120a53fc5 89-93,95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0dd4862993f50de65520718ee481744bc19756e0",
+  "prompts": {},
+  "sessions": {
+    "s_27cfb07ae86a96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "720b12c0-4146-4ad8-8160-b571efa6f789",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
