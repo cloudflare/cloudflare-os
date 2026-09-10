@@ -408,6 +408,57 @@ describe("bundled blueprint TypeScript sources", () => {
     expect(files.get("client.js")).not.toMatch(/\bimport\s*\(/u);
   });
 
+  // esbuild expands a dynamic import of a template literal into a glob helper over every file the
+  // pattern matches: no `import()` in the output, an external metafile edge whose path is the
+  // wildcard, and the matched files inlined as inputs no edge points at -- including files outside
+  // the blueprint, which the pattern is free to reach.
+  it("rejects a dynamic import of a template literal", async () => {
+    let inside = await sourceTree({
+      "client.ts": "export const load = (name: string) => import(`./lib/${name}.js`);",
+      "lib/a.js": "export const a = 1;",
+    });
+    await expect(readSourceFiles(inside, "example/files")).rejects
+      .toThrow("example/files: client.ts imports ./lib/**/*.js: a dynamic import of a template " +
+          "literal, which the bundler expands to every file the pattern matches and cannot check");
+
+    let outside = await sourceTree({
+      "files/client.ts": "export const load = (name: string) => import(`../outside/${name}.js`);",
+      "outside/x.js": "export const x = 1;",
+    });
+    await expect(readSourceFiles(join(outside, "files"), "example/files")).rejects
+      .toThrow("client.ts imports ../outside/**/*.js: a dynamic import of a template literal");
+  });
+
+  // A TypeScript lib module is compiled into the entries and not stored, so a module the archive
+  // ships as written -- an un-migrated entry, or a lib/*.js -- would import a file the archive does
+  // not contain, and the gadget would fail to load with nothing to show for it at build time.
+  it("rejects a shipped JavaScript module that imports a TypeScript lib module", async () => {
+    let direct = await sourceTree({
+      "client.ts": 'import { shared } from "./lib/shared.js";\ndocument.title = shared();',
+      "server.js": [
+        'import { shared } from "./lib/shared.js";',
+        "export class Gadget { hi() { return shared(); } }",
+      ].join("\n"),
+      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
+    });
+    await expect(readSourceFiles(direct, "example/files")).rejects
+      .toThrow("example/files: server.js imports ./lib/shared.js, which names lib/shared.ts; " +
+          "server.js ships as written, and a TypeScript lib module is compiled into the entries " +
+          "that import it and not shipped");
+
+    let chained = await sourceTree({
+      "client.ts": 'import { shared } from "./lib/shared.ts";\ndocument.title = shared();',
+      "server.js": [
+        'import { hi } from "./lib/helpers.js";',
+        "export class Gadget { hi() { return hi(); } }",
+      ].join("\n"),
+      "lib/helpers.js": 'import { shared } from "./shared.js"; export const hi = () => shared();',
+      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
+    });
+    await expect(readSourceFiles(chained, "example/files")).rejects
+      .toThrow("lib/helpers.js imports ./shared.js, which names lib/shared.ts");
+  });
+
   // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
   // throws when called, without a warning, and for a computed path without a metafile import
   // either.

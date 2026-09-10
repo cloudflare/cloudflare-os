@@ -291,7 +291,9 @@ const SPECIFIER_PATTERN = new RegExp(
  * static import and leaves a computed one in the output as written, where it would resolve inside
  * the sandbox against nothing the bundle checked. Comments cannot trip this: esbuild drops ordinary
  * ones from the output, and a template literal with no substitutions is folded to a string before
- * it is written.
+ * it is written. A template literal with substitutions never reaches the output as an `import()`
+ * at all: esbuild expands it into a glob helper over every file the pattern matches, and that is
+ * rejected from the metafile instead (see {@link auditInputs}).
  */
 const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
 
@@ -348,9 +350,12 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * from the archive; an input the bundle inlined that is neither one of the blueprint's own files
  * nor a library reached by its package subpath, from the right side, which would inline code the
  * blueprint does not own (see {@link auditInputs}); a dynamic `import()` of a computed path, which
- * the bundler cannot check (see {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}); and a reference to
+ * the bundler cannot check (see {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}), or of a template literal,
+ * which it expands into every file the pattern matches (see {@link auditInputs}); a reference to
  * `require` the bundler could not resolve away, which would throw when reached (see
- * {@link RESIDUAL_REQUIRE_PATTERN}).
+ * {@link RESIDUAL_REQUIRE_PATTERN}); and a JavaScript module the archive ships as written that
+ * imports a `lib/` module written in TypeScript, which is compiled into the entries and not
+ * shipped, so the import would find nothing at runtime (see {@link importsDroppedModule}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -393,6 +398,15 @@ async function bundleTypeScriptSources(
     const [orphan] = libSources;
     if (orphan) invalid(label, `${orphan} has no client.ts or server.ts to bundle it`);
     return output;
+  }
+  for (const [path, source] of output) {
+    if (!MODULE_PATTERN.test(path)) continue;
+    const dropped = importsDroppedModule(path, source, libSources);
+    if (dropped) {
+      invalid(label, `${path} imports ${dropped.specifier}, which names ${dropped.module}; ` +
+          `${path} ships as written, and a TypeScript lib module is compiled into the entries ` +
+          `that import it and not shipped`);
+    }
   }
 
   // Loaded on demand: esbuild drives a native binary, and the JavaScript-only path through here
@@ -490,6 +504,14 @@ async function bundleTypeScriptSources(
  * bundle's surviving imports are checked against the entry's runtime in
  * {@link bundleTypeScriptSources}.
  *
+ * One kind of edge is external without being an import the runtime will see: a dynamic `import()`
+ * of a template literal with substitutions, which esbuild expands into a glob -- every `.js` under
+ * `lib/`, for `` import(`./lib/${name}.js`) `` -- and records as an external edge with the wildcard
+ * path, while the files it matched -- anywhere the pattern reaches, including outside files/ --
+ * become inputs no edge points at, and the output calls a glob helper rather than `import()`. The
+ * walk rejects the wildcard edge, and then requires that it met every input the metafile lists, so
+ * a bundle that inlines something no import brought in is refused whatever produced it.
+ *
  * Types are erased before esbuild builds this graph, so an `import type` of the wrong side is not
  * seen here and not an error: nothing of it reaches the bundle.
  */
@@ -508,7 +530,14 @@ function auditInputs(
   for (let importer = queue.pop(); importer !== undefined; importer = queue.pop()) {
     if (files.has(importer)) own.add(importer);
     for (const imported of metafile.inputs[importer]?.imports ?? []) {
-      if (imported.external) continue;
+      if (imported.external) {
+        if (imported.path.includes("*")) {
+          invalid(label, `${importer} imports ${imported.path}: a dynamic import of a template ` +
+              `literal, which the bundler expands to every file the pattern matches and cannot ` +
+              `check`);
+        }
+        continue;
+      }
       const input = imported.path;
       const specifier = imported.original ?? input;
       if (!files.has(input)) {
@@ -545,12 +574,42 @@ function auditInputs(
       }
     }
   }
+  for (const input of Object.keys(metafile.inputs)) {
+    if (!seen.has(input)) {
+      invalid(label, `${entryPath} inlined ${input}, which no import the audit followed reaches`);
+    }
+  }
   return own;
 }
 
 /** Whether `specifier` is one of the `external` modules of an entry point. */
 function matchesExternal(specifier: string, externals: readonly string[]): boolean {
   return externals.includes(specifier);
+}
+
+/**
+ * The first import in `source`, a module the archive ships as written, that names one of the
+ * `dropped` TypeScript `lib/` modules -- which are compiled into the entries and not stored, so
+ * the shipped module would import a file the archive does not contain.
+ *
+ * A direct edge is enough: a chain through another shipped module is caught when that module is
+ * scanned in turn. The same scan as {@link importedModules}, so it can over-estimate, and here that
+ * direction rejects a valid blueprint -- a specifier-shaped string in a comment that happens to
+ * spell a dropped module's path. The error names the importer and the specifier, and a shipped
+ * JavaScript module has no reason to mention a `lib/*.ts` path at all.
+ */
+function importsDroppedModule(
+  path: string,
+  source: string,
+  dropped: ReadonlySet<string>,
+): {specifier: string; module: string} | undefined {
+  for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
+    const specifier = doubleQuoted ?? singleQuoted!;
+    if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+    const module = resolveWithinFiles(path, specifier).find(candidate => dropped.has(candidate));
+    if (module) return {specifier, module};
+  }
+  return undefined;
 }
 
 /**
