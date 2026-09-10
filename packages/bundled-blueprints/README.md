@@ -63,11 +63,12 @@ carries its CSS in the module that injects it). A file a bundle inlined is still
 only TypeScript is build input: one side of a blueprint may be `.ts` while the other is still plain
 `.js`, and the un-migrated side keeps importing the `lib/*.js` module it always did.
 
-`cloudflare:*` is the only import left for the runtime to resolve, and only on the server: the
-client is loaded as an ES module in a sandboxed iframe with nothing to resolve a bare import
-against, and the server as a Durable Object whose module map holds the gadget's own files.
-Everything else a blueprint imports must be a file it owns or a library, so `import "yjs"` is a
-build error rather than a module that goes missing inside the sandbox.
+`cloudflare:workers` is the only import left for the runtime to resolve, and only on the server:
+the client is loaded as an ES module in a sandboxed iframe with nothing to resolve a bare import
+against, and the server as a Durable Object whose module map holds the gadget's own files and whose
+loader supplies no other `cloudflare:` module. Everything else a blueprint imports must be a file it
+owns or a library, so `import "yjs"` is a build error rather than a module that goes missing inside
+the sandbox.
 
 The build rejects a tree that would otherwise ship something other than what was written: an entry
 present as both `.ts` and `.js`, a `.ts` file outside the entry/`lib/` layout, TypeScript spelled
