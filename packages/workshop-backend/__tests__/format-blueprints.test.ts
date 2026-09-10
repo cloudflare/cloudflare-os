@@ -133,7 +133,7 @@ describe("bundled format blueprints", () => {
     let slides = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.slides")!;
     let sheets = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.spreadsheet")!;
 
-    expect(await readBlueprintFile(slides, "server.js")).toContain('import { deckToPptx } from "./pptx.js"');
+    expect(await readBlueprintFile(slides, "server.js")).toContain('import { deckToPptx, measureText } from "./pptx.js"');
     expect(await readBlueprintFile(slides, "pptx.js")).toContain('import { createZip, crc32 } from "./zip.js"');
     let zip = await readBlueprintFile(slides, "zip.js");
     expect(zip.length).toBeGreaterThan(0);

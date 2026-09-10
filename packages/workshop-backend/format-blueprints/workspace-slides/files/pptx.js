@@ -14,6 +14,7 @@ const PX_TO_EMU = 10160;
 const PX_TO_LINE_EMU = PX_TO_EMU;
 const PX_TO_POINT = PX_TO_EMU / 12700;
 const MAX_DRAWING_COORDINATE = 2147483647;
+const ARIAL_ASCENT = 0.905; // ascender 1854 / 2048 em
 const ARIAL_LINE_HEIGHT = 1.15; // (ascender 1854 + descender 434 + lineGap 67) / 2048 em
 // buSzPts is the bullet's font size, not the marker's size: Arial's U+25CF black circle inks a
 // 0.43em disc (CoreText glyph bbox at 1000upm: origin x 87, y 67, width 430, height 430). This is
@@ -40,6 +41,9 @@ const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_ENCODED_BYTES = 48 * 1024 * 1024;
 const MAX_MEDIA_DECODED_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_DECODED_BYTES = 32 * 1024 * 1024;
+// An uploaded SVG is text: it is decoded to a string, scanned and re-encoded, so while it is
+// prepared it is held several times over. Pasted markup is bounded as text (MAX_TEXT_LENGTH).
+const MAX_SVG_DECODED_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 8192;
 const MAX_IMAGE_PIXELS = 16777216;
 const MAX_TOTAL_IMAGE_PIXELS = 67108864;
@@ -266,7 +270,8 @@ function lineXml(color, widthPixels = 0, dashed = false, shapeOpacity = 1, arrow
   if (!color || width === 0) return "<a:ln><a:noFill/></a:ln>";
   let xml = `<a:ln w="${width}" cap="rnd">${solidFill(color, shapeOpacity)}`;
   if (dashed) {
-    const dash = Math.round(6 / (width / PX_TO_LINE_EMU) * 100000);
+    // Bounded to the schema's integer maximum, which a hairline would otherwise exceed.
+    const dash = Math.min(MAX_DRAWING_COORDINATE, Math.round(6 / (width / PX_TO_LINE_EMU) * 100000));
     xml += `<a:custDash><a:ds d="${dash}" sp="${dash}"/></a:custDash>`;
   } else {
     xml += '<a:prstDash val="solid"/>';
@@ -306,7 +311,10 @@ function pointUpHexagonXml(state, name, box, inset, line) {
   const id = nextShapeId(state);
   const centerX = box.x + box.width / 2;
   const centerY = box.y + box.height / 2;
-  const unrotated = {x: centerX - box.height / 2, y: centerY - box.width / 2, width: box.height, height: box.width};
+  const unrotated = {
+    x: Math.round(centerX - box.height / 2), y: Math.round(centerY - box.width / 2),
+    width: box.height, height: box.width,
+  };
   const adjust = Math.round(inset * 100000);
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xmlAttribute(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>` +
     `<p:spPr>${transformXml(unrotated, ' rot="5400000"')}<a:prstGeom prst="hexagon"><a:avLst>` +
@@ -392,10 +400,12 @@ function parseHighlightTerms(value, label) {
   return [...terms];
 }
 
-// Marks every code unit covered by a literal, case-sensitive match of any term (the union of each
-// term's non-overlapping matches, spanning line breaks like the browser renderer). Bounds the
-// search work and the mark changes between adjacent non-newline characters -- each of which adds a
-// text run to the paragraph -- before any XML is produced.
+// Marks every code unit covered by a literal, case-sensitive match of a term, spanning line
+// breaks like the browser renderer. The browser wraps each term's matches, in order, in the markup
+// built so far, so a later term cannot match across an earlier highlight's edge (and one wholly
+// inside it changes nothing): a match counts only where nothing is marked yet. Bounds the search
+// work and the mark changes between adjacent non-newline characters -- each of which adds a text
+// run to the paragraph -- before any XML is produced.
 function highlightMarks(text, terms, label, limits) {
   const work = text.length * terms.length;
   if (work > MAX_HIGHLIGHT_WORK) {
@@ -408,7 +418,10 @@ function highlightMarks(text, terms, label, limits) {
   const marks = new Uint8Array(text.length);
   for (const term of terms) {
     for (let found = text.indexOf(term); found >= 0; found = text.indexOf(term, found + term.length)) {
-      marks.fill(1, found, found + term.length);
+      const end = found + term.length;
+      let marked = false;
+      for (let i = found; i < end && !marked; ++i) marked = marks[i] === 1;
+      if (!marked) marks.fill(1, found, end);
     }
   }
   let transitions = 0;
@@ -705,33 +718,59 @@ function findOrAddMedia(bytes, media, mediaState) {
   return entry;
 }
 
-// The value of `name="..."` in an element's opening tag, or null. A plain scan with no nested
-// quantifiers: the tag is authored text and can be long, so parsing must stay linear.
-function svgAttribute(rootTag, name) {
-  const match = new RegExp(String.raw`\s${name}\s*=\s*(?:"([^"]*)"|'([^']*)')`).exec(rootTag);
-  return match ? (match[1] ?? match[2]) : null;
+function isXmlSpace(code) {
+  return code === 32 || code === 9 || code === 10 || code === 13 || code === 12;
 }
 
-function svgLength(value) {
-  if (value == null) return null;
-  const number = Number(value.trim().replace(/px$/, ""));
-  return Number.isFinite(number) && number > 0 ? number : null;
+function isAsciiLetter(code) {
+  return (code | 32) >= 97 && (code | 32) <= 122;
 }
 
-// The SVG's intrinsic aspect ratio, from its viewBox or else its width/height attributes, so
-// `fit: "contain"` can letterbox the frame the way the browser's preserveAspectRatio does.
-// Returns null when neither is usable; the frame is then filled.
-function svgAspect(rootTag) {
-  const viewBox = svgAttribute(rootTag, "viewBox");
-  if (viewBox != null) {
-    const parts = viewBox.trim().split(/[\s,]+/);
-    const width = parts.length === 4 ? svgLength(parts[2]) : null;
-    const height = parts.length === 4 ? svgLength(parts[3]) : null;
-    return width && height ? width / height : null;
+// The value of attribute `name` in the opening tag `tag`: "" when it is present without a value,
+// null when absent. One linear pass that steps over every value, quoted or not, so attribute-like
+// text inside another attribute's value is never read as an attribute.
+function tagAttribute(tag, name) {
+  let i = 1;
+  while (i < tag.length && !isXmlSpace(tag.charCodeAt(i)) && tag[i] !== "/" && tag[i] !== ">") ++i;
+  for (;;) {
+    while (i < tag.length && (isXmlSpace(tag.charCodeAt(i)) || tag[i] === "/")) ++i;
+    if (i >= tag.length || tag[i] === ">") return null;
+    const nameStart = i;
+    while (i < tag.length && !isXmlSpace(tag.charCodeAt(i)) && tag[i] !== "=" && tag[i] !== "/" && tag[i] !== ">") ++i;
+    const found = i - nameStart === name.length && tag.startsWith(name, nameStart);
+    while (i < tag.length && isXmlSpace(tag.charCodeAt(i))) ++i;
+    let value = "";
+    if (tag[i] === "=") {
+      ++i;
+      while (i < tag.length && isXmlSpace(tag.charCodeAt(i))) ++i;
+      const quote = tag[i];
+      let end;
+      if (quote === '"' || quote === "'") {
+        end = tag.indexOf(quote, i + 1);
+        if (end < 0) end = tag.length;
+        if (found) value = tag.slice(i + 1, end);
+        i = end + 1;
+      } else {
+        end = i;
+        while (end < tag.length && !isXmlSpace(tag.charCodeAt(end)) && tag[end] !== ">") ++end;
+        if (found) value = tag.slice(i, end);
+        i = end;
+      }
+    }
+    if (found) return value;
   }
-  const width = svgLength(svgAttribute(rootTag, "width"));
-  const height = svgLength(svgAttribute(rootTag, "height"));
-  return width && height ? width / height : null;
+}
+
+// The SVG's intrinsic aspect ratio from its viewBox, so `fit: "contain"` can letterbox the frame
+// the way the browser's preserveAspectRatio does. The browser overrides the root's width and
+// height with 100%, so a drawing without a viewBox has no aspect ratio and fills its frame: null.
+function svgAspect(rootTag) {
+  const viewBox = tagAttribute(rootTag, "viewBox");
+  if (viewBox == null) return null;
+  const parts = viewBox.trim().split(/[\s,]+/);
+  const width = Number(parts[2]);
+  const height = Number(parts[3]);
+  return parts.length === 4 && width > 0 && height > 0 && Number.isFinite(width / height) ? width / height : null;
 }
 
 // Index just past the `>` closing the tag that opens at `index`, skipping quoted attribute values;
@@ -751,33 +790,63 @@ function tagEnd(markup, index) {
   return -1;
 }
 
+// Whether the tag name starting at `index` is exactly `svg`: followed by a name terminator, not
+// by more name characters or the end of the markup (a tag cut off there is dropped by the parser).
+function svgNameAt(markup, index) {
+  if (!markup.startsWith("svg", index)) return false;
+  const next = markup.charCodeAt(index + 3);
+  return isXmlSpace(next) || next === 62 || next === 47;
+}
+
 // The first `<svg>` element within `markup` -- the one the browser renders (`querySelector`)
-// when the paste has wrapper markup or siblings around it -- or null when there is none. A
-// linear scan over svg open/close tags tracks nesting so a sibling element is not swept in; an
-// unterminated element runs to the end of the markup.
+// when the paste has wrapper markup or siblings around it -- or null when there is none. One
+// linear pass over the markup's tags tracks svg nesting so a sibling element is not swept in, and
+// steps over the constructs whose content cannot open or close an element: quoted attribute
+// values, comments, CDATA sections and other `<!`/`<?` declarations. An unterminated element runs
+// to the end of the markup.
 function svgElement(markup) {
-  const tags = /<svg(?=[\s>/])|<\/svg\s*>/g;
-  const first = tags.exec(markup);
-  if (!first || first[0] !== "<svg") return null;
-  const start = first.index;
+  let start = -1;
   let rootTag = null;
   let depth = 0;
-  for (let match = first; match; match = tags.exec(markup)) {
-    if (match[0] !== "<svg") {
-      if (--depth === 0) return {rootTag, source: markup.slice(start, match.index + match[0].length)};
-      continue;
-    }
-    const end = tagEnd(markup, match.index);
-    if (end < 0) break;
-    rootTag ??= markup.slice(match.index, end);
-    if (markup[end - 2] === "/") {
-      if (depth === 0) return {rootTag, source: markup.slice(start, end)};
+  for (let i = markup.indexOf("<"); i >= 0; i = markup.indexOf("<", i)) {
+    let end;
+    if (markup.startsWith("<!--", i)) {
+      end = markup.indexOf("-->", i + 4);
+      if (end >= 0) end += 3;
+    } else if (markup.startsWith("<![CDATA[", i)) {
+      end = markup.indexOf("]]>", i + 9);
+      if (end >= 0) end += 3;
+    } else if (markup[i + 1] === "!" || markup[i + 1] === "?") {
+      end = markup.indexOf(">", i + 2);
+      if (end >= 0) end += 1;
     } else {
-      ++depth;
+      const closing = markup[i + 1] === "/";
+      const nameStart = closing ? i + 2 : i + 1;
+      if (!isAsciiLetter(markup.charCodeAt(nameStart))) {
+        ++i; // a literal "<"
+        continue;
+      }
+      end = tagEnd(markup, i);
+      if (svgNameAt(markup, nameStart)) {
+        if (closing) {
+          if (start >= 0 && end >= 0 && --depth === 0) return {rootTag, source: markup.slice(start, end)};
+        } else {
+          if (start < 0) {
+            start = i;
+            rootTag = markup.slice(i, end < 0 ? markup.length : end);
+          }
+          if (end >= 0 && markup[end - 2] === "/") {
+            if (depth === 0) return {rootTag, source: markup.slice(start, end)};
+          } else if (end >= 0) {
+            ++depth;
+          }
+        }
+      }
     }
-    tags.lastIndex = end;
+    if (end < 0) break;
+    i = end;
   }
-  return {rootTag: rootTag ?? markup.slice(start), source: markup.slice(start)};
+  return start < 0 ? null : {rootTag, source: markup.slice(start)};
 }
 
 function svgMedia(element, mediaState) {
@@ -786,17 +855,53 @@ function svgMedia(element, mediaState) {
   }, mediaState);
 }
 
-// Embeds the markup as an SVG media part, byte for byte. The deck's SVG is trusted as authored:
-// nothing here validates or rewrites it, so scripts, external references and the like reach the
-// consumer, and the browser's render-time cleanup is the only line of defence there.
+const SVG_NAMESPACE_DECLARATION = ' xmlns="http://www.w3.org/2000/svg"';
+
+// Embeds pasted markup's first <svg> element as an SVG media part. The browser parses the paste as
+// HTML, which puts a bare <svg> in the SVG namespace; a standalone image/svg+xml part needs that
+// declaration spelled out, and a root without one gets it. Otherwise the element is copied as
+// authored: nothing here validates or rewrites it, so scripts, external references and the like
+// reach the consumer, and the browser's render-time cleanup is the only line of defence there.
+// The seed decks' brand bar is recognized here so its check shares the per-source cache.
 function prepareSvgSource(markup, mediaState) {
   if (!markup) return {placeholder: "Paste SVG markup"};
   const cached = mediaState.bySource.get(markup);
   if (cached) return cached;
-  const element = svgElement(markup);
-  const result = element ? {media: svgMedia(element, mediaState)} : {placeholder: "Invalid SVG"};
+  let result = {placeholder: "Invalid SVG"};
+  if (isBrandBar(markup)) {
+    result = {brandBar: true};
+  } else {
+    const element = svgElement(markup);
+    if (element) {
+      if (tagAttribute(element.rootTag, "xmlns") == null) {
+        element.rootTag = `<svg${SVG_NAMESPACE_DECLARATION}${element.rootTag.slice(4)}`;
+        element.source = `<svg${SVG_NAMESPACE_DECLARATION}${element.source.slice(4)}`;
+      }
+      result = {media: svgMedia(element, mediaState)};
+    }
+  }
   mediaState.bySource.set(markup, result);
   return result;
+}
+
+// The text of an XML document, decoded by its byte-order mark or XML declaration (XML 1.0,
+// appendix F) and otherwise as UTF-8; null when the encoding is unknown or the bytes are not
+// valid in it, which the browser's XML parser rejects too.
+function decodeXml(bytes) {
+  let label = "utf-8";
+  if ((bytes[0] === 0xfe && bytes[1] === 0xff) || (bytes[0] === 0 && bytes[1] === 0x3c)) {
+    label = "utf-16be";
+  } else if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0x3c && bytes[1] === 0)) {
+    label = "utf-16le";
+  } else if (!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)) {
+    const declaration = /^<\?xml\s[^>]*\sencoding\s*=\s*["']([^"']+)["']/.exec(decoder.decode(bytes.subarray(0, 256)));
+    if (declaration) label = declaration[1];
+  }
+  try {
+    return new TextDecoder(label, {fatal: true}).decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 const IMAGE_DATA_URL = /^data:image\/(png|jpeg|svg\+xml);base64,([A-Za-z0-9+/]*={0,2})$/;
@@ -830,6 +935,10 @@ function prepareImageData(value, label, limits, mediaState) {
   }
   const decodedLength = decodedBase64Length(payload);
   if (decodedLength == null) return {placeholder: "Malformed image data"};
+  const svg = match[1] === "svg+xml";
+  if (svg && decodedLength > MAX_SVG_DECODED_BYTES) {
+    throw new Error(`${label} expands beyond the ${MAX_SVG_DECODED_BYTES}-byte SVG upload limit.`);
+  }
   if (decodedLength > MAX_MEDIA_DECODED_BYTES) {
     throw new Error(`${label} expands beyond the ${MAX_MEDIA_DECODED_BYTES}-byte decoded-image limit.`);
   }
@@ -839,9 +948,10 @@ function prepareImageData(value, label, limits, mediaState) {
   }
   const bytes = decodeBase64(payload, decodedLength);
   if (!bytes) return {placeholder: "Malformed image data"};
-  if (match[1] === "svg+xml") {
-    // The image control passes uploaded SVG files through verbatim (client.js fileToImageDataURL).
-    const element = svgElement(decoder.decode(bytes));
+  if (svg) {
+    // The image control passes uploaded SVG files through verbatim (client.js fileToImageDataURL);
+    // the file's element is embedded as UTF-8, whatever the file's own encoding.
+    const element = svgElement(decodeXml(bytes) ?? "");
     return element ? {media: svgMedia(element, mediaState)} : {placeholder: "Malformed image data"};
   }
   const mime = `image/${match[1]}`;
@@ -872,12 +982,6 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
     case "sectionLabel":
       props.text = inlineText("text").toUpperCase();
       break;
-    case "logo":
-      props.text = propsSource.text == null ? "Workspace" : inlineText("text");
-      props.variant = text("variant");
-      props.scale = sourceScalar(propsSource.scale);
-      props.accentDot = propsSource.accentDot;
-      break;
     case "gadgetsMark":
       props.size = text("size");
       break;
@@ -900,13 +1004,14 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.color = text("color");
       props.align = text("align");
       props.lineHeight = sourceScalar(propsSource.lineHeight);
+      if (type === "text") props.letterSpacing = text("letterSpacing");
       break;
     case "bulletList":
       props.text = text("text");
       props.treatment = text("treatment");
       break;
     case "card":
-      props.eyebrow = inlineText("eyebrow");
+      props.eyebrow = inlineText("eyebrow").toUpperCase();
       props.title = inlineText("title");
       props.body = text("body");
       break;
@@ -937,14 +1042,11 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
       props.alt = text("alt");
       props.image = prepareImageSource(propsSource.src, `${label} image`, limits, mediaState);
       break;
-    case "svg": {
-      const markup = text("markup");
+    case "svg":
       props.fit = text("fit");
       props.background = text("background");
-      props.brandBar = isBrandBar(markup);
-      if (!props.brandBar) props.image = prepareSvgSource(markup, mediaState);
+      props.image = prepareSvgSource(text("markup"), mediaState);
       break;
-    }
     case "arrow":
       props.x1 = sourceScalar(propsSource.x1);
       props.y1 = sourceScalar(propsSource.y1);
@@ -971,21 +1073,23 @@ function prepareBlock(source, slideIndex, blockIndex, limits, mediaState) {
 // The seed decks' bottom bar (client.js BOTTOM_BAR_SVG and the seed slides' copies): a 1200x12
 // strip whose only content is one three-stop gradient in the brand colors, filling one rect. The
 // check is structural -- exactly these elements in this order with these stop colors -- so other
-// artwork sharing the size or palette is embedded as an SVG picture instead.
+// artwork sharing the size or palette is embedded as an SVG picture instead. Tags are compared as
+// they are found, so the scan stops at the first one that differs rather than collecting them all.
 const BRAND_BAR_ELEMENTS = ["svg", "defs", "linearGradient", "stop", "stop", "stop", "rect"];
 const BRAND_BAR_STOPS = ["#FF6633", "#F6821F", "#FBAD41"];
 
 function isBrandBar(markup) {
+  const tags = /<([A-Za-z][\w:-]*)([^>]*)>/g;
   const elements = [];
-  for (const match of markup.matchAll(/<([A-Za-z][\w:-]*)([^>]*)>/g)) elements.push(match);
-  if (elements.length !== BRAND_BAR_ELEMENTS.length ||
-      elements.some((element, index) => element[1] !== BRAND_BAR_ELEMENTS[index])) {
-    return false;
+  for (let match = tags.exec(markup); match; match = tags.exec(markup)) {
+    if (match[1] !== BRAND_BAR_ELEMENTS[elements.length]) return false;
+    elements.push(match[0]);
   }
-  if (svgAttribute(elements[0][0], "viewBox")?.trim().split(/[\s,]+/).join(" ") !== "0 0 1200 12") return false;
-  const stops = elements.slice(3, 6).map(stop => svgAttribute(stop[0], "stop-color")?.toUpperCase());
+  if (elements.length !== BRAND_BAR_ELEMENTS.length) return false;
+  if (tagAttribute(elements[0], "viewBox")?.trim().split(/[\s,]+/).join(" ") !== "0 0 1200 12") return false;
+  const stops = elements.slice(3, 6).map(stop => tagAttribute(stop, "stop-color")?.toUpperCase());
   if (stops.some((color, index) => color !== BRAND_BAR_STOPS[index])) return false;
-  return /^url\(#[^)]*\)$/.test(svgAttribute(elements[6][0], "fill") || "");
+  return /^url\(#[^)]*\)$/.test(tagAttribute(elements[6], "fill") || "");
 }
 
 function prepareDeck(deck) {
@@ -1124,6 +1228,19 @@ function naturalTextWidth(text, fontSize, weight, letterSpacing = 0) {
   return Math.max(fontSize * 0.5, textWidth(text, fontSize, weight, letterSpacing) * 1.02);
 }
 
+// Metrics of single-line `text` as the renderer sets it: Arial at `fontSize` CSS pixels, bold at
+// `weight` >= 600, with `letterSpacing` pixels between glyphs. `width` is the advance sum. A line
+// at the renderer's natural spacing -- a block whose `lineHeight` prop is `lineHeight / fontSize`
+// -- has its baseline `ascent` below its top. For adapters that lay out blocks around text, such
+// as a mark baseline-aligned to a wordmark, without a copy of the font tables.
+export function measureText(text, fontSize, weight = 400, letterSpacing = 0) {
+  return {
+    width: textWidth(String(text ?? ""), fontSize, weight, letterSpacing),
+    ascent: fontSize * ARIAL_ASCENT,
+    lineHeight: fontSize * ARIAL_LINE_HEIGHT,
+  };
+}
+
 function* coverArtworkXml(state) {
   const fullSlide = {x: 0, y: 0, width: SLIDE_WIDTH, height: SLIDE_HEIGHT};
   yield shapeXml(state, "Cover gradient", fullSlide, {
@@ -1144,48 +1261,6 @@ function* renderSectionLabel(state, block, name) {
     color: parseColor("#FF6633"), align: "left",
   };
   yield* textShapeXml(state, name, box, style, {text: props.text}, {wrap: false});
-}
-
-// The browser lays the wordmark out at line-height 1 and baseline-aligns the dot to it. Arial's
-// ascent is 0.905em and its natural line height 1.15em, so with a 1em line box the baseline sits
-// at 0.905 - 0.075 = 0.83em below the block's top. Consumers apply spcPct to the first line too, so
-// the text is emitted at natural spacing (baseline 0.905em below the box top) and the box is
-// raised by the difference to land the baseline where the browser's is.
-const LOGO_FONT_PX = 24;
-const LOGO_BASELINE_PX = LOGO_FONT_PX * (0.905 - (ARIAL_LINE_HEIGHT - 1) / 2);
-const LOGO_BOX_OFFSET_PX = LOGO_FONT_PX * 0.905 - LOGO_BASELINE_PX;
-
-function* renderLogo(state, block, name) {
-  const props = block.props;
-  const scale = cssNumber(props.scale, 1, 0.01, 20);
-  const text = props.text;
-  const fontSize = LOGO_FONT_PX * scale;
-  const letterSpacing = -0.02 * fontSize;
-  const x = positionPixels(block.x);
-  const y = positionPixels(block.y);
-  const textBox = boxFromPixels(x, y - LOGO_BOX_OFFSET_PX * scale,
-    naturalTextWidth(text, fontSize, 700, letterSpacing) + 8 * scale, fontSize * ARIAL_LINE_HEIGHT);
-  const color = props.variant === "dark" ? parseColor("#000000") : parseColor("#FFFFFF");
-  yield* textShapeXml(state, `${name} wordmark`, textBox, {
-    fontSize, weight: 700, letterSpacing: "-0.02em", lineHeight: ARIAL_LINE_HEIGHT,
-    color, align: "left",
-  }, {text}, {wrap: false});
-  if (props.accentDot !== false) {
-    // Chrome tracks after the last glyph too, so the browser's text box is the advance sum plus one
-    // more letter-spacing; the dot follows it after the 3px flex gap, its bottom 1px above the
-    // baseline.
-    const wordmarkWidth = text ? textWidth(text, fontSize, 700, letterSpacing) + letterSpacing : 0;
-    const dot = boxFromPixels(
-      x + wordmarkWidth + 3 * scale,
-      y + LOGO_BASELINE_PX * scale - 7 * scale,
-      6 * scale,
-      6 * scale,
-    );
-    yield shapeXml(state, `${name} accent dot`, dot, {
-      preset: "ellipse",
-      fill: solidFill(parseColor("#F6821F")),
-    });
-  }
 }
 
 // The browser draws the mark as a 68x74 point-up hexagon (stroke 10, round joins) inside an 86-unit
@@ -1262,11 +1337,15 @@ function* renderText(state, block, name) {
   const props = block.props;
   const fontSize = cssNumber(props.fontSize, 19, 1, 1000);
   const lineHeight = cssNumber(props.lineHeight, 1.6, 0.5, 4);
-  const width = autoWidth(block, maxContentWidth(props.text, fontSize, props.weight || 400));
-  const height = block.h == null ? estimateTextHeight(props.text, width, fontSize, lineHeight, props.weight || 400) : sizePixels(block.h, fontSize * lineHeight);
+  const weight = props.weight || 400;
+  const width = autoWidth(block, maxContentWidth(props.text, fontSize, weight, props.letterSpacing));
+  const height = block.h == null
+    ? estimateTextHeight(props.text, width, fontSize, lineHeight, weight, props.letterSpacing)
+    : sizePixels(block.h, fontSize * lineHeight);
   yield* textShapeXml(state, name, blockBox({...block, w: width, h: height}, width, height), {
     fontSize,
-    weight: props.weight || 400,
+    weight,
+    letterSpacing: props.letterSpacing,
     lineHeight,
     color: parseColor(props.color, "#000000"),
     align: ["left", "center", "right"].includes(props.align) ? props.align : "left",
@@ -1296,9 +1375,21 @@ function* renderBullets(state, block, name) {
   }, {items, spacingAfter: gap}, {autofit: block.h == null && "grow"});
 }
 
+// Without an authored size the browser's wrapper shrink-to-fits the padded column of eyebrow,
+// title and body: the widest line plus the padding, up to the slide's edge, and the stacked heights.
 function* renderCard(state, block, name) {
   const props = block.props;
-  const outer = pixelBox(block, 280, 260);
+  const outerWidth = autoWidth(block, 40 + Math.max(
+    props.eyebrow ? maxContentWidth(props.eyebrow, 10, 600, "0.05em") : 0,
+    props.title ? maxContentWidth(props.title, 18, 600, "-0.02em") : 0,
+    props.body ? maxContentWidth(props.body, 15, 400) : 0));
+  const width = Math.max(1, outerWidth - 40);
+  const eyebrowHeight = props.eyebrow ? estimateTextHeight(props.eyebrow, width, 10, 1.2, 600, "0.05em") : 0;
+  // An empty title is a zero-height element in the browser; only the flex gap remains.
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 18, 1.3, 600, "-0.02em") : 0;
+  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 15, 1.5, 400) : 0;
+  const contentHeight = (props.eyebrow ? eyebrowHeight + 12 : 0) + titleHeight + 12 + bodyHeight;
+  const outer = pixelBox(block, outerWidth, 40 + contentHeight);
   yield shapeXml(state, `${name} surface`, boxFromPixels(outer.x, outer.y, outer.width, outer.height), {
     preset: "roundRect",
     radius: 2,
@@ -1307,17 +1398,13 @@ function* renderCard(state, block, name) {
   });
   const x = outer.x + 20;
   let y = outer.y + 20;
-  const width = Math.max(1, outer.width - 40);
   if (props.eyebrow) {
-    const height = estimateTextHeight(props.eyebrow, width, 10, 1.2, 600, "0.05em");
-    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, height), {
+    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, eyebrowHeight), {
       fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1.2,
       color: parseColor("#FF6633"), align: "left",
-    }, {text: props.eyebrow.toUpperCase()}, {autofit: "shrink"});
-    y += height + 12;
+    }, {text: props.eyebrow}, {autofit: "shrink"});
+    y += eyebrowHeight + 12;
   }
-  // An empty title is a zero-height element in the browser; only the flex gap remains.
-  const titleHeight = props.title ? estimateTextHeight(props.title, width, 18, 1.3, 600, "-0.02em") : 0;
   if (props.title) {
     yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
       fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
@@ -1334,17 +1421,21 @@ function* renderCard(state, block, name) {
 
 function* renderBox(state, block, name) {
   const props = block.props;
-  const outer = pixelBox(block, 220, 110);
+  // As for the card: an unsized box shrink-to-fits its padded title and body.
+  const outerWidth = autoWidth(block, 28 + Math.max(
+    props.title ? maxContentWidth(props.title, 16, 600, "-0.02em") : 0,
+    props.body ? maxContentWidth(props.body, 14, 400) : 0));
+  const width = Math.max(1, outerWidth - 28);
+  const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em") : 0;
+  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
+  const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
+  const outer = pixelBox(block, outerWidth, 28 + contentHeight);
   yield shapeXml(state, `${name} surface`, boxFromPixels(outer.x, outer.y, outer.width, outer.height), {
     preset: "roundRect",
     radius: 2,
     fill: solidFill(parseColor("#FFFFFF")),
     line: lineXml(parseColor("#E5E5E5"), 1, Boolean(props.dashed)),
   });
-  const width = Math.max(1, outer.width - 28);
-  const titleHeight = props.title ? estimateTextHeight(props.title, width, 16, 1.3, 600, "-0.02em") : 0;
-  const bodyHeight = props.body ? estimateTextHeight(props.body, width, 14, 1.45, 400) : 0;
-  const contentHeight = titleHeight + (props.body ? 6 + bodyHeight : 0);
   // The padded flex column centres its content; an overfull stack overflows above and below alike.
   let y = outer.y + (outer.height - contentHeight) / 2;
   if (props.title) {
@@ -1492,7 +1583,7 @@ function* renderImage(state, block, name) {
 
 function* renderSvg(state, block, name) {
   const props = block.props;
-  if (props.brandBar) {
+  if (props.image.brandBar) {
     yield shapeXml(state, name, blockBox(block, 600, 337.5), {
       fill: gradientFill([
         {position: 0, color: "#FF6633"},
@@ -1578,7 +1669,6 @@ function* renderBlockXml(state, block, blockIndex) {
   const name = `Block ${blockIndex + 1} ${block.type}`;
   switch (block.type) {
     case "sectionLabel": yield* renderSectionLabel(state, block, name); break;
-    case "logo": yield* renderLogo(state, block, name); break;
     case "gadgetsMark": yield* renderGadgetsMark(state, block, name); break;
     case "title": yield* renderTitle(state, block, name); break;
     case "subtitle": yield* renderSubtitle(state, block, name); break;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExportHandler } from "../format-blueprints/workspace-slides/files/server.js";
+import { ExportHandler, normalizeDeckForPptx } from "../format-blueprints/workspace-slides/files/server.js";
 import { deckToPptx } from "../format-blueprints/workspace-slides/files/pptx.js";
 import { crc32 } from "../format-blueprints/workspace-slides/files/zip.js";
 
@@ -454,42 +454,28 @@ describe("Workspace Slides PPTX rendering", () => {
 
   it("keeps intrinsic labels on one line without changing authored positions", async () => {
     const zip = await readZip(deckToPptx(oneSlide([
-      block("logo", {text: "Workspace", variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
       block("sectionLabel", {text: "A LONG SECTION LABEL"}, {x: 36, y: 35}),
       block("text", {text: "x ".repeat(60), fontSize: 19, lineHeight: 1.6}, {x: 36, y: 204, w: 760}),
       block("text", {text: "Next block", fontSize: 19, lineHeight: 1.6}, {x: 36, y: 252, w: 760}),
+      block("tonePill", {text: "A LONG PILL LABEL"}, {x: 500, y: 35}),
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
-    const wordmark = shapeByName(xml, "Block 1 logo wordmark");
-    expect(wordmark).toContain('<a:bodyPr wrap="none"');
-    // "Workspace" in Arial Bold is 5.335em; at 24px * 0.62 the box must hold it (Google Slides
-    // ignores wrap="none" and breaks anything wider than its box onto a second line).
-    const wordmarkWidth = Number(/<a:ext cx="(\d+)"/.exec(wordmark)![1]);
-    expect(wordmarkWidth).toBeGreaterThanOrEqual(Math.round(5.335 * 24 * 0.62 * 10160));
-    // Natural line spacing, so the first-line baseline is Arial's 0.905em below the box top in
-    // every consumer; the box is raised so that baseline lands where the browser's line-height-1
-    // layout puts it (0.83em), and the dot's bottom sits 1px above it, like the browser's.
-    expect(wordmark).toContain('<a:spcPct val="100000"/>');
-    const fontPx = 24 * 0.62;
-    const baseline = 40 + fontPx * 0.83;
-    expect(wordmark).toContain(`<a:off x="${1013 * 10160}" y="${Math.round((baseline - fontPx * 0.905) * 10160)}"/>`);
-    const dot = shapeByName(xml, "Block 1 logo accent dot");
-    const dotY = Number(/<a:off x="\d+" y="(\d+)"/.exec(dot)![1]);
-    expect(dotY + 6 * 0.62 * 10160).toBeCloseTo((baseline - 0.62) * 10160, -2);
-    // Tracking after the last glyph as Chrome does, then the 3px flex gap.
-    const dotX = Number(/<a:off x="(\d+)"/.exec(dot)![1]);
-    expect(dotX).toBeCloseTo((1013 + (5.335 - 9 * 0.02) * fontPx + 3 * 0.62) * 10160, -2);
-    expect(shapeByName(xml, "Block 2 sectionLabel")).toContain('<a:bodyPr wrap="none"');
-    expect(shapeByName(xml, "Block 3 text")).toContain('<a:bodyPr wrap="square"');
-    expect(shapeByName(xml, "Block 3 text")).toContain('<a:off x="365760" y="2072640"/>');
-    expect(shapeByName(xml, "Block 4 text")).toContain('<a:off x="365760" y="2560320"/>');
+    const label = shapeByName(xml, "Block 1 sectionLabel");
+    expect(label).toContain('<a:bodyPr wrap="none"');
+    // Sized from Arial's advance widths, since Google Slides ignores wrap="none" and breaks anything
+    // wider than its box onto a second line: 20 tracked 10px semibold glyphs need about 121px.
+    expect(Number(/<a:ext cx="(\d+)"/.exec(label)![1])).toBeGreaterThanOrEqual(Math.round(115 * 10160));
+    expect(shapeByName(xml, "Block 2 text")).toContain('<a:bodyPr wrap="square"');
+    expect(shapeByName(xml, "Block 2 text")).toContain('<a:off x="365760" y="2072640"/>');
+    expect(shapeByName(xml, "Block 3 text")).toContain('<a:off x="365760" y="2560320"/>');
+    expect(shapeByName(xml, "Block 4 tonePill")).toContain('<a:bodyPr wrap="none"');
   });
 
   it("renders every block type and its typography, fills, strokes, dashes, and radius", async () => {
     const blocks = [
       block("sectionLabel", {text: "section"}),
-      block("logo", {text: "Workspace", variant: "dark"}),
+      block("text", {text: "Tracked", fontSize: 20, letterSpacing: "2px"}),
       block("gadgetsMark", {size: "small"}),
       block("title", {
         text: "HOT & cold HOT", highlight: "HOT", fontSize: 20,
@@ -514,7 +500,7 @@ describe("Workspace Slides PPTX rendering", () => {
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
     for (const name of [
-      "Block 1 sectionLabel", "Block 2 logo wordmark", "Block 3 gadgetsMark hexagon",
+      "Block 1 sectionLabel", "Block 2 text", "Block 3 gadgetsMark hexagon",
       "Block 4 title", "Block 5 subtitle", "Block 6 text", "Block 7 bulletList",
       "Block 8 card surface", "Block 9 box surface", "Block 10 tonePill",
       "Block 11 divider", "Block 12 shape", "Block 13 shape", "Block 14 image",
@@ -522,6 +508,7 @@ describe("Workspace Slides PPTX rendering", () => {
     ]) expect(xml, name).toContain(`name="${name}"`);
 
     expect(shapeByName(xml, "Block 1 sectionLabel")).toContain(">SECTION</a:t>");
+    expect(shapeByName(xml, "Block 2 text")).toContain('sz="1600" b="0" spc="160"');
     const title = shapeByName(xml, "Block 4 title");
     expect(occurrences(title, '<a:srgbClr val="FF5F2E">')).toBe(2);
     expect(title).toContain("HOT");
@@ -564,17 +551,22 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(arrow).toContain('<a:tailEnd type="triangle" w="sm" len="sm"/>');
   });
 
-  it("highlights terms across line breaks and coalesces overlapping matches into single runs", async () => {
-    const zip = await readZip(deckToPptx(oneSlide([
-      block("title", {text: "foo\nbar & baz", highlight: "foo\nbar, o\nb, ar &, , foo\nbar"}),
-    ])));
-    const title = shapeByName(partText(zip, "ppt/slides/slide1.xml"), "Block 1 title");
-    const runs = [...title.matchAll(/<a:br\/>|<a:r>([\s\S]*?)<\/a:r>/g)].map(match => {
-      if (match[0] === "<a:br/>") return "<br>";
-      const text = /<a:t xml:space="preserve">([\s\S]*?)<\/a:t>/.exec(match[1])![1];
-      return (match[1].includes('<a:srgbClr val="FF5F2E">') ? "*" : "") + text;
-    });
-    expect(runs).toEqual(["*foo", "<br>", "*bar &amp;", " baz"]);
+  it("highlights terms in order across line breaks, as the browser's sequential wrapping does", async () => {
+    const runs = async (text: string, highlight: string) => {
+      const zip = await readZip(deckToPptx(oneSlide([block("title", {text, highlight})])));
+      const title = shapeByName(partText(zip, "ppt/slides/slide1.xml"), "Block 1 title");
+      return [...title.matchAll(/<a:br\/>|<a:r>([\s\S]*?)<\/a:r>/g)].map(match => {
+        if (match[0] === "<a:br/>") return "<br>";
+        const run = /<a:t xml:space="preserve">([\s\S]*?)<\/a:t>/.exec(match[1])![1];
+        return (match[1].includes('<a:srgbClr val="FF5F2E">') ? "*" : "") + run;
+      });
+    };
+    // A match inside an earlier highlight changes nothing; one across its edge ("ar & b") is
+    // impossible once the browser has wrapped "bar" in a span.
+    expect(await runs("foo\nbar & baz", "foo\nbar, o\nb, baz, , ar & b"))
+      .toEqual(["*foo", "<br>", "*bar", " &amp; ", "*baz"]);
+    expect(await runs("foobar", "foo,foobar")).toEqual(["*foo", "bar"]);
+    expect(await runs("foobar", "foobar,foo")).toEqual(["*foobar"]);
   });
 
   it("normalizes and escapes text and attributes without losing whitespace or line breaks", async () => {
@@ -703,12 +695,12 @@ describe("Workspace Slides PPTX rendering", () => {
     }
   });
 
-  it("embeds authored SVG verbatim as svgBlip pictures, letterboxed by its viewBox", async () => {
+  it("embeds authored SVG as svgBlip pictures, letterboxed by its viewBox", async () => {
     const chart = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">' +
       '<script>alert(1)</script><text x="0" y="50">Q3 &amp; Q4</text></svg>';
     // Brand-bar size and palette, but not its structure (an extra rect): the seed decks' plain
     // bar is the only SVG replaced natively.
-    const notBrandBar = '<svg viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
+    const notBrandBar = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
       '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs>' +
       '<rect width="1200" height="12" fill="url(#g)"/><rect width="10" height="12" fill="#fff"/></svg>';
     const zip = await readZip(deckToPptx(oneSlide([
@@ -720,11 +712,15 @@ describe("Workspace Slides PPTX rendering", () => {
     ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
-    // Byte-for-byte: the exporter neither validates nor rewrites the markup.
+    // As authored: the exporter neither validates nor rewrites the markup, except to declare the
+    // SVG namespace the browser's HTML parser implied on a root that lacks it.
     expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
       "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
     ]);
     expect(partText(zip, "ppt/media/image1.svg")).toBe(chart);
+    expect(partText(zip, "ppt/media/image2.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100px"><rect/></svg>');
+    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+    expect(partText(zip, "ppt/media/image4.svg")).toBe(notBrandBar);
     expect(partText(zip, "[Content_Types].xml")).toContain('<Default Extension="svg" ContentType="image/svg+xml"/>');
     expect(partText(zip, "ppt/slides/_rels/slide1.xml.rels")).toContain('Target="../media/image1.svg"');
 
@@ -735,7 +731,9 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(shapeByName(xml, "Block 1 svg background")).toContain('<a:srgbClr val="FFF4E6">');
     expect(shapeByName(xml, "Block 2 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${400 * 10160}" cy="${400 * 10160}"/>`);
     expect(shapeByName(xml, "Block 2 svg")).toContain('r:embed="rId2"');
-    expect(shapeByName(xml, "Block 3 svg")).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
+    // The browser overrides the root's width/height with 100%, so without a viewBox the drawing
+    // has no aspect ratio and fills its block.
+    expect(shapeByName(xml, "Block 3 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${300 * 10160}" cy="${300 * 10160}"/>`);
     expect(shapeByName(xml, "Block 4 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
     expect(shapeByName(xml, "Block 5 svg")).toContain("<p:blipFill>");
     expect(xml).not.toContain("<a:gradFill");
@@ -743,7 +741,7 @@ describe("Workspace Slides PPTX rendering", () => {
   });
 
   it("embeds the first <svg> element from wrapped markup and SVG files uploaded through the image control", async () => {
-    const inner = '<svg viewBox="0 0 10 20"><rect width="10" height="20"/></svg>';
+    const inner = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 20"><rect width="10" height="20"/></svg>';
     const uploaded = `data:image/svg+xml;base64,${base64(encoder.encode(inner))}`;
     const nested = '<svg viewBox="0 0 4 4" data-x="a>b"><svg><rect/></svg><svg/></svg>';
     const zip = await readZip(deckToPptx(oneSlide([
@@ -762,10 +760,11 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual([
       "ppt/media/image1.svg", "ppt/media/image2.svg", "ppt/media/image3.svg", "ppt/media/image4.svg",
     ]);
+    const xmlns = ' xmlns="http://www.w3.org/2000/svg"';
     expect(partText(zip, "ppt/media/image1.svg")).toBe(inner);
-    expect(partText(zip, "ppt/media/image2.svg")).toBe(nested);
-    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg width="8" height="4"/>');
-    expect(partText(zip, "ppt/media/image4.svg")).toBe("<svg><rect/>");
+    expect(partText(zip, "ppt/media/image2.svg")).toBe(`<svg${xmlns}${nested.slice(4)}`);
+    expect(partText(zip, "ppt/media/image3.svg")).toBe(`<svg${xmlns} width="8" height="4"/>`);
+    expect(partText(zip, "ppt/media/image4.svg")).toBe(`<svg${xmlns}><rect/>`);
     expect(shapeByName(xml, "Block 1 svg")).toContain(`<a:off x="${50 * 10160}" y="0"/><a:ext cx="${100 * 10160}" cy="${200 * 10160}"/>`);
     // A letterboxed picture never reaches the block's rounded corners, so only a filling one is rounded.
     const contain = shapeByName(xml, "Block 5 image");
@@ -777,10 +776,77 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(xml).toContain("Malformed image data");
   });
 
+  it("scans SVG markup as the HTML parser does: comments, CDATA, declarations and quoted values", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect/></svg><svg/>'}),
+      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg"><![CDATA[</svg><svg>]]><rect/></svg><svg/>'}),
+      block("svg", {markup: '<!-- <svg><a/></svg> --><?xml-stylesheet href="<svg>"?><!DOCTYPE svg [<!ENTITY x "<svg>">]>' +
+        '<div title="<svg>x</svg>"><svg xmlns="http://www.w3.org/2000/svg"><c/></svg></div>'}),
+      // A stray end tag is ignored; "<" before a non-letter is text; "svga" is another element.
+      block("svg", {markup: '</svg> a < b <svga/><svg xmlns="http://www.w3.org/2000/svg"><d/></svg>'}),
+      // Attribute-like text inside another attribute's value is not an attribute: this is square.
+      block("svg", {markup: `<svg xmlns="http://www.w3.org/2000/svg" aria-label='chart viewBox = "0 0 200 100"' viewBox="0 0 100 100"><e/></svg>`},
+        {x: 0, y: 0, w: 400, h: 400}),
+      block("svg", {markup: '<svg xmlns="http://www.w3.org/2000/svg" viewBox=0,0,300,100 data-viewBox="1 1 1 1"><f/></svg>'},
+        {x: 0, y: 0, w: 300, h: 300}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    expect(partText(zip, "ppt/media/image1.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect/></svg>');
+    expect(partText(zip, "ppt/media/image2.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><![CDATA[</svg><svg>]]><rect/></svg>');
+    expect(partText(zip, "ppt/media/image3.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><c/></svg>');
+    expect(partText(zip, "ppt/media/image4.svg")).toBe('<svg xmlns="http://www.w3.org/2000/svg"><d/></svg>');
+    expect(shapeByName(xml, "Block 5 svg")).toContain(`<a:off x="0" y="0"/><a:ext cx="${400 * 10160}" cy="${400 * 10160}"/>`);
+    expect(shapeByName(xml, "Block 6 svg")).toContain(`<a:off x="0" y="${100 * 10160}"/><a:ext cx="${300 * 10160}" cy="${100 * 10160}"/>`);
+    expect(xml).not.toContain("Invalid SVG");
+  });
+
+  it("decodes uploaded SVG files by their declared encoding and bounds their size", async () => {
+    const element = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><text>café</text></svg>';
+    const utf16 = new Uint8Array(2 + element.length * 2);
+    utf16.set([0xff, 0xfe]);
+    for (let i = 0; i < element.length; ++i) {
+      utf16[2 + 2 * i] = element.charCodeAt(i) & 0xff;
+      utf16[3 + 2 * i] = element.charCodeAt(i) >>> 8;
+    }
+    const latin1 = Uint8Array.from(`<?xml version="1.0" encoding="ISO-8859-1"?>\n${element}`, char => char.charCodeAt(0));
+    const upload = (bytes: Uint8Array) => block("image", {src: `data:image/svg+xml;base64,${base64(bytes)}`}, {w: 200, h: 100});
+    const zip = await readZip(deckToPptx(oneSlide([
+      upload(utf16),
+      upload(latin1),
+      upload(encoder.encode(`\ufeff<?xml version="1.0"?>${element}\n`)),
+      upload(new Uint8Array([0xc3, 0x28, 0x3c, 0x73, 0x76, 0x67, 0x3e])), // invalid UTF-8 before "<svg>"
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // All three spell the same element, so they share one UTF-8 part, letterboxed by its viewBox.
+    expect(zip.names.filter(name => name.startsWith("ppt/media/"))).toEqual(["ppt/media/image1.svg"]);
+    expect(partText(zip, "ppt/media/image1.svg")).toBe(element);
+    for (const name of ["Block 1 image", "Block 2 image", "Block 3 image"]) {
+      expect(shapeByName(xml, name)).toContain(`<a:ext cx="${200 * 10160}" cy="${100 * 10160}"/>`);
+    }
+    expect(occurrences(xml, "Malformed image data")).toBe(1);
+
+    // An upload is text that is decoded, scanned and re-encoded, so it has a budget of its own.
+    const oversized = `data:image/svg+xml;base64,${"A".repeat(4 * Math.ceil((4 * 1024 * 1024 + 1) / 3))}`;
+    expect(() => deckToPptx(oneSlide([block("image", {src: oversized})])))
+      .toThrow("Slide 1, block 1 image expands beyond the 4194304-byte SVG upload limit.");
+  });
+
   it("parses SVG dimensions in linear time and consults the source cache before scanning", () => {
     const hostile = `<svg viewBox="${"1".repeat(100_000)}"><rect/></svg>`;
     let started = performance.now();
     deckToPptx(oneSlide([block("svg", {markup: hostile})]));
+    expect(performance.now() - started).toBeLessThan(500);
+
+    // Brand-bar recognition compares tags as they are found, so a near-miss the size of the text
+    // limit is rejected at its eighth tag rather than after collecting a quarter-million of them.
+    const almostBar = '<svg viewBox="0 0 1200 12"><defs><linearGradient id="g"><stop stop-color="#FF6633"/>' +
+      '<stop stop-color="#F6821F"/><stop stop-color="#FBAD41"/></linearGradient></defs><rect fill="url(#g)"/>' +
+      "<g/>".repeat(249_000) + "</svg>";
+    expect(almostBar.length).toBeLessThan(1_000_000);
+    started = performance.now();
+    deckToPptx(oneSlide([block("svg", {markup: almostBar})]));
     expect(performance.now() - started).toBeLessThan(500);
 
     // One 4 MB source referenced from every block on a slide: scanned and decoded once, not per
@@ -790,6 +856,49 @@ describe("Workspace Slides PPTX rendering", () => {
     started = performance.now();
     deckToPptx(oneSlide(Array.from({length: 1000}, () => block("image", {src: source}))));
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("emits schema-valid DrawingML for hairline dashes and rotated marks", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("arrow", {x1: 0, y1: 0, x2: 100, y2: 0, dashed: true, width: 0.0001}),
+      block("gadgetsMark", {size: "small"}, {x: 48, y: 240}),
+      block("gadgetsMark", {size: "large"}, {x: 48.5, y: 240.25}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // A 1-EMU line's 6px dash is billions of percent; ST_PositivePercentage is a 32-bit integer.
+    expect(shapeByName(xml, "Block 1 arrow")).toContain('<a:custDash><a:ds d="2147483647" sp="2147483647"/></a:custDash>');
+    // The hexagon's rotated box is centred on half-EMU coordinates that must round to integers.
+    expect(xml).not.toMatch(/\b(?:x|y|cx|cy)="-?\d+\.\d+"/);
+  });
+
+  it("sizes cards and boxes without authored dimensions to their content, like the browser", async () => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("card", {eyebrow: "eye", title: "Card", body: "Body"}, {x: 100, y: 100}),
+      block("box", {title: "Box", body: "Body copy"}, {x: 100, y: 400}),
+      block("box", {title: "Box"}, {x: 100, y: 500, w: 220}),
+      block("card", {eyebrow: "", title: "", body: "word ".repeat(400)}, {x: 1100, y: 0}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    // Padding 20 around eyebrow (10px * 1.2 + 2), title (18 * 1.3 + 2) and body (15 * 1.5 + 2)
+    // with 12px flex gaps; the width is the widest line ("Card" at 18px semibold) plus padding.
+    const cardHeight = 40 + (12 + 2) + 12 + (23.4 + 2) + 12 + (22.5 + 2);
+    const card = shapeByName(xml, "Block 1 card surface");
+    expect(card).toContain(`cy="${Math.round(cardHeight * 10160)}"`);
+    // The title's -0.02em tracking is emitted in hundredths of a point (-29), and measured as such.
+    expect(card).toContain(`cx="${Math.round((40 + (2.278 * 18 - 3 * 0.29 / 0.8) * 1.02) * 10160)}"`);
+    expect(shapeByName(xml, "Block 1 card body")).toContain(`cy="${Math.round((22.5 + 2) * 10160)}"`);
+    // Padding 14 around title (16 * 1.3 + 2), the 6px margin and body (14 * 1.45 + 2).
+    const box = shapeByName(xml, "Block 2 box surface");
+    expect(box).toContain(`cy="${Math.round((28 + 22.8 + 6 + 22.3) * 10160)}"`);
+    expect(box).toContain(`cx="${Math.round((28 + 4.669 * 14 * 1.02) * 10160)}"`);
+    // An authored width is kept; the content-driven height has no body margin.
+    const sized = shapeByName(xml, "Block 3 box surface");
+    expect(sized).toContain(`cx="${220 * 10160}"`);
+    expect(sized).toContain(`cy="${Math.round((28 + 22.8) * 10160)}"`);
+    // width: auto stops at the slide's edge, and the body wraps within it.
+    expect(shapeByName(xml, "Block 4 card surface")).toContain(`cx="${100 * 10160}"`);
   });
 
   it("lays out blocks without authored sizes as the browser does", async () => {
@@ -1017,6 +1126,122 @@ describe("Workspace Slides PPTX resource limits", () => {
   });
 });
 
+describe("Workspace Slides logo normalization", () => {
+  it("expands logo blocks in place without touching the rest of the deck", () => {
+    const deck = {
+      slides: [
+        {id: "cover", background: {coverOrange: true}, blocks: [
+          block("shape", {fill: "#000"}), block("logo", {}, {x: 36, y: 56, w: 267}), block("title", {text: "T"}),
+        ]},
+        {id: "plain", background: {inset: true}, blocks: [block("text", {text: "kept"})]},
+        {id: "empty", blocks: "not an array"},
+        null,
+      ],
+    };
+    const before = structuredClone(deck);
+    const normalized = normalizeDeckForPptx(deck);
+
+    expect(deck).toEqual(before);
+    expect(normalized).not.toBe(deck);
+    expect(normalized.slides[0].blocks.map((each: {type: string}) => each.type)).toEqual(["shape", "text", "shape", "title"]);
+    expect(normalized.slides[0].blocks[0]).toBe(deck.slides[0]!.blocks[0]);
+    expect(normalized.slides[0].blocks[3]).toBe(deck.slides[0]!.blocks[2]);
+    expect(normalized.slides[0].background).toBe(deck.slides[0]!.background);
+    expect(normalized.slides[1]).toBe(deck.slides[1]);
+    expect(normalized.slides[2]).toBe(deck.slides[2]);
+    expect(normalized.slides[3]).toBeNull();
+
+    // Untouched decks come back as they are, malformed ones included; deckToPptx validates those.
+    const untouched = oneSlide([block("title", {text: "no logo"})]);
+    expect(normalizeDeckForPptx(untouched)).toBe(untouched);
+    for (const value of [null, undefined, {}, {slides: "x"}, "deck"]) {
+      expect(normalizeDeckForPptx(value)).toBe(value);
+    }
+  });
+
+  it("lays the wordmark and accent dot out as client.js does", () => {
+    const [wordmark, dot] = normalizeDeckForPptx(oneSlide([
+      block("logo", {variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
+    ])).slides[0].blocks;
+    const fontPx = 24 * 0.62;
+    // "Workspace" in Arial Bold is 5.335em; Chrome tracks (-0.02em) after each of its 9 glyphs.
+    const advance = (5.335 - 8 * 0.02) * fontPx;
+    // The browser's line-height 1 puts the baseline 0.83em down (Arial's 0.905em ascent less half
+    // its 0.15em natural leading); the renderer's natural line is raised by that half-leading.
+    const baseline = 40 + fontPx * 0.83;
+
+    expect(wordmark).toEqual({
+      type: "text", x: 1013, y: expect.closeTo(40 - fontPx * 0.075, 6),
+      w: expect.closeTo(advance * 1.02 + 8 * 0.62, 6), h: expect.closeTo(fontPx * 1.15, 6),
+      props: {
+        text: "Workspace", fontSize: fontPx, weight: 700, letterSpacing: "-0.02em",
+        lineHeight: expect.closeTo(1.15, 6), align: "left", color: "#000000",
+      },
+    });
+    expect(dot).toEqual({
+      type: "shape",
+      x: expect.closeTo(1013 + advance - 0.02 * fontPx + 3 * 0.62, 6),
+      y: expect.closeTo(baseline - 7 * 0.62, 6),
+      w: 6 * 0.62, h: 6 * 0.62,
+      props: {kind: "ellipse", fill: "#F6821F"},
+    });
+  });
+
+  it("applies the component's defaults, variants and whitespace collapsing", () => {
+    const blocks = normalizeDeckForPptx(oneSlide([
+      block("logo", {}, {x: 10, y: 20}),
+      block("logo", {text: "Work\n\t space ", variant: "light", accentDot: false, scale: "2"}, {x: 0, y: 0}),
+      block("logo", {text: "", scale: 0}, {x: 100, y: 0}),
+      block("logo", {text: 42, scale: "junk", accentDot: true}, {x: "5", y: null}),
+    ])).slides[0].blocks;
+
+    expect(blocks.map((each: {type: string}) => each.type)).toEqual(["text", "shape", "text", "text", "shape", "text", "shape"]);
+    expect(blocks[0].props).toMatchObject({text: "Workspace", fontSize: 24, color: "#FFFFFF"});
+    expect(blocks[1]).toMatchObject({w: 6, h: 6});
+    expect(blocks[2].props).toMatchObject({text: "Work space", fontSize: 48, color: "#FFFFFF"});
+    // An empty wordmark has no trailing tracking: the dot sits one flex gap from the block's edge.
+    expect(blocks[3].props.text).toBe("");
+    expect(blocks[4].x).toBe(103);
+    // Coordinates are numbers, so a string x is read and a null y is 0 (then raised by the half-leading).
+    expect(blocks[5]).toMatchObject({x: 5, y: expect.closeTo(-1.8, 6), props: {text: "42", fontSize: 24}});
+  });
+
+  it("renders through the generic blocks at the logo's previous geometry", async () => {
+    const zip = await readZip(deckToPptx(normalizeDeckForPptx(oneSlide([
+      block("logo", {text: "Workspace", variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
+      block("sectionLabel", {text: "AFTER"}, {x: 36, y: 35}),
+    ]))));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+
+    const wordmark = shapeByName(xml, "Block 1 text");
+    // "Workspace" in Arial Bold is 5.335em; at 24px * 0.62 the box must hold it (Google Slides
+    // ignores wrap="none" and breaks anything wider than its box onto a second line).
+    expect(Number(/<a:ext cx="(\d+)"/.exec(wordmark)![1])).toBeGreaterThanOrEqual(Math.round(5.335 * 24 * 0.62 * 10160));
+    expect(wordmark).toContain('sz="1190" b="1" spc="-24"');
+    expect(wordmark).toContain('<a:srgbClr val="000000">');
+    expect(wordmark).toContain("<a:noAutofit/>");
+    // Natural line spacing, so the first-line baseline is Arial's 0.905em below the box top in
+    // every consumer; the box is raised so that baseline lands where the browser's line-height-1
+    // layout puts it (0.83em), and the dot's bottom sits 1px above it, like the browser's.
+    expect(wordmark).toContain('<a:spcPct val="100000"/>');
+    const fontPx = 24 * 0.62;
+    const baseline = 40 + fontPx * 0.83;
+    expect(wordmark).toContain(`<a:off x="${1013 * 10160}" y="${Math.round((baseline - fontPx * 0.905) * 10160)}"/>`);
+    const dot = shapeByName(xml, "Block 2 shape");
+    expect(dot).toContain('<a:prstGeom prst="ellipse">');
+    expect(dot).toContain('<a:srgbClr val="F6821F">');
+    const dotY = Number(/<a:off x="\d+" y="(\d+)"/.exec(dot)![1]);
+    expect(dotY + 6 * 0.62 * 10160).toBeCloseTo((baseline - 0.62) * 10160, -2);
+    const dotX = Number(/<a:off x="(\d+)"/.exec(dot)![1]);
+    expect(dotX).toBeCloseTo((1013 + (5.335 - 9 * 0.02) * fontPx + 3 * 0.62) * 10160, -2);
+    expect(xml).toContain('name="Block 3 sectionLabel"');
+
+    // The renderer itself knows no logo: fed one directly, it shows the unknown-block marker.
+    const raw = await readZip(deckToPptx(oneSlide([block("logo", {})])));
+    expect(partText(raw, "ppt/slides/slide1.xml")).toContain("?: logo");
+  });
+});
+
 describe("Workspace Slides export handler", () => {
   it("publishes the exact HTML, PDF, and PowerPoint export metadata", async () => {
     await expect(handler().getExportFormats()).resolves.toEqual([
@@ -1040,8 +1265,11 @@ describe("Workspace Slides export handler", () => {
     expect(gadget.getDeck).not.toHaveBeenCalled();
   });
 
-  it("resolves and materializes getDeck before returning the PPTX stream", async () => {
-    const deck = oneSlide([block("title", {text: "Materialized before streaming"})]);
+  it("normalizes the deck and materializes getDeck before returning the PPTX stream", async () => {
+    const deck = oneSlide([
+      block("title", {text: "Materialized before streaming"}),
+      block("logo", {text: "Brand"}, {x: 36, y: 56}),
+    ]);
     const gadget = {getDeck: vi.fn(async () => deck)};
     const stream = await handler().export(gadget as never, "pptx");
     expect(gadget.getDeck).toHaveBeenCalledTimes(1);
@@ -1050,7 +1278,11 @@ describe("Workspace Slides export handler", () => {
       throw new Error("borrowed capability reused during stream consumption");
     });
     const zip = await readZip(stream);
-    expect(partText(zip, "ppt/slides/slide1.xml")).toContain("Materialized before streaming");
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    expect(xml).toContain("Materialized before streaming");
+    expect(xml).toContain(">Brand</a:t>");
+    expect(xml).toContain('name="Block 3 shape"');
+    expect(xml).not.toContain("?: logo");
     expect(gadget.getDeck).toHaveBeenCalledTimes(1);
   });
 });

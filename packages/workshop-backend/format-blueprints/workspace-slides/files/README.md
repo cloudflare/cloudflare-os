@@ -13,8 +13,11 @@ neutral sidebars so the slide canvas remains the visual focus.
 - `client.js` — Design tokens, the component registry, slide renderer,
   block interactions (drag, resize, inline text edit), and the builder
   shell (slide list, inspector, palette, control bar, present mode).
-- `pptx.js` — dependency-free PresentationML renderer for server-side
-  PowerPoint export.
+- `pptx.js` — dependency-free, brand-neutral PresentationML renderer for
+  server-side PowerPoint export. It knows the generic block types only;
+  `server.js` rewrites this blueprint's `logo` blocks into them first
+  (`normalizeDeckForPptx`), so the file can be reused unchanged by a
+  differently branded slides blueprint.
 - `zip.js` — streaming ZIP32 writer shared verbatim with the Workspace Sheets
   blueprint implementation. Each blueprint keeps its own copy because a
   dynamic Gadget receives only its own JavaScript files.
@@ -343,13 +346,23 @@ sidebars or presentation controls.
 PowerPoint export runs on the server and creates a conventional OPC /
 PresentationML package. Text, cards, boxes, pills, basic shapes, dividers,
 arrows, and the two brand marks become editable native PowerPoint objects
-rather than a screenshot. Source block order remains the shape z-order. The
-known bottom brand bar and orange cover treatment are native gradients.
-Dot-grid backgrounds are omitted. Colors may be hex, `rgb()`/`rgba()`, or the
-basic CSS names (`white`, `black`, `gray`, `red`, `orange`, ...); other names
-fall back to the component default. PresentationML cannot clip text, so card
-text asks the consumer to shrink-to-fit (`normAutofit`) instead of the browser's
-`overflow: hidden`, and auto-height blocks grow to their content (`spAutoFit`).
+rather than a screenshot. The renderer itself is brand-neutral: before the
+deck reaches it, `normalizeDeckForPptx()` in `server.js` replaces each `logo`
+block with a `text` block for the wordmark and an ellipse `shape` for the
+accent dot, in the logo's z-order position and at the geometry `client.js`
+draws (it uses the renderer's exported `measureText()` for the wordmark's
+width and baseline rather than its own copy of the font metrics). Another
+slides blueprint copies `pptx.js` unchanged and writes its own adapter. Source
+block order remains the shape z-order. The known bottom brand bar and orange
+cover treatment are native gradients. Dot-grid backgrounds are omitted. Colors
+may be hex, `rgb()`/`rgba()`, or the basic CSS names (`white`, `black`, `gray`,
+`red`, `orange`, ...); other names fall back to the component default.
+PresentationML cannot clip text, so card text asks the consumer to
+shrink-to-fit (`normAutofit`) instead of the browser's `overflow: hidden`, and
+auto-height blocks grow to their content (`spAutoFit`). Blocks without an
+authored `w` or `h` (including cards and boxes) are sized to their content,
+as the browser's `width: auto` wrapper is. Title highlights are applied in
+term order, as the browser's sequential wrapping is.
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
 6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's
@@ -357,7 +370,7 @@ The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
 percentage divided by Arial's natural 1.15em line height, since both PowerPoint
 and Google Slides apply percentages to that (Google also converts exact point
 spacing back into such a percentage, so points are not portable). Single-line labels
-(logo, section label, pill, arrow label) are sized from Arial's advance widths,
+(section label, pill, arrow label, the normalized logo wordmark) are sized from Arial's advance widths,
 because Google Slides ignores `wrap="none"` and breaks any label wider than its
 box. The package requests Arial, which is available in PowerPoint and Google
 previews, but does not embed fonts, so wrapping can still differ from the
@@ -371,15 +384,21 @@ never fetched or emitted as external relationships; they receive a visible
 placeholder instead.
 
 SVG blocks are embedded as pictures through Office's `svgBlip` extension, which
-PowerPoint 2016 and later render natively. The markup is copied byte for byte and
-is trusted as authored: the exporter does not validate or sanitize it, so scripts,
-external references, and other active content in a block reach the consumer (the
-browser's render-time cleanup applies only to HTML and PDF export). The exporter
-cannot rasterize, so there is no PNG fallback; consumers without SVG support
-(Google Slides import, macOS Quick Look, older PowerPoint) show an empty frame.
-`contain` letterboxes the frame by the SVG's `viewBox` (or `width`/`height`)
-aspect ratio and `stretch` fills the block. The known bottom brand-bar SVG is
-still replaced with a native gradient.
+PowerPoint 2016 and later render natively. The first `<svg>` element of the pasted
+markup is copied as authored -- scanned as the browser's HTML parser reads it,
+past comments, CDATA sections and quoted attribute values -- and given an
+`xmlns` declaration if its root lacks one, since the HTML parser implies the SVG
+namespace but a standalone `image/svg+xml` part does not. SVG files uploaded
+through the image control are decoded by their BOM or XML declaration and
+embedded as UTF-8, with a 4 MiB budget of their own. Nothing else is validated
+or sanitized: scripts, external references, and other active content in a block
+reach the consumer (the browser's render-time cleanup applies only to HTML and
+PDF export). The exporter cannot rasterize, so there is no PNG fallback;
+consumers without SVG support (Google Slides import, macOS Quick Look, older
+PowerPoint) show an empty frame. `contain` letterboxes the frame by the SVG's
+`viewBox` aspect ratio (a root without one fills the block, as the browser
+overrides its `width`/`height` with 100%) and `stretch` fills the block. The
+known bottom brand-bar SVG is still replaced with a native gradient.
 
 The following are intentionally deferred: SVG validation and rasterized
 fallbacks, pixel-perfect browser layout, embedded fonts, remote images, native
