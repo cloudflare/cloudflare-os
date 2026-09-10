@@ -23,6 +23,7 @@
       "stacy.kennedy@totango.com"
     ],
     "AUTH_GATEKEEPERS": "google",
+    "AUTH_EMAIL_DOMAIN_ALIASES": { "heyodie.ai": "totango.com" },
     "CF_ACCESS_AUD": "8201bdec886d2938927bd320749e9aaebf3562bf12286db06d788eaea49b2e21",
     "CF_ACCESS_ISS": "https://weathered-moon-e011.cloudflareaccess.com",
     "CF_AI_GATEWAY": "odie-os-ai",

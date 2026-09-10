@@ -81,6 +81,9 @@ declare global {
       // no gatekeeper sign-in (password / CF Access only).
       AUTH_GATEKEEPERS?: string;
 
+      // Deployment-only identity migration. JSON object (or JSON string in local env files).
+      AUTH_EMAIL_DOMAIN_ALIASES?: Record<string, string> | string;
+
       // Set to "true" to disable username/password login + signup (gatekeeper sign-in only). Only
       // takes effect when at least one auth gatekeeper is allowlisted (otherwise password auth stays
       // on to avoid locking everyone out).

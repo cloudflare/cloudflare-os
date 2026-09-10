@@ -31,3 +31,37 @@ export function isPasswordAuthEnabled(env: Cloudflare.Env): boolean {
   if (env.DISABLE_PASSWORD_AUTH !== "true") return true;
   return !hasAuthGatekeepers(env);
 }
+
+/** Validate the explicitly authorized migration; no arbitrary domains, chains, or cycles. */
+export function emailMigrationEnabled(env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES">): boolean {
+  const raw = env.AUTH_EMAIL_DOMAIN_ALIASES;
+  if (raw === undefined) return false;
+  const aliases: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+    throw new Error("Invalid AUTH_EMAIL_DOMAIN_ALIASES configuration.");
+  }
+  const entries = Object.entries(aliases);
+  if (entries.length === 0) return false;
+  if (entries.length !== 1 || entries[0][0] !== "heyodie.ai" || entries[0][1] !== "totango.com") {
+    throw new Error("AUTH_EMAIL_DOMAIN_ALIASES supports only heyodie.ai -> totango.com.");
+  }
+  return true;
+}
+
+/** Return exact, same-local-part identities, canonical legacy identity first. */
+export function accountEmailIdentities(
+    email: string, env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES">): string[] {
+  const enabled = emailMigrationEnabled(env);
+  const match = /^([^@\s:]+)@(heyodie\.ai|totango\.com)$/i.exec(email);
+  if (!enabled || !match) return [email];
+  return [`${match[1]}@totango.com`, `${match[1]}@heyodie.ai`];
+}
+
+/** Match a policy domain without changing its persisted representation. */
+export function matchesAuthEmailDomain(email: string, domain: string,
+    env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES"> = {}): boolean {
+  return accountEmailIdentities(email, env).some(identity => {
+    const match = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@([^@]+)$/i.exec(identity);
+    return match?.[1].toLowerCase() === domain.toLowerCase();
+  });
+}

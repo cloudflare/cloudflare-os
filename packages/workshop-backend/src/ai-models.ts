@@ -26,6 +26,7 @@ import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import {
   isTeamPiCodexConfig,
   isTeamPiCodexMarkerConfig,
+  isTeamPiCodexUserId,
 } from "./team-pi-codex-models.js";
 
 /**
@@ -138,7 +139,6 @@ const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 
 
 const TEAM_PI_CODEX_AUDIENCE = "team-pi-codex";
 const TEAM_PI_CODEX_KEY_ID = "odie-v1";
-const TEAM_PI_CODEX_USER_RE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@totango\.com$/;
 const TEAM_PI_CODEX_MAX_ENCODED_BODY_BYTES = 4 * 1024 * 1024;
 const TEAM_PI_CODEX_MAX_DECODED_BODY_BYTES = 8 * 1024 * 1024;
 const TEAM_PI_CODEX_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -381,9 +381,10 @@ export function makeTeamPiCodexFetch(
   hmacSecret: string,
   downstream?: FetchFunction,
   timeouts: { streamIdleMs?: number; requestBudgetMs?: number } = {},
+  env: Pick<Cloudflare.Env, "AUTH_EMAIL_DOMAIN_ALIASES"> = {},
 ): FetchFunction {
   const user = initiator.id.toLowerCase();
-  if (!TEAM_PI_CODEX_USER_RE.test(user)) {
+  if (!isTeamPiCodexUserId(user, env)) {
     throw new Error("Team PI Codex models require a @totango.com user email initiator.");
   }
   const innerFetch = downstream ?? globalThis.fetch;
@@ -698,7 +699,7 @@ function getModelViaTeamPiCodex(
     apiKey: SYNTHETIC_CODEX_API_KEY,
     teamPiCodex: true,
     fetchFactory: downstream => makeTeamPiCodexFetch(
-        initiator, env.TEAM_PI_CODEX_HMAC_SECRET!, downstream),
+        initiator, env.TEAM_PI_CODEX_HMAC_SECRET!, downstream, {}, env),
     sessionAffinity,
   });
 }

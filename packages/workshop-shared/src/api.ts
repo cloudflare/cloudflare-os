@@ -790,6 +790,12 @@ export const getAuthErrorCode = authErrors.getCode;
 
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
+  /** List existing same-local-part migration accounts authorized by this session's verified SSO.
+   * Legacy/password sessions return no identities; sign in again through SSO to enable switching. */
+  listAccountIdentities(): Promise<AiChatAuthorInfo[]>;
+  /** Mint a fresh capability for an existing identity returned by listAccountIdentities.
+   * Preserves verified sign-in provenance. Does not create, copy, or merge account data. */
+  switchAccountIdentity(identity: string): Promise<AuthenticatedApi>;
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
 
