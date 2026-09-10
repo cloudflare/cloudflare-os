@@ -353,9 +353,10 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * the bundler cannot check (see {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}), or of a template literal,
  * which it expands into every file the pattern matches (see {@link auditInputs}); a reference to
  * `require` the bundler could not resolve away, which would throw when reached (see
- * {@link RESIDUAL_REQUIRE_PATTERN}); and a JavaScript module the archive ships as written that
- * imports a `lib/` module written in TypeScript, which is compiled into the entries and not
- * shipped, so the import would find nothing at runtime (see {@link importsDroppedModule}).
+ * {@link RESIDUAL_REQUIRE_PATTERN}); and, in a JavaScript module the archive ships as written, an
+ * import of a `lib/` module written in TypeScript, which is compiled into the entries and not
+ * shipped, an import of a gadget library, which only the bundle can inline, or an import specifier
+ * spelled with an escape, which the scan cannot read (see {@link checkShippedImports}).
  */
 async function bundleTypeScriptSources(
   filesDir: string,
@@ -394,19 +395,13 @@ async function bundleTypeScriptSources(
     }
     entries.push(entry);
   }
+  for (const [path, source] of output) {
+    if (MODULE_PATTERN.test(path)) checkShippedImports(path, source, libSources, label);
+  }
   if (entries.length === 0) {
     const [orphan] = libSources;
     if (orphan) invalid(label, `${orphan} has no client.ts or server.ts to bundle it`);
     return output;
-  }
-  for (const [path, source] of output) {
-    if (!MODULE_PATTERN.test(path)) continue;
-    const dropped = importsDroppedModule(path, source, libSources);
-    if (dropped) {
-      invalid(label, `${path} imports ${dropped.specifier}, which names ${dropped.module}; ` +
-          `${path} ships as written, and a TypeScript lib module is compiled into the entries ` +
-          `that import it and not shipped`);
-    }
   }
 
   // Loaded on demand: esbuild drives a native binary, and the JavaScript-only path through here
@@ -588,28 +583,48 @@ function matchesExternal(specifier: string, externals: readonly string[]): boole
 }
 
 /**
- * The first import in `source`, a module the archive ships as written, that names one of the
- * `dropped` TypeScript `lib/` modules -- which are compiled into the entries and not stored, so
- * the shipped module would import a file the archive does not contain.
+ * Rejects an import in `source`, a module the archive ships as written, that the runtime could not
+ * resolve: one that names one of the `dropped` TypeScript `lib/` modules, which are compiled into
+ * the entries and not stored; one that names a gadget library by this package's name, which the
+ * build inlines into a TypeScript entry only, so a shipped module's copy of the specifier would be
+ * resolved against nothing; and, ahead of both, a specifier spelled with an escape, which the scan
+ * reads as written and could not compare with the archive's paths -- there is no reason to spell an
+ * import path that way, and allowing it would let either of the other two through.
  *
  * A direct edge is enough: a chain through another shipped module is caught when that module is
  * scanned in turn. The same scan as {@link importedModules}, so it can over-estimate, and here that
  * direction rejects a valid blueprint -- a specifier-shaped string in a comment that happens to
- * spell a dropped module's path. The error names the importer and the specifier, and a shipped
- * JavaScript module has no reason to mention a `lib/*.ts` path at all.
+ * spell a dropped module's path or the package name. The error names the importer and the
+ * specifier, and a shipped JavaScript module has no reason to mention either. The scan sees static
+ * `import`/`export ... from` declarations and a literal `import()` or `require()`, which are what
+ * fail module instantiation; a dynamic import of a computed path in shipped JavaScript resolves at
+ * runtime and is not checked, as it never was.
  */
-function importsDroppedModule(
+function checkShippedImports(
   path: string,
   source: string,
   dropped: ReadonlySet<string>,
-): {specifier: string; module: string} | undefined {
+  label: string,
+): void {
   for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
     const specifier = doubleQuoted ?? singleQuoted!;
+    if (specifier.includes("\\")) {
+      invalid(label, `${path} imports ${specifier}, spelled with an escape; write the path ` +
+          `plainly so the build can read it`);
+    }
+    if (specifier === PACKAGE_NAME || specifier.startsWith(`${PACKAGE_NAME}/`)) {
+      invalid(label, `${path} imports ${specifier}: a gadget library is inlined by the build ` +
+          `into a TypeScript entry only; ${path} ships as written, and the runtime has nothing ` +
+          `to resolve the package name against`);
+    }
     if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
     const module = resolveWithinFiles(path, specifier).find(candidate => dropped.has(candidate));
-    if (module) return {specifier, module};
+    if (module) {
+      invalid(label, `${path} imports ${specifier}, which names ${module}; ${path} ships as ` +
+          `written, and a TypeScript lib module is compiled into the entries that import it and ` +
+          `not shipped`);
+    }
   }
-  return undefined;
 }
 
 /**
