@@ -64,10 +64,11 @@ describe("handleMcpHttpRequest", () => {
     // The page carries the ticket, so it must never be cached or framed.
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Content-Security-Policy")).toBe("frame-ancestors 'none'");
-    // The page hands the ticket to the Workshop window that opened the flow, and nobody else.
+    // The page sends the popup, ticket in the fragment, to the Workshop's own handoff page, and
+    // nowhere else.
     const html = await response.text();
     expect(html).toContain(HANDOFF.ticket);
-    expect(html).toContain(`postMessage(`);
+    expect(html).toContain(`window.location.replace(target + "/connect/handoff#"`);
     expect(html).toContain(`"https://workshop.example"`);
   });
 

@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
-} from "@gadgets/workshop-shared/gatekeeper";
-import {
   connectHandoffPageHtml,
   connectMutationError,
   errorPageHtml,
@@ -50,55 +47,25 @@ describe("connect pages", () => {
 });
 
 describe("connectHandoffPageHtml", () => {
-  // Pulls the envelope and target origin the page's script posts out of its two literals.
-  function postMessageArgs(html: string): [unknown, string] {
-    const envelope = /var envelope = (.*);\n/.exec(html);
+  // Pulls the ticket and target origin the page's script navigates with out of its two literals.
+  function scriptLiterals(html: string): [string, string] {
+    const ticket = /var ticket = (".*?");\n/.exec(html);
     const target = /var target = (".*?");\n/.exec(html);
-    expect(envelope).not.toBeNull();
+    expect(ticket).not.toBeNull();
     expect(target).not.toBeNull();
     // The literals are JSON with `<`, `>` and `&` written as \uXXXX escapes, which JSON accepts.
-    return [JSON.parse(envelope![1]), JSON.parse(target![1])];
+    return [JSON.parse(ticket![1]), JSON.parse(target![1])];
   }
 
-  it("posts the versioned envelope to exactly the Workshop origin", () => {
+  it("navigates the popup to the Workshop's handoff page with the ticket in the fragment", () => {
     const html = connectHandoffPageHtml(HANDOFF);
-    const [envelope, target] = postMessageArgs(html);
+    const [ticket, target] = scriptLiterals(html);
 
-    expect(envelope).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: HANDOFF.ticket });
+    expect(ticket).toBe(HANDOFF.ticket);
     expect(target).toBe("https://workshop.example");
-    expect(html).toContain("opener.postMessage(envelope, target)");
-  });
-
-  it("falls back to a same-origin BroadcastChannel named after the message type", () => {
-    // A disowned connect popup has no opener; only when the page is on the Workshop's own origin
-    // may it broadcast, and the channel name is the versioned message type so the listener and the
-    // page cannot drift apart.
-    const html = connectHandoffPageHtml(HANDOFF);
-
+    // The path is pinned here and in workshop-frontend's route: the kit must not depend on it.
     expect(html).toContain(
-      `else if (window.location.origin === target && "BroadcastChannel" in window)`);
-    expect(html).toContain(
-      `var channel = new BroadcastChannel(${JSON.stringify(CONNECT_HANDOFF_MESSAGE_TYPE)});`);
-    expect(html).toContain("channel.postMessage(envelope);");
-    // The opener wins when there is one: sign-in and the dev server rely on it.
-    expect(html.indexOf("opener.postMessage")).toBeLessThan(html.indexOf("new BroadcastChannel"));
-  });
-
-  it("repeats a broadcast until the Workshop acknowledges this ticket, then closes", () => {
-    // A Workshop tab whose session is mid-reconnect misses a one-shot broadcast, and the connect
-    // would fail silently. The ticket is single-use server-side, so repeating it is safe; the ack
-    // for this ticket is what ends the repeats.
-    const html = connectHandoffPageHtml(HANDOFF);
-
-    expect(html).toContain("setInterval(function () { channel.postMessage(envelope); }, 1000)");
-    expect(html).toContain(`e.data.type === ${JSON.stringify(CONNECT_HANDOFF_ACK_MESSAGE_TYPE)}`);
-    expect(html).toContain("e.data.ticket === envelope.ticket");
-    // Gives up after 30 s with the "couldn't reach" text rather than closing on a timer: the
-    // channel branch returns before the 2 s fallback close, which is for the opener branch only.
-    expect(html).toContain("setTimeout(function () { clearInterval(repeat); unreachable(); }, 30000)");
-    const channelBranch = html.slice(html.indexOf("var channel"), html.indexOf("} else {"));
-    expect(channelBranch).toContain("return;");
-    expect(channelBranch).not.toContain("2000");
+      `window.location.replace(target + "/connect/handoff#" + encodeURIComponent(ticket))`);
   });
 
   it("cannot be broken out of by the ticket or origin it embeds", () => {
@@ -108,12 +75,12 @@ describe("connectHandoffPageHtml", () => {
     expect(html).not.toContain("</script><img");
     expect(html.split("<script>")).toHaveLength(2);
     expect(html.split("</script>")).toHaveLength(2);
-    expect(postMessageArgs(html)[0]).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: hostile.ticket });
+    expect(scriptLiterals(html)[0]).toBe(hostile.ticket);
   });
 
   it("refuses a targetOrigin that is not exactly an origin", () => {
-    // A path or trailing slash would make the browser drop the message; an unparsable value or an
-    // opaque origin would be far worse — `postMessage(…, "*")` style delivery to anyone.
+    // A trailing slash or path would produce a malformed redirect; an unparsable value or an opaque
+    // origin would send the ticket somewhere else.
     for (const targetOrigin of [
       "https://workshop.example/", "https://workshop.example/app", "*", "null", "workshop.example",
       "", "javascript:alert(1)",
@@ -125,17 +92,19 @@ describe("connectHandoffPageHtml", () => {
       .not.toThrow();
   });
 
-  it("tells the user when it can reach no Workshop, and only closes when it could", () => {
+  it("keeps the referrer policy that hides the path from cross-origin requests", () => {
+    expect(connectHandoffPageHtml(HANDOFF))
+      .toContain(`<meta name="referrer" content="strict-origin-when-cross-origin">`);
+  });
+
+  it("carries no channel, opener or message transport", () => {
     const html = connectHandoffPageHtml(HANDOFF);
 
-    expect(html).toContain("if (opener && !opener.closed)");
-    expect(html).toContain("setTimeout(function () { window.close(); }, 2000)");
-    // The "couldn't reach" branch returns before the close timer, so the message stays readable.
-    expect(html.lastIndexOf("return;")).toBeLessThan(
-      html.indexOf("setTimeout(function () { window.close(); }, 2000)"));
-    expect(html).toContain("couldn't reach the Workshop");
-    expect(html).toContain("start the connection again");
-    expect(html).toContain(`<meta name="referrer" content="strict-origin-when-cross-origin">`);
+    for (const transport of [
+      "BroadcastChannel", "opener", "postMessage", "setTimeout", "setInterval",
+    ]) {
+      expect(html).not.toContain(transport);
+    }
   });
 });
 

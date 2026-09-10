@@ -1,10 +1,6 @@
 /** Hardened HTML and browser request guards for gatekeeper connect flows. */
 
-import {
-  CONNECT_HANDOFF_ACK_MESSAGE_TYPE,
-  CONNECT_HANDOFF_MESSAGE_TYPE,
-  type ConnectHandoff,
-} from "@gadgets/workshop-shared/gatekeeper";
+import type { ConnectHandoff } from "@gadgets/workshop-shared/gatekeeper";
 
 const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "&": "&amp;",
@@ -138,27 +134,23 @@ function scriptLiteral(value: unknown): string {
 }
 
 /**
- * The page a connect flow lands on when it has finished. It delivers the handoff ticket to the
- * Workshop and closes itself, over one of two transports:
+ * The page a finished connect, reconnect or sign-in flow lands on. It navigates the popup to the
+ * Workshop's own handoff page, `<targetOrigin>/connect/handoff#<ticket>`, which redeems the ticket
+ * over the popup's own session; this page holds no session and needs no RPC client.
  *
- * - `postMessage` to the window that opened it — and *only* to `handoff.targetOrigin`, the
- *   Workshop's origin, so a browser drops the message if the opener is anyone else. This is the
- *   sign-in path (the login page keeps the popup handle) and the dev-server path, where the Workshop
- *   is on another origin.
- * - A `BroadcastChannel` named `CONNECT_HANDOFF_MESSAGE_TYPE`, when this page is itself on the
- *   Workshop's origin and has no opener. The Workshop disowns connect popups before navigating them
- *   (so no provider page ever holds a handle to the Workshop window), and a same-origin channel is
- *   the only thing a disowned popup can still reach; the browser scopes it to that origin. The
- *   envelope is repeated every second until a Workshop tab answers with a
- *   `CONNECT_HANDOFF_ACK_MESSAGE_TYPE` envelope for this ticket (a tab whose session is
- *   mid-reconnect would miss a one-shot broadcast, and the connect would fail silently); the ticket
- *   is single-use server-side, so the repeats are harmless. After 30 seconds unacknowledged the
- *   page gives up and tells the user, as below.
- *
- * Without either it can reach no Workshop, so it tells the user to go back and start again; a flow
- * opened from a phished link on another origin ends here with its ticket unredeemed. The connection
- * itself is inert until the Workshop redeems the ticket on the initiating user's session (see
+ * The ticket travels in the URL fragment, which a browser never sends to a server nor in a
+ * `Referer` header, and `location.replace()` leaves no history entry to revisit; the ticket is
+ * single-use and expires two minutes after the flow finishes. The destination is the
+ * backend-supplied `targetOrigin`, validated to be exactly an origin, so the ticket reaches no
+ * other document. A flow finished by anyone but its starter ends with a ticket that person's
+ * session cannot redeem and no popup of the starter's carries. The connection itself is inert until
+ * the Workshop redeems the ticket on the initiating user's session (see
  * `GatekeeperVendor.connectAccount`).
+ *
+ * The Workshop must serve `/connect/handoff` directly: a fragment survives an HTTP redirect, but the
+ * page it lands on has to be the SPA. The path literal is duplicated here on purpose — the kit is
+ * published to gatekeepers and must not depend on `workshop-frontend` — and each package pins it
+ * with a test.
  * @param handoff The handoff returned by `GatekeeperConnectCallback.complete()` /
  *   `reconnectComplete()`. Its `targetOrigin` must be exactly an origin.
  * @returns Escaped HTML; serve it with `htmlResponse()`.
@@ -179,47 +171,18 @@ export function connectHandoffPageHtml(handoff: ConnectHandoff): string {
   if (origin === "" || origin === "null" || origin !== handoff.targetOrigin) {
     throw new Error("The connect handoff's targetOrigin is not an origin.");
   }
-  const envelope = { type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: handoff.ticket };
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>Connected</title><style>${PAGE_STYLE}</style></head>
-<body><main><h1 id="title">Connected</h1>
-<p class="sub" id="detail">Returning to the Workshop…</p></main>
+<body><main><h1>Connected</h1>
+<p class="sub">Returning to the Workshop…</p></main>
 <script>
 (function () {
-  var envelope = ${scriptLiteral(envelope)};
+  var ticket = ${scriptLiteral(handoff.ticket)};
   var target = ${scriptLiteral(origin)};
-  function unreachable() {
-    document.getElementById("title").textContent = "This window couldn't reach the Workshop";
-    document.getElementById("detail").textContent =
-      "Go back to the Workshop tab and start the connection again.";
-  }
-  var opener = window.opener;
-  if (opener && !opener.closed) {
-    opener.postMessage(envelope, target);
-  } else if (window.location.origin === target && "BroadcastChannel" in window) {
-    // Repeated until a Workshop tab acknowledges this ticket: a tab mid-reconnect misses a one-shot
-    // broadcast, and the ticket is single-use server-side, so repeating is safe.
-    var channel = new BroadcastChannel(${scriptLiteral(CONNECT_HANDOFF_MESSAGE_TYPE)});
-    var repeat = setInterval(function () { channel.postMessage(envelope); }, 1000);
-    channel.postMessage(envelope);
-    channel.onmessage = function (e) {
-      if (e.data && e.data.type === ${scriptLiteral(CONNECT_HANDOFF_ACK_MESSAGE_TYPE)} &&
-          e.data.ticket === envelope.ticket) {
-        clearInterval(repeat);
-        window.close();
-      }
-    };
-    setTimeout(function () { clearInterval(repeat); unreachable(); }, 30000);
-    return;
-  } else {
-    unreachable();
-    return;
-  }
-  // The Workshop closes this window once it has redeemed the ticket; this is the fallback.
-  setTimeout(function () { window.close(); }, 2000);
+  window.location.replace(target + "/connect/handoff#" + encodeURIComponent(ticket));
 })();
 </script></body></html>`;
 }
