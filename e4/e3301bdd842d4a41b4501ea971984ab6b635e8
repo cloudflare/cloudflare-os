@@ -1,0 +1,78 @@
+packages/bundled-blueprints/blueprints/workspace-slides/files/client.ts
+  s_09cc924f63cfa6::t_d56f65ca636017 21-23
+  s_09cc924f63cfa6::t_4d7905d7e58e21 28-29
+packages/bundled-blueprints/blueprints/workspace-sheets/files/client.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 19,28-29
+  s_09cc924f63cfa6::t_d56f65ca636017 3-5
+packages/bundled-blueprints/blueprints/workspace-slides/files/server.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 2
+packages/bundled-blueprints/libraries/sync/README.md
+  s_09cc924f63cfa6::t_d56f65ca636017 12,41
+packages/bundled-blueprints/libraries/ui/server.ts
+  s_09cc924f63cfa6::t_8c137bb0a8712c 2-5
+  s_09cc924f63cfa6::t_d56f65ca636017 8
+packages/bundled-blueprints/package.json
+  s_09cc924f63cfa6::t_4d7905d7e58e21 5,8-10
+packages/bundled-blueprints/libraries/sync/__tests__/server.test.ts
+  s_09cc924f63cfa6::t_352496a67e1824 67
+packages/bundled-blueprints/blueprints/workspace-docs/files/client.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 26,35-36
+  s_09cc924f63cfa6::t_d56f65ca636017 4-9
+packages/bundled-blueprints/vitest.config.ts
+  s_09cc924f63cfa6::t_d8da2786de6727 13-17
+packages/bundled-blueprints/README.md
+  s_09cc924f63cfa6::t_8c137bb0a8712c 21-22,40-41,45-47
+  s_09cc924f63cfa6::t_352496a67e1824 39,75-77,101-104,171-173,175-177
+packages/bundled-blueprints/blueprints/workspace-slides/files/README.md
+  s_09cc924f63cfa6::t_9df76a1a4dac51 32-34
+packages/bundled-blueprints/blueprints/workspace-docs/files/server.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 15
+packages/bundled-blueprints/blueprints/workspace-docs/files/lib/protocol.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 7
+packages/bundled-blueprints/blueprints/workspace-sheets/files/server.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 2
+packages/bundled-blueprints/libraries/sync/server.ts
+  s_09cc924f63cfa6::t_352496a67e1824 2-4
+packages/bundled-blueprints/src/files.ts
+  s_09cc924f63cfa6::t_8c137bb0a8712c 515-516,523
+  s_09cc924f63cfa6::t_801de664452955 529
+  s_09cc924f63cfa6::t_800e1d63f539a0 232-234,236-237,325-332,335-338,344-349,398-401,414,433-434,468-476,518-520
+  s_09cc924f63cfa6::t_c790f59c655856 9,15-16,205-206,216-218,220,223-227,229,477-514,517,521-522,524-528,530-546,598
+packages/bundled-blueprints/__tests__/files.test.ts
+  s_09cc924f63cfa6::t_8c137bb0a8712c 537-538
+  s_09cc924f63cfa6::t_1350a886838739 1,32,35-37,493,496,502-503,506,508,516,520,523-527,535-536,539-541,554-586,588,592-593,596-600,606-607,609-619
+packages/bundled-blueprints/blueprints/workspace-sheets/files/README.md
+  s_09cc924f63cfa6::t_9df76a1a4dac51 162-170
+packages/bundled-blueprints/libraries/README.md
+  s_09cc924f63cfa6::t_352496a67e1824 4,9-10,12-14,20-21,30-35
+  s_09cc924f63cfa6::t_8c137bb0a8712c 5-8,28-29
+packages/bundled-blueprints/libraries/ui/README.md
+  s_09cc924f63cfa6::t_352496a67e1824 7-9,11-13
+AGENTS.md
+  s_09cc924f63cfa6::t_352496a67e1824 18
+packages/bundled-blueprints/blueprints/workspace-sheets/__tests__/xlsx.server.test.ts
+  s_09cc924f63cfa6::t_4d7905d7e58e21 3
+packages/bundled-blueprints/blueprints/workspace-docs/files/README.md
+  s_09cc924f63cfa6::t_9df76a1a4dac51 11,15,18
+packages/bundled-blueprints/libraries/sync/client.ts
+  s_09cc924f63cfa6::t_352496a67e1824 2-4
+packages/bundled-blueprints/libraries/ui/client.ts
+  s_09cc924f63cfa6::t_5a6505b006ef29 4-9
+  s_09cc924f63cfa6::t_8c137bb0a8712c 2-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4e3301bdd842d4a41b4501ea971984ab6b635e8",
+  "prompts": {},
+  "sessions": {
+    "s_09cc924f63cfa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e93a37cc-728a-4e07-9eb0-2f8baf9ec862",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
