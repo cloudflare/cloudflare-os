@@ -77,6 +77,21 @@ describe('retained share key write tokens', () => {
     expect(readRetainedShareKey('ws-1')).toEqual(entryB)
   })
 
+  // A duplicated tab holds a copy of the displaced entry under the same capture id. Once this
+  // tab has moved on to a new capture, the displaced capture's own success clear is the only
+  // other thing that would reach that copy, and it never comes if the displaced attempt failed
+  // transiently everywhere; the copy would then sit for the TTL and replay on a reconnect.
+  it('starting a capture broadcasts a clear for the entry it displaces', async () => {
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', 'capture-a'),
+        { key: 'aaaa', userId: 'person@example.com', captureId: 'capture-a' })
+    const received: unknown[] = []
+    openSiblingChannel().addEventListener('message', event => received.push(event.data))
+    beginRetainedShareKeyWrite('ws-1', 'capture-b')
+    await vi.waitFor(() => expect(received).toEqual([
+      { type: 'clear-capture', workspaceId: 'ws-1', captureId: 'capture-a' },
+    ]))
+  })
+
   it("starting a capture leaves another workspace's entry alone", () => {
     commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
     beginRetainedShareKeyWrite('ws-2', 'capture-b')
@@ -284,7 +299,9 @@ describe('cross-tab clear propagation', () => {
     const received: unknown[] = []
     openSiblingChannel().addEventListener('message', event => received.push(event.data))
     // Workspace-scoped clears stay local: they name no capture, and blanket-clearing sibling
-    // tabs could erase an independent capture that is still legitimately retrying.
+    // tabs could erase an independent capture that is still legitimately retrying. A begin with
+    // nothing to displace has no capture to name either, so it broadcasts nothing.
+    beginRetainedShareKeyWrite('ws-1', 'capture-x')
     clearRetainedShareKey('ws-1')
     clearRetainedShareKey('ws-1', 'capture-1')
     clearAllRetainedShareKeys()

@@ -66,9 +66,9 @@ function storageKey(workspaceId: string): string {
 // tier has a second bump site: starting a capture (beginRetainedShareKeyWrite) supersedes every
 // older pending stamp for the workspace, so when two captures have stamps in flight and the older
 // resolves last, it cannot overwrite the newer capture's entry -- the newest capture owns the
-// slot outright, whether or not the older ever cleared. The same site also removes the older
-// capture's already-committed entry, so the slot is empty rather than stale between the begin
-// and the new stamp landing. The
+// slot outright, whether or not the older ever cleared. The same site also clears the older
+// capture's already-committed entry (by capture id, so the clear is broadcast), so the slot is
+// empty rather than stale between the begin and the new stamp landing. The
 // capture-scoped tier is what lets a successful attempt void *its own* in-flight stamp even when a
 // newer capture's entry occupies the slot -- without it, the spent key's late
 // stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
@@ -98,17 +98,27 @@ export type RetainedShareKeyWrite = {
  * check instead of overwriting the newer entry -- and removing the entry is what makes that
  * ownership hold from this moment rather than from when the new stamp lands: without it an older
  * capture's already-committed entry stays readable for one identity round trip, and a reload
- * inside that window replays the older key instead of the one just captured. Other workspaces'
- * pending stamps and entries, and the per-capture tier, are untouched.
+ * inside that window replays the older key instead of the one just captured. The displaced
+ * entry's clear is capture-scoped and so broadcast, reaching a duplicated tab's copy of it. Other
+ * workspaces' pending stamps and entries, and every other capture's tier, are untouched.
  */
 export function beginRetainedShareKeyWrite(
     workspaceId: string, captureId: string): RetainedShareKeyWrite {
   // The generation is bumped before the removal so no in-flight commit can land between the two.
-  // The removal stays local (no broadcast): a sibling tab's entry under this workspace is its own
-  // capture, or a duplicate's copy of an older one that the older capture's own success clear
-  // reaches; neither is this capture's to supersede.
+  // The displaced entry is cleared by its capture id, which broadcasts: a duplicated tab holds a
+  // copy of it under the same id, and once this tab has moved on to a new capture no other clear
+  // reaches that copy -- the displaced capture's own success clear presupposes its open succeeds
+  // somewhere, and a duplicate whose attempt failed transiently would otherwise keep the copy for
+  // the TTL and replay it on reconnect, after an owner may have removed the collaborator. Only
+  // copies of this tab share the id (captures are per-capture UUIDs), so an independent sibling
+  // capture under the workspace is untouched; and this tab's own in-memory ref already holds the
+  // new capture, so the local notification for the displaced id drops nothing here. The bare
+  // removal that follows covers an entry the reader rejects (malformed or v1), which the
+  // capture-scoped clear cannot name but which must not stay readable either.
   const workspaceGeneration = (workspaceGenerations.get(workspaceId) ?? 0) + 1
   workspaceGenerations.set(workspaceId, workspaceGeneration)
+  const displaced = readRetainedShareKey(workspaceId)
+  if (displaced) clearRetainedShareKey(workspaceId, displaced.captureId)
   try {
     window.sessionStorage.removeItem(storageKey(workspaceId))
   } catch {
@@ -170,8 +180,11 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
 // Cross-tab clear propagation (see the module header): a duplicated tab copies this tab's
 // sessionStorage, entry and captureId both, so the copies answer to the same clears. Exactly two
 // scopes are broadcast. Capture-scoped clears, because the copy shares the original's captureId:
-// the broadcast clears duplicates the moment the original's open succeeds, while an independent
-// sibling capture -- a different captureId, even of the same key -- survives; workspace-scoped
+// the broadcast clears duplicates the moment the original's open succeeds, or the moment a newer
+// capture displaces the original's entry (beginRetainedShareKeyWrite clears the displaced entry
+// by its capture id, the only clear that still reaches a duplicate's copy once the original tab
+// has moved on), while an independent sibling capture -- a different captureId, even of the same
+// key -- survives; workspace-scoped
 // clears name no capture and so deliberately stay local (the capturing hook precedes a keyless
 // success's workspace-scoped clear with a capture-scoped clear of whatever entry is left, so
 // every success path does broadcast). And the logout sweep, because sibling tabs share the login
