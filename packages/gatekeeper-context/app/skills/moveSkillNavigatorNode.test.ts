@@ -2,43 +2,58 @@ import { describe, expect, it, vi } from "vitest";
 import type { ContextApi } from "../../src/context-types";
 import { moveSkillNavigatorNode } from "./moveSkillNavigatorNode";
 
-type MoveApi = Pick<ContextApi, "moveContextDocument">;
+type MoveApi = Pick<ContextApi, "moveContextSkill">;
 
-const createApi = (): MoveApi => ({
-  moveContextDocument: vi.fn(),
-});
+const createApi = (): MoveApi => ({ moveContextSkill: vi.fn() });
 
 describe("moveSkillNavigatorNode", () => {
-  it("uses the collection prefix move within one collection", async () => {
+  it("moves the complete skill directory into an existing legacy folder", async () => {
     const context = createApi();
 
     await moveSkillNavigatorNode(context, {
       collectionId: "one",
-      path: "skills/release",
+      manifestPath: "skills/release/SKILL.md",
+      directoryPath: "skills/release",
     }, {
       collectionId: "one",
       directoryPath: "teams",
     });
 
-    expect(context.moveContextDocument).toHaveBeenCalledWith(
+    expect(context.moveContextSkill).toHaveBeenCalledWith(
       "one",
-      "skills/release",
-      "teams/release",
+      "skills/release/SKILL.md",
+      "teams",
     );
   });
 
-  it("ignores reordering within the same directory", async () => {
+  it("moves a skill from a legacy folder to the collection root", async () => {
     const context = createApi();
 
     await moveSkillNavigatorNode(context, {
       collectionId: "one",
-      path: "skills/release",
+      manifestPath: "skills/release/SKILL.md",
+      directoryPath: "skills/release",
     }, {
       collectionId: "one",
-      directoryPath: "skills",
+      directoryPath: "",
     });
 
-    expect(context.moveContextDocument).not.toHaveBeenCalled();
+    expect(context.moveContextSkill).toHaveBeenCalledWith("one", "skills/release/SKILL.md", "");
+  });
+
+  it("moves a collection-root manifest into a legacy folder", async () => {
+    const context = createApi();
+
+    await moveSkillNavigatorNode(context, {
+      collectionId: "one",
+      manifestPath: "SKILL.md",
+      directoryPath: "",
+    }, {
+      collectionId: "one",
+      directoryPath: "legacy",
+    });
+
+    expect(context.moveContextSkill).toHaveBeenCalledWith("one", "SKILL.md", "legacy");
   });
 
   it("rejects moves across collections", async () => {
@@ -46,11 +61,12 @@ describe("moveSkillNavigatorNode", () => {
 
     await expect(moveSkillNavigatorNode(context, {
       collectionId: "one",
-      path: "skills/release",
+      manifestPath: "release/SKILL.md",
+      directoryPath: "release",
     }, {
       collectionId: "two",
-      directoryPath: "skills",
+      directoryPath: "",
     })).rejects.toThrow("between collections is not supported");
-    expect(context.moveContextDocument).not.toHaveBeenCalled();
+    expect(context.moveContextSkill).not.toHaveBeenCalled();
   });
 });

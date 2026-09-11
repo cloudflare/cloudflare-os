@@ -1,36 +1,39 @@
 import type { ContextApi } from "../../src/context-types";
 
-type MoveApi = Pick<ContextApi, "moveContextDocument">;
+type MoveApi = Pick<ContextApi, "moveContextSkill">;
 
+/** A skill directory that can move within its collection. */
 export type SkillNavigatorMoveSource = {
   collectionId: string;
-  path: string;
+  manifestPath: string;
+  directoryPath: string;
 };
 
+/** An existing collection directory that can receive a skill. */
 export type SkillNavigatorMoveTarget = {
   collectionId: string;
   directoryPath: string;
 };
 
-const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-const directoryName = (path: string) => {
+const dirName = (path: string) => {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
 };
 
-/** Moves a skill subtree using the collection's atomic prefix move. */
+/** Moves a complete skill directory between existing folders in one collection. */
 export const moveSkillNavigatorNode = async (
   context: MoveApi,
   source: SkillNavigatorMoveSource,
   target: SkillNavigatorMoveTarget,
 ): Promise<void> => {
   if (source.collectionId !== target.collectionId) {
-    throw new Error("Moving items between collections is not supported.");
+    throw new Error("Moving skills between collections is not supported.");
   }
-  if (directoryName(source.path) === target.directoryPath) return;
+  if (dirName(source.directoryPath) === target.directoryPath) return;
 
-  const destinationPath = target.directoryPath
-    ? `${target.directoryPath}/${baseName(source.path)}`
-    : baseName(source.path);
-  await context.moveContextDocument(source.collectionId, source.path, destinationPath);
+  await context.moveContextSkill(
+    source.collectionId,
+    source.manifestPath,
+    target.directoryPath,
+  );
 };
