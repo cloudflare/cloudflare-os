@@ -630,6 +630,32 @@ describe("bundled blueprint TypeScript sources", () => {
     expect([...files.keys()].toSorted()).toEqual(["client.js", "package.json"]);
   });
 
+  // The in-tree refusal above cannot see a package.json above the blueprint, and esbuild reads the
+  // nearest one: no option pins its `browser` field or `imports` map, so the audit checks the
+  // result instead -- an input inside files/ has to be the module its specifier names.
+  it("rejects a module the bundler resolved to another of the blueprint's files", async () => {
+    let browser = await sourceTree({
+      "package.json": '{"browser": {"./files/lib/real.ts": "./files/lib/other.ts"}}',
+      "files/client.ts": 'import { value } from "./lib/real.ts"; console.log(value);',
+      "files/lib/real.ts": "export const value = 1;",
+      "files/lib/other.ts": "export const value = 2;",
+    });
+    await expect(readSourceFiles(join(browser, "files"), "example/files")).rejects.toThrow(
+      "example/files: client.ts imports ./lib/real.ts, which the bundler resolved to " +
+      "lib/other.ts rather than the module the specifier names; a package.json above the " +
+      "blueprint is steering its resolution");
+
+    // An imports map applies under every platform, and its specifier is not even relative.
+    let imports = await sourceTree({
+      "package.json": '{"imports": {"#x": "./files/lib/other.ts"}}',
+      "files/client.ts": 'import { value } from "#x"; console.log(value);',
+      "files/lib/other.ts": "export const value = 2;",
+    });
+    await expect(readSourceFiles(join(imports, "files"), "example/files")).rejects.toThrow(
+      "example/files: client.ts imports #x, which the bundler resolved to lib/other.ts rather " +
+      "than the module the specifier names");
+  });
+
   it("keeps a side-effect-only import under a package marked side-effect free", async () => {
     let parent = await sourceTree({
       "package.json": '{"sideEffects": false}',

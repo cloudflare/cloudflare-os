@@ -323,9 +323,11 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  *
  * Rejected, rather than silently mis-shipped: a JavaScript module in a tree that holds TypeScript,
  * which would ship as written beside bundles it cannot share code with -- a blueprint is written in
- * one or the other; a `package.json` anywhere in a TypeScript tree, whose `browser` field or
- * `imports` map would steer the bundler's resolution of the blueprint's own modules away from
- * what the type check saw; a `.ts` file that is neither an entry nor under `lib/`; a TypeScript
+ * one or the other; a `package.json` inside a TypeScript tree, whose `browser` field or `imports`
+ * map would steer the bundler's resolution of the blueprint's own modules away from what the type
+ * check saw, and a module the bundler resolved to another of the blueprint's files by way of a
+ * `package.json` above the tree, which the in-tree refusal cannot see (see {@link auditInputs});
+ * a `.ts` file that is neither an entry nor under `lib/`; a TypeScript
  * dialect the archive has no place for (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/`
  * module no entry imports, which would be dropped from the archive; an input the bundle inlined that is
  * neither one of the blueprint's own files nor a library reached by its package subpath, from the
@@ -505,8 +507,11 @@ async function bundleTypeScriptSources(
  * modules -- is refused, so the package subpath is the libraries' only door and a library's `src/`
  * is not reachable from a blueprint by any path. An import written inside a library may reach any
  * module under `libraries/`, but never `node_modules`: a library's npm dependency would be inlined
- * into an archive nothing audits. An external import is not an input and is not walked; the
- * bundle's surviving imports are checked against the entry's runtime in
+ * into an archive nothing audits. An input inside files/ that a blueprint module imported must be
+ * the module its specifier names (see {@link resolveWithinFiles}), so a `browser` field or
+ * `imports` map in a `package.json` above the blueprint cannot swap one of the blueprint's modules
+ * for another behind the type check's back. An external import is not an input and is not walked;
+ * the bundle's surviving imports are checked against the entry's runtime in
  * {@link bundleTypeScriptSources}.
  *
  * One kind of edge is external without being an import the runtime will see: a dynamic `import()`
@@ -574,6 +579,11 @@ function auditInputs(
             absolute.split(/[\\/]/u).includes("node_modules")) {
           invalid(label, `${importer} imports ${specifier}, which is outside the gadget libraries`);
         }
+      } else if (files.has(importer) &&
+          (!isRelative(specifier) || !resolveWithinFiles(importer, specifier).includes(input))) {
+        invalid(label, `${importer} imports ${specifier}, which the bundler resolved to ${input} ` +
+            `rather than the module the specifier names; a package.json above the blueprint is ` +
+            `steering its resolution`);
       }
       if (!seen.has(input)) {
         seen.add(input);
@@ -637,7 +647,7 @@ function importedModules(
   const queue = [...entryPaths];
   for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
     for (const specifier of scans.get(path)?.specifiers ?? []) {
-      if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
+      if (!isRelative(specifier)) continue;
       for (const candidate of resolveWithinFiles(path, specifier)) {
         if (!files.has(candidate) || reached.has(candidate)) continue;
         reached.add(candidate);
@@ -647,6 +657,10 @@ function importedModules(
   }
   return reached;
 }
+
+/** Whether `specifier` is spelled relative to its importer, the only way to name a file of the blueprint's own. */
+const isRelative = (specifier: string): boolean =>
+    specifier.startsWith("./") || specifier.startsWith("../");
 
 /**
  * The archive paths a relative `specifier` written in `importer` could name.
