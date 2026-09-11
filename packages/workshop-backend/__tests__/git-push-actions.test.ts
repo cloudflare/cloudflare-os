@@ -27,10 +27,24 @@ declare module "cloudflare:workers" {
 const GATEKEEPER = 7;
 const USER = { type: "user" as const, id: "alice@example.com", name: "Alice" };
 
+// Every scenario starts with the gatekeeper's record in place: submitAction refuses an action
+// naming a connection the workspace no longer has.
 async function inOverseer(name: string, fn: (impl: any) => Promise<void>): Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(name);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-    await fn((instance as unknown as { impl: any }).impl);
+    let impl = (instance as unknown as { impl: any }).impl;
+    impl.storage.gatekeepers.put({
+      id: GATEKEEPER,
+      resourceTitle: "Remote repository",
+      class: {} as any,
+      creationSpec: {
+        type: "gatekeeper",
+        vendorId: "testvendor",
+        resourceUrl: "https://example.com/repo",
+        typeUrlPattern: "https://*",
+      },
+    });
+    await fn(impl);
   });
 }
 
