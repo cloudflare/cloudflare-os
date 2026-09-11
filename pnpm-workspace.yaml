@@ -26,6 +26,9 @@ catalog:
   vite-plus: ^0.2.8
   vitest: ^4.1.10
   wrangler: ^4.128.0
+  # Exact: the raw config relies on JSRPC Blob serialization added in 2026 and must run against the
+  # same runtime generation used to build and test the Worker bundles.
+  workerd: 1.20260831.1
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.

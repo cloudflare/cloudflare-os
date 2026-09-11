@@ -195,9 +195,11 @@ Your data will be stored in a subdirectory named `.wrangler`.
 
 ### Deploy to your own server using `workerd`
 
-**COMING SOON**
-
-Cloudflare OS can run entirely on `workerd`, Cloudflare's open source runtime for Workers. In fact, the "run locally" instructions above use `workerd` under the hood. We are still working on documentation and tooling to help you smoothly deploy the OS on top of `workerd` on your own servers. If you are feeling adventurous, [read the low-level documentation for workerd config](https://github.com/cloudflare/workerd/blob/main/src/workerd/server/workerd.capnp) (or point your agent at it) and have a go.
+Cloudflare OS can run entirely on `workerd`, Cloudflare's open source runtime for Workers. In fact,
+the "run locally" instructions above use `workerd` under the hood. An initial standalone
+configuration, including local service-binding implementations of the hosted AI, KV and R2 APIs,
+lives in [`workerd/`](workerd/README.md). It is intended as a self-hosting foundation rather than a
+production-hardened, one-command installer.
 
 #### Configuring external services
 
