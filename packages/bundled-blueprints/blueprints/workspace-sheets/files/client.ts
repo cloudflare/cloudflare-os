@@ -1188,13 +1188,14 @@ document.body.appendChild(printWorkbook);
 // Save / operations queue — the library's scheduler over this gadget's payload
 // ===========================================================================
 let applyingRemote = false;
-// A queued cell edit; `baseVersion` is set only when the undo/redo path pins one.
+// A queued cell edit; `baseVersion` is the version of the cell the edit was made on, as the model
+// held it when the edit was queued (0 for a cell that did not exist).
 interface PendingCellOp {
   sheetId: string;
   ref: string;
   value: string | null;
   fmt: CellFmt | null;
-  baseVersion?: number;
+  baseVersion: number;
 }
 // Pending local ops keyed to flush together.
 const pendingCellOps = new Map<string, PendingCellOp>(); // "sheetId!REF" -> { sheetId, ref, value, fmt }
@@ -1206,8 +1207,10 @@ let resyncBeforeSave = false;
 // Set when that check reloaded the sheet, so the status line says so once the save settles.
 let reloadedAfterFailure = false;
 
-function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null): void {
-  pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt });
+// `baseVersion` is the version the caller saw before it wrote the model: a deletion removes the
+// cell first, so the queue cannot read it back afterwards.
+function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion: number): void {
+  pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt, baseVersion });
   scheduleSave();
 }
 function queueStructure(): void {
@@ -1260,8 +1263,10 @@ function scheduleSave(): void {
 //
 // A rejected call is retried by the scheduler, and a rejection is ambiguous: the socket may have
 // dropped after the server committed and before the reply arrived. The cell ops may be replayed
-// through that -- each carries the version it was based on, re-read from the model at send time,
-// and the server rejects a stale one as a conflict -- but the structure snapshot and the sheet
+// through that -- each carries the version it was based on, captured when it was queued, not
+// re-read at send time, since a resync below, or a peer's edit landing during the debounce, moves
+// the model's version past what the edit saw, and re-reading would send a stale edit as current;
+// the server rejects a stale one as a conflict -- but the structure snapshot and the sheet
 // replacements carry no version and are applied wholesale, last writer wins, so replaying them
 // onto a document that moved in the meantime (our own commit, a collaborator's, or both) would
 // silently overwrite whatever moved it. They may only go out against the revision they were built
@@ -1296,10 +1301,8 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
   const sentReplacements = [...pendingReplacements];
   if (!sentCellOps.length && !sentStructure && !sentReplacements.length) return "saved";
 
-  const cellOps: CellOp[] = sentCellOps.map(([, op]) => {
-    const cur: Cell | undefined = (model.cells[op.sheetId] || {})[op.ref];
-    return { sheetId: op.sheetId, ref: op.ref, value: op.value, fmt: op.fmt, baseVersion: op.baseVersion || (cur ? cur.version : 0) };
-  });
+  const cellOps: CellOp[] = sentCellOps.map(([, op]) =>
+    ({ sheetId: op.sheetId, ref: op.ref, value: op.value, fmt: op.fmt, baseVersion: op.baseVersion }));
   const sheetReplacements = sentReplacements.map(([sheetId, cells]) => ({ sheetId, cells }));
   let result: OperationResult;
   try {
@@ -1321,12 +1324,22 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
   }
 
   model.revision = Math.max(model.revision, result.revision || 0);
-  // Adopt acknowledged versions.
+  // Adopt acknowledged versions. An edit typed while this call was in flight replaced its entry
+  // and stays pending; it was made on top of what the call carried, and only our write could
+  // have produced the version acknowledged here -- a peer's would have conflicted -- so it moves
+  // with the ack. A conflict rebases nothing: the server's cell stands, and a pending follow-up
+  // on it is rejected the same way.
   for (const up of result.upserts || []) {
     const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
     cells[up.ref] = { ...up.cell };
+    const pending = pendingCellOps.get(up.sheetId + "!" + up.ref);
+    if (pending) pending.baseVersion = up.cell.version;
   }
-  for (const del of result.deletes || []) { const cells = model.cells[del.sheetId]; if (cells) delete cells[del.ref]; }
+  for (const del of result.deletes || []) {
+    const cells = model.cells[del.sheetId]; if (cells) delete cells[del.ref];
+    const pending = pendingCellOps.get(del.sheetId + "!" + del.ref);
+    if (pending) pending.baseVersion = 0;
+  }
   const conflicts = result.status === "conflict" && result.conflicts ? result.conflicts : [];
   // Rebase on the server's version of every cell it rejected.
   for (const cf of conflicts) {
@@ -1380,10 +1393,7 @@ function applyHistory(entry: HistoryBatch, into: HistoryBatch[]): void {
     inverse.cells.set(key, { sheetId: rec.sheetId, ref: rec.ref, prev: now });
     if (rec.prev) { cells[rec.ref] = { ...rec.prev }; }
     else delete cells[rec.ref];
-    queueCellOp(rec.sheetId, rec.ref, rec.prev ? rec.prev.value : null, rec.prev ? rec.prev.fmt : null);
-    // ensure base version matches server: send with adopted version handling
-    const pk = rec.sheetId + "!" + rec.ref;
-    const p = pendingCellOps.get(pk); if (p) p.baseVersion = now ? now.version : 0;
+    queueCellOp(rec.sheetId, rec.ref, rec.prev ? rec.prev.value : null, rec.prev ? rec.prev.fmt : null, now ? now.version : 0);
   }
   into.push(inverse);
   rebuildEngine();
@@ -1403,12 +1413,12 @@ function setCellValue(ref: string, value: string | null, { batch = true }: { bat
   const cells = curCells();
   const cur = cells[ref];
   if ((value == null || value === "") && (!cur || !cur.fmt)) {
-    if (cur) { delete cells[ref]; queueCellOp(sheetId, ref, null, null); }
+    if (cur) { delete cells[ref]; queueCellOp(sheetId, ref, null, null, cur.version); }
     return;
   }
   const fmt = cur ? cur.fmt : null;
   cells[ref] = { value: value == null ? "" : String(value), fmt: fmt || null, version: cur ? cur.version : 0 };
-  queueCellOp(sheetId, ref, cells[ref].value, cells[ref].fmt);
+  queueCellOp(sheetId, ref, cells[ref].value, cells[ref].fmt, cells[ref].version);
 }
 function setCellFmt(ref: string, mutator: (f: CellFmt) => void): void {
   const sheetId = activeSheetId;
@@ -1419,9 +1429,9 @@ function setCellFmt(ref: string, mutator: (f: CellFmt) => void): void {
   mutator(fmt);
   const clean = Object.keys(fmt).length ? fmt : null;
   const value = cur ? cur.value : "";
-  if ((value == null || value === "") && !clean) { if (cur) { delete cells[ref]; queueCellOp(sheetId, ref, null, null); } return; }
+  if ((value == null || value === "") && !clean) { if (cur) { delete cells[ref]; queueCellOp(sheetId, ref, null, null, cur.version); } return; }
   cells[ref] = { value: value || "", fmt: clean, version: cur ? cur.version : 0 };
-  queueCellOp(sheetId, ref, cells[ref].value, clean);
+  queueCellOp(sheetId, ref, cells[ref].value, clean, cells[ref].version);
 }
 
 // ===========================================================================
@@ -2174,7 +2184,7 @@ function deleteSelectionContents(): void {
   beginBatch();
   for (let row = r.r1; row <= r.r2; row++) for (let col = r.c1; col <= r.c2; col++) {
     const ref = rcToRef(row, col); const cell = getCell(ref);
-    if (cell) { recordCell(activeSheetId, ref); if (cell.fmt) { setCellValue(ref, null); } else { delete curCells()[ref]; queueCellOp(activeSheetId, ref, null, null); } }
+    if (cell) { recordCell(activeSheetId, ref); if (cell.fmt) { setCellValue(ref, null); } else { delete curCells()[ref]; queueCellOp(activeSheetId, ref, null, null, cell.version); } }
   }
   commitBatch(); rebuildEngine(); renderGrid();
 }
@@ -2233,8 +2243,8 @@ function pasteText(text: string): void {
       if (useSnapshot && copyFallback!.cells[i] && copyFallback!.cells[i][j] !== undefined) {
         const src = copyFallback!.cells[i][j];
         recordCell(activeSheetId, ref);
-        if (src) { curCells()[ref] = { value: src.value, fmt: src.fmt, version: getCell(ref)?.version || 0 }; queueCellOp(activeSheetId, ref, src.value, src.fmt); }
-        else { if (getCell(ref)) { delete curCells()[ref]; queueCellOp(activeSheetId, ref, null, null); } }
+        if (src) { curCells()[ref] = { value: src.value, fmt: src.fmt, version: getCell(ref)?.version || 0 }; queueCellOp(activeSheetId, ref, src.value, src.fmt, curCells()[ref].version); }
+        else { const was = getCell(ref); if (was) { delete curCells()[ref]; queueCellOp(activeSheetId, ref, null, null, was.version); } }
       } else {
         setCellValue(ref, cols[j] === "" ? null : cols[j]);
       }
