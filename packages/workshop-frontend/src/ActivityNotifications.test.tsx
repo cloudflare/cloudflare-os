@@ -15,6 +15,7 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
 import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
 import ActivityNotifications from './ActivityNotifications'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
+import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 
 const view = makeTestRoot()
 
@@ -23,40 +24,63 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-// Renders the popover with one pending request.
-async function renderRequest(descriptionIsComplete?: true, fields?: unknown[]) {
+const longDescription = [
+  'Send the following email to alice@example.com:',
+  'Hi Alice, attached are the quarterly numbers you asked for.',
+  'Regards, the workspace.',
+].join('\n\n')
+
+// Renders the popover with one pending request and returns the span carrying its description.
+async function renderPending(
+  restricted?: boolean, descriptionIsComplete?: true, fields?: unknown[],
+): Promise<HTMLElement> {
   const server = makeOverseer()
   await view.render(
-    <ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} />,
+    <ActivityNotifications overseer={server.overseer} onViewActivity={() => {}} restricted={restricted} />,
   )
   await server.resolveSubscription()
   await server.resolvePendingQuery({
     entries: [entry(1, {
       description: {
-        title: 'Send email', description: 'Send an email.', implementsRevert: false,
+        title: 'Send email', description: longDescription, implementsRevert: false,
         descriptionIsComplete, fields,
       },
     })],
   })
   flushFrames()
-  expect(document.body.textContent).toContain('Send an email.')
+  const description = [...document.querySelectorAll('span')]
+      .find(span => span.textContent === longDescription)
+  if (!description) throw new Error('The pending request description was not rendered')
+  return description
 }
 
-describe('ActivityNotifications incomplete description notice', () => {
+describe('ActivityNotifications', () => {
+  it('shows the review notice and the untruncated request while restricted', async () => {
+    const description = await renderPending(true)
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(description.classList.contains('line-clamp-2')).toBe(false)
+  })
+
+  it('clamps the request and shows no notice when not restricted', async () => {
+    const description = await renderPending()
+    expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
+    expect(description.classList.contains('line-clamp-2')).toBe(true)
+  })
+
   it('flags a request whose description is not marked complete', async () => {
-    await renderRequest()
+    await renderPending()
     expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 
-  it('shows no notice when the description is complete', async () => {
-    await renderRequest(true)
+  it('shows no incomplete notice when the description is complete', async () => {
+    await renderPending(false, true)
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 })
 
 describe('ActivityNotifications action fields', () => {
   it('counts a request\'s fields beside its prose, leaving the values to a fuller view', async () => {
-    await renderRequest(true, [
+    await renderPending(false, true, [
       { label: 'To', kind: 'list', items: ['a@example.com'] },
       { label: 'Body', kind: 'text', value: 'Full body text' },
     ])
@@ -65,7 +89,7 @@ describe('ActivityNotifications action fields', () => {
   })
 
   it('shows no count for a request without fields', async () => {
-    await renderRequest(true)
+    await renderPending(false, true)
     expect(document.body.textContent).not.toMatch(/\d+ fields?/)
   })
 })

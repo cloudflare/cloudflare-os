@@ -21,6 +21,7 @@ import { safeExternalUrl } from './utils/safeExternalUrl'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
+import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
 
 export type ActivityView = 'review' | 'history' | 'auto'
 
@@ -254,6 +255,7 @@ export default function Activity({
                 <ReviewRequest
                   key={record.id}
                   record={record}
+                  restricted={restricted}
                   expanded={expandedActionId === record.id}
                   processing={processingActions.has(record.id)}
                   onToggle={() => toggleExpanded(record.id)}
@@ -619,6 +621,7 @@ function AutoApprovalPanel({
 
 function ReviewRequest({
   record,
+  restricted,
   expanded,
   processing,
   onToggle,
@@ -627,6 +630,9 @@ function ReviewRequest({
   onAlwaysApprove,
 }: {
   record: ActionLogEntry
+  // While restricted the approver is the leak check, so the request is shown in full with a
+  // notice saying so.
+  restricted?: boolean
   expanded: boolean
   processing: boolean
   onToggle: () => void
@@ -678,8 +684,10 @@ function ReviewRequest({
         </div>
       </div>
 
+      {restricted && <RestrictedApprovalNotice className="mt-2 max-w-2xl" />}
+
       {record.description.description && (
-        <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${expanded ? '' : 'line-clamp-2'}`}>
+        <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${restricted || expanded ? '' : 'line-clamp-2'}`}>
           {record.description.description}
         </p>
       )}
