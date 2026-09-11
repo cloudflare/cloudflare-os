@@ -5,7 +5,14 @@ import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import React, { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import React, {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   HierarchicalListPrimitive,
   type HierarchicalListPrimitiveRowProps,
@@ -89,6 +96,7 @@ const StyledRow = ({
   const rowRef = useRef<HTMLButtonElement>(null);
   const restoreDrawerFocusRef = useRef(true);
   const drawerTitleId = useId();
+  const wasRenamingRef = useRef(false);
   const {
     item,
     depth,
@@ -99,7 +107,12 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
-  const contextMenu = renderContextMenu?.(item);
+  const renaming = rename?.isRenaming(item) ?? false;
+  useLayoutEffect(() => {
+    if (wasRenamingRef.current && !renaming) rowRef.current?.focus();
+    wasRenamingRef.current = renaming;
+  }, [renaming]);
+  const contextMenu = renaming ? null : renderContextMenu?.(item);
   useEffect(() => {
     if (!actionsOpen || !useActionDrawer) return;
     restoreDrawerFocusRef.current = true;
@@ -114,47 +127,8 @@ const StyledRow = ({
     document.addEventListener("focusin", trackFocusDestination, true);
     return () => document.removeEventListener("focusin", trackFocusDestination, true);
   }, [actionsOpen, useActionDrawer]);
-  const renaming = rename?.isRenaming(item) ?? false;
-  const row = (
-    <Button
-      ref={rowRef}
-      {...rowProps as React.ComponentProps<typeof Button>}
-      type="button"
-      variant="ghost"
-      size="base"
-      aria-current={selected ? "true" : undefined}
-      aria-expanded={collapsible ? expanded : undefined}
-      onClick={(event) => {
-        if (renaming) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        rowProps.onClick?.(event);
-        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
-      }}
-      onContextMenu={(event) => {
-        rowProps.onContextMenu?.(event);
-        if (event.defaultPrevented || !useActionDrawer || !contextMenu) return;
-        event.preventDefault();
-        onActionsOpenChange(true);
-      }}
-      className={cn(
-        rowProps.className,
-        "group relative focus-visible:z-20",
-        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left",
-        !renaming && "active:!bg-kumo-recessed",
-        state.draggable && "cursor-grab active:cursor-grabbing",
-        state.draggable && "[@media(any-pointer:coarse)]:pr-11",
-        highlighted && "bg-kumo-recessed",
-        coarsePointer && (
-          highlighted
-            ? "hover:!bg-kumo-recessed"
-            : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
-        ),
-      )}
-      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
-    >
+  const contents = (
+    <>
       {itemIcon(item)}
       {collapsible && (
         <CaretDownIcon
@@ -167,11 +141,7 @@ const StyledRow = ({
         />
       )}
       {renaming ? (
-        <span
-          className="min-w-0 flex-1"
-          onClick={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
+        <span className="min-w-0 flex-1">
           {rename!.renderInput(item)}
         </span>
       ) : (
@@ -202,7 +172,7 @@ const StyledRow = ({
           />
         )}
       </AnimatePresence>
-      {state.draggable && (
+      {!renaming && state.draggable && (
         <span
           {...state.touchDragHandleProps}
           aria-hidden="true"
@@ -214,6 +184,55 @@ const StyledRow = ({
           <DotsSixVerticalIcon aria-hidden="true" size={18} />
         </span>
       )}
+    </>
+  );
+  const rowClassName = cn(
+    rowProps.className,
+    "group relative focus-visible:z-20",
+    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
+    !renaming && "active:!bg-kumo-recessed",
+    !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
+    !renaming && state.draggable && "[@media(any-pointer:coarse)]:pr-11",
+    highlighted && "bg-kumo-recessed",
+    coarsePointer && !renaming && (
+      highlighted
+        ? "hover:!bg-kumo-recessed"
+        : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
+    ),
+  );
+  const row = renaming ? (
+    <div
+      data-hierarchical-list-row=""
+      data-depth={depth}
+      tabIndex={-1}
+      className={rowClassName}
+      style={{ paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
+    </div>
+  ) : (
+    <Button
+      ref={rowRef}
+      {...rowProps as React.ComponentProps<typeof Button>}
+      type="button"
+      variant="ghost"
+      size="base"
+      aria-current={selected ? "true" : undefined}
+      aria-expanded={collapsible ? expanded : undefined}
+      onClick={(event) => {
+        rowProps.onClick?.(event);
+        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
+      }}
+      onContextMenu={(event) => {
+        rowProps.onContextMenu?.(event);
+        if (event.defaultPrevented || !useActionDrawer || !contextMenu) return;
+        event.preventDefault();
+        onActionsOpenChange(true);
+      }}
+      className={rowClassName}
+      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
     </Button>
   );
 
