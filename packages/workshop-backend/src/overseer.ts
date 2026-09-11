@@ -5781,6 +5781,15 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
+    // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
+    // connection could never be approved or rejected (both dereference the facet).
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    if (!gatekeeper) {
+      throw new Error(
+          "This action was blocked because the connection it was submitted through has been " +
+          "removed from this workspace.");
+    }
+
     if (this.storage.containsRestrictedData.get()) {
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
@@ -5799,14 +5808,12 @@ class OverseerImpl implements AgentHooks {
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
 
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-
     let record: ActionRecord = {
       id: actionId,
       gatekeeperId,
       caller,
-      resourceTitle: gatekeeper?.resourceTitle,
-      resourceUrl: gatekeeper?.resourceUrl,
+      resourceTitle: gatekeeper.resourceTitle,
+      resourceUrl: gatekeeper.resourceUrl,
       action,
       createdAt: new Date(),
       state: "pending",
