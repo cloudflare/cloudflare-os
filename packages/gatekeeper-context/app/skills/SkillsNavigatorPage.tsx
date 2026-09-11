@@ -1,5 +1,27 @@
-import { Button, Dialog, DropdownMenu, Input, InputArea, Text, useKumoToastManager } from "@cloudflare/kumo";
-import { FileTextIcon, MagnifyingGlassIcon, PencilSimple, PlusIcon, TrashIcon, X } from "@phosphor-icons/react";
+import {
+  Button,
+  Dialog,
+  DropdownMenu,
+  Field,
+  Input,
+  InputArea,
+  Select,
+  Text,
+  useKumoToastManager,
+} from "@cloudflare/kumo";
+import {
+  FileTextIcon,
+  FolderPlus,
+  MagnifyingGlassIcon,
+  PencilSimple,
+  PlusIcon,
+  TrashIcon,
+  X,
+} from "@phosphor-icons/react";
+import {
+  CollectionIconPicker,
+  DEFAULT_COLLECTION_ICON,
+} from "../components/CollectionIconPicker";
 import {
   HierarchicalList,
   type HierarchicalListDropDestination,
@@ -10,7 +32,7 @@ import type {
   ContextDocumentSummary,
   EnabledCollectionInfo,
 } from "../../src/context-types";
-import { useContextApi } from "../bridge";
+import { useContextApi, usePresentWhileOpen } from "../bridge";
 import {
   buildNewSkillLocation,
   isValidSkillDescription,
@@ -110,6 +132,8 @@ const toListItem = (
 type PendingAdd = {
   collectionId: string;
   directoryPath: string;
+  /** Whether the user may pick a different target collection in the dialog. */
+  collectionEditable: boolean;
 };
 
 type PendingRemove =
@@ -192,6 +216,9 @@ const RenameInput = ({ initialValue, format, onCommit, onCancel }: RenameInputPr
         onChange={(event) => setValue(formatRenameValue(event.target.value, format))}
         onBlur={commit}
         onKeyDown={(event) => {
+          // Keep typing from activating the surrounding list row (e.g. Space would give it an
+          // active background while the rename input is focused).
+          event.stopPropagation();
           if (event.key === "Enter") {
             event.preventDefault();
             commit();
@@ -229,7 +256,20 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
   const [displayedAdd, setDisplayedAdd] = useState<PendingAdd | null>(null);
   const [addName, setAddName] = useState("");
   const [addDescription, setAddDescription] = useState("");
+  const [addCollectionId, setAddCollectionId] = useState("");
   const [adding, setAdding] = useState(false);
+
+  const [pendingAddCollection, setPendingAddCollection] = useState(false);
+  const [addCollectionTitle, setAddCollectionTitle] = useState("");
+  const [addCollectionDescription, setAddCollectionDescription] = useState("");
+  const [addCollectionIcon, setAddCollectionIcon] = useState(DEFAULT_COLLECTION_ICON);
+  const [addingCollection, setAddingCollection] = useState(false);
+
+  const [pendingEditCollection, setPendingEditCollection] = useState<EnabledCollectionInfo | null>(null);
+  const [editCollectionTitle, setEditCollectionTitle] = useState("");
+  const [editCollectionDescription, setEditCollectionDescription] = useState("");
+  const [editCollectionIcon, setEditCollectionIcon] = useState(DEFAULT_COLLECTION_ICON);
+  const [editingCollection, setEditingCollection] = useState(false);
 
   const [pendingRemove, setPendingRemove] = useState<PendingRemove | null>(null);
   const [displayedRemove, setDisplayedRemove] = useState<PendingRemove | null>(null);
@@ -246,6 +286,29 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
     if (pendingRemove) setDisplayedRemove(pendingRemove);
   }, [pendingRemove]);
 
+  const writableCollections = useMemo(
+    () => collections.filter((collection) => writableCollectionIds.has(collection.id)),
+    [collections, writableCollectionIds],
+  );
+
+  const LAST_PICKED_COLLECTION_KEY = "gatekeeper-context:last-picked-skill-collection";
+
+  const getLastPickedCollectionId = (): string | null => {
+    try {
+      return localStorage.getItem(LAST_PICKED_COLLECTION_KEY);
+    } catch {
+      return null;
+    }
+  };
+
+  const saveLastPickedCollectionId = (collectionId: string) => {
+    try {
+      localStorage.setItem(LAST_PICKED_COLLECTION_KEY, collectionId);
+    } catch {
+      // Ignore private-mode or storage-full errors.
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -257,7 +320,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             .catch(() => [] as ContextDocumentSummary[]);
           return [collection.id, collectionDocuments] as const;
         }));
-        const writableCollections = await Promise.all(loadedCollections.map(async (collection) => {
+        const writableIds = await Promise.all(loadedCollections.map(async (collection) => {
           const [canWrite, metadata] = await Promise.all([
             context.canWriteContextCollection(collection.id).catch(() => false),
             context.getContextCollectionMetadata(collection.id).catch(() => null),
@@ -267,7 +330,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
         if (cancelled) return;
         setCollections(loadedCollections);
         setDocuments(new Map(loadedDocuments));
-        setWritableCollectionIds(new Set(writableCollections.filter((id) => id !== null)));
+        setWritableCollectionIds(new Set(writableIds.filter((id) => id !== null)));
         setStatus("ready");
       } catch {
         if (!cancelled) setStatus("error");
@@ -341,30 +404,53 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
     setPendingAdd(target);
     setAddName("");
     setAddDescription("");
+    setAddCollectionId(target.collectionId);
+  };
+
+  const startAddSkillFromMenu = () => {
+    const lastPicked = getLastPickedCollectionId();
+    const defaultCollectionId = writableCollections.find((collection) => collection.id === lastPicked)?.id ?? "";
+    startAdd({ collectionId: defaultCollectionId, directoryPath: "", collectionEditable: true });
+  };
+
+  const startAddCollection = () => {
+    setPendingAddCollection(true);
+    setAddCollectionTitle("");
+    setAddCollectionDescription("");
+    setAddCollectionIcon(DEFAULT_COLLECTION_ICON);
   };
 
   const cancelAdd = () => {
     setPendingAdd(null);
     setAddName("");
     setAddDescription("");
+    setAddCollectionId("");
+  };
+
+  const cancelAddCollection = () => {
+    setPendingAddCollection(false);
+    setAddCollectionTitle("");
+    setAddCollectionDescription("");
+    setAddCollectionIcon(DEFAULT_COLLECTION_ICON);
   };
 
   const handleAddSkill = async () => {
-    if (!pendingAdd || !isValidSkillName(addName.trim()) || !isValidSkillDescription(addDescription)) {
+    if (!pendingAdd || !addCollectionId || !isValidSkillName(addName.trim()) || !isValidSkillDescription(addDescription)) {
       return;
     }
-    const { collectionId, directoryPath } = pendingAdd;
+    const { directoryPath } = pendingAdd;
     const name = addName.trim();
     const description = addDescription.trim();
-    const { path } = buildNewSkillLocation(documents, collectionId, directoryPath, name);
+    const { path } = buildNewSkillLocation(documents, addCollectionId, directoryPath, name);
 
     setAdding(true);
     try {
-      await context.putContextDocument(collectionId, path, {
+      await context.putContextDocument(addCollectionId, path, {
         description,
         body: makeSkillManifestBody(name, description),
         contentType: "text/markdown",
       });
+      saveLastPickedCollectionId(addCollectionId);
       cancelAdd();
       setReloadKey((value) => value + 1);
     } catch (error) {
@@ -374,6 +460,103 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       });
     } finally {
       setAdding(false);
+    }
+  };
+
+  const handleAddCollection = async () => {
+    const title = addCollectionTitle.trim();
+    if (!title || addingCollection) return;
+
+    setAddingCollection(true);
+    try {
+      const metadata = await context.createContextCollection(
+        title,
+        addCollectionDescription.trim(),
+        "private",
+        addCollectionIcon,
+      );
+      const newCollection: EnabledCollectionInfo = {
+        id: metadata.id,
+        title: metadata.title,
+        description: metadata.description,
+        icon: metadata.icon,
+        source: metadata.visibility,
+        lastUpdated: metadata.lastUpdated,
+      };
+      setCollections((current) => [...current, newCollection]);
+      setDocuments((current) => {
+        const next = new Map(current);
+        next.set(metadata.id, []);
+        return next;
+      });
+      setWritableCollectionIds((current) => {
+        const next = new Set(current);
+        next.add(metadata.id);
+        return next;
+      });
+      saveLastPickedCollectionId(metadata.id);
+      cancelAddCollection();
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      toasts.add({
+        title: error instanceof Error ? error.message : "Failed to create collection",
+        variant: "error",
+      });
+    } finally {
+      setAddingCollection(false);
+    }
+  };
+
+  const startEditCollection = (collection: EnabledCollectionInfo) => {
+    setPendingEditCollection(collection);
+    setEditCollectionTitle(collection.title);
+    setEditCollectionDescription(collection.description);
+    setEditCollectionIcon(collection.icon ?? DEFAULT_COLLECTION_ICON);
+  };
+
+  const resetEditCollection = () => {
+    setEditCollectionTitle("");
+    setEditCollectionDescription("");
+    setEditCollectionIcon(DEFAULT_COLLECTION_ICON);
+  };
+
+  const cancelEditCollection = () => {
+    setPendingEditCollection(null);
+  };
+
+  const handleEditCollection = async () => {
+    if (!pendingEditCollection || editingCollection) return;
+    const title = editCollectionTitle.trim();
+    if (!title) return;
+
+    const trimmedDescription = editCollectionDescription.trim();
+    const expectedIcon = pendingEditCollection.icon ?? DEFAULT_COLLECTION_ICON;
+    const updates: { title?: string; description?: string; icon?: string } = {};
+    if (title !== pendingEditCollection.title) updates.title = title;
+    if (trimmedDescription !== pendingEditCollection.description) updates.description = trimmedDescription;
+    if (editCollectionIcon !== expectedIcon) updates.icon = editCollectionIcon;
+    if (Object.keys(updates).length === 0) {
+      cancelEditCollection();
+      return;
+    }
+
+    setEditingCollection(true);
+    try {
+      await context.updateContextCollection(pendingEditCollection.id, updates);
+      setCollections((current) => current.map((collection) =>
+        collection.id === pendingEditCollection.id
+          ? { ...collection, title, description: trimmedDescription, icon: editCollectionIcon }
+          : collection,
+      ));
+      cancelEditCollection();
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      toasts.add({
+        title: error instanceof Error ? error.message : "Failed to update collection",
+        variant: "error",
+      });
+    } finally {
+      setEditingCollection(false);
     }
   };
 
@@ -554,7 +737,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
         <>
           <DropdownMenu.Item
             icon={<PlusIcon size={13} className="mr-2" />}
-            onClick={() => startAdd({ collectionId, directoryPath: directory.path })}
+            onClick={() => startAdd({ collectionId, directoryPath: directory.path, collectionEditable: false })}
           >
             Add skill
           </DropdownMenu.Item>
@@ -592,20 +775,16 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
         <>
           <DropdownMenu.Item
             icon={<PlusIcon size={13} className="mr-2" />}
-            onClick={() => startAdd({ collectionId, directoryPath: "" })}
+            onClick={() => startAdd({ collectionId, directoryPath: "", collectionEditable: false })}
           >
             Add skill
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item
             icon={<PencilSimple size={13} className="mr-2" />}
-            onClick={() => startRename({
-              type: "collection",
-              collectionId,
-              name: collectionInfo.collection.title,
-            })}
+            onClick={() => startEditCollection(collectionInfo.collection)}
           >
-            Rename
+            Edit
           </DropdownMenu.Item>
           <DropdownMenu.Item
             icon={<TrashIcon size={13} className="mr-2" />}
@@ -625,11 +804,9 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
     return null;
   };
 
-  const addTargetLabel = displayedAdd?.directoryPath
-    ? baseName(displayedAdd.directoryPath)
-    : "the collection root";
-
-  const isAddValid = isValidSkillName(addName.trim()) && isValidSkillDescription(addDescription);
+  const isAddValid = Boolean(addCollectionId)
+    && isValidSkillName(addName.trim())
+    && isValidSkillDescription(addDescription);
 
   const removeTitle = displayedRemove?.type === "collection"
     ? "Delete collection"
@@ -653,6 +830,11 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       </>
     );
 
+  const { presenting: presentingAdd, onOpenChangeComplete: onAddOpenChangeComplete } = usePresentWhileOpen(pendingAdd !== null);
+  const { presenting: presentingAddCollection, onOpenChangeComplete: onAddCollectionOpenChangeComplete } = usePresentWhileOpen(pendingAddCollection);
+  const { presenting: presentingEditCollection, onOpenChangeComplete: onEditCollectionOpenChangeComplete } = usePresentWhileOpen(pendingEditCollection !== null);
+  const { presenting: presentingRemove, onOpenChangeComplete: onRemoveOpenChangeComplete } = usePresentWhileOpen(pendingRemove !== null);
+
   return (
     <main className="h-full overflow-y-auto bg-kumo-base px-5 py-8 sm:px-10 sm:py-10">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
@@ -663,19 +845,45 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           </Text>
         </header>
 
-        <div className="relative">
-          <MagnifyingGlassIcon
-            aria-hidden
-            size={16}
-            className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-kumo-inactive"
-          />
-          <Input
-            aria-label="Search skills"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search skills"
-            className="w-full pl-9"
-          />
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1">
+            <MagnifyingGlassIcon
+              aria-hidden
+              size={16}
+              className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-kumo-inactive"
+            />
+            <Input
+              aria-label="Search skills"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search skills"
+              className="w-full pl-9"
+            />
+          </div>
+          <DropdownMenu>
+            <DropdownMenu.Trigger
+              render={(
+                <Button>
+                  <PlusIcon size={16} weight="bold" />
+                  Add
+                </Button>
+              )}
+            />
+            <DropdownMenu.Content align="end" sideOffset={6}>
+              <DropdownMenu.Item
+                icon={<PlusIcon size={13} className="mr-2" />}
+                onClick={startAddSkillFromMenu}
+              >
+                Add skill
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                icon={<FolderPlus size={13} className="mr-2" />}
+                onClick={startAddCollection}
+              >
+                Add collection
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu>
         </div>
 
         {status === "loading" ? (
@@ -702,8 +910,8 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             rename={{
               isRenaming: (item) => {
                 if (!pendingRename) return false;
-                if (item.id === `${pendingRename.collectionId}:collection`) {
-                  return pendingRename.type === "collection";
+                if (pendingRename.type === "collection") {
+                  return item.id === `${pendingRename.collectionId}:collection`;
                 }
                 if (pendingRename.type === "skill") {
                   return item.id === `${pendingRename.collectionId}:skill:${pendingRename.path}`;
@@ -712,7 +920,9 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               },
               renderInput: () => pendingRename ? (
                 <RenameInput
-                  key={pendingRename.collectionId + pendingRename.type + pendingRename.path}
+                  key={pendingRename.type === "collection"
+                    ? `${pendingRename.collectionId}:collection`
+                    : `${pendingRename.collectionId}:${pendingRename.type}:${pendingRename.path}`}
                   initialValue={pendingRename.name}
                   format={pendingRename.type}
                   onCommit={handleRename}
@@ -729,22 +939,22 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       </div>
 
       <Dialog.Root
-        open={pendingAdd !== null}
+        open={pendingAdd !== null && presentingAdd}
         onOpenChange={(open) => { if (!open) cancelAdd(); }}
-        onOpenChangeComplete={(open) => { if (!open) setDisplayedAdd(null); }}
+        onOpenChangeComplete={(open) => {
+          onAddOpenChangeComplete(open);
+          if (!open) setDisplayedAdd(null);
+        }}
       >
         <Dialog
-          className="z-[1000]! w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
+          className="w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
           size="sm"
         >
-          <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
+          <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
             <div className="min-w-0">
               <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
                 Add skill
               </Dialog.Title>
-              <Dialog.Description className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                Create a new skill in {addTargetLabel}.
-              </Dialog.Description>
             </div>
             <Dialog.Close
               render={(props) => (
@@ -755,29 +965,49 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             />
           </div>
           <div className="flex flex-col gap-4 px-4 py-5 sm:px-6">
-            <div className="flex flex-col gap-1.5">
-              <Text as="label" size="sm" htmlFor="skill-name">Name</Text>
-              <Input
-                id="skill-name"
-                value={addName}
-                onChange={(event) => setAddName(formatSkillName(event.target.value))}
-                placeholder="new-skill"
-                autoFocus
-              />
-              <Text variant="secondary" size="xs">
-                Lowercase letters, numbers, and hyphens only. Max 64 characters.
-              </Text>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Text as="label" size="sm" htmlFor="skill-description">Description</Text>
-              <InputArea
-                id="skill-description"
-                value={addDescription}
-                onChange={(event) => setAddDescription(event.target.value)}
-                placeholder="What this skill does"
-                rows={3}
-              />
-            </div>
+            <Input
+              label="Name"
+              description="Lowercase letters, numbers, and hyphens only. Max 64 characters."
+              value={addName}
+              onChange={(event) => setAddName(formatSkillName(event.target.value))}
+              placeholder="new-skill"
+              autoFocus
+            />
+            <InputArea
+              label="Description"
+              value={addDescription}
+              onChange={(event) => setAddDescription(event.target.value)}
+              placeholder="What this skill does"
+              rows={3}
+            />
+            {displayedAdd?.collectionEditable && (
+              <Select
+                label="Collection"
+                className="w-full"
+                placeholder="Select a collection"
+                value={addCollectionId}
+                onValueChange={(value) => setAddCollectionId(value as string)}
+                renderValue={(id) => {
+                  const collection = collections.find((c) => c.id === id);
+                  if (!collection) return "Select a collection";
+                  return (
+                    <span className="flex items-center gap-2">
+                      {collection.icon ? <span>{collection.icon}</span> : null}
+                      <span className="truncate">{collection.title}</span>
+                    </span>
+                  );
+                }}
+              >
+                {writableCollections.map((collection) => (
+                  <Select.Option key={collection.id} value={collection.id}>
+                    <span className="flex items-center gap-2">
+                      {collection.icon ? <span>{collection.icon}</span> : null}
+                      <span className="truncate">{collection.title}</span>
+                    </span>
+                  </Select.Option>
+                ))}
+              </Select>
+            )}
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
             <Button
@@ -799,22 +1029,19 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       </Dialog.Root>
 
       <Dialog.Root
-        open={pendingRemove !== null}
-        onOpenChange={(open) => { if (!open) cancelRemove(); }}
-        onOpenChangeComplete={(open) => { if (!open) setDisplayedRemove(null); }}
+        open={pendingAddCollection && presentingAddCollection}
+        onOpenChange={(open) => { if (!open) cancelAddCollection(); }}
+        onOpenChangeComplete={onAddCollectionOpenChangeComplete}
       >
         <Dialog
-          className="z-[1000]! w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
+          className="w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
           size="sm"
         >
-          <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">
+          <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
             <div className="min-w-0">
               <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-                {removeTitle}
+                Add collection
               </Dialog.Title>
-              <Dialog.Description className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                {removeDescription}
-              </Dialog.Description>
             </div>
             <Dialog.Close
               render={(props) => (
@@ -823,6 +1050,159 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
                 </Button>
               )}
             />
+          </div>
+          <div className="flex flex-col gap-4 px-4 py-5 sm:px-6">
+            <Field label="Name">
+              <div className="flex w-full items-center gap-2">
+                <CollectionIconPicker
+                  value={addCollectionIcon}
+                  onChange={setAddCollectionIcon}
+                  variant="boxed"
+                  size={24}
+                />
+                <Input
+                  value={addCollectionTitle}
+                  onChange={(event) => setAddCollectionTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") handleAddCollection();
+                  }}
+                  placeholder="A short name, e.g., Brand guidelines"
+                  autoFocus
+                  className="min-w-0 flex-1"
+                />
+              </div>
+            </Field>
+            <InputArea
+              label={<span>Description <span className="font-normal text-kumo-inactive">Optional</span></span>}
+              value={addCollectionDescription}
+              onChange={(event) => setAddCollectionDescription(event.target.value)}
+              placeholder="What it contains and when to use it"
+              rows={3}
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
+            <Button
+              variant="secondary"
+              onClick={cancelAddCollection}
+              disabled={addingCollection}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddCollection}
+              loading={addingCollection}
+              disabled={!addCollectionTitle.trim()}
+            >
+              Add collection
+            </Button>
+          </div>
+        </Dialog>
+      </Dialog.Root>
+
+      <Dialog.Root
+        open={pendingEditCollection !== null && presentingEditCollection}
+        onOpenChange={(open) => { if (!open) cancelEditCollection(); }}
+        onOpenChangeComplete={(open) => {
+          onEditCollectionOpenChangeComplete(open);
+          if (!open) {
+            resetEditCollection();
+          }
+        }}
+      >
+        <Dialog
+          className="w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
+          size="sm"
+        >
+          <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
+            <div className="min-w-0">
+              <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+                Edit collection
+              </Dialog.Title>
+            </div>
+            <Dialog.Close
+              render={(props) => (
+                <Button {...props} variant="ghost" shape="square" aria-label="Close">
+                  <X size={18} />
+                </Button>
+              )}
+            />
+          </div>
+          <div className="flex flex-col gap-4 px-4 py-5 sm:px-6">
+            <Field label="Name">
+              <div className="flex w-full items-center gap-2">
+                <CollectionIconPicker
+                  value={editCollectionIcon}
+                  onChange={setEditCollectionIcon}
+                  variant="boxed"
+                  size={24}
+                />
+                <Input
+                  value={editCollectionTitle}
+                  onChange={(event) => setEditCollectionTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") handleEditCollection();
+                  }}
+                  placeholder="A short name, e.g., Brand guidelines"
+                  autoFocus
+                  className="min-w-0 flex-1"
+                />
+              </div>
+            </Field>
+            <InputArea
+              label={<span>Description <span className="font-normal text-kumo-inactive">Optional</span></span>}
+              value={editCollectionDescription}
+              onChange={(event) => setEditCollectionDescription(event.target.value)}
+              placeholder="What it contains and when to use it"
+              rows={3}
+            />
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
+            <Button
+              variant="secondary"
+              onClick={cancelEditCollection}
+              disabled={editingCollection}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditCollection}
+              loading={editingCollection}
+              disabled={!editCollectionTitle.trim()}
+            >
+              Save changes
+            </Button>
+          </div>
+        </Dialog>
+      </Dialog.Root>
+
+      <Dialog.Root
+        open={pendingRemove !== null && presentingRemove}
+        onOpenChange={(open) => { if (!open) cancelRemove(); }}
+        onOpenChangeComplete={(open) => {
+          onRemoveOpenChangeComplete(open);
+          if (!open) setDisplayedRemove(null);
+        }}
+      >
+        <Dialog
+          className="w-[min(440px,calc(100vw-32px))]! bg-kumo-base p-0 top-[16%]! translate-y-0!"
+          size="sm"
+        >
+          <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
+            <div className="min-w-0">
+              <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+                {removeTitle}
+              </Dialog.Title>
+            </div>
+            <Dialog.Close
+              render={(props) => (
+                <Button {...props} variant="ghost" shape="square" aria-label="Close">
+                  <X size={18} />
+                </Button>
+              )}
+            />
+          </div>
+          <div className="px-4 py-5 sm:px-6">
+            <Text size="sm" variant="secondary">{removeDescription}</Text>
           </div>
           <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
             <Button
