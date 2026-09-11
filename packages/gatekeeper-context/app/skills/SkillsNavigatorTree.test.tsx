@@ -121,4 +121,18 @@ describe("SkillsNavigatorTree", () => {
       collectionEditable: false,
     });
   });
+
+  it("starts inline renaming from a skill context menu", () => {
+    renderTree(true);
+
+    act(() => row("Incident Response")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const rename = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent?.includes("Rename"));
+    act(() => rename?.click());
+
+    expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
 });
