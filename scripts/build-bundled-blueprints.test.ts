@@ -127,11 +127,40 @@ describe("bundled blueprint scripts", () => {
     assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// updated\n");
     assert.equal(await readFile(join(directory, "example/files/lib/util.js"), "utf8"),
       "// updated util\n");
-    assert.equal(await readFile(join(directory, ".example.backup-123/files/client.js"), "utf8"),
-      "// old .example.backup-123\n");
+    // The stale backup did not count as a duplicate, and a completed import supersedes it.
+    assert.deepEqual((await readdir(directory)).toSorted(), [".update.gadget", "example"]);
     let updatedManifest = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
     assert.equal(updatedManifest.revision, 2);
     assert.equal(updatedManifest.version, 2);
+  });
+
+  it("refuses an export whose files the build rejects, before replacing anything", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// old\n");
+
+    // A JavaScript module beside TypeScript is one thing the staged build refuses.
+    let archivePath = join(directory, ".update.gadget");
+    await writeArchive(archivePath, 2, new Map([
+      ["client.ts", "export {};\n"],
+      ["client.js", "// shipped\n"],
+    ]));
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
+        cwd: packageRoot,
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /client\.js is a JavaScript module in a TypeScript blueprint/);
+    assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// old\n");
+    // No staged or backup directory survives the refusal.
+    assert.deepEqual((await readdir(directory)).toSorted(), [".update.gadget", "example"]);
   });
 
   it("keeps what lives beside blueprint.json and files/ when importing an update", async () => {
