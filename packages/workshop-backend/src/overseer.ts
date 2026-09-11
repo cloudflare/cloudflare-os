@@ -650,6 +650,10 @@ type ChatAttachmentContentRecord = {
 // the gatekeeper, so no lookup is ever attempted.
 const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 
+// The connections a workspace has read restricted data through, and the `nextActionId` up to
+// which the action log has been reconciled into `ids` (see isRestrictedProducer).
+type RestrictedProducers = {ids: WorkpieceId[], through: number};
+
 export type ActionRecord = {
   id: number,
   gatekeeperId: WorkpieceId;
@@ -1158,6 +1162,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // public web, and may act only on the connections in restrictedProducerIds, never
       // auto-approved. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
+
+      // The connections restricted reads came through: the only action targets while latched.
+      // `null` marks a workspace latched before this field existed.
+      restrictedProducerIds: <RestrictedProducers | null>null,
     },
 
     collections: {
@@ -5245,7 +5253,7 @@ class OverseerImpl implements AgentHooks {
     // be approved after it. rejectAction is not gated -- denying is how the user unsticks an
     // agent turn suspended on awaitDecision.
     if (this.storage.containsRestrictedData.get() &&
-        !this.restrictedProducerIds().has(record.gatekeeperId)) {
+        !this.isRestrictedProducer(record.gatekeeperId)) {
       throw new Error(
           "This workspace has observed sensitive data from other connections. To prevent leaks, " +
           "it may only perform actions on those same connections; this pending action targets " +
@@ -5542,6 +5550,13 @@ class OverseerImpl implements AgentHooks {
     }
 
     if (description.containsRestrictedData) {
+      // Producer and latch land together, synchronously with the record below. `through` is
+      // left as is: earlier records may still be unreconciled.
+      let producers = this.#storedRestrictedProducers();
+      if (!producers.ids.includes(gatekeeperId)) {
+        this.storage.restrictedProducerIds.put(
+            {ids: [...producers.ids, gatekeeperId], through: producers.through});
+      }
       this.storage.containsRestrictedData.put(true);
     }
 
@@ -5673,31 +5688,41 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // The connection ids this workspace has read restricted data through -- the targets the
-  // writes-to-self carve-out admits (see submitAction). Derived by scanning the action log for
-  // observations whose description carries `containsRestrictedData`, since nothing else records
-  // which connection a latched read came through; the log is never pruned, so the scan is also
-  // the backfill for workspaces latched before the carve-out existed. Built-in tool observations
-  // are skipped: they are not a connection anything can write back to. The callers are
-  // submitAction and applyPendingAction, and both scan only while latched (the unlatched path
-  // short-circuits before the scan); latched manual approvals are human-bounded, and the
-  // auto-approval drainer already full-scans the log per drain, so the cost is fine where it
-  // runs.
-  //
-  // A latched workspace always yields a non-empty set: the latch and the producing record are
-  // written in one synchronous block (see authorizeObservation). Records written before the
-  // flag's rename from `prohibitAllSharing` are not read, so a workspace latched only by such
-  // records yields the empty set and refuses every action -- what it did before the carve-out.
-  restrictedProducerIds(): Set<WorkpieceId> {
-    let producers = new Set<WorkpieceId>();
-    for (let record of this.storage.actions.list()) {
-      if (record.type === "observation" &&
-          record.description.containsRestrictedData === true &&
+  // True if this workspace has read restricted data through connection `gatekeeperId`. Producers
+  // are recorded beside the latch (authorizeObservation); a miss reconciles from the log
+  // watermark first, so producers latched while older code ran (a rollback to code that writes
+  // the latch and the record but not the set) are found before a write to them is refused.
+  // Records predating the flag's rename are not read, so a legacy workspace stays empty and
+  // keeps refusing every action. Only meaningful while latched.
+  isRestrictedProducer(gatekeeperId: WorkpieceId): boolean {
+    return this.#storedRestrictedProducers().ids.includes(gatekeeperId) ||
+        this.#reconcileRestrictedProducers().ids.includes(gatekeeperId);
+  }
+
+  #storedRestrictedProducers(): RestrictedProducers {
+    let stored = this.storage.restrictedProducerIds.get();
+    // A preview build stored the bare id list; read it as unreconciled.
+    if (Array.isArray(stored)) return {ids: stored, through: 0};
+    return stored ?? {ids: [], through: 0};
+  }
+
+  // Folds the restricted observations at or past the watermark into the stored set and moves the
+  // watermark to nextActionId. Sound because both observation writers allocate the id and put the
+  // record synchronously, so no record below the watermark appears later.
+  #reconcileRestrictedProducers(): RestrictedProducers {
+    let stored = this.#storedRestrictedProducers();
+    let next = this.storage.nextActionId.get();
+    if (stored.through >= next) return stored;
+    let ids = new Set(stored.ids);
+    for (let record of this.storage.actions.list({start: stored.through})) {
+      if (record.type === "observation" && record.description.containsRestrictedData === true &&
           record.gatekeeperId !== BUILTIN_TOOL_GATEKEEPER_ID) {
-        producers.add(record.gatekeeperId);
+        ids.add(record.gatekeeperId);
       }
     }
-    return producers;
+    stored = {ids: [...ids], through: next};
+    this.storage.restrictedProducerIds.put(stored);
+    return stored;
   }
 
   // True if a pending approval request names connection `id` (the index also holds pending hooks).
@@ -5837,14 +5862,10 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
-    // An in-flight facet RPC can outlive removeGatekeeper (cf. the restricted-observation refusal
-    // in authorizeObservation), so an action can arrive naming a connection this workspace no
-    // longer has. A pending action persisted on a removed connection could never be approved *or*
-    // rejected -- both paths dereference the record through getGatekeeperFacet -- and would
-    // suspend an awaitDecision agent turn forever, so refuse before any write. This also covers
-    // the latched case below: restrictedProducerIds is derived from the never-pruned action log,
-    // so a removed producer stays in the set, and membership alone must not admit a write to a
-    // dead connection.
+    // An in-flight facet RPC can outlive removeGatekeeper. A pending action on a removed
+    // connection could never be approved or rejected (both dereference the facet), so refuse
+    // before any write. Also needed while latched: a removed producer stays in
+    // restrictedProducerIds.
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
       throw new Error(
@@ -5852,17 +5873,13 @@ class OverseerImpl implements AgentHooks {
           "removed from this workspace.");
     }
 
-    // Writes-to-self carve-out: a latched workspace may still act on the connections that
-    // produced its restricted data, while any other target could leak it. (Every such action
-    // still requires manual human approval; see autoApprovalRule.) The check is set membership,
-    // not provenance -- the human approver is the check for cross-producer or broader-audience
-    // writes; see the containsRestrictedData doc. A latched workspace always has a
-    // non-empty producer set (the latch and its action record are written in one synchronous
-    // block; see restrictedProducerIds); if the set is ever empty anyway, the `has` check fails
-    // for every target and all actions are refused -- the conservative fallback. Refused before
-    // the id allocation below, so a blocked action leaves no record behind.
+    // Writes-to-self carve-out: a latched workspace may act only on the connections that produced
+    // its restricted data (each still manually approved; see autoApprovalRule). Membership, not
+    // provenance: the human approver covers cross-producer writes (see the containsRestrictedData
+    // doc). An empty set refuses everything. Refused before the id allocation, so nothing is
+    // recorded.
     if (this.storage.containsRestrictedData.get() &&
-        !this.restrictedProducerIds().has(gatekeeperId)) {
+        !this.isRestrictedProducer(gatekeeperId)) {
       throw new Error(
           "This workspace has observed sensitive data from other connections. To prevent leaks, " +
           "it may only perform actions on those same connections.");

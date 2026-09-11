@@ -75,12 +75,14 @@ describe("authorizeObservation's restricted-data latch", () => {
       // Nothing is delivered while the teardown is in flight, so nothing has latched: a teardown
       // that ends in refusal must leave no trace.
       expect(impl.storage.containsRestrictedData.get()).toBe(false);
+      expect(impl.storage.restrictedProducerIds.get()).toBeNull();
 
       held.resolve();
       await expect(observation).resolves.toBeUndefined();
 
-      // Delivery: the latch and the record landed together.
+      // Delivery: the latch, the producer and the record landed together.
       expect(impl.storage.containsRestrictedData.get()).toBe(true);
+      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1], through: 0 });
 
       // The teardown still ran (mallory is no longer set up to observe).
       expect(impl.storage.observers.get("mallory")).toBeUndefined();
@@ -111,6 +113,7 @@ describe("authorizeObservation's restricted-data latch", () => {
       // The blocked observation delivered no data, so the workspace is not restricted: no latch,
       // no action record -- and mallory, still authorized, was not torn down.
       expect(impl.storage.containsRestrictedData.get()).toBe(false);
+      expect(impl.storage.restrictedProducerIds.get()).toBeNull();
       expect([...impl.storage.actions.list()]).toHaveLength(0);
       expect(impl.storage.observers.get("mallory")).toBeDefined();
     });
