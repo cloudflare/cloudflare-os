@@ -10,8 +10,9 @@ catalog:
   '@cloudflare/vitest-pool-workers': ^0.22.0
   '@cloudflare/workers-types': ^5.20260903.1
   capnweb: ^0.12.0
-  # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
-  # simulated PR diff's hunks). One catalog entry so the two can't drift apart.
+  # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-kit's git-diff (the
+  # simulated PR/MR diff's hunks, used by the git-host gatekeepers). One catalog entry so the two
+  # can't drift apart.
   diff: ^8.0.4
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0

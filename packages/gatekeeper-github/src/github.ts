@@ -39,26 +39,19 @@ import {
 } from "./github-api";
 import { assertIssueSearchResultsInRepo, buildIssueSearchQuery } from "./github-search";
 import {
-  actorFromUser,
-  advertiseCommits,
-  commitDetailsFromGitObject,
-  commitIdsOfPullSummary,
-  commitIdsOfSummary,
-  CommitAdvertisingCursor,
-  isCommitOid,
-  normalizeBranchSummary,
-  normalizeCommitDetails,
-  normalizeCommitSummary,
-  normalizeTagSummary,
-  parseGitCommitPayload,
-} from "./git-commits";
-import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
   diffGitTrees,
   parseGitTreePayload,
   type TreeDiffSource,
-} from "./git-diff";
+} from "@gadgets/gatekeeper-kit/git-diff";
+import {
+  advertiseCommits,
+  commitIdsOfSummary,
+  CommitAdvertisingCursor,
+  isCommitOid,
+  parseGitCommitPayload,
+} from "@gadgets/gatekeeper-kit/git-objects";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -66,7 +59,16 @@ import {
   pullGitObjectsIntoCache,
   pushGitRefUpdate,
   validateBranchName,
-} from "./git-transport";
+} from "@gadgets/gatekeeper-kit/git-transport";
+import {
+  actorFromUser,
+  commitDetailsFromGitObject,
+  commitIdsOfPullSummary,
+  normalizeBranchSummary,
+  normalizeCommitDetails,
+  normalizeCommitSummary,
+  normalizeTagSummary,
+} from "./git-commits";
 import GITHUB_LOGO_SVG from "./github-logo.svg";
 import type {
   GitHubActor,
@@ -1048,7 +1050,7 @@ class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
 }
 
 /**
- * RPC wrapper around `CommitAdvertisingCursor` (see git-commits.ts): each page a caller fetches
+ * RPC wrapper around the kit's `CommitAdvertisingCursor`: each page a caller fetches
  * advertises its commit ids to the workspace git cache before it is returned. Owns the `GitCache`
  * stub it is given (a dup of the session's), disposing it with the cursor.
  */
@@ -3590,7 +3592,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * `Gatekeeper.gitPull()`: fetch the requested objects from this repo over git smart-HTTP
    * (protocol v2) and deposit them in the workspace git cache. The gatekeeper contributes only
-   * protocol framing -- git-transport.ts composes the fetch command from the hints and strips
+   * protocol framing -- the kit's git-transport composes the fetch command from the hints and strips
    * the response down to the raw pack body, which streams into `cache.consumePack()` for
    * overseer-side decoding, hash verification, and storage -- and retains nothing locally.
    *

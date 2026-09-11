@@ -11,7 +11,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
-import { FLUSH_PKT, encodePktLine } from "../../src/git-transport";
+import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type { GitHubCommitFilter, GitHubCreatePullRequestOptions } from "../../src/types";
 import type {
   CreatePullRequestActionData, GatekeeperProps, Outcome, PushActionData,
