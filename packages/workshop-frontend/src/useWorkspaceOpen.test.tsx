@@ -723,6 +723,53 @@ describe('useWorkspaceOpen', () => {
     expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
   })
 
+  it("an older capture's late identity stamp cannot overwrite a newer capture's entry", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Attempt A captures its key and its identity stamp parks; A's open is denied, so A never
+    // clears anything. B (a swapped stub, another user) captures its own key, whose stamp also
+    // parks. B's stamp lands first and owns the entry; A's then lands last. Without the newer
+    // capture superseding the older's pending write, A's spent-or-not key would overwrite B's
+    // entry and be what a reload replays under B's session.
+    window.location.hash = '#share=aaaa'
+    const heldWhoamiA = deferred<typeof WHOAMI_USER>()
+    const apiA = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: () => heldWhoamiA.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+    const OTHER_USER = { type: 'user', id: 'other@example.com', name: 'Other' }
+    const heldWhoamiB = deferred<typeof OTHER_USER>()
+    const apiB = {
+      openGadget: () => openDeniedOverseer(),
+      whoami: () => heldWhoamiB.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    function Probe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+      useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => { window.location.hash = '' },
+      })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe authenticatedApi={apiA} />))
+    window.location.hash = '#share=bbbb'
+    await act(async () => root!.render(<Probe authenticatedApi={apiB} />))
+    expect(storedRetained()).toBeNull()
+
+    await act(async () => { heldWhoamiB.resolve(OTHER_USER); await Promise.resolve() })
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
+
+    // A's stamp resolving last must find its license void.
+    await act(async () => { heldWhoamiA.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
+  })
+
   it('a keyed open that confirms after cancellation clears its own retention', async () => {
     // The complement of the superseded-attempt test above: the open *resolving* proves the server
     // durably confirmed the redemption (nothing in disposal reverts it), so a cancelled attempt

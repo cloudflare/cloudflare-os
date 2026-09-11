@@ -17,6 +17,28 @@ describe('retained share key write tokens', () => {
     expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
   })
 
+  // Two captures for one workspace can both have stamps in flight (the same user opening two
+  // invite links, or a swapped stub capturing again); the newest owns the slot, so the older's
+  // stamp landing last must not overwrite it -- the older key would then be what a reload
+  // replays, even after its own attempt was superseded without ever succeeding or clearing.
+  it('starting a capture supersedes an older pending stamp for the same workspace', () => {
+    const stampA = beginRetainedShareKeyWrite('ws-1', 'capture-a')
+    const stampB = beginRetainedShareKeyWrite('ws-1', 'capture-b')
+    commitRetainedShareKeyWrite(stampA,
+        { key: 'aaaa', userId: 'person@example.com', captureId: 'capture-a' })
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+    const entryB = { key: 'bbbb', userId: 'person@example.com', captureId: 'capture-b' }
+    commitRetainedShareKeyWrite(stampB, entryB)
+    expect(readRetainedShareKey('ws-1')).toEqual(entryB)
+  })
+
+  it("starting a capture leaves another workspace's pending stamp alive", () => {
+    const stampA = beginRetainedShareKeyWrite('ws-1', 'capture-a')
+    beginRetainedShareKeyWrite('ws-2', 'capture-b')
+    commitRetainedShareKeyWrite(stampA, ENTRY)
+    expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
+  })
+
   it('reads an entry without a capture id as absent', () => {
     // Not a migration concern (the v2 format never shipped without one); just the shape check
     // holding the line so no clear path has to reason about ownerless entries.

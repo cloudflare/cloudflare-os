@@ -60,7 +60,11 @@ function storageKey(workspaceId: string): string {
 // capture time and commits only while all still match, so any later clear permanently
 // invalidates it. Three tiers, matching the three clear scopes: a global counter (logout sweeps
 // everything), a per-workspace counter (workspace-wide clears -- a keyless success, an
-// identity-mismatch sweep), and a per-capture counter for attempt-owned clears. The
+// identity-mismatch sweep), and a per-capture counter for attempt-owned clears. The workspace
+// tier has a second bump site: starting a capture (beginRetainedShareKeyWrite) supersedes every
+// older pending stamp for the workspace, so when two captures have stamps in flight and the older
+// resolves last, it cannot overwrite the newer capture's entry -- the newest capture owns the
+// slot outright, whether or not the older ever cleared. The
 // capture-scoped tier is what lets a successful attempt void *its own* in-flight stamp even when a
 // newer capture's entry occupies the slot -- without it, the spent key's late
 // stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
@@ -82,14 +86,22 @@ export type RetainedShareKeyWrite = {
   captureGeneration: number
 }
 
-/** Capture the current generations; pass the token to {@link commitRetainedShareKeyWrite}. */
+/**
+ * Start a capture's write: supersede every older pending stamp for the workspace, then capture
+ * the current generations. Pass the token to {@link commitRetainedShareKeyWrite}. Bumping the
+ * workspace generation here is what makes the newest capture own the slot -- an older capture's
+ * stamp resolving later fails its workspace check instead of overwriting the newer entry. Other
+ * workspaces' pending stamps, and the per-capture tier, are untouched.
+ */
 export function beginRetainedShareKeyWrite(
     workspaceId: string, captureId: string): RetainedShareKeyWrite {
+  const workspaceGeneration = (workspaceGenerations.get(workspaceId) ?? 0) + 1
+  workspaceGenerations.set(workspaceId, workspaceGeneration)
   return {
     workspaceId,
     captureId,
     globalGeneration,
-    workspaceGeneration: workspaceGenerations.get(workspaceId) ?? 0,
+    workspaceGeneration,
     captureGeneration: captureGenerations.get(captureId) ?? 0,
   }
 }
