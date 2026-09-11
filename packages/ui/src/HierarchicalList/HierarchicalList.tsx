@@ -97,6 +97,8 @@ const StyledRow = ({
   const restoreDrawerFocusRef = useRef(true);
   const drawerTitleId = useId();
   const wasRenamingRef = useRef(false);
+  const [actionsClosing, setActionsClosing] = useState(false);
+  const actionsClosedTimerRef = useRef<number | null>(null);
   const {
     item,
     depth,
@@ -107,7 +109,36 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
-  const renaming = rename?.isRenaming(item) ?? false;
+  const renameRequested = rename?.isRenaming(item) ?? false;
+  const renaming = renameRequested && !actionsOpen && !actionsClosing;
+  const handleActionsOpenChange = (open: boolean) => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+      actionsClosedTimerRef.current = null;
+    }
+    if (!open && actionsOpen) setActionsClosing(true);
+    onActionsOpenChange(open);
+  };
+  const handleActionsOpenChangeComplete = (open: boolean) => {
+    if (!open) {
+      if (
+        restoreDrawerFocusRef.current
+        && (document.activeElement === document.body
+          || drawerPopupRef.current?.contains(document.activeElement))
+      ) rowRef.current?.focus();
+      // Base UI restores final focus in a microtask after this callback. Preserve the trigger until
+      // the next task so rename cannot replace it before that restoration completes.
+      actionsClosedTimerRef.current = window.setTimeout(() => {
+        actionsClosedTimerRef.current = null;
+        setActionsClosing(false);
+      });
+    }
+  };
+  useEffect(() => () => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+    }
+  }, []);
   useLayoutEffect(() => {
     if (wasRenamingRef.current && !renaming) rowRef.current?.focus();
     wasRenamingRef.current = renaming;
@@ -254,7 +285,11 @@ const StyledRow = ({
   if (!contextMenu) return row;
   if (!useActionDrawer) {
     return (
-      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+      <ContextMenu.Root
+        open={actionsOpen}
+        onOpenChange={handleActionsOpenChange}
+        onOpenChangeComplete={handleActionsOpenChangeComplete}
+      >
         <ContextMenu.Trigger render={row} />
         <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
       </ContextMenu.Root>
@@ -266,19 +301,12 @@ const StyledRow = ({
       {row}
       <Drawer.Root
         open={actionsOpen}
-        onOpenChange={onActionsOpenChange}
-        onOpenChangeComplete={(open) => {
-          if (
-            !open
-            && restoreDrawerFocusRef.current
-            && (document.activeElement === document.body
-              || drawerPopupRef.current?.contains(document.activeElement))
-          ) rowRef.current?.focus();
-        }}
+        onOpenChange={handleActionsOpenChange}
+        onOpenChangeComplete={handleActionsOpenChangeComplete}
       >
         <Drawer.Portal>
           <Drawer.Backdrop
-            onClick={() => onActionsOpenChange(false)}
+            onClick={() => handleActionsOpenChange(false)}
             className={cn(
               "fixed inset-0 z-40 bg-kumo-recessed",
               "[opacity:calc(0.8*(1-var(--drawer-swipe-progress)))]",
@@ -304,7 +332,7 @@ const StyledRow = ({
               <Drawer.Title id={drawerTitleId} className="px-2 pb-2 text-xs text-kumo-subtle">
                 {item.name}
               </Drawer.Title>
-              <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
+              <Menu.Root open={actionsOpen} modal={false} onOpenChange={handleActionsOpenChange}>
                 <Menu.Portal container={drawerPopupRef}>
                   <Menu.Positioner
                     className="!static !block !min-h-0 !w-full !flex-1 !transform-none overflow-y-auto overscroll-contain"
