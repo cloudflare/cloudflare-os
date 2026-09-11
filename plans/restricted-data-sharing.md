@@ -132,32 +132,14 @@ lazy-revocation residual in `docs/observers.md` edge case 3). Nothing in this mo
 
 - **Share modal**: no longer replaces itself with a "can't be shared" view. Controls stay
   live behind a notice.
-- **Retained share keys** (`retainedShareKeys.ts`, new): the `#share=` fragment is
-  stripped from the URL on open, so an open that fails *before the server redeems the
-  key* (a transport failure, a server throw ahead of the redemption, an attempt
-  superseded before issuing) would otherwise leave nothing to retry with. The key is
-  held in `sessionStorage` under a versioned, per-workspace key, and replayed on the
-  next attempt. A failure *after* redemption needs no key -- one-step redemption leaves
-  a real edge, so that retry resolves keylessly -- but the client cannot tell the two
-  apart, so it retains on every failure; replaying a key whose edge already exists is a
-  server-side no-op.
-- **Identity stamping**: because `sessionStorage` outlives the session that wrote it, each
-  entry records the capturing user's id. A read by a different identity ignores *and*
-  sweeps it, and `logout()` sweeps the whole prefix including malformed and older
-  unstamped entries. Without this, one user's pending share key could be auto-redeemed
-  under the next user's account in the same tab.
-- **The in-memory tier is bound to its capturing stub**: it is replayed only on the same
-  `authenticatedApi` that captured it; any other stub falls through to the
-  identity-checked storage tier. This removes the reliance on the rendering invariant
-  that an identity change unmounts the editor -- true today, but enforced two files away.
-- **Stamps are generation-gated**: the async identity stamp commits through a write token
-  taken at capture; clearing a workspace's entry (a successful open) or the logout sweep
-  voids every earlier token, so a stamp resolving late cannot resurrect a cleared key.
-  The invalidation lives in `retainedShareKeys.ts` because the storage outlives any one
-  attempt -- a per-attempt flag guards only its own attempt's writes.
-- **A superseded open bails after its identity await**, before creating any capability:
-  its cleanup already ran with nothing to dispose, so proceeding would mint a stub
-  nothing can reach and publish a stale (or wrong-workspace) capability.
+- **No share-key retention.** The `#share=` fragment is stripped from the URL on open and
+  sent once. If that first open fails before the server redeems the key, the retry is
+  keyless and the user re-clicks the invite link. A client-side retention tier
+  (`sessionStorage` plus an in-memory ref) was built and then dropped from
+  `restricted-data-followups`: keeping the key across retries, reconnects and reloads
+  reopened replay-after-removal and cross-user paths that took identity stamps, generation
+  tokens, a TTL and cross-tab broadcasts to close, all for a residual that costs one link
+  re-click.
 
 ## Commit sequence (one PR)
 
@@ -190,8 +172,7 @@ path, and the scope-widening restart — landed separately in #380.
    `assertGrantAllowed` plumbing, the action-log scan, and the legacy flag shim.
 
 The deferred items are collected in the Known-limitations section below. The Share
-modal unblock and the retained-share-key frontend work live in
-`restricted-data-followups`.
+modal unblock lives in `restricted-data-followups`.
 
 ## Known limitations
 
