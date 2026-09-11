@@ -245,14 +245,49 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
     await this.#collection(collectionId).putContextDocument(path, doc);
   }
 
+  async createContextSkill(collectionId: string, path: string, doc: {
+    description: string; body: string; contentType?: string;
+  }): Promise<void> {
+    await this.#assertCanWrite(collectionId);
+    await this.#collection(collectionId).createContextSkill(path, doc);
+  }
+
   async deleteContextDocument(collectionId: string, path: string): Promise<void> {
     await this.#assertCanWrite(collectionId);
     await this.#collection(collectionId).deleteContextDocument(path);
   }
 
+  async deleteContextSkill(collectionId: string, manifestPath: string): Promise<void> {
+    await this.#assertCanWrite(collectionId);
+    await this.#collection(collectionId).deleteContextSkill(manifestPath);
+  }
+
+  async deleteContextDocumentTree(collectionId: string, path: string): Promise<void> {
+    await this.#assertCanWrite(collectionId);
+    await this.#collection(collectionId).deleteContextDocumentTree(path);
+  }
+
   async moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void> {
     await this.#assertCanWrite(collectionId);
     await this.#collection(collectionId).moveContextDocument(fromPath, toPath);
+  }
+
+  async moveContextSkill(
+    collectionId: string,
+    manifestPath: string,
+    directoryPath: string,
+  ): Promise<void> {
+    await this.#assertCanWrite(collectionId);
+    await this.#collection(collectionId).moveContextSkill(manifestPath, directoryPath);
+  }
+
+  async renameContextSkill(
+    collectionId: string,
+    manifestPath: string,
+    newName: string,
+  ): Promise<void> {
+    await this.#assertCanWrite(collectionId);
+    await this.#collection(collectionId).renameContextSkill(manifestPath, newName);
   }
 
   // --- Listing & access ---

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_SKILL_CATALOG_MAX_ENTRIES,
   isSkillManifestPath, buildAgentSkillCatalogEntries, buildAgentSkillCommands,
-  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
+  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest, updateSkillManifestName,
   type CollectionSkills,
 } from "../src/agent-skill";
 import { isTextContentType } from "../src/context-types";
@@ -131,6 +131,20 @@ Instructions
     )).toEqual({name: "example", description: "Example."});
   });
 
+});
+
+describe("updateSkillManifestName", () => {
+  it("updates CRLF frontmatter while preserving other fields and body content", () => {
+    const source = "\uFEFF--- \r\nname: old-name\r\ndescription: Existing skill.\r\nowner: platform\r\n---\r\nInstructions\r\n";
+    const updated = updateSkillManifestName(source, "new-name");
+
+    expect(parseSkillManifest("new-name/SKILL.md", updated)).toEqual({
+      name: "new-name",
+      description: "Existing skill.",
+    });
+    expect(updated).toContain("owner: platform");
+    expect(updated).toContain("Instructions\r\n");
+  });
 });
 
 describe("buildAgentSkillCommands", () => {

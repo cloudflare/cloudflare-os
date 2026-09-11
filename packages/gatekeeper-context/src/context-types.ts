@@ -331,8 +331,20 @@ export interface ContextApi extends RpcTarget {
   putContextDocument(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;
+  /** Creates a skill, rejecting the operation if its directory is already occupied. */
+  createContextSkill(collectionId: string, path: string, doc: {
+    description: string; body: string; contentType?: string;
+  }): Promise<void>;
   deleteContextDocument(collectionId: string, path: string): Promise<void>;
+  /** Atomically deletes a skill and its supporting files. */
+  deleteContextSkill(collectionId: string, manifestPath: string): Promise<void>;
+  /** Atomically deletes a document path and every document below it. */
+  deleteContextDocumentTree(collectionId: string, path: string): Promise<void>;
   moveContextDocument(collectionId: string, fromPath: string, toPath: string): Promise<void>;
+  /** Atomically moves a skill and its supporting files within its collection. */
+  moveContextSkill(collectionId: string, manifestPath: string, directoryPath: string): Promise<void>;
+  /** Atomically renames a skill directory and its manifest name. */
+  renameContextSkill(collectionId: string, manifestPath: string, newName: string): Promise<void>;
   /** Own private collections plus every public one. */
   listEnabledContextCollections(): Promise<EnabledCollectionInfo[]>;
   /** Whether the viewer may edit this collection: own private collection, or public collection as admin. */
