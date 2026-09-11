@@ -1,0 +1,25 @@
+docs/sharing.md
+  s_0487fe8c850093::t_88f11478db4025 159
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_0487fe8c850093::t_88f11478db4025 93-94,154
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_0487fe8c850093::t_88f11478db4025 37,46,48
+plans/restricted-data-sharing.md
+  s_0487fe8c850093::t_474c164019b75a 135-142,175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dc3c4b0029d3e9b108a9a8d99773288d1ed7747a",
+  "prompts": {},
+  "sessions": {
+    "s_0487fe8c850093": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee13dbfd-628a-4011-a9e2-0feb45cf3989",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
