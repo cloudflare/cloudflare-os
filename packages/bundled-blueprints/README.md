@@ -83,9 +83,9 @@ relative or absolute path into `libraries/`, a `src/` module, the package root, 
 dynamic `import()` or `require()` of anything but a string literal, refused before the bundler runs
 (it would leave a computed path unchecked, and expand a template literal or concatenation into every
 file the pattern matches, wherever that reaches), a generated `client.js`/`server.js` that collides
-with a file or directory already in the tree, a shipped JavaScript module that imports a library,
-which only the bundle can inline, or an import specifier spelled with an escape in a shipped module,
-which the build could not read.
+with a file or directory already in the tree, or a shipped JavaScript module that imports a library,
+which only the bundle can inline. Imports are read from each module's syntax tree with the
+TypeScript compiler, so a comment or a string can neither masquerade as one nor hide one.
 
 ### Type checks and tests
 

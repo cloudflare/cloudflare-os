@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Y from "yjs";
 import type { Metafile } from "esbuild";
+import { type ModuleScan, scanModule } from "./scan.ts";
 import pkg from "../package.json" with { type: "json" };
 
 const MAGIC = 0xec2e2d3a2300e317n;
@@ -267,60 +268,10 @@ const DECLARATION_PATTERN = /\.d\.[cm]?ts$/u;
 const UNSUPPORTED_TYPESCRIPT_PATTERN = /\.(?:tsx|mts|cts)$/u;
 
 /**
- * A module: a file that can name another. What the reachability scan reads, and what a blueprint
- * holding TypeScript may not also hold in JavaScript.
+ * A module: a file that can name another. What a blueprint holding TypeScript may not also hold in
+ * JavaScript, and what a JavaScript blueprint ships as written (see {@link checkShippedImports}).
  */
 const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
-
-/**
- * What may sit between a keyword and its operand in source: whitespace and comments, in any
- * number. `import`, a block comment, then `"./lib/setup.ts"` is a legal import, and the scan below
- * has to see the specifier through the comment, or a module the bundle inlined would be reported
- * as unimported. A line comment ends at any of the four line terminators, as it does for esbuild,
- * or a CR-terminated one would hide the `(` that follows it from the scan below; the terminator is
- * required rather than optional so the alternative cannot stop partway through a comment and read
- * a string inside it as the operand.
- */
-const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n\r\u2028\u2029]*[\n\r\u2028\u2029])*`;
-
-/**
- * Every string literal that could be a module specifier: the operand of `from`, of `import` or
- * `import()`, or of `require()`, with comments allowed wherever whitespace is. A scan, not a parse,
- * so it also matches inside a string or a comment; that direction of error is the harmless one
- * (see {@link importedModules}).
- */
-const SPECIFIER_PATTERN = new RegExp(
-    String.raw`\b(?:from|import|require)${GAP}\(?${GAP}(?:"([^"\n]*)"|'([^'\n]*)')`, "gu");
-
-/**
- * A dynamic `import()` whose operand is not a string literal. esbuild bundles a literal one like a
- * static import and leaves a computed one in the output as written, where it would resolve inside
- * the sandbox against nothing the bundle checked. Comments cannot trip this: esbuild drops ordinary
- * ones from the output, and a template literal with no substitutions is folded to a string before
- * it is written. A template literal with substitutions never reaches the output as an `import()`
- * at all: esbuild expands it into a glob helper over every file the pattern matches, and that is
- * rejected from the metafile instead (see {@link auditInputs}). Either is reached only by a
- * library's own code or by a spelling the source scan missed: the blueprint's sources are refused
- * ahead of the build (see {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), and this is the backstop.
- */
-const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
-
-/**
- * A dynamic `import()` or `require()` whose operand is anything but one plain string literal, as
- * spelled in a blueprint's TypeScript. esbuild expands a template literal with substitutions, or a
- * concatenation that begins with a string, into a glob over every file the pattern matches --
- * `` import(`../../${name}.js`) `` walks everything two directories up and bundles each match --
- * and does so before any check here can see the result, so the spelling is refused from the
- * source, ahead of the build. The same class the output is checked for afterwards (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN} and {@link auditInputs}); those stay as the backstop for
- * what a scan cannot see, a library's own code or a spelling this one misses. A scan, so a
- * dynamic-import-shaped string in a comment is refused too; the error names the file and the
- * spelling, and a blueprint has no reason to write one. The lookbehind keeps a method of that name
- * (`foo.import(...)`) from reading as the keyword.
- */
-const NON_LITERAL_DYNAMIC_IMPORT_PATTERN = new RegExp(
-    String.raw`(?<![.\w$])(?<keyword>import|require)${GAP}\(${GAP}(?!(?:"[^"\n]*"|'[^'\n]*')${GAP}\))`,
-    "u");
 
 /**
  * A reference to `require` that survived bundling. Both bundles are ES modules and neither gadget
@@ -331,7 +282,7 @@ const NON_LITERAL_DYNAMIC_IMPORT_PATTERN = new RegExp(
  * warning and, for a computed path, records no import in the metafile, so the output is scanned for
  * the shim instead. The identifier alone is the witness: esbuild emits the shim only when some
  * reference survives, and renames a source identifier of that name away from it. Comments cannot
- * trip this either, for the reason above.
+ * trip this: esbuild drops ordinary ones from the output.
  */
 const RESIDUAL_REQUIRE_PATTERN = /\b__require\b/u;
 
@@ -378,14 +329,12 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * neither one of the blueprint's own files nor a library reached by its package subpath, from the
  * right side, which would inline code the blueprint does not own (see {@link auditInputs}); a
  * dynamic `import()` or `require()` of anything but a string literal, refused from the source
- * before the bundler could expand a pattern into every file it matches (see
- * {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), and again in the output should one reach it (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN} and {@link auditInputs}); a generated `client.js` or
- * `server.js` that collides with a file or directory the tree already holds; a reference to
- * `require` the bundler could not resolve away, which would throw when reached (see
- * {@link RESIDUAL_REQUIRE_PATTERN}); and, in
- * a JavaScript module the archive ships as written, an import of a gadget library, which only the
- * bundle can inline, or an import specifier spelled with an escape, which the scan cannot read (see
+ * before the bundler could expand a pattern into every file it matches (see {@link scanModule}),
+ * and again in the output should one reach it through a library (see {@link auditInputs}); a
+ * generated `client.js` or `server.js` that collides with a file or directory the tree already
+ * holds; a reference to `require` the bundler could not resolve away, which would throw when
+ * reached (see {@link RESIDUAL_REQUIRE_PATTERN}); and, in a JavaScript module the archive ships as
+ * written, an import of a gadget library, which only the bundle can inline (see
  * {@link checkShippedImports}).
  */
 async function bundleTypeScriptSources(
@@ -396,10 +345,16 @@ async function bundleTypeScriptSources(
   const output = new Map<string, string>();
   const libSources = new Set<string>();
   const entries: EntryPoint[] = [];
+  // Each TypeScript module's imports, read once and shared with the reachability walk below.
+  const scans = new Map<string, ModuleScan>();
   const typescript = [...files.keys()]
     .some(path => path.endsWith(".ts") && !DECLARATION_PATTERN.test(path));
   for (const [path, source] of files) {
-    if (DECLARATION_PATTERN.test(path)) continue;
+    if (DECLARATION_PATTERN.test(path)) {
+      // Ships no code, but can name a `lib/` module in type position (see importedModules).
+      scans.set(path, scanModule(path, source));
+      continue;
+    }
     if (UNSUPPORTED_TYPESCRIPT_PATTERN.test(path)) {
       invalid(label, `${path} is not a gadget module: gadget TypeScript is plain .ts, not .tsx, ` +
           `.mts or .cts`);
@@ -413,11 +368,12 @@ async function bundleTypeScriptSources(
       output.set(path, source);
       continue;
     }
-    const dynamic = NON_LITERAL_DYNAMIC_IMPORT_PATTERN.exec(source);
-    if (dynamic) {
-      invalid(label, `${path} contains ${dynamic.groups!.keyword}(...): a dynamic import whose ` +
-          `path is not a string literal; the bundler would expand a pattern into every file it ` +
-          `matches, or leave a computed path unchecked`);
+    const scan = scanModule(path, source);
+    scans.set(path, scan);
+    if (scan.dynamic) {
+      invalid(label, `${path} contains ${scan.dynamic}(...): a dynamic import whose path is not ` +
+          `a string literal; the bundler would expand a pattern into every file it matches, or ` +
+          `leave a computed path unchecked`);
     }
     if (path.startsWith(LIB_PREFIX)) {
       libSources.add(path);
@@ -497,7 +453,7 @@ async function bundleTypeScriptSources(
         }
       }
     }
-    if (COMPUTED_DYNAMIC_IMPORT_PATTERN.test(text)) {
+    if (scanModule(`${entry.name}.js`, text).dynamic === "import") {
       invalid(label, `${entry.name}.ts contains a dynamic import whose path is not a string ` +
           `literal; the bundler cannot check it`);
     }
@@ -507,12 +463,12 @@ async function bundleTypeScriptSources(
     }
     output.set(`${entry.name}.js`, text);
   }));
-  // A `lib/` module is wanted if some bundle inlined it, or if the source names it: the two are
-  // read together because neither alone sees everything. Types are erased before the bundle is
-  // written, so a module holding only the shared contract is inlined nowhere and only the source
-  // scan can witness it; the scan in turn is a scan (see importedModules), so the metafile is what
-  // vouches for a spelling it does not recognize.
-  const imported = importedModules(files, entries.map(entry => `${entry.name}.ts`));
+  // A `lib/` module is wanted if some bundle inlined it, or if the source names it. Types are
+  // erased before the bundle is written, so a module holding only the shared contract is inlined
+  // nowhere and only the source can witness it (see importedModules); the metafile is kept beside
+  // it so that a module the bundler reached by a path the parse did not attribute to an import is
+  // still vouched for, rather than reported as unimported by a build that shipped it.
+  const imported = importedModules(files, scans, entries.map(entry => `${entry.name}.ts`));
   for (const lib of libSources) {
     if (!imported.has(lib) && !bundled.has(lib)) {
       invalid(label, `${lib} is not imported by any entry point`);
@@ -553,9 +509,8 @@ async function bundleTypeScriptSources(
  * become inputs no edge points at, and the output calls a glob helper rather than `import()`. The
  * walk rejects the wildcard edge, and then requires that it met every input the metafile lists, so
  * a bundle that inlines something no import brought in is refused whatever produced it. The edge
- * is reached only from a library's code or a spelling the source scan missed: a blueprint's own
- * files are refused before the build (see {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), which is
- * the first line; this is the backstop.
+ * is reached only from a library's code: a blueprint's own files are refused before the build (see
+ * {@link scanModule}), which is the first line; this is the backstop.
  *
  * Types are erased before esbuild builds this graph, so an `import type` of the wrong side is not
  * seen here and not an error: nothing of it reaches the bundle.
@@ -633,31 +588,20 @@ function matchesExternal(specifier: string, externals: readonly string[]): boole
 }
 
 /**
- * Rejects an import in `source`, a module the archive ships as written, that the runtime could not
- * resolve: one that names a gadget library by this package's name, which the build inlines into a
- * TypeScript entry only, so a shipped module's copy of the specifier would be resolved against
- * nothing; and, ahead of it, a specifier spelled with an escape, which the scan reads as written
- * and could not compare with the package name -- there is no reason to spell an import path that
- * way, and allowing it would let the library import through. A relative import needs no check: a
- * shipped module can only sit in a JavaScript blueprint, where every module it could name ships
- * beside it.
+ * Rejects an import in `source`, a module the archive ships as written, that names a gadget
+ * library by this package's name: the build inlines a library into a TypeScript entry only, so a
+ * shipped module's copy of the specifier would be resolved against nothing. The specifier is
+ * compared decoded (see {@link scanModule}), so spelling the name with an escape does not get it
+ * past the check. A relative import needs no check: a shipped module can only sit in a JavaScript
+ * blueprint, where every module it could name ships beside it.
  *
  * A direct edge is enough: a chain through another shipped module is caught when that module is
- * scanned in turn. The same scan as {@link importedModules}, so it can over-estimate, and here that
- * direction rejects a valid blueprint -- a specifier-shaped string in a comment that happens to
- * spell the package name. The error names the importer and the specifier, and a shipped JavaScript
- * module has no reason to mention it. The scan sees static `import`/`export ... from` declarations
- * and a literal `import()` or `require()`, which are what fail module instantiation; a dynamic
- * import of a computed path in shipped JavaScript resolves at runtime and is not checked, as it
- * never was.
+ * read in turn. Static `import`/`export ... from` declarations and a literal `import()` or
+ * `require()` are what fail module instantiation; a dynamic import of a computed path in shipped
+ * JavaScript resolves at runtime and is not checked, as it never was.
  */
 function checkShippedImports(path: string, source: string, label: string): void {
-  for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
-    const specifier = doubleQuoted ?? singleQuoted!;
-    if (specifier.includes("\\")) {
-      invalid(label, `${path} imports ${specifier}, spelled with an escape; write the path ` +
-          `plainly so the build can read it`);
-    }
+  for (const specifier of scanModule(path, source).specifiers) {
     if (specifier === PACKAGE_NAME || specifier.startsWith(`${PACKAGE_NAME}/`)) {
       invalid(label, `${path} imports ${specifier}: a gadget library is inlined by the build ` +
           `into a TypeScript entry only; ${path} ships as written, and the runtime has nothing ` +
@@ -667,27 +611,25 @@ function checkShippedImports(path: string, source: string, label: string): void 
 }
 
 /**
- * The blueprint's own files reachable from `entryPaths` by following import specifiers.
+ * The blueprint's own files reachable from `entryPaths` by following import specifiers, as read
+ * from each module's syntax tree in `scans`.
  *
- * A scan of the source rather than a parse of it, and deliberately so: it exists to prove that a
- * `lib/` module is wanted, and a scan can only over-estimate that (a specifier-shaped string in a
- * comment counts as an import), so the "no entry imports this" build error stays impossible to
- * trigger for a module something really does import -- including one imported only for its types,
- * which no compiled output can witness. Comments between a keyword and its specifier are allowed
- * for (see {@link GAP}); a module the scan still misses is vouched for by the bundle that inlined
- * it, in {@link bundleTypeScriptSources}.
+ * It exists to prove that a `lib/` module is wanted, so it has to see every import the compiler
+ * sees, and it does: an `import type` declaration and a type-position `import("...")` are nodes
+ * like any other, so a module imported only for its types is counted, which no compiled output can
+ * witness. It is exact in the other direction too -- a specifier-shaped string in a comment is not
+ * an import. A module the bundler inlined by some path this does not follow is vouched for by the
+ * bundle instead, in {@link bundleTypeScriptSources}.
  */
 function importedModules(
   files: ReadonlyMap<string, string>,
+  scans: ReadonlyMap<string, ModuleScan>,
   entryPaths: string[],
 ): Set<string> {
   const reached = new Set(entryPaths);
   const queue = [...entryPaths];
   for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
-    const source = MODULE_PATTERN.test(path) ? files.get(path) : undefined;
-    if (source === undefined) continue;
-    for (const [, doubleQuoted, singleQuoted] of source.matchAll(SPECIFIER_PATTERN)) {
-      const specifier = doubleQuoted ?? singleQuoted!;
+    for (const specifier of scans.get(path)?.specifiers ?? []) {
       if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
       for (const candidate of resolveWithinFiles(path, specifier)) {
         if (!files.has(candidate) || reached.has(candidate)) continue;
