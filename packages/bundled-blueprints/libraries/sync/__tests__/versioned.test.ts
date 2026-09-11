@@ -101,12 +101,34 @@ describe("operationStatus and normalizeBaseVersion", () => {
     expect(operationStatus(false, [])).toBe("unchanged");
   });
 
-  it("reads a base version as a non-negative integer", () => {
+  it("reads a base version as a non-negative integer, or as one that matches nothing", () => {
     expect(normalizeBaseVersion(3)).toBe(3);
     expect(normalizeBaseVersion("2")).toBe(2);
-    expect(normalizeBaseVersion(2.9)).toBe(2);
-    expect(normalizeBaseVersion(-1)).toBe(0);
     expect(normalizeBaseVersion(undefined)).toBe(0);
-    expect(normalizeBaseVersion(Number.NaN)).toBe(0);
+    expect(normalizeBaseVersion(null)).toBe(0);
+    expect(normalizeBaseVersion(2.9)).toBe(-1);
+    expect(normalizeBaseVersion(-1)).toBe(-1);
+    expect(normalizeBaseVersion(Number.NaN)).toBe(-1);
+  });
+
+  // A precondition that cannot be read fails rather than passes: -1 is neither the stored version
+  // nor the 0 that re-creates a missing item.
+  it("rejects what an unreadable base version guards", () => {
+    const current = blocks(["a", "<p>server</p>", 2]);
+    const upsert = applyVersioned(current, {
+      upserts: [{ id: "a", html: "<p>mine</p>", baseVersion: normalizeBaseVersion(2.9) }],
+    });
+    expect(upsert.conflicts).toEqual([{ id: "a", reason: "stale", current: current[0] }]);
+    expect(upsert.items.get("a")).toBe(current[0]);
+
+    const deletion = applyVersioned(current, { deletes: [{ id: "a", baseVersion: normalizeBaseVersion(2.9) }] });
+    expect(deletion.conflicts).toEqual([{ id: "a", reason: "stale", current: current[0] }]);
+    expect(deletion.items.get("a")).toBe(current[0]);
+
+    const missing = applyVersioned(current, {
+      upserts: [{ id: "b", html: "<p>new</p>", baseVersion: normalizeBaseVersion(-1) }],
+    });
+    expect(missing.conflicts).toEqual([{ id: "b", reason: "missing" }]);
+    expect(missing.items.has("b")).toBe(false);
   });
 });

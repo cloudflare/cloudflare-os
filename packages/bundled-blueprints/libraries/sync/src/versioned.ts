@@ -80,9 +80,16 @@ export function operationStatus(changed: boolean, conflicts: ReadonlyArray<unkno
   return changed ? "applied" : "unchanged";
 }
 
-/** A `baseVersion` as sent over RPC, read as the non-negative integer it must be; anything else is 0. */
+/**
+ * A `baseVersion` as sent over RPC. An absent one is 0 (the version of an item the client created);
+ * a value that is not a non-negative integer is read as -1, which matches no stored version and is
+ * not 0, so what it guards is rejected as `stale` or `missing` rather than applied against a version
+ * the client never saw.
+ */
 export function normalizeBaseVersion(value: unknown): number {
-  return Math.max(0, Math.floor(Number(value) || 0));
+  if (value === undefined || value === null) return 0;
+  const version = Number(value);
+  return Number.isInteger(version) && version >= 0 ? version : -1;
 }
 
 /**
