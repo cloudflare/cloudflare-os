@@ -320,6 +320,7 @@ describe("HierarchicalList", () => {
       item: HierarchicalListItem,
       destination: HierarchicalListDropDestination,
     ) => void>();
+    const onItemClick = vi.fn<(item: HierarchicalListItem) => void>();
     const touchItems: HierarchicalListItem[] = [
       { id: "source", name: "Source", draggable: true },
       { id: "target", name: "Target" },
@@ -330,6 +331,7 @@ describe("HierarchicalList", () => {
         label="Files"
         dragAndDrop={{ onMove }}
         interaction={{ touchDragThresholdPx: 16 }}
+        onItemClick={onItemClick}
       />,
     );
     const source = rowFor("Source")!;
@@ -355,6 +357,10 @@ describe("HierarchicalList", () => {
 
     expect(onMove).toHaveBeenCalledWith(touchItems[0], { parent: null, index: 1 });
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
+    act(() => source.click());
+    expect(onItemClick).not.toHaveBeenCalled();
+    act(() => source.click());
+    expect(onItemClick).toHaveBeenCalledWith(touchItems[0]);
   });
 
   it("disables touch scrolling on draggable rows when the primary pointer is fine", () => {
@@ -374,6 +380,8 @@ describe("HierarchicalList", () => {
     const row = rowFor("Source")!;
     expect(row.draggable).toBe(true);
     expect(row.className).toContain("touch-none");
+    expect(row.style.touchAction).toBe("none");
+    expect(row.style.paddingLeft).toBe("12px");
   });
 
   it("opens an item's action menu from a right click", () => {

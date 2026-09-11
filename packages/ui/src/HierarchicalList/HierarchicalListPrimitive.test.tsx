@@ -177,6 +177,7 @@ describe("HierarchicalListPrimitive", () => {
     );
 
     const [source, target] = Array.from(container!.querySelectorAll("button"));
+    expect(source.style.touchAction).toBe("none");
     source.getBoundingClientRect = () => DOMRect.fromRect({ y: 0, width: 300, height: 40 });
     target.getBoundingClientRect = () => DOMRect.fromRect({ y: 40, width: 300, height: 40 });
     const transfer = {
@@ -240,6 +241,49 @@ describe("HierarchicalListPrimitive", () => {
     expect(container!.querySelector('[role="status"]')?.textContent).toBe(
       "Movable moved to position 1 in Folder.",
     );
+  });
+
+  it("focuses a collapsed destination when the moved item becomes hidden", () => {
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const movable: HierarchicalListItem = { id: "movable", name: "Movable", draggable: true };
+    const Example = () => {
+      const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
+      return (
+        <HierarchicalListPrimitive
+          items={tree}
+          label="Resources"
+          dragAndDrop={{
+            onMove: (item, destination) => {
+              if (destination.parent?.id !== folder.id) return;
+              setTree([{ ...folder, children: [item] }]);
+            },
+          }}
+          renderRow={disclosureRow}
+        />
+      );
+    };
+    render(<Example />);
+
+    const movableRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Movable")!;
+    act(() => movableRow.focus());
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    expect(container!.querySelector("[data-item-id='movable']")).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Folder");
+    act(() => (document.activeElement as HTMLButtonElement).click());
+    expect(container!.querySelector("[data-item-id='movable']")).not.toBeNull();
+    expect(document.activeElement?.textContent).toBe("Folder");
   });
 
   it("uses primary coarse-pointer capability for native dragging", () => {

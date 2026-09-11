@@ -310,7 +310,7 @@ export const HierarchicalListPrimitive = ({
   );
   const [moveAnnouncement, setMoveAnnouncement] = useState<{ id: number; text: string } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const pendingFocusIdRef = useRef<string | null>(null);
+  const pendingFocusRef = useRef<{ itemId: string; fallbackId: string | null } | null>(null);
   const announcementIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
     ...dragAndDrop,
@@ -321,8 +321,13 @@ export const HierarchicalListPrimitive = ({
       const focusedItemId = document.activeElement
         ?.closest("[data-hierarchical-list-item]")
         ?.getAttribute("data-item-id");
-      if (focusedItemId === item.id) pendingFocusIdRef.current = item.id;
       const normalizedDestination = normalizeDropDestination(items, item, destination);
+      if (focusedItemId === item.id) {
+        pendingFocusRef.current = {
+          itemId: item.id,
+          fallbackId: normalizedDestination.parent?.id ?? null,
+        };
+      }
       setMoveAnnouncement({
         id: ++announcementIdRef.current,
         text: `${item.name} moved to position ${normalizedDestination.index + 1} in ${
@@ -337,15 +342,17 @@ export const HierarchicalListPrimitive = ({
   const coarsePointer = useHierarchicalListCoarsePointer();
 
   useLayoutEffect(() => {
-    const pendingFocusId = pendingFocusIdRef.current;
-    if (!pendingFocusId) return;
+    const pendingFocus = pendingFocusRef.current;
+    if (!pendingFocus) return;
     const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-hierarchical-list-row]");
-    const row = rows && [...rows].find((candidate) => candidate
-      .closest("[data-hierarchical-list-item]")
-      ?.getAttribute("data-item-id") === pendingFocusId);
-    if (!row) return;
-    row.focus();
-    pendingFocusIdRef.current = null;
+    const rowFor = (id: string | null) => id
+      ? [...rows ?? []].find((candidate) => candidate
+        .closest("[data-hierarchical-list-item]")
+        ?.getAttribute("data-item-id") === id)
+      : undefined;
+    const row = rowFor(pendingFocus.itemId) || rowFor(pendingFocus.fallbackId);
+    row?.focus();
+    pendingFocusRef.current = null;
   });
 
   useEffect(() => {
