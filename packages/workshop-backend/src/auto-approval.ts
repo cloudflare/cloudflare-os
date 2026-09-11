@@ -21,12 +21,9 @@ export interface AutoApprovalStorage {
 }
 
 /**
- * The single authority on whether an action may be applied without a human. Returns the enabling
- * rule iff ALL of:
- *  - the gatekeeper author marked this specific action `autoApprovable`,
- *  - the action carries an `actionKind` for which the user enabled a rule on this gatekeeper,
- *  - the workspace has not latched restricted mode (`containsRestrictedData` above).
- * Returns undefined otherwise: manual approval required.
+ * The single authority on whether an action may be applied without a human: the enabling rule if
+ * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
+ * this gatekeeper, and the workspace has not latched restricted mode; else undefined.
  */
 export function autoApprovalRule(
     storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)

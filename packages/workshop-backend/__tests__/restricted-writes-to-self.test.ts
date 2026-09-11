@@ -35,8 +35,8 @@ function seedGatekeeper(impl: any, id: number): void {
   });
 }
 
-// A restricted observation attributed to `gatekeeperId` plus the latch, as authorizeObservation
-// writes them on code that records no producers (so the set is reconciled from the log).
+// A restricted observation attributed to `gatekeeperId` plus the producer and the latch, as
+// authorizeObservation writes them.
 function seedRestrictedObservation(impl: any, gatekeeperId: number, actionId: number): void {
   impl.storage.actions.put({
     id: actionId,
@@ -52,6 +52,8 @@ function seedRestrictedObservation(impl: any, gatekeeperId: number, actionId: nu
     },
   });
   impl.storage.nextActionId.put(actionId + 1);
+  impl.storage.restrictedProducerIds.put(
+      [...impl.storage.restrictedProducerIds.get(), gatekeeperId]);
   impl.storage.containsRestrictedData.put(true);
 }
 
@@ -79,59 +81,13 @@ describe("the recorded producer set", () => {
       seedGatekeeper(impl, 1);
       seedGatekeeper(impl, 2);
       let restricted = { title: "Read", description: "Read.", containsRestrictedData: true };
-      expect(impl.storage.restrictedProducerIds.get()).toBeNull();
+      expect(impl.storage.restrictedProducerIds.get()).toEqual([]);
 
       await impl.authorizeObservation(1, restricted, CALLER);
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1], through: 0 });
+      expect(impl.storage.restrictedProducerIds.get()).toEqual([1]);
       await impl.authorizeObservation(2, restricted, CALLER);
       await impl.authorizeObservation(1, restricted, CALLER);
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1, 2], through: 0 });
-      expect(impl.isRestrictedProducer(1)).toBe(true);
-      expect(impl.isRestrictedProducer(2)).toBe(true);
-      // A miss reconciles from the log: the watermark advances, the set is unchanged.
-      expect(impl.isRestrictedProducer(3)).toBe(false);
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1, 2], through: 3 });
-    });
-  });
-
-  it("backfills from the action log on a workspace latched before the set was recorded", async () => {
-    let stub = env.TEST_OVERSEER.getByName("producers-backfilled");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = getImpl(instance);
-      seedGatekeeper(impl, 1);
-      seedGatekeeper(impl, 2);
-      // Record and latch only, the way the log looked before producers were recorded.
-      seedRestrictedObservation(impl, 1, 100);
-      expect(impl.storage.restrictedProducerIds.get()).toBeNull();
-
-      await impl.submitAction(1, 0, pokeDescription(), CALLER);
-      expect(actionStates(impl)).toEqual([{ gatekeeperId: 1, state: "pending" }]);
-      // The reconcile persisted what the scan found and its watermark; later hits skip the log.
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1], through: 101 });
-      await expect(impl.submitAction(2, 0, pokeDescription(), CALLER))
-          .rejects.toThrow(/only perform actions on those same connections/i);
-    });
-  });
-
-  it("reconciles a producer the log records but the set omits (rollback)", async () => {
-    let stub = env.TEST_OVERSEER.getByName("producers-rollback");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = getImpl(instance);
-      seedGatekeeper(impl, 1);
-      seedGatekeeper(impl, 2);
-      seedGatekeeper(impl, 3);
-      let restricted = { title: "Read", description: "Read.", containsRestrictedData: true };
-      await impl.authorizeObservation(1, restricted, CALLER);
-      // Then a rollback to code that latches without recording the producer read through 2.
-      seedRestrictedObservation(impl, 2, 100);
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1], through: 0 });
-
-      // The miss on 2 reconciles from the watermark and finds it, so the write is not refused.
-      await impl.submitAction(2, 0, pokeDescription(), CALLER);
-      expect(actionStates(impl)).toEqual([{ gatekeeperId: 2, state: "pending" }]);
-      expect(impl.storage.restrictedProducerIds.get()).toEqual({ ids: [1, 2], through: 101 });
-      await expect(impl.submitAction(3, 0, pokeDescription(), CALLER))
-          .rejects.toThrow(/only perform actions on those same connections/i);
+      expect(impl.storage.restrictedProducerIds.get()).toEqual([1, 2]);
     });
   });
 });
@@ -219,7 +175,7 @@ describe("submitAction under the restricted-data latch", () => {
     });
   });
 
-  it("refuses everything when the latch is set with no derivable producer", async () => {
+  it("refuses everything when the latch is set with no recorded producer", async () => {
     let stub = env.TEST_OVERSEER.getByName("writes-to-self-empty-producers");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);

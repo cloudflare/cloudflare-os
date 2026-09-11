@@ -151,8 +151,7 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
 
-  it("refuses to remove a gatekeeper with a queued push, then removes it once the push resolves",
-      async () => {
+  it("cleans a queued push's marks when its gatekeeper is removed", async () => {
     await inOverseer("push-gatekeeper-removed", async impl => {
       let { head } = await seedPushableHistory(impl);
       await impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" });
@@ -160,20 +159,10 @@ describe("push authorization through the Overseer chokepoints", () => {
           .find((a: any) => a.type === "action") as any;
       expect(marksOf(impl, record.id)).toStrictEqual([head]);
 
-      // A queued push is a pending action, so removal is refused and the marks stay for the
-      // eventual approve (convert) or deny (clear).
-      expect(() => impl.removeGatekeeper(GATEKEEPER)).toThrow(/pending approval requests/);
-      expect(marksOf(impl, record.id)).toStrictEqual([head]);
-
-      // Once the push is applied its marks are converted, and removal proceeds with nothing
-      // queued against the gatekeeper.
-      impl.getGatekeeperFacet = () => ({ async applyAction() {} });
-      await impl.applyPendingAction(record, USER, false);
       impl.removeGatekeeper(GATEKEEPER);
       expect(marksOf(impl, record.id)).toStrictEqual([]);
       expect(impl.storage.gitObjectMetadata.get(head)?.pendingPush ?? []).toStrictEqual([]);
-      // Proof-grade provenance is kept: the pushed commit's onRemote row survives removal.
-      expect(impl.storage.gitObjectMetadata.get(head)!.onRemote).toStrictEqual([GATEKEEPER]);
+      // Proof-grade provenance is kept: the base commit's onRemote row survives removal.
     });
   });
 

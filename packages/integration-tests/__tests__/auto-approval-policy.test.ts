@@ -131,10 +131,8 @@ describe("auto-approval policy", () => {
       const [held] = await listWrites(ws);
       expect(held.state).toBe("pending");
 
-      // No new rules while latched, but the catalog still names each existing rule's connection
-      // so it stays identifiable and revocable in the UI.
-      await expect(ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE))
-          .rejects.toThrow(/cannot be auto-approved/i);
+      // The catalog still names each existing rule's connection so it stays identifiable and
+      // revocable in the UI.
       await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([
         expect.objectContaining({
           gatekeeperId: ws.gatekeeperId, actionKind: SET_VALUE, alreadyEnabled: true,

@@ -546,29 +546,6 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("a connection with pending approval requests cannot be removed", async () => {
-    await withSession(async publicApi => {
-      const ws = await newWorkspace(publicApi, "remove-pending");
-
-      // A pending write (held, not awaited: it resolves once decided) blocks removal, which would
-      // delete the facet both approval and rejection resolve through.
-      const write = ws.session.writeValue(5);
-      const [pending] = await waitFor("the write to be held for approval", async () => {
-        const { entries } = await ws.overseer.listActions({ filter: "pending" });
-        return entries.length > 0 ? entries : null;
-      });
-      const gatekeeper = await ws.overseer.getGatekeeperById(ws.gatekeeperId);
-      await expect(gatekeeper.remove()).rejects.toThrow(/pending approval requests/i);
-      // The refused removal left the connection intact.
-      await expect(ws.session.readValue()).resolves.toBe(42);
-
-      // Denying the action resolves it, which unblocks the removal.
-      await ws.overseer.rejectAction(pending.id);
-      await expect(write).rejects.toThrow();
-      await expect(gatekeeper.remove()).resolves.toBeUndefined();
-    });
-  });
-
   it.concurrent("removal restarts the workspace and tears down the observer record", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "removal");
