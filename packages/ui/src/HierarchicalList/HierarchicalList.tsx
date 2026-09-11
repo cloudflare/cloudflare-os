@@ -307,7 +307,7 @@ export const HierarchicalList = ({
   }, [openActions, useActionDrawer]);
 
   return (
-    <LayerCard className="p-1">
+    <LayerCard className="bg-kumo-control p-1">
       <HierarchicalListPrimitive
         {...props}
         hasLongPressAction={renderContextMenu && useActionDrawer
