@@ -38,6 +38,14 @@ const itemIcon = (item: HierarchicalListItem) => item.icon ?? (
 export type HierarchicalListInteractionOptions = HierarchicalListTouchInteractionOptions
   & HierarchicalListActionPresentationOptions;
 
+/** Render state for an item that is being renamed inline. */
+export type HierarchicalListRenameOptions = {
+  /** Whether the given item is currently in rename mode. */
+  isRenaming: (item: HierarchicalListItem) => boolean;
+  /** Renders the inline rename control for the given item. */
+  renderInput: (item: HierarchicalListItem) => ReactNode;
+};
+
 /** Props for {@link HierarchicalList}. */
 export type HierarchicalListProps = HierarchicalListExpansionProps & {
   items: readonly HierarchicalListItem[];
@@ -52,6 +60,8 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   onItemClick?: (item: HierarchicalListItem) => void;
   onSelectionClear?: () => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
+  /** Optional inline rename rendering and state. */
+  rename?: HierarchicalListRenameOptions;
 };
 
 type StyledRowProps = {
@@ -61,6 +71,7 @@ type StyledRowProps = {
   useActionDrawer: boolean;
   onActionsOpenChange: (open: boolean) => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
+  rename?: HierarchicalListRenameOptions;
 };
 
 type OpenActions = { itemId: string; drawer: boolean };
@@ -72,6 +83,7 @@ const StyledRow = ({
   useActionDrawer,
   onActionsOpenChange,
   renderContextMenu,
+  rename,
 }: StyledRowProps) => {
   const drawerPopupRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLButtonElement>(null);
@@ -102,6 +114,7 @@ const StyledRow = ({
     document.addEventListener("focusin", trackFocusDestination, true);
     return () => document.removeEventListener("focusin", trackFocusDestination, true);
   }, [actionsOpen, useActionDrawer]);
+  const renaming = rename?.isRenaming(item) ?? false;
   const row = (
     <Button
       ref={rowRef}
@@ -112,6 +125,11 @@ const StyledRow = ({
       aria-current={selected ? "true" : undefined}
       aria-expanded={collapsible ? expanded : undefined}
       onClick={(event) => {
+        if (renaming) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         rowProps.onClick?.(event);
         if (!event.defaultPrevented && collapsible) state.toggleExpanded();
       }}
@@ -147,9 +165,19 @@ const StyledRow = ({
           )}
         />
       )}
-      <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
-        {item.name}
-      </Text>
+      {renaming ? (
+        <span
+          className="min-w-0 flex-1"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {rename!.renderInput(item)}
+        </span>
+      ) : (
+        <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
+          {item.name}
+        </Text>
+      )}
       {item.metadata !== null && item.metadata !== undefined && (
         <Text
           as="span"
@@ -267,6 +295,7 @@ const StyledRow = ({
 /** A nested Kumo resource list with optional context-menu and drag-and-drop behaviors. */
 export const HierarchicalList = ({
   renderContextMenu,
+  rename,
   ...props
 }: HierarchicalListProps) => {
   const [openActions, setOpenActions] = useState<OpenActions | null>(null);
@@ -281,7 +310,7 @@ export const HierarchicalList = ({
       <HierarchicalListPrimitive
         {...props}
         hasLongPressAction={renderContextMenu && useActionDrawer
-          ? (item) => Boolean(renderContextMenu(item))
+          ? (item) => Boolean(renderContextMenu(item)) && !rename?.isRenaming(item)
           : undefined}
         onItemLongPress={renderContextMenu && useActionDrawer
           ? (item) => setOpenActions({ itemId: item.id, drawer: true })
@@ -329,6 +358,7 @@ export const HierarchicalList = ({
               ? { itemId: state.item.id, drawer: useActionDrawer }
               : null)}
             renderContextMenu={renderContextMenu}
+            rename={rename}
           />
         )}
         renderDropIndicator={(indicator) => (
