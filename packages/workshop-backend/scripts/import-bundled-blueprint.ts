@@ -14,6 +14,7 @@ import type {
 } from "@gadgets/bundled-blueprints";
 import {
   BUNDLED_BLUEPRINTS_DIR,
+  buildContent,
   extractFiles,
   findInterruptedImportBackups,
   parseArchive,
@@ -254,8 +255,10 @@ try {
   }
   // The staged tree is built before it replaces anything: the bundler policy the post-rename build
   // applies to files/ is applied here first, so an export it rejects is refused with the current
-  // source untouched.
-  await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`);
+  // source untouched. The snapshot is built too, since the bundles inline lib/ into each entry and
+  // can outgrow sources that were under the limit; buildContent holds the update-size limit
+  // generation applies. The metadata's own limit was met when the export's manifest was read.
+  buildContent(await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`), entry.name);
   if (!scaffold && entry.layout === "extracted") await rename(targetDir, backupDir);
   await rename(stagedDir, targetDir);
   await rm(backupDir, {recursive: true, force: true});
