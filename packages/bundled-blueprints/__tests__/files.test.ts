@@ -445,6 +445,19 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     await expect(readSourceFiles(commented, "example/files")).rejects
       .toThrow(message("import(...)"));
+
+    // A line comment ends at CR, LS or PS too, and esbuild reads the `(` after it; the scan has to
+    // as well, or the pattern would be enumerated before the wildcard edge rejects it. As above,
+    // the match is not JavaScript, so a rejection here proves the build never ran.
+    for (let terminator of ["\r", "\u2028", "\u2029"]) {
+      let split = await sourceTree({
+        "files/client.ts": "export const load = (name: string) => import //x" + terminator +
+            "(`../outside/${name}.js`);",
+        "outside/x.js": "not js (((",
+      });
+      await expect(readSourceFiles(join(split, "files"), "example/files")).rejects
+        .toThrow(message("import(...)"));
+    }
   });
 
   // The bundle adds client.js and server.js to a tree the path check saw without them, so a
@@ -537,6 +550,22 @@ describe("bundled blueprint TypeScript sources", () => {
     });
 
     let files = await readSourceFiles(directory, "example/files");
+
+    expect([...files.keys()]).toEqual(["client.js"]);
+    expect(files.get("client.js")).toContain('document.title = "ready"');
+  });
+
+  // esbuild applies the field to the package's own relative imports, not just to dependencies,
+  // and the audit could not tell: the module is named in the source, so it counts as imported,
+  // and a dropped input is simply absent from the metafile.
+  it("keeps a side-effect-only import under a package marked side-effect free", async () => {
+    let parent = await sourceTree({
+      "package.json": '{"sideEffects": false}',
+      "files/client.ts": 'import "./lib/setup.ts";',
+      "files/lib/setup.ts": 'document.title = "ready";',
+    });
+
+    let files = await readSourceFiles(join(parent, "files"), "example/files");
 
     expect([...files.keys()]).toEqual(["client.js"]);
     expect(files.get("client.js")).toContain('document.title = "ready"');
