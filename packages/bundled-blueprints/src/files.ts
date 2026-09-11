@@ -633,8 +633,9 @@ function auditInputs(
  * esbuild wrote, which is relative to the blueprint's files/ and so, for a tree outside this
  * package, climbs to the filesystem root and spells out where the checkout that built it lives.
  * The archive stays a function of its sources: the same blueprint builds the same bytes anywhere,
- * and its fingerprint with them. Only a path the metafile lists as an input is rewritten, so a
- * line of a template literal that happens to look like one is left alone.
+ * and its fingerprint with them. Only a path the metafile lists as an input is rewritten; a template
+ * literal whose own line spells exactly such a path would be rewritten with it, which the README
+ * lists among the build's limits.
  */
 function nameLibraryModules(
   text: string,
