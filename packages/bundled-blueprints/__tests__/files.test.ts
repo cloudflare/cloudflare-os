@@ -439,6 +439,15 @@ describe("bundled blueprint TypeScript sources", () => {
     await expect(readSourceFiles(required, "example/files")).rejects
       .toThrow(message("require(...)"));
 
+    // The bundler looks through a type assertion around `require`, so the scan does too.
+    let wrapped = await sourceTree({
+      "files/client.ts":
+        "export const load = (name: string) => (require as any)(`../outside/${name}.js`);",
+      "outside/x.js": "not js (((",
+    });
+    await expect(readSourceFiles(join(wrapped, "files"), "example/files")).rejects
+      .toThrow(message("require(...)"));
+
     // The imports are read from the syntax tree, so a comment cannot spell one.
     let commented = await sourceTree({
       "client.ts": "// import(`./${x}`)\nexport const a = 1;",
@@ -577,6 +586,37 @@ describe("bundled blueprint TypeScript sources", () => {
   // esbuild applies the field to the package's own relative imports, not just to dependencies,
   // and the audit could not tell: the module is named in the source, so it counts as imported,
   // and a dropped input is simply absent from the metafile.
+  it("rejects a package.json in a TypeScript blueprint", async () => {
+    let message = (path: string) => "example/files: " + path + " is a package.json in a TypeScript " +
+        "blueprint; the bundler would read it, and its browser field or imports map can send an " +
+        "import of one of the blueprint's modules to another, so the tree ships none";
+    let mapping = '{"browser": {"./lib/real.ts": "./lib/other.ts"}}';
+    let root = await sourceTree({
+      "package.json": mapping,
+      "client.ts": 'import { value } from "./lib/real.ts"; console.log(value);',
+      "lib/real.ts": "export const value = 1;",
+      "lib/other.ts": "export const value = 2;",
+    });
+    await expect(readSourceFiles(root, "example/files")).rejects.toThrow(message("package.json"));
+
+    let nested = await sourceTree({
+      "lib/package.json": mapping,
+      "client.ts": 'import { value } from "./lib/real.ts"; console.log(value);',
+      "lib/real.ts": "export const value = 1;",
+      "lib/other.ts": "export const value = 2;",
+    });
+    await expect(readSourceFiles(nested, "example/files")).rejects
+      .toThrow(message("lib/package.json"));
+
+    // A JavaScript blueprint ships as written, so the bundler never reads one.
+    let javascript = await sourceTree({
+      "package.json": mapping,
+      "client.js": "console.log(1);",
+    });
+    let files = await readSourceFiles(javascript, "example/files");
+    expect([...files.keys()].toSorted()).toEqual(["client.js", "package.json"]);
+  });
+
   it("keeps a side-effect-only import under a package marked side-effect free", async () => {
     let parent = await sourceTree({
       "package.json": '{"sideEffects": false}',

@@ -30,6 +30,12 @@ describe("module scan", () => {
     ['import("./a" + x)', "import"],
     ["require()", "require"],
     ["require(p)", "require"],
+    ["(require)(p)", "require"],
+    ["(require as any)(p)", "require"],
+    ["require!(p)", "require"],
+    ["(<any>require)(p)", "require"],
+    ["(require satisfies any)(p)", "require"],
+    ["((require))(p)", "require"],
     ["export const load = (name: string) => import //x\r(`../outside/${name}.js`);", "import"],
   ])("reports %s as a dynamic import of a computed path", (source, keyword) => {
     expect(scanModule("client.ts", source)).toEqual({specifiers: [], dynamic: keyword});
@@ -41,6 +47,8 @@ describe("module scan", () => {
     "// import(x)",
     '/* require(p) */ const s = "import(x)";',
     "const t = `require(${p})`;",
+    // Not a require call to esbuild either: it becomes the `__require` shim the output check catches.
+    "(0, require)(p);",
   ])("does not read %s as an import", source => {
     expect(scanModule("client.ts", source)).toEqual({specifiers: []});
   });

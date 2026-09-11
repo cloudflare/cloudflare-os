@@ -15,8 +15,28 @@ export interface ModuleScan {
    * output never shows.
    */
   specifiers: string[];
-  /** The keyword of the first `import()` or `require()` whose operand is not one string literal. */
+  /**
+   * The keyword of the first `import()` or `require()` whose operand is not one string literal.
+   * A `require` wrapped in parentheses or a type assertion (`(require as any)(...)`) counts, since
+   * the bundler looks through those too (see {@link unwrap}).
+   */
   dynamic?: "import" | "require";
+}
+
+/**
+ * Strips the wrappers esbuild drops from a callee before it recognises `require`: parentheses and
+ * the type-only `as`, `satisfies`, `!` and `<T>` assertions, all of which leave the value untouched.
+ * `(require as any)(p)` is a require call to the bundler, so it has to be one here. A comma
+ * expression `(0, require)(p)` is deliberately not unwrapped: esbuild does not treat it as a
+ * require call either, leaving it to the `__require` shim the output check catches.
+ */
+function unwrap(expression: ts.Expression): ts.Expression {
+  while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+      ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression) ||
+      ts.isTypeAssertionExpression(expression)) {
+    expression = expression.expression;
+  }
+  return expression;
 }
 
 /**
@@ -41,8 +61,9 @@ export function scanModule(path: string, source: string): ModuleScan {
       if (ts.isLiteralTypeNode(node.argument)) specifier(node.argument.literal);
     } else if (ts.isCallExpression(node)) {
       // A bare `require` only: `foo.require(...)` is a method of that name, not the keyword.
-      const keyword = node.expression.kind === ts.SyntaxKind.ImportKeyword ? "import"
-          : ts.isIdentifier(node.expression) && node.expression.text === "require" ? "require"
+      const callee = unwrap(node.expression);
+      const keyword = callee.kind === ts.SyntaxKind.ImportKeyword ? "import"
+          : ts.isIdentifier(callee) && callee.text === "require" ? "require"
           : undefined;
       if (keyword !== undefined) {
         // The first argument names the module; `import("./x", { with: ... })` is a literal import.
