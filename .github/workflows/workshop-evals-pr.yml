@@ -1,0 +1,373 @@
+name: Workshop eval comparison
+
+# Same trust boundary as preview.yml: GitHub withholds repository secrets from fork PRs, and the
+# first job re-verifies that a non-bot same-repository author still has write access before any
+# secret-bearing job starts. Core maintainers' same-repository branch code is trusted.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - .github/workflows/workshop-evals-pr.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.json
+      - vite.config.ts
+      - scripts/**
+      - packages/backend-utils/**
+      - packages/error-reporting/**
+      - packages/integration-tests/**
+      - packages/typed-storage/**
+      - packages/workshop-backend/**
+      - packages/workshop-evals/**
+      - packages/workshop-shared/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/workshop-evals-pr.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.json
+      - vite.config.ts
+      - scripts/**
+      - packages/backend-utils/**
+      - packages/error-reporting/**
+      - packages/integration-tests/**
+      - packages/typed-storage/**
+      - packages/workshop-backend/**
+      - packages/workshop-evals/**
+      - packages/workshop-shared/**
+
+permissions: {}
+
+concurrency:
+  group: >-
+    workshop-evals-${{ github.event.pull_request.number || github.ref }}-${{
+      (github.event.action == 'edited' && github.event.changes.base == null &&
+       github.run_id) || 'eval' }}
+  cancel-in-progress: >-
+    ${{ github.event_name != 'pull_request' ||
+        github.event.action != 'edited' || github.event.changes.base != null }}
+
+env:
+  NODE_VERSION: "24.19.0"
+  EVAL_MODEL: "@cf/deepseek-ai/deepseek-v4-pro-0813"
+  EVAL_TRIALS: "3"
+
+jobs:
+  trust:
+    name: Verify pull request
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      github.event.pull_request.user.type != 'Bot' &&
+      (github.event.action != 'edited' || github.event.changes.base != null) &&
+      github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Verify the pull request is from a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$PR_AUTHOR/permission" --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$PR_AUTHOR has '$permission' on $GH_REPO; Workshop evals require write access."
+            exit 1
+          fi
+
+  main-baseline:
+    name: Refresh eval baseline
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Run baseline evals
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WORKSHOP_EVAL_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.WORKSHOP_EVAL_ACCOUNT_ID }}
+          CF_AI_GATEWAY: ${{ vars.WORKSHOP_EVAL_AI_GATEWAY }}
+          CF_AI_GATEWAY_ACCOUNT_ID: ${{ vars.WORKSHOP_EVAL_ACCOUNT_ID }}
+          CF_AI_GATEWAY_USE_BINDING: "true"
+          WORKSHOP_EVAL_MODELS: ${{ env.EVAL_MODEL }}
+          WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
+          WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
+        run: pnpm evals
+
+      - name: Require eval results
+        run: test -f packages/workshop-evals/.wrangler/evals/results.json
+
+      - name: Validate eval results
+        uses: getsentry/vitest-evals@d37153f06d7d086393927c57a2faaeff464a55e2 # v0
+        with:
+          results: packages/workshop-evals/.wrangler/evals/results.json
+          publish-summary: false
+          publish-annotations: false
+          publish-check: false
+          fail-on-failures: false
+          min-pass-rate: 0
+          soft-fail: false
+
+      - name: Require a reusable baseline
+        env:
+          EXPECTED_TRIALS: ${{ env.EVAL_TRIALS }}
+          EVAL_MODELS: ${{ env.EVAL_MODEL }}
+        run: |
+          shopt -s globstar nullglob
+          tasks=(packages/workshop-evals/evals/**/*.eval.ts)
+          IFS=',' read -ra models <<< "$EVAL_MODELS"
+          expected_cases=$((${#tasks[@]} * ${#models[@]} * EXPECTED_TRIALS))
+          jq -e --argjson expected_trials "$EXPECTED_TRIALS" \
+            --argjson expected_cases "$expected_cases" '
+            [.testResults[].assertionResults[]] as $cases |
+            ($cases | length) == $expected_cases and
+            all($cases[];
+              (.meta.harness.run.session.metadata.taskId | type) == "string" and
+              (.meta.harness.run.usage.model | type) == "string" and
+              ((.meta.harness.run.errors // []) | length) == 0) and
+            ([$cases[] | [
+              .meta.harness.run.session.metadata.taskId,
+              .meta.harness.run.usage.model
+            ]] | group_by(.) | all(length == $expected_trials))
+          ' packages/workshop-evals/.wrangler/evals/results.json
+
+      - name: Upload baseline trajectories
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workshop-evals-baseline
+          path: packages/workshop-evals/.wrangler/evals/results.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  pr-evals:
+    name: Eval ${{ matrix.revision }}
+    if: github.event_name == 'pull_request' && needs.trust.result == 'success'
+    needs: trust
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - revision: baseline
+            sha: ${{ github.event.pull_request.base.sha }}
+          - revision: candidate
+            sha: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Find stored baseline
+        if: matrix.revision == 'baseline'
+        id: stored
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          artifact_id=$(gh api "repos/$GH_REPO/actions/artifacts?name=workshop-evals-baseline&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | sort_by(.created_at) | last | .id // ""')
+          echo "artifact-id=$artifact_id" >> "$GITHUB_OUTPUT"
+
+      - name: Restore stored baseline
+        if: matrix.revision == 'baseline' && steps.stored.outputs.artifact-id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ steps.stored.outputs.artifact-id }}
+        run: |
+          mkdir -p packages/workshop-evals/.wrangler/evals
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/workshop-evals-baseline.zip
+          unzip -q /tmp/workshop-evals-baseline.zip -d packages/workshop-evals/.wrangler/evals
+
+      - name: Check out ${{ matrix.revision }}
+        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+
+      - name: Enable Corepack
+        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Run ${{ matrix.revision }} evals
+        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WORKSHOP_EVAL_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.WORKSHOP_EVAL_ACCOUNT_ID }}
+          CF_AI_GATEWAY: ${{ vars.WORKSHOP_EVAL_AI_GATEWAY }}
+          CF_AI_GATEWAY_ACCOUNT_ID: ${{ vars.WORKSHOP_EVAL_ACCOUNT_ID }}
+          CF_AI_GATEWAY_USE_BINDING: "true"
+          WORKSHOP_EVAL_MODELS: ${{ env.EVAL_MODEL }}
+          WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
+          WORKSHOP_EVAL_COMMIT: ${{ matrix.sha }}
+        run: pnpm evals
+
+      - name: Require eval results
+        run: test -f packages/workshop-evals/.wrangler/evals/results.json
+
+      - name: Validate eval results
+        uses: getsentry/vitest-evals@d37153f06d7d086393927c57a2faaeff464a55e2 # v0
+        with:
+          results: packages/workshop-evals/.wrangler/evals/results.json
+          publish-summary: false
+          publish-annotations: false
+          publish-check: false
+          fail-on-failures: false
+          min-pass-rate: 0
+          soft-fail: false
+
+      - name: Upload current-run ${{ matrix.revision }} trajectories
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workshop-evals-${{ matrix.revision }}
+          path: packages/workshop-evals/.wrangler/evals/results.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  compare:
+    name: Compare evals
+    if: always() && needs.trust.result == 'success' && needs.pr-evals.result == 'success'
+    needs: [trust, pr-evals]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Download baseline trajectories
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: workshop-evals-baseline
+          path: artifacts/baseline
+
+      - name: Download candidate trajectories
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: workshop-evals-candidate
+          path: artifacts/candidate
+
+      - name: Check whether eval definitions changed
+        id: definitions
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          BASELINE_SHA=$(jq -er \
+            '[.testResults[].assertionResults[].meta.harness.run.session.metadata.gitCommit] |
+             unique | if length == 1 then .[0] else error("baseline has inconsistent commits") end' \
+            artifacts/baseline/results.json)
+          git cat-file -e "$BASELINE_SHA^{commit}" 2>/dev/null ||
+            git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
+          if git diff --quiet "$BASELINE_SHA" "$HEAD_SHA" -- \
+            packages/integration-tests/fixtures/gatekeeper-test \
+            packages/integration-tests/package.json \
+            packages/integration-tests/src \
+            packages/integration-tests/vite.config.ts \
+            packages/workshop-evals/evals \
+            packages/workshop-evals/package.json \
+            packages/workshop-evals/src/budgets.ts \
+            packages/workshop-evals/src/config.ts \
+            packages/workshop-evals/src/eval.ts \
+            packages/workshop-evals/src/harness.ts \
+            packages/workshop-evals/src/target.ts \
+            packages/workshop-evals/src/task.ts \
+            packages/workshop-evals/src/transcript.ts \
+            packages/workshop-evals/src/verifier.ts \
+            packages/workshop-evals/vitest.eval.config.ts; then
+            echo changed=false >> "$GITHUB_OUTPUT"
+          else
+            echo changed=true >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compare eval results
+        run: |
+          mkdir -p artifacts/comparison
+          node scripts/evals/compare-results.ts \
+            artifacts/baseline/results.json \
+            artifacts/candidate/results.json \
+            artifacts/comparison/comparison.json \
+            artifacts/comparison/comparison.md \
+            ${{ steps.definitions.outputs.changed }}
+          cat artifacts/comparison/comparison.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload comparison
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workshop-evals-comparison
+          path: artifacts/comparison
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+      - name: Publish comparison check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n \
+            --arg name "Workshop eval comparison" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg details_url "$DETAILS_URL" \
+            --rawfile summary artifacts/comparison/comparison.md \
+            '{name: $name, head_sha: $head_sha, status: "completed", conclusion: "neutral", details_url: $details_url, output: {title: "Workshop eval comparison", summary: $summary}}' \
+            > /tmp/workshop-evals-check.json
+          gh api --method POST "repos/$GH_REPO/check-runs" --input /tmp/workshop-evals-check.json
