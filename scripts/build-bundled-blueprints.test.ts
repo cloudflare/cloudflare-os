@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile }
+  from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -147,6 +148,7 @@ describe("bundled blueprint scripts", () => {
     await mkdir(join(directory, "example", "__tests__"));
     await writeFile(join(directory, "example", "__tests__/greeting.test.ts"), test);
     await writeFile(join(directory, "example", "NOTES.md"), notes);
+    await symlink("../NOTES.md", join(directory, "example", "__tests__/notes.md"));
 
     let archivePath = join(directory, ".update.gadget");
     await writeArchive(archivePath, 2, new Map([["client.js", "// updated\n"]]));
@@ -161,6 +163,8 @@ describe("bundled blueprint scripts", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(join(directory, "example/__tests__/greeting.test.ts"), "utf8"), test);
     assert.equal(await readFile(join(directory, "example/NOTES.md"), "utf8"), notes);
+    // Copied as written, not resolved to this checkout's absolute path.
+    assert.equal(await readlink(join(directory, "example/__tests__/notes.md")), "../NOTES.md");
     assert.deepEqual((await readdir(join(directory, "example"))).toSorted(),
       ["NOTES.md", "__tests__", "blueprint.json", "files"]);
     // files/ holds exactly the archive's files: the old lib/util.js is gone.

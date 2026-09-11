@@ -262,10 +262,12 @@ try {
   if (!scaffold && entry.layout === "extracted") {
     // Only blueprint.json and files/ are archive-owned; __tests__/ and anything else beside them
     // is repo-only and carried over -- copied, not moved, so a failure below leaves the current
-    // tree whole for the restore in the catch.
+    // tree whole for the restore in the catch. A symlink is copied as written: cp would otherwise
+    // rewrite a relative target to an absolute path under this checkout.
     for (const name of await readdir(targetDir)) {
       if (name !== "blueprint.json" && name !== "files") {
-        await cp(join(targetDir, name), join(stagedDir, name), {recursive: true});
+        await cp(join(targetDir, name), join(stagedDir, name),
+            {recursive: true, verbatimSymlinks: true});
       }
     }
     await rename(targetDir, backupDir);
