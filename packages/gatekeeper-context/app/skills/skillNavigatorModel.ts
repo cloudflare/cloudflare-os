@@ -2,6 +2,7 @@ import type {
   ContextDocumentSummary,
   EnabledCollectionInfo,
 } from "../../src/context-types";
+import { humanizeSkillName } from "./skillName";
 
 export type SkillNavigatorSkill = {
   type: "skill";
@@ -10,6 +11,7 @@ export type SkillNavigatorSkill = {
   directoryPath: string;
   name: string;
   description: string;
+  lastUpdated: Date;
 };
 
 export type SkillNavigatorDirectory = {
@@ -85,6 +87,7 @@ export const buildSkillNavigator = (
         directoryPath: skillDirectory,
         name: document.skillName,
         description: document.description,
+        lastUpdated: document.lastUpdated,
       };
 
       if (parentDirectory) getDirectory(parentDirectory).children.push(skill);
@@ -104,7 +107,8 @@ const filterNodes = (
   const matches: SkillNavigatorNode[] = [];
   for (const node of nodes) {
     if (node.type === "skill") {
-      if (includesQuery(node.name, query) || includesQuery(node.description, query)) {
+      if (includesQuery(humanizeSkillName(node.name), query)
+        || includesQuery(node.description, query)) {
         matches.push(node);
       }
       continue;

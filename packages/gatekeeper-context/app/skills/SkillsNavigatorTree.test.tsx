@@ -31,8 +31,9 @@ const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
       collectionId,
       manifestPath: "legacy/review/SKILL.md",
       directoryPath: "legacy/review",
-      name: "review",
+      name: "incident-response",
       description: "Review code",
+      lastUpdated: new Date(),
     }],
   }],
 }];
@@ -75,7 +76,7 @@ describe("SkillsNavigatorTree", () => {
 
   it("provides no actions or movement for a read-only collection", () => {
     renderTree(false);
-    const skillRow = row("review");
+    const skillRow = row("Incident Response");
 
     expect(skillRow?.draggable).toBe(false);
     act(() => skillRow?.dispatchEvent(new MouseEvent("contextmenu", {
@@ -89,7 +90,11 @@ describe("SkillsNavigatorTree", () => {
   it("moves skills but not legacy directories in a writable collection", () => {
     renderTree(true);
 
-    expect(row("review")?.draggable).toBe(true);
+    expect(row("Incident Response")?.draggable).toBe(true);
+    expect(row("Incident Response")?.textContent).toContain("Review code");
+    expect(row("Incident Response")?.textContent).toContain("now");
+    expect(row("Incident Response")?.querySelector('[aria-label="Updated just now"]'))
+      .not.toBeNull();
     expect(row("legacy")?.draggable).toBe(false);
   });
 });

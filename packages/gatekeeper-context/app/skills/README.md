@@ -5,6 +5,10 @@ encompasses its `SKILL.md` manifest and all related agentic standards files. Tho
 stored together in a skill directory, but the navigator presents the complete bundle as one skill,
 not as a file hierarchy.
 
+Skill titles are presented as human-readable title case. Creation and rename accept that display
+form, then derive the lowercase, hyphen-separated `name` required by the Agent Skills specification
+for the manifest metadata and directory name.
+
 Organizational directories are being abandoned. The navigator does not let users create, rename, or
 move them, and new product behavior must not depend on adding more directory hierarchy. Directory
 nodes remain only to preserve collections that already use older nested layouts.

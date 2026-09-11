@@ -21,7 +21,6 @@ import {
   type NavigatorDeleteTarget,
 } from "./DeleteNavigatorNodeDialog";
 import { EditCollectionDialog } from "./EditCollectionDialog";
-import { getLastPickedCollectionId } from "./skillCollectionPreference";
 import { buildSkillNavigator, filterSkillNavigator } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
 import { useSkillsNavigatorData } from "./useSkillsNavigatorData";
@@ -59,9 +58,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
   const startAdd = (target: AddSkillTarget) => setPendingAdd(target);
 
   const startAddSkillFromMenu = () => {
-    const lastPicked = getLastPickedCollectionId();
-    const defaultCollectionId = writableCollections.find((collection) => collection.id === lastPicked)?.id ?? "";
-    startAdd({ collectionId: defaultCollectionId, directoryPath: "", collectionEditable: true });
+    startAdd({ collectionId: "", directoryPath: "", collectionEditable: true });
   };
 
   const reload = () => setReloadKey((value) => value + 1);
