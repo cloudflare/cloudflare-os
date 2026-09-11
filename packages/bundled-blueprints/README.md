@@ -144,7 +144,8 @@ pnpm import:bundled-blueprint ~/Downloads/Gadgets-Doc-v4.gadget format.document
 
 The importer replaces `files/`, updates archive-owned metadata (`created`, `version`, `lastUpdated`,
 and `bindings`), bumps `revision`, rebuilds the backend's `src/generated/bundled-blueprints.ts`, and
-reports changed files and bindings. Review the resulting source diff normally.
+reports changed files and bindings. An export the build rejects is refused before it replaces
+anything. Review the resulting source diff normally.
 
 An export contains the bundled JavaScript, so importing one over a TypeScript blueprint replaces its
 sources with the built `client.js` / `server.js`. Edit a TypeScript blueprint in the repo instead,
