@@ -697,6 +697,20 @@ describe("bundled blueprint TypeScript sources", () => {
       "than the module the specifier names");
   });
 
+  // Under `"type": "commonjs"` esbuild wraps a module with imports but no export in its
+  // `__commonJS` helper, whose inner function is `__require`: the output check catches the wrapper
+  // as it catches the shim, and the message says so.
+  it("rejects a module the bundler wrapped as CommonJS under an enclosing package.json", async () => {
+    let parent = await sourceTree({
+      "package.json": '{"type": "commonjs"}',
+      "files/client.ts": 'import "./lib/a.ts"; console.log(1);',
+      "files/lib/a.ts": 'console.log("a"); var q = 1;',
+    });
+
+    await expect(readSourceFiles(join(parent, "files"), "example/files")).rejects.toThrow(
+      'a package.json above the blueprint with "type": "commonjs"');
+  });
+
   it("keeps a side-effect-only import under a package marked side-effect free", async () => {
     let parent = await sourceTree({
       "package.json": '{"sideEffects": false}',
@@ -772,9 +786,22 @@ describe("bundled blueprint TypeScript sources", () => {
       // package name resolved through the build's alias, not through an install.
       expect([...files.keys()]).toEqual(["client.js", "server.js"]);
       expect(files.get("client.js")).toContain("function el(");
-      expect(files.get("client.js")).not.toContain("@gadgets/");
+      expect(files.get("client.js")).not.toMatch(/["']@gadgets\//u);
       expect(files.get("server.js")).toContain("MutationQueue = class");
-      expect(files.get("server.js")).not.toContain("@gadgets/");
+      expect(files.get("server.js")).not.toMatch(/["']@gadgets\//u);
+      // Each inlined library module is named by its package path, not by where this checkout
+      // keeps it: from the temporary directory that path would climb to the filesystem root.
+      expect(files.get("client.js")).toContain(`// ${LIBRARY}/ui/src/dom.ts`);
+      expect(files.get("client.js")).not.toMatch(/^\/\/ .*\.\.\//mu);
+    });
+
+    it("builds the same bytes wherever the blueprint's tree is", async () => {
+      let client = `import { el } from "${LIBRARY}/ui/client"; document.body.append(el("div"));`;
+      let shallow = await sourceTree({"client.ts": client});
+      let deep = await sourceTree({"a/b/c/client.ts": client});
+
+      expect(await readSourceFiles(join(deep, "a/b/c"), "example/files"))
+        .toEqual(await readSourceFiles(shallow, "example/files"));
     });
 
     it.each([

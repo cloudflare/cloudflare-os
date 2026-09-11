@@ -284,11 +284,20 @@ const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
  * imports; `require.resolve(...)`; `typeof require`; a bare `require` passed along -- to its
  * `__require` shim, which throws "Dynamic require ... is not supported" when called. It reports no
  * warning and, for a computed path, records no import in the metafile, so the output is scanned for
- * the shim instead. The identifier alone is the witness: esbuild emits the shim only when some
- * reference survives, and renames a source identifier of that name away from it. Comments cannot
- * trip this: esbuild drops ordinary ones from the output.
+ * the shim instead. The same name is the inner function of esbuild's `__commonJS` wrapper, emitted
+ * around a module it took for CommonJS -- one assigning `module.exports`, or, under a package.json
+ * above the tree that says `"type": "commonjs"`, one with imports but no export -- whose shape is
+ * not what the type check saw either, so the one test refuses both. A source identifier of that
+ * name is refused with them rather than told apart. Comments cannot trip this: esbuild drops
+ * ordinary ones from the output.
  */
 const RESIDUAL_REQUIRE_PATTERN = /\b__require\b/u;
+
+/**
+ * esbuild's comment naming the module whose code follows, as a path relative to `absWorkingDir`.
+ * Ordinary comments are dropped from a bundle, so this is the only `// ` line one holds.
+ */
+const MODULE_COMMENT_PATTERN = /^\/\/ (.+)$/gmu;
 
 /**
  * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
@@ -478,10 +487,12 @@ async function bundleTypeScriptSources(
           `literal; the bundler cannot check it`);
     }
     if (RESIDUAL_REQUIRE_PATTERN.test(text)) {
-      invalid(label, `${entry.name}.ts references require; the bundle is an ES module and the ` +
-          `gadget runtime has no require`);
+      invalid(label, `${entry.name}.ts references require: a require(...) the bundler could not ` +
+          `resolve, or a module it took for CommonJS (a module.exports assignment, or a ` +
+          `package.json above the blueprint with "type": "commonjs"); the bundle is an ES module ` +
+          `and the gadget runtime has no require`);
     }
-    output.set(`${entry.name}.js`, text);
+    output.set(`${entry.name}.js`, nameLibraryModules(text, metafile, rootDir, librariesDir));
   }));
   // A `lib/` module is wanted if some bundle inlined it, or if the source names it. Types are
   // erased before the bundle is written, so a module holding only the shared contract is inlined
@@ -608,6 +619,29 @@ function auditInputs(
     }
   }
   return own;
+}
+
+/**
+ * Names each library module inlined into `text` by its package path rather than by the path
+ * esbuild wrote, which is relative to the blueprint's files/ and so, for a tree outside this
+ * package, climbs to the filesystem root and spells out where the checkout that built it lives.
+ * The archive stays a function of its sources: the same blueprint builds the same bytes anywhere,
+ * and its fingerprint with them. Only a path the metafile lists as an input is rewritten, so a
+ * line of a template literal that happens to look like one is left alone.
+ */
+function nameLibraryModules(
+  text: string,
+  metafile: Metafile,
+  rootDir: string,
+  librariesDir: string,
+): string {
+  return text.replace(MODULE_COMMENT_PATTERN, (comment, path: string) => {
+    if (!Object.hasOwn(metafile.inputs, path)) return comment;
+    const absolute = resolve(rootDir, path);
+    if (!contains(librariesDir, absolute)) return comment;
+    const subpath = relative(librariesDir, absolute).split(/[\\/]/u).join("/");
+    return `// ${PACKAGE_NAME}/libraries/${subpath}`;
+  });
 }
 
 /** Whether `specifier` is one of the `external` modules of an entry point. */
