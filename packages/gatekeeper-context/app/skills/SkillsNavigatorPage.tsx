@@ -5,6 +5,8 @@ import {
   Field,
   Input,
   InputArea,
+  LayerCard,
+  Loader,
   Select,
   Text,
   useKumoToastManager,
@@ -886,56 +888,64 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           </DropdownMenu>
         </div>
 
-        {status === "loading" ? (
-          <Text variant="secondary" size="sm">Loading skills...</Text>
-        ) : status === "error" ? (
-          <Text variant="secondary" size="sm">Skills could not be loaded.</Text>
-        ) : items.length > 0 ? (
-          <HierarchicalList
-            items={items}
-            label="Skills"
-            expandAll={deferredQuery.trim().length > 0}
-            dragAndDrop={{
-              canMoveTo: (item, parent) => Boolean(
-                parent
-                && collectionIdsByItemId.get(item.id) === collectionIdsByItemId.get(parent.id),
-              ),
-              onMove: (item, destination) => void handleMove(item, destination),
-            }}
-            onItemClick={(item) => {
-              const skill = skillsById.get(item.id);
-              if (skill) onSelectSkill(skill.collectionId, skill.manifestPath);
-            }}
-            renderContextMenu={renderContextMenu}
-            rename={{
-              isRenaming: (item) => {
-                if (!pendingRename) return false;
-                if (pendingRename.type === "collection") {
-                  return item.id === `${pendingRename.collectionId}:collection`;
-                }
-                if (pendingRename.type === "skill") {
-                  return item.id === `${pendingRename.collectionId}:skill:${pendingRename.path}`;
-                }
-                return item.id === `${pendingRename.collectionId}:directory:${pendingRename.path}`;
-              },
-              renderInput: () => pendingRename ? (
-                <RenameInput
-                  key={pendingRename.type === "collection"
-                    ? `${pendingRename.collectionId}:collection`
-                    : `${pendingRename.collectionId}:${pendingRename.type}:${pendingRename.path}`}
-                  initialValue={pendingRename.name}
-                  format={pendingRename.type}
-                  onCommit={handleRename}
-                  onCancel={cancelRename}
-                />
-              ) : null,
-            }}
-          />
-        ) : (
-          <Text variant="secondary" size="sm">
-            {query.trim() ? "No skills match your search." : "No skills are available."}
-          </Text>
-        )}
+        <div className="min-h-[240px]">
+          {status === "loading" ? (
+            <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
+              <Loader size="lg" />
+            </LayerCard>
+          ) : status === "error" ? (
+            <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
+              <Text variant="secondary" size="sm">Skills could not be loaded.</Text>
+            </LayerCard>
+          ) : items.length > 0 ? (
+            <HierarchicalList
+              items={items}
+              label="Skills"
+              expandAll={deferredQuery.trim().length > 0}
+              dragAndDrop={{
+                canMoveTo: (item, parent) => Boolean(
+                  parent
+                  && collectionIdsByItemId.get(item.id) === collectionIdsByItemId.get(parent.id),
+                ),
+                onMove: (item, destination) => void handleMove(item, destination),
+              }}
+              onItemClick={(item) => {
+                const skill = skillsById.get(item.id);
+                if (skill) onSelectSkill(skill.collectionId, skill.manifestPath);
+              }}
+              renderContextMenu={renderContextMenu}
+              rename={{
+                isRenaming: (item) => {
+                  if (!pendingRename) return false;
+                  if (pendingRename.type === "collection") {
+                    return item.id === `${pendingRename.collectionId}:collection`;
+                  }
+                  if (pendingRename.type === "skill") {
+                    return item.id === `${pendingRename.collectionId}:skill:${pendingRename.path}`;
+                  }
+                  return item.id === `${pendingRename.collectionId}:directory:${pendingRename.path}`;
+                },
+                renderInput: () => pendingRename ? (
+                  <RenameInput
+                    key={pendingRename.type === "collection"
+                      ? `${pendingRename.collectionId}:collection`
+                      : `${pendingRename.collectionId}:${pendingRename.type}:${pendingRename.path}`}
+                    initialValue={pendingRename.name}
+                    format={pendingRename.type}
+                    onCommit={handleRename}
+                    onCancel={cancelRename}
+                  />
+                ) : null,
+              }}
+            />
+          ) : (
+            <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
+              <Text variant="secondary" size="sm">
+                {query.trim() ? "No skills match your search." : "No skills are available."}
+              </Text>
+            </LayerCard>
+          )}
+        </div>
       </div>
 
       <Dialog.Root
