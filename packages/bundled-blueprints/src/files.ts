@@ -653,7 +653,9 @@ function importedModules(
  *
  * Every spelling a bundler would try that could name a module of the blueprint's own, since which
  * one resolves is the bundler's business: the path as written, an omitted extension, a directory's
- * index module, and the TypeScript source behind a JavaScript extension. A specifier reaching above
+ * index module, the TypeScript source behind a JavaScript extension, and the declaration file
+ * behind either, which the type check follows and this walk has to follow too. A specifier
+ * reaching above
  * files/ resolves to nothing here -- the bundle rejects that as an import outside the blueprint
  * (see {@link auditInputs}).
  */
@@ -670,9 +672,11 @@ function resolveWithinFiles(importer: string, specifier: string): string[] {
   }
   const path = segments.join("/");
   if (path === "") return [];
-  const candidates = [path, `${path}.ts`, `${path}.js`, `${path}/index.ts`, `${path}/index.js`];
+  const candidates = [path, `${path}.ts`, `${path}.d.ts`, `${path}.js`, `${path}/index.ts`,
+      `${path}/index.d.ts`, `${path}/index.js`];
   if (JAVASCRIPT_EXTENSION.test(path)) {
-    candidates.push(path.replace(JAVASCRIPT_EXTENSION, ".ts"));
+    candidates.push(path.replace(JAVASCRIPT_EXTENSION, ".ts"),
+        path.replace(JAVASCRIPT_EXTENSION, ".d.ts"));
   }
   return candidates;
 }
