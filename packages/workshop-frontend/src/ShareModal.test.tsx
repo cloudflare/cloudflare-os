@@ -314,6 +314,13 @@ describe('ShareModal', () => {
     // must warn rather than block.
     expect(rendered.textContent).toContain('This workspace has read sensitive data')
     expect(rendered.textContent).not.toContain('This workspace can’t be shared')
+    // The warning states the guarantee the server actually makes: verification is scoped to the
+    // recipient's role (the panel below lists the connections per level), and output the
+    // workspace has already persisted is readable by anyone who can open it. It must not claim
+    // invitees are verified against "the same data" -- never-bound and since-removed producers
+    // fall outside that check.
+    expect(rendered.textContent).toContain('verify their own access')
+    expect(rendered.textContent).not.toContain('the same data')
 
     // Every management affordance stays reachable: the people list with removal, the share
     // links with copying and revocation, and the invite composer.

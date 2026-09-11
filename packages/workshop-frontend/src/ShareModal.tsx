@@ -781,8 +781,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 <ShieldWarning size={18} weight="duotone" />
               </div>
               <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
-                This workspace has read sensitive data. People you invite must be verified to have
-                access to the same data — some may be unable to open it.
+                This workspace has read sensitive data. People you invite are asked to verify their
+                own access to the connections it uses at their access level — some may be unable to
+                open it. Anything the workspace has already saved is visible to everyone who can.
               </p>
             </div>
           )}
