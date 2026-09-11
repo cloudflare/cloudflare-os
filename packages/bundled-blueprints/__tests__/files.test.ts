@@ -380,16 +380,18 @@ describe("bundled blueprint TypeScript sources", () => {
       .rejects.toThrow("client.ts imports ../outside.ts, which is outside the blueprint's files");
   });
 
-  // esbuild inlines a dynamic import of a literal path like a static one, but leaves a computed
-  // path in the output as written, to resolve inside the sandbox against nothing the build checked.
+  // esbuild inlines a dynamic import of a literal path like a static one, but would leave a
+  // computed path in the output as written, to resolve inside the sandbox against nothing the
+  // build checked; the source is refused before it gets there.
   it("rejects a dynamic import of a computed path, and inlines one of a literal", async () => {
     let computed = await sourceTree({
       "client.ts": 'const p = "./lib/x.js"; export const m = import(p);',
       "lib/x.ts": "export const x = 1;",
     });
     await expect(readSourceFiles(computed, "example/files")).rejects
-      .toThrow("example/files: client.ts contains a dynamic import whose path is not a string " +
-          "literal; the bundler cannot check it");
+      .toThrow("example/files: client.ts contains import(...): a dynamic import whose path is not " +
+          "a string literal; the bundler would expand a pattern into every file it matches, or " +
+          "leave a computed path unchecked");
 
     let literal = await sourceTree({
       "client.ts": 'export const m = import("./lib/x.ts");',
@@ -401,25 +403,67 @@ describe("bundled blueprint TypeScript sources", () => {
     expect(files.get("client.js")).not.toMatch(/\bimport\s*\(/u);
   });
 
-  // esbuild expands a dynamic import of a template literal into a glob helper over every file the
-  // pattern matches: no `import()` in the output, an external metafile edge whose path is the
-  // wildcard, and the matched files inlined as inputs no edge points at -- including files outside
-  // the blueprint, which the pattern is free to reach.
-  it("rejects a dynamic import of a template literal", async () => {
+  // esbuild expands a dynamic import of a template literal, or of a concatenation that begins
+  // with a string, into a glob helper over every file the pattern matches -- walking and bundling
+  // each of them, wherever the pattern reaches, before any check of the output could object. So
+  // the spelling is refused from the source, and the build never runs.
+  it("rejects a dynamic import the bundler would expand into a glob, before it runs", async () => {
+    let message = (spelling: string) => "example/files: client.ts contains " + spelling + ": a " +
+        "dynamic import whose path is not a string literal; the bundler would expand a pattern " +
+        "into every file it matches, or leave a computed path unchecked";
     let inside = await sourceTree({
       "client.ts": "export const load = (name: string) => import(`./lib/${name}.ts`);",
       "lib/a.ts": "export const a = 1;",
     });
-    await expect(readSourceFiles(inside, "example/files")).rejects
-      .toThrow("example/files: client.ts imports ./lib/**/*.ts: a dynamic import of a template " +
-          "literal, which the bundler expands to every file the pattern matches and cannot check");
+    await expect(readSourceFiles(inside, "example/files")).rejects.toThrow(message("import(...)"));
 
+    // The match is not JavaScript: had the build run, it would have failed parsing it instead.
     let outside = await sourceTree({
       "files/client.ts": "export const load = (name: string) => import(`../outside/${name}.js`);",
-      "outside/x.js": "export const x = 1;",
+      "outside/x.js": "not js (((",
     });
     await expect(readSourceFiles(join(outside, "files"), "example/files")).rejects
-      .toThrow("client.ts imports ../outside/**/*.js: a dynamic import of a template literal");
+      .toThrow(message("import(...)"));
+
+    let concatenated = await sourceTree({
+      "client.ts": 'export const load = (name: string) => import("./lib/" + name + ".js");',
+      "lib/a.ts": "export const a = 1;",
+    });
+    await expect(readSourceFiles(concatenated, "example/files")).rejects
+      .toThrow(message("import(...)"));
+
+    let required = await sourceTree({
+      "client.ts": "export const load = (name: string) => require(`./lib/${name}.ts`);",
+      "lib/a.ts": "export const a = 1;",
+    });
+    await expect(readSourceFiles(required, "example/files")).rejects
+      .toThrow(message("require(...)"));
+
+    // A scan, so the spelling is refused wherever it appears, a comment included.
+    let commented = await sourceTree({
+      "client.ts": "// import(`./${x}`)\nexport const a = 1;",
+    });
+    await expect(readSourceFiles(commented, "example/files")).rejects
+      .toThrow(message("import(...)"));
+  });
+
+  // The bundle adds client.js and server.js to a tree the path check saw without them, so a
+  // directory of that name -- of files no other rule refuses -- collides only once the build is
+  // done. The map that is returned is what the installed gadget sees, so it is checked as such.
+  it("rejects a generated entry that collides with a directory", async () => {
+    let client = await sourceTree({
+      "client.ts": "document.title = 'hi';",
+      "client.js/assets.txt": "not a module",
+    });
+    await expect(readSourceFiles(client, "example/files")).rejects
+      .toThrow("example/files: client.js/assets.txt conflicts with file client.js");
+
+    let server = await sourceTree({
+      "server.ts": "export class Gadget {}",
+      "server.js/x.txt": "not a module",
+    });
+    await expect(readSourceFiles(server, "example/files")).rejects
+      .toThrow("example/files: server.js/x.txt conflicts with file server.js");
   });
 
   // A library is inlined by the build into a TypeScript entry; a JavaScript module is copied into
@@ -458,15 +502,16 @@ describe("bundled blueprint TypeScript sources", () => {
 
   // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
   // throws when called, without a warning, and for a computed path without a metafile import
-  // either.
+  // either. A computed path is refused from the source first, in a `lib/` module as much as an
+  // entry; the shim is what catches the spellings the source scan does not read as dynamic.
   it("rejects a require that survives into the bundle", async () => {
     let computed = await sourceTree({
       "client.ts": 'import { h } from "./lib/helper.ts"; console.log(h);',
       "lib/helper.ts": 'const p = "./x.js"; export const h = require(p);',
     });
     await expect(readSourceFiles(computed, "example/files")).rejects
-      .toThrow("example/files: client.ts references require; the bundle is an ES module and the " +
-          "gadget runtime has no require");
+      .toThrow("example/files: lib/helper.ts contains require(...): a dynamic import whose path " +
+          "is not a string literal");
 
     // A literal path is no better: the server's externals are ES module imports, so a require of
     // one is left to a runtime that has no require.
