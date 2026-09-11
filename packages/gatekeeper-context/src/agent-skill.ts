@@ -1,9 +1,10 @@
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, parseDocument } from "yaml";
 import { z } from "zod";
 import { boundAgentCatalog } from "@gadgets/workshop-shared/gatekeeper";
 import type { AgentCatalog, SlashCommandDescriptor } from "@gadgets/workshop-shared/gatekeeper";
 import type { EnabledCollectionInfo } from "./context-types.js";
 import { docIdRoot, encodeDocId } from "./context-types.js";
+import { joinFrontmatter, splitFrontmatter } from "./description-extractors.js";
 
 const AGENT_SKILL_NAME_MAX_LENGTH = 64;
 
@@ -182,4 +183,15 @@ export function parseSkillManifest(path: string, source: string): SkillManifestM
     name: result.data.name,
     description: result.data.description,
   };
+}
+
+/** Rewrites a valid skill manifest's name while preserving its remaining frontmatter and body. */
+export function updateSkillManifestName(source: string, newName: string): string {
+  let {frontmatter, content} = splitFrontmatter(source);
+  if (frontmatter === null) throw new Error("Skill manifest must start with YAML frontmatter.");
+
+  let document = parseDocument(frontmatter);
+  if (document.errors.length > 0) throw new Error("Skill frontmatter is not valid YAML.");
+  document.set("name", newName);
+  return joinFrontmatter(document.toString().trimEnd(), content);
 }
