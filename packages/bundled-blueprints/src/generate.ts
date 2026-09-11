@@ -66,6 +66,16 @@ export async function generateBundledBlueprintsModule(
   for (const [name, backup] of findInterruptedImportBackups(allContents, sourceDir)) {
     directoryPaths.set(name, backup);
   }
+  // A backup beside its live directory is what an import interrupted after the swap leaves. It is
+  // ignored while the directory exists and would stand in for it once the directory is deleted,
+  // so it is named here; the next import of that blueprint removes it.
+  for (let entry of allContents) {
+    let name = /^\.(.+)\.backup-\d+$/su.exec(entry.name)?.[1];
+    if (entry.isDirectory() && name !== undefined && directoryPaths.get(name) === name) {
+      console.warn(`${entry.name} is left over from an interrupted import beside ${name}/ and ` +
+          `is ignored; delete it, or import ${name} again.`);
+    }
+  }
   let directories = [...directoryPaths.keys()].toSorted();
   let directorySet = new Set(directories);
   let files = contents.filter(entry => entry.isFile()).map(entry => entry.name);

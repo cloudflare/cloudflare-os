@@ -241,6 +241,9 @@ if (duplicate) {
 }
 
 const targetDir = join(sourceDir, entry.name);
+// What the staged tree ships, as readSourceFiles builds it: the same kind of thing as oldFiles, so
+// the change summary compares like with like even for an export that holds TypeScript.
+let newFiles: Map<string, string>;
 const stagedDir = join(sourceDir, `.${entry.name}.import-${process.pid}`);
 const backupDir = join(sourceDir, `.${entry.name}.backup-${process.pid}`);
 await rm(stagedDir, {recursive: true, force: true});
@@ -258,7 +261,8 @@ try {
   // source untouched. The snapshot is built too, since the bundles inline lib/ into each entry and
   // can outgrow sources that were under the limit; buildContent holds the update-size limit
   // generation applies. The metadata's own limit was met when the export's manifest was read.
-  buildContent(await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`), entry.name);
+  newFiles = await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`);
+  buildContent(newFiles, entry.name);
   if (!scaffold && entry.layout === "extracted") {
     // Only blueprint.json and files/ are archive-owned; __tests__/ and anything else beside them
     // is repo-only and carried over -- copied, not moved, so a failure below leaves the current
@@ -273,7 +277,6 @@ try {
     await rename(targetDir, backupDir);
   }
   await rename(stagedDir, targetDir);
-  await rm(backupDir, {recursive: true, force: true});
 } catch (err) {
   await rm(stagedDir, {recursive: true, force: true});
   try {
@@ -287,18 +290,31 @@ try {
   }
   throw err;
 }
+// The import has landed once the staged tree is in place, so a backup that will not go is a
+// leftover to report, not a failed import. Every backup of the name goes, including one an earlier
+// import left beside the live directory when it was interrupted here: the generator ignores such a
+// backup only while the directory exists, and would stand it in for the blueprint once the
+// directory is deleted.
+for (const dirent of await readdir(sourceDir)) {
+  if (/^\.(.+)\.backup-\d+$/su.exec(dirent)?.[1] !== entry.name) continue;
+  try {
+    await rm(join(sourceDir, dirent), {recursive: true, force: true});
+  } catch (err) {
+    console.error(`warning: could not remove ${dirent} (${errorMessage(err)}); delete it by hand`);
+  }
+}
 // An extracted directory is authoritative if migration was interrupted, so cleanup can safely be
 // retried by a later import without ever making the legacy pair win again.
 await rm(join(sourceDir, `${entry.name}.gadget`), {force: true});
 await rm(join(sourceDir, `${entry.name}.json`), {force: true});
 
-const changed = oldFiles && [...new Set([...oldFiles.keys(), ...files.keys()])]
-    .filter(filename => oldFiles.get(filename) !== files.get(filename)).toSorted();
+const changed = oldFiles && [...new Set([...oldFiles.keys(), ...newFiles.keys()])]
+    .filter(filename => oldFiles.get(filename) !== newFiles.get(filename)).toSorted();
 const oldBindings = Object.keys(scaffold ? {} : current!.bindings).toSorted().join(",");
 const newBindings = Object.keys(manifest.bindings).toSorted().join(",");
 
 console.log(`${scaffold ? "Imported" : "Updated"} ${entry.name}/ (${manifest.blueprintId})`);
-console.log(`  files        ${files.size} (${changed === undefined
+console.log(`  files        ${newFiles.size} (${changed === undefined
     ? "summary unavailable: current source does not build"
     : changed.length ? `changed: ${changed.join(", ")}` : "unchanged"})`);
 console.log(`  snapshot     ${incoming.content.byteLength} bytes (${sha(incoming.content)})`);
