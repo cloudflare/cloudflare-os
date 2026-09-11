@@ -80,11 +80,77 @@ export type VendorDescription = {
 }
 
 /**
- * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). `isAdmin` is supplied fresh
- * each time rather than baked into the account, since a user's admin status can change over time.
+ * User directory capability passed from the workshop backend to a gatekeeper to
+ * faciliate sharing.
+ */
+export interface GatekeeperSharingDirectory extends RpcTarget {
+  /**
+   * Returns active workshop users that a gatekeeper resource can be shared
+   * with.
+   */
+  searchRecipients(query: string): Promise<GatekeeperShareRecipientSearchResult[]>;
+}
+
+/**
+ * Potential sharing recipient with presentation metadata and a delivery
+ * capability.
+ */
+export type GatekeeperShareRecipientSearchResult = {
+  /** Presentation metadata used for rendering the gatekeeper sharing UI. */
+  display: ShareRecipientDisplayInfo;
+  /** Capability for delivering a sharing grant to this recipient. */
+  recipient: RpcStub<GatekeeperShareRecipient>;
+};
+
+/**
+ * Presentation metadata for a potential sharing recipient. These values should
+ * not be used for authorization or deriving user identity.
+ */
+export type ShareRecipientDisplayInfo = {
+  displayName: string;
+  avatar?: AvatarImage;
+};
+
+/** Sharing capability bound to one user and one gatekeeper vendor. */
+export interface GatekeeperShareRecipient extends RpcTarget {
+  /**
+   * Routes the grant to the bound recipient. After the account accepts the
+   * grant, return a persistent Workshop-owned capability for reading the
+   * recipient's current presentation metadata. If the recipient does not have a
+   * corresponding gatekeeper account, the share fails.
+   */
+  deliver(grant: Fetcher<GatekeeperShareGrant>): Promise<Fetcher<GatekeeperShareRecipientProfile>>;
+}
+
+/**
+ * An opaque, vendor-defined share grant transported through the Workshop. The
+ * Workshop does not inspect or manipulate this, and it's passed to the vendor
+ * as-is at the other end of the share flow.
+ */
+export interface GatekeeperShareGrant extends WorkerEntrypoint {}
+
+/**
+ * A persistent, Workshop-owned capability exposing current presentation metadata for one recipient,
+ * bound to one Workshop user and one gatekeeper vendor. A gatekeeper may retain this capability
+ * while the share exists, but must never use it or its results for authorization.
+ */
+export interface GatekeeperShareRecipientProfile extends WorkerEntrypoint {
+  /** Return current presentation metadata, or null when the recipient profile is no longer available. */
+  getDisplayInfo(): Promise<ShareRecipientDisplayInfo | null>;
+}
+
+/**
+ * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). The
+ * Workshop supplies `sharing` only for the lifetime of an authenticated
+ * management-UI open whose account declares `supportsSharing`. `isAdmin` is
+ * supplied fresh each time rather than baked into the account, since a user's
+ * admin status can change over time.
  */
 export type AppUiContext = {
+  /** Whether the user is currently a Workshop administrator. */
   isAdmin: boolean;
+  /** Session-scoped directory capability for the account's gatekeeper vendor. */
+  sharing?: RpcStub<GatekeeperSharingDirectory>;
 }
 
 // The agent catalog is bounded discovery metadata a gatekeeper exposes via
@@ -180,6 +246,12 @@ export type AccountDescription = {
    * surfaces it as a nav entry / page using this title.
    */
   providesUi?: { title: string; icon?: AvatarImage };
+
+  /**
+   * If true, this account implements GatekeeperUser.acceptShare(), and the Workshop may provide
+   * its management UI with a sharing directory.
+   */
+  supportsSharing?: boolean;
 }
 
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
@@ -715,10 +787,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}>;
 
   // ---------------------------------------------------------------------------
-  // Singleton / management-UI capabilities. Present only on accounts created by
-  // GatekeeperVendor.createAccount() whose describe() sets AccountDescription.singleton and/or
-  // .providesUi. The Workshop gates calls on those declaration flags rather than probing the stub,
-  // since RPC stubs cannot reliably report whether an optional method exists.
+  // Singleton / sharing / management-UI capabilities. Present only when the account's
+  // AccountDescription declares .singleton, .supportsSharing, and/or .providesUi. The Workshop
+  // gates calls on those declaration flags rather than probing the stub, since RPC stubs cannot
+  // reliably report whether an optional method exists.
 
   /**
    * Get a Durable Object class implementing the account's agent singleton, for accounts whose
@@ -733,6 +805,12 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * singleton (e.g. the account id and sharing domain).
    */
   getSingletonGatekeeperClass?(): Promise<DurableObjectClass<Gatekeeper<any>>>;
+
+  /**
+   * Accept and redeem a share grant created by this account's own vendor. The Workshop calls this
+   * method only when AccountDescription.supportsSharing is true.
+   */
+  acceptShare?(grant: Fetcher<GatekeeperShareGrant>): Promise<void>;
 
   /**
    * The account's full-page management UI (iframe HTML + ui capability). `context.isAdmin` is passed
