@@ -11388,10 +11388,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
-    // A latched workspace can't have auto-approval rules (see setAutoApprovedActionKind), so
-    // offer nothing.
-    if (this.impl.storage.containsRestrictedData.get()) return [];
-
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
     let boundIds = new Set<WorkpieceId>();
     for (let gadget of this.impl.storage.gadgets.list()) {

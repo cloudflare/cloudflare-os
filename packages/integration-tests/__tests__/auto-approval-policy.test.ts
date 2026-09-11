@@ -143,6 +143,10 @@ describe("auto-approval policy", () => {
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "pre-latch");
+      // The catalog lists only connections some gadget binds (pure storage writes; no gadget code
+      // runs), so bind this one to make its rule visible below. Unshared, so no restart.
+      using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
+      await gadget.bind("TEST_THING", ws.gatekeeperId);
       await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
       await ws.session.readValue(true);
 
@@ -153,10 +157,15 @@ describe("auto-approval policy", () => {
       const [held] = await listWrites(ws);
       expect(held.state).toBe("pending");
 
-      // The rule surface refuses a latched workspace outright.
+      // No new rules while latched, but the catalog still names each existing rule's connection
+      // so it stays identifiable and revocable in the UI.
       await expect(ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE))
           .rejects.toThrow(/cannot be auto-approved/i);
-      await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([]);
+      await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([
+        expect.objectContaining({
+          gatekeeperId: ws.gatekeeperId, actionKind: SET_VALUE, alreadyEnabled: true,
+        }),
+      ]);
 
       // Manual approval still works: the human is the intended path.
       await ws.overseer.approveAction(held.id);
