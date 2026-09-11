@@ -149,9 +149,10 @@ Build the blueprint in a Workshop, export it, then import the export, from `pack
 pnpm import:bundled-blueprint ~/Downloads/Gadgets-Doc-v4.gadget format.document
 ```
 
-The importer replaces `files/`, updates archive-owned metadata (`created`, `version`, `lastUpdated`,
-and `bindings`), bumps `revision`, rebuilds the backend's `src/generated/bundled-blueprints.ts`, and
-reports changed files and bindings. An export the build rejects is refused before it replaces
+The importer replaces `files/` and leaves anything beside `blueprint.json` and `files/` alone,
+updates archive-owned metadata (`created`, `version`, `lastUpdated`, and `bindings`), bumps
+`revision`, rebuilds the backend's `src/generated/bundled-blueprints.ts`, and reports changed files
+and bindings. An export the build rejects is refused before it replaces
 anything. Review the resulting source diff normally.
 
 An export contains the bundled JavaScript, so importing one over a TypeScript blueprint replaces its

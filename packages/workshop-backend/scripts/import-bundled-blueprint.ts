@@ -3,7 +3,7 @@
 // (resolved against this package's root, as build-bundled-blueprints.ts resolves it). See that
 // package's README for the workflow this belongs to.
 
-import { access, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
+import { access, cp, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -259,7 +259,17 @@ try {
   // can outgrow sources that were under the limit; buildContent holds the update-size limit
   // generation applies. The metadata's own limit was met when the export's manifest was read.
   buildContent(await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`), entry.name);
-  if (!scaffold && entry.layout === "extracted") await rename(targetDir, backupDir);
+  if (!scaffold && entry.layout === "extracted") {
+    // Only blueprint.json and files/ are archive-owned; __tests__/ and anything else beside them
+    // is repo-only and carried over -- copied, not moved, so a failure below leaves the current
+    // tree whole for the restore in the catch.
+    for (const name of await readdir(targetDir)) {
+      if (name !== "blueprint.json" && name !== "files") {
+        await cp(join(targetDir, name), join(stagedDir, name), {recursive: true});
+      }
+    }
+    await rename(targetDir, backupDir);
+  }
   await rename(stagedDir, targetDir);
   await rm(backupDir, {recursive: true, force: true});
 } catch (err) {
