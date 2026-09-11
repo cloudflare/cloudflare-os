@@ -77,6 +77,20 @@ function storedRetained(): unknown {
   return raw === null ? null : JSON.parse(raw)
 }
 
+// A sibling tab's end of the retained-share-key clear channel (the real BroadcastChannel; Node
+// provides one in the vitest process). Posting a capture clear through it is what a duplicated
+// tab receives when the original's open of that capture succeeds.
+let siblingChannel: BroadcastChannel | undefined
+
+function postSiblingCaptureClear(captureId: string): void {
+  siblingChannel ??= new BroadcastChannel('gadgets:retained-share-keys');
+  (siblingChannel as { unref?: () => void }).unref?.()
+  // BroadcastChannel.postMessage takes no targetOrigin; the unicorn rule is written for
+  // window.postMessage.
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin
+  siblingChannel.postMessage({ type: 'clear-capture', workspaceId: 'workspace-1', captureId })
+}
+
 const METADATA = {
   id: 'workspace-1',
   title: 'Quarterly planning',
@@ -113,6 +127,8 @@ describe('useWorkspaceOpen', () => {
     document.title = ''
     window.location.hash = ''
     sessionStorage.clear()
+    siblingChannel?.close()
+    siblingChannel = undefined
     vi.restoreAllMocks()
   })
 
@@ -768,6 +784,72 @@ describe('useWorkspaceOpen', () => {
     // A's stamp resolving last must find its license void.
     await act(async () => { heldWhoamiA.resolve(WHOAMI_USER); await Promise.resolve() })
     expect(storedRetained()).toMatchObject({ key: 'bbbb', userId: OTHER_USER.id })
+  })
+
+  it("a sibling tab's clear of this capture drops the in-memory key before a retry", async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // A duplicated tab: this tab's keyed open is denied and retains the key in memory and in
+    // storage. The original tab's open of the same capture then succeeds and broadcasts the
+    // capture clear. The storage copy is swept -- and so must be the ref, or "Try again" on the
+    // same stub replays the spent key and re-redeems the still-live link.
+    window.location.hash = '#share=aaaa'
+    const sentKeys: (string | undefined)[] = []
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return openDeniedOverseer()
+      },
+      whoami: async () => WHOAMI_USER,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+    window.location.hash = ''
+    expect(sentKeys).toEqual(['aaaa'])
+    const stored = storedRetained() as { captureId: string }
+    expect(stored).toMatchObject({ key: 'aaaa', userId: WHOAMI_USER.id })
+
+    postSiblingCaptureClear(stored.captureId)
+    await vi.waitFor(() => expect(storedRetained()).toBeNull())
+
+    await act(async () => {
+      const retryButton = [...container!.querySelectorAll('button')]
+          .find(button => button.textContent?.includes('Try again'))
+      retryButton!.click()
+      await Promise.resolve()
+    })
+    expect(sentKeys).toEqual(['aaaa', undefined])
+  })
+
+  it('a clear landing while the reload path awaits identity is honored', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // The reload path reads the stored entry into a local, then parks in whoami(). A sibling
+    // tab's clear of that capture sweeps storage meanwhile; when identity resolves, the stale
+    // local must not be attached -- the open proceeds keylessly.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe'))
+    const heldWhoami = deferred<typeof WHOAMI_USER>()
+    const sentKeys: (string | undefined)[] = []
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return openDeniedOverseer()
+      },
+      whoami: () => heldWhoami.promise,
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+    expect(sentKeys).toEqual([])
+
+    postSiblingCaptureClear('capture-test')
+    await vi.waitFor(() => expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull())
+
+    await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
+    expect(sentKeys).toEqual([undefined])
   })
 
   it('a keyed open that confirms after cancellation clears its own retention', async () => {

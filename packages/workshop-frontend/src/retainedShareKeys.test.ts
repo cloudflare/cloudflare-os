@@ -4,9 +4,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   beginRetainedShareKeyWrite, clearAllRetainedShareKeys, clearRetainedShareKey,
   commitRetainedShareKeyWrite, readRetainedShareKey, RETAINED_SHARE_KEY_TTL_MS,
+  subscribeToRetainedShareKeyClears, type RetainedShareKeyClear,
 } from './retainedShareKeys'
 
 const ENTRY = { key: 'deadbeef', userId: 'person@example.com', captureId: 'capture-1' }
+
+// A sibling tab's end of the clear channel. Node >= 18 provides BroadcastChannel in the vitest
+// process, so tests that post through this run against the real channel.
+let channel: BroadcastChannel | undefined
+
+afterEach(() => {
+  channel?.close()
+  channel = undefined
+})
+
+function openSiblingChannel(): BroadcastChannel {
+  const sibling = new BroadcastChannel('gadgets:retained-share-keys');
+  // Match the module's unref so a test failure can't wedge the process either.
+  (sibling as { unref?: () => void }).unref?.()
+  channel = sibling
+  return sibling
+}
+
+// BroadcastChannel.postMessage takes no targetOrigin; the unicorn rule is written for
+// window.postMessage.
+function post(sibling: BroadcastChannel, message: unknown): void {
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin
+  sibling.postMessage(message)
+}
 
 describe('retained share key write tokens', () => {
   afterEach(() => sessionStorage.clear())
@@ -187,31 +212,9 @@ describe('entry expiry', () => {
 })
 
 // Clears are broadcast so a duplicated tab's copied entry (which shares the original's
-// captureId) is cleared the moment the original spends its key. Node >= 18 provides
-// BroadcastChannel in the vitest process, so these run against the real channel.
+// captureId) is cleared the moment the original spends its key.
 describe('cross-tab clear propagation', () => {
-  let channel: BroadcastChannel | undefined
-
-  afterEach(() => {
-    channel?.close()
-    channel = undefined
-    sessionStorage.clear()
-  })
-
-  function openSiblingChannel(): BroadcastChannel {
-    const sibling = new BroadcastChannel('gadgets:retained-share-keys');
-    // Match the module's unref so a test failure can't wedge the process either.
-    (sibling as { unref?: () => void }).unref?.()
-    channel = sibling
-    return sibling
-  }
-
-  // BroadcastChannel.postMessage takes no targetOrigin; the unicorn rule is written for
-  // window.postMessage.
-  function post(sibling: BroadcastChannel, message: unknown): void {
-    // oxlint-disable-next-line unicorn/require-post-message-target-origin
-    sibling.postMessage(message)
-  }
+  afterEach(() => sessionStorage.clear())
 
   it('a received capture clear removes the matching entry and voids its stamp', async () => {
     const stamp = beginRetainedShareKeyWrite('ws-1', ENTRY.captureId)
@@ -271,5 +274,90 @@ describe('cross-tab clear propagation', () => {
       { type: 'clear-capture', workspaceId: 'ws-1', captureId: 'capture-1' },
       { type: 'clear-all' },
     ])
+  })
+})
+
+// The capturing hook holds a third retention tier in memory, which no storage removal reaches.
+// Clears notify subscribers so a sibling tab's broadcast can drop that ref too; otherwise a live
+// duplicate would replay the spent key from memory on its next same-stub retry.
+describe('clear subscription', () => {
+  let unsubscribe: (() => void) | undefined
+
+  afterEach(() => {
+    unsubscribe?.()
+    unsubscribe = undefined
+    sessionStorage.clear()
+  })
+
+  function subscribe(): RetainedShareKeyClear[] {
+    const received: RetainedShareKeyClear[] = []
+    unsubscribe = subscribeToRetainedShareKeyClears(clear => received.push(clear))
+    return received
+  }
+
+  it('reports a local capture-scoped clear, whether or not an entry matched', () => {
+    const received = subscribe()
+    clearRetainedShareKey('ws-1', 'capture-1')
+    // An entry owned by a different capture keeps the slot, but the in-memory tier may still
+    // hold the named capture, so the clear is reported regardless.
+    const newerEntry = { key: 'cafe', userId: ENTRY.userId, captureId: 'capture-2' }
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', newerEntry.captureId), newerEntry)
+    clearRetainedShareKey('ws-1', 'capture-1')
+    expect(readRetainedShareKey('ws-1')).toEqual(newerEntry)
+    expect(received).toEqual([
+      { scope: 'capture', workspaceId: 'ws-1', captureId: 'capture-1' },
+      { scope: 'capture', workspaceId: 'ws-1', captureId: 'capture-1' },
+    ])
+  })
+
+  it('reports a received sibling capture clear', async () => {
+    const received = subscribe()
+    post(openSiblingChannel(),
+        { type: 'clear-capture', workspaceId: 'ws-1', captureId: ENTRY.captureId })
+    await vi.waitFor(() => expect(received).toHaveLength(1))
+    expect(received).toEqual([
+      { scope: 'capture', workspaceId: 'ws-1', captureId: ENTRY.captureId },
+    ])
+  })
+
+  it('reports the logout sweep, local and received', async () => {
+    const received = subscribe()
+    clearAllRetainedShareKeys()
+    post(openSiblingChannel(), { type: 'clear-all' })
+    await vi.waitFor(() => expect(received).toHaveLength(2))
+    expect(received).toEqual([{ scope: 'all' }, { scope: 'all' }])
+  })
+
+  it('does not report a workspace-scoped clear', () => {
+    // Workspace-scoped clears name no capture and are only issued by a hook that has already
+    // dropped its own ref; reporting them would make the in-memory tier answer to a clear it
+    // cannot scope.
+    const received = subscribe()
+    clearRetainedShareKey('ws-1')
+    expect(received).toEqual([])
+  })
+
+  it('an unsubscribed listener receives nothing', () => {
+    const received = subscribe()
+    unsubscribe!()
+    unsubscribe = undefined
+    clearRetainedShareKey('ws-1', 'capture-1')
+    clearAllRetainedShareKeys()
+    expect(received).toEqual([])
+  })
+
+  it('a throwing listener neither prevents the removal nor starves other listeners', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const throwing = subscribeToRetainedShareKeyClears(() => { throw new Error('listener bug') })
+    try {
+      const received = subscribe()
+      commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+      expect(() => clearRetainedShareKey('ws-1', ENTRY.captureId)).not.toThrow()
+      expect(readRetainedShareKey('ws-1')).toBeUndefined()
+      expect(received).toHaveLength(1)
+    } finally {
+      throwing()
+      vi.restoreAllMocks()
+    }
   })
 })

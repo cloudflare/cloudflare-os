@@ -13,11 +13,13 @@
 // notably after an owner removes the collaborator. Two mitigations bound that: entries expire
 // (RETAINED_SHARE_KEY_TTL_MS), so a copy cannot replay long after the capture, and capture-scoped
 // clears plus the logout sweep are broadcast to sibling same-origin tabs (BroadcastChannel),
-// clearing a duplicate's copy the moment the original's open succeeds. Residual: a duplicate
-// discarded or unloaded at broadcast time that reactivates within the TTL can still replay once.
-// The link itself deliberately stays multi-use server-side (docs/sharing.md carries the matching
-// manual re-redeem residual); a single-use server-side retry capability would close both and is a
-// possible kernel-side follow-up, not attempted here.
+// clearing a duplicate's copy the moment the original's open succeeds. In a live duplicate the
+// received clear reaches all three retention tiers: the storage entry and any pending identity
+// stamp here, and the capturing hook's in-memory ref through subscribeToRetainedShareKeyClears.
+// Residual: a duplicate discarded or unloaded at broadcast time that reactivates within the TTL
+// can still replay once. The link itself deliberately stays multi-use server-side
+// (docs/sharing.md carries the matching manual re-redeem residual); a single-use server-side
+// retry capability would close both and is a possible kernel-side follow-up, not attempted here.
 //
 // All operations are best-effort: storage can be unavailable in restricted browser contexts, and
 // a lost key only costs the user a re-visit of their invite link.
@@ -186,16 +188,57 @@ if (clearChannel) {
 // BroadcastChannel.postMessage takes no targetOrigin (the unicorn rule is written for
 // window.postMessage), hence the disables at the two send sites below.
 
+/**
+ * A clear as seen by the in-memory tier. Exactly the two broadcast scopes are reported (a
+ * workspace-scoped clear names no capture and is only ever issued locally, by a hook that has
+ * already dropped its own ref), and a capture-scoped clear is reported whether or not a stored
+ * entry matched it: the hook's ref is a separate tier that may hold the capture with nothing in
+ * storage.
+ */
+export type RetainedShareKeyClear =
+  | { scope: 'capture'; workspaceId: string; captureId: string }
+  | { scope: 'all' }
+
+const clearListeners = new Set<(clear: RetainedShareKeyClear) => void>()
+
+/**
+ * Observe capture-scoped clears and logout sweeps, local and received alike. This is how a
+ * broadcast from a sibling tab reaches the capturing hook's in-memory ref, which no storage
+ * removal can touch: without it a live duplicate would replay the cleared key from memory on
+ * its next same-stub retry. Returns the unsubscribe.
+ */
+export function subscribeToRetainedShareKeyClears(
+    listener: (clear: RetainedShareKeyClear) => void): () => void {
+  clearListeners.add(listener)
+  return () => { clearListeners.delete(listener) }
+}
+
+function notifyClearListeners(clear: RetainedShareKeyClear): void {
+  for (const listener of clearListeners) {
+    try {
+      listener(clear)
+    } catch (error) {
+      // A listener's failure must not break the clear (or starve the other listeners): the
+      // storage removal and the generation bump have already happened by the time this runs.
+      console.error('Retained share key clear listener failed:', error)
+    }
+  }
+}
+
 function applyCaptureClear(workspaceId: string, captureId: string): void {
   // The generation is bumped before the removal so no in-flight commit can land between the two.
   captureGenerations.set(captureId, (captureGenerations.get(captureId) ?? 0) + 1)
   const entry = readRetainedShareKey(workspaceId)
-  if (entry && entry.captureId !== captureId) return
-  try {
-    window.sessionStorage.removeItem(storageKey(workspaceId))
-  } catch {
-    // Best-effort; see above.
+  if (!entry || entry.captureId === captureId) {
+    try {
+      window.sessionStorage.removeItem(storageKey(workspaceId))
+    } catch {
+      // Best-effort; see above.
+    }
   }
+  // Notified even when a different capture's entry kept the slot: the in-memory tier may still
+  // hold the named capture, and the listeners scope by capture id themselves.
+  notifyClearListeners({ scope: 'capture', workspaceId, captureId })
 }
 
 function applyClearAll(): void {
@@ -210,6 +253,7 @@ function applyClearAll(): void {
   } catch {
     // Best-effort; see above.
   }
+  notifyClearListeners({ scope: 'all' })
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   clearRetainedShareKey,
   commitRetainedShareKeyWrite,
   readRetainedShareKey,
+  subscribeToRetainedShareKeyClears,
 } from './retainedShareKeys'
 import {
   classifyWorkspaceOpenFailure,
@@ -80,8 +81,9 @@ export function useWorkspaceOpen({
   // stamp lands loses retention, recovered by re-clicking the invite link; and in the other
   // direction, a *duplicated* tab copies the sessionStorage entry, so a clear here cannot reach
   // the copy directly -- retainedShareKeys.ts bounds that with an entry TTL and a cross-tab
-  // clear broadcast, leaving only a duplicate unloaded at broadcast time that reactivates within
-  // the TTL able to replay a spent key (see that module's header). The secret never
+  // clear broadcast, which this ref honors too (see the subscription below), leaving only a
+  // duplicate unloaded at broadcast time that reactivates within the TTL able to replay a spent
+  // key (see that module's header). The secret never
   // enters the URL or history -- the fragment is stripped before openGadget is even issued --
   // nor error reports (normalizePageLocation keeps origin+pathname only); sessionStorage is
   // same-origin, per-tab, and dies with the tab, and gadget UIs run in opaque-origin frames
@@ -93,6 +95,22 @@ export function useWorkspaceOpen({
   callbacksRef.current = { onMetadata, onShareKeyConsumed, onInvalidShareKey }
 
   useDocumentTitle(error ? '' : metadata?.title)
+
+  // The in-memory tier honors clears the same way the storage tier does. Local clears are
+  // redundant here (the attempt nulls the ref itself before issuing them), but this is the only
+  // way a *sibling tab's* clear can reach this tab's memory: a duplicated tab re-arms its ref from
+  // the copied storage entry (same capture id as the original's), and when the original's open
+  // succeeds and broadcasts, the storage copy is swept while the ref would otherwise keep
+  // replaying the spent key on every same-stub retry. Scoped by capture id, so a newer local
+  // capture (a different id, even of the same key) is untouched.
+  useEffect(() => subscribeToRetainedShareKeyClears(clear => {
+    const retained = retainedShareKeyRef.current
+    if (!retained) return
+    if (clear.scope === 'all' ||
+        (retained.id === clear.workspaceId && retained.captureId === clear.captureId)) {
+      retainedShareKeyRef.current = null
+    }
+  }), [])
 
   useEffect(() => {
     let overseerStub: RpcStub<Overseer> | null = null
@@ -172,7 +190,13 @@ export function useWorkspaceOpen({
               // re-arm the in-memory ref over a newer attempt's capture nor judge an entry that
               // may have been replaced while it was parked.
               if (cancelled) return
-              if (info.type === 'user' && info.id === retained.userId) {
+              if (readRetainedShareKey(id)?.captureId !== retained.captureId) {
+                // The entry this attempt read was swept while it was parked -- a sibling tab's
+                // clear broadcast after its own open of this capture succeeded, a logout sweep,
+                // or the TTL running out. The local read is stale, so neither attach the key it
+                // held nor judge it: the open proceeds keylessly, exactly as if the entry had
+                // never been there.
+              } else if (info.type === 'user' && info.id === retained.userId) {
                 shareKey = retained.key
                 shareKeyCaptureId = retained.captureId
                 // Re-arming adopts the entry's capture id: this attempt continues the capture
