@@ -1478,7 +1478,11 @@ export default function GadgetEditor() {
             </span>
           )}
 
-          <ActivityNotifications overseer={overseer.stub} onViewActivity={openActivity} />
+          <ActivityNotifications
+            overseer={overseer.stub}
+            onViewActivity={openActivity}
+            restricted={metadata?.containsRestrictedData === true}
+          />
 
           {showReconnecting && <ReconnectingChip />}
 
