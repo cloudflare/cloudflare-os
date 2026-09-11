@@ -24,13 +24,11 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
-import { createPortal } from "react-dom";
 import type {
   ContextCollectionMetadata,
   ContextDocumentSummary,
@@ -44,8 +42,6 @@ import {
   isMarkdownContentType,
   isTextContentType,
 } from "../src/context-types";
-import emojiData from "@emoji-mart/data";
-import { Picker as EmojiMartPicker } from "emoji-mart";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, lineNumbers } from "@codemirror/view";
 import {
@@ -62,6 +58,10 @@ import { yaml } from "@codemirror/lang-yaml";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
 import { useContextApi, usePresentWhileOpen, useResolvedThemeMode } from "./bridge";
+import {
+  CollectionIconPicker,
+  DEFAULT_COLLECTION_ICON,
+} from "./components/CollectionIconPicker";
 import { extractDescription } from "../src/description-extractors";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -148,146 +148,6 @@ function fileToBase64(file: File): Promise<string> {
 
 function dataUri(contentType: string, base64Body: string): string {
   return `data:${contentType};base64,${base64Body}`;
-}
-
-const DEFAULT_COLLECTION_ICON = "📚";
-
-function IconPickerButton({
-  value,
-  onChange,
-  size = 32,
-  variant = "boxed",
-}: {
-  value?: string;
-  onChange: (emoji: string) => void;
-  size?: number;
-  // "boxed": standalone bordered tile (settings modal). "inline": borderless tile that sits inside a
-  // shared input pill.
-  variant?: "boxed" | "inline";
-}) {
-  const themeMode = useResolvedThemeMode();
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const pickerHostRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        wrapRef.current?.contains(target) ||
-        pickerHostRef.current?.contains(target)
-      )
-        return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  // Fixed-position layer anchored to the trigger so the form can't clip it. Opens above the trigger
-  // by default, flips below when there's no room, and stays glued to the button on scroll/resize.
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
-    const PICKER_W = 352;
-    const PICKER_H = 435;
-    const GAP = 6;
-    const place = () => {
-      const btn = btnRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const roomAbove = rect.top;
-      const roomBelow = window.innerHeight - rect.bottom;
-      const openAbove = roomAbove >= PICKER_H + GAP || roomAbove >= roomBelow;
-      const top = openAbove
-        ? Math.max(GAP, rect.top - GAP - PICKER_H)
-        : Math.min(window.innerHeight - PICKER_H - GAP, rect.bottom + GAP);
-      const left = Math.min(
-        Math.max(GAP, rect.left),
-        window.innerWidth - PICKER_W - GAP,
-      );
-      setPos({ left, top });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !pickerHostRef.current) return;
-    const host = pickerHostRef.current;
-    const picker = new (EmojiMartPicker as any)({
-      data: emojiData,
-      theme: themeMode,
-      previewPosition: "none",
-      skinTonePosition: "none",
-      // Hide the "Frequently used" category.
-      maxFrequentRows: 0,
-      onEmojiSelect: (e: { native: string }) => {
-        onChange(e.native);
-        setOpen(false);
-      },
-    });
-    host.appendChild(picker as unknown as Node);
-    return () => {
-      host.replaceChildren();
-    };
-  }, [open, onChange, themeMode]);
-
-  const inline = variant === "inline";
-  return (
-    <div ref={wrapRef} className="relative inline-block">
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        title="Choose an icon"
-        className={
-          inline
-            ? "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-kumo-tint text-[18px] leading-none text-kumo-subtle transition-colors hover:bg-kumo-fill"
-            : "grid place-items-center rounded-xl border border-kumo-line bg-kumo-base hover:border-kumo-brand transition-colors"
-        }
-        style={
-          inline
-            ? undefined
-            : {
-                width: size + 12,
-                height: size + 12,
-                fontSize: size * 0.66,
-                lineHeight: 1,
-              }
-        }
-      >
-        <span>{value || DEFAULT_COLLECTION_ICON}</span>
-      </button>
-      {open &&
-        // Portaled to <body> so a transformed ancestor (e.g. .ctx-rise's fill-both transform) can't
-        // become the containing block for `fixed` and offset the coordinates.
-        createPortal(
-          <div
-            ref={pickerHostRef}
-            className="z-[2000]"
-            style={{
-              position: "fixed",
-              left: pos?.left ?? 0,
-              top: pos?.top ?? 0,
-              // Hidden until measured so it never flashes at (0,0).
-              visibility: pos ? "visible" : "hidden",
-            }}
-          />,
-          document.body,
-        )}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +345,7 @@ function CollectionNameField({
       <FieldLabel>Name</FieldLabel>
       {/* Icon tile + name share one focus-within pill so the emoji reads as part of the input. */}
       <div className="flex items-center gap-2 rounded-xl border-2 border-kumo-line bg-kumo-base p-1.5 transition-[border-color,box-shadow] duration-150 ease-out focus-within:border-kumo-ring focus-within:ring-1 focus-within:ring-kumo-ring/15">
-        <IconPickerButton value={icon} onChange={onIconChange} variant="inline" />
+        <CollectionIconPicker value={icon} onChange={onIconChange} variant="inline" />
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
