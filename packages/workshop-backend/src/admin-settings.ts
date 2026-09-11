@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { collection, createTypedStorage } from '@gadgets/typed-storage';
 import { createWorkshopLogger } from "./observability";
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, sanitizeBlueprintOutput, serializeFeaturedBlueprints } from './blueprint-archive.js';
-import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -259,11 +259,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   // --- Deployment admin config ---
 
-  // Every read of the stored config goes through here. A config persisted before a field existed
-  // is missing that field entirely, so reads must backfill from the defaults or the first
-  // deployment to upgrade hits `undefined` on it.
+  // Every read of the stored config goes through the same normalization as the KV mirror. A
+  // config persisted before a field existed is missing that field entirely; in particular,
+  // userSearchEnabled has a dependent default and cannot be restored by a simple defaults spread.
   #config(): AdminConfig {
-    return { ...DEFAULT_ADMIN_CONFIG, ...this.storage.adminConfig.get() };
+    return normalizeAdminConfig(this.storage.adminConfig.get());
   }
 
   getAdminConfig(): AdminConfig {
@@ -311,6 +311,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let config = this.#config();
     return {
       signupsEnabled: config.signupsEnabled,
+      userSearchEnabled: config.userSearchEnabled,
       siteName: config.siteName,
       siteLogo: siteLogoImage(config.siteLogoConfigured),
       instanceInstructions: config.instanceInstructions,
@@ -576,6 +577,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async setSignupsEnabled(enabled: boolean): Promise<void> {
     await this.admin.updateAdminConfig({ signupsEnabled: enabled });
+  }
+
+  async setUserSearchEnabled(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig({ userSearchEnabled: enabled });
   }
 
   async setSiteName(name: string): Promise<void> {
