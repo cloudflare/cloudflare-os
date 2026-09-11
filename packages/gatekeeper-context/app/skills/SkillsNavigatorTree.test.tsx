@@ -14,6 +14,7 @@ import { ContextApiProvider } from "../bridge";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import type { SkillNavigatorCollection } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
+import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -75,12 +76,14 @@ describe("SkillsNavigatorTree", () => {
     metadataAvailable = true,
     source = "web",
     visibility = "private",
+    onUploadSkills = () => {},
   }: {
     writable: boolean;
     manageable?: boolean;
     metadataAvailable?: boolean;
     source?: "web" | "git";
     visibility?: ContextCollectionMetadata["visibility"];
+    onUploadSkills?: (target: UploadSkillsTarget) => void;
   }) => {
     container = document.createElement("div");
     document.body.append(container);
@@ -107,6 +110,7 @@ describe("SkillsNavigatorTree", () => {
             expandAll
             onSelectSkill={() => {}}
             onAddSkill={() => {}}
+            onUploadSkills={onUploadSkills}
             onEditCollection={() => {}}
             onDelete={onDelete}
             onChanged={() => {}}
@@ -216,6 +220,30 @@ describe("SkillsNavigatorTree", () => {
     const drawer = document.querySelector<HTMLElement>('[role="dialog"]');
     expect(drawer).not.toBeNull();
     expect([...drawer!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-      .map((item) => item.textContent)).toEqual(["Add skill", "Edit", "Delete"]);
+      .map((item) => item.textContent)).toEqual([
+        "Add skill",
+        "Upload skills",
+        "Edit",
+        "Delete",
+      ]);
+  });
+
+  it("uploads skills into a writable legacy directory from its context menu", () => {
+    const onUploadSkills = vi.fn<(target: UploadSkillsTarget) => void>();
+    renderTree({ writable: true, onUploadSkills });
+
+    act(() => row("legacy")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const upload = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent?.includes("Upload skills"));
+    act(() => upload?.click());
+
+    expect(onUploadSkills).toHaveBeenCalledWith({
+      collectionId: "collection",
+      directoryPath: "legacy",
+      collectionEditable: false,
+    });
   });
 });
