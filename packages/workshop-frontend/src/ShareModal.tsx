@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import type { PortalContainer } from '@cloudflare/kumo'
 import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
@@ -19,17 +19,13 @@ import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControl
 import { PersonAvatar } from './components/PersonAvatar'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
+import { UserSearchCombobox, type UserSearchState } from './UserSearchCombobox'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
   | { kind: 'collaborator'; info: CollaboratorInfo }
 
-type DirectorySearch = {
-  status: 'loading' | 'failed' | 'ready'
-  query: string
-  results: UserDirectoryRecord[]
-}
-const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
+const NO_DIRECTORY_SEARCH: UserSearchState = { status: 'ready', query: '', resultCount: 0 }
 
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -307,22 +303,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
-  const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
+  const [directory, setDirectory] = useState<UserSearchState>(NO_DIRECTORY_SEARCH)
   const [selectedUser, setSelectedUser] = useState<UserDirectoryRecord | null>(null)
-  const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
-  const directoryListboxId = useId()
-  const activeDirectoryOptionRef = useRef<HTMLButtonElement>(null)
   const directoryQuery = addUsername.trim()
   const directoryExcludeIds = useMemo(() => [
     ...(currentUser ? [currentUser.id] : []),
     ...collaborators.map(({ profile }) => profile.id),
   ], [collaborators, currentUser])
-  const directoryOpen = selectedUser === null && directoryQuery !== ''
+  const searchDirectory = useCallback((query: string) =>
+    authenticatedApi.searchUsers(query, directoryExcludeIds), [authenticatedApi, directoryExcludeIds])
   const canInviteUser = selectedUser !== null || (
     directoryQuery !== '' &&
     directory.status === 'ready' &&
     directory.query === directoryQuery &&
-    directory.results.length === 0
+    directory.resultCount === 0
   )
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
@@ -384,37 +378,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }, [])
 
-  useEffect(() => {
-    if (!open || !directoryOpen) {
-      setDirectory(NO_DIRECTORY_SEARCH)
-      return
-    }
-    let cancelled = false
-    setDirectory({ status: 'loading', query: directoryQuery, results: [] })
-    setActiveDirectoryIndex(0)
-    // Debounced: every keystroke from every user would otherwise hit the one directory DO.
-    const timer = window.setTimeout(() => {
-      authenticatedApi.searchUsers(directoryQuery, directoryExcludeIds).then(
-        results => {
-          if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
-        },
-        error => {
-          if (cancelled) return
-          console.error('Failed to search user directory:', error)
-          setDirectory({ status: 'failed', query: directoryQuery, results: [] })
-        })
-    }, 200)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [authenticatedApi, directoryExcludeIds, directoryOpen, directoryQuery, open])
-
-  useLayoutEffect(() => {
-    if (directoryOpen) {
-      activeDirectoryOptionRef.current?.scrollIntoView({ block: 'nearest' })
-    }
-  }, [activeDirectoryIndex, directoryOpen, directory.results])
 
   useEffect(() => {
     const element = document.createElement('div')
@@ -618,24 +581,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const selectDirectoryUser = (user: UserDirectoryRecord) => {
     setSelectedUser(user)
     setAddUsername(user.name)
-  }
-
-  const handleDirectoryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (isImeComposing(event)) return
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      const user = selectedUser === null ? directory.results[activeDirectoryIndex] : undefined
-      if (user) selectDirectoryUser(user)
-      else void handleAddCollaborator()
-      return
-    }
-    if (selectedUser !== null) return
-    if (directory.results.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-      event.preventDefault()
-      const direction = event.key === 'ArrowDown' ? 1 : -1
-      setActiveDirectoryIndex(current =>
-        (current + direction + directory.results.length) % directory.results.length)
-    }
   }
 
   const handleAddCollaborator = async () => {
@@ -888,38 +833,21 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
               <UserPlus size={15} weight="duotone" />
             </div>
-            <div className="relative min-w-0 flex-1">
-              <input
-                type="search"
-                role="combobox"
-                placeholder="Search by name or email"
-                aria-label="Search people"
-                aria-autocomplete="list"
-                aria-expanded={directoryOpen}
-                aria-controls={directoryOpen ? directoryListboxId : undefined}
-                aria-activedescendant={directory.results[activeDirectoryIndex]
-                  ? `${directoryListboxId}-option-${activeDirectoryIndex}`
-                  : undefined}
-                value={addUsername}
-                onChange={(event) => {
-                  setAddUsername(event.target.value)
-                  setSelectedUser(null)
-                }}
-                onKeyDown={handleDirectoryKeyDown}
-                name="gadget-share-people-search"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                data-keeper-ignore="true"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-bwignore="true"
-                data-form-type="other"
-                className="h-9 w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
-                disabled={sharingProhibited}
-              />
-            </div>
+            <UserSearchCombobox
+              authenticatedApi={authenticatedApi}
+              value={addUsername}
+              selected={selectedUser !== null}
+              disabled={sharingProhibited}
+              inputName="gadget-share-people-search"
+              search={searchDirectory}
+              onValueChange={(value) => {
+                setAddUsername(value)
+                setSelectedUser(null)
+              }}
+              onSelect={selectDirectoryUser}
+              onSubmit={() => { void handleAddCollaborator() }}
+              onSearchStateChange={setDirectory}
+            />
             <RoleMenu
               ariaLabel="Access to grant"
               value={addRole}
@@ -935,50 +863,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
-            {directoryOpen && (
-              <div
-                id={directoryListboxId}
-                role="listbox"
-                aria-label="Matching people"
-                aria-busy={directory.status === 'loading'}
-                className="themed-floating-shadow-lg absolute left-0 top-full z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-kumo-line/70 bg-kumo-base p-2 sm:w-96"
-              >
-                {directory.status === 'loading' ? (
-                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">Searching…</p>
-                ) : directory.status === 'failed' ? (
-                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-danger">
-                    User search is temporarily unavailable.
-                  </p>
-                ) : directory.results.length === 0 ? (
-                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">No users found.</p>
-                ) : directory.results.map((user, index) => (
-                  <button
-                    key={user.id}
-                    ref={index === activeDirectoryIndex ? activeDirectoryOptionRef : undefined}
-                    id={`${directoryListboxId}-option-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeDirectoryIndex}
-                    onMouseEnter={() => setActiveDirectoryIndex(index)}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => selectDirectoryUser(user)}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
-                      index === activeDirectoryIndex ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/70'
-                    }`}
-                  >
-                    <PersonAvatar api={authenticatedApi} userId={user.id} name={user.name} size={32} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-[13px] font-medium text-kumo-default">
-                        {user.name}
-                      </span>
-                      <span className="block truncate font-mono text-[11px] text-kumo-subtle">
-                        {user.id}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           {invitedName && (

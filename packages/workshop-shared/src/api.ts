@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, GatekeeperUserPickerSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -738,6 +738,15 @@ export interface AuthenticatedApi extends RpcTarget {
    * in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
+
+  /**
+   * Resolve a person picked in the Workshop's trusted person picker (opened by a gatekeeper app via
+   * its host's `pickUsers()`) to opaque capabilities for the app's gatekeeper: `gatekeeperId` is the
+   * same vendor id as `getGatekeeperApp(id)`, `userId` a `UserDirectoryRecord.id` from
+   * `searchUsers()`. Null if that user is the caller or doesn't have exactly one active account for
+   * the vendor. The caller must hand the result only to that gatekeeper's UI.
+   */
+  selectGatekeeperUser(gatekeeperId: string, userId: string): Promise<GatekeeperUserPickerSelection | null>;
 
   // --- Deployment admin ---
 

@@ -12,11 +12,14 @@ import {
 } from "@tanstack/react-router";
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
 } from "@gadgets/workshop-shared/theme";
+import type {
+  GatekeeperUiFrame,
+  GatekeeperUserPickerSelection,
+} from "@gadgets/workshop-shared/gatekeeper";
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
 
 vi.mock("./ThemeContext", () => ({
@@ -53,6 +56,7 @@ interface TestHost extends RpcTarget {
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;
+  pickUsers(): Promise<GatekeeperUserPickerSelection[]>;
 }
 
 class EmptyUi extends RpcTarget {}
@@ -119,6 +123,19 @@ describe("SandboxedGatekeeperApp navigation", () => {
       mode: "light",
       accentColor: "#7c3aed",
     });
+
+    let pendingPick!: Promise<GatekeeperUserPickerSelection[]>;
+    await act(async () => {
+      pendingPick = host!.pickUsers();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await expect(host.pickUsers()).rejects.toThrow("A person picker is already open.");
+    const closePicker = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close person picker"]',
+    );
+    if (!closePicker) throw new Error("Missing person picker close button");
+    await act(async () => closePicker.click());
+    await expect(pendingPick).resolves.toEqual([]);
 
     await act(async () => {
       await host!.setPresenting(true);
