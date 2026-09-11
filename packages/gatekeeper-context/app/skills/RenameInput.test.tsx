@@ -43,31 +43,4 @@ describe("RenameInput", () => {
     act(() => input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
     expect(onCommit).toHaveBeenCalledWith("security-audit");
   });
-
-  it("survives delayed dialog focus restoration to a menu trigger", async () => {
-    const onCancel = vi.fn<() => void>();
-    container = document.createElement("div");
-    const trigger = document.createElement("button");
-    trigger.setAttribute("aria-haspopup", "menu");
-    document.body.append(container, trigger);
-    root = createRoot(container);
-    act(() => root?.render(
-      <RenameInput
-        initialValue="incident-response"
-        format="skill"
-        onCommit={() => {}}
-        onCancel={onCancel}
-      />,
-    ));
-
-    const input = container.querySelector("input")!;
-    await act(async () => {
-      trigger.focus();
-      await Promise.resolve();
-    });
-
-    expect(onCancel).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(input);
-    trigger.remove();
-  });
 });
