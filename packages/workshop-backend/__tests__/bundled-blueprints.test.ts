@@ -1,0 +1,210 @@
+import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
+import { parseBlueprintArchive, parseBlueprintKvRecord, sanitizeBlueprintOutput } from "../src/blueprint-archive.js";
+import { bundledBlueprintsManifestVersion, installBundledBlueprints } from "../src/bundled-blueprints.js";
+import { BUNDLED_BLUEPRINTS } from "../src/generated/bundled-blueprints.js";
+
+async function readBlueprintFile(
+  entry: (typeof BUNDLED_BLUEPRINTS)[number],
+  filename: string,
+): Promise<string> {
+  let archive = new Response(Uint8Array.fromBase64(entry.archive) as BufferSource).body!;
+  let {content} = await parseBlueprintArchive(archive);
+  let decompressed = content.pipeThrough(new DecompressionStream("gzip"));
+  let update = new Uint8Array(await new Response(decompressed).arrayBuffer());
+  let doc = new Y.Doc();
+  Y.applyUpdateV2(doc, update);
+  return doc.getMap<Y.Text>().get(filename)?.toString() ?? "";
+}
+
+/**
+ * Whether `code` exports `name`, in either shape a blueprint's installed JavaScript can have: hand
+ * written (`export class Foo`), or produced by the TypeScript build, which rewrites the declaration
+ * to a `var` and gathers every export into one trailing `export { ... }` list.
+ */
+function exportsName(code: string, name: string): boolean {
+  return new RegExp(`export\\s+(?:class|function|const|let|var)\\s+${name}\\b`, "u").test(code) ||
+    new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`, "su").test(code);
+}
+
+// Minimal in-memory stand-ins for the two bindings the installer writes to. They record what was
+// written so the test can assert on the installed blueprint the way a reader would see it.
+function makeEnv() {
+  let kv = new Map<string, string>();
+  let r2 = new Map<string, Uint8Array>();
+  return {
+    kv,
+    r2,
+    env: {
+      BLUEPRINTS: {
+        put: async (key: string, value: string) => { kv.set(key, value); },
+      },
+      BLUEPRINT_CONTENT: {
+        // Deliberately strict: real R2 rejects a stream of unknown length, so accepting one here
+        // would hide exactly the bug this stands in for.
+        put: async (key: string, value: unknown) => {
+          if (!ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer)) {
+            throw new TypeError(
+                "Provided readable stream must have a known length " +
+                "(request/response body or readable half of FixedLengthStream)");
+          }
+          r2.set(key, new Uint8Array(ArrayBuffer.isView(value)
+              ? value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+              : value));
+        },
+      },
+    } as unknown as Pick<Cloudflare.Env, "BLUEPRINTS" | "BLUEPRINT_CONTENT">,
+  };
+}
+
+describe("bundled blueprints", () => {
+  it("installs every manifest entry as an ordinary blueprint", async () => {
+    let {kv, r2, env} = makeEnv();
+
+    let installed = await installBundledBlueprints(env);
+
+    expect(installed).toHaveLength(BUNDLED_BLUEPRINTS.length);
+    for (let entry of BUNDLED_BLUEPRINTS) {
+      let raw = kv.get(entry.blueprintId);
+      expect(raw, `${entry.blueprintId} metadata`).toBeDefined();
+
+      let record = parseBlueprintKvRecord(raw!);
+      // No owning user: these belong to the deployment, so the owner-anchored featured toggle
+      // must not apply to them.
+      expect(record.ownerId).toBeUndefined();
+      // Presentation comes from the source manifest, not from whatever the archive was called in the
+      // workspace it was exported from.
+      expect(record.metadata.title).toBe(entry.title);
+      expect(record.metadata.description).toBe(entry.description);
+      expect(record.metadata.author).toEqual(entry.author);
+      // The manifest's declaration is written into the installed blueprint, so from here on the
+      // blueprint declares its own format like any other.
+      expect(record.metadata.output).toEqual(entry.output);
+      // ...and it survives the same validation an uploaded archive's would.
+      expect(sanitizeBlueprintOutput(record.metadata.output)).toEqual(entry.output);
+
+      // Content lands where readBlueprintContent() looks for it.
+      let content = r2.get(`${entry.blueprintId}/${record.metadata.version}`);
+      expect(content, `${entry.blueprintId} content`).toBeDefined();
+      expect(content!.byteLength).toBeGreaterThan(0);
+    }
+  });
+
+  it("ships print layouts for every standard output format", async () => {
+    for (let entry of BUNDLED_BLUEPRINTS) {
+      expect(await readBlueprintFile(entry, "client.js"), entry.blueprintId)
+        .toContain("@media print");
+    }
+  });
+
+  it("renders document HTML and PDF exports without the editor chrome", async () => {
+    let entry = BUNDLED_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
+    let client = await readBlueprintFile(entry, "client.js");
+
+    // The TypeScript build rewrites the source; what survives is the export-mode check itself.
+    expect(client).toContain('["html", "pdf"].includes(');
+    expect(client).toContain("gadgetExportFormatId");
+    expect(client).toContain('document.documentElement.classList.add("document-export")');
+    expect(client).toContain("app.replaceChildren(canvas)");
+  });
+
+  it("declares the intended export formats for every standard output format", async () => {
+    let expectedFormats: Record<string, string[]> = {
+      "format.document": [
+        'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
+        'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
+        'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+      ],
+      "format.slides": [
+        'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
+        'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+      ],
+      "format.spreadsheet": [
+        // `const` in the source; the TypeScript build emits `var`.
+        'CSV_FORMAT_PREFIX = "csv:"',
+        'id: "xlsx"',
+        'label: "Excel Workbook"',
+        'contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"',
+        'mode: "server"',
+        'contentType: "text/csv"',
+      ],
+    };
+
+    for (let entry of BUNDLED_BLUEPRINTS) {
+      let serverCode = await readBlueprintFile(entry, "server.js");
+      expect(exportsName(serverCode, "ExportHandler"),
+        `${entry.blueprintId}: server.js exports ExportHandler`).toBe(true);
+      for (let declaration of expectedFormats[entry.blueprintId] ?? []) {
+        expect(serverCode, `${entry.blueprintId}: ${declaration}`).toContain(declaration);
+      }
+    }
+  });
+
+  // The export assertion above is only as good as its shape matching, and its two shapes come from
+  // two different producers (a hand-written blueprint, and esbuild), so neither the suite nor a
+  // reader can see them side by side anywhere else.
+  it.each<[string, boolean]>([
+    ["export class ExportHandler {}\n", true],
+    ["var ExportHandler = class {\n};\nexport {\n  ExportHandler,\n  Gadget\n};\n", true],
+    ["class ExportHandler {}\nnew ExportHandler();\n", false],
+    ["export {\n  Gadget\n};\n// ExportHandler moved out.\n", false],
+  ])("recognizes an ExportHandler export in %j", (code, expected) => {
+    expect(exportsName(code, "ExportHandler")).toBe(expected);
+  });
+
+  // Skipped when the deployment bundles nothing, which BUNDLED_BLUEPRINTS_DIR makes a supported
+  // configuration rather than a broken checkout.
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
+      "changes the manifest version when an entry's revision changes", () => {
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
+    expect(before).toContain(entry.blueprintId);
+
+    let original = entry.revision;
+    try {
+      entry.revision = original + 1;
+      expect(bundledBlueprintsManifestVersion()).not.toBe(before);
+    } finally {
+      entry.revision = original;
+    }
+  });
+
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
+      "changes the manifest version when bundled source changes", () => {
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
+    let original = entry.contentHash;
+    try {
+      entry.contentHash = `${original}-changed`;
+      expect(bundledBlueprintsManifestVersion()).not.toBe(before);
+    } finally {
+      entry.contentHash = original;
+    }
+  });
+
+  // Curated text is the input most likely to be edited -- it is the whole point of keeping it in a
+  // text file -- and an edit that doesn't reach deployments which already installed would be
+  // invisible: the build succeeds and the old wording stays put.
+  it.skipIf(BUNDLED_BLUEPRINTS.length === 0)(
+      "changes the manifest version when curated presentation changes, with no revision bump", () => {
+    let entry = BUNDLED_BLUEPRINTS[0];
+    let before = bundledBlueprintsManifestVersion();
+
+    for (let mutate of [
+      () => { entry.description += " Now with more detail."; },
+      () => { entry.title += " (Beta)"; },
+      () => { entry.output = {...entry.output, noun: "Document"}; },
+    ]) {
+      let restore = {...entry};
+      try {
+        mutate();
+        expect(bundledBlueprintsManifestVersion()).not.toBe(before);
+        expect(entry.revision).toBe(restore.revision);
+      } finally {
+        Object.assign(entry, restore);
+      }
+    }
+
+    expect(bundledBlueprintsManifestVersion()).toBe(before);
+  });
+});

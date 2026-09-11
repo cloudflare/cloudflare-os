@@ -33,9 +33,9 @@ import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 
 const logger = createWorkshopLogger("workshop.server");
 
-// Set once we've asked the AdminSettings DO to install the bundled format blueprints (see the
+// Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
-let formatBlueprintInstallStarted = false;
+let bundledBlueprintInstallStarted = false;
 
 function publicBlueprintInfo(id: string, metadata: BlueprintPublicInfo['metadata']): BlueprintPublicInfo {
   return {
@@ -836,24 +836,24 @@ export default {
     }
 
     if (url.pathname === "/api") {
-      // Make sure the bundled format blueprints are installed. The AdminSettings DO doesn't wake
+      // Make sure the bundled blueprints are installed. The AdminSettings DO doesn't wake
       // merely because someone deployed, so the install needs a trigger; hanging it off API
       // traffic means a fresh deployment is provisioned by its first visitor. Fire-and-forget,
       // and the DO is idempotent.
-      if (!formatBlueprintInstallStarted) {
-        formatBlueprintInstallStarted = true;
-        ctx.waitUntil(ctx.exports.AdminSettings.getByName("").ensureFormatBlueprintsInstalled()
+      if (!bundledBlueprintInstallStarted) {
+        bundledBlueprintInstallStarted = true;
+        ctx.waitUntil(ctx.exports.AdminSettings.getByName("").ensureBundledBlueprintsInstalled()
             .then((complete: boolean) => {
               // A partial install resolves rather than throwing, and nothing else will call the DO
               // from here, so clearing this is the whole retry: one bad archive would otherwise
               // leave the deployment half-provisioned for as long as the isolate lives.
-              if (!complete) formatBlueprintInstallStarted = false;
+              if (!complete) bundledBlueprintInstallStarted = false;
             })
             .catch((err: unknown) => {
               // Likewise let the next request try again. The DO coalesces concurrent callers, so a
               // retry costs one comparison once it succeeds.
-              formatBlueprintInstallStarted = false;
-              logger.warn("failed to install bundled format blueprints", {
+              bundledBlueprintInstallStarted = false;
+              logger.warn("failed to install bundled blueprints", {
                 event: "formats.install.trigger.failed", error: err,
               });
             }));

@@ -83,6 +83,37 @@ importers:
         specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
 
+  packages/bundled-blueprints:
+    dependencies:
+      yjs:
+        specifier: ^13.6.32
+        version: 13.6.32
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260903.1
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:../../scripts
+      '@types/node':
+        specifier: 26.1.0
+        version: 26.1.0
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0(supports-color@10.2.2)
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      typescript6:
+        specifier: npm:typescript@6.0.3
+        version: typescript@6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10)(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+
   packages/configurator-ui:
     devDependencies:
       '@gadgets/scripts':
@@ -981,6 +1012,9 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: 'catalog:'
         version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.10)
+      '@gadgets/bundled-blueprints':
+        specifier: workspace:*
+        version: link:../bundled-blueprints
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

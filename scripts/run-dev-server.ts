@@ -294,7 +294,7 @@ function runBuild(
   });
 }
 
-// Everything Wrangler needs generated before it bundles: the backend's format blueprint module
+// Everything Wrangler needs generated before it bundles: the backend's bundled blueprint module
 // (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
 //
 // The UI groups go through `vp` rather than a loop over `gatekeepers` so they run in parallel and
@@ -326,9 +326,9 @@ const vpEnv = vpRunEnv({ concurrentRuns: VP_PREFLIGHT_BUILDS.length });
 try {
   await Promise.all([
     runBuild(
-      "format blueprints",
+      "bundled blueprints",
       process.execPath,
-      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.ts")],
+      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-bundled-blueprints.ts")],
       WORKSHOP_BACKEND_DIR,
     ),
     ...VP_PREFLIGHT_BUILDS.map(({ label, args }) =>

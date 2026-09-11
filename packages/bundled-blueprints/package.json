@@ -1,0 +1,29 @@
+{
+  "name": "@gadgets/bundled-blueprints",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The blueprints a deployment ships with and offers as its standard output formats, the gadget libraries they import as `@gadgets/bundled-blueprints/libraries/<name>/client` and `.../server`, and the build that turns a blueprint directory into the archives the Workshop backend installs. Not a deployable Worker; the backend's build scripts import `src/`.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./libraries/*/client": "./libraries/*/client.ts",
+    "./libraries/*/server": "./libraries/*/server.ts"
+  },
+  "scripts": {
+    "test:run": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "@types/node": "^26.1.0",
+    "esbuild": "^0.28.1",
+    "jsdom": "^26.1.0",
+    "typescript": "catalog:",
+    "typescript6": "npm:typescript@6.0.3",
+    "vitest": "catalog:"
+  }
+}
