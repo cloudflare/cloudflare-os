@@ -9,6 +9,7 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import {
   ArrayCursor,
   OffsetCursor,
+  PageHookCursor,
   PageNumberCursor,
   TokenCursor,
   type TokenPage,
@@ -653,5 +654,62 @@ describe("TokenCursor", () => {
     expect(() => new TokenCursor<Issue>(
       { fetchPage, authorizePage, pageSize: 2, remotePageSize: 1.5 }))
       .toThrow(/positive safe integer/);
+  });
+});
+
+describe("PageHookCursor", () => {
+  const issues: Issue[] = [{ id: 1, open: true }, { id: 2, open: false }, { id: 3, open: true }];
+
+  it("runs the hook on each page before returning it, and not at exhaustion", async () => {
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), {
+      beforePage: async items => { hooked.push(items.map(issue => issue.id)); },
+    });
+
+    expect(await cursor.next()).toEqual(issues.slice(0, 2));
+    // The second page has not been fetched, so the hook has seen only the first.
+    expect(hooked).toEqual([[1, 2]]);
+    expect(await cursor.next()).toEqual(issues.slice(2));
+    expect(await cursor.next()).toBeNull();
+    expect(hooked).toEqual([[1, 2], [3]]);
+  });
+
+  it("holds a page whose hook threw, so the retry re-offers it rather than skipping it", async () => {
+    let failures = 1;
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), {
+      beforePage: async items => {
+        if (failures-- > 0) throw new Error("hook failed");
+        hooked.push(items.map(issue => issue.id));
+      },
+    });
+
+    await expect(cursor.next()).rejects.toThrow(/hook failed/);
+    expect(await cursor.next()).toEqual(issues.slice(0, 2));
+    expect(await cursor.next()).toEqual(issues.slice(2));
+    expect(hooked).toEqual([[1, 2], [3]]);
+  });
+
+  it("serializes concurrent calls, so each page is hooked and returned once", async () => {
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 1), {
+      beforePage: async items => {
+        await Promise.resolve();
+        hooked.push(items.map(issue => issue.id));
+      },
+    });
+
+    const pages = await Promise.all([cursor.next(), cursor.next(), cursor.next()]);
+    expect(pages).toEqual([[issues[0]], [issues[1]], [issues[2]]]);
+    expect(hooked).toEqual([[1], [2], [3]]);
+  });
+
+  it("runs the release hook once, however often it is disposed", () => {
+    const dispose = vi.fn();
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), { beforePage: async () => {}, dispose });
+
+    cursor[Symbol.dispose]();
+    cursor[Symbol.dispose]();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });

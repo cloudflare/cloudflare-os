@@ -343,3 +343,61 @@ export class TokenCursor<T> extends BufferedCursor<T> {
     for (const item of page.items) this.buffer.push(item);
   }
 }
+
+/** What a `PageHookCursor` runs on each page, and what it releases. */
+export type PageHookCursorOptions<T> = {
+  /**
+   * Runs on each page before `next()` returns it -- e.g. `advertisePages()` from `./git-objects`,
+   * which reports a git listing's commit ids to the workspace before the caller sees them. A
+   * throw rejects that `next()` and holds the page, so the retry re-offers exactly it instead of
+   * skipping it.
+   * @param items The page `next()` is about to return.
+   */
+  beforePage(items: readonly T[]): Promise<void>;
+  /** Releases what the hook owns -- a duplicated RPC stub, most often -- when the cursor is disposed. */
+  dispose?(): void;
+};
+
+/**
+ * Wraps a cursor the gatekeeper already built, so a hook sees each page before the caller does.
+ * For listings whose observation was authorized once, up front: the hook is not an authorization
+ * point (the provider-backed cursors' `authorizePage` is), it only acts on what is about to be
+ * returned.
+ */
+export class PageHookCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
+  readonly #inner: Cursor<T>;
+  readonly #options: PageHookCursorOptions<T>;
+  readonly #queue = new SerialTaskQueue();
+  #held?: T[];
+  #disposed = false;
+
+  /**
+   * Creates the wrapper. It does not take ownership of `inner`.
+   * @param inner The cursor whose pages to return.
+   * @param options The hook, and an optional release hook.
+   */
+  constructor(inner: Cursor<T>, options: PageHookCursorOptions<T>) {
+    super();
+    this.#inner = inner;
+    this.#options = options;
+  }
+
+  /** @returns The next page, or `null` after exhaustion. Concurrent calls are serialized. */
+  next(): Promise<T[] | null> {
+    return this.#queue.run(async () => {
+      const page = this.#held ?? await this.#inner.next();
+      if (page === null) return null;
+      this.#held = page;
+      await this.#options.beforePage(page);
+      this.#held = undefined;
+      return page;
+    });
+  }
+
+  /** Runs the release hook. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#options.dispose?.();
+  }
+}

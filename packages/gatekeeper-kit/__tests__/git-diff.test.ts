@@ -1,6 +1,6 @@
 // Pure-logic coverage for git-diff.ts: tree-object parsing, the pruning tree-to-tree walk, and
-// the line-level unified diff whose hunks must match the shape parsePatch produces from GitHub's
-// own patches.
+// the line-level unified diff whose hunks must match the shape a gatekeeper's patch reader
+// produces from the provider's own patches.
 
 import { describe, expect, it } from "vitest";
 import {

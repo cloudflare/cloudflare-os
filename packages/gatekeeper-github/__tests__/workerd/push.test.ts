@@ -16,7 +16,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
-import { FLUSH_PKT, ZERO_OID, encodePktLine, pktText } from "../../src/git-transport";
+import { FLUSH_PKT, ZERO_OID, encodePktLine, pktText } from "@gadgets/gatekeeper-kit/git-transport";
 import type { GatekeeperProps, Outcome, PushActionData } from "./worker";
 
 const OWNER = "acme";

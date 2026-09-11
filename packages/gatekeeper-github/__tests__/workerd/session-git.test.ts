@@ -1,6 +1,6 @@
 // Wiring coverage for session-side commit advertising: every commit id a session read returns
 // must be advertised to the workspace git cache, or a later attempt to mount it as a worktree
-// fails as unknown. The pure helpers are tested in Node (git-commits.test.ts); only this suite can
+// fails as unknown. The pure helpers are tested in Node (git-commits.test.ts here, git-objects.test.ts in the kit); only this suite can
 // catch a session method that forgets to wrap its cursor or advertise its shas -- removing any
 // `#gitCache.wrap()`/`#gitCache.advertise()` call in github.ts must fail this file.
 //
