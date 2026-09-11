@@ -1331,13 +1331,6 @@ export type ActionDescription = {
    */
   autoApprovable?: boolean;
 
-  /**
-   * Gatekeeper-authored warnings for the human approver, shown ahead of the description: context
-   * the action's own content can't show (e.g. "this conversation has read data from other
-   * accounts"). An action carrying one is never auto-approved.
-   */
-  operatorWarnings?: string[];
-
   // ----------------------------------------------------------------------------
   // Policy hints
   //

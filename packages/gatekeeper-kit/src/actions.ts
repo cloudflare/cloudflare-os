@@ -101,8 +101,7 @@ export const APPLY_OUTCOME_UNKNOWN_MESSAGE = "This action was interrupted after 
   + "so it may or may not have taken effect. Check the provider before submitting it again.";
 
 type KitOwnedField = "awaitDecision" | "autoApprovable" | "actionKind";
-type ProviderOwnedField =
-  "title" | "description" | "pushedCommits" | "implementsRevert" | "operatorWarnings";
+type ProviderOwnedField = "title" | "description" | "pushedCommits" | "implementsRevert";
 type Unclassified = Exclude<keyof ActionDescription, KitOwnedField | ProviderOwnedField>;
 
 /**
@@ -708,7 +707,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           const staged = fence && { generation: fence.generation };
           // Cloned for the same reason as the payload: staging serializes behind the journal's
           // lane, and `describe` may still own what it returned.
-          const { title, description, pushedCommits, implementsRevert, operatorWarnings } =
+          const { title, description, pushedCommits, implementsRevert } =
             structuredClone(await definition.describe(payload, host));
           const action = { kind, payload } as TaggedAction<M>;
           return stageAction(journal, queue, action, {
@@ -720,7 +719,6 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             // Spread, so an action with no git, no kind, or no awaited decision puts no key on the
             // wire at all.
             ...(pushedCommits ? { pushedCommits } : {}),
-            ...(operatorWarnings?.length ? { operatorWarnings } : {}),
             autoApprovable: definition.autoApprovable === true,
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),

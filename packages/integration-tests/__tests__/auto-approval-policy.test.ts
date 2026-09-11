@@ -1,6 +1,13 @@
-// The auto-approval gates around sensitive data and operator warnings: a warned action, or any
-// action on a latched workspace, must pend for a human even with a matching rule. The fixture's
-// `writeValue()` resolves once the action is decided, so the submit -> auto-approve -> apply round
+// Tests for the auto-approval policy gate around sensitive data.
+//
+// Auto-approval requires the author's per-action `autoApprovable` verdict AND a user-enabled rule
+// for the action's kind. The restricted-data latch must additionally force manual approval no
+// matter what -- even when the rule was enabled before the data was read. (The web-fetch
+// restriction has no client-reachable surface, so it is not asserted here.)
+//
+// The fixture gatekeeper's session drives this through the real ApprovalQueue funnel:
+// `writeValue()` submits a `set-value` action with the given verdict and resolves once the action
+// is decided, and `applyAction` succeeds, so the drain's submit -> auto-approve -> apply round
 // trip is the real one.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -103,39 +110,6 @@ describe("auto-approval policy", () => {
         return write?.state === "approved" ? write : null;
       });
       expect(applied.autoApproved).toBe(true);
-    });
-  });
-
-  it.concurrent("a warned action holds the queue until a human approves it", async () => {
-    await withSession(async publicApi => {
-      const ws = await newWorkspace(publicApi, "warned");
-      await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
-
-      // Only the warning stands between the first write and auto-application, and the clean one
-      // behind it must wait too (the drain never skips a manual gate). Held, not awaited: each
-      // resolves only once decided.
-      const warned = ws.session.writeValue(1,
-          { autoApprovable: true, warnings: ["Cross-account data risk."] });
-      const [held] = await waitFor("the warned write to be held for approval", async () => {
-        const writes = await listWrites(ws);
-        return writes.length === 1 ? writes : null;
-      });
-      const clean = ws.session.writeValue(2, { autoApprovable: true });
-      await settle(ws);
-
-      const writes = await listWrites(ws);
-      expect(writes.map(w => w.state)).toEqual(["pending", "pending"]);
-      expect(writes[0].id).toBe(held.id);
-      expect(writes[0].description.operatorWarnings).toEqual(["Cross-account data risk."]);
-
-      // A human approving the warned action clears the gate; the one behind it then auto-applies.
-      await ws.overseer.approveAction(held.id);
-      await expect(warned).resolves.toEqual(expect.any(Number));
-      await expect(clean).resolves.toEqual(expect.any(Number));
-      const [first, second] = await listWrites(ws);
-      expect([first.state, second.state]).toEqual(["approved", "approved"]);
-      expect(first.autoApproved).toBeFalsy();
-      expect(second.autoApproved).toBe(true);
     });
   });
 

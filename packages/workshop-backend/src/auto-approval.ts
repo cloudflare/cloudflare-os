@@ -21,9 +21,12 @@ export interface AutoApprovalStorage {
 }
 
 /**
- * The one gate on applying an action without a human: the author's `autoApprovable` verdict, a
- * user-enabled rule for its kind on this gatekeeper, no `operatorWarnings` (a warning exists to be
- * read), and no restricted-data latch. Returns the enabling rule, or undefined for manual approval.
+ * The single authority on whether an action may be applied without a human. Returns the enabling
+ * rule iff ALL of:
+ *  - the gatekeeper author marked this specific action `autoApprovable`,
+ *  - the action carries an `actionKind` for which the user enabled a rule on this gatekeeper,
+ *  - the workspace has not latched restricted mode (`containsRestrictedData` above).
+ * Returns undefined otherwise: manual approval required.
  */
 export function autoApprovalRule(
     storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)
@@ -31,9 +34,6 @@ export function autoApprovalRule(
   if (description.autoApprovable !== true) return undefined;
   let tag = description.actionKind?.tag;
   if (tag === undefined) return undefined;
-  if (description.operatorWarnings !== undefined && description.operatorWarnings.length > 0) {
-    return undefined;
-  }
   if (storage.containsRestrictedData.get()) return undefined;
   return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
 }
@@ -78,7 +78,8 @@ export class AutoApprovalDrainer {
   // applying -- it is never skipped ahead of. This preserves in-order application and the
   // invariant that nothing is silently applied past a human gate.
   //
-  // Eligibility is `autoApprovalRule()`.
+  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
+  // rule for the action's kind, and no restricted-data latch.
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),
