@@ -653,6 +653,24 @@ describe("bundled blueprint TypeScript sources", () => {
       "rather than the module the specifier names");
   });
 
+  // esbuild reads `require` as the module loader only while the name is unbound; a module that
+  // rebinds it would have its computed call refused as a dynamic require, and its literal call
+  // counted as an import the bundle never makes, so the rebinding is refused instead.
+  it("rejects a module that binds the name require", async () => {
+    let directory = await sourceTree({
+      "client.ts": [
+        "const require = (x: string) => x;",
+        'console.log(require(location.href), require("./lib/orphan.ts"));',
+      ].join("\n"),
+      "lib/orphan.ts": "export const o = 1;",
+    });
+
+    await expect(readSourceFiles(directory, "example/files")).rejects.toThrow(
+      "example/files: client.ts binds the name require; a bare require(...) is read as the " +
+      "module loader, which the bundler leaves alone once the name is rebound, so a module may " +
+      "not rebind it");
+  });
+
   // The in-tree refusal above cannot see a package.json above the blueprint, and esbuild reads the
   // nearest one: no option pins its `browser` field or `imports` map, so the audit checks the
   // result instead -- an input inside files/ has to be the module its specifier names.

@@ -20,6 +20,34 @@ describe("module scan", () => {
     expect(scanModule("client.ts", source)).toEqual({specifiers: [specifier]});
   });
 
+  it.each([
+    "const require = (x: string) => x;",
+    "let require;",
+    "function require(x: string) {}",
+    "class require {}",
+    "function f(require: string) {}",
+    "const { require } = globalThis;",
+    "const [require] = [];",
+    'import require from "./a";',
+    'import { r as require } from "./a";',
+    'import * as require from "./a";',
+    'import require = require("./a");',
+    "try {} catch (require) {}",
+  ])("sees the module bind require in %s", source => {
+    expect(scanModule("client.ts", source).rebindsRequire).toBe(true);
+  });
+
+  it.each([
+    "const { require: r } = globalThis;",
+    "foo.require = 1;",
+    "const o = { require: 1 };",
+    "type T = { require: number };",
+    'import { require as r } from "./a";',
+    'require("./a");',
+  ])("does not see a binding of require in %s", source => {
+    expect(scanModule("client.ts", source).rebindsRequire).toBeUndefined();
+  });
+
   it("decodes an escaped specifier", () => {
     expect(scanModule("client.ts", 'import x from "./\\u0061/b";').specifiers).toEqual(["./a/b"]);
   });

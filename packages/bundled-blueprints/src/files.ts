@@ -339,6 +339,8 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * dynamic `import()` or `require()` of anything but a string literal, refused from the source
  * before the bundler could expand a pattern into every file it matches (see {@link scanModule}),
  * and again in the output should one reach it through a library (see {@link auditInputs}); a
+ * module that binds the name `require`, which the scan would read as the module loader and the
+ * bundler would not (see {@link ModuleScan.rebindsRequire}); a
  * generated `client.js` or `server.js` that collides with a file or directory the tree already
  * holds; a reference to `require` the bundler could not resolve away, which would throw when
  * reached (see {@link RESIDUAL_REQUIRE_PATTERN}); and, in a JavaScript module the archive ships as
@@ -383,6 +385,11 @@ async function bundleTypeScriptSources(
     }
     const scan = scanModule(path, source);
     scans.set(path, scan);
+    if (scan.rebindsRequire) {
+      invalid(label, `${path} binds the name require; a bare require(...) is read as the module ` +
+          `loader, which the bundler leaves alone once the name is rebound, so a module may not ` +
+          `rebind it`);
+    }
     if (scan.dynamic) {
       invalid(label, `${path} contains ${scan.dynamic}(...): a dynamic import whose path is not ` +
           `a string literal; the bundler would expand a pattern into every file it matches, or ` +
