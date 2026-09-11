@@ -3,7 +3,6 @@ import { X } from "@phosphor-icons/react";
 import { useState } from "react";
 import { CollectionIconPicker, DEFAULT_COLLECTION_ICON } from "../components/CollectionIconPicker";
 import { useContextApi } from "../bridge";
-import { saveLastPickedCollectionId } from "./skillCollectionPreference";
 import { useMutationDialog } from "./useMutationDialog";
 
 type CreateCollectionDialogProps = {
@@ -27,13 +26,12 @@ export const CreateCollectionDialog = ({ onCreated, onClose }: CreateCollectionD
 
     setCreating(true);
     try {
-      const metadata = await context.createContextCollection(
+      await context.createContextCollection(
         trimmedTitle,
         description.trim(),
         "private",
         icon,
       );
-      saveLastPickedCollectionId(metadata.id);
       onCreated();
       dialog.closeAfterSuccess();
     } catch (error) {

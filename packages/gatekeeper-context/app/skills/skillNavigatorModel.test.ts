@@ -76,7 +76,7 @@ describe("skillNavigatorModel", () => {
       [collection("product", "Product", "Launch work")],
       new Map([["product", [
         document("skills/release/SKILL.md", {
-          skillName: "release",
+          skillName: "release-readiness",
           description: "Publish changes",
         }),
         document("teams/design/review/SKILL.md", {
@@ -87,7 +87,10 @@ describe("skillNavigatorModel", () => {
     );
 
     expect(filterSkillNavigator(navigator, "publish")[0].children).toMatchObject([
-      { path: "skills", children: [{ name: "release" }] },
+      { path: "skills", children: [{ name: "release-readiness" }] },
+    ]);
+    expect(filterSkillNavigator(navigator, "release readiness")[0].children).toMatchObject([
+      { path: "skills", children: [{ name: "release-readiness" }] },
     ]);
     expect(filterSkillNavigator(navigator, "design")[0].children).toMatchObject([
       { path: "teams", children: [{ path: "teams/design", children: [{ name: "review" }] }] },

@@ -5,6 +5,8 @@ export type HierarchicalListItem = {
   id: string;
   name: string;
   icon?: ReactNode;
+  /** Secondary text shown inline after the item name, truncating before the name does. */
+  description?: ReactNode;
   metadata?: ReactNode;
   children?: readonly HierarchicalListItem[];
   draggable?: boolean;

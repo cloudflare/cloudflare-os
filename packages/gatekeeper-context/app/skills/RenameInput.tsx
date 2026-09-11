@@ -1,6 +1,6 @@
 import { Text } from "@cloudflare/kumo";
 import { useLayoutEffect, useRef, useState } from "react";
-import { formatSkillName } from "./addSkillNavigatorNode";
+import { humanizeSkillName, sanitizeSkillTitle, skillNameFromTitle } from "./skillName";
 
 type RenameInputProps = {
   initialValue: string;
@@ -11,7 +11,9 @@ type RenameInputProps = {
 
 /** Single-line editor used for inline skill and collection renaming. */
 export const RenameInput = ({ initialValue, format, onCommit, onCancel }: RenameInputProps) => {
-  const [value, setValue] = useState(initialValue);
+  const [value, setValue] = useState(
+    format === "skill" ? humanizeSkillName(initialValue) : initialValue,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
 
   useLayoutEffect(() => {
@@ -20,8 +22,8 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
   }, []);
 
   const commit = () => {
-    const trimmed = value.trim();
-    if (trimmed && trimmed !== initialValue.trim()) onCommit(trimmed);
+    const committed = format === "skill" ? skillNameFromTitle(value) : value.trim();
+    if (committed && committed !== initialValue.trim()) onCommit(committed);
     else onCancel();
   };
 
@@ -34,8 +36,9 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
         value={value}
         onChange={(event) => {
           const singleLine = event.target.value.replace(/\n/g, "");
-          setValue(format === "skill" ? formatSkillName(singleLine) : singleLine);
+          setValue(format === "skill" ? sanitizeSkillTitle(singleLine) : singleLine);
         }}
+        maxLength={format === "skill" ? 64 : undefined}
         onBlur={commit}
         onKeyDown={(event) => {
           event.stopPropagation();

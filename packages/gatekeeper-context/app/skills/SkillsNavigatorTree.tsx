@@ -1,13 +1,18 @@
 import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
-import { FileTextIcon, PencilSimple, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import {
+  CalendarBlankIcon,
+  PencilSimple,
+  PlusIcon,
+  ScrollIcon,
+  TrashIcon,
+} from "@phosphor-icons/react";
 import {
   HierarchicalList,
   type HierarchicalListDropDestination,
   type HierarchicalListItem,
 } from "@gadgets/ui/hierarchical-list";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useContextApi } from "../bridge";
-import { isValidSkillName } from "./addSkillNavigatorNode";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import { RenameInput } from "./RenameInput";
@@ -24,6 +29,8 @@ import {
   type SkillNavigatorNode,
   type SkillNavigatorSkill,
 } from "./skillNavigatorModel";
+import { humanizeSkillName, isValidSkillName } from "./skillName";
+import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
 
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
@@ -54,6 +61,7 @@ const toListItem = (
   collectionIdsByItemId: Map<string, string>,
   writable: boolean,
   renamedSkill: { sourceId: string; destinationId: string; name: string } | null,
+  now: number,
 ): HierarchicalListItem => {
   const id = nodeId(collectionId, node);
   collectionIdsByItemId.set(id, collectionId);
@@ -69,8 +77,19 @@ const toListItem = (
     }
     return {
       id,
-      name,
-      icon: <FileTextIcon aria-hidden size={17} className="text-kumo-subtle" />,
+      name: humanizeSkillName(name),
+      icon: <ScrollIcon aria-hidden size={17} className="text-kumo-subtle" />,
+      description: node.description,
+      metadata: (
+        <span
+          className="flex items-center gap-1"
+          aria-label={skillUpdatedAtLabel(node.lastUpdated, now)}
+          title={`Updated ${node.lastUpdated.toLocaleString()}`}
+        >
+          <CalendarBlankIcon aria-hidden size={12} />
+          <span aria-hidden>{formatSkillUpdatedAt(node.lastUpdated, now)}</span>
+        </span>
+      ),
       draggable: writable,
     };
   }
@@ -94,6 +113,7 @@ const toListItem = (
       collectionIdsByItemId,
       writable,
       renamedSkill,
+      now,
     )),
   };
 };
@@ -119,6 +139,7 @@ export const SkillsNavigatorTree = ({
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const treeRef = useRef<HTMLDivElement>(null);
   const skillsById = new Map<string, SkillNavigatorSkill>();
   const directoriesById = new Map<string, SkillNavigatorDirectory>();
@@ -148,9 +169,15 @@ export const SkillsNavigatorTree = ({
         collectionIdsByItemId,
         writable,
         renamedSkill,
+        now,
       )),
     };
   });
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useLayoutEffect(() => {
     if (!renamedSkill) return;
