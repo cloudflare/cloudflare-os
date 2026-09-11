@@ -251,11 +251,10 @@ export class Gadget extends DurableObject<GadgetEnv, unknown> implements GadgetS
   }
 
   async updatePresence(presence: PresenceUpdate): Promise<void> {
+    // The same normalization as the join, so a cursor is keyed as its join was.
     const event: DocPresenceEvent = {
       type: "cursor",
-      clientId: String(presence.clientId || ""),
-      name: String(presence.name || "Guest").slice(0, 40),
-      color: String(presence.color || "#e1632e"),
+      ...normalizeCollaborator(presence),
       // Anchor/focus endpoints let clients render both a caret and highlighted
       // selections, including selections spanning multiple top-level blocks.
       anchorBlockId: presence.anchorBlockId ? String(presence.anchorBlockId) : null,
@@ -272,7 +271,7 @@ export class Gadget extends DurableObject<GadgetEnv, unknown> implements GadgetS
   async leavePresence(clientId: string): Promise<void> {
     this.broadcastPresence({
       type: "leave",
-      clientId: String(clientId || ""),
+      clientId: normalizeCollaborator({ clientId }).clientId,
       at: Date.now(),
     });
   }
