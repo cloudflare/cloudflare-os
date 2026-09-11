@@ -508,7 +508,7 @@ async function bundleTypeScriptSources(
  * is not reachable from a blueprint by any path. An import written inside a library may reach any
  * module under `libraries/`, but never `node_modules`: a library's npm dependency would be inlined
  * into an archive nothing audits. An input inside files/ that a blueprint module imported must be
- * the module its specifier names (see {@link resolveWithinFiles}), so a `browser` field or
+ * the one module its specifier names (see {@link resolveWithinFiles}), so a `browser` field or
  * `imports` map in a `package.json` above the blueprint cannot swap one of the blueprint's modules
  * for another behind the type check's back. An external import is not an input and is not walked;
  * the bundle's surviving imports are checked against the entry's runtime in
@@ -580,7 +580,7 @@ function auditInputs(
           invalid(label, `${importer} imports ${specifier}, which is outside the gadget libraries`);
         }
       } else if (files.has(importer) &&
-          (!isRelative(specifier) || !resolveWithinFiles(importer, specifier).includes(input))) {
+          (!isRelative(specifier) || resolveWithinFiles(files, importer, specifier) !== input)) {
         invalid(label, `${importer} imports ${specifier}, which the bundler resolved to ${input} ` +
             `rather than the module the specifier names; a package.json above the blueprint is ` +
             `steering its resolution`);
@@ -648,11 +648,10 @@ function importedModules(
   for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
     for (const specifier of scans.get(path)?.specifiers ?? []) {
       if (!isRelative(specifier)) continue;
-      for (const candidate of resolveWithinFiles(path, specifier)) {
-        if (!files.has(candidate) || reached.has(candidate)) continue;
-        reached.add(candidate);
-        queue.push(candidate);
-      }
+      const imported = resolveWithinFiles(files, path, specifier);
+      if (imported === undefined || reached.has(imported)) continue;
+      reached.add(imported);
+      queue.push(imported);
     }
   }
   return reached;
@@ -663,17 +662,22 @@ const isRelative = (specifier: string): boolean =>
     specifier.startsWith("./") || specifier.startsWith("../");
 
 /**
- * The archive paths a relative `specifier` written in `importer` could name.
+ * The one archive path a relative `specifier` written in `importer` names, or `undefined` when it
+ * names none of `files`.
  *
- * Every spelling a bundler would try that could name a module of the blueprint's own, since which
- * one resolves is the bundler's business: the path as written, an omitted extension, a directory's
- * index module, the TypeScript source behind a JavaScript extension, and the declaration file
- * behind either, which the type check follows and this walk has to follow too. A specifier
- * reaching above
- * files/ resolves to nothing here -- the bundle rejects that as an import outside the blueprint
- * (see {@link auditInputs}).
+ * The spellings are tried in the type check's order, and the first that exists wins, since that is
+ * the module TypeScript checked and so the only one the bundle may ship: the path as written, then
+ * the source behind a JavaScript extension (`./lib/blocks.js` naming `lib/blocks.ts`) and its
+ * declaration, then an omitted extension's source and declaration, then a directory's index module
+ * and its declaration. With both `lib/foo.ts` and `lib/foo/index.ts` present, `./lib/foo` is
+ * `lib/foo.ts` and nothing else. A specifier reaching above files/ resolves to nothing here -- the
+ * bundle rejects that as an import outside the blueprint (see {@link auditInputs}).
  */
-function resolveWithinFiles(importer: string, specifier: string): string[] {
+function resolveWithinFiles(
+  files: ReadonlyMap<string, string>,
+  importer: string,
+  specifier: string,
+): string | undefined {
   const segments = importer.split("/").slice(0, -1);
   for (const segment of specifier.split("/")) {
     if (segment === "" || segment === ".") continue;
@@ -681,18 +685,18 @@ function resolveWithinFiles(importer: string, specifier: string): string[] {
       segments.push(segment);
       continue;
     }
-    if (segments.length === 0) return [];
+    if (segments.length === 0) return undefined;
     segments.pop();
   }
   const path = segments.join("/");
-  if (path === "") return [];
-  const candidates = [path, `${path}.ts`, `${path}.d.ts`, `${path}.js`, `${path}/index.ts`,
-      `${path}/index.d.ts`, `${path}/index.js`];
+  if (path === "") return undefined;
+  const candidates = [path];
   if (JAVASCRIPT_EXTENSION.test(path)) {
     candidates.push(path.replace(JAVASCRIPT_EXTENSION, ".ts"),
         path.replace(JAVASCRIPT_EXTENSION, ".d.ts"));
   }
-  return candidates;
+  candidates.push(`${path}.ts`, `${path}.d.ts`, `${path}/index.ts`, `${path}/index.d.ts`);
+  return candidates.find(candidate => files.has(candidate));
 }
 
 function validateFilePaths(paths: Iterable<string>, label: string): void {
