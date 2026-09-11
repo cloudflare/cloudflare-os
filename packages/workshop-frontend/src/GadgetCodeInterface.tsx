@@ -14,7 +14,7 @@ import type {
 } from './ChatInterface'
 import { ChatOtClient, type RemoteFileEvent } from './otClient'
 import { reportIssue } from './errorReporting'
-import { saveTextToFile } from './fileTransfers'
+import { makeExportFilename, saveFilesToZip, saveTextToFile } from './fileTransfers'
 import { isTransientRpcError } from './rpcErrors'
 
 // The code view over git-backed gadget code.
@@ -44,6 +44,7 @@ interface GadgetCodeInterfaceProps {
   overseer: RpcStub<Overseer>
   // The selected workpiece: the gadget whose files the editor shows.
   workpieceId: WorkpieceId
+  workpieceTitle: string
   // The selected workpiece's head commit (WorkpieceSummary.commitId). Absent while the gadget
   // is still pending in a chat, which reads as an empty committed file set.
   headCommitId?: string
@@ -169,7 +170,7 @@ function replaceSpanTextChange(
 }
 
 export default function GadgetCodeInterface({
-  overseer, workpieceId, headCommitId, height = '100%', selectedChatId = null, chatChanges,
+  overseer, workpieceId, workpieceTitle, headCommitId, height = '100%', selectedChatId = null, chatChanges,
   liveRows, liveEditPreviews, pendingGadgetIds, streamingActiveFile, isAgentActive,
   isVisible = true, onHasCodeChange,
 }: GadgetCodeInterfaceProps) {
@@ -1000,6 +1001,15 @@ export default function GadgetCodeInterface({
     saveTextToFile(filename, text)
   }, [displayFiles, toasts])
 
+  const handleFilesDownload = useCallback(() => {
+    if (!displayFiles || displayFiles.size === 0) return
+    try {
+      saveFilesToZip(makeExportFilename(workpieceTitle, '.zip'), displayFiles)
+    } catch {
+      toasts.add({ title: 'Could not download gadget files', variant: 'error' })
+    }
+  }, [displayFiles, toasts, workpieceTitle])
+
   // ---- render ------------------------------------------------------------------------------
 
   // Outside a chat, ready means the committed files have loaded; within one, the chat's
@@ -1129,6 +1139,7 @@ export default function GadgetCodeInterface({
             onFileDelete={handleFileDelete}
             onFileRename={handleFileRename}
             onFileDownload={handleFileDownload}
+            onFilesDownload={handleFilesDownload}
             onRequestClose={() => setFileDrawerOpen(false)}
             className="max-md:!w-full"
           />

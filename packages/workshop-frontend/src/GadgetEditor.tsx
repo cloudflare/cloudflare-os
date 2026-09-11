@@ -1881,6 +1881,7 @@ export default function GadgetEditor() {
                 <GadgetCodeInterface
                   overseer={overseer.stub}
                   workpieceId={selectedGadgetSummary.id}
+                  workpieceTitle={selectedGadgetSummary.title}
                   headCommitId={selectedGadgetSummary.commitId}
                   height="100%"
                   selectedChatId={effectiveSelectedChatId}

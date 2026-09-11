@@ -19,6 +19,7 @@ interface FileSidebarProps {
   onFileDelete: (filename: string) => void
   onFileRename: (oldName: string, newName: string) => void
   onFileDownload: (filename: string) => void
+  onFilesDownload: () => void
   className?: string
   onRequestClose?: () => void
   ref?: Ref<FileSidebarHandle>
@@ -44,6 +45,7 @@ export default function FileSidebar({
   onFileDelete,
   onFileRename,
   onFileDownload,
+  onFilesDownload,
   className = '',
   onRequestClose,
   ref,
@@ -125,6 +127,15 @@ export default function FileSidebar({
           Files
         </span>
         <div className="flex items-center gap-1">
+          <WorkshopIconButton
+            onClick={onFilesDownload}
+            disabled={files.length === 0}
+            aria-label="Download all files"
+            title="Download all files"
+            className="!h-8 !w-8 text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default md:!h-6 md:!w-6"
+          >
+            <DownloadSimple size={14} weight="bold" />
+          </WorkshopIconButton>
           <WorkshopIconButton
             onClick={() => setIsCreateModalOpen(true)}
             disabled={editLocked}
