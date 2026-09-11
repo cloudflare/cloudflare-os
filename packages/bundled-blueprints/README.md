@@ -77,8 +77,9 @@ package.json cannot drop a side-effect-only import from the bundle.
 The build rejects a tree that would otherwise ship something other than what was written: a
 JavaScript module in a TypeScript blueprint, a `package.json` in a TypeScript blueprint (its `browser`
 field or `imports` map would steer the bundler's resolution), an import of one of the blueprint's
-modules that the bundler resolved to another of them (a `package.json` above the blueprint doing the
-same steering), a `.ts` file outside the entry/`lib/`
+modules that the bundler resolved to something other than the module TypeScript resolves it to (a
+`package.json` above the blueprint steering it, or an extensionless file the bundler takes first), a
+`.ts` file outside the entry/`lib/`
 layout, TypeScript spelled `.tsx`/`.mts`/`.cts`, declarations included (neither runtime has a loader
 for it), a `lib/` module
 no entry imports, an import that reaches outside `files/` by any path other than a library's exported

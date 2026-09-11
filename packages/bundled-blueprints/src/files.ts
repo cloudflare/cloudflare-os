@@ -300,6 +300,12 @@ const RESIDUAL_REQUIRE_PATTERN = /\b__require\b/u;
 const MODULE_COMMENT_PATTERN = /^\/\/ (.+)$/gmu;
 
 /**
+ * The extensions TypeScript resolves as written: `./lib/blocks.ts` and `./data.json` name those
+ * files and nothing else, where any other spelling is completed (see {@link resolveWithinFiles}).
+ */
+const RESOLVED_AS_WRITTEN = /\.(?:ts|json)$/u;
+
+/**
  * The JavaScript extension TypeScript rewrites to a source one, i.e. `./lib/blocks.js` naming
  * `lib/blocks.ts`. It is the only such rewrite a gadget module can need: the other dialects
  * TypeScript spells this way are rejected before any specifier is resolved (see
@@ -604,8 +610,9 @@ function auditInputs(
       } else if (files.has(importer) &&
           (!isRelative(specifier) || resolveWithinFiles(files, importer, specifier) !== input)) {
         invalid(label, `${importer} imports ${specifier}, which the bundler resolved to ${input} ` +
-            `rather than the module the specifier names; a package.json above the blueprint is ` +
-            `steering its resolution`);
+            `rather than the module TypeScript resolves the specifier to; a package.json above ` +
+            `the blueprint is steering it, or the bundler prefers a file TypeScript never reads ` +
+            `(one without an extension, say)`);
       }
       if (!seen.has(input)) {
         seen.add(input);
@@ -710,13 +717,16 @@ const isRelative = (specifier: string): boolean =>
  * The one archive path a relative `specifier` written in `importer` names, or `undefined` when it
  * names none of `files`.
  *
- * The spellings are tried in the type check's order, and the first that exists wins, since that is
- * the module TypeScript checked and so the only one the bundle may ship: the path as written, then
- * the source behind a JavaScript extension (`./lib/blocks.js` naming `lib/blocks.ts`) and its
- * declaration, then an omitted extension's source and declaration, then a directory's index module
- * and its declaration. With both `lib/foo.ts` and `lib/foo/index.ts` present, `./lib/foo` is
- * `lib/foo.ts` and nothing else. A specifier reaching above files/ resolves to nothing here -- the
- * bundle rejects that as an import outside the blueprint (see {@link auditInputs}).
+ * The spellings are tried in TypeScript's order, and the first that exists wins, since that is the
+ * module the type check read and so the only one the bundle may ship. A path with an extension
+ * TypeScript resolves as written (`.ts`, `.json`) names that file alone; a JavaScript extension
+ * names the source or declaration behind it (`./lib/blocks.js` is `lib/blocks.ts`); anything else
+ * -- an omitted extension, or one TypeScript has no module for -- names the source, the
+ * declaration, or a directory's index module, never a file spelled that way: `./lib/foo` is
+ * `lib/foo.ts` even beside a file `lib/foo`, which esbuild would take first and ship where the
+ * type check read something else. With both `lib/foo.ts` and `lib/foo/index.ts` present, `./lib/foo`
+ * is `lib/foo.ts` and nothing else. A specifier reaching above files/ resolves to nothing here --
+ * the bundle rejects that as an import outside the blueprint (see {@link auditInputs}).
  */
 function resolveWithinFiles(
   files: ReadonlyMap<string, string>,
@@ -735,12 +745,10 @@ function resolveWithinFiles(
   }
   const path = segments.join("/");
   if (path === "") return undefined;
-  const candidates = [path];
-  if (JAVASCRIPT_EXTENSION.test(path)) {
-    candidates.push(path.replace(JAVASCRIPT_EXTENSION, ".ts"),
-        path.replace(JAVASCRIPT_EXTENSION, ".d.ts"));
-  }
-  candidates.push(`${path}.ts`, `${path}.d.ts`, `${path}/index.ts`, `${path}/index.d.ts`);
+  const candidates = RESOLVED_AS_WRITTEN.test(path) ? [path]
+      : JAVASCRIPT_EXTENSION.test(path)
+      ? [path.replace(JAVASCRIPT_EXTENSION, ".ts"), path.replace(JAVASCRIPT_EXTENSION, ".d.ts"), path]
+      : [`${path}.ts`, `${path}.d.ts`, `${path}/index.ts`, `${path}/index.d.ts`];
   return candidates.find(candidate => files.has(candidate));
 }
 

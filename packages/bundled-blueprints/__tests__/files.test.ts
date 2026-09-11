@@ -650,7 +650,7 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     await expect(readSourceFiles(join(steered, "files"), "example/files")).rejects.toThrow(
       "example/files: client.ts imports ./lib/foo, which the bundler resolved to lib/foo/index.ts " +
-      "rather than the module the specifier names");
+      "rather than the module TypeScript resolves the specifier to");
   });
 
   // esbuild reads `require` as the module loader only while the name is unbound; a module that
@@ -671,6 +671,25 @@ describe("bundled blueprint TypeScript sources", () => {
       "not rebind it");
   });
 
+  // esbuild takes an exact file first and TypeScript never does: `./lib/foo` is `lib/foo.ts` to the
+  // type check even beside a file named `lib/foo`, which esbuild would bundle in its place while an
+  // erased import kept foo.ts reachable.
+  it("resolves an extensionless import to the TypeScript module, not to a file spelled that way", async () => {
+    let directory = await sourceTree({
+      "client.ts": [
+        'import { v } from "./lib/foo";',
+        'import type { V } from "./lib/foo.ts";',
+        "console.log(v as V);",
+      ].join("\n"),
+      "lib/foo": 'export const v = "extensionless";',
+      "lib/foo.ts": 'export const v = "foo.ts"; export type V = string;',
+    });
+
+    await expect(readSourceFiles(directory, "example/files")).rejects.toThrow(
+      "example/files: client.ts imports ./lib/foo, which the bundler resolved to lib/foo rather " +
+      "than the module TypeScript resolves the specifier to");
+  });
+
   // The in-tree refusal above cannot see a package.json above the blueprint, and esbuild reads the
   // nearest one: no option pins its `browser` field or `imports` map, so the audit checks the
   // result instead -- an input inside files/ has to be the module its specifier names.
@@ -683,8 +702,8 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     await expect(readSourceFiles(join(browser, "files"), "example/files")).rejects.toThrow(
       "example/files: client.ts imports ./lib/real.ts, which the bundler resolved to " +
-      "lib/other.ts rather than the module the specifier names; a package.json above the " +
-      "blueprint is steering its resolution");
+      "lib/other.ts rather than the module TypeScript resolves the specifier to; a package.json " +
+      "above the blueprint is steering it");
 
     // An imports map applies under every platform, and its specifier is not even relative.
     let imports = await sourceTree({
@@ -694,7 +713,7 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     await expect(readSourceFiles(join(imports, "files"), "example/files")).rejects.toThrow(
       "example/files: client.ts imports #x, which the bundler resolved to lib/other.ts rather " +
-      "than the module the specifier names");
+      "than the module TypeScript resolves the specifier to");
   });
 
   // Under `"type": "commonjs"` esbuild wraps a module with imports but no export in its
