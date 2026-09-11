@@ -1,28 +1,19 @@
-// The sessionStorage tier of share-key retention (see useWorkspaceOpen's retainedShareKeyRef for
-// the model and the security notes). Split into its own module so useAuth can sweep the entries
-// on logout without importing the workspace hook.
+// The sessionStorage tier of share-key retention (model and security notes: useWorkspaceOpen's
+// retainedShareKeyRef). Its own module so useAuth can sweep entries on logout without importing
+// the hook.
 //
-// Entries are identity-stamped: each stores the userId of the session that captured the key, and
-// readers only honor an entry whose stamp matches the current session's identity. That is what
-// keeps a key from crossing users in a shared tab -- user A's retained key must not be silently
-// re-redeemed under user B's account. Logout additionally sweeps the whole prefix
-// (clearAllRetainedShareKeys), which also collects stale entries from older storage formats.
+// Entries are stamped with the capturing session's userId and honored only by a session with the
+// same identity, so a key never crosses users in a shared tab; logout sweeps the whole prefix.
 //
-// A duplicated tab copies sessionStorage, so an entry cleared here can live on in the copy and
-// silently re-redeem the still-live link on the duplicate's next revocation-restart reconnect --
-// notably after an owner removes the collaborator. Two mitigations bound that: entries expire
-// (RETAINED_SHARE_KEY_TTL_MS), so a copy cannot replay long after the capture, and capture-scoped
-// clears plus the logout sweep are broadcast to sibling same-origin tabs (BroadcastChannel),
-// clearing a duplicate's copy the moment the original's open succeeds. In a live duplicate the
-// received clear reaches all three retention tiers: the storage entry and any pending identity
-// stamp here, and the capturing hook's in-memory ref through subscribeToRetainedShareKeyClears.
-// Residual: a duplicate discarded or unloaded at broadcast time that reactivates within the TTL
-// can still replay once. The link itself deliberately stays multi-use server-side
-// (docs/sharing.md carries the matching manual re-redeem residual); a single-use server-side
-// retry capability would close both and is a possible kernel-side follow-up, not attempted here.
+// A duplicated tab copies sessionStorage, so a clear here cannot reach the copy directly. Two
+// mitigations bound that: entries expire (RETAINED_SHARE_KEY_TTL_MS), and capture-scoped clears
+// and the logout sweep are broadcast to sibling tabs (BroadcastChannel), reaching a live
+// duplicate's storage entry, pending stamp, and in-memory ref alike. Residual: a duplicate
+// unloaded at broadcast time that reactivates within the TTL can replay once. The link itself
+// stays multi-use server-side (docs/sharing.md); a single-use retry capability would close both.
 //
-// All operations are best-effort: storage can be unavailable in restricted browser contexts, and
-// a lost key only costs the user a re-visit of their invite link.
+// All operations are best-effort: storage can be unavailable, and a lost key only costs a
+// re-click of the invite link.
 
 const RETAINED_SHARE_KEY_PREFIX = 'gadgets:retained-share-key:'
 const V2_PREFIX = `${RETAINED_SHARE_KEY_PREFIX}v2:`
@@ -32,18 +23,16 @@ export type RetainedShareKey = {
   /** The profile id of the user whose session captured the key. */
   userId: string
   /**
-   * The unique id of the capture (one fragment read) that owns this entry. Ownership is by
-   * capture rather than by raw key because two captures can hold the *same* key -- a second user
-   * clicking the same invite link in the same tab -- and an attempt-owned clear must touch only
-   * its own capture's retention, never a same-key successor's.
+   * The capture (one fragment read) that owns this entry. Two captures can hold the same key (the
+   * same link clicked again by the tab's next user), so attempt-owned clears scope by capture.
    */
   captureId: string
 }
 
 /**
- * How long a stored entry stays honored, from the moment its identity stamp is written. The
- * legitimate flow -- a failed first open retried or reloaded shortly after -- fits well inside
- * it; a duplicated tab's copied entry replaying after a later collaborator removal does not.
+ * How long a stored entry is honored after its stamp lands. A failed first open retried or
+ * reloaded shortly after fits well inside it; a duplicated tab's copy replaying much later does
+ * not.
  */
 export const RETAINED_SHARE_KEY_TTL_MS = 15 * 60 * 1000
 
@@ -54,29 +43,16 @@ function storageKey(workspaceId: string): string {
   return `${V2_PREFIX}${workspaceId}`
 }
 
-// Write invalidation. A capture stamps its entry asynchronously (the identity resolves after the
-// open is issued, to keep the open pipelined), so a clear can race a stamp still in flight: an
-// attempt's success -- or logout -- clears storage, then the older attempt's identity resolves
-// and writes the entry back, resurrecting a key whose link the redeemed edge already covers (or
-// that logout meant to sweep). Generations close that: a pending write captures the counters at
-// capture time and commits only while all still match, so any later clear permanently
-// invalidates it. Three tiers, matching the three clear scopes: a global counter (logout sweeps
-// everything), a per-workspace counter (workspace-wide clears -- a keyless success, an
-// identity-mismatch sweep), and a per-capture counter for attempt-owned clears. The workspace
-// tier has a second bump site: starting a capture (beginRetainedShareKeyWrite) supersedes every
-// older pending stamp for the workspace, so when two captures have stamps in flight and the older
-// resolves last, it cannot overwrite the newer capture's entry -- the newest capture owns the
-// slot outright, whether or not the older ever cleared. The same site also clears the older
-// capture's already-committed entry (by capture id, so the clear is broadcast), so the slot is
-// empty rather than stale between the begin and the new stamp landing. The
-// capture-scoped tier is what lets a successful attempt void *its own* in-flight stamp even when a
-// newer capture's entry occupies the slot -- without it, the spent key's late
-// stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
-// after an owner removal; and conversely it leaves every other capture's pending stamp intact, so
-// an attempt-owned clear can never void a concurrent newer capture -- not even one that captured
-// the *same* key, which is why the tier is keyed by capture id rather than by the raw key. Kept
-// here rather than in the capturing hook because the storage outlives any single attempt -- a
-// per-attempt flag can only guard its own attempt's writes.
+// Write invalidation. A capture stamps its entry asynchronously (identity resolves after the open
+// is issued), so a clear can race a stamp still in flight, and the late stamp would resurrect the
+// key the clear meant to discard. A pending write captures three generation counters and commits
+// only while all still match; each clear scope bumps one: logout the global counter, a
+// workspace-scoped clear (keyless success, identity-mismatch sweep) the workspace's, an
+// attempt-owned clear the capture's. beginRetainedShareKeyWrite also bumps the workspace counter,
+// so the newest capture owns the slot and an older capture's late stamp cannot overwrite it. The
+// capture tier is keyed by capture id rather than by key so a successful attempt voids exactly
+// its own pending stamp, never a concurrent newer capture's, even one of the same key. Kept here
+// rather than in the hook because storage outlives any single attempt.
 let globalGeneration = 0
 const workspaceGenerations = new Map<string, number>()
 const captureGenerations = new Map<string, number>()
@@ -91,30 +67,18 @@ export type RetainedShareKeyWrite = {
 }
 
 /**
- * Start a capture's write: supersede the workspace's older captures -- every pending stamp and
- * the stored entry alike -- then capture the current generations. Pass the token to
- * {@link commitRetainedShareKeyWrite}. Bumping the workspace generation here is what makes the
- * newest capture own the slot -- an older capture's stamp resolving later fails its workspace
- * check instead of overwriting the newer entry -- and removing the entry is what makes that
- * ownership hold from this moment rather than from when the new stamp lands: without it an older
- * capture's already-committed entry stays readable for one identity round trip, and a reload
- * inside that window replays the older key instead of the one just captured. The displaced
- * entry's clear is capture-scoped and so broadcast, reaching a duplicated tab's copy of it. Other
- * workspaces' pending stamps and entries, and every other capture's tier, are untouched.
+ * Start a capture's write: bump the workspace generation (superseding every older pending stamp
+ * for the workspace), clear the displaced stored entry, and capture the current generations for
+ * {@link commitRetainedShareKeyWrite}. Clearing the entry now rather than when the new stamp
+ * lands keeps a reload inside that identity round trip from replaying the older key.
  */
 export function beginRetainedShareKeyWrite(
     workspaceId: string, captureId: string): RetainedShareKeyWrite {
-  // The generation is bumped before the removal so no in-flight commit can land between the two.
-  // The displaced entry is cleared by its capture id, which broadcasts: a duplicated tab holds a
-  // copy of it under the same id, and once this tab has moved on to a new capture no other clear
-  // reaches that copy -- the displaced capture's own success clear presupposes its open succeeds
-  // somewhere, and a duplicate whose attempt failed transiently would otherwise keep the copy for
-  // the TTL and replay it on reconnect, after an owner may have removed the collaborator. Only
-  // copies of this tab share the id (captures are per-capture UUIDs), so an independent sibling
-  // capture under the workspace is untouched; and this tab's own in-memory ref already holds the
-  // new capture, so the local notification for the displaced id drops nothing here. The bare
-  // removal that follows covers an entry the reader rejects (malformed or v1), which the
-  // capture-scoped clear cannot name but which must not stay readable either.
+  // Bump before removing so no in-flight commit lands between the two. The displaced entry is
+  // cleared by capture id, which broadcasts: a duplicated tab holds a copy under the same id, and
+  // once this tab has moved on no other clear reaches it. This tab's own ref already holds the
+  // new capture, so the local notification drops nothing. The bare removal then covers an entry
+  // the reader rejects (malformed or v1), which the capture-scoped clear cannot name.
   const workspaceGeneration = (workspaceGenerations.get(workspaceId) ?? 0) + 1
   workspaceGenerations.set(workspaceId, workspaceGeneration)
   const displaced = readRetainedShareKey(workspaceId)
@@ -157,13 +121,12 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
     if (typeof parsed !== 'object' || parsed === null) return undefined
     const { key, userId, captureId, capturedAt } = parsed as
         { key?: unknown; userId?: unknown; captureId?: unknown; capturedAt?: unknown }
-    // Lenient bounds only -- the server is the validator of record for the key itself. A v1
-    // (bare-string) or otherwise malformed entry fails the shape check and reads as absent.
+    // Lenient bounds only; the server validates the key itself. A v1 (bare-string) or malformed
+    // entry reads as absent.
     if (typeof key === 'string' && key.length > 0 && key.length <= 128 &&
         typeof userId === 'string' && typeof captureId === 'string') {
-      // Expiry bounds the duplicated-tab copy (see the module header). A missing or malformed
-      // stamp time expires too (NaN fails the comparison), and the dead entry is removed rather
-      // than left to be re-judged forever.
+      // Expiry bounds the duplicated-tab copy (module header). A missing or malformed stamp
+      // expires too (NaN fails the comparison); the dead entry is removed rather than re-judged.
       if (typeof capturedAt !== 'number' ||
           !(Date.now() - capturedAt <= RETAINED_SHARE_KEY_TTL_MS)) {
         window.sessionStorage.removeItem(storageKey(workspaceId))
@@ -177,20 +140,14 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
   return undefined
 }
 
-// Cross-tab clear propagation (see the module header): a duplicated tab copies this tab's
-// sessionStorage, entry and captureId both, so the copies answer to the same clears. Exactly two
-// scopes are broadcast. Capture-scoped clears, because the copy shares the original's captureId:
-// the broadcast clears duplicates the moment the original's open succeeds, or the moment a newer
-// capture displaces the original's entry (beginRetainedShareKeyWrite clears the displaced entry
-// by its capture id, the only clear that still reaches a duplicate's copy once the original tab
-// has moved on), while an independent sibling capture -- a different captureId, even of the same
-// key -- survives; workspace-scoped
-// clears name no capture and so deliberately stay local (the capturing hook precedes a keyless
-// success's workspace-scoped clear with a capture-scoped clear of whatever entry is left, so
-// every success path does broadcast). And the logout sweep, because sibling tabs share the login
-// session. The handler applies clears through the same internal functions
-// the local clears use, without re-broadcasting; the payload is validated defensively even
-// though the channel is same-origin.
+// Cross-tab clear propagation (module header). Exactly two scopes are broadcast: capture-scoped
+// clears, because a duplicated tab's copy shares the original's captureId while an independent
+// sibling capture (a different id, even of the same key) does not; and the logout sweep, because
+// sibling tabs share the login session. Workspace-scoped clears name no capture and stay local
+// (the hook precedes its keyless-success workspace clear with a capture-scoped clear of whatever
+// entry is left, so every success path does broadcast). Received clears go through the same
+// internal functions as local ones, without re-broadcasting; the payload is validated even though
+// the channel is same-origin.
 type RetainedShareKeyClearMessage =
   | { type: 'clear-capture'; workspaceId: string; captureId: string }
   | { type: 'clear-all' }
@@ -219,11 +176,9 @@ if (clearChannel) {
 // window.postMessage), hence the disables at the two send sites below.
 
 /**
- * A clear as seen by the in-memory tier. Exactly the two broadcast scopes are reported (a
- * workspace-scoped clear names no capture and is only ever issued locally, by a hook that has
- * already dropped its own ref), and a capture-scoped clear is reported whether or not a stored
- * entry matched it: the hook's ref is a separate tier that may hold the capture with nothing in
- * storage.
+ * A clear as seen by the in-memory tier: exactly the two broadcast scopes. A capture-scoped clear
+ * is reported whether or not a stored entry matched it, since the hook's ref may hold the capture
+ * with nothing in storage.
  */
 export type RetainedShareKeyClear =
   | { scope: 'capture'; workspaceId: string; captureId: string }
@@ -233,9 +188,8 @@ const clearListeners = new Set<(clear: RetainedShareKeyClear) => void>()
 
 /**
  * Observe capture-scoped clears and logout sweeps, local and received alike. This is how a
- * broadcast from a sibling tab reaches the capturing hook's in-memory ref, which no storage
- * removal can touch: without it a live duplicate would replay the cleared key from memory on
- * its next same-stub retry. Returns the unsubscribe.
+ * sibling tab's broadcast reaches the hook's in-memory ref, which no storage removal can touch.
+ * Returns the unsubscribe.
  */
 export function subscribeToRetainedShareKeyClears(
     listener: (clear: RetainedShareKeyClear) => void): () => void {
@@ -248,8 +202,8 @@ function notifyClearListeners(clear: RetainedShareKeyClear): void {
     try {
       listener(clear)
     } catch (error) {
-      // A listener's failure must not break the clear (or starve the other listeners): the
-      // storage removal and the generation bump have already happened by the time this runs.
+      // The storage removal and generation bump already happened; a failing listener must not
+      // break the clear for the others.
       console.error('Retained share key clear listener failed:', error)
     }
   }
@@ -266,8 +220,8 @@ function applyCaptureClear(workspaceId: string, captureId: string): void {
       // Best-effort; see above.
     }
   }
-  // Notified even when a different capture's entry kept the slot: the in-memory tier may still
-  // hold the named capture, and the listeners scope by capture id themselves.
+  // Notified even when another capture's entry kept the slot: the in-memory tier may still hold
+  // this capture, and listeners scope by capture id themselves.
   notifyClearListeners({ scope: 'capture', workspaceId, captureId })
 }
 
@@ -287,17 +241,12 @@ function applyClearAll(): void {
 }
 
 /**
- * Discard a workspace's retained entry and void any in-flight identity stamp for it. With
- * `onlyCapture`, the clear is attempt-owned and touches exactly that capture's retention: its
- * per-capture generation is *always* bumped -- voiding the calling capture's own
- * in-flight stamp even when a different capture already occupies the entry, whose late landing
- * would otherwise resurrect a key the server already redeemed -- while the entry is removed only when it
- * is absent or carries `onlyCapture`. A different-capture entry (even one holding the *same* key
- * -- a later user's capture of the same invite link), and every other capture's pending stamp,
- * are untouched: a newer capture owns the slot, and the workspace generation is deliberately not
- * bumped in this branch so an attempt-owned clear can never void a concurrent newer capture's
- * stamp. A capture-scoped clear is additionally broadcast to sibling tabs, which clears a
- * duplicated tab's copy of the entry (same captureId) with the same precision.
+ * Discard a workspace's retained entry and void any in-flight stamp for it. With `onlyCapture`,
+ * the clear is attempt-owned: that capture's generation is always bumped (voiding its own pending
+ * stamp even when another capture's entry occupies the slot), the entry is removed only if absent
+ * or owned by that capture, and the clear is broadcast to sibling tabs. A different capture's
+ * entry and pending stamp, even one of the same key, are untouched; the workspace generation is
+ * deliberately not bumped in this branch.
  */
 export function clearRetainedShareKey(workspaceId: string, onlyCapture?: string): void {
   if (onlyCapture !== undefined) {
@@ -307,10 +256,9 @@ export function clearRetainedShareKey(workspaceId: string, onlyCapture?: string)
     // oxlint-disable-next-line unicorn/require-post-message-target-origin
     clearChannel?.postMessage(message)
   } else {
-    // The generation is bumped before the removal; see applyCaptureClear. Local only: this scope
-    // names no capture, so a broadcast could not be applied with any precision. The hook's
-    // keyless success clears any leftover entry by capture (broadcast) before falling through to
-    // this scope, whose remaining job is voiding the workspace's in-flight stamps.
+    // Bump before removing, as in applyCaptureClear. Local only: this scope names no capture, so a
+    // broadcast could not be applied precisely. After the hook's capture-scoped clear its
+    // remaining job is voiding the workspace's pending stamps.
     workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
     try {
       window.sessionStorage.removeItem(storageKey(workspaceId))
@@ -322,7 +270,7 @@ export function clearRetainedShareKey(workspaceId: string, onlyCapture?: string)
 
 /**
  * Sweep every retained share key, of any format version, in this tab and (broadcast) every
- * sibling tab -- they share the login session logout just ended. Called on logout.
+ * sibling tab. Called on logout.
  */
 export function clearAllRetainedShareKeys(): void {
   applyClearAll()
