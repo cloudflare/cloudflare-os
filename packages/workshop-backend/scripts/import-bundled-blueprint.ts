@@ -49,6 +49,16 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Whether a process with `pid` exists; EPERM means it does, under another user. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !isErrorCode(err, "ESRCH");
+  }
+}
+
 function isErrorCode(err: unknown, code: string): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
@@ -291,12 +301,16 @@ try {
   throw err;
 }
 // The import has landed once the staged tree is in place, so a backup that will not go is a
-// leftover to report, not a failed import. Every backup of the name goes, including one an earlier
-// import left beside the live directory when it was interrupted here: the generator ignores such a
-// backup only while the directory exists, and would stand it in for the blueprint once the
-// directory is deleted.
+// leftover to report, not a failed import. Every backup of the name whose import is over goes:
+// this process's, and one an earlier import left beside the live directory when it was
+// interrupted here, which the generator ignores only while the directory exists and would stand
+// in for the blueprint once it is deleted. A backup whose process is still alive belongs to an
+// import in progress, whose restore may need it.
 for (const dirent of await readdir(sourceDir)) {
-  if (/^\.(.+)\.backup-\d+$/su.exec(dirent)?.[1] !== entry.name) continue;
+  const match = /^\.(.+)\.backup-(\d+)$/su.exec(dirent);
+  if (match?.[1] !== entry.name) continue;
+  const pid = Number(match[2]);
+  if (pid !== process.pid && processAlive(pid)) continue;
   try {
     await rm(join(sourceDir, dirent), {recursive: true, force: true});
   } catch (err) {

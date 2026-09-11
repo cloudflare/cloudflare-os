@@ -101,7 +101,10 @@ describe("bundled blueprint scripts", () => {
   it("ignores hidden duplicate manifests when importing an update", async () => {
     let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
-    for (let name of ["example", ".example.backup-123"]) {
+    // Two hidden backups: one from a process long gone, one from this process, standing in for an
+    // import still running beside the one under test.
+    let running = `.example.backup-${process.pid}`;
+    for (let name of ["example", ".example.backup-123", running]) {
       await mkdir(join(directory, name, "files"), {recursive: true});
       await writeFile(join(directory, name, "blueprint.json"),
         `${JSON.stringify(manifest, null, 2)}\n`);
@@ -127,8 +130,9 @@ describe("bundled blueprint scripts", () => {
     assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// updated\n");
     assert.equal(await readFile(join(directory, "example/files/lib/util.js"), "utf8"),
       "// updated util\n");
-    // The stale backup did not count as a duplicate, and a completed import supersedes it.
-    assert.deepEqual((await readdir(directory)).toSorted(), [".update.gadget", "example"]);
+    // Neither backup counted as a duplicate; the completed import removed the dead process's and
+    // left the live one, whose import may still need it to restore.
+    assert.deepEqual((await readdir(directory)).toSorted(), [running, ".update.gadget", "example"]);
     let updatedManifest = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
     assert.equal(updatedManifest.revision, 2);
     assert.equal(updatedManifest.version, 2);
