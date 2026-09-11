@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -131,6 +131,41 @@ describe("bundled blueprint scripts", () => {
     let updatedManifest = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
     assert.equal(updatedManifest.revision, 2);
     assert.equal(updatedManifest.version, 2);
+  });
+
+  it("keeps what lives beside blueprint.json and files/ when importing an update", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files", "lib"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// old\n");
+    await writeFile(join(directory, "example", "files/lib/util.js"), "// old util\n");
+    // Repo-only siblings the archive never carries.
+    let test = 'import { greet } from "../files/lib/greeting.ts";\n';
+    let notes = "# Notes\n\nNot part of the archive.\n";
+    await mkdir(join(directory, "example", "__tests__"));
+    await writeFile(join(directory, "example", "__tests__/greeting.test.ts"), test);
+    await writeFile(join(directory, "example", "NOTES.md"), notes);
+
+    let archivePath = join(directory, ".update.gadget");
+    await writeArchive(archivePath, 2, new Map([["client.js", "// updated\n"]]));
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
+        cwd: packageRoot,
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(directory, "example/__tests__/greeting.test.ts"), "utf8"), test);
+    assert.equal(await readFile(join(directory, "example/NOTES.md"), "utf8"), notes);
+    assert.deepEqual((await readdir(join(directory, "example"))).toSorted(),
+      ["NOTES.md", "__tests__", "blueprint.json", "files"]);
+    // files/ holds exactly the archive's files: the old lib/util.js is gone.
+    assert.deepEqual(await readdir(join(directory, "example/files")), ["client.js"]);
+    assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// updated\n");
   });
 
   it("builds and recovers a blueprint left only in an interrupted-import backup", async () => {
