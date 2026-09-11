@@ -15,6 +15,7 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
     format === "skill" ? humanizeSkillName(initialValue) : initialValue,
   );
   const inputRef = useRef<HTMLInputElement>(null);
+  const mayReceiveStaleMenuFocusRef = useRef(true);
 
   useLayoutEffect(() => {
     inputRef.current?.focus();
@@ -39,7 +40,18 @@ export const RenameInput = ({ initialValue, format, onCommit, onCancel }: Rename
           setValue(format === "skill" ? sanitizeSkillTitle(singleLine) : singleLine);
         }}
         maxLength={format === "skill" ? 64 : undefined}
-        onBlur={commit}
+        onBlur={(event) => {
+          const next = event.relatedTarget;
+          if (mayReceiveStaleMenuFocusRef.current
+            && next instanceof HTMLElement
+            && next.matches('[aria-haspopup="menu"]')) {
+            mayReceiveStaleMenuFocusRef.current = false;
+            queueMicrotask(() => inputRef.current?.focus());
+            return;
+          }
+          mayReceiveStaleMenuFocusRef.current = false;
+          commit();
+        }}
         onKeyDown={(event) => {
           event.stopPropagation();
           if (event.key === "Enter") {
