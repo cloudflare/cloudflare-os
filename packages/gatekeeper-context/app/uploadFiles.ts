@@ -11,6 +11,10 @@ type ReadUploadFileOptions = {
   inferUnknownBinary?: boolean;
 };
 
+type DroppedDataTransferItem = DataTransferItem & {
+  getAsEntry?: () => FileSystemEntry | null;
+};
+
 /** Read a browser file as base64 without creating a size-limited data URL. */
 export const fileToBase64 = async (file: File): Promise<string> => {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -70,21 +74,28 @@ export const readUploadFiles = async (
   return result;
 };
 
-/** Decode dropped files, rejecting folder APIs that are unsafe in an opaque-origin iframe. */
+const droppedFolderReadError = () => new Error(
+  "We couldn't read this dropped folder. Use Choose folder to select it instead.",
+);
+
+/** Decode dropped files, directing unsupported directory drops to the safe folder picker. */
 export const readDroppedUploadFiles = async (
   dataTransfer: DataTransfer,
 ): Promise<DecodedUploadFile[]> => {
   const plainFiles = Array.from(dataTransfer.files);
-  let includesDirectory = false;
+  const items = Array.from(dataTransfer.items);
+  let entries: FileSystemEntry[] = [];
   try {
-    includesDirectory = Array.from(dataTransfer.items).some(
-      (item) => item.webkitGetAsEntry?.()?.isDirectory,
-    );
+    entries = items.flatMap((item) => {
+      const droppedItem = item as DroppedDataTransferItem;
+      const entry = droppedItem.getAsEntry?.() ?? droppedItem.webkitGetAsEntry?.();
+      return entry ? [entry] : [];
+    });
   } catch {
-    includesDirectory = plainFiles.length === 0 && dataTransfer.items.length > 0;
+    if (plainFiles.length === 0 && items.length > 0) throw droppedFolderReadError();
   }
-  if (includesDirectory || (plainFiles.length === 0 && dataTransfer.items.length > 0)) {
-    throw new Error("To add a complete skill folder, use Choose folder.");
-  }
+
+  if (entries.some((entry) => entry.isDirectory)
+    || (plainFiles.length === 0 && items.length > 0)) throw droppedFolderReadError();
   return readUploadFiles(plainFiles, { inferUnknownBinary: true });
 };
