@@ -296,9 +296,28 @@ const SPECIFIER_PATTERN = new RegExp(
  * ones from the output, and a template literal with no substitutions is folded to a string before
  * it is written. A template literal with substitutions never reaches the output as an `import()`
  * at all: esbuild expands it into a glob helper over every file the pattern matches, and that is
- * rejected from the metafile instead (see {@link auditInputs}).
+ * rejected from the metafile instead (see {@link auditInputs}). Either is reached only by a
+ * library's own code or by a spelling the source scan missed: the blueprint's sources are refused
+ * ahead of the build (see {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), and this is the backstop.
  */
 const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
+
+/**
+ * A dynamic `import()` or `require()` whose operand is anything but one plain string literal, as
+ * spelled in a blueprint's TypeScript. esbuild expands a template literal with substitutions, or a
+ * concatenation that begins with a string, into a glob over every file the pattern matches --
+ * `` import(`../../${name}.js`) `` walks everything two directories up and bundles each match --
+ * and does so before any check here can see the result, so the spelling is refused from the
+ * source, ahead of the build. The same class the output is checked for afterwards (see
+ * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN} and {@link auditInputs}); those stay as the backstop for
+ * what a scan cannot see, a library's own code or a spelling this one misses. A scan, so a
+ * dynamic-import-shaped string in a comment is refused too; the error names the file and the
+ * spelling, and a blueprint has no reason to write one. The lookbehind keeps a method of that name
+ * (`foo.import(...)`) from reading as the keyword.
+ */
+const NON_LITERAL_DYNAMIC_IMPORT_PATTERN = new RegExp(
+    String.raw`(?<![.\w$])(?:import|require)${GAP}\(${GAP}(?!(?:"[^"\n]*"|'[^'\n]*')${GAP}\))`,
+    "u");
 
 /**
  * A reference to `require` that survived bundling. Both bundles are ES modules and neither gadget
@@ -353,10 +372,13 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * entry imports, which would be dropped from the archive; an input the bundle inlined that is
  * neither one of the blueprint's own files nor a library reached by its package subpath, from the
  * right side, which would inline code the blueprint does not own (see {@link auditInputs}); a
- * dynamic `import()` of a computed path, which the bundler cannot check (see
- * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN}), or of a template literal, which it expands into every
- * file the pattern matches (see {@link auditInputs}); a reference to `require` the bundler could
- * not resolve away, which would throw when reached (see {@link RESIDUAL_REQUIRE_PATTERN}); and, in
+ * dynamic `import()` or `require()` of anything but a string literal, refused from the source
+ * before the bundler could expand a pattern into every file it matches (see
+ * {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), and again in the output should one reach it (see
+ * {@link COMPUTED_DYNAMIC_IMPORT_PATTERN} and {@link auditInputs}); a generated `client.js` or
+ * `server.js` that collides with a file or directory the tree already holds; a reference to
+ * `require` the bundler could not resolve away, which would throw when reached (see
+ * {@link RESIDUAL_REQUIRE_PATTERN}); and, in
  * a JavaScript module the archive ships as written, an import of a gadget library, which only the
  * bundle can inline, or an import specifier spelled with an escape, which the scan cannot read (see
  * {@link checkShippedImports}).
@@ -385,6 +407,12 @@ async function bundleTypeScriptSources(
       }
       output.set(path, source);
       continue;
+    }
+    const dynamic = NON_LITERAL_DYNAMIC_IMPORT_PATTERN.exec(source);
+    if (dynamic) {
+      invalid(label, `${path} contains ${dynamic[0].trim()}...): a dynamic import whose path is ` +
+          `not a string literal; the bundler would expand a pattern into every file it matches, ` +
+          `or leave a computed path unchecked`);
     }
     if (path.startsWith(LIB_PREFIX)) {
       libSources.add(path);
@@ -478,7 +506,11 @@ async function bundleTypeScriptSources(
       invalid(label, `${lib} is not imported by any entry point`);
     }
   }
-  return new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
+  // The bundle added client.js / server.js, which the on-disk check never saw: a client.js/
+  // directory of non-modules would otherwise survive to buildContent.
+  const shipped = new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
+  validateFilePaths(shipped.keys(), label);
+  return shipped;
 }
 
 /**
@@ -508,7 +540,10 @@ async function bundleTypeScriptSources(
  * path, while the files it matched -- anywhere the pattern reaches, including outside files/ --
  * become inputs no edge points at, and the output calls a glob helper rather than `import()`. The
  * walk rejects the wildcard edge, and then requires that it met every input the metafile lists, so
- * a bundle that inlines something no import brought in is refused whatever produced it.
+ * a bundle that inlines something no import brought in is refused whatever produced it. The edge
+ * is reached only from a library's code or a spelling the source scan missed: a blueprint's own
+ * files are refused before the build (see {@link NON_LITERAL_DYNAMIC_IMPORT_PATTERN}), which is
+ * the first line; this is the backstop.
  *
  * Types are erased before esbuild builds this graph, so an `import type` of the wrong side is not
  * seen here and not an error: nothing of it reaches the bundle.
