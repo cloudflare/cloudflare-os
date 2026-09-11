@@ -71,7 +71,8 @@ the client is loaded as an ES module in a sandboxed iframe with nothing to resol
 against, and the server as a Durable Object whose module map holds the gadget's own files and whose
 loader supplies no other `cloudflare:` module. Everything else a blueprint imports must be a file it
 owns or a library, so `import "yjs"` is a build error rather than a module that goes missing inside
-the sandbox.
+the sandbox, and tree-shaking annotations are ignored, so a `"sideEffects": false` in an enclosing
+package.json cannot drop a side-effect-only import from the bundle.
 
 The build rejects a tree that would otherwise ship something other than what was written: a
 JavaScript module in a TypeScript blueprint, a `.ts` file outside the entry/`lib/` layout, TypeScript

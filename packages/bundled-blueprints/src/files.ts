@@ -276,9 +276,12 @@ const MODULE_PATTERN = /\.[cm]?[jt]s$/u;
  * What may sit between a keyword and its operand in source: whitespace and comments, in any
  * number. `import`, a block comment, then `"./lib/setup.ts"` is a legal import, and the scan below
  * has to see the specifier through the comment, or a module the bundle inlined would be reported
- * as unimported.
+ * as unimported. A line comment ends at any of the four line terminators, as it does for esbuild,
+ * or a CR-terminated one would hide the `(` that follows it from the scan below; the terminator is
+ * required rather than optional so the alternative cannot stop partway through a comment and read
+ * a string inside it as the operand.
  */
-const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)*`;
+const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n\r\u2028\u2029]*[\n\r\u2028\u2029])*`;
 
 /**
  * Every string literal that could be a module specifier: the operand of `from`, of `import` or
@@ -316,7 +319,7 @@ const COMPUTED_DYNAMIC_IMPORT_PATTERN = /\bimport\s*\(\s*(?!["'])/u;
  * (`foo.import(...)`) from reading as the keyword.
  */
 const NON_LITERAL_DYNAMIC_IMPORT_PATTERN = new RegExp(
-    String.raw`(?<![.\w$])(?:import|require)${GAP}\(${GAP}(?!(?:"[^"\n]*"|'[^'\n]*')${GAP}\))`,
+    String.raw`(?<![.\w$])(?<keyword>import|require)${GAP}\(${GAP}(?!(?:"[^"\n]*"|'[^'\n]*')${GAP}\))`,
     "u");
 
 /**
@@ -358,12 +361,14 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * blueprint carries its own copy of the library as of its instantiation, and nothing resolves the
  * package name at runtime.
  *
- * Bundles are readable rather than minified, because the agent edits the installed file. The only
- * imports that survive are the ones the entry's runtime supplies (see {@link ENTRY_POINTS}); every
- * other specifier has to resolve to a file the blueprint owns or to a gadget library. esbuild
- * enforces that for bare specifiers, which it resolves or fails on, but not for URLs: `import x
- * from "https://..."` is left in the output as an external without a word, so the bundle's
- * surviving imports are checked against the entry's allowlist here.
+ * Bundles are readable rather than minified, because the agent edits the installed file, and
+ * tree-shaking annotations are ignored, so a `"sideEffects": false` in an enclosing package.json
+ * cannot drop a side-effect-only import (see the option below). The only imports that survive are
+ * the ones the entry's runtime supplies (see {@link ENTRY_POINTS}); every other specifier has to
+ * resolve to a file the blueprint owns or to a gadget library. esbuild enforces that for bare
+ * specifiers, which it resolves or fails on, but not for URLs: `import x from "https://..."` is
+ * left in the output as an external without a word, so the bundle's surviving imports are checked
+ * against the entry's allowlist here.
  *
  * Rejected, rather than silently mis-shipped: a JavaScript module in a tree that holds TypeScript,
  * which would ship as written beside bundles it cannot share code with -- a blueprint is written in
@@ -410,9 +415,9 @@ async function bundleTypeScriptSources(
     }
     const dynamic = NON_LITERAL_DYNAMIC_IMPORT_PATTERN.exec(source);
     if (dynamic) {
-      invalid(label, `${path} contains ${dynamic[0].trim()}...): a dynamic import whose path is ` +
-          `not a string literal; the bundler would expand a pattern into every file it matches, ` +
-          `or leave a computed path unchecked`);
+      invalid(label, `${path} contains ${dynamic.groups!.keyword}(...): a dynamic import whose ` +
+          `path is not a string literal; the bundler would expand a pattern into every file it ` +
+          `matches, or leave a computed path unchecked`);
     }
     if (path.startsWith(LIB_PREFIX)) {
       libSources.add(path);
@@ -461,6 +466,13 @@ async function bundleTypeScriptSources(
         target: GADGET_TARGET,
         charset: "utf8",
         minify: false,
+        // A `"sideEffects": false` in whatever package.json encloses the tree applies to the
+        // package's own relative imports too, so esbuild would drop `import "./lib/setup.ts"` from
+        // the output with only a warning, which the silent log level swallows and the audit cannot
+        // see: the source names the module, so it counts as imported, and a dropped input is
+        // simply absent from the metafile. Blueprints and libraries write no `@__PURE__`
+        // annotations, so nothing else is kept.
+        ignoreAnnotations: true,
         sourcemap: false,
         write: false,
         metafile: true,
