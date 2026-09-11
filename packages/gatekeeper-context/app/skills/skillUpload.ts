@@ -14,35 +14,11 @@ export type SkillUploadCandidate = {
   supportingFiles: SkillUploadFile[];
   name: string;
   description: string;
-  metadataError: string | null;
 };
 
 const baseName = (path: string) => path.split("/").at(-1) ?? path;
 const dirName = (path: string) => path.split("/").slice(0, -1).join("/");
 const isMarkdownPath = (path: string) => /\.(?:md|markdown)$/i.test(path);
-
-const validateRequiredMetadata = (body: string): void => {
-  const { frontmatter } = splitFrontmatter(body);
-  if (frontmatter === null) throw new Error("Add a name and description for this skill.");
-  const document = parseDocument(frontmatter);
-  if (document.errors.length > 0 || !isMap(document.contents)) {
-    throw new Error("We couldn't read this skill's details. Review them below.");
-  }
-  const name = document.get("name");
-  const description = document.get("description");
-  if (typeof name !== "string") throw new Error("Add a name for this skill.");
-  if (!isValidSkillName(name)) {
-    throw new Error(name.length > 64
-      ? "Shorten this skill's name to 64 characters or fewer."
-      : "Review this skill's name before uploading.");
-  }
-  if (typeof description !== "string" || description.trim().length === 0) {
-    throw new Error("Add a description for this skill.");
-  }
-  if (description.trim().length > 1024) {
-    throw new Error("Shorten this skill's description to 1024 characters or fewer.");
-  }
-};
 
 const normalizeFolderPaths = (files: readonly SkillUploadFile[]) => {
   const roots = files.map((file) => file.path.split("/"));
@@ -57,8 +33,33 @@ const normalizeFolderPaths = (files: readonly SkillUploadFile[]) => {
   };
 };
 
+const descriptionFromMarkdown = (body: string, fallbackName: string): string => {
+  const { content } = splitFrontmatter(body);
+  for (const block of content.split(/\r?\n\s*\r?\n/)) {
+    const trimmed = block
+      .split(/\r?\n/)
+      .filter((line) => !/^#{1,6}\s/.test(line.trim()))
+      .join("\n")
+      .trim();
+    if (!trimmed || /^```/.test(trimmed)) continue;
+    const description = trimmed
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/^[>*+-]\s+/gm, "")
+      .replace(/[*_`~]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (description) return description.slice(0, 1024);
+  }
+  const title = fallbackName.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  return `Instructions for ${title || "this skill"}.`;
+};
+
 const metadataDefaults = (body: string, fallbackName: string) => {
   const { frontmatter } = splitFrontmatter(body);
+  if (frontmatter === null && /^\uFEFF?---[ \t]*\r?\n/.test(body)) {
+    throw new Error(`${fallbackName} has unterminated YAML frontmatter.`);
+  }
   let name = "";
   let description = "";
   if (frontmatter !== null) {
@@ -71,6 +72,9 @@ const metadataDefaults = (body: string, fallbackName: string) => {
     }
   }
   if (!isValidSkillName(name)) name = skillNameFromTitle(fallbackName) || "untitled-skill";
+  if (description.trim().length === 0 || description.trim().length > 1024) {
+    description = descriptionFromMarkdown(body, fallbackName);
+  }
   return { name, description };
 };
 
@@ -103,19 +107,13 @@ export const prepareSkillUploads = (
       path: root ? file.path.slice(root.length + 1) : file.path,
     }));
     const label = root ? baseName(root) : folderName || "SKILL.md";
-    let metadataError: string | null = null;
-    try {
-      validateRequiredMetadata(manifest.body);
-    } catch (error) {
-      metadataError = error instanceof Error ? error.message : "Skill metadata is invalid.";
-    }
+    const defaults = metadataDefaults(manifest.body, label);
     return {
       id: `manifest:${manifest.path}`,
       label,
       manifestBody: manifest.body,
       supportingFiles,
-      ...metadataDefaults(manifest.body, label),
-      metadataError,
+      ...defaults,
     };
   });
 
@@ -123,19 +121,13 @@ export const prepareSkillUploads = (
     if (!isMarkdownPath(file.path) || baseName(file.path) === "SKILL.md"
       || belongsToManifest(file.path)) continue;
     const label = baseName(file.path).replace(/\.(?:md|markdown)$/i, "");
-    let metadataError: string | null = null;
-    try {
-      validateRequiredMetadata(file.body);
-    } catch (error) {
-      metadataError = error instanceof Error ? error.message : "Skill metadata is invalid.";
-    }
+    const defaults = metadataDefaults(file.body, label);
     candidates.push({
       id: `standalone:${file.path}`,
       label,
       manifestBody: file.body,
       supportingFiles: [],
-      ...metadataDefaults(file.body, label),
-      metadataError,
+      ...defaults,
     });
   }
 
