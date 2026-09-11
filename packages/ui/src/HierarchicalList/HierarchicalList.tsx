@@ -116,7 +116,8 @@ const StyledRow = ({
       className={cn(
         rowProps.className,
         "group relative focus-visible:z-20",
-        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left active:!bg-kumo-recessed",
+        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left",
+        !renaming && "active:!bg-kumo-recessed",
         state.draggable && "cursor-grab active:cursor-grabbing",
         state.draggable && "touch-none",
         highlighted && "bg-kumo-recessed",
