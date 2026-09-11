@@ -122,6 +122,23 @@ is this package referring to itself by name, which tsc resolves through the `exp
 `package.json` with no `paths` block, so a blueprint is checked against the real signatures it
 imports.
 
+### What the build does not check
+
+The bundler and the type check are kept in step by refusing what would let them diverge, not by
+supporting every way TypeScript can be written. Write a blueprint the plain way -- `.ts` modules
+under `files/`, relative imports spelled `./name.ts` or `./lib/name.ts`, libraries by the package
+subpath -- and stay inside these limits, which the build does not enforce:
+
+- A `/// <reference types="…" />`, `lib="…"` or `path="…"` directive loads types the side's tsconfig
+  deliberately leaves out (`types: []`, one `lib` per side), so `Buffer` type-checks in a client and
+  ships as a free global that throws in the iframe. Do not write one: a gadget module sees exactly
+  the globals its runtime supplies, and the type check is only as honest as that isolation.
+- A tree under `BUNDLED_BLUEPRINTS_DIR` is bundled but not type-checked; the programs above cover
+  this package's `blueprints/` and `libraries/` only. Type-check such a tree in its own workspace.
+- The comment naming each inlined library module is rewritten line by line, so the archive is the
+  same wherever it is built; a template literal whose own line spells exactly such a path would be
+  rewritten with it.
+
 Unit tests of a blueprint's `lib/` modules, or of its server, live in the blueprint's `__tests__/`
 and run under `pnpm test` (jsdom by default; a pure module's or a server's test declares
 `// @vitest-environment node`). They import the module under test by on-disk name, e.g.
