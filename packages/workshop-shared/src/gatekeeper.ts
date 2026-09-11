@@ -1207,12 +1207,15 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: no more actions or public-web fetches,
-   *   only observations, so the gadget cannot leak the data through other gatekeepers.
+   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
+   *   action's full `description` and is responsible for checking it contains none of the
+   *   restricted data; the kernel does not restrict which connections may be acted on.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
-   *   actions whose visibility is limited to people verified to have access to the same data,
-   *   but this requires a more complex policy framework to compute.
+   *   actions whose visibility is limited to people verified to have access to the same data: an
+   *   action should declare who can see its effects, and each restricted producer verify that
+   *   every such person can already see the data.
    */
   containsRestrictedData?: boolean;
 

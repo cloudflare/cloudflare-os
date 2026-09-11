@@ -5,10 +5,11 @@
 // anything that widens what they must pass restarts the workspace so every live session re-opens
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
 // and sharing stays available. The observation also sets `containsRestrictedData`, putting the
-// workspace into a restricted mode: once it is set, the workspace may not perform actions (nor
-// fetch from the web, which has no client-reachable surface to assert here). An observation that
-// also carries `ownerInvitesOnly` sets that flag too: from then on only direct grants from the
-// owner count, so share links stop admitting anyone and people who joined through one lose access.
+// workspace into a restricted mode: once it is set, every action pends for manual approval and is
+// never auto-approved, and the workspace may not fetch from the web (which has no client-reachable
+// surface to assert here). An observation that also carries `ownerInvitesOnly` sets that flag too:
+// from then on only direct grants from the owner count, so share links stop admitting anyone and
+// people who joined through one lose access.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -220,7 +221,8 @@ async function bobHolds(ws: Workspace, bob: Bob): Promise<HeldSession> {
 }
 
 describe("sensitive observations", () => {
-  it.concurrent("containsRestrictedData: actions are blocked and metadata reports it", async () => {
+  it.concurrent("containsRestrictedData: actions pend for manual approval and metadata reports it",
+      async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "restricted-mode");
 
@@ -238,7 +240,33 @@ describe("sensitive observations", () => {
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
       expect((await ws.overseer.getMetadata()).containsRestrictedData).toBe(true);
-      await expect(ws.session.writeValue(8)).rejects.toThrow(/prohibited from performing actions/i);
+
+      // A write back to the producing connection is held for approval and goes through once
+      // approved...
+      const latchedWrite = ws.session.writeValue(8);
+      const [pending] = await waitFor("the latched write to be held for approval", async () => {
+        const { entries } = await ws.overseer.listActions({ filter: "pending" });
+        return entries.length > 0 ? entries : null;
+      });
+      await ws.overseer.approveAction(pending.id);
+      await expect(latchedWrite).resolves.toEqual(expect.any(Number));
+
+      // ...and so is a write to any other connection: the latch does not distinguish targets, it
+      // only insists on a human decision.
+      const accounts = await listConnectedAccounts(ws.aliceApi);
+      const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
+      const other = await ws.overseer.newGatekeeper(account.id, thingUrl("latch-other"));
+      if (!other) throw new Error("Failed to create the second test connection");
+      const otherSession = await other.openSession() as RpcStub<TestSession>;
+      const otherWrite = otherSession.writeValue(9);
+      const [otherPending] = await waitFor("the other connection's write to be held for approval",
+          async () => {
+        const { entries } = await ws.overseer.listActions({ filter: "pending" });
+        return entries.length > 0 ? entries : null;
+      });
+      await ws.overseer.rejectAction(otherPending.id);
+      await expect(otherWrite).rejects.toThrow();
+
       // Reads -- sensitive or not -- keep working.
       await expect(ws.session.readValue()).resolves.toBe(42);
       await expect(ws.session.readValue(true)).resolves.toBe(42);
