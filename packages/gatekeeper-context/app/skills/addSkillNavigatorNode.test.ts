@@ -53,4 +53,14 @@ describe("uniqueSkillDirectory", () => {
     expect(location.name).toBe(`${"a".repeat(62)}-2`);
     expect(location.path).toBe(`${location.name}/SKILL.md`);
   });
+
+  it("returns the complete skill directory below a legacy parent", () => {
+    const location = buildNewSkillLocation(new Map(), "collection", "legacy", "new-skill");
+
+    expect(location).toEqual({
+      name: "new-skill",
+      directory: "legacy/new-skill",
+      path: "legacy/new-skill/SKILL.md",
+    });
+  });
 });

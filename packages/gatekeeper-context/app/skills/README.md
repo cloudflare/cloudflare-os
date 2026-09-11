@@ -65,3 +65,19 @@ could overwrite concurrent edits or leave duplicated or partially moved data aft
 future backend operation must authorize both collections, reject read-only sources and destinations,
 preserve the complete skill subtree, fail on destination conflicts, and define recoverable or atomic
 semantics across the two collection Durable Objects before the UI enables these drops.
+
+## Upload limitations
+
+The Skills Navigator accepts standalone Markdown files and folders. Each loose `.md` or `.markdown`
+file becomes one skill. A `SKILL.md` file defines a bundle and imports the other files below its source
+directory as related skill files; nested bundles are imported as separate top-level skills. Browser
+folder selection is based on the non-standard but widely supported `webkitdirectory` input, so folder
+upload may not be available in every browser. Folder drag-and-drop is deliberately rejected because
+browser directory APIs are not safe inside the management app's opaque-origin iframe; users are
+directed to the folder picker instead.
+
+Skill manifests are created through the skill-specific RPC, but there is currently no backend RPC for
+atomically creating a complete bundle. Supporting files are written only after the manifest succeeds.
+If one of those writes fails, the user is told which skill was only partially uploaded, but the created
+manifest and any successful related files remain. A future bundle-oriented RPC is required for true
+all-or-nothing uploads.

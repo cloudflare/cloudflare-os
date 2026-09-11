@@ -66,6 +66,7 @@ import { extractDescription } from "../src/description-extractors";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
+import { fileToBase64, readUploadFile } from "./uploadFiles";
 
 function baseName(path: string): string {
   const i = path.lastIndexOf("/");
@@ -129,21 +130,6 @@ function replacePathPrefix(path: string, fromPrefix: string, toPrefix: string): 
   if (path === fromPrefix) return toPrefix;
   if (path.startsWith(fromPrefix + "/")) return toPrefix + path.slice(fromPrefix.length);
   return path;
-}
-
-// Read a File as base64 (no data: prefix) for binary uploads.
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      const result = reader.result as string;
-      // result is "data:<mime>;base64,<data>"; strip the prefix.
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    });
-    reader.addEventListener("error", () => reject(reader.error));
-    reader.readAsDataURL(file);
-  });
 }
 
 function dataUri(contentType: string, base64Body: string): string {
@@ -1850,19 +1836,13 @@ function CollectionEditor({
     let ok = 0,
       failed = 0;
     await runWithConcurrency(Array.from(files), 6, async (file) => {
-      const rel = (file as any).webkitRelativePath || file.name;
-      // Derive the type from the path (its extension), not the browser-reported file.type, so the
-      // stored encoding matches how the editor and the agent read-path interpret it (both go by
-      // extension). Trusting file.type caused e.g. .js to be stored base64 but shown as text.
-      const ct = contentTypeFromPath(rel);
       try {
-        const isText = isTextContentType(ct);
-        const body = isText ? await file.text() : await fileToBase64(file);
-        await context.putContextDocument(collectionId, rel, {
+        const uploaded = await readUploadFile(file);
+        await context.putContextDocument(collectionId, uploaded.path, {
           // Self-describing files supply their own description; others start blank.
-          description: extractDescription(ct, body) ?? "",
-          body,
-          contentType: ct,
+          description: extractDescription(uploaded.contentType, uploaded.body) ?? "",
+          body: uploaded.body,
+          contentType: uploaded.contentType,
         });
         ok++;
       } catch {

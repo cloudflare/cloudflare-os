@@ -62,10 +62,11 @@ export const buildNewSkillLocation = (
   parentDir: string,
   name: string,
 ): NewSkillLocation => {
-  const directory = uniqueSkillDirectory(documents, collectionId, parentDir, name);
+  const nameDirectory = uniqueSkillDirectory(documents, collectionId, parentDir, name);
+  const directory = joinPath(parentDir, nameDirectory);
   return {
-    name: directory,
+    name: nameDirectory,
     directory,
-    path: joinPath(parentDir, `${directory}/SKILL.md`),
+    path: `${directory}/SKILL.md`,
   };
 };

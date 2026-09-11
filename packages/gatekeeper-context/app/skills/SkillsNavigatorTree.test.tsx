@@ -4,11 +4,12 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { RpcStub } from "capnweb";
 import { Toasty } from "@cloudflare/kumo";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContextApi, EnabledCollectionInfo } from "../../src/context-types";
 import { ContextApiProvider } from "../bridge";
 import type { SkillNavigatorCollection } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
+import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -47,7 +48,10 @@ describe("SkillsNavigatorTree", () => {
     container?.remove();
   });
 
-  const renderTree = (writable: boolean) => {
+  const renderTree = (
+    writable: boolean,
+    onUploadSkills: (target: UploadSkillsTarget) => void = () => {},
+  ) => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -61,6 +65,7 @@ describe("SkillsNavigatorTree", () => {
             expandAll
             onSelectSkill={() => {}}
             onAddSkill={() => {}}
+            onUploadSkills={onUploadSkills}
             onEditCollection={() => {}}
             onDelete={() => {}}
             onChanged={() => {}}
@@ -96,5 +101,24 @@ describe("SkillsNavigatorTree", () => {
     expect(row("Incident Response")?.querySelector('[aria-label="Updated just now"]'))
       .not.toBeNull();
     expect(row("legacy")?.draggable).toBe(false);
+  });
+
+  it("uploads skills into a writable legacy directory from its context menu", () => {
+    const onUploadSkills = vi.fn<(target: UploadSkillsTarget) => void>();
+    renderTree(true, onUploadSkills);
+
+    act(() => row("legacy")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const upload = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent?.includes("Upload skills"));
+    act(() => upload?.click());
+
+    expect(onUploadSkills).toHaveBeenCalledWith({
+      collectionId: "collection",
+      directoryPath: "legacy",
+      collectionEditable: false,
+    });
   });
 });
