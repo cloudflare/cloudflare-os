@@ -1,5 +1,9 @@
 import type { ContextApi } from "../../src/context-types";
-import type { ContextDocumentSummary } from "../../src/context-types";
+
+type DeleteApi = Pick<
+  ContextApi,
+  "deleteContextCollection" | "deleteContextSkill" | "deleteContextDocumentTree"
+>;
 
 /** Target for deleting a skill, folder, or collection from the navigator. */
 export type SkillNavigatorDeleteTarget =
@@ -9,8 +13,7 @@ export type SkillNavigatorDeleteTarget =
 
 /** Delete a skill, folder, or collection the viewer has write access to. */
 export const deleteSkillNavigatorNode = async (
-  context: ContextApi,
-  documents: ReadonlyMap<string, readonly ContextDocumentSummary[]>,
+  context: DeleteApi,
   target: SkillNavigatorDeleteTarget,
 ): Promise<void> => {
   if (target.type === "collection") {
@@ -18,17 +21,9 @@ export const deleteSkillNavigatorNode = async (
     return;
   }
 
-  if (target.type === "directory") {
-    const collectionDocuments = documents.get(target.collectionId) ?? [];
-    const toDelete = collectionDocuments.filter(
-      (document) => document.path === target.path
-        || document.path.startsWith(`${target.path}/`),
-    );
-    await Promise.all(toDelete.map((document) =>
-      context.deleteContextDocument(target.collectionId, document.path),
-    ));
+  if (target.type === "skill") {
+    await context.deleteContextSkill(target.collectionId, target.path);
     return;
   }
-
-  await context.deleteContextDocument(target.collectionId, target.path);
+  await context.deleteContextDocumentTree(target.collectionId, target.path);
 };

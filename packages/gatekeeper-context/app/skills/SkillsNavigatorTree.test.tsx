@@ -1,0 +1,95 @@
+// @vitest-environment jsdom
+
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+import type { RpcStub } from "capnweb";
+import { Toasty } from "@cloudflare/kumo";
+import { afterEach, describe, expect, it } from "vitest";
+import type { ContextApi, EnabledCollectionInfo } from "../../src/context-types";
+import { ContextApiProvider } from "../bridge";
+import type { SkillNavigatorCollection } from "./skillNavigatorModel";
+import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const info = (id: string): EnabledCollectionInfo => ({
+  id,
+  title: id,
+  description: "",
+  source: "private",
+  lastUpdated: new Date(),
+});
+
+const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
+  collection: info(collectionId),
+  children: [{
+    type: "directory",
+    path: "legacy",
+    name: "legacy",
+    children: [{
+      type: "skill",
+      collectionId,
+      manifestPath: "legacy/review/SKILL.md",
+      directoryPath: "legacy/review",
+      name: "review",
+      description: "Review code",
+    }],
+  }],
+}];
+
+describe("SkillsNavigatorTree", () => {
+  let container: HTMLDivElement | undefined;
+  let root: ReturnType<typeof createRoot> | undefined;
+
+  afterEach(() => {
+    if (root) act(() => root?.unmount());
+    container?.remove();
+  });
+
+  const renderTree = (writable: boolean) => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const api = { renameContextSkill: async () => {} } as unknown as RpcStub<ContextApi>;
+    act(() => root?.render(
+      <ContextApiProvider value={api}>
+        <Toasty>
+          <SkillsNavigatorTree
+            navigator={navigator("collection")}
+            writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
+            expandAll
+            onSelectSkill={() => {}}
+            onAddSkill={() => {}}
+            onEditCollection={() => {}}
+            onDelete={() => {}}
+            onChanged={() => {}}
+          />
+        </Toasty>
+      </ContextApiProvider>,
+    ));
+  };
+
+  const row = (name: string) => [...container!.querySelectorAll<HTMLElement>(
+    "[data-hierarchical-list-row]",
+  )].find((candidate) => candidate.textContent?.includes(name));
+
+  it("provides no actions or movement for a read-only collection", () => {
+    renderTree(false);
+    const skillRow = row("review");
+
+    expect(skillRow?.draggable).toBe(false);
+    act(() => skillRow?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    expect(document.body.textContent).not.toContain("Rename");
+    expect(document.body.textContent).not.toContain("Delete");
+  });
+
+  it("moves skills but not legacy directories in a writable collection", () => {
+    renderTree(true);
+
+    expect(row("review")?.draggable).toBe(true);
+    expect(row("legacy")?.draggable).toBe(false);
+  });
+});

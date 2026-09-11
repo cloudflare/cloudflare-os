@@ -1,8 +1,17 @@
 import type { ContextDocumentSummary } from "../../src/context-types";
+import { stringify as stringifyYaml } from "yaml";
 
 const SKILL_NAME_MAX_LENGTH = 64;
 const SKILL_DESCRIPTION_MAX_LENGTH = 1024;
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** Formats user input as a lowercase, hyphen-separated skill identifier. */
+export const formatSkillName = (value: string): string => value
+  .toLowerCase()
+  .replace(/[^a-z0-9\s-]/g, "")
+  .trimStart()
+  .replace(/\s+/g, "-")
+  .replace(/-+/g, "-");
 
 const dirName = (path: string) => {
   const i = path.lastIndexOf("/");
@@ -13,7 +22,7 @@ const joinPath = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
 /** Build the markdown body for a new skill manifest. */
 export const makeSkillManifestBody = (name: string, description: string) =>
-  `---\nname: ${name}\ndescription: ${description}\n---\n`;
+  `---\n${stringifyYaml({ name, description }).trimEnd()}\n---\n`;
 
 /** Whether a string is a valid skill identifier (kebab-case, max 64 chars). */
 export const isValidSkillName = (name: string): boolean =>
@@ -34,9 +43,14 @@ export const uniqueSkillDirectory = (
   parentDir: string,
   name: string,
 ): string => {
-  const existing = new Set(
-    (documents.get(collectionId) ?? []).map((document) => dirName(document.path)),
-  );
+  const existing = new Set<string>();
+  for (const document of documents.get(collectionId) ?? []) {
+    let directory = dirName(document.path);
+    while (directory) {
+      existing.add(directory);
+      directory = dirName(directory);
+    }
+  }
   let candidate = name;
   let index = 2;
   while (existing.has(joinPath(parentDir, candidate))) {
