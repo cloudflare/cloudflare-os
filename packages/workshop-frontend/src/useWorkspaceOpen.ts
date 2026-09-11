@@ -330,7 +330,12 @@ export function useWorkspaceOpen({
         // still-in-flight identity stamp for the workspace, so a late-resolving capture cannot
         // re-write the entry after this. The cancelled branch just above is the other site that
         // discards the unjudged entry, for an attempt whose success lands after its cleanup.
-        retainedShareKeyRef.current = null
+        // The id guard on the ref is nominally redundant for this workspace -- every path that
+        // reaches here already dropped any ref for `id` (the foreign-stub drop, the keyed
+        // success, or a newer local capture cancelling this attempt) -- and exists so a success
+        // here never touches another workspace's retention, whose key this open proves nothing
+        // about.
+        if (retainedShareKeyRef.current?.id === id) retainedShareKeyRef.current = null
         const leftover = readRetainedShareKey(id)
         if (leftover) clearRetainedShareKey(id, leftover.captureId)
         clearRetainedShareKey(id)

@@ -97,9 +97,10 @@ const METADATA = {
   provisional: false,
 } as GadgetMetadata
 
-function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<AuthenticatedApi> }) {
+function WorkspaceProbe({ authenticatedApi, id = 'workspace-1' }:
+    { authenticatedApi: RpcStub<AuthenticatedApi>; id?: string }) {
   const state = useWorkspaceOpen({
-    id: 'workspace-1',
+    id,
     authenticatedApi,
     onInvalidShareKey: () => {},
     onMetadata: () => {},
@@ -987,6 +988,54 @@ describe('useWorkspaceOpen', () => {
     // a fresh mount would replay the confirmed key from storage.
     await act(async () => { heldWhoami.resolve(WHOAMI_USER); await Promise.resolve() })
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+  })
+
+  it("a keyless success elsewhere leaves another workspace's in-memory key alone", async () => {
+    // By the time a keyless open succeeds, any in-memory ref for *this* workspace is already
+    // gone (foreign-stub drop, keyed success, or a newer capture cancelling the attempt), so
+    // the only ref the success could still drop belongs to a different workspace -- whose key
+    // it proves nothing about. Identity stays unresolvable throughout so no storage stamp
+    // lands and the in-memory tier is the only replay path: capture a key for A, have the open
+    // itself fail (retention kept), visit B keylessly, and A's same-stub retry must still carry
+    // the key.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sentOpens: [string, string | undefined][] = []
+    const deniedOverseer = openDeniedOverseer()
+    const goodOverseer = disposableStub({
+      subscribeToMetadata:
+          vi.fn<(callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>>(
+              async callback => {
+                callback({ ...METADATA, id: 'workspace-2' })
+                return disposableStub({}) as RpcStub<{}>
+              }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (id: string, shareKey?: string) => {
+        sentOpens.push([id, shareKey])
+        return id === 'workspace-1' ? deniedOverseer : goodOverseer
+      },
+      whoami: async () => { throw new Error('connection lost') },
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    window.location.hash = '#share=abcd'
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(
+        <WorkspaceProbe authenticatedApi={authenticatedApi} id="workspace-1" />))
+    expect(sentOpens).toEqual([['workspace-1', 'abcd']])
+    expect(container.textContent).toContain("You don't have access to this workspace")
+    window.location.hash = ''
+
+    await act(async () => root!.render(
+        <WorkspaceProbe authenticatedApi={authenticatedApi} id="workspace-2" />))
+    expect(sentOpens).toEqual([['workspace-1', 'abcd'], ['workspace-2', undefined]])
+    expect(container.textContent).toBe(METADATA.title)
+
+    await act(async () => root!.render(
+        <WorkspaceProbe authenticatedApi={authenticatedApi} id="workspace-1" />))
+    expect(sentOpens).toEqual(
+        [['workspace-1', 'abcd'], ['workspace-2', undefined], ['workspace-1', 'abcd']])
   })
 
   it('clears loaded metadata and title and disposes the failed stub after access is denied', async () => {
