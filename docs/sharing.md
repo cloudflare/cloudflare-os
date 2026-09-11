@@ -43,7 +43,7 @@ Storage shape: a link is its first key. The `shareKeys` table holds one row per 
 
 Share key redemption and gadget opening happen atomically in a single RPC call (`openGadget(id, shareKey)`), which allows subsequent calls to be pipelined on the returned `Overseer` stub without waiting for a separate redemption step.
 
-Redemption is **one-step**: redeeming a key writes the recipient's `shareKey` edge immediately, making them a collaborator like any other before the redeeming open()'s observer verification runs. Redemption is policy-gated like every grant-creating mutator (`assertNewSharingAllowed` runs synchronously with the write; a re-redemption whose edge already exists is a no-op that skips the gate). A recipient whose verification then fails keeps the edge -- see Known limitations.
+Redemption is **one-step**: redeeming a key writes the recipient's `shareKey` edge immediately, making them a collaborator like any other before the redeeming open()'s observer verification runs. A recipient whose verification then fails keeps the edge -- see Known limitations.
 
 ### Home page behavior
 
@@ -150,7 +150,7 @@ Authorization is enforced at `open()`: the method computes the caller's effectiv
 
 Because the role is recomputed from the graph on every `open()`, the live computation is the *sole* source of truth for access -- there is no eager cleanup whose bugs could grant access to an unreachable user. This is what makes lazy revocation safe: severing an edge is enough to deny access, even though the unreachable records linger in storage.
 
-A share-key redemption goes through the same gate: the redemption is a grant like any other, policy-gated by `assertNewSharingAllowed` synchronously with the edge write. The redeeming open() then verifies the recipient as an observer like any other collaborator; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
+A share-key redemption goes through the same gate. The redeeming open() then verifies the recipient as an observer like any other collaborator; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
 ### Terminating live sessions on revocation or scope growth
 
@@ -184,11 +184,9 @@ Revocations and role changes take effect within seconds -- the revocation restar
 - **An unverified redeemer persists as a collaborator.** Redemption writes a real edge before the
   redeeming open's observer verification runs, so from the moment a recipient clicks the link they
   appear in `listCollaborators` whether or not they ever complete the open. They cannot reach the
-  workspace -- verification denies them at open -- but the workspace counts as *shared* for the
-  checks that ask only whether anyone else is on it: removing a restricted producer is blocked, and
-  an unverifiable producer's restricted reads are refused. Remedies: they verify (complete the
-  open), the owner removes them, or the link is revoked. Two-phase redemption (a pending edge
-  granting nothing until verification confirms it) is the planned fix.
+  workspace -- verification denies them at open. Remedies: they verify (complete the open), the
+  owner removes them, or the link is revoked. Two-phase redemption (a pending edge granting
+  nothing until verification confirms it) is the planned fix.
 - **A refused recipient persists.** A recipient whose verification is refused keeps their edge:
   they appear in `listCollaborators` until the owner removes them (or revokes the link), with the
   same consequences as the previous item, and covered by the same planned fix.

@@ -36,38 +36,31 @@ commits.
   key explicitly: `containsRestrictedData: singleton(false, {storageKey:
   "prohibitAllSharing"})`. `storageKey` is a typed-storage schema option added for this,
   so the exception lives in the schema rather than as a special case at each call site.
-- **Persisted records are read through a legacy shim.** Old action-log entries still
-  carry `prohibitAllSharing` in their recorded `ObservationDescription`.
-  `observationContainsRestrictedData()` (with a local `LegacyObservationDescription`
-  type) reads either spelling. This is a read-side shim only — no producer may write the
-  old name.
 - **Admission is per-collaborator, checked continuously.** Not at grant time: at every
   `open()`, so revocation of a collaborator's underlying resource access is caught
   promptly. Nobody is in the workspace without having passed the producer's
   `addObserver()`, and anything that widens what they must pass restarts every live
   session so it re-opens at the new scope (`#restartIfSessionsAffected`).
-  `authorizeObservation` itself only has to refuse the one producer admission cannot see:
-  an unverifiable one (`#assertUnverifiableProducerUnshared`).
 - **Coverage is held to each collaborator's own role scope.** `ensureObserver` never
   verifies a `use` collaborator against a gatekeeper outside their scope. This is a liveness
   tradeoff, not a security guarantee: restricted data can flow from that gatekeeper
   through the agent into gadget-visible state. The exception for an unbound producer and
   a `use` collaborator is the known security risk stated above.
 - **Share-key redemption stays one-step.** Redeeming a key writes a real edge
-  immediately, as on main, gated by `assertNewSharingAllowed` synchronously with the
-  write. The redeeming open then verifies the recipient like any other collaborator.
-  Two consequences are accepted on the ledger below: an unverified redeemer, and a
-  refused recipient, both persist in `listCollaborators` until removed, which is enough
-  to make the workspace count as shared. Two-phase redemption (a pending edge granting
-  nothing until verification confirms it) is the planned follow-up fix for both.
+  immediately, as on main. The redeeming open then verifies the recipient like any other
+  collaborator. Two consequences are accepted on the ledger below: an unverified
+  redeemer, and a refused recipient, both persist in `listCollaborators` until removed.
+  Two-phase redemption (a pending edge granting nothing until verification confirms it)
+  is the planned follow-up fix for both.
 - **One authorization gate for every non-owner entry point.** `authorizeCollaborator`
   resolves the effective role and runs `ensureObserver`. Both `open()` and
   `receiveExternalMessage()` pass through it; the latter non-interactively, since there
   is no way to configure connected accounts from an inbound message.
-- **Removing the producing connection does not lift the restriction** for existing
-  collaborators. It does close the workspace to *new* grants
-  (`assertNewSharingAllowed`), since there is no longer an anchor to verify a newcomer
-  against.
+- **Removing the producing connection is not guarded.** The latch stays set, but nothing
+  stops the removal even though the record is what collaborators are verified against.
+  There is no UI to remove a connection today; when one is built, it will require the
+  owner to certify that no sensitive data from the connection has been retained in the
+  workspace, for any connection.
 - **Fail closed everywhere.** An operational failure — provider outage, expired
   credential — is treated exactly like a refusal.
 
@@ -82,14 +75,13 @@ commits.
 - `SharingManager` (sharing.ts) owns the permission graph: collaborator records, their
   `addedBy` edges, share links and keys, and `computeEffectiveRoles`' fixed-point
   resolution. The module header states that sharing *policy* deliberately lives outside
-  it — this plan keeps that boundary by passing policy in as `assertGrantAllowed`
-  callbacks.
+  it.
 - `#inScopeGatekeepers(role)` derives what a collaborator must be verified against.
   `use` scope is live gadget-binding state; `build` scope is broader.
 
 ## Design
 
-### 1. Admission, and the residual guard (`#assertUnverifiableProducerUnshared`)
+### 1. Admission
 
 Coverage is enforced by admission rather than per observation. `ensureObserver` verifies
 each collaborator against every in-scope gatekeeper at every `open()`, and
@@ -98,31 +90,16 @@ one bound into a gadget, a merge promoting such a binding, a hook enabled), so n
 session outlives the scope it was verified at. It is a no-op unless a collaborator session
 of the widened role is live — severing sessions is all a restart does.
 
-What survives in `authorizeObservation` is the one producer admission structurally cannot
-see: one with no vendor account behind it (`aiModel`/`agentSpawner`, or a legacy record
-with no `creationSpec`). `#inScopeGatekeepers` skips those, so no collaborator is ever
-asked about them, and its restricted observations are refused outright while the
-workspace has any collaborator or outstanding share link — consistent with
-`assertNewSharingAllowed`, which already treats the same case as unshareable.
-
-The error reaches sandboxed gadget code and agent output — an audience that cannot
-otherwise enumerate collaborators — so it reports only that the workspace is shared,
-naming neither the collaborators nor their profile ids (the full email on OAuth and CF
-Access deployments).
-
 ### 2. One-step share-key redemption (sharing.ts)
 
 `redeemShareKey` keeps main's shape: hash the key, resolve the link, and write a real
 `shareKey` edge (creating the collaborator record if they're new), deduplicating against
-an existing edge for the same link. The one delta vs main is the `assertGrantAllowed`
-policy gate, invoked synchronously before the write and only when an edge is actually
-added — a no-op re-redemption skips it, so an existing collaborator's re-open with a
-retained key is untouched by a latched policy.
+an existing edge for the same link.
 
 The edge is real before the redeeming open's observer verification runs; the two
-resulting windows (an unverified redeemer blocking restricted reads; a refused recipient
-persisting until removed) are the accepted consequences on the ledger, marked by the
-TODO at `redeemShareKey`.
+resulting windows (an unverified redeemer and a refused recipient, each persisting in
+`listCollaborators` until removed) are the accepted consequences on the ledger, marked by
+the TODO at `redeemShareKey`.
 
 ### 3. The unified gate (`authorizeCollaborator`)
 
@@ -140,16 +117,7 @@ revocation affected-set like any collaborator: a link revoked (or a removal land
 while their open is parked triggers the revocation restart, which severs their session
 and re-runs `open()` against the live graph.
 
-### 4. Policy hooks, not policy in `SharingManager`
-
-`addCollaborator`, `createShareLink`, `newShareLinkKey` and `redeemShareKey` all take an
-optional `assertGrantAllowed` callback, invoked synchronously with the granting write.
-The overseer passes `assertNewSharingAllowed`. A throw persists nothing. The manager invokes
-the hook only when a grant is actually created (a new record, a new edge, or a role rise on
-an existing edge); a same-or-lower `addCollaborator` re-grant or a redemption whose edge
-already exists skips it.
-
-### 5. Observer records on a failed live check
+### 4. Observer records on a failed live check
 
 An earlier draft scrubbed the failed gatekeeper from the collaborator's persisted
 `accountChoices` and restarted the workspace on the failure. The observer machinery
@@ -160,7 +128,7 @@ collaborator is denied at their next open regardless, and only that open is deni
 lazy-revocation residual in `docs/observers.md` edge case 3). Nothing in this model reads
 `accountChoices` to admit a restricted read, so the scrub is not a precondition of it.
 
-### 6. Frontend
+### 5. Frontend
 
 - **Share modal**: no longer replaces itself with a "can't be shared" view. Controls stay
   live behind a notice.
@@ -205,16 +173,17 @@ path, and the scope-widening restart — landed separately in #380.
    `gatekeeper-mcp` and the gatekeeper-authoring skill doc. Atomic by necessity.
 2. **Part 1 — API.** The restated contract on `containsRestrictedData`. Server still
    implements the old behavior.
-3. **Part 2 — core server implementation.** The restricted-observation guard, the
-   redemption policy gate, `restrictedProducerIds`/`assertNewSharingAllowed`, the
-   producer-removal guard, the legacy flag shim, and removal of `hasAnyShares`. Places
-   the TODO ledger for the deferred fixes.
+3. **Part 2 — core server implementation.** The latch, the removal of `hasAnyShares`
+   and the sharing checks, and the TODO ledger.
 4. **Part 3 — backend tests.**
 5. **Part 4 — integration tests.** Over real Durable Objects, through the test
    gatekeeper fixture's `readValue(restricted)` and its controllable verification
    outcome.
 6. **Part 5 — documentation.** `docs/observers.md` coverage rules and residuals;
-   `docs/sharing.md` one-step redemption and the policy hooks; this plan.
+   `docs/sharing.md` one-step redemption; this plan.
+7. **Part 6 — drop the producer guards per review.** Deletes the unverifiable-producer
+   refusal, the producer-removal guard, `assertNewSharingAllowed` and the
+   `assertGrantAllowed` plumbing, the action-log scan, and the legacy flag shim.
 
 The deferred items are collected in the Known-limitations section below. The Share
 modal unblock and the retained-share-key frontend work live in
@@ -237,11 +206,10 @@ the follow-up worklist.
   in-memory pending-id map consulted there, failing closed — `observer-verification-fixes`.
 - An unverified redeemer persists as a collaborator: redemption writes a real edge
   before the redeeming open's verification runs, so from click onward the recipient is
-  visible in `listCollaborators` whether or not they ever complete the open, which is
-  enough to make the workspace count as shared (remedies: verify, remove, or revoke the
-  link). Two-phase redemption is the planned fix.
+  visible in `listCollaborators` whether or not they ever complete the open (remedies:
+  verify, remove, or revoke the link). Two-phase redemption is the planned fix.
 - A refused recipient persists: a recipient whose verification is refused keeps their
-  edge, with the same consequence as the previous item, and the same planned fix.
+  edge and stays in `listCollaborators` until removed; the same planned fix.
 - A failed re-verification denies only the open being attempted. Sessions the
   collaborator already holds keep the access their own opens verified until they next
   re-open — the lazy-revocation residual `docs/observers.md` edge case 3 already accepts,
@@ -249,29 +217,12 @@ the follow-up worklist.
 
 ## Known edge cases / watch-fors
 
-- **A producer removed mid-redemption cannot slip a grant through.** `remove()` refuses
-  every restricted producer (unverifiable ones included) while any share link is
-  outstanding, and the redemption policy gate runs synchronously with the edge write.
 - **Operational failures deny like refusals.** An outage or expired credential denies the
   collaborator's open exactly as a revocation does (the overseer cannot tell them apart);
   they get back in as soon as a repaired open re-verifies them. Fail-closed by design.
 - **Role increases do not ride out on a redeeming open.** An owner grant landing while
   verification waited takes effect at the recipient's next open, exactly as for an
   ordinary keyless open.
-- **Removing an unverifiable restricted producer — implemented: guarded like any other.**
-  `remove()`'s producer guard used to exempt unverifiable records ("removing one is
-  itself a remedy"), which was backwards once the data had been read: the record is the
-  *blocker* -- `#inScopeGatekeepers` throws on it, so no collaborator can open -- and
-  removing it let every existing collaborator open unverified while the restricted data
-  persists in chat history, gadget storage and code (`assertNewSharingAllowed` only stops
-  *new* grants). Decided and implemented: fail closed -- unverifiable producers are
-  guarded like any other (the owner must remove all collaborators and revoke all share
-  links first), after which the workspace is permanently owner-only
-  (`restrictedProducerIds()` reads the action log, which never forgets the producer).
-  Deliberately no migration or reconnect flow: an automatic migration is impossible
-  (legacy records never persisted `vendorId`, and the class stub is opaque), and an
-  owner-driven reconnect flow was considered and rejected as scope. The documented
-  recovery for an owner who wants to share such a workspace is to start a new workspace.
 
 ## Accepted tradeoffs / future work
 
@@ -281,9 +232,9 @@ the follow-up worklist.
   the data entered gadget storage while the producer *was* bound, when every `use`
   collaborator was verified against it or could not open the workspace; and re-binding
   restores verifiability at the next open. The residual is `use` grants created after the
-  unbind. Note that (i) does not cover a binding loopback retained across the unbind, which
-  returns the read directly as an RPC result and stays callable until `removeGatekeeper`;
-  that is the `docs/observers.md` Step 5 known gap, with `#assertBindingEdgeLive` as the
+  unbind. The chat-history argument does not cover a binding loopback retained across the
+  unbind, which returns the read directly as an RPC result and stays callable until
+  `removeGatekeeper`; that is the `docs/observers.md` Step 5 known gap, with `#assertBindingEdgeLive` as the
   named fix.
 - **Known security risk — never-bound producers.** A producer reachable only through chat
   bindings (including an ambient singleton) is never in a `use` collaborator's verification

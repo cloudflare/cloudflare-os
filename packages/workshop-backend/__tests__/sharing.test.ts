@@ -169,52 +169,6 @@ describe("redeemShareKey", () => {
     });
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
-
-  it("a throwing assertGrantAllowed rejects a new recipient with nothing persisted", async () => {
-    let { storage, mgr } = makeManager();
-    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
-
-    await expect(mgr.redeemShareKey({
-      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
-      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
-    })).rejects.toThrow(/sharing is closed/);
-
-    // No collaborator record and no edge were written.
-    expect(storage.collaborators.get("a")).toBeUndefined();
-  });
-
-  it("does not invoke assertGrantAllowed for an already-existing edge", async () => {
-    let { mgr } = makeManager();
-    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
-    });
-
-    // An existing edge is an existing grant, not a new one: the redemption stays a no-op even
-    // when policy forbids new sharing (a collaborator re-opening with a retained key).
-    await expect(mgr.redeemShareKey({
-      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
-      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
-    })).resolves.toBeUndefined();
-    expect(mgr.getEffectiveRole("a")).toBe("build");
-  });
-
-  it("invokes a passing assertGrantAllowed once and writes the edge", async () => {
-    let { storage, mgr } = makeManager();
-    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
-
-    let calls = 0;
-    await mgr.redeemShareKey({
-      rawKey: key, profileId: "a", fetchProfile: async () => profile("a"),
-      assertGrantAllowed: () => { calls++; },
-    });
-
-    expect(calls).toBe(1);
-    expect(storage.collaborators.get("a")!.addedBy).toEqual([
-      expect.objectContaining({ type: "shareKey", keyId: linkId }),
-    ]);
-    expect(mgr.getEffectiveRole("a")).toBe("build");
-  });
 });
 
 describe("addCollaborator", () => {
@@ -268,68 +222,6 @@ describe("addCollaborator", () => {
 
     // A subsequent lower grant does not downgrade the existing edge.
     mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "use" });
-    expect(mgr.getEffectiveRole("a")).toBe("build");
-  });
-
-  it("does not invoke assertGrantAllowed for a same-or-lower re-grant", () => {
-    let { storage, mgr } = makeManager();
-    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    let closed = () => { throw new Error("sharing is closed"); };
-
-    // Same role: an existing grant, not a new one, so only the note changes even when policy
-    // forbids new sharing.
-    expect(() => mgr.addCollaborator({
-      caller: owner, profile: profile("a"), role: "build", note: "updated",
-      assertGrantAllowed: closed,
-    })).not.toThrow();
-    let record = storage.collaborators.get("a")!;
-    expect(record.addedBy).toHaveLength(1);
-    expect(record.addedBy[0]).toEqual(expect.objectContaining({ role: "build", note: "updated" }));
-    expect(mgr.getEffectiveRole("a")).toBe("build");
-
-    // Lower role: never downgrades, and creates no grant either.
-    expect(() => mgr.addCollaborator({
-      caller: owner, profile: profile("a"), role: "use", assertGrantAllowed: closed,
-    })).not.toThrow();
-    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
-    expect(mgr.getEffectiveRole("a")).toBe("build");
-  });
-
-  it("invokes assertGrantAllowed for a new collaborator, a new edge, and a role rise, and a throw persists nothing", () => {
-    let { storage, mgr } = makeManager();
-    let closed = () => { throw new Error("sharing is closed"); };
-
-    // New collaborator: no record written.
-    expect(() => mgr.addCollaborator({
-      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: closed,
-    })).toThrow(/sharing is closed/);
-    expect(storage.collaborators.get("a")).toBeUndefined();
-
-    // New edge from a different sharer onto an existing collaborator: addedBy unchanged.
-    seedCollaborator(storage, "b", [userEdge(OWNER, "build")]);
-    seedCollaborator(storage, "a", [userEdge("b", "use")]);
-    expect(() => mgr.addCollaborator({
-      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: closed,
-    })).toThrow(/sharing is closed/);
-    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
-    expect(mgr.getEffectiveRole("a")).toBe("use");
-
-    // Role rise on the existing same-sharer edge: role unchanged.
-    expect(() => mgr.addCollaborator({
-      caller: collab("b"), profile: profile("a"), role: "build", assertGrantAllowed: closed,
-    })).toThrow(/sharing is closed/);
-    expect(storage.collaborators.get("a")!.addedBy[0]).toEqual(expect.objectContaining({
-      type: "user", sharer: "b", role: "use",
-    }));
-    expect(mgr.getEffectiveRole("a")).toBe("use");
-
-    // A passing check is invoked exactly once and the grant is written.
-    let calls = 0;
-    mgr.addCollaborator({
-      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: () => { calls++; },
-    });
-    expect(calls).toBe(1);
-    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(2);
     expect(mgr.getEffectiveRole("a")).toBe("build");
   });
 });
@@ -588,26 +480,6 @@ describe("createShareLink", () => {
     expect(() => mgr.createShareLink({ caller: collab("a"), role: "build" }))
         .rejects.toThrow(/higher than your own/);
   });
-
-  it("a throwing assertGrantAllowed aborts with nothing persisted", async () => {
-    let { storage, mgr } = makeManager();
-    await expect(mgr.createShareLink({
-      caller: owner, role: "build",
-      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
-    })).rejects.toThrow(/sharing is closed/);
-    // The minted key was discarded, never stored.
-    expect([...storage.shareKeys.list()]).toEqual([]);
-  });
-
-  it("invokes assertGrantAllowed once and persists the grant when it passes", async () => {
-    let { mgr } = makeManager();
-    let calls = 0;
-    let { linkId } = await mgr.createShareLink({
-      caller: owner, role: "use", assertGrantAllowed: () => { calls++; },
-    });
-    expect(calls).toBe(1);
-    expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual([linkId]);
-  });
 });
 
 describe("newShareLinkKey", () => {
@@ -667,23 +539,6 @@ describe("newShareLinkKey", () => {
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
     expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
         .rejects.toThrow(/higher than your own/);
-  });
-
-  it("a throwing assertGrantAllowed aborts the copy with nothing persisted", async () => {
-    let { storage, mgr } = makeManager();
-    let { linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
-
-    await expect(mgr.newShareLinkKey({
-      caller: owner, linkId,
-      assertGrantAllowed: () => { throw new Error("sharing is closed"); },
-    })).rejects.toThrow(/sharing is closed/);
-    // Only the original link record remains; the aborted copy's key was never stored.
-    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual([linkId]);
-
-    let calls = 0;
-    await mgr.newShareLinkKey({ caller: owner, linkId, assertGrantAllowed: () => { calls++; } });
-    expect(calls).toBe(1);
-    expect([...storage.shareKeys.list()]).toHaveLength(2);
   });
 
   it("cannot manage a link through the id of one of its copies", async () => {

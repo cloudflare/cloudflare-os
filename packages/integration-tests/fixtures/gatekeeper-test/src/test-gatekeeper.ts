@@ -302,11 +302,7 @@ export class TestVerifier
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
 export interface TestSession {
-  /**
-   * Records an observation through the same `ApprovalQueue` funnel a shipping gatekeeper uses.
-   * `restricted` marks it `containsRestrictedData`, to trip the restricted-mode latch and the
-   * unverifiable-producer guard.
-   */
+  /** `restricted` marks the observation `containsRestrictedData`. */
   readValue(restricted?: boolean): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;

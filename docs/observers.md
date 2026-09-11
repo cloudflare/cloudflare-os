@@ -36,10 +36,7 @@ observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 latches the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
 admission: nobody can open the workspace without being verified against the producing gatekeeper,
-and anything that widens what they must be verified against restarts every live session. The one
-producer admission cannot see — one with no vendor account behind it — is refused outright while
-the workspace is shared; see `#assertUnverifiableProducerUnshared` in `overseer.ts` and edge case
-4 below.)
+and anything that widens what they must be verified against restarts every live session.)
 
 The check works as follows:
 
@@ -103,7 +100,7 @@ The check works as follows:
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
-| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation`'s `#assertUnverifiableProducerUnshared`, `getWebFetchEnv`, `submitAction`) |
+| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation`'s latch, `getWebFetchEnv`, `submitAction`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
 | Gatekeeper storage record | `overseer.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
 | `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts` |
@@ -672,39 +669,18 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope widens"). The flag also latches the workspace
    into a restricted mode that blocks actions and web fetches.
-   One producer admission structurally cannot cover: one with no vendor account behind it — an
-   `aiModel`/`agentSpawner` binding, or a legacy record with no `creationSpec`.
-   `#inScopeGatekeepers` skips those, so no collaborator is ever asked about them, and
-   `#assertUnverifiableProducerUnshared` in `authorizeObservation` therefore refuses their
-   restricted observations outright while the workspace is shared (any collaborator or
-   outstanding share link — the same test `removalBlockedByRestrictedData` applies; a link's key
-   never expires, so admitting the read would strand a link the owner has already handed out).
-   (This matches `assertNewSharingAllowed()`, which already treats the same case as unshareable,
-   and the message names no collaborator: it reaches sandboxed gadget code and agent output.)
-   Verification is also held to each collaborator's own role scope, because `ensureObserver` can
+   Verification is held to each collaborator's own role scope, because `ensureObserver` can
    never verify beyond it: a `use` collaborator can't be covered for a gatekeeper outside their
    scope (one no gadget binds and no enabled hook feeds — see `#useScopeGatekeeperIds`).
-   `use` scope is *live* binding state, with a transition case in each direction. Adding a
-   binding grows it, which restarts every live session (edge case 5). Unbinding shrinks it
-   silently: a formerly-bound producer drops out of `use` verification scope, so its sensitive
-   reads stop requiring `use` collaborators' coverage — the same skip as a never-bound producer,
-   though the liveness argument above doesn't apply to it. Accepted because (i) `use` sessions
-   cannot read chat history or the action log, so the exposure is limited to state the gadget
-   persisted, served through the gadget's own UI or export; (ii) that data entered gadget
-   storage while the producer *was* bound, when every `use` collaborator was verified against
-   it or could not open the workspace; (iii) the residual is `use` grants created after the
-   unbind, who view that persisted state unverified — and re-binding the connection restores their
-   verifiability at their next open. Coverage does not go stale across the unbind/rebind either:
-   a `use` collaborator who opened only during the unbound window verified nothing against the
-   producer and so holds no entry for it, and the rebind restarts the workspace, so their forced
-   re-open asks them about it; one who had verified before the unbind keeps their entry — it
-   records the account they chose, not an admission — and their re-open re-runs `addObserver`
-   against it.
+   Unbinding shrinks `use` scope silently, so a formerly-bound producer's later restricted reads
+   are not covered for `use` collaborators added after the unbind. Accepted because `use`
+   sessions cannot read chat history or the action log, and a rebind restores coverage at the
+   next open.
    The *never*-bound flavor of the same skip is broader: a producer reachable only through
    chat bindings (an ambient singleton the agent reads in chat) was never in any `use`
-   collaborator's scope, so premise (ii) does not hold for it — the agent can persist its
-   restricted data into gadget code or storage without any `use` collaborator ever having
-   been verified against it, and there is no prior binding for "re-bind" to restore.
+   collaborator's scope — the agent can persist its restricted data into gadget code or storage
+   without any `use` collaborator ever having been verified against it, and there is no prior
+   binding for "re-bind" to restore.
    Accepted on the same grounds: coverage there is unverifiable by construction (the
    liveness argument above), `use` sessions still cannot read chat history or the action
    log, so the exposure is limited to what the agent chose to persist, and the forward
@@ -732,31 +708,11 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    (unbound, with no enabled hook keeping it reachable) is the different case Step 5's scope test
    handles: the gatekeeper still knows the id, but the observer can no longer reach what it
    produces, so they are de-registered from it instead of blocking.
-8. **Removing a connection that read restricted data** — while the workspace is latched
-   (`containsRestrictedData`) *and* shared, `GatekeeperClient.remove()` refuses for the
-   *producer* connections — those through which restricted data was actually read, derived from
-   the permanent action log (`restrictedProducerIds`); non-producers stay removable. The record
-   is what observer verification runs against, and the restricted data outlives it in chat
-   history and storage, so deleting it would let a never-verified collaborator open unchecked.
-   Outstanding share links block removal the same way: their keys never expire, and redemption
-   is gated at open() only while the record exists. The remedy is to remove collaborators and
-   revoke share links first.
-   Unverifiable producers (a legacy record with no creation spec, or an aiModel/agentSpawner
-   backed by no vendor account) are guarded the same way: a legacy record denies every open whose
-   scope includes it (every `build` open — `observerVendorId` throws on it) while it exists, so
-   removing it while shared would readmit every existing collaborator with the restricted history
-   still in chat. It cannot be migrated (it never persisted the vendor identity), so the recovery
-   for an owner who wants to share such a workspace is to start a new one. Internal removals need
-   no guard: the creation-failure rollback removes a record too new to be a producer, and ambient
-   reconciliation skips — and logs — a stale record the guard protects.
-   The complementary rule (`assertNewSharingAllowed`): once latched, if any producer is gone or
-   can never verify a collaborator, everything that would admit a new party refuses — the
-   grant-creating mutators (`addCollaborator`, `createShareLink`, `newShareLinkKey`) and
-   `redeemShareKey` at open() — leaving the workspace permanently owner-only. Each check runs
-   synchronously with its storage write, so a producer removed in any await window still refuses
-   the grant; a redemption whose edge already exists, or an `addCollaborator` that creates no
-   new edge and raises no role, skips the check, so an existing collaborator's re-open or
-   re-grant is untouched.
+8. **Removing a connection that read restricted data** — removal is not guarded by the
+   restricted-data latch. The record is what observer verification runs against, so removing a
+   producer drops the check for data that outlives it in chat history and storage. The intended
+   remedy is that a future connection-removal UI asks the owner to certify that no sensitive data
+   from that connection has been retained in the workspace, for any connection.
 
 ---
 

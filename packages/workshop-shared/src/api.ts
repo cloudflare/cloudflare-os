@@ -1307,10 +1307,9 @@ export type GadgetMetadata = {
   role?: CollaboratorRole;
 
   /**
-   * True when the gadget has observed data marked as containing restricted data (see
-   * `ObservationDescription.containsRestrictedData`). Such gadgets can still be shared, but
-   * collaborators must be verified (per gatekeeper) to have access to the same data, and the
-   * workspace can no longer perform actions or fetch from the public web.
+   * True when the gadget has observed data marked `containsRestrictedData` (see
+   * `ObservationDescription`). It can still be shared, with collaborators verified per
+   * gatekeeper, but can no longer perform actions or fetch from the public web.
    */
   containsRestrictedData?: boolean;
 

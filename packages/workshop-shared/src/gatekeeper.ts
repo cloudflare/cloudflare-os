@@ -1213,20 +1213,11 @@ export type ObservationDescription = {
   /**
    * If true, then this observation contains sensitive information that must only be shown to
    * people who are verified to have access to the same data. This means:
-   * - Access to the gadget is conditioned on verification: every collaborator passed this
-   *   gatekeeper's `addObserver()` at their most recent open and cannot open without passing it,
-   *   so a gatekeeper whose `addObserver()` always throws is unshareable once it has made one of
-   *   these observations. Anything that widens what a collaborator must be verified against --
-   *   adding a connection, binding one into a gadget -- restarts the workspace, so every live
-   *   session re-opens and re-verifies against the new scope.
+   * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
+   *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
+   *   once it has made one of these observations.
    * - Once observed, the gadget enters a restricted mode: no more actions or public-web fetches,
    *   only observations, so the gadget cannot leak the data through other gatekeepers.
-   *
-   * Two limits are worth stating plainly. Verification is held to the collaborator's role scope,
-   * so a gatekeeper the agent reads only through a chat binding is in no "use" collaborator's
-   * scope and they are never verified against it. And enforcement is at admission rather than at
-   * each read, so a session whose holder should no longer be admitted is severed within ~100ms of
-   * the change rather than instantaneously.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
    *   actions whose visibility is limited to people verified to have access to the same data,
