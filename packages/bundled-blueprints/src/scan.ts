@@ -21,6 +21,24 @@ export interface ModuleScan {
    * the bundler looks through those too (see {@link unwrap}).
    */
   dynamic?: "import" | "require";
+  /**
+   * Whether the module binds the name `require` itself -- a variable, parameter, function, class
+   * or import of that name. The scan reads a bare `require(...)` as the module loader, as the
+   * bundler does when the name is unbound; a module that rebinds it would be misread in both
+   * directions, so the build refuses it instead.
+   */
+  rebindsRequire?: true;
+}
+
+/** Whether `node` declares a value binding named `require` (see {@link ModuleScan.rebindsRequire}). */
+function bindsRequire(node: ts.Node): boolean {
+  const declaration = ts.isVariableDeclaration(node) || ts.isParameter(node) ||
+      ts.isBindingElement(node) || ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node) ||
+      ts.isEnumDeclaration(node) || ts.isImportClause(node) || ts.isImportSpecifier(node) ||
+      ts.isNamespaceImport(node) || ts.isImportEqualsDeclaration(node);
+  return declaration && node.name !== undefined && ts.isIdentifier(node.name) &&
+      node.name.text === "require";
 }
 
 /**
@@ -51,6 +69,7 @@ export function scanModule(path: string, source: string): ModuleScan {
     if (node !== undefined && ts.isStringLiteralLike(node)) scan.specifiers.push(node.text);
   };
   const visit = (node: ts.Node): void => {
+    if (bindsRequire(node)) scan.rebindsRequire = true;
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       specifier(node.moduleSpecifier);
     } else if (ts.isImportEqualsDeclaration(node)) {
@@ -60,7 +79,8 @@ export function scanModule(path: string, source: string): ModuleScan {
     } else if (ts.isImportTypeNode(node)) {
       if (ts.isLiteralTypeNode(node.argument)) specifier(node.argument.literal);
     } else if (ts.isCallExpression(node)) {
-      // A bare `require` only: `foo.require(...)` is a method of that name, not the keyword.
+      // A bare `require` only: `foo.require(...)` is a method of that name, not the keyword. A
+      // local binding of the name is refused above rather than resolved here.
       const callee = unwrap(node.expression);
       const keyword = callee.kind === ts.SyntaxKind.ImportKeyword ? "import"
           : ts.isIdentifier(callee) && callee.text === "require" ? "require"

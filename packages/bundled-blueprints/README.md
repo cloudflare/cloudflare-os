@@ -87,7 +87,9 @@ specifier some `node_modules` resolves), a library import of the wrong side or o
 not exist, a
 dynamic `import()` or `require()` of anything but a string literal, refused before the bundler runs
 (it would leave a computed path unchecked, and expand a template literal or concatenation into every
-file the pattern matches, wherever that reaches), a generated `client.js`/`server.js` that collides
+file the pattern matches, wherever that reaches), a module that binds the name `require` (the scan
+reads a bare `require(...)` as the module loader, as the bundler does only while the name is
+unbound), a generated `client.js`/`server.js` that collides
 with a file or directory already in the tree, or a shipped JavaScript module that imports a library,
 which only the bundle can inline. Imports are read from each module's syntax tree with the
 TypeScript compiler, so a comment or a string can neither masquerade as one nor hide one.
