@@ -439,16 +439,15 @@ describe("bundled blueprint TypeScript sources", () => {
     await expect(readSourceFiles(required, "example/files")).rejects
       .toThrow(message("require(...)"));
 
-    // A scan, so the spelling is refused wherever it appears, a comment included.
+    // The imports are read from the syntax tree, so a comment cannot spell one.
     let commented = await sourceTree({
       "client.ts": "// import(`./${x}`)\nexport const a = 1;",
     });
-    await expect(readSourceFiles(commented, "example/files")).rejects
-      .toThrow(message("import(...)"));
+    expect([...(await readSourceFiles(commented, "example/files")).keys()]).toEqual(["client.js"]);
 
-    // A line comment ends at CR, LS or PS too, and esbuild reads the `(` after it; the scan has to
-    // as well, or the pattern would be enumerated before the wildcard edge rejects it. As above,
-    // the match is not JavaScript, so a rejection here proves the build never ran.
+    // A line comment ends at CR, LS or PS too, so the `(` after one ended that way is the call's,
+    // and the pattern has to be refused before it is enumerated. As above, the match is not
+    // JavaScript, so a rejection here proves the build never ran.
     for (let terminator of ["\r", "\u2028", "\u2029"]) {
       let split = await sourceTree({
         "files/client.ts": "export const load = (name: string) => import //x" + terminator +
@@ -497,10 +496,8 @@ describe("bundled blueprint TypeScript sources", () => {
     await expect(readSourceFiles(directory, "example/files")).rejects.toThrow(message);
   });
 
-  // The scan reads a specifier as spelled, so an escape in one would spell the package name in a
-  // way the check above cannot see. Nobody spells an import path with an escape, so the spelling
-  // is refused outright.
-  it("rejects an import spelled with an escape in a shipped module", async () => {
+  // The specifier is compared as the parser decodes it, so an escape spells the same name.
+  it("reads an escaped specifier as what it names", async () => {
     let directory = await sourceTree({
       "client.js": 'document.title = "hi";',
       "server.js": [
@@ -509,8 +506,8 @@ describe("bundled blueprint TypeScript sources", () => {
       ].join("\n"),
     });
     await expect(readSourceFiles(directory, "example/files")).rejects
-      .toThrow(`example/files: server.js imports ${LIBRARY.replace("g", "\\u0067")}/sync/server, ` +
-          "spelled with an escape; write the path plainly so the build can read it");
+      .toThrow(`example/files: server.js imports ${LIBRARY}/sync/server: a gadget library is ` +
+          "inlined by the build into a TypeScript entry only");
   });
 
   // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
@@ -553,6 +550,28 @@ describe("bundled blueprint TypeScript sources", () => {
 
     expect([...files.keys()]).toEqual(["client.js"]);
     expect(files.get("client.js")).toContain('document.title = "ready"');
+  });
+
+  it("does not count a module named only in a comment", async () => {
+    let directory = await sourceTree({
+      "client.ts": '// import "./lib/unused.ts"\nexport const a = 1;',
+      "lib/unused.ts": "export const unused = 1;",
+    });
+
+    await expect(readSourceFiles(directory, "example/files"))
+      .rejects.toThrow("lib/unused.ts is not imported by any entry point");
+  });
+
+  // Nothing of a type-position import reaches the bundle, so the parse alone witnesses it.
+  it("counts a module reached only through a type-position import", async () => {
+    let directory = await sourceTree({
+      "client.ts": 'export type T = import("./lib/types.ts").T;',
+      "lib/types.ts": "export type T = number;",
+    });
+
+    let files = await readSourceFiles(directory, "example/files");
+
+    expect([...files.keys()]).toEqual(["client.js"]);
   });
 
   // esbuild applies the field to the package's own relative imports, not just to dependencies,
