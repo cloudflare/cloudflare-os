@@ -119,6 +119,21 @@ const StyledRow = ({
         <span className="min-w-0 flex-1">
           {rename!.renderInput(item)}
         </span>
+      ) : item.description ? (
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink">
+            {item.name}
+          </Text>
+          <Text
+            as="span"
+            size="sm"
+            variant="secondary"
+            truncate
+            DANGEROUS_className="min-w-0 flex-1 font-normal"
+          >
+            {item.description}
+          </Text>
+        </span>
       ) : (
         <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
           {item.name}
@@ -130,7 +145,7 @@ const StyledRow = ({
           size="xs"
           variant="secondary"
           truncate
-          DANGEROUS_className="min-w-0 max-w-1/2 shrink tabular-nums"
+          DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap tabular-nums"
         >
           {item.metadata}
         </Text>

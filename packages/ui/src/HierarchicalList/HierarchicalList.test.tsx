@@ -536,4 +536,16 @@ describe("HierarchicalList", () => {
     act(() => finishRename?.());
     expect(document.activeElement).toBe(buttonFor("Review code"));
   });
+
+  it("renders an inline item description next to its name", () => {
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Incident Response", description: "Handle incidents" }]}
+        label="Skills"
+      />,
+    );
+
+    expect(buttonFor("Incident Response")?.textContent)
+      .toContain("Incident ResponseHandle incidents");
+  });
 });

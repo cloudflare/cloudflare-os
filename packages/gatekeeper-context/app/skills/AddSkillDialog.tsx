@@ -5,12 +5,10 @@ import type { ContextDocumentSummary, EnabledCollectionInfo } from "../../src/co
 import { useContextApi } from "../bridge";
 import {
   buildNewSkillLocation,
-  formatSkillName,
   isValidSkillDescription,
-  isValidSkillName,
   makeSkillManifestBody,
 } from "./addSkillNavigatorNode";
-import { saveLastPickedCollectionId } from "./skillCollectionPreference";
+import { isValidSkillName, sanitizeSkillTitle, skillNameFromTitle } from "./skillName";
 import { useMutationDialog } from "./useMutationDialog";
 
 /** Location and collection-selection behavior for a new skill. */
@@ -45,29 +43,28 @@ export const AddSkillDialog = ({
   const [collectionId, setCollectionId] = useState(target.collectionId);
   const [adding, setAdding] = useState(false);
   const dialog = useMutationDialog(adding, onClose);
+  const metadataName = skillNameFromTitle(name);
   const valid = Boolean(collectionId)
-    && isValidSkillName(name.trim())
+    && isValidSkillName(metadataName)
     && isValidSkillDescription(description);
 
   const add = async () => {
     if (!valid || adding) return;
-    const trimmedName = name.trim();
     const trimmedDescription = description.trim();
-    const { path } = buildNewSkillLocation(
+    const location = buildNewSkillLocation(
       documents,
       collectionId,
       target.directoryPath,
-      trimmedName,
+      metadataName,
     );
 
     setAdding(true);
     try {
-      await context.createContextSkill(collectionId, path, {
+      await context.createContextSkill(collectionId, location.path, {
         description: trimmedDescription,
-        body: makeSkillManifestBody(trimmedName, trimmedDescription),
+        body: makeSkillManifestBody(location.name, trimmedDescription),
         contentType: "text/markdown",
       });
-      saveLastPickedCollectionId(collectionId);
       onAdded();
       dialog.closeAfterSuccess();
     } catch (error) {
@@ -103,10 +100,11 @@ export const AddSkillDialog = ({
         <div className="flex flex-col gap-4 px-4 py-5 sm:px-6">
           <Input
             label="Name"
-            description="Lowercase letters, numbers, and hyphens only. Max 64 characters."
+            description="Up to 64 letters, numbers, spaces, or hyphens."
             value={name}
-            onChange={(event) => setName(formatSkillName(event.target.value))}
-            placeholder="new-skill"
+            onChange={(event) => setName(sanitizeSkillTitle(event.target.value))}
+            placeholder="New skill"
+            maxLength={64}
             autoFocus
           />
           <InputArea
