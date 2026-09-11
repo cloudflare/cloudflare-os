@@ -1,0 +1,28 @@
+packages/bundled-blueprints/src/files.ts
+  s_c98a968d9791dd::t_9b10545a745c47 392
+  s_c98a968d9791dd::t_d8fd728ef27b72 342-343,388-391
+packages/bundled-blueprints/src/scan.ts
+  s_c98a968d9791dd::t_d8fd728ef27b72 24-41,72,82-83
+packages/bundled-blueprints/README.md
+  s_c98a968d9791dd::t_d8fd728ef27b72 90-92
+packages/bundled-blueprints/__tests__/scan.test.ts
+  s_c98a968d9791dd::t_d8fd728ef27b72 23-50
+packages/bundled-blueprints/__tests__/files.test.ts
+  s_c98a968d9791dd::t_d8fd728ef27b72 656-673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1ac222ee57211882b54c8ca81ab742d1675c83d",
+  "prompts": {},
+  "sessions": {
+    "s_c98a968d9791dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cc4e73b-3307-4e86-b24d-b45122beb798",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
