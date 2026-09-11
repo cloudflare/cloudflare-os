@@ -76,7 +76,9 @@ export default {
           { command: 'vitest run', idleSeconds: 120 },
           'vitest run --config vitest.integration.config.ts',
         ]),
-        dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
+        dependsOn: [
+          '@gadgets/typed-storage#build', 'build:format-blueprints', 'build:browser-runtime',
+        ],
       },
     },
   },
