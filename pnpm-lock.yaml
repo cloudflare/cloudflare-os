@@ -1142,9 +1142,6 @@ importers:
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
-      '@gadgets/ui':
-        specifier: workspace:*
-        version: link:../ui
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
