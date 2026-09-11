@@ -12168,15 +12168,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     let sharing = await this.impl.getSharingManager();
-    // Asserted in the same synchronous block as the grant's storage write (after every await): a
-    // check ahead of the awaits above could pass, a concurrent producer-connection removal land
-    // during the yield, and the grant still be written past it.
-    this.impl.assertNewSharingAllowed();
     return sharing.addCollaborator({
       caller: this.#sharingCaller(),
       profile,
       role,
       note,
+      // Run by the manager in the same synchronous block as the grant's storage write (after
+      // every await): a check ahead of the awaits above could pass, a concurrent
+      // producer-connection removal land during the yield, and the grant still be written past
+      // it. The manager also skips it when no new grant is created (a same-or-lower re-grant
+      // over an existing edge), matching redeemShareKey's already-existing-edge case.
+      assertGrantAllowed: () => this.impl.assertNewSharingAllowed(),
     });
   }
 

@@ -754,8 +754,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    grant-creating mutators (`addCollaborator`, `createShareLink`, `newShareLinkKey`) and
    `redeemShareKey` at open() — leaving the workspace permanently owner-only. Each check runs
    synchronously with its storage write, so a producer removed in any await window still refuses
-   the grant; a redemption whose edge already exists skips the check, so an existing
-   collaborator's re-open is untouched.
+   the grant; a redemption whose edge already exists, or an `addCollaborator` that creates no
+   new edge and raises no role, skips the check, so an existing collaborator's re-open or
+   re-grant is untouched.
 
 ---
 

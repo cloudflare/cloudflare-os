@@ -270,6 +270,68 @@ describe("addCollaborator", () => {
     mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "use" });
     expect(mgr.getEffectiveRole("a")).toBe("build");
   });
+
+  it("does not invoke assertGrantAllowed for a same-or-lower re-grant", () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    let closed = () => { throw new Error("sharing is closed"); };
+
+    // Same role: an existing grant, not a new one, so only the note changes even when policy
+    // forbids new sharing.
+    expect(() => mgr.addCollaborator({
+      caller: owner, profile: profile("a"), role: "build", note: "updated",
+      assertGrantAllowed: closed,
+    })).not.toThrow();
+    let record = storage.collaborators.get("a")!;
+    expect(record.addedBy).toHaveLength(1);
+    expect(record.addedBy[0]).toEqual(expect.objectContaining({ role: "build", note: "updated" }));
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+
+    // Lower role: never downgrades, and creates no grant either.
+    expect(() => mgr.addCollaborator({
+      caller: owner, profile: profile("a"), role: "use", assertGrantAllowed: closed,
+    })).not.toThrow();
+    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
+  it("invokes assertGrantAllowed for a new collaborator, a new edge, and a role rise, and a throw persists nothing", () => {
+    let { storage, mgr } = makeManager();
+    let closed = () => { throw new Error("sharing is closed"); };
+
+    // New collaborator: no record written.
+    expect(() => mgr.addCollaborator({
+      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: closed,
+    })).toThrow(/sharing is closed/);
+    expect(storage.collaborators.get("a")).toBeUndefined();
+
+    // New edge from a different sharer onto an existing collaborator: addedBy unchanged.
+    seedCollaborator(storage, "b", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "a", [userEdge("b", "use")]);
+    expect(() => mgr.addCollaborator({
+      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: closed,
+    })).toThrow(/sharing is closed/);
+    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(1);
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+
+    // Role rise on the existing same-sharer edge: role unchanged.
+    expect(() => mgr.addCollaborator({
+      caller: collab("b"), profile: profile("a"), role: "build", assertGrantAllowed: closed,
+    })).toThrow(/sharing is closed/);
+    expect(storage.collaborators.get("a")!.addedBy[0]).toEqual(expect.objectContaining({
+      type: "user", sharer: "b", role: "use",
+    }));
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+
+    // A passing check is invoked exactly once and the grant is written.
+    let calls = 0;
+    mgr.addCollaborator({
+      caller: owner, profile: profile("a"), role: "build", assertGrantAllowed: () => { calls++; },
+    });
+    expect(calls).toBe(1);
+    expect(storage.collaborators.get("a")!.addedBy).toHaveLength(2);
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
 });
 
 describe("computeEffectiveRoles", () => {

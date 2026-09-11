@@ -40,10 +40,6 @@ function edgeGrantedRole(edge: PermissionEdge): CollaboratorRole {
   return edge.role ?? "build";
 }
 
-function maxRole(a: CollaboratorRole, b: CollaboratorRole): CollaboratorRole {
-  return roleRank(a) >= roleRank(b) ? a : b;
-}
-
 function minRole(a: CollaboratorRole, b: CollaboratorRole): CollaboratorRole {
   return roleRank(a) <= roleRank(b) ? a : b;
 }
@@ -285,14 +281,22 @@ export class SharingManager {
 
   /**
    * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
-   * responsible for resolving `profile` (via RPC) and for any policy checks. The caller may not
-   * grant a role higher than their own effective role.
+   * responsible for resolving `profile` (via RPC) and supplies the policy hook; the manager
+   * decides whether the call actually creates a grant (a new record, a new edge from this
+   * sharer, or a role rise on the existing edge) and invokes the hook only then, so a
+   * same-or-lower re-grant (which at most updates the edge's note) is never refused by policy.
+   * The caller may not grant a role higher than their own effective role.
    */
   addCollaborator(opts: {
     caller: SharingCaller;
     profile: AiChatAuthorInfo;
     role: CollaboratorRole;
     note?: string;
+    /**
+     * See createShareLink: run synchronously with the put, a throw persists nothing. Skipped when
+     * no new grant is created (same-or-lower re-grant over an existing edge from this sharer).
+     */
+    assertGrantAllowed?: () => void;
   }): CollaboratorInfo {
     // Don't add the owner as a collaborator.
     if (opts.profile.id === this.ownerProfileId) {
@@ -319,9 +323,15 @@ export class SharingManager {
       let existingEdge = existing.addedBy.find(
           e => e.type === "user" && e.sharer === opts.caller.profileId);
       if (existingEdge && existingEdge.type === "user") {
-        existingEdge.role = maxRole(edgeGrantedRole(existingEdge), opts.role);
+        // A role rise widens the grant; a same-or-lower role leaves it untouched (only the note
+        // may change), so no policy check.
+        if (roleRank(opts.role) > roleRank(edgeGrantedRole(existingEdge))) {
+          opts.assertGrantAllowed?.();
+          existingEdge.role = opts.role;
+        }
         if (opts.note !== undefined) existingEdge.note = opts.note;
       } else {
+        opts.assertGrantAllowed?.();
         existing.addedBy.push(edge);
       }
       this.storage.collaborators.put(existing);
@@ -336,6 +346,7 @@ export class SharingManager {
       profile: opts.profile,
       addedBy: [edge],
     };
+    opts.assertGrantAllowed?.();
     this.storage.collaborators.put(record);
     return {
       profile: record.profile,

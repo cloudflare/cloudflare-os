@@ -144,7 +144,10 @@ and re-runs `open()` against the live graph.
 
 `addCollaborator`, `createShareLink`, `newShareLinkKey` and `redeemShareKey` all take an
 optional `assertGrantAllowed` callback, invoked synchronously with the granting write.
-The overseer passes `assertNewSharingAllowed`. A throw persists nothing.
+The overseer passes `assertNewSharingAllowed`. A throw persists nothing. The manager invokes
+the hook only when a grant is actually created (a new record, a new edge, or a role rise on
+an existing edge); a same-or-lower `addCollaborator` re-grant or a redemption whose edge
+already exists skips it.
 
 ### 5. Observer records on a failed live check
 
