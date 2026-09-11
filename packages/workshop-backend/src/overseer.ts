@@ -49,7 +49,7 @@ import { completeAgentCatalogSnapshot, normalizeAgentCatalog } from "./agent-cat
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, CollaboratorRecord, ShareKeyRecord, roleRank }
     from "./sharing";
-import { AutoApprovalDrainer } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext, traced } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
@@ -1154,7 +1154,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       deadWorktreeIds: <WorkpieceId[]>[],
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
-      // set in its `ObservationDescription`. The key on disk predates the flag's rename.
+      // set in its `ObservationDescription`. While set, the workspace may not fetch from the
+      // public web, and may act only on the connections in restrictedProducerIds, never
+      // auto-approved. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
     },
 
@@ -5652,6 +5654,31 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
+  // The connection ids this workspace has read restricted data through -- the targets the
+  // writes-to-self carve-out admits (see submitAction). Derived by scanning the action log for
+  // observations whose description carries `containsRestrictedData`, since nothing else records
+  // which connection a latched read came through; the log is never pruned, so the scan is also
+  // the backfill for workspaces latched before the carve-out existed. Built-in tool observations
+  // are skipped: they are not a connection anything can write back to. Scanned only while
+  // latched, and the auto-approval drainer already full-scans the log per drain, so the cost is
+  // fine where it runs.
+  //
+  // A latched workspace always yields a non-empty set: the latch and the producing record are
+  // written in one synchronous block (see authorizeObservation). Records written before the
+  // flag's rename from `prohibitAllSharing` are not read, so a workspace latched only by such
+  // records yields the empty set and refuses every action -- what it did before the carve-out.
+  restrictedProducerIds(): Set<WorkpieceId> {
+    let producers = new Set<WorkpieceId>();
+    for (let record of this.storage.actions.list()) {
+      if (record.type === "observation" &&
+          record.description.containsRestrictedData === true &&
+          record.gatekeeperId !== BUILTIN_TOOL_GATEKEEPER_ID) {
+        producers.add(record.gatekeeperId);
+      }
+    }
+    return producers;
+  }
+
   // Enforce an observation's `excludeObservers`, named by the gatekeeper `gatekeeperId` produced
   // it. For each named opaque observerId:
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
@@ -5781,10 +5808,19 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
-    if (this.storage.containsRestrictedData.get()) {
+    // Writes-to-self carve-out: a latched workspace may still act on the connections that
+    // produced its restricted data -- sending the data back where it came from reveals nothing
+    // new to that system -- while any other target could leak it. (Every such action still
+    // requires manual human approval; see autoApprovalRule.) A latched workspace always has a
+    // non-empty producer set (the latch and its action record are written in one synchronous
+    // block; see restrictedProducerIds); if the set is ever empty anyway, the `has` check fails
+    // for every target and all actions are refused -- the conservative fallback. Refused before
+    // the id allocation below, so a blocked action leaves no record behind.
+    if (this.storage.containsRestrictedData.get() &&
+        !this.restrictedProducerIds().has(gatekeeperId)) {
       throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
-          "from performing actions.");
+          "This workspace has observed sensitive data from other connections. To prevent leaks, " +
+          "it may only perform actions on those same connections.");
     }
 
     // Push authorization (see ActionDescription.pushedCommits): before anything is queued,
@@ -5825,10 +5861,9 @@ class OverseerImpl implements AgentHooks {
     });
     this.#associateAction(caller, actionId);
 
-    // Same auto-approval gate as before, named because awaitDecision uses it too. The drain is
-    // deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
-    let willAutoApprove = !!(description.autoApprovable && description.actionKind &&
-        this.storage.autoApproveTags.get(`${gatekeeperId}:${description.actionKind.tag}`) !== undefined);
+    // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
+    // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
+    let willAutoApprove = autoApprovalRule(this.storage, gatekeeperId, description) !== undefined;
 
     // Only agent turns suspend on awaitDecision, and only when a manual decision is pending.
     // Auto-approved actions keep the seamless behavior the user opted into.
@@ -11248,6 +11283,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error(`No such gatekeeper: ${gatekeeperId}`);
     }
 
+    // A rule stored while latched would never fire (see autoApprovalRule).
+    if (this.impl.storage.containsRestrictedData.get()) {
+      throw new Error(
+          "This workspace has observed sensitive data, so its actions always require manual " +
+          "approval and cannot be auto-approved.");
+    }
+
     let profile = await this.#getClientProfile();
     this.impl.storage.autoApproveTags.put({
       gatekeeperId,
@@ -11274,6 +11316,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
+    // A latched workspace can't have auto-approval rules (see setAutoApprovedActionKind), so
+    // offer nothing.
+    if (this.impl.storage.containsRestrictedData.get()) return [];
+
     // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
     let boundIds = new Set<WorkpieceId>();
     for (let gadget of this.impl.storage.gadgets.list()) {
