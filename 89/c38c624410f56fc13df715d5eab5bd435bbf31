@@ -1,0 +1,19 @@
+packages/bundled-blueprints/blueprints/workspace-sheets/files/client.ts
+  s_5f520bb0e51ffc::t_1d95493075afc8 1243
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "89c38c624410f56fc13df715d5eab5bd435bbf31",
+  "prompts": {},
+  "sessions": {
+    "s_5f520bb0e51ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2dc44edf-de46-4989-9c7e-b1dbdd9f6426",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
