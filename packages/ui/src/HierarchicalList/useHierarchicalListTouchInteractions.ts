@@ -143,6 +143,7 @@ export const useHierarchicalListTouchInteractions = ({
       onPointerUp: (event) => {
         if (touchDraggingRef.current) {
           event.preventDefault();
+          suppressClickRef.current = true;
           dispatchTouchDragEvent("drop", event.clientX, event.clientY);
           touchDraggingRef.current = false;
           dragController.setTouchDragPosition(null);

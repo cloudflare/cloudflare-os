@@ -108,7 +108,7 @@ const StyledRow = ({
             : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
         ),
       )}
-      style={{ paddingLeft: `${itemPadding(depth)}px` }}
+      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
     >
       {itemIcon(item)}
       {collapsible && (

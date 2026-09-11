@@ -14,7 +14,7 @@ import {
 } from "./useHierarchicalListTouchInteractions";
 import type { HierarchicalListItem } from "./HierarchicalList.types";
 
-/** Props that must be applied to the consumer-rendered row element. */
+/** Props that must be applied to the consumer-rendered row element, composing any overrides. */
 export type HierarchicalListPrimitiveRowProps = HTMLAttributes<HTMLElement> & {
   draggable?: boolean;
   "data-hierarchical-list-row": string;
@@ -109,6 +109,7 @@ export const useHierarchicalListRowInteractions = ({
   };
 
   const rowProps: HierarchicalListPrimitiveRowProps = {
+    style: draggable ? { touchAction: "none" } : undefined,
     onPointerDown: (event) => {
       if (!event.defaultPrevented) pointerProps.onPointerDown?.(event);
     },
