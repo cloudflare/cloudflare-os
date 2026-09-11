@@ -1240,8 +1240,7 @@ function queueReplacement(sheetId: string): void {
   scheduleSave();
 }
 function dropCellOpsFor(sheetId: string): void {
-  const prefix = sheetId + "!";
-  for (const key of [...pendingCellOps.keys()]) if (key.startsWith(prefix)) pendingCellOps.delete(key);
+  for (const [key, op] of pendingCellOps) if (op.sheetId === sheetId) pendingCellOps.delete(key);
 }
 
 // Debounces, serializes and retries the operation below, and owns the status line.
