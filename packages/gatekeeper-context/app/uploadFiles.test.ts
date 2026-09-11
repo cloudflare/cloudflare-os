@@ -39,12 +39,18 @@ describe("readDroppedUploadFiles", () => {
 
   it("directs dropped folders to the safe folder picker", async () => {
     const transfer = {
-      items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }],
+      items: [{
+        webkitGetAsEntry: () => ({
+          isFile: false,
+          isDirectory: true,
+          name: "deployment-check",
+        }),
+      }],
       files: [],
     } as unknown as DataTransfer;
 
     await expect(readDroppedUploadFiles(transfer)).rejects.toThrow(
-      "To add a complete skill folder, use Choose folder.",
+      "We couldn't read this dropped folder. Use Choose folder to select it instead.",
     );
   });
 });
