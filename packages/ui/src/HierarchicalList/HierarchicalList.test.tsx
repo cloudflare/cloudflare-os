@@ -537,6 +537,42 @@ describe("HierarchicalList", () => {
     expect(document.activeElement).toBe(buttonFor("Review code"));
   });
 
+  it("waits for context-menu focus restoration before rendering inline rename", () => {
+    vi.useFakeTimers();
+    const Harness = () => {
+      const [renaming, setRenaming] = React.useState(false);
+      return (
+        <HierarchicalList
+          items={[{ id: "skill", name: "Review code" }]}
+          label="Skills"
+          renderContextMenu={() => (
+            <DropdownMenu.Item onClick={() => setRenaming(true)}>Rename</DropdownMenu.Item>
+          )}
+          rename={{
+            isRenaming: (item) => renaming && item.id === "skill",
+            renderInput: () => <input aria-label="Rename skill" />,
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const trigger = rowFor("Review code")!;
+    act(() => trigger.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const rename = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent === "Rename")!;
+    act(() => rename.click());
+
+    expect(trigger.isConnected).toBe(true);
+    expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
+
+    act(() => vi.runAllTimers());
+    expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+
   it("renders an inline item description next to its name", () => {
     render(
       <HierarchicalList

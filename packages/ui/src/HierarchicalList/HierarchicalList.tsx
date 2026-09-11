@@ -5,7 +5,7 @@ import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretDownIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import React, { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   HierarchicalListPrimitive,
   type HierarchicalListPrimitiveRowProps,
@@ -86,6 +86,8 @@ const StyledRow = ({
   const drawerPopupRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const wasRenamingRef = useRef(false);
+  const [actionsClosing, setActionsClosing] = useState(false);
+  const actionsClosedTimerRef = useRef<number | null>(null);
   const {
     item,
     depth,
@@ -96,7 +98,31 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
-  const renaming = rename?.isRenaming(item) ?? false;
+  const renameRequested = rename?.isRenaming(item) ?? false;
+  const renaming = renameRequested && !actionsOpen && !actionsClosing;
+  const handleActionsOpenChange = (open: boolean) => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+      actionsClosedTimerRef.current = null;
+    }
+    if (!open && actionsOpen) setActionsClosing(true);
+    onActionsOpenChange(open);
+  };
+  const handleActionsOpenChangeComplete = (open: boolean) => {
+    if (!open) {
+      // Base UI restores final focus in a microtask after this callback. Preserve the trigger until
+      // the next task so rename cannot replace it before that restoration completes.
+      actionsClosedTimerRef.current = window.setTimeout(() => {
+        actionsClosedTimerRef.current = null;
+        setActionsClosing(false);
+      });
+    }
+  };
+  useEffect(() => () => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+    }
+  }, []);
   useLayoutEffect(() => {
     if (wasRenamingRef.current && !renaming) buttonRef.current?.focus();
     wasRenamingRef.current = renaming;
@@ -210,7 +236,11 @@ const StyledRow = ({
   if (!contextMenu) return row;
   if (!useActionDrawer) {
     return (
-      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+      <ContextMenu.Root
+        open={actionsOpen}
+        onOpenChange={handleActionsOpenChange}
+        onOpenChangeComplete={handleActionsOpenChangeComplete}
+      >
         <ContextMenu.Trigger render={row} />
         <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
       </ContextMenu.Root>
@@ -220,7 +250,11 @@ const StyledRow = ({
   return (
     <>
       {row}
-      <Drawer.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+      <Drawer.Root
+        open={actionsOpen}
+        onOpenChange={handleActionsOpenChange}
+        onOpenChangeComplete={handleActionsOpenChangeComplete}
+      >
         <Drawer.Portal>
           <Drawer.Backdrop
             onClick={() => onActionsOpenChange(false)}
@@ -248,7 +282,7 @@ const StyledRow = ({
               <Drawer.Title className="px-2 pb-2 text-xs text-kumo-subtle">
                 {item.name}
               </Drawer.Title>
-              <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
+              <Menu.Root open={actionsOpen} modal={false} onOpenChange={handleActionsOpenChange}>
                 <Menu.Trigger className="sr-only" tabIndex={-1} aria-hidden="true" />
                 <Menu.Portal container={drawerPopupRef}>
                   <Menu.Positioner className="!static !block !w-full !transform-none" sideOffset={0}>
