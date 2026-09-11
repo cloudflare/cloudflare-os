@@ -5,7 +5,7 @@ import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretDownIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import React, { useRef, useState, type ReactNode } from "react";
+import React, { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   HierarchicalListPrimitive,
   type HierarchicalListPrimitiveRowProps,
@@ -84,6 +84,8 @@ const StyledRow = ({
   rename,
 }: StyledRowProps) => {
   const drawerPopupRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const wasRenamingRef = useRef(false);
   const {
     item,
     depth,
@@ -94,41 +96,14 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
-  const contextMenu = renderContextMenu?.(item);
   const renaming = rename?.isRenaming(item) ?? false;
-  const row = (
-    <Button
-      {...rowProps as React.ComponentProps<typeof Button>}
-      type="button"
-      variant="ghost"
-      size="base"
-      aria-current={selected ? "true" : undefined}
-      aria-expanded={collapsible ? expanded : undefined}
-      onClick={(event) => {
-        if (renaming) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        rowProps.onClick?.(event);
-        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
-      }}
-      className={cn(
-        rowProps.className,
-        "group relative focus-visible:z-20",
-        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left",
-        !renaming && "active:!bg-kumo-recessed",
-        state.draggable && "cursor-grab active:cursor-grabbing",
-        state.draggable && "touch-none",
-        highlighted && "bg-kumo-recessed",
-        coarsePointer && (
-          highlighted
-            ? "hover:!bg-kumo-recessed"
-            : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
-        ),
-      )}
-      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
-    >
+  useLayoutEffect(() => {
+    if (wasRenamingRef.current && !renaming) buttonRef.current?.focus();
+    wasRenamingRef.current = renaming;
+  }, [renaming]);
+  const contextMenu = renaming ? null : renderContextMenu?.(item);
+  const contents = (
+    <>
       {itemIcon(item)}
       {collapsible && (
         <CaretDownIcon
@@ -141,11 +116,7 @@ const StyledRow = ({
         />
       )}
       {renaming ? (
-        <span
-          className="min-w-0 flex-1"
-          onClick={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
+        <span className="min-w-0 flex-1">
           {rename!.renderInput(item)}
         </span>
       ) : (
@@ -176,6 +147,48 @@ const StyledRow = ({
           />
         )}
       </AnimatePresence>
+    </>
+  );
+  const rowClassName = cn(
+    rowProps.className,
+    "group relative focus-visible:z-20",
+    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
+    !renaming && "active:!bg-kumo-recessed",
+    !renaming && state.draggable && "cursor-grab active:cursor-grabbing touch-none",
+    highlighted && "bg-kumo-recessed",
+    coarsePointer && !renaming && (
+      highlighted
+        ? "hover:!bg-kumo-recessed"
+        : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
+    ),
+  );
+  const row = renaming ? (
+    <div
+      data-hierarchical-list-row=""
+      data-depth={depth}
+      tabIndex={-1}
+      className={rowClassName}
+      style={{ paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
+    </div>
+  ) : (
+    <Button
+      ref={buttonRef}
+      {...rowProps as React.ComponentProps<typeof Button>}
+      type="button"
+      variant="ghost"
+      size="base"
+      aria-current={selected ? "true" : undefined}
+      aria-expanded={collapsible ? expanded : undefined}
+      onClick={(event) => {
+        rowProps.onClick?.(event);
+        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
+      }}
+      className={rowClassName}
+      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
     </Button>
   );
 
