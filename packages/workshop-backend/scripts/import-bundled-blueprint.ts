@@ -180,7 +180,10 @@ try {
 }
 rejectIgnoredBlueprintPaths(entry.name, files.keys());
 
-let oldFiles: Map<string, string>;
+// The outgoing files, read only for the change summary below; undefined if the current TypeScript
+// source does not build, which the import warns about rather than refuses over (the archive being
+// imported may be what repairs it).
+let oldFiles: Map<string, string> | undefined;
 let current: BlueprintManifest | undefined;
 if ("scaffold" in entry) {
   oldFiles = new Map();
@@ -196,7 +199,12 @@ if ("scaffold" in entry) {
     bindings: (existing.metadata.bindings as Record<string, unknown> | undefined) ?? {},
   };
 } else {
-  oldFiles = await readSourceFiles(join(sourceDir, entry.name, "files"), `${entry.name}/files`);
+  try {
+    oldFiles = await readSourceFiles(join(sourceDir, entry.name, "files"), `${entry.name}/files`);
+  } catch (err) {
+    console.error(`warning: ${entry.name}/files does not build (${errorMessage(err)}); the ` +
+        "change summary compares against nothing");
+  }
   current = entry;
 }
 
@@ -244,6 +252,10 @@ try {
     await mkdir(dirname(path), {recursive: true});
     await writeFile(path, source);
   }
+  // The staged tree is built before it replaces anything: the bundler policy the post-rename build
+  // applies to files/ is applied here first, so an export it rejects is refused with the current
+  // source untouched.
+  await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`);
   if (!scaffold && entry.layout === "extracted") await rename(targetDir, backupDir);
   await rename(stagedDir, targetDir);
   await rm(backupDir, {recursive: true, force: true});
@@ -265,13 +277,15 @@ try {
 await rm(join(sourceDir, `${entry.name}.gadget`), {force: true});
 await rm(join(sourceDir, `${entry.name}.json`), {force: true});
 
-const changed = [...new Set([...oldFiles.keys(), ...files.keys()])]
+const changed = oldFiles && [...new Set([...oldFiles.keys(), ...files.keys()])]
     .filter(filename => oldFiles.get(filename) !== files.get(filename)).toSorted();
 const oldBindings = Object.keys(scaffold ? {} : current!.bindings).toSorted().join(",");
 const newBindings = Object.keys(manifest.bindings).toSorted().join(",");
 
 console.log(`${scaffold ? "Imported" : "Updated"} ${entry.name}/ (${manifest.blueprintId})`);
-console.log(`  files        ${files.size} (${changed.length ? `changed: ${changed.join(", ")}` : "unchanged"})`);
+console.log(`  files        ${files.size} (${changed === undefined
+    ? "summary unavailable: current source does not build"
+    : changed.length ? `changed: ${changed.join(", ")}` : "unchanged"})`);
 console.log(`  snapshot     ${incoming.content.byteLength} bytes (${sha(incoming.content)})`);
 console.log(`  bindings     ${newBindings || "(none)"}` +
     `${oldBindings !== newBindings ? `   [CHANGED from ${oldBindings || "(none)"}]` : ""}`);
