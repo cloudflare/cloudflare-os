@@ -30,6 +30,14 @@ describe("Workspace Slides blocks", () => {
     expect(saved.slides[0]!.blocks).toEqual([{ id, type: "text", x: 10, y: 20, props: { text: "hi" } }]);
   });
 
+  // setDeck is reached over the GADGET binding with a deck built from the public type, on which
+  // the marker is optional; without the stamp the next getDeck would reseed and the deck be lost.
+  it("keeps a deck set without the schema marker", async () => {
+    const gadget = inMemoryGadget(undefined);
+    await gadget.setDeck({ slides: [{ id: "s9", background: {}, blocks: [] }] });
+    expect((await gadget.getDeck()).slides.map(slide => slide.id)).toEqual(["s9"]);
+  });
+
   it("returns null, and stores nothing, for a slide that no longer exists", async () => {
     const gadget = inMemoryGadget(deck());
     expect(await gadget.addBlock("gone", { type: "text", x: 0, y: 0, props: {} })).toBeNull();

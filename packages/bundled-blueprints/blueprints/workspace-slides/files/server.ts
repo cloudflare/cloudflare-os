@@ -45,6 +45,8 @@ import type {
  */
 
 const STORAGE_KEY = "deck";
+/** The schema marker a stored deck carries; a deck without it is reseeded (see getDeck). */
+const THEME_VERSION = "workspace.1";
 const MAX_UNDO = 50;
 
 export class Gadget extends DurableObject<unknown> implements GadgetStub {
@@ -99,7 +101,7 @@ export class Gadget extends DurableObject<unknown> implements GadgetStub {
     // Defensive: if the storage was empty OR holds an older-schema document
     // (the previous version of this Gadget stored field overrides under
     // numeric keys rather than a `slides` array), wipe and seed.
-    if (!d || !Array.isArray(d.slides) || d.themeVersion !== "workspace.1") {
+    if (!d || !Array.isArray(d.slides) || d.themeVersion !== THEME_VERSION) {
       d = initialDeck();
       await this.state.storage.put(STORAGE_KEY, d);
     }
@@ -213,7 +215,9 @@ export class Gadget extends DurableObject<unknown> implements GadgetStub {
 
   // -------- bulk ----------------------------------------------------------
   async setDeck(deck: Deck): Promise<void> {
-    await this.#save(deck);
+    // Stamped as current: getDeck() reseeds a deck without the marker, which a caller building a
+    // whole deck from the public type would otherwise lose on the next read.
+    await this.#save({ ...deck, themeVersion: THEME_VERSION });
   }
 
   async resetAll(): Promise<Deck> {
@@ -347,7 +351,7 @@ const KEY_TAKEAWAYS_SLIDE: Slide = {
 };
 
 const INITIAL_DECK: Deck = {
-  themeVersion: "workspace.1",
+  themeVersion: THEME_VERSION,
   slides: [
     {
       id: "a8dd8e44",
