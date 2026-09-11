@@ -237,27 +237,6 @@ describe("bundled blueprint TypeScript sources", () => {
     expect(files.get("lib/data.json")).toBe('{"answer": 42}');
   });
 
-  it("bundles one side while the other stays plain JavaScript", async () => {
-    let directory = await sourceTree({
-      "client.ts": 'import { shared } from "./lib/helpers.js";\ndocument.title = shared();',
-      "server.js": [
-        'import { shared } from "./lib/helpers.js";',
-        "export class Gadget { hi() { return shared(); } }",
-      ].join("\n"),
-      "lib/helpers.js": 'export function shared() { return "shared"; }',
-    });
-
-    let files = await readSourceFiles(directory, "example/files");
-
-    // The un-migrated side keeps its import, so the module it names has to survive the migration
-    // of the other side -- an archive whose server.js imports a file that is gone would fail to
-    // load with nothing to show for it at build time.
-    expect([...files.keys()]).toEqual(["client.js", "lib/helpers.js", "server.js"]);
-    expect(files.get("server.js")).toContain('from "./lib/helpers.js"');
-    expect(files.get("client.js")).toContain('return "shared"');
-    expect(files.get("client.js")).not.toMatch(/from\s+"\.\/lib/u);
-  });
-
   it("leaves a JavaScript blueprint untouched and drops declaration files", async () => {
     let directory = await sourceTree({
       "client.js": "client\n",
@@ -272,26 +251,40 @@ describe("bundled blueprint TypeScript sources", () => {
     ]));
   });
 
-  it("rejects an entry present as both TypeScript and JavaScript", async () => {
-    let directory = await sourceTree({
+  // A module the archive ships as written cannot import what the bundle compiled away, so a tree
+  // is TypeScript or JavaScript, never both; only modules count, a data file is fine either way.
+  it("rejects a JavaScript module in a TypeScript blueprint", async () => {
+    let message = (path: string) => `example/files: ${path} is a JavaScript module in a ` +
+        "TypeScript blueprint; a blueprint is written in one or the other, since a module that " +
+        "ships as written cannot import what the bundle compiled away";
+
+    let otherSide = await sourceTree({
+      "client.ts": 'document.title = "hi";',
+      "server.js": "export class Gadget {}",
+    });
+    await expect(readSourceFiles(otherSide, "example/files")).rejects.toThrow(message("server.js"));
+
+    let twinEntry = await sourceTree({
       "client.ts": "export {};",
       "client.js": "export {};",
     });
+    await expect(readSourceFiles(twinEntry, "example/files")).rejects.toThrow(message("client.js"));
 
-    await expect(readSourceFiles(directory, "example/files"))
-      .rejects.toThrow("client.ts and client.js both define the client entry");
-  });
-
-  it("rejects a lib module present as both TypeScript and JavaScript", async () => {
-    let directory = await sourceTree({
+    let twinLib = await sourceTree({
       "client.ts": 'import { value } from "./lib/value.js"; console.log(value);',
       "lib/value.ts": "export const value: number = 1;",
       "lib/value.js": "export const value = 2;",
     });
+    await expect(readSourceFiles(twinLib, "example/files")).rejects
+      .toThrow(message("lib/value.js"));
 
-    await expect(readSourceFiles(directory, "example/files"))
-      .rejects.toThrow("lib/value.ts and lib/value.js both define the same module; TypeScript " +
-          "would type the .ts while the bundle ships the .js");
+    let nonModules = await sourceTree({
+      "client.ts": 'import data from "./lib/data.json"; console.log(data.answer);',
+      "lib/data.json": '{"answer": 42}',
+      "README.md": "# notes\n",
+    });
+    expect([...(await readSourceFiles(nonModules, "example/files")).keys()])
+      .toEqual(["README.md", "client.js", "lib/data.json"]);
   });
 
   it("rejects TypeScript that is neither an entry nor a lib module", async () => {
@@ -364,7 +357,7 @@ describe("bundled blueprint TypeScript sources", () => {
 
   it("rejects lib modules with no entry to bundle them", async () => {
     let directory = await sourceTree({
-      "client.js": "export {};",
+      "README.md": "# no entry\n",
       "lib/orphan.ts": "export const orphan = 1;",
     });
 
@@ -414,11 +407,11 @@ describe("bundled blueprint TypeScript sources", () => {
   // the blueprint, which the pattern is free to reach.
   it("rejects a dynamic import of a template literal", async () => {
     let inside = await sourceTree({
-      "client.ts": "export const load = (name: string) => import(`./lib/${name}.js`);",
-      "lib/a.js": "export const a = 1;",
+      "client.ts": "export const load = (name: string) => import(`./lib/${name}.ts`);",
+      "lib/a.ts": "export const a = 1;",
     });
     await expect(readSourceFiles(inside, "example/files")).rejects
-      .toThrow("example/files: client.ts imports ./lib/**/*.js: a dynamic import of a template " +
+      .toThrow("example/files: client.ts imports ./lib/**/*.ts: a dynamic import of a template " +
           "literal, which the bundler expands to every file the pattern matches and cannot check");
 
     let outside = await sourceTree({
@@ -427,36 +420,6 @@ describe("bundled blueprint TypeScript sources", () => {
     });
     await expect(readSourceFiles(join(outside, "files"), "example/files")).rejects
       .toThrow("client.ts imports ../outside/**/*.js: a dynamic import of a template literal");
-  });
-
-  // A TypeScript lib module is compiled into the entries and not stored, so a module the archive
-  // ships as written -- an un-migrated entry, or a lib/*.js -- would import a file the archive does
-  // not contain, and the gadget would fail to load with nothing to show for it at build time.
-  it("rejects a shipped JavaScript module that imports a TypeScript lib module", async () => {
-    let direct = await sourceTree({
-      "client.ts": 'import { shared } from "./lib/shared.js";\ndocument.title = shared();',
-      "server.js": [
-        'import { shared } from "./lib/shared.js";',
-        "export class Gadget { hi() { return shared(); } }",
-      ].join("\n"),
-      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
-    });
-    await expect(readSourceFiles(direct, "example/files")).rejects
-      .toThrow("example/files: server.js imports ./lib/shared.js, which names lib/shared.ts; " +
-          "server.js ships as written, and a TypeScript lib module is compiled into the entries " +
-          "that import it and not shipped");
-
-    let chained = await sourceTree({
-      "client.ts": 'import { shared } from "./lib/shared.ts";\ndocument.title = shared();',
-      "server.js": [
-        'import { hi } from "./lib/helpers.js";',
-        "export class Gadget { hi() { return hi(); } }",
-      ].join("\n"),
-      "lib/helpers.js": 'import { shared } from "./shared.js"; export const hi = () => shared();',
-      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
-    });
-    await expect(readSourceFiles(chained, "example/files")).rejects
-      .toThrow("lib/helpers.js imports ./shared.js, which names lib/shared.ts");
   });
 
   // A library is inlined by the build into a TypeScript entry; a JavaScript module is copied into
@@ -473,32 +436,24 @@ describe("bundled blueprint TypeScript sources", () => {
         "runtime has nothing to resolve the package name against";
 
     // A JavaScript-only tree, which the build otherwise leaves untouched.
-    let untouched = await sourceTree({"client.js": "document.title = 'hi';", "server.js": server});
-    await expect(readSourceFiles(untouched, "example/files")).rejects.toThrow(message);
-
-    // A half-migrated one, where the client's own library import is fine.
-    let mixed = await sourceTree({
-      "client.ts": `import { el } from "${LIBRARY}/ui/client"; document.body.append(el("p"));`,
-      "server.js": server,
-    });
-    await expect(readSourceFiles(mixed, "example/files")).rejects.toThrow(message);
+    let directory = await sourceTree({"client.js": "document.title = 'hi';", "server.js": server});
+    await expect(readSourceFiles(directory, "example/files")).rejects.toThrow(message);
   });
 
-  // The scan reads a specifier as spelled, so an escape in one would name nothing it can compare
-  // with the archive's paths -- and slip a dropped module, or the package name, past the checks
-  // above. Nobody spells an import path with an escape, so the spelling is refused outright.
+  // The scan reads a specifier as spelled, so an escape in one would spell the package name in a
+  // way the check above cannot see. Nobody spells an import path with an escape, so the spelling
+  // is refused outright.
   it("rejects an import spelled with an escape in a shipped module", async () => {
     let directory = await sourceTree({
-      "client.ts": 'import { shared } from "./lib/shared.js";\ndocument.title = shared();',
+      "client.js": 'document.title = "hi";',
       "server.js": [
-        'import { shared } from "./lib/sh\\u0061red.js";',
-        "export class Gadget { hi() { return shared(); } }",
+        `import { MutationQueue } from "${LIBRARY.replace("g", "\\u0067")}/sync/server";`,
+        "export class Gadget { queue = new MutationQueue(); }",
       ].join("\n"),
-      "lib/shared.ts": 'export function shared(): string { return "shared"; }',
     });
     await expect(readSourceFiles(directory, "example/files")).rejects
-      .toThrow("example/files: server.js imports ./lib/sh\\u0061red.js, spelled with an escape; " +
-          "write the path plainly so the build can read it");
+      .toThrow(`example/files: server.js imports ${LIBRARY.replace("g", "\\u0067")}/sync/server, ` +
+          "spelled with an escape; write the path plainly so the build can read it");
   });
 
   // esbuild rewrites a reference to require it could not resolve away to a `__require` shim that
@@ -506,8 +461,8 @@ describe("bundled blueprint TypeScript sources", () => {
   // either.
   it("rejects a require that survives into the bundle", async () => {
     let computed = await sourceTree({
-      "client.ts": 'import { h } from "./lib/helper.js"; console.log(h);',
-      "lib/helper.js": 'const p = "./x.js"; export const h = require(p);',
+      "client.ts": 'import { h } from "./lib/helper.ts"; console.log(h);',
+      "lib/helper.ts": 'const p = "./x.js"; export const h = require(p);',
     });
     await expect(readSourceFiles(computed, "example/files")).rejects
       .toThrow("example/files: client.ts references require; the bundle is an ES module and the " +
