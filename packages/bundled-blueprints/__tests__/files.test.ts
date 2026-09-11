@@ -630,6 +630,29 @@ describe("bundled blueprint TypeScript sources", () => {
     expect([...files.keys()].toSorted()).toEqual(["client.js", "package.json"]);
   });
 
+  // An omitted extension names one module, the one the type check resolves it to; the other
+  // spelling beside it is dead code the walk must not vouch for, and the one thing a steered
+  // bundler could ship in its place.
+  it("resolves a relative import to the module the type check would, not any it could", async () => {
+    let orphan = await sourceTree({
+      "client.ts": 'import { v } from "./lib/foo"; console.log(v);',
+      "lib/foo.ts": 'export const v = "foo.ts";',
+      "lib/foo/index.ts": 'export const v = "index";',
+    });
+    await expect(readSourceFiles(orphan, "example/files"))
+      .rejects.toThrow("example/files: lib/foo/index.ts is not imported by any entry point");
+
+    let steered = await sourceTree({
+      "package.json": '{"browser": {"./files/lib/foo.ts": "./files/lib/foo/index.ts"}}',
+      "files/client.ts": 'import { v } from "./lib/foo"; console.log(v);',
+      "files/lib/foo.ts": 'import "./foo/index.ts"; export const v = "foo.ts";',
+      "files/lib/foo/index.ts": 'export const v = "index";',
+    });
+    await expect(readSourceFiles(join(steered, "files"), "example/files")).rejects.toThrow(
+      "example/files: client.ts imports ./lib/foo, which the bundler resolved to lib/foo/index.ts " +
+      "rather than the module the specifier names");
+  });
+
   // The in-tree refusal above cannot see a package.json above the blueprint, and esbuild reads the
   // nearest one: no option pins its `browser` field or `imports` map, so the audit checks the
   // result instead -- an input inside files/ has to be the module its specifier names.
