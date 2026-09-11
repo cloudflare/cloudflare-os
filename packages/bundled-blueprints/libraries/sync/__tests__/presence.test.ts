@@ -37,6 +37,17 @@ describe("PresenceRoster", () => {
     expect(roster.get("ada")).toBeNull();
   });
 
+  // The registry announces a newcomer's join only after its seeds have settled, while the
+  // newcomer's first cursor is broadcast at once, so a cursor for someone not yet joined is the
+  // common wire order: it creates the entry, and the join that follows keeps its position.
+  it("keeps a cursor that arrives before its join", () => {
+    const roster = new PresenceRoster<Caret>("me", () => 1_000);
+    expect(roster.apply(cursor("bob", "Bob", "b2", 3))).toBe(true);
+    expect(roster.get("bob")).toEqual({ clientId: "bob", name: "Bob", color: "#123456", cursor: { blockId: "b2", offset: 3 }, seenAt: 1_000 });
+    roster.apply(join("bob", "Bob"));
+    expect(roster.get("bob")?.cursor).toEqual({ blockId: "b2", offset: 3 });
+  });
+
   it("expires a collaborator not heard from for STALE_MS", () => {
     const roster = new PresenceRoster("me", () => 10_000);
     roster.apply(join("ada", "Ada"));
