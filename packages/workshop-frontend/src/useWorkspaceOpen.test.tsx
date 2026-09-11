@@ -405,6 +405,46 @@ describe('useWorkspaceOpen', () => {
     expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('cafe'))
   })
 
+  it('a keyless success after an unresolvable identity broadcasts a clear for the skipped entry', async () => {
+    // The identity-unknown path above leaves the entry in place; if the keyless open then
+    // succeeds, the key is spent for good. A workspace-scoped clear alone would stay local, and
+    // a duplicated tab's copy of the entry (same capture id) would replay the still-live link
+    // after an owner removal. The success must clear the leftover by its capture id, which is
+    // the scope that reaches siblings.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe'))
+    const sentKeys: (string | undefined)[] = []
+    const goodOverseer = disposableStub({
+      subscribeToMetadata:
+          vi.fn<(callback: (metadata: GadgetMetadata) => void) => Promise<RpcStub<{}>>>(
+              async callback => {
+                callback(METADATA)
+                return disposableStub({}) as RpcStub<{}>
+              }),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return goodOverseer
+      },
+      whoami: async () => { throw new Error('connection lost') },
+    } as unknown as RpcStub<AuthenticatedApi>
+    const received: unknown[] = []
+    siblingChannel ??= new BroadcastChannel('gadgets:retained-share-keys');
+    (siblingChannel as { unref?: () => void }).unref?.()
+    siblingChannel.addEventListener('message', event => received.push(event.data))
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+
+    expect(sentKeys).toEqual([undefined])
+    expect(container.textContent).toBe(METADATA.title)
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+    await vi.waitFor(() => expect(received).toContainEqual(
+        { type: 'clear-capture', workspaceId: 'workspace-1', captureId: 'capture-test' }))
+  })
+
   it('abandons a superseded attempt parked in identity resolution before it opens anything', async () => {
     // The retained-storage path awaits whoami() before openGadget. An attempt superseded while
     // parked there already had its cleanup run -- with nothing yet to dispose -- so if it

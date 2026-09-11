@@ -301,10 +301,19 @@ export function useWorkspaceOpen({
         // keylessly proves the key is no longer needed, and a kept one would silently re-redeem
         // the still-active link after an owner removes this collaborator (the revocation
         // restart reconnects with a new authenticatedApi, re-running this effect while the
-        // component stays mounted), undoing the removal. (clearRetainedShareKey also
-        // invalidates any still-in-flight identity stamp, so a late-resolving capture cannot
-        // re-write the entry after this.)
+        // component stays mounted), undoing the removal. Any entry still stored here can only be
+        // that unjudged one, or nothing: a newer local capture would have cancelled this attempt
+        // before it got here. So it is cleared by its capture id first -- that scope is what gets
+        // broadcast, and a duplicated tab holds a copy of the very same entry (and, if live, the
+        // capture in its in-memory ref) that a workspace-scoped clear would leave to replay after
+        // the removal. Only duplicates of this tab share the capture id, so the broadcast cannot
+        // reach an independent sibling's capture, and a wrongly cleared key costs a re-click of
+        // the link. The workspace-scoped clear then still runs: it is what invalidates any
+        // still-in-flight identity stamp for the workspace, so a late-resolving capture cannot
+        // re-write the entry after this.
         retainedShareKeyRef.current = null
+        const leftover = readRetainedShareKey(id)
+        if (leftover) clearRetainedShareKey(id, leftover.captureId)
         clearRetainedShareKey(id)
         setError(null)
         if (connectionLost) setConnectionLost(false)

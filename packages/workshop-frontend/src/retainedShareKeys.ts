@@ -172,8 +172,10 @@ export function readRetainedShareKey(workspaceId: string): RetainedShareKey | un
 // scopes are broadcast. Capture-scoped clears, because the copy shares the original's captureId:
 // the broadcast clears duplicates the moment the original's open succeeds, while an independent
 // sibling capture -- a different captureId, even of the same key -- survives; workspace-scoped
-// clears name no capture and so deliberately stay local. And the logout sweep, because sibling
-// tabs share the login session. The handler applies clears through the same internal functions
+// clears name no capture and so deliberately stay local (the capturing hook precedes a keyless
+// success's workspace-scoped clear with a capture-scoped clear of whatever entry is left, so
+// every success path does broadcast). And the logout sweep, because sibling tabs share the login
+// session. The handler applies clears through the same internal functions
 // the local clears use, without re-broadcasting; the payload is validated defensively even
 // though the channel is same-origin.
 type RetainedShareKeyClearMessage =
@@ -292,7 +294,10 @@ export function clearRetainedShareKey(workspaceId: string, onlyCapture?: string)
     // oxlint-disable-next-line unicorn/require-post-message-target-origin
     clearChannel?.postMessage(message)
   } else {
-    // The generation is bumped before the removal; see applyCaptureClear.
+    // The generation is bumped before the removal; see applyCaptureClear. Local only: this scope
+    // names no capture, so a broadcast could not be applied with any precision. The hook's
+    // keyless success clears any leftover entry by capture (broadcast) before falling through to
+    // this scope, whose remaining job is voiding the workspace's in-flight stamps.
     workspaceGenerations.set(workspaceId, (workspaceGenerations.get(workspaceId) ?? 0) + 1)
     try {
       window.sessionStorage.removeItem(storageKey(workspaceId))
