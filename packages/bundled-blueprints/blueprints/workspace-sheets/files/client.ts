@@ -1201,6 +1201,10 @@ interface PendingCellOp {
 const pendingCellOps = new Map<string, PendingCellOp>(); // "sheetId!REF" -> { sheetId, ref, value, fmt }
 let pendingStructure: StructureUpdate | null = null;      // latest structure snapshot to send
 const pendingReplacements = new Map<string, CellMap>(); // sheetId -> cells (full)
+// The revision the model held when the first pending structure snapshot or sheet replacement was
+// built; the payload may be replayed after a failure only against that revision (see
+// sendPendingOperation). `null` while neither is pending.
+let wholesaleBaseRevision: number | null = null;
 // Set when a save was rejected, so the next attempt first asks the server where the document
 // stands (see sendPendingOperation): a rejection says nothing about whether the commit landed.
 let resyncBeforeSave = false;
@@ -1214,6 +1218,8 @@ function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: Ce
   scheduleSave();
 }
 function queueStructure(): void {
+  // Oldest wins: a later item cannot vouch for an earlier one.
+  if (wholesaleBaseRevision === null) wholesaleBaseRevision = model.revision;
   pendingStructure = {
     title: model.title,
     sheetOrder: model.sheetOrder.slice(),
@@ -1229,6 +1235,7 @@ function queueReplacement(sheetId: string): void {
   // that coordinate. A cell op and a replacement for one sheet coexist only when the op was
   // queued after the replacement, against the layout the replacement carries.
   dropCellOpsFor(sheetId);
+  if (wholesaleBaseRevision === null) wholesaleBaseRevision = model.revision;
   pendingReplacements.set(sheetId, JSON.parse(JSON.stringify(model.cells[sheetId] || {})));
   scheduleSave();
 }
@@ -1270,19 +1277,28 @@ function scheduleSave(): void {
 // replacements carry no version and are applied wholesale, last writer wins, so replaying them
 // onto a document that moved in the meantime (our own commit, a collaborator's, or both) would
 // silently overwrite whatever moved it. They may only go out against the revision they were built
-// on: after a failure the next attempt asks for the document first, and if its revision is not
-// ours, drops both, adopts the server's copy and sends only the cell ops -- and only those on
-// sheets no dropped replacement had moved under them, since a cell op is replayable only where
-// its coordinate still names the cell it edited. The server could not check this for us with a
-// base revision: the revision moves on every cell edit, so a rename would fail whenever anyone
-// typed.
+// on, which is captured when the first of them is queued -- not the model's current revision,
+// which a collaborator's broadcast advances while the payload sits in the queue, so comparing
+// against it would pass a snapshot that predates the peer's edit and overwrite it. After a failure
+// the next attempt asks for the document first, and if its revision is not that one, drops both,
+// adopts the server's copy and sends only the cell ops -- and only those on sheets no dropped
+// replacement had moved under them, since a cell op is replayable only where its coordinate still
+// names the cell it edited. A wholesale edit queued while a save is in flight is built at the
+// pre-ack revision, so a failure of the *next* save drops it: the loss every failure had before
+// the resync, confined to that timing. With nothing wholesale pending there is no base and no
+// reload; the cell ops protect themselves. The server could not check this for us with a base
+// revision: the revision moves on every cell edit, so a rename would fail whenever anyone typed.
 async function sendPendingOperation(): Promise<SaveOutcome> {
-  if (resyncBeforeSave) {
+  if (resyncBeforeSave && wholesaleBaseRevision === null) {
+    // Nothing wholesale is pending, and a stale cell op is rejected on its own version.
+    resyncBeforeSave = false;
+  } else if (resyncBeforeSave) {
     // Rejecting here leaves the flag set; the scheduler counts a failure and tries again.
     const doc = await gadget.getDocument();
     resyncBeforeSave = false;
-    if (doc.revision !== model.revision) {
+    if (doc.revision !== wholesaleBaseRevision) {
       pendingStructure = null;
+      wholesaleBaseRevision = null;
       // A cell op queued after a replacement is keyed by the layout the replacement built, which
       // the server may not have: if our commit landed, its snapshot already holds the cells the
       // replacement carried but not an edit typed after it, which is lost here; if a peer's
@@ -1322,6 +1338,7 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
   for (const [sheetId, cells] of sentReplacements) {
     if (pendingReplacements.get(sheetId) === cells) pendingReplacements.delete(sheetId);
   }
+  if (pendingStructure === null && pendingReplacements.size === 0) wholesaleBaseRevision = null;
 
   model.revision = Math.max(model.revision, result.revision || 0);
   // Adopt acknowledged versions. An edit typed while this call was in flight replaced its entry
@@ -1347,6 +1364,11 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
     cells[cf.ref] = { ...cf.cell };
   }
   rebuildEngine();
+  // The optimistic render already shows a plain acknowledgement. A reload above replaced the
+  // grid with the server's copy, which the acknowledged cells now supersede, and a conflict
+  // replaces our cell with the server's; neither is shown otherwise, since our own broadcast is
+  // ignored.
+  if (reloadedAfterFailure || conflicts.length) renderGrid();
   return conflicts.length ? "conflict" : "saved";
 }
 
