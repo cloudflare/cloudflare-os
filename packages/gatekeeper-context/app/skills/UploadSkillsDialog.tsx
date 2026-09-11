@@ -1,5 +1,4 @@
 import {
-  Badge,
   Banner,
   Button,
   Collapsible,
@@ -51,7 +50,7 @@ export type UploadSkillsTarget = {
   collectionEditable: boolean;
 };
 
-type EditableCandidate = SkillUploadCandidate & { title: string; open: boolean };
+type EditableCandidate = SkillUploadCandidate & { title: string };
 
 /** Imports standalone Markdown skills or complete skill folders into a writable collection. */
 export const UploadSkillsDialog = ({
@@ -70,6 +69,7 @@ export const UploadSkillsDialog = ({
     target.collectionId || writableCollections[0]?.id || "",
   );
   const [candidates, setCandidates] = useState<EditableCandidate[]>([]);
+  const [openCandidateId, setOpenCandidateId] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [finished, setFinished] = useState(false);
@@ -89,7 +89,6 @@ export const UploadSkillsDialog = ({
         ...candidate,
         id: `${selectionId}:${candidate.id}`,
         title: humanizeSkillName(candidate.name),
-        open: candidate.metadataError !== null,
       }));
       setCandidates((current) => [...(finished ? [] : current), ...editable]);
       if (prepared.length === 0) {
@@ -262,25 +261,29 @@ export const UploadSkillsDialog = ({
           {candidates.length > 0 && (
             <div
               role="group"
-              aria-labelledby="skills-to-upload-label"
-              className="flex flex-col gap-2"
+              aria-label={target.collectionEditable ? undefined : "Skills to upload"}
+              aria-labelledby={target.collectionEditable ? "skills-to-upload-label" : undefined}
+              className="mt-2 flex flex-col gap-2"
             >
-              <span id="skills-to-upload-label"><Label>Skills to upload</Label></span>
-              {candidates.map((candidate) => {
-                const nameError = isValidSkillName(skillNameFromTitle(candidate.title))
-                  ? undefined
-                  : "Enter a name using letters, numbers, spaces, or hyphens.";
-                const descriptionError = isValidSkillDescription(candidate.description)
-                  ? undefined
-                  : "Add a description of up to 1024 characters.";
-                const needsDetails = Boolean(nameError || descriptionError || candidate.metadataError);
-                return (
-                  <LayerCard key={candidate.id} className="overflow-hidden bg-kumo-control p-0">
+              {target.collectionEditable && (
+                <span id="skills-to-upload-label"><Label>Skills to upload</Label></span>
+              )}
+              <LayerCard className="overflow-hidden bg-kumo-control p-0">
+                {candidates.map((candidate, index) => {
+                  const nameError = isValidSkillName(skillNameFromTitle(candidate.title))
+                    ? undefined
+                    : "Enter a name using letters, numbers, spaces, or hyphens.";
+                  const descriptionError = isValidSkillDescription(candidate.description)
+                    ? undefined
+                    : "Add a description of up to 1024 characters.";
+                  return (
                     <Collapsible.Root
-                      open={candidate.open}
-                      onOpenChange={(open) => updateCandidate(candidate.id, { open })}
+                      key={candidate.id}
+                      className={index > 0 ? "border-t border-kumo-line" : undefined}
+                      open={openCandidateId === candidate.id}
+                      onOpenChange={(open) => setOpenCandidateId(open ? candidate.id : null)}
                     >
-                      <Collapsible.Trigger className="flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-kumo-tint">
+                      <Collapsible.Trigger className="flex w-full min-w-0 items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-kumo-tint">
                         <ScrollIcon aria-hidden size={18} className="shrink-0 text-kumo-subtle" />
                         <span className="max-w-[40%] shrink-0 truncate text-sm font-medium text-kumo-default">
                           {candidate.title.trim() || candidate.label}
@@ -288,52 +291,40 @@ export const UploadSkillsDialog = ({
                         <span className="min-w-0 flex-1 truncate text-sm text-kumo-subtle">
                           {candidate.description.trim() || "Description needed"}
                         </span>
-                        <Badge
-                          variant={needsDetails ? "warning" : "success"}
-                          appearance="dot"
-                          className="shrink-0"
-                        >
-                          {needsDetails ? "Needs details" : "Ready"}
-                        </Badge>
                         <CaretRight
                           aria-hidden
                           size={14}
-                          className={`shrink-0 text-kumo-inactive transition-transform ${candidate.open ? "rotate-90" : ""}`}
+                          className={`shrink-0 text-kumo-inactive transition-transform ${openCandidateId === candidate.id ? "rotate-90" : ""}`}
                         />
                       </Collapsible.Trigger>
-                      <Collapsible.Panel className="border-t border-kumo-line px-4 py-4">
-                        <div className="flex flex-col gap-3">
-                          {candidate.metadataError && (
-                            <Text variant="secondary" size="sm">{candidate.metadataError}</Text>
-                          )}
-                      <Input
-                        label="Title"
-                        description="Up to 64 letters, numbers, spaces, or hyphens."
-                        value={candidate.title}
-                        onChange={(event) => updateCandidate(candidate.id, {
-                          title: sanitizeSkillTitle(event.target.value),
-                          metadataError: null,
-                        })}
-                        error={nameError}
-                        maxLength={64}
-                      />
-                      <InputArea
-                        label="Description"
-                        value={candidate.description}
-                        onChange={(event) => updateCandidate(candidate.id, {
-                          description: event.target.value,
-                          metadataError: null,
-                        })}
-                        error={descriptionError}
-                        rows={2}
-                        maxLength={1024}
-                      />
+                      <Collapsible.Panel className="h-[var(--collapsible-panel-height)] overflow-hidden transition-[height,opacity] duration-100 ease-out data-ending-style:h-0 data-ending-style:opacity-0 data-starting-style:h-0 data-starting-style:opacity-0 [&[hidden]:not([hidden='until-found'])]:hidden">
+                        <div className="flex flex-col gap-3 p-4">
+                          <Input
+                            label={<span className="text-sm">Title</span>}
+                            description="Up to 64 letters, numbers, spaces, or hyphens."
+                            value={candidate.title}
+                            onChange={(event) => updateCandidate(candidate.id, {
+                              title: sanitizeSkillTitle(event.target.value),
+                            })}
+                            error={nameError}
+                            maxLength={64}
+                          />
+                          <InputArea
+                            label={<span className="text-sm">Description</span>}
+                            value={candidate.description}
+                            onChange={(event) => updateCandidate(candidate.id, {
+                              description: event.target.value,
+                            })}
+                            error={descriptionError}
+                            rows={2}
+                            maxLength={1024}
+                          />
                         </div>
                       </Collapsible.Panel>
                     </Collapsible.Root>
-                  </LayerCard>
-                );
-              })}
+                  );
+                })}
+              </LayerCard>
             </div>
           )}
 
@@ -404,12 +395,13 @@ export const UploadSkillsDialog = ({
             <>
               <Button variant="secondary" onClick={dialog.requestClose} disabled={reading || uploading}>Cancel</Button>
               <Button
+                variant="primary"
                 icon={<UploadSimple size={16} />}
                 onClick={upload}
                 loading={uploading}
                 disabled={!valid || reading}
               >
-                Upload {candidates.length > 1 ? `${candidates.length} skills` : "skill"}
+                Upload
               </Button>
             </>
           )}
