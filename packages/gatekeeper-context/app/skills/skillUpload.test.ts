@@ -16,10 +16,34 @@ describe("prepareSkillUploads", () => {
       file("notes.txt", "Ignored", "text/plain"),
     ]);
 
-    expect(candidates.map(({ label, name, metadataError }) => ({ label, name, metadataError }))).toEqual([
-      { label: "one", name: "one", metadataError: "Add a name and description for this skill." },
-      { label: "two", name: "two", metadataError: "Add a name and description for this skill." },
+    expect(candidates.map(({ label, name, description }) => ({
+      label,
+      name,
+      description,
+    }))).toEqual([
+      { label: "one", name: "one", description: "First" },
+      { label: "two", name: "two", description: "Second" },
     ]);
+  });
+
+  it("creates a neutral description when Markdown contains only a heading", () => {
+    const [candidate] = prepareSkillUploads([file("deployment-check.md", "# Deployment check")]);
+
+    expect(candidate.description).toBe("Instructions for deployment check.");
+  });
+
+  it("uses prose directly below a heading as the description", () => {
+    const [candidate] = prepareSkillUploads([
+      file("deployment-check.md", "# Deployment check\nVerify the production deployment."),
+    ]);
+
+    expect(candidate.description).toBe("Verify the production deployment.");
+  });
+
+  it("rejects unterminated YAML frontmatter", () => {
+    expect(() => prepareSkillUploads([
+      file("deployment-check.md", "---\nname: deployment-check\nDescription"),
+    ])).toThrow("deployment-check has unterminated YAML frontmatter.");
   });
 
   it("groups related files under SKILL.md and separates nested skill bundles", () => {
@@ -33,7 +57,6 @@ describe("prepareSkillUploads", () => {
     expect(candidates).toHaveLength(2);
     expect(candidates[0].supportingFiles.map(({ path }) => path)).toEqual(["reference.md"]);
     expect(candidates[1].supportingFiles.map(({ path }) => path)).toEqual(["script.ts"]);
-    expect(candidates.map(({ metadataError }) => metadataError)).toEqual([null, null]);
   });
 
   it("removes the selected folder name from bundle-relative paths", () => {
