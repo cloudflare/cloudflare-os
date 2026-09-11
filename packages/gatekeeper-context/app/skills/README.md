@@ -71,10 +71,10 @@ semantics across the two collection Durable Objects before the UI enables these 
 The Skills Navigator accepts standalone Markdown files and folders. Each loose `.md` or `.markdown`
 file becomes one skill. A `SKILL.md` file defines a bundle and imports the other files below its source
 directory as related skill files; nested bundles are imported as separate top-level skills. Browser
-folder selection is based on the non-standard but widely supported `webkitdirectory` input, so folder
-upload may not be available in every browser. Folder drag-and-drop is deliberately rejected because
-browser directory APIs are not safe inside the management app's opaque-origin iframe; users are
-directed to the folder picker instead.
+folder selection is based on the non-standard but widely supported `webkitdirectory` input. Chrome's
+directory APIs fail or terminate the management app's opaque-origin iframe, so complete folders should
+be selected with the folder picker. Supporting folder drops requires reading them in the Workshop host
+and passing the files into the sandboxed app.
 
 Skill manifests are created through the skill-specific RPC, but there is currently no backend RPC for
 atomically creating a complete bundle. Supporting files are written only after the manifest succeeds.
