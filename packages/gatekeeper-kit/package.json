@@ -17,6 +17,9 @@
     "./credentials": "./src/credentials.ts",
     "./cursors": "./src/cursors.ts",
     "./endpoint": "./src/endpoint.ts",
+    "./git-diff": "./src/git-diff.ts",
+    "./git-objects": "./src/git-objects.ts",
+    "./git-transport": "./src/git-transport.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
@@ -31,6 +34,7 @@
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
+    "diff": "catalog:",
     "jose": "^6.2.12"
   },
   "devDependencies": {
