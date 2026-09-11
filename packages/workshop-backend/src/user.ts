@@ -1925,6 +1925,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Identity capability for this user's single active account with `vendorId`, or null if there is
+   * none or more than one (never chosen arbitrarily). Target-side half of the Workshop-owned
+   * gatekeeper user picker: it creates only deployment-forced accounts, never an optional one merely
+   * because someone picked this user.
+   */
+  async getUniqueGatekeeperUserVerifier(vendorId: string)
+      : Promise<Fetcher<GatekeeperUserVerifier> | null> {
+    if (!this.storage.created.get()) return null;
+    vendorId = vendorId.toLowerCase();
+
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(vendorId)) return null;
+
+    await this.#ensureAutoProvisionedAccounts();
+
+    let matches = [...this.#connectedAccountRecords()].filter((record) =>
+      record.vendorId === vendorId && areCredentialsValid(record) &&
+      (!record.autoProvisioned || ambientGatekeeperMode(config, vendorId) !== "disabled")
+    );
+    return matches.length === 1 ? await matches[0].account.getVerifier() : null;
+  }
+
+  /**
    * Describe one of the user's connected accounts so a caller can name it in a message. Returns null
    * if it no longer exists.
    */

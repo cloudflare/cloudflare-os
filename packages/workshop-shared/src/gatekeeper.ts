@@ -80,6 +80,26 @@ export type VendorDescription = {
 }
 
 /**
+ * Workshop-owned capability for reading a picked user's current display name.
+ *
+ * This capability conveys no authority over the user's gatekeeper account. Gatekeepers must use
+ * the paired `GatekeeperUserVerifier` for vendor-specific authorization and routing, and must not
+ * persist the name returned here as identity data.
+ */
+export interface GatekeeperUserProfile extends WorkerEntrypoint {
+  /** Current display name, or null if the Workshop user no longer exists. */
+  getDisplayName(): Promise<string | null>;
+}
+
+/** Opaque capabilities returned after the trusted Workshop host selects an eligible user. */
+export type GatekeeperUserPickerSelection = {
+  /** Verifier for the selected user's account with the gatekeeper vendor that opened the picker. */
+  verifier: Fetcher<GatekeeperUserVerifier>;
+  /** Workshop-owned presentation capability for the selected user. */
+  profile: Fetcher<GatekeeperUserProfile>;
+};
+
+/**
  * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). `isAdmin` is supplied fresh
  * each time rather than baked into the account, since a user's admin status can change over time.
  */
@@ -765,7 +785,9 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 /**
  * Opaque object representing the capability to verify whether a particular user is able to access
  * a particular Gatekeeper. Minted by `GatekeeperUser`, and then passed to
- * `Gatekeeper.addObserver()` and possibly other future interfaces.
+ * `Gatekeeper.addObserver()` and possibly other future interfaces. It is also what the Workshop's
+ * user picker returns to a gatekeeper's management UI (`GatekeeperUserPickerSelection.verifier`),
+ * so a gatekeeper can grant a share to the picked person's account.
  *
  * At present, this interface has no methods, because it is merely meant to be passed back to the
  * Gatekeeper that created it.

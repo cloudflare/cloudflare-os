@@ -45,11 +45,13 @@ export default defineConfig({
         // `allow_irrevocable_stub_storage` as in wrangler.jsonc: the user DO persists account stubs.
         compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
         bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
+        kvNamespaces: ['BLUEPRINTS'],
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
           TEST_USER: { className: 'UserDurableObject', useSQLite: true },
           TEST_PENDING_LOGIN: { className: 'PendingLogin', useSQLite: true },
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
+          TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },
       },
     }),

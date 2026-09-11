@@ -13,7 +13,7 @@ import { deploymentOutputForBlueprint, listFormatOffers, readAdminConfig } from 
 
 // Re-export the optional-feature Durable Objects + entrypoints so they can be bound in wrangler.
 export { PendingLogin, LoginConnectCallbackImpl };
-import { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { GatekeeperUiFrame, GatekeeperUserPickerSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { LanguageModelGatekeeper } from "./ai-models";
 import { getAiGatewayConfig } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
@@ -21,6 +21,7 @@ import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
+import { GatekeeperUserProfileImpl } from "./gatekeeper-user-profile.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
@@ -53,6 +54,9 @@ export { AdminSettings };
 
 // Re-export the deployment-wide user directory Durable Object.
 export { UserDirectoryDurableObject };
+
+// Re-export the Workshop-owned profile entrypoint so it can cross native Worker RPC.
+export { GatekeeperUserProfileImpl };
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl };
@@ -593,6 +597,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
     return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
+  }
+
+  async selectGatekeeperUser(gatekeeperId: string, userId: string)
+      : Promise<GatekeeperUserPickerSelection | null> {
+    if (userId === this.#userId.name) return null;
+    let verifier = await this.users.getByName(userId).getUniqueGatekeeperUserVerifier(gatekeeperId);
+    if (!verifier) return null;
+    return { verifier, profile: this.ctx.exports.GatekeeperUserProfileImpl({ props: { userId } }) };
   }
 
   // --- Deployment admin ---
