@@ -865,7 +865,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           <DropdownMenu>
             <DropdownMenu.Trigger
               render={(
-                <Button>
+                <Button variant="primary">
                   <PlusIcon size={16} weight="bold" />
                   Add
                 </Button>
