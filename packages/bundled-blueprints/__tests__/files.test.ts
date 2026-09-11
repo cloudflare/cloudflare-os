@@ -242,7 +242,6 @@ describe("bundled blueprint TypeScript sources", () => {
       "client.js": "client\n",
       "lib/util.js": "utility\n",
       "lib/util.d.ts": "export {};\n",
-      "lib/util.d.mts": "export {};\n",
     });
 
     expect(await readSourceFiles(directory, "example/files")).toEqual(new Map([
@@ -331,7 +330,8 @@ describe("bundled blueprint TypeScript sources", () => {
     expect([...files.keys()]).toEqual(["client.js"]);
   });
 
-  it.each(["client.tsx", "lib/component.tsx", "lib/loader.mts", "lib/loader.cts"])(
+  it.each(["client.tsx", "lib/component.tsx", "lib/loader.mts", "lib/loader.cts",
+    "lib/loader.d.mts", "lib/loader.d.cts"])(
     "rejects TypeScript the gadget runtimes have no loader for: %s", async path => {
       let directory = await sourceTree({"client.ts": "export {};", [path]: "export {};"});
 

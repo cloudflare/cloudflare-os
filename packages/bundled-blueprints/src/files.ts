@@ -256,14 +256,18 @@ const LIB_PREFIX = "lib/";
 /** The ECMAScript level both gadget runtimes accept, and what the blueprint tsconfigs target. */
 const GADGET_TARGET = "es2022";
 
-/** Declaration files carry no code: dropped rather than compiled. */
-const DECLARATION_PATTERN = /\.d\.[cm]?ts$/u;
+/**
+ * Declaration files carry no code: dropped rather than compiled. Only the plain spelling: a
+ * `.d.mts` or `.d.cts` describes a module flavour the archive cannot hold, so it is refused with
+ * the sources it would describe (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}).
+ */
+const DECLARATION_PATTERN = /\.d\.ts$/u;
 
 /**
- * TypeScript spellings a gadget module may not use. Each would type-check but reach the archive
- * as raw TypeScript or not at all, so they are rejected rather than half-supported: JSX has no
- * runtime here (the client is hand-written DOM code), and the ESM/CJS variants say nothing a
- * blueprint needs -- both bundles are ES modules.
+ * TypeScript spellings a gadget module may not use, declarations included. Each would type-check
+ * but reach the archive as raw TypeScript or not at all, so they are rejected rather than
+ * half-supported: JSX has no runtime here (the client is hand-written DOM code), and the ESM/CJS
+ * variants say nothing a blueprint needs -- both bundles are ES modules.
  */
 const UNSUPPORTED_TYPESCRIPT_PATTERN = /\.(?:tsx|mts|cts)$/u;
 
