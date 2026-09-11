@@ -311,6 +311,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let config = this.#config();
     return {
       signupsEnabled: config.signupsEnabled,
+      userSearchEnabled: config.userSearchEnabled,
       siteName: config.siteName,
       siteLogo: siteLogoImage(config.siteLogoConfigured),
       instanceInstructions: config.instanceInstructions,
@@ -576,6 +577,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async setSignupsEnabled(enabled: boolean): Promise<void> {
     await this.admin.updateAdminConfig({ signupsEnabled: enabled });
+  }
+
+  async setUserSearchEnabled(enabled: boolean): Promise<void> {
+    await this.admin.updateAdminConfig({ userSearchEnabled: enabled });
   }
 
   async setSiteName(name: string): Promise<void> {

@@ -11,6 +11,7 @@ describe("parseAdminConfig", () => {
     expect(config.signupsEnabled).toBe(false);
     expect(config.siteName).toBe("acme");
     expect(config.formats).toEqual([]);
+    expect(config.userSearchEnabled).toBe(true);
     for (let key of Object.keys(DEFAULT_ADMIN_CONFIG)) {
       expect(config[key as keyof typeof config], key).toBeDefined();
     }

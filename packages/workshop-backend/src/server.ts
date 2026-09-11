@@ -128,7 +128,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
   }
-  searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
+  async searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
+    if (!(await readAdminConfig(this.env)).userSearchEnabled) return [];
     return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject.getByName("")
         .searchUsers(query, [this.#userId.name!, ...excludeIds]));
   }

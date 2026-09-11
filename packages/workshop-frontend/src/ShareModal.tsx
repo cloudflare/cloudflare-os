@@ -19,6 +19,7 @@ import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControl
 import { PersonAvatar } from './components/PersonAvatar'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
+import { useServerConfig } from './ServerConfigContext'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
@@ -315,6 +316,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [directoryDismissed, setDirectoryDismissed] = useState(true)
   const directoryListboxId = useId()
   const activeDirectoryOptionRef = useRef<HTMLButtonElement>(null)
+  // Directory search is admin policy (ServerConfig.userSearchEnabled, on by default). Without it
+  // the field is a plain exact-id input: no lookups, and Invite submits whatever was typed.
+  const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? true
   const directoryQuery = addUsername.trim()
   // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
   // when the caller is a collaborator), and every collaborator.
@@ -323,13 +327,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     ...(metadata.owner ? [metadata.owner.id] : []),
     ...collaborators.map(({ profile }) => profile.id),
   ], [collaborators, currentUser, metadata.owner])
-  const directorySearching = selectedUser === null && directoryQuery !== ''
+  const directorySearching = userSearchEnabled && selectedUser === null && directoryQuery !== ''
   const directoryOpen = directorySearching && !directoryDismissed
   const directorySettled = directory.status !== 'loading' && directory.query === directoryQuery
   // Once the search has settled, the typed text can always be submitted as a canonical id: the
   // directory is a lazily backfilled convenience, so a valid id may be missing from it (or
   // shadowed by unrelated substring matches), and a directory outage must not block invites.
-  const canInviteUser = selectedUser !== null || (directoryQuery !== '' && directorySettled)
+  // With user search off there is no search to wait for.
+  const canInviteUser = selectedUser !== null ||
+    (directoryQuery !== '' && (!userSearchEnabled || directorySettled))
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -903,11 +909,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             <div className="relative min-w-0 flex-1">
               <input
                 type="search"
-                role="combobox"
-                placeholder="Search by name or email"
-                aria-label="Search people"
-                aria-autocomplete="list"
-                aria-expanded={directoryOpen}
+                role={userSearchEnabled ? 'combobox' : undefined}
+                placeholder={userSearchEnabled ? 'Search by name or email' : 'Username or email'}
+                aria-label={userSearchEnabled ? 'Search people' : 'Username or email'}
+                aria-autocomplete={userSearchEnabled ? 'list' : undefined}
+                aria-expanded={userSearchEnabled ? directoryOpen : undefined}
                 aria-controls={directoryOpen ? directoryListboxId : undefined}
                 aria-activedescendant={directoryOpen && directory.results[activeDirectoryIndex]
                   ? `${directoryListboxId}-option-${activeDirectoryIndex}`

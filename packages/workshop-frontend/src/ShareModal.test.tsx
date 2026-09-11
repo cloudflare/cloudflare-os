@@ -13,9 +13,11 @@ import type {
   GadgetMetadata,
   ObserverBindingNeed,
   Overseer,
+  ServerConfig,
   ShareLinkInfo,
   UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
+import { ServerConfigContext } from './ServerConfigContext'
 
 const toastAdd = vi.hoisted(() => vi.fn<(toast: unknown) => void>())
 
@@ -194,14 +196,21 @@ function verificationSection(rendered: HTMLElement, headingId: string): HTMLElem
   return section
 }
 
-async function typeDirectorySearch(rendered: HTMLElement, query: string) {
-  const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+// Types into the people field and waits out the search debounce (200ms), so a directory lookup
+// -- or the absence of one -- has had its chance to happen.
+async function typeInto(input: HTMLInputElement, query: string) {
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
     setValue.call(input, query)
     input.dispatchEvent(new Event('input', { bubbles: true }))
-    await new Promise(resolve => window.setTimeout(resolve, 225))
+    const { promise, resolve } = Promise.withResolvers<void>()
+    window.setTimeout(resolve, 225)
+    await promise
   })
+}
+
+async function typeDirectorySearch(rendered: HTMLElement, query: string) {
+  await typeInto(rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!, query)
 }
 
 async function invite(rendered: HTMLElement, username: string) {
@@ -232,20 +241,24 @@ describe('ShareModal', () => {
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
     metadata: GadgetMetadata = METADATA,
+    { userSearchEnabled = true } = {},
   ) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
+    const serverConfig = { userSearchEnabled } as ServerConfig
     await act(async () => {
       root!.render(
-        <ShareModal
-          open
-          onClose={() => {}}
-          overseer={overseer}
-          metadata={metadata}
-          currentUser={CURRENT_USER}
-          authenticatedApi={authenticatedApi}
-        />
+        <ServerConfigContext.Provider value={serverConfig}>
+          <ShareModal
+            open
+            onClose={() => {}}
+            overseer={overseer}
+            metadata={metadata}
+            currentUser={CURRENT_USER}
+            authenticatedApi={authenticatedApi}
+          />
+        </ServerConfigContext.Provider>
       )
     })
     // Let the load effects settle.
@@ -361,6 +374,45 @@ describe('ShareModal', () => {
     ))
 
     expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
+  })
+
+  it('never queries the directory and invites by exact id when user search is off', async () => {
+    const addCollaborator = vi.fn<(
+      userId: string,
+      role: CollaboratorRole,
+      note?: string,
+    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Grace Hopper' },
+      role,
+      addedBy: [],
+    }))
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(async () => [
+      { id: 'grace@example.com', name: 'Grace Hopper' },
+    ])
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers }),
+      METADATA,
+      { userSearchEnabled: false },
+    )
+
+    expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
+    expect(input.getAttribute('role')).toBeNull()
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+
+    await typeInto(input, 'grace@example.com')
+
+    expect(searchUsers).not.toHaveBeenCalled()
+    expect(rendered.querySelector('[role="listbox"]')).toBeNull()
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+    await click(button(rendered, 'Invite'))
+
+    expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'use', undefined)
+    expect(rendered.textContent).toContain('Added Grace Hopper')
   })
 
   it('does not submit a raw query while search is pending', async () => {

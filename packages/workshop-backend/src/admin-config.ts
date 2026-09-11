@@ -20,6 +20,12 @@ export type AdminConfig = {
    */
   signupsEnabled: boolean;
   /**
+   * Whether users may search the deployment-wide user directory to find
+   * collaborators (default true). The directory itself is maintained either
+   * way, and this switch just controls user access.
+   */
+  userSearchEnabled: boolean;
+  /**
    * Site name shown next to the top-bar logo, or "" to use DEFAULT_SITE_NAME. Resolve it for
    * display with `resolveSiteName()`.
    */
@@ -81,6 +87,7 @@ export type FormatCuration = {
 
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   signupsEnabled: true,
+  userSearchEnabled: true,
   siteName: "",
   siteLogoConfigured: false,
   instanceInstructions: "",
@@ -300,6 +307,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
     }
     return {
       signupsEnabled: typeof p.signupsEnabled === "boolean" ? p.signupsEnabled : true,
+      userSearchEnabled: typeof p.userSearchEnabled === "boolean" ? p.userSearchEnabled : true,
       siteName: typeof p.siteName === "string" ? p.siteName : "",
       siteLogoConfigured: typeof p.siteLogoConfigured === "boolean" ? p.siteLogoConfigured : false,
       instanceInstructions: typeof p.instanceInstructions === "string" ? p.instanceInstructions : "",

@@ -1,5 +1,5 @@
 import { createExecutionContext } from "cloudflare:test";
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import type { PublicApi } from "@gadgets/workshop-shared/api";
 import { describe, expect, it } from "vitest";
@@ -27,8 +27,15 @@ async function createAccount(
   return { username: name, token };
 }
 
+// User search is admin policy. The AdminSettings DO is the config's only writer, so go through it
+// (rather than the KV mirror) like AdminApiImpl does; each test sets the state it relies on.
+function setUserSearchEnabled(enabled: boolean): Promise<void> {
+  return exports.AdminSettings.getByName("").updateAdminConfig({ userSearchEnabled: enabled });
+}
+
 describe("authenticated user directory RPC", () => {
   it("indexes a user when it authenticates and re-indexes on rename", async () => {
+    await setUserSearchEnabled(true);
     using publicApi = await connect();
     const viewer = await createAccount(publicApi, "directoryviewer", "Directory Viewer");
     const target = await createAccount(publicApi, "directorytarget", "Directory Target Before");
@@ -50,5 +57,24 @@ describe("authenticated user directory RPC", () => {
       { id: target.username, name: "Directory Target After" },
     ]);
     await expect(viewerApi.searchUsers("target bef", [])).resolves.toEqual([]);
+  });
+
+  it("hides the directory from users while search is off, without dropping the index", async () => {
+    await setUserSearchEnabled(true);
+    using publicApi = await connect();
+    const viewer = await createAccount(publicApi, "policyviewer", "Policy Viewer");
+    const target = await createAccount(publicApi, "policytarget", "Policy Target");
+    using viewerApi = await publicApi.authenticate(viewer.token);
+    using _targetApi = await publicApi.authenticate(target.token);
+    const record = { id: target.username, name: "Policy Target" };
+    await expect.poll(() => viewerApi.searchUsers("policy target", [])).toEqual([record]);
+
+    await setUserSearchEnabled(false);
+    await expect(viewerApi.searchUsers("policy target", [])).resolves.toEqual([]);
+    await expect(viewerApi.searchUsers(target.username, [])).resolves.toEqual([]);
+
+    // Indexing continued while search was off: the record is there the moment it's turned back on.
+    await setUserSearchEnabled(true);
+    await expect(viewerApi.searchUsers("policy target", [])).resolves.toEqual([record]);
   });
 });
