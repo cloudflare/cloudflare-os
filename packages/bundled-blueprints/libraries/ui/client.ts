@@ -5,8 +5,8 @@
  * `colorBtn` and `customSelect` assemble a toolbar; `promptInline` stands in for the sandbox's
  * blocked `window.prompt`; `statusIndicator` is the save-status dot; `relativeTime` phrases a
  * timestamp; and the image helpers turn a picked or pasted file into a data URL that fits a budget.
- * Each is documented at its definition, and the README records where this behaviour deliberately
- * differs from the copies it replaces.
+ * Each is documented at its definition; the README lists the behaviour worth knowing before a
+ * gadget adopts one.
  */
 
 export { type ElChild, type ElProps, type ElPropValue, el, icon } from "./src/dom.ts";

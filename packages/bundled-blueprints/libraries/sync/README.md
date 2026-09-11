@@ -1,13 +1,12 @@
 # `sync` — collaboration plumbing
 
 Every collaborative gadget here has the same skeleton: one Durable Object owns the authoritative
-state and many browsers edit it live. The Docs, Sheets and Slides blueprints each wrote that
-skeleton for themselves -- a mutation queue in the object, a set of subscriber
-stubs it broadcasts to, presence seeded on join and dropped on leave, per-item optimistic
-concurrency, and in the browser a debounced save loop with retry, a throttled presence heartbeat
-and an `RpcTarget` for the callbacks. This library is that skeleton once, with none of the flesh:
-it knows nothing about blocks, cells or slides, and a gadget keeps its own model, protocol, DOM
-and export formats unchanged while it adopts the parts it re-implemented.
+state and many browsers edit it live -- a mutation queue in the object, a set of subscriber stubs
+it broadcasts to, presence seeded on join and dropped on leave, per-item optimistic concurrency,
+and in the browser a debounced save loop with retry, a throttled presence heartbeat and an
+`RpcTarget` for the callbacks. This library is that skeleton once, with none of the flesh: it knows
+nothing about blocks, cells or slides, and a gadget keeps its own model, protocol, DOM and export
+formats on top of it.
 
 ## Server (`@gadgets/bundled-blueprints/libraries/sync/server`)
 
@@ -22,8 +21,8 @@ and export formats unchanged while it adopts the parts it re-implemented.
   subscriber hears events in order. `remove(handle)`, `has(handle)`, `members()`, `size`. Given
   `PresenceHooks` -- `join(subscriber, who)` and `leave(subscriber, who)` in the gadget's own
   callback vocabulary -- it seeds a newcomer with everyone already here (all at once; one that
-  fails a seed is dropped unannounced), announces the newcomer to all, and announces whoever drops
-  out. A gadget with no presence passes none and gets a fan-out.
+  fails a seed is dropped, and its leave announced, since it was a member from the moment it was
+  added), announces the newcomer to all, and announces whoever drops out. A gadget with no presence passes none and gets a fan-out.
 - **`applyVersioned(items, batch, options?)`** -- the per-item concurrency rule over any
   `{ id, version }`: an upsert whose `baseVersion` is stale is rejected with the authoritative
   item, one for a deleted item is rejected as `missing` (the client may re-create it with
@@ -63,16 +62,15 @@ disposer).
 
 Nothing on the client side touches the DOM; every module runs in Node under its tests.
 
-## Adopting it
+## Using it
 
-A gadget keeps its RPC surface and its stored shape; what changes is who implements the loop. On
-the server, `enqueueMutation` becomes `queue.run`, the `subscribers` map and the two `broadcast`
-methods become one registry with hooks that build the gadget's own `presence` events, and the
-upsert/delete loop becomes `applyVersioned` with the gadget's sanitizer in front and its ordering
-after. In the browser, `scheduleSave`/`doSave` become a `SaveScheduler` whose `save()` is the
-gadget's payload builder, the `collaborators` map becomes a roster, `sendPresence` and the
-`setInterval` become a reporter, and the callbacks class becomes `createSubscriber`. Every step
-is independent of the others.
+A gadget keeps its RPC surface and its stored shape; the library implements the loop. On the
+server, every mutation runs through `queue.run`, one registry with hooks that build the gadget's own
+`presence` events holds the subscribers and broadcasts to them, and `applyVersioned` applies the
+upsert/delete rule with the gadget's sanitizer in front and its ordering after. In the browser, a
+`SaveScheduler` whose `save()` is the gadget's payload builder drives saving, a roster holds the
+collaborators, a reporter sends presence and the heartbeat, and `createSubscriber` builds the
+callbacks class. Each part stands alone; a gadget may use any subset.
 
 ## Tests
 

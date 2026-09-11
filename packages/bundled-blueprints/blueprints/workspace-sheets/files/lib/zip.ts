@@ -161,9 +161,9 @@ export function createZip(entries: Iterable<ZipEntry>): ReadableStream<Uint8Arra
       if (result.done) controller.close();
       else controller.enqueue(result.value);
     },
-    // Settles once the generator has finished closing, as the returned promise did in the
-    // untyped original; the stream's `cancel` contract is `Promise<void>`. `reason` keeps the
-    // stream API's own (untyped) parameter type, which is what the generator's `return` takes.
+    // Settles once the generator has finished closing; the stream's `cancel` contract is
+    // `Promise<void>`. `reason` keeps the stream API's own (untyped) parameter type, which is what
+    // the generator's `return` takes.
     async cancel(reason) {
       await iterator.return(reason);
     },

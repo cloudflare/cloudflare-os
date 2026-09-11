@@ -40,7 +40,7 @@ export const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpe
 
 /**
  * Defaults: 1600px on the longest edge, roughly a megabyte of encoded image, and about 2 MB for a
- * GIF kept animated (the budget Docs applied to a GIF before this library).
+ * GIF kept animated.
  */
 export const DEFAULT_IMAGE_LIMITS: ImageLimits = { maxDimension: 1600, maxDataUrlLength: 1_400_000, maxGifDataUrlLength: 2_700_000 };
 

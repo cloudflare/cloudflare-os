@@ -254,7 +254,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     // every operation committed after its snapshot, and none before it. The
     // registry duplicates the callback only once the snapshot exists, so a
     // failed read leaves nothing to dispose; it then seeds the newcomer with
-    // everyone here and announces it, after this call has returned.
+    // everyone here and announces it, once add() has returned.
     return this.mutations.run(async () => {
       const document = await this.assembleDocument(await this.loadMeta());
       this.subscribers.add(callback, info);

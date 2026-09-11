@@ -1230,8 +1230,8 @@ const pendingByBlock = new Map<string, PendingBlock>();
 const roster = new PresenceRoster<DocCursor>(clientId);
 
 // The dot's classes are this stylesheet's. The sync library names a rejected
-// save `conflict` and a failed one `offline`; both are drawn the way this
-// editor has always drawn them.
+// save `conflict` and a failed one `offline`: a rejected save is drawn as
+// synced, since the server's state won, and a failed one as bad.
 const STATUS_KINDS: Record<string, string> = { conflict: "synced", offline: "bad" };
 function setStatus(kind: string, text: string) {
   saveStatus.set(STATUS_KINDS[kind] ?? kind, text);

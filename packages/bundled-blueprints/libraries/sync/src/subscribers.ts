@@ -75,7 +75,8 @@ export class SubscriberRegistry<Callbacks extends object, Info = void> {
    * Keep `subscriber` -- the stub the RPC layer delivered, typed as the client implements it --
    * until its connection breaks or it fails a delivery, and announce its presence when hooks are
    * set: it is seeded with everyone already here, all at once, and then announced to everyone,
-   * after the current task so that the call that subscribed it returns first. A newcomer that
+   * in a microtask once this call has returned, so the caller's own work comes first -- though a
+   * reply the caller still awaits something for may follow the seeds. A newcomer that
    * fails a seed is gone already: it is dropped, and its leave is announced, because it was a
    * member from the moment it was added -- a subscriber added during its seeding window was seeded
    * with it, and would otherwise show it until its own roster expired it. Returns the kept handle,

@@ -1,8 +1,7 @@
 /**
- * The toolbar icons of the document-style gadgets, as the path markup {@link icon} wraps. Every
- * entry but `image` is drawn character for character by at least two of them; `image` is the
- * page's drawing. A gadget keeps its own table for the icons only it uses, typically spread over
- * this one: `const MY_ICONS = { ...ICONS, fill: '<path .../>' }`.
+ * The toolbar icons the document-style gadgets share, as the path markup {@link icon} wraps. A
+ * gadget keeps its own table for the icons only it uses, typically spread over this one:
+ * `const MY_ICONS = { ...ICONS, fill: '<path .../>' }`.
  */
 
 /** Path markup by icon name; pass an entry to `icon()` or straight to `iconBtn()`. */

@@ -30,7 +30,7 @@ on it, say); the blueprint build resolves that import the same way. A client ent
 library's server side, and the build rejects a blueprint that does: it would drag a Durable Object
 into the iframe. A blueprint imports its own files by relative path and a library by package
 subpath; everything else the bundle inlines fails the build -- a relative or absolute path into
-`libraries/` (`../../../libraries/ui/src/el.ts`), a library's `src/` module by package path, the
+`libraries/` (`../../../libraries/ui/src/dom.ts`), a library's `src/` module by package path, the
 package root, or a bare specifier some `node_modules` above the blueprint happens to satisfy -- so
 the exported subpath is the only door.
 

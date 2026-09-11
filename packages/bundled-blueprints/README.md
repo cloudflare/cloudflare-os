@@ -60,8 +60,8 @@ Sheets and Slides blueprints are written this way, each with a `lib/protocol.ts`
 its client and server share (imported type-only, so nothing of it ships).
 
 Everything else under `files/` (the README, assets) passes through unchanged, and may be imported
-for its contents if the bundler has a loader for it: JSON is inlined, a stylesheet is not (a gadget
-carries its CSS in the module that injects it). A file a bundle inlined is still shipped, because
+for its contents where the bundler can inline it: JSON is; a stylesheet is not, and
+`import "./styles.css"` fails the build (a gadget carries its CSS in the module that injects it). A file a bundle inlined is still shipped, because
 only TypeScript is build input. A blueprint is written in TypeScript or in JavaScript, not both: a
 `.js` module in a tree that holds `.ts` is rejected, since it would ship as written beside bundles
 it cannot share code with. Non-module files pass through either way.

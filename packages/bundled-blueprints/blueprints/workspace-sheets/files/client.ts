@@ -1302,8 +1302,8 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
       // the server may not have: if our commit landed, its snapshot already holds the cells the
       // replacement carried but not an edit typed after it, which is lost here; if a peer's
       // landed instead, the op would write into some other cell. Losing an edit after a failed
-      // save is what every failure did before the resync; writing the wrong cell is not. The
-      // undo history presumes that layout too. Cell ops on sheets with no replacement stay queued.
+      // save is a loss the user sees and can redo; writing the wrong cell is not. The undo
+      // history presumes that layout too. Cell ops on sheets with no replacement stay queued.
       for (const sheetId of pendingReplacements.keys()) dropCellOpsFor(sheetId);
       pendingReplacements.clear();
       undoStack.length = 0; redoStack.length = 0; updateUndoButtons();
