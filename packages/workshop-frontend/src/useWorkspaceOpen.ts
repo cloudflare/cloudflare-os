@@ -152,6 +152,10 @@ export function useWorkspaceOpen({
         // can never erase a newer capture's -- not even a same-key one (the same invite link
         // clicked again by the tab's next user).
         let shareKeyCaptureId: string | undefined
+        // The capture id of a stored entry this attempt read but could neither attach nor judge
+        // (identity unknown). Tracked so a keyless success can still discard it after the
+        // attempt has been cancelled.
+        let unjudgedCaptureId: string | undefined
         if (shareKey) {
           const captureId = crypto.randomUUID()
           shareKeyCaptureId = captureId
@@ -212,7 +216,11 @@ export function useWorkspaceOpen({
               }
             } catch {
               // Transport failure: identity unknown, so neither attach the key nor discard an
-              // entry that may belong to this user. The open proceeds keylessly.
+              // entry that may belong to this user. The open proceeds keylessly. This is the
+              // only branch that leaves a readable entry behind unjudged (a mismatch sweeps, a
+              // match attaches, a swept-while-parked read stores nothing), so remember which
+              // capture it was.
+              unjudgedCaptureId = retained.captureId
             }
           }
         }
@@ -290,6 +298,16 @@ export function useWorkspaceOpen({
         })
         if (cancelled) {
           resolvedSubscription[Symbol.dispose]()
+          // Mirror of the keyed path's confirm-after-cancel clear above: the subscribe resolving
+          // proves the keyless open succeeded (the pipelined call would have rejected
+          // otherwise), so the entry this attempt read but could not judge is spent, and a
+          // cancelled attempt is the only thing left that knows about it. Scoped to the capture
+          // this attempt actually read, never to a fresh read of the slot: a newer attempt may
+          // have stored its own entry there since, and that one must survive (the
+          // capture-scoped clear also leaves its in-flight stamp alone, which the
+          // workspace-scoped clear below would void). The ref is already null for this id on
+          // this path, so it is left untouched.
+          if (unjudgedCaptureId !== undefined) clearRetainedShareKey(id, unjudgedCaptureId)
           return
         }
         metadataSubscription = resolvedSubscription
@@ -310,7 +328,8 @@ export function useWorkspaceOpen({
         // reach an independent sibling's capture, and a wrongly cleared key costs a re-click of
         // the link. The workspace-scoped clear then still runs: it is what invalidates any
         // still-in-flight identity stamp for the workspace, so a late-resolving capture cannot
-        // re-write the entry after this.
+        // re-write the entry after this. The cancelled branch just above is the other site that
+        // discards the unjudged entry, for an attempt whose success lands after its cleanup.
         retainedShareKeyRef.current = null
         const leftover = readRetainedShareKey(id)
         if (leftover) clearRetainedShareKey(id, leftover.captureId)

@@ -445,6 +445,52 @@ describe('useWorkspaceOpen', () => {
         { type: 'clear-capture', workspaceId: 'workspace-1', captureId: 'capture-test' }))
   })
 
+  it('a keyless open that confirms after cancellation clears the entry it could not judge', async () => {
+    // The identity-unknown path leaves the entry unjudged, and the keyless success above is
+    // what finally discards it. If the attempt is cancelled while its metadata subscribe is
+    // still in flight, the subscribe resolving nonetheless proves the open succeeded (the
+    // pipelined call would have rejected otherwise), so the spent entry must still go -- along
+    // with a duplicated tab's copy, which only the capture-scoped broadcast reaches -- or a
+    // later reload replays it against the still-live link after an owner removal.
+    sessionStorage.setItem(RETAINED_V2_KEY, retainedEntry('cafe'))
+    const pendingSubscription = deferred<RpcStub<{}>>()
+    const subscriptionDispose = vi.fn<() => void>()
+    const subscription = disposableStub({}, subscriptionDispose) as RpcStub<{}>
+    const sentKeys: (string | undefined)[] = []
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(() => pendingSubscription.promise),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = {
+      openGadget: (_id: string, shareKey?: string) => {
+        sentKeys.push(shareKey)
+        return overseer
+      },
+      whoami: async () => { throw new Error('connection lost') },
+    } as unknown as RpcStub<AuthenticatedApi>
+    const received: unknown[] = []
+    siblingChannel ??= new BroadcastChannel('gadgets:retained-share-keys');
+    (siblingChannel as { unref?: () => void }).unref?.()
+    siblingChannel.addEventListener('message', event => received.push(event.data))
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={authenticatedApi} />))
+    expect(sentKeys).toEqual([undefined])
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBe(retainedEntry('cafe'))
+
+    // Unmount cancels the attempt while the subscribe is parked; the entry is still unjudged.
+    act(() => root!.unmount())
+    root = undefined
+
+    // The subscribe resolves after the cancellation: the open succeeded, the entry is spent.
+    await act(async () => { pendingSubscription.resolve(subscription); await Promise.resolve() })
+    expect(subscriptionDispose).toHaveBeenCalledOnce()
+    expect(sessionStorage.getItem(RETAINED_V2_KEY)).toBeNull()
+    await vi.waitFor(() => expect(received).toContainEqual(
+        { type: 'clear-capture', workspaceId: 'workspace-1', captureId: 'capture-test' }))
+  })
+
   it('abandons a superseded attempt parked in identity resolution before it opens anything', async () => {
     // The retained-storage path awaits whoami() before openGadget. An attempt superseded while
     // parked there already had its cleanup run -- with nothing yet to dispose -- so if it
