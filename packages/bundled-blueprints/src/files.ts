@@ -323,9 +323,11 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  *
  * Rejected, rather than silently mis-shipped: a JavaScript module in a tree that holds TypeScript,
  * which would ship as written beside bundles it cannot share code with -- a blueprint is written in
- * one or the other; a `.ts` file that is neither an entry nor under `lib/`; a TypeScript dialect
- * the archive has no place for (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/` module no
- * entry imports, which would be dropped from the archive; an input the bundle inlined that is
+ * one or the other; a `package.json` anywhere in a TypeScript tree, whose `browser` field or
+ * `imports` map would steer the bundler's resolution of the blueprint's own modules away from
+ * what the type check saw; a `.ts` file that is neither an entry nor under `lib/`; a TypeScript
+ * dialect the archive has no place for (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/`
+ * module no entry imports, which would be dropped from the archive; an input the bundle inlined that is
  * neither one of the blueprint's own files nor a library reached by its package subpath, from the
  * right side, which would inline code the blueprint does not own (see {@link auditInputs}); a
  * dynamic `import()` or `require()` of anything but a string literal, refused from the source
@@ -364,6 +366,11 @@ async function bundleTypeScriptSources(
         invalid(label, `${path} is a JavaScript module in a TypeScript blueprint; a blueprint is ` +
             `written in one or the other, since a module that ships as written cannot import ` +
             `what the bundle compiled away`);
+      }
+      if (typescript && path.split("/").at(-1) === "package.json") {
+        invalid(label, `${path} is a package.json in a TypeScript blueprint; the bundler would ` +
+            `read it, and its browser field or imports map can send an import of one of the ` +
+            `blueprint's modules to another, so the tree ships none`);
       }
       output.set(path, source);
       continue;

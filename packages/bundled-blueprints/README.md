@@ -75,11 +75,13 @@ the sandbox, and tree-shaking annotations are ignored, so a `"sideEffects": fals
 package.json cannot drop a side-effect-only import from the bundle.
 
 The build rejects a tree that would otherwise ship something other than what was written: a
-JavaScript module in a TypeScript blueprint, a `.ts` file outside the entry/`lib/` layout, TypeScript
-spelled `.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module no entry imports,
-an import that reaches outside `files/` by any path other than a library's exported subpath (a
-relative or absolute path into `libraries/`, a `src/` module, the package root, a bare specifier some
-`node_modules` resolves), a library import of the wrong side or of a library that does not exist, a
+JavaScript module in a TypeScript blueprint, a `package.json` in a TypeScript blueprint (its `browser`
+field or `imports` map would steer the bundler's resolution), a `.ts` file outside the entry/`lib/`
+layout, TypeScript spelled `.tsx`/`.mts`/`.cts` (neither runtime has a loader for it), a `lib/` module
+no entry imports, an import that reaches outside `files/` by any path other than a library's exported
+subpath (a relative or absolute path into `libraries/`, a `src/` module, the package root, a bare
+specifier some `node_modules` resolves), a library import of the wrong side or of a library that does
+not exist, a
 dynamic `import()` or `require()` of anything but a string literal, refused before the bundler runs
 (it would leave a computed path unchecked, and expand a template literal or concatenation into every
 file the pattern matches, wherever that reaches), a generated `client.js`/`server.js` that collides
