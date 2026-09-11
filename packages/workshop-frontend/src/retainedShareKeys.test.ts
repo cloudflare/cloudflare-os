@@ -64,6 +64,25 @@ describe('retained share key write tokens', () => {
     expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
   })
 
+  // The newest capture owns the slot from the moment it begins, not from when its stamp lands:
+  // an older capture's committed entry left readable for that identity round trip is what a
+  // reload inside the window would replay instead of the key just captured.
+  it('starting a capture removes the previous entry for that workspace', () => {
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', 'capture-a'),
+        { key: 'aaaa', userId: 'person@example.com', captureId: 'capture-a' })
+    const stampB = beginRetainedShareKeyWrite('ws-1', 'capture-b')
+    expect(readRetainedShareKey('ws-1')).toBeUndefined()
+    const entryB = { key: 'bbbb', userId: 'person@example.com', captureId: 'capture-b' }
+    commitRetainedShareKeyWrite(stampB, entryB)
+    expect(readRetainedShareKey('ws-1')).toEqual(entryB)
+  })
+
+  it("starting a capture leaves another workspace's entry alone", () => {
+    commitRetainedShareKeyWrite(beginRetainedShareKeyWrite('ws-1', ENTRY.captureId), ENTRY)
+    beginRetainedShareKeyWrite('ws-2', 'capture-b')
+    expect(readRetainedShareKey('ws-1')).toEqual(ENTRY)
+  })
+
   it('reads an entry without a capture id as absent', () => {
     // Not a migration concern (the v2 format never shipped without one); just the shape check
     // holding the line so no clear path has to reason about ownerless entries.

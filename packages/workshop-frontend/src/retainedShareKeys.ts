@@ -66,7 +66,9 @@ function storageKey(workspaceId: string): string {
 // tier has a second bump site: starting a capture (beginRetainedShareKeyWrite) supersedes every
 // older pending stamp for the workspace, so when two captures have stamps in flight and the older
 // resolves last, it cannot overwrite the newer capture's entry -- the newest capture owns the
-// slot outright, whether or not the older ever cleared. The
+// slot outright, whether or not the older ever cleared. The same site also removes the older
+// capture's already-committed entry, so the slot is empty rather than stale between the begin
+// and the new stamp landing. The
 // capture-scoped tier is what lets a successful attempt void *its own* in-flight stamp even when a
 // newer capture's entry occupies the slot -- without it, the spent key's late
 // stamp overwrites the newer entry and resurrects a key whose link would silently re-redeem
@@ -89,16 +91,29 @@ export type RetainedShareKeyWrite = {
 }
 
 /**
- * Start a capture's write: supersede every older pending stamp for the workspace, then capture
- * the current generations. Pass the token to {@link commitRetainedShareKeyWrite}. Bumping the
- * workspace generation here is what makes the newest capture own the slot -- an older capture's
- * stamp resolving later fails its workspace check instead of overwriting the newer entry. Other
- * workspaces' pending stamps, and the per-capture tier, are untouched.
+ * Start a capture's write: supersede the workspace's older captures -- every pending stamp and
+ * the stored entry alike -- then capture the current generations. Pass the token to
+ * {@link commitRetainedShareKeyWrite}. Bumping the workspace generation here is what makes the
+ * newest capture own the slot -- an older capture's stamp resolving later fails its workspace
+ * check instead of overwriting the newer entry -- and removing the entry is what makes that
+ * ownership hold from this moment rather than from when the new stamp lands: without it an older
+ * capture's already-committed entry stays readable for one identity round trip, and a reload
+ * inside that window replays the older key instead of the one just captured. Other workspaces'
+ * pending stamps and entries, and the per-capture tier, are untouched.
  */
 export function beginRetainedShareKeyWrite(
     workspaceId: string, captureId: string): RetainedShareKeyWrite {
+  // The generation is bumped before the removal so no in-flight commit can land between the two.
+  // The removal stays local (no broadcast): a sibling tab's entry under this workspace is its own
+  // capture, or a duplicate's copy of an older one that the older capture's own success clear
+  // reaches; neither is this capture's to supersede.
   const workspaceGeneration = (workspaceGenerations.get(workspaceId) ?? 0) + 1
   workspaceGenerations.set(workspaceId, workspaceGeneration)
+  try {
+    window.sessionStorage.removeItem(storageKey(workspaceId))
+  } catch {
+    // Best-effort; see above.
+  }
   return {
     workspaceId,
     captureId,
