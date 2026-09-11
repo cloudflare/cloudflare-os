@@ -318,6 +318,19 @@ describe("bundled blueprint TypeScript sources", () => {
     expect(files.get("client.js")).toContain("new Text(block.text)");
   });
 
+  it("follows a type-only import through a declaration file", async () => {
+    let directory = await sourceTree({
+      "client.ts": 'import type { T } from "./lib/public.js"; export const x: T = 1;',
+      // What tsc resolves `./lib/public.js` to: a declaration whose own import reaches a source.
+      "lib/public.d.ts": 'import type { U } from "./detail.js"; export type T = U;',
+      "lib/detail.ts": "export type U = number;",
+    });
+
+    let files = await readSourceFiles(directory, "example/files");
+
+    expect([...files.keys()]).toEqual(["client.js"]);
+  });
+
   it.each(["client.tsx", "lib/component.tsx", "lib/loader.mts", "lib/loader.cts"])(
     "rejects TypeScript the gadget runtimes have no loader for: %s", async path => {
       let directory = await sourceTree({"client.ts": "export {};", [path]: "export {};"});
