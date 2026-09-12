@@ -19,6 +19,7 @@ import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
+import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
 
 export type ActivityView = 'review' | 'history' | 'auto'
 
@@ -26,6 +27,10 @@ const PANE_BAR = 'flex h-9 flex-shrink-0 items-center border-b border-kumo-line'
 
 interface ActivityProps {
   overseer: RpcStub<Overseer>
+  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData).
+  // Latched actions are never auto-approved, so the always-approve affordance is hidden and
+  // existing rules are shown as suspended but stay revocable.
+  restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
   onAutoApproveChange?: () => void
@@ -152,6 +157,7 @@ function ActivityNotice({ icon, title, description, children }: {
 
 export default function Activity({
   overseer,
+  restricted,
   view,
   onViewChange,
   onAutoApproveChange,
@@ -169,6 +175,11 @@ export default function Activity({
     actionKind: ActionKind
     actionLabel: string
   } | null>(null)
+
+  // The workspace latched: the affordance is gone and confirming could only error.
+  useEffect(() => {
+    if (restricted) setConfirmAutoApprove(null)
+  }, [restricted])
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
@@ -225,6 +236,8 @@ export default function Activity({
           <div className="min-h-0 flex-1 overflow-auto">
             {pendingActions.map(record => {
               const autoApproveTarget =
+                // Never auto-approved while restricted, so no rule is offered.
+                !restricted &&
                 record.type === 'action' && record.gatekeeperId !== undefined &&
                 record.description.actionKind !== undefined &&
                 record.description.autoApprovable === true
@@ -240,6 +253,7 @@ export default function Activity({
                 <ReviewRequest
                   key={record.id}
                   record={record}
+                  restricted={restricted}
                   expanded={expandedActionId === record.id}
                   processing={processingActions.has(record.id)}
                   onToggle={() => toggleExpanded(record.id)}
@@ -423,7 +437,13 @@ export default function Activity({
           </>
         )
       case 'auto':
-        return <AutoApprovalPanel overseer={overseer} reloadTrigger={autoApproveReloadTrigger} />
+        return (
+          <AutoApprovalPanel
+            overseer={overseer}
+            restricted={restricted}
+            reloadTrigger={autoApproveReloadTrigger}
+          />
+        )
     }
   }
 
@@ -452,9 +472,11 @@ export default function Activity({
 
 function AutoApprovalPanel({
   overseer,
+  restricted,
   reloadTrigger,
 }: {
   overseer: RpcStub<Overseer>
+  restricted?: boolean
   reloadTrigger?: number
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
@@ -567,17 +589,21 @@ function AutoApprovalPanel({
                       {entry.actionKind.label}
                     </span>
                     <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-                      {entry.orphaned
-                        ? 'This connection no longer offers this action; the rule still applies.'
-                        : entry.enabled
-                          ? 'Applied without asking'
-                          : 'Waits for your approval'}
+                      {restricted
+                        // Rules don't apply while restricted; say so, but keep them revocable.
+                        ? "Won't apply: this workspace has read sensitive data, so actions always require manual approval."
+                        : entry.orphaned
+                          ? 'This connection no longer offers this action; the rule still applies.'
+                          : entry.enabled
+                            ? 'Applied without asking'
+                            : 'Waits for your approval'}
                     </span>
                   </span>
                   <Switch
                     size="sm"
                     checked={entry.enabled}
-                    disabled={busy}
+                    // Enabling would only error while restricted; disabling must stay possible.
+                    disabled={busy || (restricted === true && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
                     onCheckedChange={enabled => void setEnabled(entry, enabled)}
                   />
@@ -593,6 +619,7 @@ function AutoApprovalPanel({
 
 function ReviewRequest({
   record,
+  restricted,
   expanded,
   processing,
   onToggle,
@@ -601,6 +628,9 @@ function ReviewRequest({
   onAlwaysApprove,
 }: {
   record: ActionLogEntry
+  // While restricted the approver is the leak check, so the request is shown in full with a
+  // notice saying so.
+  restricted?: boolean
   expanded: boolean
   processing: boolean
   onToggle: () => void
@@ -651,8 +681,10 @@ function ReviewRequest({
         </div>
       </div>
 
+      {restricted && <RestrictedApprovalNotice className="mt-2 max-w-2xl" />}
+
       {record.description.description && (
-        <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${expanded ? '' : 'line-clamp-2'}`}>
+        <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${restricted || expanded ? '' : 'line-clamp-2'}`}>
           {record.description.description}
         </p>
       )}

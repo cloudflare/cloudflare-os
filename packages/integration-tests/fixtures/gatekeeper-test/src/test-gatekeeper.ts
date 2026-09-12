@@ -301,10 +301,15 @@ export class TestVerifier
 // ---------------------------------------------------------------------------
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
+/**
+ * A live session against a Test Thing, opened via `GatekeeperClient.openSession()`. `readValue()`
+ * records an observation (optionally `containsRestrictedData`); `writeValue()` submits a
+ * `set-value` action whose `autoApprovable` verdict and warnings the caller chooses.
+ */
 export interface TestSession {
   /** `restricted` marks the observation `containsRestrictedData`. */
   readValue(restricted?: boolean): Promise<number>;
-  writeValue(value: number): Promise<number>;
+  writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
 }
 
@@ -329,7 +334,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return 42;
   }
 
-  async writeValue(value: number): Promise<number> {
+  async writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number> {
     const id = await this.state.stageAction(this.label, value);
     try {
       await this.approvalQueue.submitAction(id, {
@@ -337,7 +342,8 @@ class TestSessionTarget extends RpcTarget implements TestSession {
         description: `Set the deterministic integration-test value to **${value}**.`,
         implementsRevert: false,
         awaitDecision: true,
-        actionKind: { tag: "set-value", label: "Set value" },
+        actionKind: SET_VALUE_ACTION_KIND,
+        ...(opts?.autoApprovable ? { autoApprovable: true } : {}),
       });
       return id;
     } catch (error) {
@@ -354,6 +360,8 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     this.approvalQueue[Symbol.dispose]();
   }
 }
+
+const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
 
 @validateRpc()
 export class TestGatekeeper
@@ -384,7 +392,7 @@ export class TestGatekeeper
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return [SET_VALUE_ACTION_KIND];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
