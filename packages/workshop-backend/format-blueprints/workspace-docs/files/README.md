@@ -6,6 +6,7 @@ A single-document, Google-Docs-style rich-text editor with Durable Object persis
 
 - **server.js** is the authoritative collaboration coordinator. It stores one atomic `document:v2` snapshot containing the title, global revision, ordered blocks, per-block versions, and modification time.
 - **client.js** builds the entire UI around a `contenteditable` surface. Every top-level document element has a stable `data-block-id`. Local typing is optimistic and changed blocks are sent after a short ~220 ms debounce.
+- **docx.js** converts a document snapshot into a WordprocessingML package streamed through the blueprint-local **zip.js** writer (shared with the Sheets blueprint).
 - Clients subscribe with a Cap'n Web `RpcTarget`. The server broadcasts accepted block operations and ephemeral presence events to every connected client.
 
 ## Real-time data model
@@ -76,3 +77,15 @@ Pasted Google Docs/Word HTML is rebuilt into clean semantic markup. Images from 
 - **Markdown** exports the persisted rich-text blocks as Markdown, preserving headings, emphasis,
   links, images, lists, block quotes, code, and horizontal rules.
 - **HTML** and **PDF** use the editor's print layout and omit editing chrome and presence UI.
+- **Word Document (DOCX)** converts the persisted HTML blocks directly (not via Markdown), so it
+  keeps underline, fonts, sizes, colors, highlights, alignment, indentation, links, and image sizes.
+
+DOCX uses US Letter pages with 0.65-inch margins, 11-point Normal text, ~1.5 line spacing, and
+paragraph styles mirroring the editor's stylesheet. Lists become native Word numbering, and
+`http:`/`https:`/`mailto:`/`tel:` links become external relationships (other targets stay as plain
+text). PNG, JPEG, GIF, and WebP data-URL images are embedded at their intrinsic or styled size,
+clamped to the page; external and `blob:` images are not fetched and appear as their alt text. Blink's
+Increase Indent wrapper (a borderless `blockquote`) is exported as indentation, a bordered
+`blockquote` as a Quote. Incidental tables are flattened to one paragraph per row with tab-separated
+cells. Anything beyond that (native tables, headers/footers, footnotes, comments, floating images,
+arbitrary CSS) is out of scope; HTML and PDF remain the visual-fidelity exports.

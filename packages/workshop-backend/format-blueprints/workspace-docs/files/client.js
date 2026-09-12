@@ -485,6 +485,12 @@ const styleSel = customSelect({
   value: "P",
   onChange: (value) => {
     restoreRange();
+    const previousBlock = currentBlock();
+    // formatBlock is a no-op on an existing blockquote; drop the wrapper's styles to make it a quote.
+    if (value === "BLOCKQUOTE" && isIndentationWrapper(previousBlock)) {
+      for (const property of ["margin", "border", "padding"]) previousBlock.style.removeProperty(property);
+      if (!previousBlock.style.length) previousBlock.removeAttribute("style");
+    }
     if (value === "TITLE") {
       document.execCommand("formatBlock", false, "H1");
       const block = currentBlock();
@@ -548,6 +554,11 @@ function cmdBtn(name, title, command, value = null) {
     refreshToolbarState();
     scheduleSave();
   });
+}
+
+// Increase Indent wraps the block in a borderless blockquote; it is indentation, not a quote.
+function isIndentationWrapper(node) {
+  return node?.tagName === "BLOCKQUOTE" && node.style.borderLeftStyle === "none";
 }
 
 const boldBtn = cmdBtn("bold", "Bold (Ctrl+B)", "bold");
@@ -1317,6 +1328,7 @@ function refreshToolbarState() {
   const block = currentBlock();
   if (block) {
     let tag = block.tagName;
+    if (isIndentationWrapper(block)) tag = "P";
     if (tag === "LI" || tag === "DIV") tag = "P";
     if (tag === "H1" && block.classList.contains("doc-title")) tag = "TITLE";
     styleSel.setValue(["P", "TITLE", "H1", "H2", "H3", "BLOCKQUOTE", "PRE"].includes(tag) ? tag : "P");
