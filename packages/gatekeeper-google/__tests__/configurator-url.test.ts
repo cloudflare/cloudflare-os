@@ -22,11 +22,12 @@ import driveAccountConfigurator from "../src/configurator/drive-account-configur
 import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
+import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import sharedDriveConfigurator from "../src/configurator/shared-drive-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SHARED_DRIVE_RESOURCE, parseResourceUrl,
+  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHARED_DRIVE_RESOURCE, parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -165,6 +166,9 @@ describe("Drive configurator URLs", () => {
     expect(renderedCopy(driveFileConfigurator)).toContain(
       "A selected native Google Doc or Sheet also provides read-only content.",
     );
+    expect(renderedCopy(driveFolderConfigurator)).toContain(
+      "Search everything currently beneath it and read native Google Docs and Sheets.",
+    );
   });
 
   it("round-trips an encoded shared-drive ID", () => {
@@ -185,6 +189,25 @@ describe("Drive configurator URLs", () => {
     expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
   });
 
+  it("round-trips an encoded folder ID", () => {
+    let values = { folderId: "folder/id with spaces" };
+    let url = configurableUrl(driveFolderConfigurator, values);
+    expect(url).toBe(
+      GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern.replace(
+        ":folderId", encodeURIComponent(values.folderId)),
+    );
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: values.folderId });
+  });
+
+  // The folder picker mints the internal `_resource` selector, never the natural browser URL: that
+  // one is the shared drive's permanent identity, and a folder minting it would hand a whole
+  // drive's authority to a binding the user configured as one folder.
+  it("never mints the shared drive's identity from a folder", () => {
+    let url = configurableUrl(driveFolderConfigurator, { folderId: "FOLDER123" });
+    expect(url).not.toContain("/drive/folders/");
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: "FOLDER123" });
+  });
+
   // Prefill after deleting the hand-written hooks: the sandbox fallback extracts named groups and
   // decodeURIComponent's them. A missing decode would leave `%2F`/`%20` in the form values.
   it("prefills encoded IDs from urlPattern named groups", () => {
@@ -197,5 +220,10 @@ describe("Drive configurator URLs", () => {
     let fileUrl = configurableUrl(driveFileConfigurator, fileValues);
     expect(valuesFromUrlPattern(fileUrl, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern))
       .toEqual(fileValues);
+
+    let folderValues = { folderId: "folder/id with spaces" };
+    let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
+    expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
+      .toEqual(folderValues);
   });
 });
