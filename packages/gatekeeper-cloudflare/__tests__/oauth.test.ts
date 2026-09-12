@@ -85,10 +85,15 @@ describe("Cloudflare OAuth", () => {
     });
   });
 
-  it("returns null rather than a token on a rejected redemption", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
+  it("surfaces the provider error when redemption is rejected", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: "invalid_client",
+      error_description: "Client authentication failed.",
+    }, { status: 401 })));
 
-    expect(await exchangeCode(config, "code", "verifier")).toBeNull();
+    await expect(exchangeCode(config, "code", "verifier")).rejects.toThrow(
+      "Cloudflare OAuth token exchange failed (401 invalid_client): Client authentication failed.",
+    );
   });
 
   it("returns null when a successful response carries no access token", async () => {
