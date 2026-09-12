@@ -8,12 +8,19 @@ neutral sidebars so the slide canvas remains the visual focus.
 
 ## Files
 
-- `server.js` — Durable Object that owns the deck document and broadcasts
-  every mutation to connected viewers. The server is a generic store; it
-  doesn't know what any component does.
+- `server.js` — Durable Object that owns the deck document, broadcasts every
+  mutation to connected viewers, and delegates PowerPoint export.
 - `client.js` — Design tokens, the component registry, slide renderer,
   block interactions (drag, resize, inline text edit), and the builder
   shell (slide list, inspector, palette, control bar, present mode).
+- `pptx.js` — dependency-free, brand-neutral PresentationML renderer for
+  server-side PowerPoint export. It knows the generic block types only;
+  `server.js` rewrites this blueprint's `logo` blocks into them first
+  (`normalizeDeckForPptx`), so the file can be reused unchanged by a
+  differently branded slides blueprint.
+- `zip.js` — streaming ZIP32 writer shared verbatim with the Workspace Sheets
+  blueprint implementation. Each blueprint keeps its own copy because a
+  dynamic Gadget receives only its own JavaScript files.
 
 ## Slide formats
 
@@ -81,17 +88,16 @@ hanging-indent treatment: one item per source line, 6px Tangerine dots,
 12px dot-to-copy gap, 19px primary or 17px compact Inter Regular text, and
 controlled 10px/8px item spacing.
 
-## Data model## Initial blueprint
+## Initial blueprint
 
 New Gadget instances start from the current four-slide overview of the
 builder: the orange “Compose your deck or build with agent” cover, a six-part
 feature overview, a connected-charts example showing how an agent can use an
 approved internal system of record as a data source, and a two-path get-started
 slide for editing directly or asking the agent. The complete blueprint
-is defined by `INITIAL_DECK` plus `KEY_TAKEAWAYS_SLIDE` in `server.js`; both
-first-time initialization and `resetAll()` clone that blueprint. The immutable default
-objects in `server.js` are cloned whenever storage is first seeded and by
-`resetAll()`, so later edits cannot mutate the blueprint.
+is defined by `INITIAL_DECK` plus `KEY_TAKEAWAYS_SLIDE` and `GET_STARTED_SLIDE`
+in `server.js`; both first-time initialization and `resetAll()` clone that
+blueprint, so later edits cannot mutate the immutable default objects.
 
 ## Data model
 
@@ -332,5 +338,62 @@ need to touch styles when adding a new field type.
 
 ## Export formats
 
-The deck supports **HTML** and **PDF** exports. Both use the same print renderer, which emits every
-slide at its fixed 1200 x 675 aspect ratio without the editor sidebars or presentation controls.
+The deck supports **HTML**, **PDF**, and **PowerPoint (`.pptx`)** exports. HTML
+and PDF remain browser-mode formats and use the same print renderer, which
+emits every slide at its fixed 1200 x 675 aspect ratio without the editor
+sidebars or presentation controls.
+
+PowerPoint export runs on the server and creates a conventional OPC /
+PresentationML package. Text, cards, boxes, pills, basic shapes, dividers,
+arrows, and the two brand marks become editable native PowerPoint objects
+rather than a screenshot. The renderer itself is brand-neutral: before the
+deck reaches it, `normalizeDeckForPptx()` in `server.js` replaces each `logo`
+block with a `text` block for the wordmark and an ellipse `shape` for the
+accent dot, in the logo's z-order position and at the geometry `client.js`
+draws (it uses the renderer's exported `measureText()` for the wordmark's
+width and baseline rather than its own copy of the font metrics). Another
+slides blueprint copies `pptx.js` unchanged and writes its own adapter. Source
+block order remains the shape z-order. The known bottom brand bar and orange
+cover treatment are native gradients. Dot-grid backgrounds are omitted. Colors
+may be hex, `rgb()`/`rgba()`, or the basic CSS names (`white`, `black`, `gray`,
+`red`, `orange`, ...); other names fall back to the component default.
+PresentationML cannot clip text, so card text asks the consumer to
+shrink-to-fit (`normAutofit`) instead of the browser's `overflow: hidden`, and
+auto-height blocks grow to their content (`spAutoFit`). Blocks without an
+authored `w` or `h` (including cards and boxes) are sized to their content,
+as the browser's `width: auto` wrapper is. Title highlights are applied in
+term order, as the browser's sequential wrapping is.
+
+The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x
+6,858,000 EMU. Positions, dimensions, and CSS font sizes all use the canvas's
+0.8-point-per-pixel scale. CSS `line-height` is emitted as a line-spacing
+percentage divided by Arial's natural 1.15em line height, since both PowerPoint
+and Google Slides apply percentages to that (Google also converts exact point
+spacing back into such a percentage, so points are not portable). Single-line labels
+(section label, pill, arrow label, the normalized logo wordmark) are sized from Arial's advance widths,
+because Google Slides ignores `wrap="none"` and breaks any label wider than its
+box. The package requests Arial, which is available in PowerPoint and Google
+previews, but does not embed fonts, so wrapping can still differ from the
+browser. Every block retains its authored position, including when its text
+wraps.
+
+PNG and JPEG data URLs are embedded after signature, dimension, and resource
+limit checks. Identical image data is stored once. `fill`, `contain`, and
+`cover` are supported, including source cropping for `cover`. Remote URLs are
+never fetched or emitted as external relationships; they receive a visible
+placeholder instead.
+
+SVG is not carried into PowerPoint. Office 2016+ could embed it through the
+`svgBlip` extension, but the consumers this export is round-tripped through
+(Google Slides import, macOS Quick Look, older PowerPoint) render that as an
+empty frame, and the exporter has no rasterizer to produce the PNG fallback such
+a picture needs. Pasted `svg` blocks and SVG files uploaded through the image
+control therefore become a visible "SVG not included" placeholder (keeping the
+block's background color), the same way remote images do. The known bottom
+brand-bar SVG is the one exception, drawn as a native gradient.
+
+The following are intentionally deferred: SVG (rasterized fallbacks or native
+shape conversion), pixel-perfect browser layout, embedded fonts, remote images,
+native charts and tables, animations and transitions, speaker notes and
+comments, audio and video, hyperlinks, rounded-image clipping beyond a safe
+approximation, and PPTX import or edited-PPTX round trips.

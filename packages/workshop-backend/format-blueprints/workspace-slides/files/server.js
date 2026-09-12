@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { MAX_TOTAL_TEXT_LENGTH, deckToPptx, measureText } from "./pptx.js";
 
 /**
  * The Gadget stores a single "deck" document under the "deck" key:
@@ -19,10 +20,10 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
  *   props: {...},         // type-specific (text, tone, etc.)
  * }
  *
- * All shape/render logic lives in client.js; the server is a dumb document
- * store with realtime broadcast. Mutations are coarse: any change re-sends
- * the whole deck, which keeps clients trivially in sync and makes undo
- * (future) easy.
+ * Interactive rendering lives in client.js and PowerPoint rendering in
+ * pptx.js; the server is a document store with realtime broadcast plus the
+ * export entrypoint. Mutations are coarse: any change re-sends the whole
+ * deck, which keeps clients trivially in sync and makes undo easy.
  */
 
 const STORAGE_KEY = "deck";
@@ -188,7 +189,10 @@ export class Gadget extends DurableObject {
 
   // -------- bulk ----------------------------------------------------------
   async setDeck(deck) {
-    await this.#save(deck);
+    // Stamp the schema marker getDeck() checks; a caller-built deck without it
+    // would otherwise be discarded and replaced by the starter deck on the
+    // next read (client boot, export).
+    await this.#save({ ...deck, themeVersion: "workspace.1" });
   }
 
   async resetAll() {
@@ -525,6 +529,7 @@ function defaultDeck() {
 const SLIDES_EXPORT_FORMATS = [
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
+  { id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileExtension: ".pptx" },
 ];
 
 export class ExportHandler extends WorkerEntrypoint {
@@ -532,7 +537,96 @@ export class ExportHandler extends WorkerEntrypoint {
     return SLIDES_EXPORT_FORMATS;
   }
 
-  async export(_gadget, id) {
+  async export(gadget, id) {
+    if (id === "pptx") {
+      const deck = await gadget.getDeck();
+      return deckToPptx(normalizeDeckForPptx(deck));
+    }
     throw new Error("Unsupported slides export format: " + id);
   }
+}
+
+/**
+ * Rewrites this blueprint's `logo` blocks -- its brand mark, which the brand-neutral PowerPoint
+ * renderer does not know -- into the generic blocks it does: a text block for the wordmark and an
+ * ellipse for the accent dot, in the logo's z-order position, laid out as client.js draws it.
+ * Pure: the deck is not modified, and every slide without a logo (or the whole deck) is returned
+ * as is. Malformed decks pass through to deckToPptx()'s own validation, and the work done here
+ * ahead of it is bounded by its total-text limit.
+ */
+export function normalizeDeckForPptx(deck) {
+  if (!Array.isArray(deck?.slides)) return deck;
+  const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
+  let changed = false;
+  const slides = deck.slides.map(slide => {
+    if (!Array.isArray(slide?.blocks) || !slide.blocks.some(isLogo)) return slide;
+    changed = true;
+    return { ...slide, blocks: slide.blocks.flatMap(block => isLogo(block) ? logoBlocks(block, budget) : block) };
+  });
+  return changed ? { ...deck, slides } : deck;
+}
+
+function isLogo(block) {
+  return block?.type === "logo";
+}
+
+// The logo component's styling, from client.js: a 24px bold wordmark tracked -0.02em at
+// line-height 1, then a 3px flex gap and a 6px dot whose bottom sits 1px above the baseline, all
+// multiplied by `scale`.
+const LOGO_FONT_PX = 24;
+const LOGO_TRACKING_EM = -0.02;
+const LOGO_GAP_PX = 3;
+const LOGO_DOT_PX = 6;
+
+// The browser's `props.scale || 1`, bounded so a stray value cannot produce a degenerate block.
+function logoScale(value) {
+  const scale = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
+  return scale && Number.isFinite(scale) ? Math.max(0.01, Math.min(20, scale)) : 1;
+}
+
+function logoBlocks(block, budget) {
+  const props = block.props !== null && typeof block.props === "object" ? block.props : {};
+  const scale = logoScale(props.scale);
+  const x = Number(block.x);
+  const y = Number(block.y);
+  const fontSize = LOGO_FONT_PX * scale;
+  const tracking = LOGO_TRACKING_EM * fontSize;
+  const raw = props.text == null ? "Workspace" : typeof props.text === "object" ? "" : String(props.text);
+  // Once the wordmarks alone exceed the renderer's total-text limit the deck is bound to be
+  // rejected, so the rest are handed over unmeasured for that error rather than measured first.
+  budget.remaining -= raw.length;
+  if (budget.remaining < 0) return [{ type: "text", x, y, props: { text: raw } }];
+  // A nowrap element: runs of spaces and line breaks collapse to one space.
+  const text = raw.replace(/[\t\n\r ]+/g, " ").trim();
+  const { width, ascent, lineHeight } = measureText(text, fontSize, 700, tracking);
+  // At line-height 1 the browser trims half the natural leading above the line, raising the
+  // baseline by that much. The renderer sets natural spacing, so the block is raised instead.
+  const halfLeading = (lineHeight - fontSize) / 2;
+  const baseline = y + ascent - halfLeading;
+  const blocks = [{
+    type: "text",
+    x,
+    y: y - halfLeading,
+    // The measured width, with the 2% slack the renderer gives every measured box and a margin.
+    w: Math.max(fontSize / 2, width * 1.02) + 8 * scale,
+    h: lineHeight,
+    props: {
+      text, fontSize, weight: 700, letterSpacing: `${LOGO_TRACKING_EM}em`,
+      lineHeight: lineHeight / fontSize, align: "left",
+      color: props.variant === "dark" ? "#000000" : "#FFFFFF",
+    },
+  }];
+  if (props.accentDot !== false) {
+    // Chrome tracks after the last glyph too, so the wordmark's box is the advance sum plus one
+    // more letter-spacing; the dot follows the flex gap.
+    blocks.push({
+      type: "shape",
+      x: x + (text ? width + tracking : 0) + LOGO_GAP_PX * scale,
+      y: baseline - (LOGO_DOT_PX + 1) * scale,
+      w: LOGO_DOT_PX * scale,
+      h: LOGO_DOT_PX * scale,
+      props: { kind: "ellipse", fill: "#F6821F" },
+    });
+  }
+  return blocks;
 }
