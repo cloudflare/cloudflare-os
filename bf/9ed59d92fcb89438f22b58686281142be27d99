@@ -1,0 +1,23 @@
+packages/gatekeeper-gitlab/src/configurator/gitlab-issue-configurator-ui.tsx
+  s_b235d7e85db519::t_0f048a80a3fc95 11-12
+packages/gatekeeper-gitlab/src/configurator/gitlab-merge-request-configurator-ui.tsx
+  s_b235d7e85db519::t_b1838aa21c6dfb 11-12
+packages/gatekeeper-gitlab/src/configurator/gitlab-project-configurator-ui.tsx
+  s_b235d7e85db519::t_d9a5e3c802816f 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bf9ed59d92fcb89438f22b58686281142be27d99",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
