@@ -1,0 +1,27 @@
+docs/observers.md
+  s_cd4ad01e342d73::t_5e4593117fb905 757-759
+packages/workshop-backend/src/overseer.ts
+  s_cd4ad01e342d73::t_992a1298788342 12176-12181
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_cd4ad01e342d73::t_5e4593117fb905 273-334
+plans/restricted-data-sharing.md
+  s_cd4ad01e342d73::t_5e4593117fb905 147-150
+packages/workshop-backend/src/sharing.ts
+  s_cd4ad01e342d73::t_992a1298788342 284-288,295-299,326-331,334,349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "546bc3ea0d7dd2be87cacd3d32a482fce1e11212",
+  "prompts": {},
+  "sessions": {
+    "s_cd4ad01e342d73": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3be780b9-45a6-4a2c-bd73-ac8a0689cccf",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

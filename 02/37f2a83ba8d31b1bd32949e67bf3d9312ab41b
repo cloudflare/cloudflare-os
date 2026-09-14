@@ -1,0 +1,22 @@
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_f2d13aeb63a5e8::t_0034d2530b432c 521-522
+  s_f2d13aeb63a5e8::t_9ebd61da7befea 498-499
+  s_f2d13aeb63a5e8::t_a82965d13a3669 545-546
+  s_f2d13aeb63a5e8::t_292c0127133169 533
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0237f2a83ba8d31b1bd32949e67bf3d9312ab41b",
+  "prompts": {},
+  "sessions": {
+    "s_f2d13aeb63a5e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3f23b61-389d-483f-bfc7-4b9547576abe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

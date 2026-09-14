@@ -1,0 +1,25 @@
+packages/integration-tests/__tests__/auto-approval-policy.test.ts
+  s_1308b62841ef11::t_6a903005f42aa3 114-116
+packages/workshop-frontend/src/Activity.tsx
+  s_1308b62841ef11::t_674a930762a016 248
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1308b62841ef11::t_0f61c067a39671 4875-4876,4913
+packages/workshop-shared/src/gatekeeper.ts
+  s_1308b62841ef11::t_e4b75858076b01 1339-1341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "42b0ae8aed8b670872313b4081b14921c3b598fd",
+  "prompts": {},
+  "sessions": {
+    "s_1308b62841ef11": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d4e83c-738d-4593-b0c2-b380cfb18732",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

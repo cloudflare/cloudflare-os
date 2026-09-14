@@ -1,0 +1,24 @@
+packages/workshop-backend/scripts/import-bundled-blueprint.ts
+  s_c98a968d9791dd::t_5c936e97075ee5 244-246,264-265,293-305,311-312,317
+scripts/build-bundled-blueprints.test.ts
+  s_c98a968d9791dd::t_5c936e97075ee5 130-131,137-163
+  s_c98a968d9791dd::t_1155554b741693 164-165
+packages/bundled-blueprints/src/generate.ts
+  s_c98a968d9791dd::t_5c936e97075ee5 69-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6f1d5257e5088a40951e4715f373374869fe9f5d",
+  "prompts": {},
+  "sessions": {
+    "s_c98a968d9791dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cc4e73b-3307-4e86-b24d-b45122beb798",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

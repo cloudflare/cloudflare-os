@@ -1,0 +1,41 @@
+docs/observers.md
+  s_8fc87153e931d7::t_97a858a4b5bf5f 39,103,672,675-678,711-715
+  s_8fc87153e931d7::t_df0d8dea2bcc11 681
+  s_8fc87153e931d7::t_a94761b7487cb6 682-683
+packages/workshop-shared/src/gatekeeper.ts
+  s_8fc87153e931d7::t_3d2a3cc3cb9f95 1216-1218
+plans/restricted-data-sharing.md
+  s_8fc87153e931d7::t_ecdb6b04220cb0 50-54,59-63,78,84,97,100-102,120,131,176-177,183-186,209-210,212
+  s_8fc87153e931d7::t_7a25b2e4193ea3 235
+  s_8fc87153e931d7::t_2c0bc329c29817 236-237
+packages/workshop-shared/src/api.ts
+  s_8fc87153e931d7::t_3d2a3cc3cb9f95 1310-1312
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_8fc87153e931d7::t_3d2a3cc3cb9f95 1-4,6-7,53,82,98-99,112
+packages/workshop-backend/src/overseer.ts
+  s_8fc87153e931d7::t_f8e301d266be27 1157,5681-5682,7448,9170-9173,11974,11995,12052-12053,12057-12058
+  s_8fc87153e931d7::t_25e54e1409c4ba 5683-5684
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_8fc87153e931d7::t_ec296bd7d9cd53 305
+docs/sharing.md
+  s_8fc87153e931d7::t_df0d8dea2bcc11 188-189
+  s_8fc87153e931d7::t_e982772ab3ae59 46,153,187
+packages/workshop-backend/src/sharing.ts
+  s_8fc87153e931d7::t_de9324dfbf90af 18-19,40-43,200-202,224,276-277,310,420,440
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd8c45d1557c1a0d6828464a858486fc19cff40f",
+  "prompts": {},
+  "sessions": {
+    "s_8fc87153e931d7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15a0fcad-4caf-4805-ba20-0d3a8f66634e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

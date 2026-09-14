@@ -1,0 +1,25 @@
+packages/workshop-backend/__tests__/restricted-writes-to-self.test.ts
+  s_bb9764ecc797fe::t_76fd10f704ce2f 146-147,149,151-152,154-169,171-177,198
+packages/workshop-backend/src/agent.ts
+  s_bb9764ecc797fe::t_a3312db54df05a 562,3407
+packages/workshop-backend/src/auto-approval.ts
+  s_bb9764ecc797fe::t_7b72553fc02dfe 56-58,63,66,69-89
+packages/workshop-backend/src/overseer.ts
+  s_bb9764ecc797fe::t_85cccaf74bfe55 8769-8770,8776-8777,8780-8781,8783-8789
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8cc13c79145d2d9e99f19aedf960bd02f7d2af4b",
+  "prompts": {},
+  "sessions": {
+    "s_bb9764ecc797fe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd4a5412-2024-4763-97b9-505b644377ad",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
