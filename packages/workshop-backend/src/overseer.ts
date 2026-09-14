@@ -6859,8 +6859,8 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
 
     return new Proxy(session, {
       get(target, prop, receiver) {
-        // Symbols are used internally by Workers RPC (e.g. Symbol.dispose); pass through.
-        if (typeof prop === "symbol") return Reflect.get(target, prop, target);
+        // Symbols and `then` are used internally by Workers RPC and Promise resolution; pass through.
+        if (typeof prop === "symbol" || prop === "then") return Reflect.get(target, prop, target);
         // Return a real function rather than `Reflect.get(target, prop, target)`.
         //
         // For method names NOT in workerd's statically-known RPC surface for this stub
