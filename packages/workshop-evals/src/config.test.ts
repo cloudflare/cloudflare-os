@@ -42,14 +42,9 @@ it("resolves catalog models to their provider", () => {
     .toEqual({ provider: "cloudflare", model: "@cf/deepseek-ai/deepseek-v4-pro-0813" });
 });
 
-it("resolves eval-only models that the picker does not offer", () => {
-  expect(resolveEvalModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast"))
-    .toEqual({ provider: "cloudflare", model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" });
-});
-
 it("does not guess a provider for an unlisted model", () => {
-  expect(() => resolveEvalModel("@cf/vendor/not-in-catalog"))
-    .toThrow("must be listed in SUGGESTED_MODELS or EVAL_ONLY_MODELS");
+  expect(() => resolveEvalModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast"))
+    .toThrow("must be listed in SUGGESTED_MODELS");
 });
 
 const COMMIT = "a".repeat(40);
