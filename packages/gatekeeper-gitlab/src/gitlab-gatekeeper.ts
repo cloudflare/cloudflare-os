@@ -3,8 +3,10 @@
 // them onto everything it returns (so a caller sees the world as if its queued work had landed),
 // and mints the sessions agents talk to. Mirrors gatekeeper-github's `GitHubGatekeeperImpl`.
 //
-// Git pull and push (`gitPull`, the `push` action's queue/apply/revert, and the simulation of
-// queued pushes onto reads) follow in a later commit.
+// Git operations follow plans/worktrees.md §3 verbatim: every commit id a read returns is
+// advertised by the session, `gitPull` is smart-HTTP protocol v2 through the kit's transport,
+// `push` binds its expected old head at queue time and applies through receive-pack's
+// compare-and-swap, and reads of a branch with queued pushes show the world as if they had landed.
 
 import { DurableObject, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -16,11 +18,25 @@ import {
   type GatekeeperUserVerifier,
   type GitCache,
   type GitOid,
+  type GitPullHints,
   type ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { GitDiffFile } from "@gadgets/gatekeeper-kit/git-diff";
-import { commitDetailsFromGitObject, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
-import { ZERO_OID } from "@gadgets/gatekeeper-kit/git-transport";
+import {
+  MAX_DIFF_BLOB_BYTES,
+  changedPathsBetweenTrees,
+  diffGitTrees,
+  parseGitTreePayload,
+  type GitDiffFile,
+  type TreeDiffSource,
+} from "@gadgets/gatekeeper-kit/git-diff";
+import { commitDetailsFromGitObject, isCommitOid, parseGitCommitPayload } from "@gadgets/gatekeeper-kit/git-objects";
+import {
+  GitRefUpdateRejectedError,
+  ZERO_OID,
+  emptyPackBytes,
+  pullGitObjectsIntoCache,
+  pushGitRefUpdate,
+} from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitLabApi,
   GitLabApiError,
@@ -143,11 +159,35 @@ const VIEWER_CACHE_TTL_MS = 5 * 60 * 1000;
 const DIFF_REFS_RETRY_DELAY_MS = 1500;
 
 const RECONNECT_MESSAGE = "GitLab credentials have expired or been revoked. Please reconnect the account.";
-const PUSH_NOT_YET = "GitLab push actions are not available in this build.";
+/** Cap on the queued-but-not-yet-pushed commits walked when simulating a branch's history. */
+const MAX_PENDING_CHAIN_COMMITS = 250;
 /** Bound on following a chain of not-yet-applied replies back to a real thread. */
 const MAX_REPLY_TARGET_HOPS = 50;
 
 type StoredViewer = { actor: GitLabActor; fetchedAt: number };
+
+/**
+ * A `target...source` merge request comparison computed as if the source branch's queued pushes
+ * had already landed (see `#simulatedMergeRequestComparison`). `pendingCommitIds` are the commits
+ * that are not on GitLab yet -- sessions must not advertise them.
+ */
+type SimulatedMergeRequestComparison = {
+  revision: GitLabMergeRequestRevision;
+  files: GitDiffFile[];
+  totalCommits: number;
+  /** Oldest-first: GitLab's compare commits, then the pending chain. */
+  commitSummaries: GitLabCommitSummary[];
+  pendingCommitIds: GitOid[];
+};
+
+function bytesToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
 
 /** Label names are unique case-insensitively on GitLab, as the overlay treats them. */
 function hasLabel(labels: string[], name: string): boolean {
@@ -511,7 +551,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         throw new Error(`Provisional merge request ${logicalId} is no longer available.`);
       }
       return this.#overlayIssueLike(
-        await this.#buildProvisionalMergeRequestDetails(createAction), "mergeRequest", logicalId, true);
+        await this.#buildProvisionalMergeRequestDetails(createAction, gitCache), "mergeRequest", logicalId, true);
     }
     return await this.#overlaySimulatedSourceHead(
       this.#overlayIssueLike(await this.#getRemoteMergeRequestDetails(logicalId), "mergeRequest", logicalId),
@@ -519,13 +559,30 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Overlay queued pushes onto an existing merge request's source branch head. Only the head sha
-   * moves in this commit; the recomputed diff stats arrive with the push simulation.
+   * Overlay queued pushes onto an existing merge request's source branch: when the (same-project)
+   * source branch has pending pushes, the details read as if they had landed -- simulated head
+   * sha and recomputed changed-file count. `mergeStatus` becomes `unchecked`: GitLab's verdict
+   * describes the remote head, not the simulated one. Without a git cache (a read that is not a
+   * session's, such as binding a merge's expected head), or when the simulation fails, the head
+   * alone is overlaid from the queued pushes' records -- so every read of the branch agrees on
+   * which commit it is at, and a merge queued behind a push binds the head that push will leave.
    */
   async #overlaySimulatedSourceHead(
-    details: GitLabMergeRequestDetails, _gitCache?: RpcStub<GitCache>,
+    details: GitLabMergeRequestDetails, gitCache?: RpcStub<GitCache>,
   ): Promise<GitLabMergeRequestDetails> {
-    return this.#overlayMergeRequestSummaryHead(details);
+    if (details.source.project.path !== this.#projectPath()) return details;
+    if (this.#pendingPushActions(details.source.branch).length === 0) return details;
+    if (gitCache === undefined) return this.#overlayMergeRequestSummaryHead(details);
+    const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, details.target.branch, details.source.branch);
+    if (simulated === null) return this.#overlayMergeRequestSummaryHead(details);
+    return {
+      ...details,
+      source: { ...details.source, sha: simulated.revision.headSha },
+      changedFiles: simulated.files.length,
+      changedFilesTruncated: undefined,
+      mergeStatus: "unchecked",
+      hasConflicts: false,
+    };
   }
 
   /**
@@ -559,22 +616,34 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     };
   }
 
-  async #buildProvisionalMergeRequestDetails(action: CreateMergeRequestAction): Promise<GitLabMergeRequestDetails> {
+  async #buildProvisionalMergeRequestDetails(
+    action: CreateMergeRequestAction, gitCache?: RpcStub<GitCache>,
+  ): Promise<GitLabMergeRequestDetails> {
     const viewer = await this.#getViewerActor();
     let sourceSha = "";
     let targetSha = "";
     let changedFiles: number | undefined;
     try {
-      // The branches exist (or a queued push will create them): read their heads for the refs.
-      const [source, target] = await Promise.all([
-        this.#getBranchHeadCached(action.options.sourceBranch),
-        this.#getBranchHeadCached(action.options.targetBranch),
-      ]);
-      sourceSha = this.#simulateBranchHead(action.options.sourceBranch, source) ?? "";
-      targetSha = target ?? "";
-      if (source !== null && target !== null) {
-        const compare = await this.#compareCached(action.options.targetBranch, action.options.sourceBranch);
-        changedFiles = compare.files.length;
+      // The source branch may itself be provisional -- moved, or outright created, by queued
+      // pushes. The simulated comparison reads it as if those pushes had landed; when it cannot
+      // run (no cache, or a tree the cache lacks) the live heads stand in, with the source head
+      // still overlaid so the ref points where the queued pushes will put it.
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, action.options.targetBranch, action.options.sourceBranch);
+      if (simulated !== null) {
+        sourceSha = simulated.revision.headSha;
+        targetSha = simulated.revision.baseSha;
+        changedFiles = simulated.files.length;
+      } else {
+        const [source, target] = await Promise.all([
+          this.#getBranchHeadCached(action.options.sourceBranch),
+          this.#getBranchHeadCached(action.options.targetBranch),
+        ]);
+        sourceSha = this.#simulateBranchHead(action.options.sourceBranch, source) ?? "";
+        targetSha = target ?? "";
+        if (source !== null && target !== null && sourceSha === source) {
+          const compare = await this.#compareCached(action.options.targetBranch, action.options.sourceBranch);
+          changedFiles = compare.files.length;
+        }
       }
     } catch (error) {
       logger.warn("failed to compute provisional merge request comparison", {
@@ -754,12 +823,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const touched = await this.#buildTouchedMergeRequestSummaries(matches, compare);
     const provisionals = (await Promise.all(this.#listPendingActions()
       .filter((action): action is CreateMergeRequestAction => action.type === "createMergeRequest")
-      .map(action => this.#buildProvisionalMergeRequestDetails(action)
+      .map(action => this.#buildProvisionalMergeRequestDetails(action, gitCache)
         .then(mr => this.#overlayIssueLike(mr, "mergeRequest", action.provisionalId, true)))))
       .filter(matches)
       .toSorted(compare);
     const injectedItems = [...touched.items, ...provisionals].toSorted(compare);
-    void gitCache;
 
     const { orderBy, sort } = mergeRequestOrder(filter);
     const projectPath = this.#projectPath();
@@ -995,11 +1063,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     };
   }
 
-  async #getDiff(logicalId: string, pageSize: number, _gitCache?: RpcStub<GitCache>):
+  async #getDiff(logicalId: string, pageSize: number, gitCache?: RpcStub<GitCache>):
       Promise<{ revision: GitLabMergeRequestRevision; files: Cursor<GitDiffFile> }> {
     if (logicalId.startsWith("~") && !this.#resolveProvisionalId(logicalId)) {
       const action = this.#findCreateAction(logicalId, "mergeRequest");
       if (!action) throw new Error(`Provisional merge request ${logicalId} is no longer available.`);
+      // The source branch may be provisional (moved or created by queued pushes); read the
+      // comparison as if those pushes had landed. GitLab's live compare would 404 on a branch
+      // that does not exist yet, or silently describe its stale head.
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, action.options.targetBranch, action.options.sourceBranch);
+      if (simulated !== null) {
+        return { revision: simulated.revision, files: new ArrayCursor(simulated.files, pageSize) };
+      }
       const [source, target] = await Promise.all([
         this.#getBranchHeadCached(action.options.sourceBranch),
         this.#getBranchHeadCached(action.options.targetBranch),
@@ -1018,6 +1093,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
     const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId)! : logicalId;
     const mr = await this.#getRawMergeRequest(realId);
+    // An existing merge request whose source branch has queued pushes reads its diff at the
+    // simulated head, like every other read of that branch.
+    if (gitCache !== undefined && mr.source_project_id === mr.target_project_id &&
+        this.#pendingPushActions(mr.source_branch).length > 0) {
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, mr.target_branch, mr.source_branch);
+      if (simulated !== null) {
+        return { revision: simulated.revision, files: new ArrayCursor(simulated.files, pageSize) };
+      }
+    }
     const revision = await this.#mergeRequestRevision(mr);
     const projectPath = this.#projectPath();
     return {
@@ -1166,11 +1250,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return await this.#getDiff(id, pageSize, gitCache);
   }
 
-  /** The merge base of a merge request, always a commit GitLab itself knows. */
-  async mergeRequestMergeBase(id: string, _gitCache?: RpcStub<GitCache>): Promise<GitOid> {
+  /**
+   * The merge base of a merge request, always a commit GitLab itself knows -- even a simulated
+   * head's merge base comes from a live `/merge_base` against the pending chain's anchor -- so
+   * sessions may advertise it.
+   */
+  async mergeRequestMergeBase(id: string, gitCache?: RpcStub<GitCache>): Promise<GitOid> {
     if (id.startsWith("~") && !this.#resolveProvisionalId(id)) {
       const action = this.#findCreateAction(id, "mergeRequest");
       if (!action) throw new Error(`Provisional merge request ${id} is no longer available.`);
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, action.options.targetBranch, action.options.sourceBranch);
+      if (simulated?.revision.mergeBaseSha !== undefined) return simulated.revision.mergeBaseSha;
       const [source, target] = await Promise.all([
         this.#getBranchHeadCached(action.options.sourceBranch),
         this.#getBranchHeadCached(action.options.targetBranch),
@@ -1181,7 +1271,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       return await this.#getMergeBaseCached(target, source);
     }
     const realId = id.startsWith("~") ? this.#resolveProvisionalId(id)! : id;
-    const revision = await this.#mergeRequestRevision(await this.#getRawMergeRequest(realId));
+    const mr = await this.#getRawMergeRequest(realId);
+    // A source branch with queued pushes reads at its simulated head, like every other read of
+    // that branch; its comparison already knows the merge base it diffs from.
+    if (gitCache !== undefined && mr.source_project_id === mr.target_project_id &&
+        this.#pendingPushActions(mr.source_branch).length > 0) {
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, mr.target_branch, mr.source_branch);
+      if (simulated?.revision.mergeBaseSha !== undefined) return simulated.revision.mergeBaseSha;
+    }
+    const revision = await this.#mergeRequestRevision(mr);
     if (revision.mergeBaseSha) return revision.mergeBaseSha;
     if (!isCommitOid(revision.baseSha) || !isCommitOid(revision.headSha)) {
       throw new Error(`GitLab has not finished computing merge request ${id}; retry shortly.`);
@@ -1358,12 +1456,38 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     throw new Error(`No commit found for ref "${ref}".`);
   }
 
-  async listCommits(filter: GitLabCommitFilter | undefined, pageSize: number, _gitCache?: RpcStub<GitCache>):
+  async listCommits(filter: GitLabCommitFilter | undefined, pageSize: number, gitCache?: RpcStub<GitCache>):
       Promise<Cursor<GitLabCommitSummary>> {
     const projectPath = this.#projectPath();
     // An omitted ref means the default branch, resolved here so the listing names the branch
     // explicitly (consistently with getCommit()/resolveRef(), which resolve from the same cache).
-    const refName = filter?.ref ?? (await this.#getProjectMetadata()).defaultBranch;
+    const ref = filter?.ref ?? (await this.#getProjectMetadata()).defaultBranch;
+    // A ref naming a branch with queued pushes enumerates from the simulated head: the pending
+    // chain (locally filtered) is injected newest-first ahead of GitLab's listing, which starts
+    // from the chain's anchor -- the first commit GitLab actually knows. Without this, a branch a
+    // queued push creates 404s, and a moved one lists its stale history.
+    let injected: GitLabCommitSummary[] = [];
+    let refName = ref;
+    if (gitCache !== undefined && this.#pendingPushActions(ref).length > 0) {
+      const realHead = await this.#getBranchHeadCached(ref);
+      const simulatedHead = this.#simulateBranchHead(ref, realHead);
+      if (simulatedHead !== null && simulatedHead !== realHead) {
+        try {
+          const chain = await this.#collectPendingChain(gitCache, simulatedHead);
+          injected = await this.#filterPendingCommitsForListing(gitCache, chain, filter);
+          refName = chain.anchor;
+        } catch (error) {
+          logger.warn("failed to simulate a commit listing over queued pushes", {
+            event: "commits.list.simulated.failed", error,
+          });
+          if (realHead === null) {
+            throw new Error(
+              `Branch "${ref}" does not exist on GitLab yet and the commits queued to create it ` +
+              `could not be read. Retry, or list commits from an existing ref.`, { cause: error });
+          }
+        }
+      }
+    }
     return new StreamingCursor<GitLabCommitSummary>({
       fetchPage: async (page, perPage) =>
         await this.#cached(this.#cacheKey("list-commits", stableKey({ ...filter, ref: refName }), `p${page}`), LIST_CACHE_TTL_MS, async () =>
@@ -1378,22 +1502,37 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           }))).map(c => normalizeCommitSummary(this.#instanceUrl(), projectPath, c))),
       overlay: item => item,
       filter: () => true,
+      // Injected pending commits are newer than everything the remote lists (newest-first).
       comparator: () => -1,
-      injectedItems: [],
+      injectedItems: injected,
       pageSize,
     });
   }
 
-  async mergeRequestCommits(logicalId: string, pageSize: number, _gitCache?: RpcStub<GitCache>):
+  async mergeRequestCommits(logicalId: string, pageSize: number, gitCache?: RpcStub<GitCache>):
       Promise<Cursor<GitLabCommitSummary>> {
     const projectPath = this.#projectPath();
     if (logicalId.startsWith("~") && !this.#resolveProvisionalId(logicalId)) {
       const action = this.#findCreateAction(logicalId, "mergeRequest");
       if (!action) throw new Error(`Provisional merge request ${logicalId} is no longer available.`);
+      // Not on GitLab yet: when the source branch has queued pushes the spliced simulation is the
+      // truth; otherwise the branch comparison is.
+      const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, action.options.targetBranch, action.options.sourceBranch);
+      if (simulated !== null) return new ArrayCursor(simulated.commitSummaries, pageSize);
       const compare = await this.#compareCached(action.options.targetBranch, action.options.sourceBranch);
       return new ArrayCursor(compare.commits, pageSize);
     }
     const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId)! : logicalId;
+    // An existing merge request whose source branch has queued pushes lists the simulated
+    // comparison instead of the remote pages (a force push may even have replaced the listed
+    // history, so splicing pages with the pending chain would misreport it).
+    if (gitCache !== undefined && this.#pendingPushActions().length > 0) {
+      const mr = await this.#getRawMergeRequest(realId);
+      if (mr.source_project_id === mr.target_project_id && this.#pendingPushActions(mr.source_branch).length > 0) {
+        const simulated = await this.#simulatedMergeRequestComparisonOrWarn(gitCache, mr.target_branch, mr.source_branch);
+        if (simulated !== null) return new ArrayCursor(simulated.commitSummaries, pageSize);
+      }
+    }
     // GitLab lists a merge request's commits newest first and the agent-facing order is oldest
     // first, so the whole list is read and reversed rather than streamed. Nothing bounds it but
     // the merge request itself; a pathological one costs pages, not correctness.
@@ -1730,7 +1869,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   // -- apply ------------------------------------------------------------------------------
 
-  async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+  async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {
     const record = this.#requireActionRecord(actionId);
     if (record.state === "approved") {
       // Already applied: the overseer records completion only after this method returns, so a
@@ -1840,8 +1979,41 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         await this.#mergeMergeRequest(realId, action.options, action.expectedHeadSha);
         break;
       }
-      case "push":
-        throw new Error(PUSH_NOT_YET);
+      case "push": {
+        // No gatekeeper-side object walk: the overseer composes the pack from the action's
+        // pending-push marks (`cache.buildPack()` on the action-scoped stub), and this side
+        // contributes only send-pack framing plus the ref-update command. The command's old-sha
+        // is the queue-time `expectedOldSha` -- receive-pack's compare-and-swap applies to every
+        // update, force or not (fast-forward policy was already enforced at queue time), so a
+        // branch that moved between approval and apply fails cleanly instead of being clobbered.
+        try {
+          const pack = await cache.buildPack();
+          await this.#withApi(api => pushGitRefUpdate(
+            body => api.fetchGitReceivePack(projectPath, body),
+            { branch: action.branch, oldSha: action.expectedOldSha, newSha: action.newSha },
+            pack));
+        } catch (error) {
+          if (!(error instanceof GitRefUpdateRejectedError)) throw error;
+          // Desired-state semantics: apply succeeds iff the branch ends up at newSha -- by our
+          // CAS'd push, or by finding it already there (a retried apply whose first attempt
+          // landed but crashed before this record was persisted, or a third party's
+          // byte-identical push -- indistinguishable, and the approved end state holds either way).
+          const head = (await this.#withApi(api => api.getBranch(projectPath, action.branch)))?.commit.id ?? null;
+          if (head !== action.newSha) {
+            // GitLab's pre-receive hooks (protected branches, push rules) explain themselves in
+            // the report-status line; that reason is passed through, never matched.
+            throw new Error(action.expectedOldSha === ZERO_OID
+              ? `The push cannot be applied: a branch named "${action.branch}" was created after this push ` +
+                `was queued (the push would have created it). Re-observe the branch and queue a fresh push ` +
+                `against its current head. GitLab said: ${error.reason}`
+              : `The push cannot be applied: branch "${action.branch}" has moved from ${action.expectedOldSha}, ` +
+                `the head it was approved against, or GitLab refused it. Re-observe the branch and queue a ` +
+                `fresh push against its current head. GitLab said: ${error.reason}`,
+              { cause: error });
+          }
+        }
+        break;
+      }
     }
 
     this.#markActionApproved(action);
@@ -2192,8 +2364,31 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         await this.#withApi(api => api.setDiscussionResolved(this.#projectPath(), Number(realId), action.threadId, !action.resolved));
         break;
       }
-      case "push":
-        throw new Error(PUSH_NOT_YET);
+      case "push": {
+        // Ref rollback: move the branch back to the head the user approved pushing it from
+        // (delete it, if the push created it). The command's old-sha is the pushed commit, so
+        // work that landed on the branch after the push is never stomped -- the rollback then
+        // fails cleanly instead. The pushed objects stay on the remote (they merely go dangling),
+        // which is also why the rollback needs no pack contents: an empty pack accompanies the
+        // update, and a deletion sends none (the protocol forbids it).
+        const deleting = action.expectedOldSha === ZERO_OID;
+        try {
+          await this.#withApi(async api => pushGitRefUpdate(
+            body => api.fetchGitReceivePack(this.#projectPath(), body),
+            { branch: action.branch, oldSha: action.newSha, newSha: deleting ? ZERO_OID : action.expectedOldSha },
+            deleting ? null : bytesToStream(await emptyPackBytes())));
+        } catch (error) {
+          if (error instanceof GitRefUpdateRejectedError) {
+            return {
+              message: `Branch "${action.branch}" is no longer at the pushed commit ${action.newSha}, so it ` +
+                `cannot be rolled back automatically (GitLab said: ${error.reason}). Reset the branch manually if needed.`,
+              canRetry: false,
+            };
+          }
+          throw error;
+        }
+        break;
+      }
       case "createIssue":
       case "createMergeRequest":
       case "postReview":
@@ -2201,5 +2396,267 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         return { message: "This GitLab action cannot be automatically reverted.", canRetry: false };
     }
     this.#clearCaches();
+  }
+
+  // -- git: pull, push, and the simulation of queued pushes -------------------------------
+
+  /**
+   * `Gatekeeper.gitPull()`: fetch the requested objects from this project over git smart-HTTP
+   * (protocol v2) and deposit them in the workspace git cache. The gatekeeper contributes only
+   * protocol framing -- the kit's transport composes the fetch command from the hints and strips
+   * the response down to the raw pack body, which streams into `cache.consumePack()` for
+   * overseer-side decoding, hash verification, and storage -- and retains nothing locally.
+   *
+   * No observation is recorded: a pull is overseer-initiated population of the workspace cache
+   * with objects whose commit ids were already returned (and advertised) by observed session
+   * reads, not a new agent-visible read; observer access to the git data rides the same
+   * project-level ACL as everything else here (strategy B).
+   */
+  async gitPull(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void> {
+    const projectPath = this.#projectPath();
+    await this.#withApi(api => pullGitObjectsIntoCache(
+      body => api.fetchGitUploadPack(projectPath, body), oids, hints, cache));
+  }
+
+  /**
+   * Prepare a push action, binding the expected remote ref state at queue time: reads the
+   * branch's current head (live, never cached -- the expectation must reflect the remote) and
+   * overlays this project's earlier queued pushes (`#simulateBranchHead`: stacked pushes bind
+   * each `expectedOldSha` to the previous push's `newSha`, so approving them in order applies
+   * cleanly). Returns null when the (simulated) branch is already at `commitId`.
+   *
+   * A non-force push must be a fast-forward: `expectedOldSha` must be an ancestor of `commitId`,
+   * checked here -- before anything is queued -- via `GitCache.isAncestor()`. Branch creation is
+   * exempt (no old head to fast-forward from; the zero-id compare-and-swap at apply protects
+   * against a branch appearing in the interim), and `force` skips only this policy check -- it
+   * does not loosen the old-sha match at apply.
+   */
+  async preparePush(branch: string, commitId: GitOid, force: boolean, gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+    const realHead = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
+    const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
+    if (expectedOldSha === commitId) return null;
+    if (!force && expectedOldSha !== ZERO_OID && !(await gitCache.isAncestor(expectedOldSha, commitId))) {
+      throw new Error(
+        `Cannot push to branch "${branch}": its current head ${expectedOldSha} is not an ancestor of ` +
+        `${commitId}, so this push is not a fast-forward -- the branch has moved past the head this work ` +
+        `was based on. Pull the branch's new head and rebase onto it, or pass force: true to overwrite the branch.`);
+    }
+    return { type: "push", ...this.#base(), branch, expectedOldSha, newSha: commitId, force };
+  }
+
+  /** Whether GitLab knows this commit (the anchor test for pending-chain walks). */
+  async #isCommitOnGitLab(oid: GitOid): Promise<boolean> {
+    return (await this.#getRemoteCommitDetails(oid)) !== null;
+  }
+
+  /**
+   * Walk a simulated branch head down to its **anchor** -- the first commit GitLab already knows
+   * -- reading the not-yet-pushed commits from the workspace git cache (which serves this
+   * gatekeeper's queued-push closure, pulling objects through on demand). Returns the pending
+   * commits newest-first plus the anchor. The *listing* follows first parents, as GitLab's own
+   * history view does; a chain that leaves the cache or bottoms out with no GitLab-known ancestor
+   * throws, and callers degrade.
+   *
+   * The *served* set is wider than the listing: every parent of a pending commit that GitLab does
+   * not have is recorded in `#servedSimulatedCommitIds` too, side parents of a local merge
+   * included, because every summary names its parents and the session advertises what it names.
+   * Advertising a not-yet-pushed side parent would tell the overseer the remote has it; the push
+   * pack would then omit it (a remote-known object is not sent) and receive-pack would reject the
+   * push for the missing object.
+   */
+  async #collectPendingChain(gitCache: RpcStub<GitCache>, head: GitOid): Promise<{
+    commits: { summary: GitLabCommitSummary; tree: GitOid }[];
+    anchor: GitOid;
+  }> {
+    // A push's expectedOldSha is usually known to GitLab without a probe: it was read from the
+    // remote at queue time. Stacked pushes bind each expectedOldSha to the previous queued push's
+    // newSha (a pending commit), so those are excluded and the walk continues to the real anchor.
+    const pendingNewShas = new Set(this.#pendingPushActions().map(action => action.newSha));
+    const knownShas = new Set(this.#pendingPushActions()
+      .map(action => action.expectedOldSha)
+      .filter(sha => sha !== ZERO_OID && !pendingNewShas.has(sha)));
+
+    const onGitLab = async (oid: GitOid) => knownShas.has(oid) || await this.#isCommitOnGitLab(oid);
+    const commits: { summary: GitLabCommitSummary; tree: GitOid }[] = [];
+    const sideParents: GitOid[] = [];
+    let current = head;
+    while (commits.length <= MAX_PENDING_CHAIN_COMMITS) {
+      if (await onGitLab(current)) {
+        await this.#recordPendingSideParents(gitCache, sideParents, onGitLab);
+        return { commits, anchor: current };
+      }
+      const object = await gitCache.get(current);
+      if (object === null || object.type !== "commit") {
+        throw new Error(`Commit ${current} is not available from the workspace git cache.`);
+      }
+      const parsed = parseGitCommitPayload(object.content, current);
+      this.#servedSimulatedCommitIds.add(current);
+      const instanceUrl = this.#instanceUrl();
+      const projectPath = this.#projectPath();
+      commits.push({
+        summary: commitDetailsFromGitObject(current, object.content, id => `${instanceUrl}/${projectPath}/-/commit/${id}`),
+        tree: parsed.tree,
+      });
+      if (parsed.parents.length === 0) {
+        throw new Error(`Commit ${current} has no ancestor known to GitLab.`);
+      }
+      sideParents.push(...parsed.parents.slice(1));
+      current = parsed.parents[0];
+    }
+    throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
+  }
+
+  /**
+   * Mark every not-yet-pushed commit reachable through a local merge's side parents as served
+   * (see `#collectPendingChain`), walking each side branch down to a commit GitLab has. Bounded
+   * like the main chain; a side branch that leaves the cache is left unmarked (the push itself
+   * would fail on the missing object, not silently advertise it).
+   */
+  async #recordPendingSideParents(
+    gitCache: RpcStub<GitCache>, roots: GitOid[], onGitLab: (oid: GitOid) => Promise<boolean>,
+  ): Promise<void> {
+    const stack = [...roots];
+    let visited = 0;
+    while (stack.length > 0 && visited <= MAX_PENDING_CHAIN_COMMITS) {
+      const oid = stack.pop()!;
+      if (this.#servedSimulatedCommitIds.has(oid) || await onGitLab(oid)) continue;
+      const object = await gitCache.get(oid);
+      if (object === null || object.type !== "commit") continue;
+      visited += 1;
+      this.#servedSimulatedCommitIds.add(oid);
+      stack.push(...parseGitCommitPayload(object.content, oid).parents);
+    }
+  }
+
+  /**
+   * The tree oid of a commit, from cached bytes when available. GitLab's REST API has no
+   * object-by-oid read of a commit's tree, so an on-remote commit whose bytes the cache lacks
+   * cannot be resolved -- the caller degrades.
+   */
+  async #treeOidOfCommit(gitCache: RpcStub<GitCache>, sha: GitOid): Promise<GitOid> {
+    const object = await gitCache.get(sha);
+    if (object !== null && object.type === "commit") {
+      return parseGitCommitPayload(object.content, sha).tree;
+    }
+    throw new Error(`Could not resolve the tree of commit ${sha}: it is not in the workspace git cache.`);
+  }
+
+  /**
+   * Object source for the simulated-diff tree walk: the workspace git cache first (the pending
+   * side always resolves there -- the queued-push closure pulls through on demand). Blobs the
+   * cache lacks come from GitLab's blob-by-sha endpoint; trees have no oid-addressed endpoint
+   * (`/repository/tree` is path-and-ref addressed), so a missing tree is `null` and the walk
+   * throws `TreeUnavailableError`, which callers degrade to the un-simulated remote read.
+   */
+  #treeDiffSource(gitCache: RpcStub<GitCache>): TreeDiffSource {
+    const projectPath = this.#projectPath();
+    return {
+      getTree: async oid => {
+        const object = await gitCache.get(oid);
+        return object !== null && object.type === "tree" ? parseGitTreePayload(object.content, oid) : null;
+      },
+      getBlob: async oid => {
+        const object = await gitCache.get(oid);
+        if (object !== null && object.type === "blob") return object.content;
+        const remote = await this.#withApi(api => api.getBlob(projectPath, oid, MAX_DIFF_BLOB_BYTES));
+        return remote === null || remote === "oversized" ? "unavailable" : remote;
+      },
+    };
+  }
+
+  /**
+   * The simulated `target...source` comparison for a merge request whose source branch has
+   * queued pushes, computed as if those pushes had already landed: the head is the simulated
+   * branch head, the commit list splices GitLab's `compare(target, anchor)` with the pending
+   * chain, and the file diff is a local tree diff from the merge base to the simulated head
+   * (GitLab cannot compute it -- the pending commits are not on the remote). Returns null when
+   * no overlay applies (no cache, no queued pushes, or the remote has invalidated their
+   * expectations), so callers fall through to the ordinary remote reads.
+   *
+   * Known gap: a queued push to the *target* branch is not overlaid here -- the comparison uses
+   * the target branch's remote state.
+   */
+  async #simulatedMergeRequestComparison(
+    gitCache: RpcStub<GitCache> | undefined, targetRef: string, sourceBranch: string,
+  ): Promise<SimulatedMergeRequestComparison | null> {
+    if (gitCache === undefined) return null;
+    if (this.#pendingPushActions(sourceBranch).length === 0) return null;
+    const realHead = await this.#getBranchHeadCached(sourceBranch);
+    const simulatedHead = this.#simulateBranchHead(sourceBranch, realHead);
+    if (simulatedHead === null || simulatedHead === realHead) return null;
+
+    const cacheKey = this.#cacheKey("mr-simulated", stableKey(targetRef), simulatedHead);
+    const cached = this.#loadCached<SimulatedMergeRequestComparison>(cacheKey, ENTITY_CACHE_TTL_MS);
+    if (cached !== undefined) {
+      // The served-id set is in-memory; re-record the cached result's pending ids so this
+      // instance's advertising filter covers them too.
+      for (const id of cached.pendingCommitIds) this.#servedSimulatedCommitIds.add(id);
+      return cached;
+    }
+
+    const generation = this.#cacheGeneration();
+    const chain = await this.#collectPendingChain(gitCache, simulatedHead);
+    const targetHead = await this.#getBranchHeadCached(targetRef);
+    if (targetHead === null) throw new Error(`Target branch "${targetRef}" does not exist on GitLab.`);
+    const [compare, mergeBase] = await Promise.all([
+      this.#compareCached(targetRef, chain.anchor),
+      this.#getMergeBaseCached(targetHead, chain.anchor),
+    ]);
+
+    const newTree = chain.commits.length > 0 ? chain.commits[0].tree : await this.#treeOidOfCommit(gitCache, simulatedHead);
+    const files = await diffGitTrees(this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree);
+
+    const result: SimulatedMergeRequestComparison = {
+      // The pending chain descends from the anchor without touching the target branch, so the
+      // diff's merge base is the (target, anchor) one.
+      revision: { baseSha: targetHead, headSha: simulatedHead, mergeBaseSha: mergeBase },
+      files,
+      totalCommits: compare.commits.length + chain.commits.length,
+      // Oldest-first, like the merge request commit listing.
+      commitSummaries: [...compare.commits, ...chain.commits.map(commit => commit.summary).toReversed()],
+      pendingCommitIds: chain.commits.map(commit => commit.summary.id),
+    };
+    this.#storeCached(cacheKey, result, generation);
+    return result;
+  }
+
+  /** `#simulatedMergeRequestComparison`, degrading a failure to null with a warning. */
+  async #simulatedMergeRequestComparisonOrWarn(
+    gitCache: RpcStub<GitCache> | undefined, targetRef: string, sourceBranch: string,
+  ): Promise<SimulatedMergeRequestComparison | null> {
+    try {
+      return await this.#simulatedMergeRequestComparison(gitCache, targetRef, sourceBranch);
+    } catch (error) {
+      logger.warn("failed to simulate a merge request comparison over queued pushes", {
+        event: "merge.request.simulated.comparison.failed", error,
+      });
+      return null;
+    }
+  }
+
+  /** Apply a history listing's filters to the pending chain locally (GitLab never sees these commits). */
+  async #filterPendingCommitsForListing(
+    gitCache: RpcStub<GitCache>,
+    chain: { commits: { summary: GitLabCommitSummary; tree: GitOid }[]; anchor: GitOid },
+    filter: GitLabCommitFilter | undefined,
+  ): Promise<GitLabCommitSummary[]> {
+    const results: GitLabCommitSummary[] = [];
+    for (let index = 0; index < chain.commits.length; index++) {
+      const { summary, tree } = chain.commits[index];
+      if (filter?.author !== undefined && summary.author.email !== filter.author && summary.author.name !== filter.author) continue;
+      const date = summary.committer.date ?? summary.author.date;
+      if (filter?.since !== undefined && (date === undefined || date < filter.since)) continue;
+      if (filter?.until !== undefined && (date === undefined || date > filter.until)) continue;
+      if (filter?.path !== undefined) {
+        const parentTree = index + 1 < chain.commits.length
+          ? chain.commits[index + 1].tree
+          : await this.#treeOidOfCommit(gitCache, chain.anchor);
+        const changed = await changedPathsBetweenTrees(this.#treeDiffSource(gitCache), parentTree, tree);
+        const path = filter.path.replace(/\/+$/, "");
+        if (!changed.some(candidate => candidate === path || candidate.startsWith(`${path}/`))) continue;
+      }
+      results.push(summary);
+    }
+    return results;
   }
 }
