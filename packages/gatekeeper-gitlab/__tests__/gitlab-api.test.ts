@@ -171,16 +171,42 @@ describe("error bodies", () => {
     expect(errorMessageFromBody(undefined, "fallback")).toBe("fallback");
   });
 
-  it("marks a 401 as an auth error and appends Retry-After on a 429", async () => {
+  it("classifies a 401 as a credential rejection only from /user and the git endpoints", async () => {
     fakeFetch([
       json(fx.errorBodies.data.unauthorized, { status: 401 }),
-      new Response("Retry later", { status: 429, headers: { "retry-after": "30" } }),
+      json({ message: "401 Unauthorized" }, { status: 401 }),
+      json({ message: "401 Unauthorized" }, { status: 401 }),
+      new Response("Unauthorized", { status: 401 }),
     ]);
-    const unauthorized = await api().getCurrentUser().catch(e => e);
-    expect(unauthorized.isAuthError).toBe(true);
+    expect((await api().getCurrentUser().catch(e => e)).isAuthError).toBe(true);
+    // GitLab's documented "this user does not have permission to accept this merge request" is a
+    // 401 too; it is the merge's own answer, not a revoked token.
+    expect((await api().mergeMergeRequest("g/p", 1, {}).catch(e => e)).isAuthError).toBe(false);
+    expect((await api().approveMergeRequest("g/p", 1, "abc").catch(e => e)).isAuthError).toBe(false);
+    // The git endpoints authenticate nothing but the bearer.
+    expect((await api().fetchGitUploadPack("g/p", new Uint8Array()).catch(e => e)).isAuthError).toBe(true);
+  });
+
+  it("appends Retry-After on a 429", async () => {
+    fakeFetch([new Response("Retry later", { status: 429, headers: { "retry-after": "30" } })]);
     const limited = await api().getCurrentUser().catch(e => e);
     expect(limited.status).toBe(429);
     expect(limited.message).toBe("Retry later (retry after 30s)");
+  });
+});
+
+describe("members", () => {
+  it("reads a user's effective membership through the documented user_ids filter, taking the highest row", async () => {
+    const calls = fakeFetch([
+      json([{ id: 8769, username: "dancarter", access_level: 30 }]),
+      json([]),
+      json([{ id: 8769, username: "dancarter", access_level: 10 }, { id: 8769, username: "dancarter", access_level: 40 }, { id: 7, username: "other", access_level: 50 }]),
+    ]);
+    expect(await api().getProjectMember("g/p", 8769)).toMatchObject({ access_level: 30 });
+    expect(calls[0].url.pathname).toBe("/api/v4/projects/g%2Fp/members/all");
+    expect(calls[0].url.searchParams.getAll("user_ids[]")).toEqual(["8769"]);
+    expect(await api().getProjectMember("g/p", 8769)).toBeNull();
+    expect(await api().getProjectMember("g/p", 8769)).toMatchObject({ access_level: 40 });
   });
 });
 
@@ -257,7 +283,7 @@ describe("issues and merge requests", () => {
   });
 
   it("resolves the merge_request/issues note paths and the discussion reply path", async () => {
-    const calls = fakeFetch([json(fx.issueNotesResponse.data), json({}, { status: 201 }), json({})]);
+    const calls = fakeFetch([json(fx.issueNotesResponse.data), json({}, { status: 201 }), json({}), json([])]);
     await api().listNotes("g/p", "merge_requests", 7, { orderBy: "updated_at", sort: "desc", page: 1, perPage: 100 });
     expect(calls[0].url.pathname).toBe("/api/v4/projects/g%2Fp/merge_requests/7/notes");
     expect(calls[0].url.searchParams.get("order_by")).toBe("updated_at");
@@ -267,6 +293,10 @@ describe("issues and merge requests", () => {
     await api().setDiscussionResolved("g/p", 7, "abc", true);
     expect(calls[2].init.method).toBe("PUT");
     expect(JSON.parse(calls[2].body!)).toEqual({ resolved: true });
+    // The thread itself is read from the discussions endpoint, for issues and merge requests alike.
+    await api().listDiscussions("g/p", "issues", 3, 2, 100);
+    expect(calls[3].url.pathname).toBe("/api/v4/projects/g%2Fp/issues/3/discussions");
+    expect(calls[3].url.searchParams.get("page")).toBe("2");
   });
 
   it("publishes drafts with a summary note and reviewer state", async () => {

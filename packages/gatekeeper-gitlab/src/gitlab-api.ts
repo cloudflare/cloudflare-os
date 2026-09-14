@@ -35,10 +35,18 @@ export type GitLabSimpleUser = {
   web_url: string;
 };
 
-/** Per-user access levels on a project, `GET /projects/:id`. Both are null for a non-member. */
-export type GitLabProjectPermissions = {
-  project_access: { access_level: number } | null;
-  group_access: { access_level: number } | null;
+/**
+ * One row of `GET /projects/:id/members/all`: the user's *effective* access, "including members
+ * inherited or invited through ancestor groups", at the highest level they hold.
+ * `membership_state` is `"awaiting"` for an invitation not yet accepted, where the version
+ * reports it.
+ */
+export type GitLabMemberResponse = {
+  id: number;
+  username: string;
+  access_level: number;
+  expires_at?: string | null;
+  membership_state?: string;
 };
 
 export type GitLabProjectResponse = {
@@ -51,7 +59,6 @@ export type GitLabProjectResponse = {
   visibility: "public" | "private" | "internal";
   default_branch?: string | null;
   namespace: { full_path: string; name: string; path: string };
-  permissions?: GitLabProjectPermissions;
   archived?: boolean;
   empty_repo?: boolean;
 };
@@ -251,12 +258,18 @@ export type GitLabCompareResponse = {
 };
 
 /**
- * A failed GitLab request. `status` is the HTTP status; `isAuthError` marks a 401, which callers
- * treat as "revoked, reconnect" -- not "refresh": expiry is handled ahead of time from
- * `expires_in`, so a 401 on a token still fresh by our clock means it was revoked, and a refresh
- * would only come back `invalid_grant`. `movedTo` is set when the API answered a 3xx: a renamed
- * or transferred project answers its old path with a `301` to its numeric-id URL, which must
- * never be followed (a followed 301 turns a POST into a GET).
+ * A failed GitLab request. `status` is the HTTP status. `isAuthError` marks a 401 that means the
+ * *credentials* were rejected, which callers treat as "revoked, reconnect" -- not "refresh":
+ * expiry is handled ahead of time from `expires_in`, so a 401 on a token still fresh by our
+ * clock means it was revoked, and a refresh would only come back `invalid_grant`. GitLab also
+ * answers 401 for things that are not credential rejections -- documented for `PUT …/merge` as
+ * "this user does not have permission to accept this merge request", and the approvals endpoint
+ * requires an eligible approver -- so only a 401 from `GET /user`, the one request that asserts
+ * nothing but authentication, is classified as one; every other endpoint's 401 is that
+ * operation's own answer, for the caller to explain. (A revoked token still surfaces: the next
+ * `describe()` or user-id read asks `/user`.) `movedTo` is set when the API answered a 3xx: a
+ * renamed or transferred project answers its old path with a `301` to its numeric-id URL, which
+ * must never be followed (a followed 301 turns a POST into a GET).
  */
 export class GitLabApiError extends Error {
   status: number;
@@ -264,15 +277,18 @@ export class GitLabApiError extends Error {
   isAuthError: boolean;
   movedTo?: string;
 
-  constructor(status: number, message: string, details?: unknown, movedTo?: string) {
+  constructor(status: number, message: string, options: { details?: unknown; movedTo?: string; isAuthError?: boolean } = {}) {
     super(message);
     this.name = "GitLabApiError";
     this.status = status;
-    this.details = details;
-    this.isAuthError = status === 401;
-    this.movedTo = movedTo;
+    this.details = options.details;
+    this.isAuthError = options.isAuthError ?? false;
+    this.movedTo = options.movedTo;
   }
 }
+
+/** The one path whose 401 means the credentials themselves were refused. */
+const CREDENTIAL_PROBE_PATH = "/user";
 
 /** Where a `GitLabApi` sends requests and what it attaches to each. */
 export type GitLabInstance = {
@@ -433,7 +449,7 @@ async function send(
   if (response.status >= 300 && response.status < 400) {
     await response.body?.cancel().catch(() => {});
     const location = response.headers.get("location") ?? undefined;
-    throw new GitLabApiError(response.status, redirectMessage(url, location), undefined, location);
+    throw new GitLabApiError(response.status, redirectMessage(url, location), { movedTo: location });
   }
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
@@ -443,7 +459,10 @@ async function send(
       const retryAfter = response.headers.get("retry-after");
       if (retryAfter) message += ` (retry after ${retryAfter}s)`;
     }
-    throw new GitLabApiError(response.status, message, parsed);
+    throw new GitLabApiError(response.status, message, {
+      details: parsed,
+      isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH,
+    });
   }
 
   return response;
@@ -532,7 +551,7 @@ async function postForm(
 function grantFromResponse(parsed: unknown, now: number): GitLabOAuthGrant {
   const result = parsed as RawTokenResponse;
   if (!result.access_token || !result.refresh_token || typeof result.expires_in !== "number") {
-    throw new GitLabApiError(400, errorMessageFromBody(parsed, "GitLab OAuth token response was incomplete"), parsed);
+    throw new GitLabApiError(400, errorMessageFromBody(parsed, "GitLab OAuth token response was incomplete"), { details: parsed });
   }
   return {
     accessToken: result.access_token,
@@ -561,7 +580,7 @@ export async function exchangeAuthCode(
   const parsed = await parseBody(response);
   if (!response.ok) {
     throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token exchange failed"), parsed);
+      errorMessageFromBody(parsed, "GitLab OAuth token exchange failed"), { details: parsed });
   }
   return grantFromResponse(parsed, now);
 }
@@ -595,7 +614,7 @@ export async function refreshAccessToken(
       return { ok: false, revoked: true, message: errorMessageFromBody(parsed, "invalid_grant") };
     }
     throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token refresh failed"), parsed);
+      errorMessageFromBody(parsed, "GitLab OAuth token refresh failed"), { details: parsed });
   }
   return { ok: true, grant: grantFromResponse(parsed, now) };
 }
@@ -613,7 +632,7 @@ export async function revokeToken(
   if (!response.ok) {
     const parsed = await parseBody(response);
     throw new GitLabApiError(response.status,
-      errorMessageFromBody(parsed, "GitLab OAuth token revocation failed"), parsed);
+      errorMessageFromBody(parsed, "GitLab OAuth token revocation failed"), { details: parsed });
   }
   await response.body?.cancel().catch(() => {});
 }
@@ -658,6 +677,32 @@ export class GitLabApi {
 
   async getProject(projectPath: string): Promise<GitLabProjectResponse> {
     return await this.#get<GitLabProjectResponse>(`/projects/${encodeProjectPath(projectPath)}`);
+  }
+
+  /** A project by numeric id -- how a merge request from a fork names its source project. */
+  async getProjectById(id: number): Promise<GitLabProjectResponse> {
+    return await this.#get<GitLabProjectResponse>(`/projects/${id}`);
+  }
+
+  /**
+   * A user's effective membership of a project -- direct, inherited through ancestor groups, or
+   * through a group the project is shared with -- or null when they have none. This, not the
+   * project's `permissions` object, is the source for "what can this user see": `permissions`
+   * reports only direct project membership on the instance this was checked against, reading
+   * `null` for the group-inherited access that most members hold. The list form with the
+   * documented `user_ids` filter is used rather than `members/all/:user_id` because its
+   * non-member answer is a documented, verified shape (`[]`), where the single-member form's
+   * 404 is neither. The list folds a user's memberships into one row at their highest level;
+   * the highest is taken anyway, should a version return several.
+   */
+  async getProjectMember(projectPath: string, userId: number): Promise<GitLabMemberResponse | null> {
+    const rows = await this.#get<GitLabMemberResponse[]>(
+      `/projects/${encodeProjectPath(projectPath)}/members/all`, { user_ids: [userId], per_page: 100 });
+    let best: GitLabMemberResponse | null = null;
+    for (const row of rows) {
+      if (row.id === userId && (best === null || row.access_level > best.access_level)) best = row;
+    }
+    return best;
   }
 
   /**
@@ -832,8 +877,9 @@ export class GitLabApi {
   // -- notes and discussions
 
   /**
-   * One page of notes on an issue or merge request. Ordered by `updated_at` descending so an
-   * incremental sync can stop at the first note older than its watermark (there is no `since`).
+   * One page of an issue's or merge request's root-level notes. Not the way to read a thread:
+   * replies (`DiscussionNote`s) are absent from this listing by GitLab's documented design; see
+   * `listDiscussions`.
    */
   async listNotes(projectPath: string, kind: "issues" | "merge_requests", iid: number, options: {
     orderBy?: "created_at" | "updated_at";
@@ -860,9 +906,19 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/${kind}/${iid}/notes/${noteId}`);
   }
 
-  async listMergeRequestDiscussions(projectPath: string, iid: number, page: number, perPage: number): Promise<GitLabDiscussionResponse[]> {
+  /**
+   * One page of an issue's or merge request's discussions -- the threads, each with every note
+   * in it. This, not `listNotes`, is how a thread's replies are read: GitLab documents that
+   * "items of type DiscussionNote are not returned as part of the Note API". The endpoint takes
+   * no `order_by`, `sort`, or `since`; a reader walks it whole.
+   */
+  async listDiscussions(projectPath: string, kind: "issues" | "merge_requests", iid: number, page: number, perPage: number): Promise<GitLabDiscussionResponse[]> {
     return await this.#get<GitLabDiscussionResponse[]>(
-      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/discussions`, { page, per_page: perPage });
+      `/projects/${encodeProjectPath(projectPath)}/${kind}/${iid}/discussions`, { page, per_page: perPage });
+  }
+
+  async listMergeRequestDiscussions(projectPath: string, iid: number, page: number, perPage: number): Promise<GitLabDiscussionResponse[]> {
+    return await this.listDiscussions(projectPath, "merge_requests", iid, page, perPage);
   }
 
   /** Reply within an existing discussion. */
@@ -1063,12 +1119,14 @@ export class GitLabApi {
       throw new GitLabApiError(response.status,
         `git ${verb} failed: the git endpoint redirected (${response.headers.get("location") ?? "no location"}); ` +
         "if the instance is behind Cloudflare Access, the Access application must admit the service token on the .git/ paths.",
-        undefined, response.headers.get("location") ?? undefined);
+        { movedTo: response.headers.get("location") ?? undefined });
     }
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).trim().slice(0, 200);
+      // A git endpoint has no per-operation 401: the only thing it authenticates is the bearer.
       throw new GitLabApiError(response.status,
-        `git ${verb} failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`);
+        `git ${verb} failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
+        { isAuthError: response.status === 401 });
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.startsWith(headers.Accept)) {
