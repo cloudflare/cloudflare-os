@@ -70,6 +70,8 @@ export type CreateMergeRequestAction = BaseAction & {
   type: "createMergeRequest";
   provisionalId: string;
   options: GitLabCreateMergeRequestOptions;
+  /** Resolved at prepare time from `options.assignees`, as for an issue. */
+  assigneeIds: number[];
 };
 
 type BaseEntityAction = BaseAction & {
@@ -139,12 +141,21 @@ export type ResolveDiffThreadAction = BaseAction & {
   mergeRequestId: string;
   threadId: string;
   resolved: boolean;
+  /** The thread's state when the action was queued, which a revert restores. */
+  previouslyResolved: boolean;
 };
 
 export type MergeMergeRequestAction = BaseAction & {
   type: "mergeMergeRequest";
   mergeRequestId: string;
   options?: GitLabMergeRequestMergeOptions;
+  /**
+   * The source head the merge was approved against: the agent's `expectedHeadSha`, else the head
+   * read at queue time. Sent as `sha`, so GitLab refuses (409) to merge commits that arrived
+   * after approval. Always present: a merge whose head cannot be determined is refused at
+   * prepare rather than queued unbound.
+   */
+  expectedHeadSha: string;
 };
 
 /**
@@ -178,12 +189,72 @@ export type GitLabAction =
   | MergeMergeRequestAction
   | PushAction;
 
+/**
+ * The Markdown an action will post, in which `#~N` / `!~N` provisional references are honoured
+ * (rewritten to the real number at apply; see `#rewriteKnownReferences`). This is the one list
+ * of those fields: the apply-time rewrite and the reject-time cascade both read it, so a text
+ * that would be rewritten is also a dependency -- reject the referenced resource and the action
+ * that names it can never apply.
+ */
+export function referenceBearingTexts(action: GitLabAction): string[] {
+  switch (action.type) {
+    case "createIssue":
+    case "createMergeRequest":
+      return action.options.bodyMarkdown ? [action.options.bodyMarkdown] : [];
+    case "setBody":
+    case "postComment":
+    case "replyToDiffComment":
+      return [action.bodyMarkdown];
+    case "postReview":
+      return [
+        ...(action.review.bodyMarkdown ? [action.review.bodyMarkdown] : []),
+        ...(action.review.diffComments ?? []).map(comment => comment.bodyMarkdown),
+      ];
+    case "setTitle": case "addLabels": case "removeLabels": case "changeState":
+    case "resolveDiffThread": case "mergeMergeRequest": case "push":
+      return [];
+  }
+}
+
+/**
+ * Whether `text` names the provisional `#~N` (issue) or `!~N` (merge request) `provisionalId`,
+ * as the rewrite reads references: whole tokens only, so `#~1` is not named by `#~10`.
+ */
+export function textReferences(text: string, kind: EntityKind, provisionalId: string): boolean {
+  const sigil = kind === "issue" ? "#" : "!";
+  return [...text.matchAll(PROVISIONAL_REFERENCE)].some(([, found, id]) => found === sigil && id === provisionalId);
+}
+
+/**
+ * How far a review's apply has got, so that a retry resumes rather than repeats -- including a
+ * step whose reply was lost, which GitLab carried out but the record never heard about. A step
+ * GitLab could carry out unanswered records that it is under way first (`"approving"`,
+ * `"creating"`, `"posting"`), and a retry finds out what became of it before repeating it.
+ */
+export type ReviewProgress = {
+  /**
+   * `approve`'s approval: `"approving"` while unanswered; `{ approvedAt }` once it landed --
+   * GitLab's `approved_at` for it, or null where the instance does not report one -- so that a
+   * discard takes back this approval and not a later one; or `"preexisting"`, an approval the
+   * account already held, which a discard leaves alone.
+   */
+  approval?: "approving" | "preexisting" | { approvedAt: string | null };
+  /** Each diff comment's draft, by index: `"creating"` while unanswered, then its id, then `"published"`. */
+  comments?: Array<null | "creating" | number | "published">;
+  /** A `requestChanges` review's `bulk_publish` -- its drafts and its reviewer state -- answered. */
+  requestedChanges?: true;
+  /** The summary note: `"posting"` while unanswered, then its id. */
+  summary?: "posting" | number;
+};
+
 export type StoredActionRecord = {
   action: GitLabAction;
   state: StoredActionState;
   appliedAt?: number;
   rejectedAt?: number;
   revertInfo?: GitLabRevertInfo;
+  /** A review's steps so far: the one action GitLab makes multi-call. */
+  progress?: ReviewProgress;
 };
 
 /** A provisional issue/MR: what kind it is and, once created, its real number. */

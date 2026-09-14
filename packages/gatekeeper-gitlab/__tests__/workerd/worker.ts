@@ -7,15 +7,20 @@
 // serializable, TestHooks cannot hand the facet to the test; it forwards each call instead, and
 // results ride back as plain data.
 
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
-import type { ConnectHandoff, GatekeeperConnectCallback, GitCache } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GitCache } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabCredential } from "../../src/gitlab-api.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
 import type { GitLabGatekeeperImplProps } from "../../src/gitlab-env.js";
 import type {
   GitLabBranchSummary,
   GitLabCommitDetails,
+  GitLabCreateIssueOptions,
+  GitLabCreateMergeRequestOptions,
+  GitLabMergeRequestMergeOptions,
+  GitLabMergeRequestReviewDraft,
   GitLabCommitSummary,
   GitLabDiffFile,
   GitLabDiffThread,
@@ -83,6 +88,22 @@ type GatekeeperFacet = {
   listCommits(filter: undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   mergeRequestCommits(id: string, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   addObserver(id: string, verifier: unknown): Promise<void>;
+  // write side
+  prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<GitLabAction>;
+  prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<GitLabAction>;
+  prepareSetTitle(kind: "issue" | "mergeRequest", id: string, title: string): Promise<GitLabAction>;
+  prepareAddLabels(kind: "issue" | "mergeRequest", id: string, labels: string[]): Promise<GitLabAction>;
+  prepareRemoveLabels(kind: "issue" | "mergeRequest", id: string, labels: string[]): Promise<GitLabAction>;
+  prepareChangeState(kind: "issue" | "mergeRequest", id: string, state: "opened" | "closed"): Promise<GitLabAction>;
+  preparePostComment(kind: "issue" | "mergeRequest", id: string, body: string): Promise<GitLabAction>;
+  preparePostReview(id: string, review: GitLabMergeRequestReviewDraft): Promise<GitLabAction>;
+  prepareReplyToDiffComment(id: string, commentId: string, body: string): Promise<GitLabAction>;
+  prepareResolveDiffThread(id: string, threadId: string, resolved: boolean): Promise<GitLabAction>;
+  prepareMergeMergeRequest(id: string, options?: GitLabMergeRequestMergeOptions): Promise<GitLabAction>;
+  submitActionForApproval(queue: unknown, action: GitLabAction, description: ActionDescription): Promise<void>;
+  applyAction(actionId: number, cache: unknown): Promise<void>;
+  rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
+  revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
 };
 
 /**
@@ -108,6 +129,27 @@ export class TestCallback extends WorkerEntrypoint<Cloudflare.Env, { userObjectI
 
   async reconnectComplete(stageId: string): Promise<ConnectHandoff> {
     return { targetOrigin: "http://localhost:8787", ticket: stageId };
+  }
+}
+
+/** A stand-in for the action-scoped `GitCache` stub `applyAction` receives; nothing here reads it yet. */
+class NullGitCache extends RpcTarget {}
+
+/** A test approval queue: records descriptions, and accepts every action unless told to refuse. */
+export class RecordingQueue extends RpcTarget {
+  readonly submitted: Array<{ actionId: number; description: ActionDescription }> = [];
+  readonly observations: string[] = [];
+  /** How many of the next submissions to refuse, as a Workshop that could not record them would. */
+  refuseNext = 0;
+  async submitAction(actionId: number, description: ActionDescription): Promise<void> {
+    if (this.refuseNext > 0) {
+      this.refuseNext -= 1;
+      throw new Error("The approval queue refused the action.");
+    }
+    this.submitted.push({ actionId, description });
+  }
+  async authorizeObservation(description: { title: string }): Promise<void> {
+    this.observations.push(description.title);
   }
 }
 
@@ -187,6 +229,21 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listIssues(undefined, pageSize)));
   }
 
+  /**
+   * Open an issue listing, apply `actionId`, then drain the listing: what a cursor serves when an
+   * action lands between its opening and its first page. One call, so the cursor never has to
+   * outlive the event it was received in.
+   */
+  async listIssuesAcrossApply(facetName: string, props: GatekeeperProps, actionId: number, pageSize: number):
+      Promise<Outcome<GitLabIssueSummary[]>> {
+    return await outcome(async () => {
+      const gatekeeper = this.#gatekeeper(facetName, props);
+      const cursor = await gatekeeper.listIssues(undefined, pageSize);
+      await gatekeeper.applyAction(actionId, new NullGitCache());
+      return await drain(cursor);
+    });
+  }
+
   async listMergeRequestsAll(facetName: string, props: GatekeeperProps, pageSize: number): Promise<Outcome<GitLabMergeRequestSummary[]>> {
     return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listMergeRequests(undefined, pageSize)));
   }
@@ -217,6 +274,57 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async addObserver(facetName: string, props: GatekeeperProps, observerUserObjectId: string): Promise<Outcome<void>> {
     const verifier = (this.ctx.exports as unknown as TestExports).TestVerifier({ props: { userObjectId: observerUserObjectId } });
     return await outcome(() => this.#gatekeeper(facetName, props).addObserver("observer", verifier));
+  }
+
+  // -- write side -------------------------------------------------------------------------
+
+  #queues = new Map<string, RecordingQueue>();
+
+  #queue(facetName: string): RecordingQueue {
+    let queue = this.#queues.get(facetName);
+    if (!queue) {
+      queue = new RecordingQueue();
+      this.#queues.set(facetName, queue);
+    }
+    return queue;
+  }
+
+  /** Make the facet's queue refuse its next submission. */
+  async refuseNextSubmit(facetName: string): Promise<void> {
+    this.#queue(facetName).refuseNext += 1;
+  }
+
+  /** What the facet's queue has recorded so far. */
+  async queueLog(facetName: string): Promise<{ submitted: Array<{ actionId: number; description: ActionDescription }>; observations: string[] }> {
+    const queue = this.#queue(facetName);
+    return { submitted: queue.submitted, observations: queue.observations };
+  }
+
+  /**
+   * Prepare and submit one action through the facet, returning the stored action record. `kind`
+   * selects the prepare method; `args` are its arguments.
+   */
+  async queueAction(facetName: string, props: GatekeeperProps, method: string, args: unknown[], description: ActionDescription):
+      Promise<Outcome<GitLabAction>> {
+    return await outcome(async () => {
+      const gatekeeper = this.#gatekeeper(facetName, props) as unknown as Record<string, (...a: unknown[]) => Promise<GitLabAction>>;
+      const action = await gatekeeper[method](...args);
+      await (this.#gatekeeper(facetName, props)).submitActionForApproval(this.#queue(facetName), action, description);
+      return action;
+    });
+  }
+
+  async applyAction(facetName: string, props: GatekeeperProps, actionId: number): Promise<Outcome<void>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).applyAction(actionId, new NullGitCache()));
+  }
+
+  async rejectAction(facetName: string, props: GatekeeperProps, actionId: number): Promise<Outcome<undefined | { restart?: boolean }>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).rejectAction(actionId));
+  }
+
+  async revertAction(facetName: string, props: GatekeeperProps, actionId: number):
+      Promise<Outcome<undefined | { message?: string; canRetry?: boolean }>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).revertAction(actionId));
   }
 
   // -- account ----------------------------------------------------------------------------
