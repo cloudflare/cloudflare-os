@@ -167,6 +167,7 @@ export const useHierarchicalListTouchInteractions = ({
   const touchDragHandleProps: HierarchicalListTouchDragHandleProps = {
     "data-hierarchical-list-touch-drag-handle": "",
     style: { touchAction: "none" },
+    onTouchStart: (event) => event.stopPropagation(),
     onPointerDown: (event) => {
       if (event.pointerType !== "touch" || !event.isPrimary || !draggable) return;
       event.stopPropagation();

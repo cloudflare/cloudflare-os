@@ -77,6 +77,7 @@ describe("HierarchicalListPrimitive", () => {
     expect(row.getAttribute("data-collapsed")).toBe("");
     expect(row.getAttribute("data-depth")).toBe("0");
     expect(row.tabIndex).toBe(0);
+    expect(row.closest("ul")?.getAttribute("role")).toBe("list");
     expect(row.textContent).toBe("Folder:selected:closed");
     expect(container!.querySelector("[data-item-id='folder']")?.getAttribute("data-depth")).toBe("0");
     expect(container!.textContent).not.toContain("Document");
@@ -431,7 +432,7 @@ describe("HierarchicalListPrimitive", () => {
     })));
     await act(() => Promise.resolve());
 
-    expect(container!.querySelector('[role="status"]')).toBeNull();
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe("");
 
     act(() => root!.render(renderList([{ ...folder, children: [movable] }])));
 
@@ -462,7 +463,7 @@ describe("HierarchicalListPrimitive", () => {
       bubbles: true,
       cancelable: true,
     })));
-    expect(container!.querySelector('[role="status"]')).toBeNull();
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe("");
 
     await act(async () => {
       resolveMove?.();

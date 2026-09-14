@@ -255,7 +255,7 @@ const PrimitiveBranch = ({
       />
       {renderRow(rowInteractions.rowProps, state)}
       {collapsible && expanded && (
-        <ul {...slots?.group} data-hierarchical-list-group="">
+        <ul {...slots?.group} role="list" data-hierarchical-list-group="">
           {item.children?.map((child, childIndex) => (
             <PrimitiveBranch
               key={child.id}
@@ -319,7 +319,7 @@ export const HierarchicalListPrimitive = ({
   const [internalExpandedIds, setInternalExpandedIds] = useState<ReadonlySet<string>>(
     () => new Set(props.initialExpandedIds),
   );
-  const [moveAnnouncement, setMoveAnnouncement] = useState<{ id: number; text: string } | null>(null);
+  const [moveAnnouncement, setMoveAnnouncement] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const pendingFocusRef = useRef<{
     itemId: string;
@@ -328,7 +328,6 @@ export const HierarchicalListPrimitive = ({
     index: number;
     origin: HTMLElement;
   } | null>(null);
-  const announcementIdRef = useRef(0);
   const moveOperationIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
     ...dragAndDrop,
@@ -362,12 +361,9 @@ export const HierarchicalListPrimitive = ({
       const operationId = ++moveOperationIdRef.current;
       const announceMove = () => {
         if (moveOperationIdRef.current !== operationId) return;
-        setMoveAnnouncement({
-          id: ++announcementIdRef.current,
-          text: `${item.name} moved to position ${normalizedDestination.index + 1} in ${
-            normalizedDestination.parent?.name ?? label
-          }.`,
-        });
+        setMoveAnnouncement(`${item.name} moved to position ${normalizedDestination.index + 1} in ${
+          normalizedDestination.parent?.name ?? label
+        }.`);
       };
       try {
         const result = dragAndDrop.onMove(item, normalizedDestination);
@@ -405,7 +401,7 @@ export const HierarchicalListPrimitive = ({
       return;
     }
     if (
-      position.parent?.id !== pendingFocus.parentId
+      (position.parent?.id ?? null) !== pendingFocus.parentId
       || position.index !== pendingFocus.index
     ) return;
     const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-hierarchical-list-row]");
@@ -463,7 +459,7 @@ export const HierarchicalListPrimitive = ({
 
   return (
     <div {...slots?.root} ref={listRef} data-hierarchical-list-root="">
-      <ul {...slots?.list} aria-label={label} data-hierarchical-list="">
+      <ul {...slots?.list} role="list" aria-label={label} data-hierarchical-list="">
         {items.map((item, index) => (
           <PrimitiveBranch
             key={item.id}
@@ -486,33 +482,33 @@ export const HierarchicalListPrimitive = ({
           />
         ))}
       </ul>
-      {moveAnnouncement && (
-        <span
-          key={moveAnnouncement.id}
-          role="status"
-          aria-live="polite"
-          style={{
-            position: "absolute",
-            width: 1,
-            height: 1,
-            padding: 0,
-            margin: -1,
-            overflow: "hidden",
-            clip: "rect(0, 0, 0, 0)",
-            whiteSpace: "nowrap",
-            border: 0,
-          }}
-        >
-          {moveAnnouncement.text}
-        </span>
-      )}
+      <span
+        role="status"
+        aria-live="polite"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {moveAnnouncement}
+      </span>
       {dragController.draggedItem && dragController.dropIndicator
         && renderDropIndicator?.(dragController.dropIndicator)}
-      {dragController.draggedItem && dragController.touchDragPosition
-        && renderTouchDragPreview?.(
-          dragController.draggedItem,
-          dragController.touchDragPosition,
-        )}
+      {dragController.draggedItem && dragController.touchDragPosition && (
+        <div aria-hidden="true" style={{ pointerEvents: "none" }}>
+          {renderTouchDragPreview?.(
+            dragController.draggedItem,
+            dragController.touchDragPosition,
+          )}
+        </div>
+      )}
     </div>
   );
 };

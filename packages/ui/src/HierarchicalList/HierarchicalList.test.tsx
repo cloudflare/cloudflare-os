@@ -205,7 +205,7 @@ describe("HierarchicalList", () => {
     dispatchDrag(target, "dragover", transfer, 59);
     dispatchDrag(target, "drop", transfer, 59);
     expect(onMove).not.toHaveBeenCalled();
-    expect(container!.querySelector('[role="status"]')).toBeNull();
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe("");
 
     dispatchDrag(source, "dragstart", transfer);
     dispatchDrag(target, "dragover", transfer, 60);
@@ -392,6 +392,8 @@ describe("HierarchicalList", () => {
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
     dispatchTouchPointer(handle, "pointermove", 30, 30);
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
+    expect(container!.querySelector<HTMLElement>("[data-touch-drag-preview]")?.parentElement
+      ?.style.pointerEvents).toBe("none");
     dispatchTouchPointer(handle, "pointerup", 20, 60, 2);
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
     dispatchTouchPointer(handle, "pointermove", 20, 60);
