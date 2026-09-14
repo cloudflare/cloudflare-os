@@ -156,6 +156,12 @@ export type MergeMergeRequestAction = BaseAction & {
    * prepare rather than queued unbound.
    */
   expectedHeadSha: string;
+  /**
+   * The source branch, when it is in this project (null for a fork's): the branch whose queued
+   * pushes `expectedHeadSha` may name. Rejecting the push that would leave that head retires
+   * this merge too, since it could only be refused (see `#rejectActionsStrandedByPush`).
+   */
+  sourceBranch: string | null;
 };
 
 /**
