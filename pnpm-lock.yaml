@@ -413,6 +413,46 @@ importers:
         specifier: 'catalog:'
         version: 4.128.0(@cloudflare/workers-types@5.20260903.1)
 
+  packages/gatekeeper-gitlab:
+    dependencies:
+      '@gadgets/backend-utils':
+        specifier: workspace:*
+        version: link:../backend-utils
+      '@gadgets/configurator-ui':
+        specifier: workspace:*
+        version: link:../configurator-ui
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
+      '@gadgets/workshop-shared':
+        specifier: workspace:*
+        version: link:../workshop-shared
+      capnweb:
+        specifier: 'catalog:'
+        version: 0.12.0
+      capnweb-validate:
+        specifier: 'catalog:'
+        version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.1)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260903.1
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:../../scripts
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.128.0(@cloudflare/workers-types@5.20260903.1)
+
   packages/gatekeeper-google:
     dependencies:
       '@gadgets/backend-utils':
@@ -5942,6 +5982,21 @@ snapshots:
     dependencies:
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.1
+      miniflare: 5.20260831.0-alpha
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler: 4.128.0(@cloudflare/workers-types@5.20260903.1)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260903.1)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+    dependencies:
+      '@vitest/runner': 4.1.11
+      '@vitest/snapshot': 4.1.11
       cjs-module-lexer: 1.2.3
       esbuild: 0.28.1
       miniflare: 5.20260831.0-alpha
