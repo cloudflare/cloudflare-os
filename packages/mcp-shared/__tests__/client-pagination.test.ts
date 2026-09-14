@@ -45,6 +45,26 @@ describe("McpClient.listTools", () => {
     expect(new Set(ids).size).toBe(2);
   });
 
+  it("mints request ids from characters strict servers accept", async () => {
+    // JSON-RPC 2.0 allows any string id, but the official Ruby MCP SDK rejects a string id outside
+    // /^[A-Za-z0-9_-]+$/ with -32600 before dispatching the method, so an id containing anything
+    // else makes every server built on it -- api.harvestapp.com/mcp among them -- refuse
+    // `initialize` and stay unreachable.
+    const ids: string[] = [];
+    vi.stubGlobal("fetch", async (_input: unknown, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body));
+      ids.push(request.id);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools: [] } }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new McpClient("https://mcp.example.com/mcp", async () => null);
+
+    await client.listTools(10);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
   it("follows cursors until the server stops sending them", async () => {
     stubPages([
       { tools: [{ name: "a" }], nextCursor: "1" },

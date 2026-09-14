@@ -470,7 +470,12 @@ export class McpClient {
     // A transport session is persisted on the account and can be used by several short-lived client
     // instances concurrently. Prefixing IDs per instance prevents two active requests from both
     // being JSON-RPC id 1 and confusing the server's SSE response routing.
-    const id = `${this.#requestPrefix}:${++this.#requestId}`;
+    //
+    // The separator stays inside `[A-Za-z0-9_-]`: JSON-RPC 2.0 allows any string id, but the
+    // official Ruby MCP SDK validates string ids against `/\A[a-zA-Z0-9_-]+\z/` before dispatching
+    // a method, so a `:` here comes back as -32600 "Invalid Request" from every server built on
+    // it -- starting with `initialize`, which makes the server unreachable rather than degraded.
+    const id = `${this.#requestPrefix}-${++this.#requestId}`;
     const response = await this.#post({ jsonrpc: "2.0", id, method, params });
 
     if (!response.ok) {
