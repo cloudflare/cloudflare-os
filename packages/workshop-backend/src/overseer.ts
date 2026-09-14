@@ -32,6 +32,7 @@ import {
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
+import { scanWorktreeForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
@@ -2967,6 +2968,12 @@ class OverseerImpl implements AgentHooks {
     return this.gitCache.assertWorktreePathWritable(commit, path);
   }
 
+  // AgentHooks implementation: the grep tool's worktree scan (see scanWorktreeForGrep).
+  grepWorktree(turn: WorktreeTurnAccess, worktreeId: WorkpieceId, base: string, path?: string)
+      : Promise<GrepScan> {
+    return scanWorktreeForGrep(this.gitCache, turn, worktreeId, base, path);
+  }
+
   // Rebuild a chat's content -- `gadgetId -> (path -> text)` for every gadget whose files live
   // in the chat's change stream -- from the chat log. Content is epoch-scoped: a merge message with
   // `epochBoundary` (or a migrated chat's `conversionBoundary` changes message) discards
@@ -5738,6 +5745,7 @@ class OverseerImpl implements AgentHooks {
       let {update: _, ...rest} = msg as AiChatMessage & {update?: Uint8Array};
       msg = rest as AiChatMessage;
     }
+
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
       if (!isAllowedChatAttachmentImageMimeType(a.mimeType)) {
