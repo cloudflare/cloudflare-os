@@ -322,7 +322,7 @@ describe("HierarchicalList", () => {
     expect(container!.querySelector("[data-drop-indicator]")).toBe(indicator);
   });
 
-  it("moves items by touch without native scrolling or drag events", () => {
+  it("scrolls from draggable rows and reorders from their touch handles", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true,
       addEventListener: vi.fn<() => void>(),
@@ -347,6 +347,8 @@ describe("HierarchicalList", () => {
       />,
     );
     const source = rowFor("Source")!;
+    const handle = source.closest("[data-hierarchical-list-item]")
+      ?.querySelector<HTMLElement>("[data-hierarchical-list-touch-drag-handle]")!;
     const target = rowFor("Target")!;
     setRect(container!.firstElementChild!, { top: 0 });
     setRect(source, { top: 0 });
@@ -356,26 +358,67 @@ describe("HierarchicalList", () => {
       value: vi.fn<(x: number, y: number) => Element | null>(() => target),
     });
 
-    expect(source.draggable).toBe(false);
-    expect(source.className).toContain("touch-none");
+    expect(source.draggable).toBe(true);
+    expect(source.style.touchAction).not.toBe("none");
+    expect(handle.style.touchAction).toBe("none");
+    expect(handle.getAttribute("aria-hidden")).toBe("true");
     expect(source.className).toContain("hover:!bg-transparent");
+    const rowMove = new MouseEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 30,
+      clientY: 30,
+    });
+    Object.defineProperties(rowMove, {
+      isPrimary: { value: true },
+      pointerType: { value: "touch" },
+    });
     dispatchTouchPointer(source, "pointerdown", 10, 10);
-    dispatchTouchPointer(source, "pointermove", 20, 20);
+    act(() => source.dispatchEvent(rowMove));
+    expect(rowMove.defaultPrevented).toBe(false);
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
-    dispatchTouchPointer(source, "pointermove", 30, 30);
+    dispatchTouchPointer(source, "pointercancel", 30, 30);
+
+    dispatchTouchPointer(handle, "pointerdown", 10, 10);
+    dispatchTouchPointer(handle, "pointermove", 20, 20);
+    expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
+    dispatchTouchPointer(handle, "pointermove", 30, 30);
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
-    dispatchTouchPointer(source, "pointermove", 20, 60);
-    dispatchTouchPointer(source, "pointerup", 20, 60);
+    dispatchTouchPointer(handle, "pointermove", 20, 60);
+    dispatchTouchPointer(handle, "pointerup", 20, 60);
 
     expect(onMove).toHaveBeenCalledWith(touchItems[0], { parent: null, index: 1 });
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
-    act(() => source.click());
-    expect(onItemClick).not.toHaveBeenCalled();
+    act(() => handle.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
     act(() => source.click());
     expect(onItemClick).toHaveBeenCalledWith(touchItems[0]);
   });
 
-  it("disables touch scrolling on draggable rows when the primary pointer is fine", () => {
+  it("starts native mouse dragging from a visible touch handle on hybrid devices", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    render(
+      <HierarchicalList
+        items={[{ id: "source", name: "Source", draggable: true }]}
+        label="Files"
+        dragAndDrop={{ onMove: () => {} }}
+      />,
+    );
+    const source = rowFor("Source")!;
+    const handle = source.closest("[data-hierarchical-list-item]")
+      ?.querySelector<HTMLElement>("[data-hierarchical-list-touch-drag-handle]")!;
+    const transfer = dataTransfer();
+
+    dispatchDrag(handle, "dragstart", transfer);
+
+    expect(transfer.setData).toHaveBeenCalledWith("text/plain", "source");
+    expect(source.closest("[data-hierarchical-list-item]")?.getAttribute("data-dragging")).toBe("");
+  });
+
+  it("keeps rows natively draggable without disabling their touch scrolling", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: false,
       addEventListener: vi.fn<() => void>(),
@@ -391,8 +434,8 @@ describe("HierarchicalList", () => {
 
     const row = rowFor("Source")!;
     expect(row.draggable).toBe(true);
-    expect(row.className).toContain("touch-none");
-    expect(row.style.touchAction).toBe("none");
+    expect(row.className).not.toContain("touch-none");
+    expect(row.style.touchAction).not.toBe("none");
     expect(row.style.paddingLeft).toBe("12px");
   });
 
@@ -459,12 +502,88 @@ describe("HierarchicalList", () => {
       />,
     );
     const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    const row = rowFor("Review code")!;
 
-    act(() => rowFor("Review code")?.dispatchEvent(event));
+    act(() => row.focus());
+    act(() => row.dispatchEvent(event));
 
     expect(event.defaultPrevented).toBe(true);
     expect(document.body.textContent).toContain("Delete");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
+    const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
+    expect(label?.textContent).toBe("Review code");
+    expect(document.querySelector("[aria-hidden='true'][data-popup-open]")).toBeNull();
+
+    const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
+    act(() => menuItem.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(row);
+  });
+
+  it("does not restore drawer focus over an action's destination", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    const destination = document.createElement("button");
+    destination.textContent = "Dialog control";
+    document.body.append(destination);
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Review code" }]}
+        label="Skills"
+        renderContextMenu={() => (
+          <DropdownMenu.Item onClick={() => destination.focus()}>Edit</DropdownMenu.Item>
+        )}
+      />,
+    );
+    const row = rowFor("Review code")!;
+    act(() => row.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
+
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      act(() => menuItem.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+      })));
+    }
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).not.toBe(row);
+    destination.remove();
+  });
+
+  it("positions drop indicators in the scrolled list content", () => {
+    render(
+      <HierarchicalList
+        items={[{ id: "source", name: "Source", draggable: true }]}
+        label="Files"
+        dragAndDrop={{ onMove: () => {} }}
+      />,
+    );
+    const listRoot = container!.querySelector<HTMLElement>("[data-hierarchical-list-root]")!;
+    const source = rowFor("Source")!;
+    listRoot.scrollTop = 100;
+    listRoot.scrollLeft = 25;
+    setRect(listRoot, { top: 20, left: 10, width: 300 });
+    setRect(source, { top: 50, left: 30, width: 200 });
+
+    dispatchDrag(source, "dragstart", dataTransfer());
+
+    const indicator = container!.querySelector<HTMLElement>("[data-drop-indicator]")!;
+    expect(indicator.style.left).toBe("57px");
+    expect(indicator.style.top).toBe("129.25px");
+    expect(indicator.style.width).toBe("180px");
   });
 
   it("does not suppress clicks when an item has no context actions", () => {

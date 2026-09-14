@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type PointerEventHandler } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type PointerEventHandler,
+} from "react";
 import {
   dispatchTouchDragEvent,
   insertionTargetId,
@@ -21,6 +27,11 @@ export type HierarchicalListTouchInteractionOptions = {
 export type HierarchicalListActionPresentationOptions = {
   /** Maximum width at which item actions use a drawer. Defaults to 639px. */
   actionDrawerMaxWidthPx?: number;
+};
+
+/** Props that activate touch reordering when applied to a dedicated drag handle. */
+export type HierarchicalListTouchDragHandleProps = HTMLAttributes<HTMLElement> & {
+  "data-hierarchical-list-touch-drag-handle": string;
 };
 
 const useMediaQuery = (queryText: string) => {
@@ -78,6 +89,7 @@ export const useHierarchicalListTouchInteractions = ({
 }) => {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const suppressClickRef = useRef(false);
   const touchDraggingRef = useRef(false);
   const [pressed, setPressed] = useState(false);
@@ -89,34 +101,26 @@ export const useHierarchicalListTouchInteractions = ({
   };
   useEffect(() => cancelLongPress, []);
 
-  const pointerProps: {
+  const rowPointerProps: {
     onPointerDown?: PointerEventHandler<HTMLElement>;
     onPointerMove?: PointerEventHandler<HTMLElement>;
     onPointerUp?: PointerEventHandler<HTMLElement>;
     onPointerCancel?: PointerEventHandler<HTMLElement>;
   } = enabled ? {
       onPointerDown: (event) => {
-        if (event.pointerType !== "touch" || !event.isPrimary) return;
+        if (event.pointerType !== "touch" || !event.isPrimary || !longPressAction) return;
         cancelLongPress();
-        if (longPressAction) setPressed(true);
+        setPressed(true);
         longPressStartRef.current = { x: event.clientX, y: event.clientY };
-        if (longPressAction) {
-          longPressTimerRef.current = setTimeout(() => {
-            suppressClickRef.current = true;
-            longPressStartRef.current = null;
-            onItemLongPress?.(item);
-            longPressTimerRef.current = null;
-          }, Math.max(0, interaction?.longPressDelayMs ?? LONG_PRESS_DELAY_MS));
-        }
+        longPressTimerRef.current = setTimeout(() => {
+          suppressClickRef.current = true;
+          longPressStartRef.current = null;
+          onItemLongPress?.(item);
+          longPressTimerRef.current = null;
+        }, Math.max(0, interaction?.longPressDelayMs ?? LONG_PRESS_DELAY_MS));
       },
       onPointerMove: (event) => {
         if (event.pointerType !== "touch" || !event.isPrimary) return;
-        if (touchDraggingRef.current) {
-          event.preventDefault();
-          dragController.setTouchDragPosition({ x: event.clientX, y: event.clientY });
-          dispatchTouchDragEvent("dragover", event.clientX, event.clientY);
-          return;
-        }
         const start = longPressStartRef.current;
         if (!start || (
           Math.abs(event.clientX - start.x)
@@ -126,51 +130,87 @@ export const useHierarchicalListTouchInteractions = ({
         )) return;
         setPressed(false);
         cancelLongPress();
-        if (!draggable) return;
-        event.preventDefault();
-        touchDraggingRef.current = true;
-        onSelectionClear?.();
-        dragController.setDropTargetId(insertionTargetId(parent, index));
-        dragController.updateDropIndicator(
-          event.currentTarget,
-          getDropIndicatorInset(depth),
-          "top",
-          true,
-        );
-        dragController.setTouchDragPosition({ x: event.clientX, y: event.clientY });
-        dragController.setDraggedItem(item);
       },
-      onPointerUp: (event) => {
-        if (touchDraggingRef.current) {
-          event.preventDefault();
-          suppressClickRef.current = true;
-          dispatchTouchDragEvent("drop", event.clientX, event.clientY);
-          touchDraggingRef.current = false;
-          dragController.setTouchDragPosition(null);
-          dragController.setDraggedItem(null);
-          dragController.setDropTargetId(null);
-        }
+      onPointerUp: () => {
         setPressed(false);
         cancelLongPress();
       },
       onPointerCancel: () => {
         suppressClickRef.current = false;
-        if (touchDraggingRef.current) {
-          touchDraggingRef.current = false;
-          dragController.setTouchDragPosition(null);
-          dragController.setDraggedItem(null);
-          dragController.setDropTargetId(null);
-        }
         setPressed(false);
         cancelLongPress();
       },
     } : {};
 
+  const clearTouchDrag = () => {
+    touchDragStartRef.current = null;
+    if (!touchDraggingRef.current) return;
+    touchDraggingRef.current = false;
+    dragController.setTouchDragPosition(null);
+    dragController.setDraggedItem(null);
+    dragController.setDropTargetId(null);
+  };
   const consumeSuppressedClick = () => {
     if (!suppressClickRef.current) return false;
     suppressClickRef.current = false;
     return true;
   };
+  const touchDragHandleProps: HierarchicalListTouchDragHandleProps = {
+    "data-hierarchical-list-touch-drag-handle": "",
+    style: { touchAction: "none" },
+    onPointerDown: (event) => {
+      if (event.pointerType !== "touch" || !event.isPrimary || !draggable) return;
+      event.stopPropagation();
+      touchDragStartRef.current = { x: event.clientX, y: event.clientY };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    onPointerMove: (event) => {
+      if (event.pointerType !== "touch" || !event.isPrimary) return;
+      if (touchDraggingRef.current) {
+        event.preventDefault();
+        dragController.setTouchDragPosition({ x: event.clientX, y: event.clientY });
+        dispatchTouchDragEvent("dragover", event.clientX, event.clientY);
+        return;
+      }
+      const start = touchDragStartRef.current;
+      if (!start || (
+        Math.abs(event.clientX - start.x)
+          <= Math.max(0, interaction?.touchDragThresholdPx ?? DRAG_MOVE_TOLERANCE_PX)
+        && Math.abs(event.clientY - start.y)
+          <= Math.max(0, interaction?.touchDragThresholdPx ?? DRAG_MOVE_TOLERANCE_PX)
+      )) return;
+      event.preventDefault();
+      touchDraggingRef.current = true;
+      onSelectionClear?.();
+      dragController.setDropTargetId(insertionTargetId(parent, index));
+      dragController.updateDropIndicator(
+        event.currentTarget.closest<HTMLElement>("[data-hierarchical-list-item]")
+          ?.querySelector<HTMLElement>("[data-hierarchical-list-row]") ?? event.currentTarget,
+        getDropIndicatorInset(depth),
+        "top",
+        true,
+      );
+      dragController.setTouchDragPosition({ x: event.clientX, y: event.clientY });
+      dragController.setDraggedItem(item);
+    },
+    onPointerUp: (event) => {
+      if (touchDraggingRef.current) {
+        event.preventDefault();
+        suppressClickRef.current = true;
+        dispatchTouchDragEvent("drop", event.clientX, event.clientY);
+      }
+      clearTouchDrag();
+    },
+    onPointerCancel: () => {
+      suppressClickRef.current = false;
+      clearTouchDrag();
+    },
+    onClick: (event) => {
+      if (!consumeSuppressedClick()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+  };
 
-  return { pressed, pointerProps, consumeSuppressedClick };
+  return { pressed, rowPointerProps, touchDragHandleProps, consumeSuppressedClick };
 };

@@ -18,6 +18,7 @@ import {
 } from "./HierarchicalListDragAndDrop";
 import {
   useHierarchicalListCoarsePointer,
+  type HierarchicalListTouchDragHandleProps,
   type HierarchicalListTouchInteractionOptions,
 } from "./useHierarchicalListTouchInteractions";
 import {
@@ -46,6 +47,8 @@ export type HierarchicalListPrimitiveRowState = {
   insideDropTarget: boolean;
   pressed: boolean;
   coarsePointer: boolean;
+  /** Props for a dedicated touch reorder handle. */
+  touchDragHandleProps: HierarchicalListTouchDragHandleProps;
   /** Toggles this branch without activating the item. No-op while `expandAll` is true. */
   toggleExpanded: () => void;
 };
@@ -217,6 +220,7 @@ const PrimitiveBranch = ({
     insideDropTarget: rowInteractions.insideDropTarget,
     pressed: rowInteractions.pressed,
     coarsePointer,
+    touchDragHandleProps: rowInteractions.touchDragHandleProps,
     toggleExpanded: () => {
       if (collapsible && !expandAll) onToggle(item.id);
     },
@@ -316,6 +320,7 @@ export const HierarchicalListPrimitive = ({
     fallbackId: string | null;
     parentId: string | null;
     index: number;
+    origin: HTMLElement;
   } | null>(null);
   const announcementIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
@@ -324,7 +329,9 @@ export const HierarchicalListPrimitive = ({
       item: HierarchicalListItem,
       destination: Parameters<typeof normalizeDropDestination>[2],
     ) => {
-      const focusedItemId = document.activeElement
+      const focusedRow = document.activeElement
+        ?.closest<HTMLElement>("[data-hierarchical-list-row]");
+      const focusedItemId = focusedRow
         ?.closest("[data-hierarchical-list-item]")
         ?.getAttribute("data-item-id");
       const normalizedDestination = normalizeDropDestination(items, item, destination);
@@ -334,13 +341,16 @@ export const HierarchicalListPrimitive = ({
         && (sourcePosition.parent?.id ?? null) === (normalizedDestination.parent?.id ?? null)
         && sourcePosition.index === normalizedDestination.index
       ) return;
-      if (focusedItemId === item.id) {
-        pendingFocusRef.current = {
+      let pendingFocus: typeof pendingFocusRef.current = null;
+      if (focusedItemId === item.id && focusedRow) {
+        pendingFocus = {
           itemId: item.id,
           fallbackId: normalizedDestination.parent?.id ?? null,
           parentId: normalizedDestination.parent?.id ?? null,
           index: normalizedDestination.index,
+          origin: focusedRow,
         };
+        pendingFocusRef.current = pendingFocus;
       }
       setMoveAnnouncement({
         id: ++announcementIdRef.current,
@@ -348,7 +358,15 @@ export const HierarchicalListPrimitive = ({
           normalizedDestination.parent?.name ?? label
         }.`,
       });
-      dragAndDrop.onMove(item, normalizedDestination);
+      try {
+        const result = dragAndDrop.onMove(item, normalizedDestination);
+        if (result) void result.catch(() => {
+          if (pendingFocusRef.current === pendingFocus) pendingFocusRef.current = null;
+        });
+      } catch (error) {
+        if (pendingFocusRef.current === pendingFocus) pendingFocusRef.current = null;
+        throw error;
+      }
     },
   };
   const dragController = useHierarchicalListDragAndDrop(normalizedDragAndDrop, listRef);
@@ -359,9 +377,12 @@ export const HierarchicalListPrimitive = ({
     const pendingFocus = pendingFocusRef.current;
     if (!pendingFocus) return;
     const position = findItemPosition(items, pendingFocus.itemId);
+    if (!position) {
+      pendingFocusRef.current = null;
+      return;
+    }
     if (
-      !position
-      || position.parent?.id !== pendingFocus.parentId
+      position.parent?.id !== pendingFocus.parentId
       || position.index !== pendingFocus.index
     ) return;
     const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-hierarchical-list-row]");
@@ -374,6 +395,27 @@ export const HierarchicalListPrimitive = ({
     row?.focus();
     pendingFocusRef.current = null;
   });
+
+  useEffect(() => {
+    const abandonFocusRestoration = (event: Event) => {
+      const pendingFocus = pendingFocusRef.current;
+      if (!pendingFocus) return;
+      const target = event.target;
+      if (target instanceof Node && pendingFocus.origin.contains(target)) return;
+      pendingFocusRef.current = null;
+    };
+    const abandonOnWindowBlur = () => {
+      pendingFocusRef.current = null;
+    };
+    document.addEventListener("pointerdown", abandonFocusRestoration, true);
+    document.addEventListener("focusin", abandonFocusRestoration, true);
+    window.addEventListener("blur", abandonOnWindowBlur);
+    return () => {
+      document.removeEventListener("pointerdown", abandonFocusRestoration, true);
+      document.removeEventListener("focusin", abandonFocusRestoration, true);
+      window.removeEventListener("blur", abandonOnWindowBlur);
+    };
+  }, []);
 
   useEffect(() => {
     if (selectedId === undefined || !onSelectionClear) return;

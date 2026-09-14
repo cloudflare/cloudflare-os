@@ -30,7 +30,10 @@ export type HierarchicalListDragAndDropOptions = {
   /** Enables edge-triggered scrolling during mouse and touch dragging. */
   autoScroll?: boolean;
   /** Applies a move to the supplied post-removal destination. */
-  onMove: (item: HierarchicalListItem, destination: HierarchicalListDropDestination) => void;
+  onMove: (
+    item: HierarchicalListItem,
+    destination: HierarchicalListDropDestination,
+  ) => void | Promise<void>;
 };
 
 type DropIndicatorEdge = "top" | "center" | "bottom";
@@ -254,6 +257,24 @@ const edgeScrollDelta = (clientY: number, top: number, bottom: number) => {
   return 0;
 };
 
+const visibleVerticalBounds = (scrollable: HTMLElement) => {
+  const scrollableRect = scrollable === document.scrollingElement
+    ? { top: 0, bottom: window.innerHeight }
+    : scrollable.getBoundingClientRect();
+  let top = Math.max(0, scrollableRect.top);
+  let bottom = Math.min(window.innerHeight, scrollableRect.bottom);
+
+  for (let ancestor = scrollable.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const { overflowY } = getComputedStyle(ancestor);
+    if (!["auto", "scroll", "hidden", "clip"].includes(overflowY)) continue;
+    const rect = ancestor.getBoundingClientRect();
+    top = Math.max(top, rect.top);
+    bottom = Math.min(bottom, rect.bottom);
+  }
+
+  return { top, bottom };
+};
+
 /** Continuously scrolls the nearest vertical scroll container while a drag is near its edge. */
 const useDragAutoScroll = ({
   enabled = true,
@@ -275,10 +296,8 @@ const useDragAutoScroll = ({
       if (!currentPosition) return;
       const scrollable = scrollableAncestorAtPoint(currentPosition);
       if (scrollable) {
-        const rect = scrollable === document.scrollingElement
-          ? { top: 0, bottom: window.innerHeight }
-          : scrollable.getBoundingClientRect();
-        const delta = edgeScrollDelta(currentPosition.y, rect.top, rect.bottom);
+        const { top, bottom } = visibleVerticalBounds(scrollable);
+        const delta = edgeScrollDelta(currentPosition.y, top, bottom);
         if (delta !== 0) {
           const previousScrollTop = scrollable.scrollTop;
           scrollable.scrollTop += delta;
@@ -333,11 +352,14 @@ export const useHierarchicalListDragAndDrop = (
       : edge === "bottom"
         ? targetRect.bottom
         : targetRect.top + targetRect.height / 2;
-    const left = targetRect.left - listRect.left + inset;
+    const left = targetRect.left - listRect.left + list.scrollLeft + inset;
     setDropIndicator({
       left,
-      top: edgeY - listRect.top - 0.75,
-      width: Math.max(0, targetRect.right - listRect.left - 8 - left),
+      top: edgeY - listRect.top + list.scrollTop - 0.75,
+      width: Math.max(
+        0,
+        targetRect.right - listRect.left + list.scrollLeft - 8 - left,
+      ),
       visible,
     });
   };

@@ -75,7 +75,12 @@ export const useHierarchicalListRowInteractions = ({
   const draggable = Boolean(item.draggable && dragAndDrop?.onMove);
   const longPressAction = Boolean(hasLongPressAction?.(item) && onItemLongPress);
   const { draggedItem, dropTargetId } = dragController;
-  const { pressed, pointerProps, consumeSuppressedClick } = useHierarchicalListTouchInteractions({
+  const {
+    pressed,
+    rowPointerProps,
+    touchDragHandleProps,
+    consumeSuppressedClick,
+  } = useHierarchicalListTouchInteractions({
     enabled: longPressAction || draggable,
     item,
     parent,
@@ -109,18 +114,17 @@ export const useHierarchicalListRowInteractions = ({
   };
 
   const rowProps: HierarchicalListPrimitiveRowProps = {
-    style: draggable ? { touchAction: "none" } : undefined,
     onPointerDown: (event) => {
-      if (!event.defaultPrevented) pointerProps.onPointerDown?.(event);
+      if (!event.defaultPrevented) rowPointerProps.onPointerDown?.(event);
     },
     onPointerMove: (event) => {
-      if (!event.defaultPrevented) pointerProps.onPointerMove?.(event);
+      if (!event.defaultPrevented) rowPointerProps.onPointerMove?.(event);
     },
     onPointerUp: (event) => {
-      if (!event.defaultPrevented) pointerProps.onPointerUp?.(event);
+      if (!event.defaultPrevented) rowPointerProps.onPointerUp?.(event);
     },
     onPointerCancel: (event) => {
-      if (!event.defaultPrevented) pointerProps.onPointerCancel?.(event);
+      if (!event.defaultPrevented) rowPointerProps.onPointerCancel?.(event);
     },
     "data-hierarchical-list-row": "",
     "data-depth": depth,
@@ -129,7 +133,7 @@ export const useHierarchicalListRowInteractions = ({
     "data-selected": selected ? "" : undefined,
     "data-pressed": pressed ? "" : undefined,
     "data-drop-target": insideDropTarget ? "inside" : undefined,
-    draggable: draggable && !coarsePointer || undefined,
+    draggable: draggable || undefined,
     "aria-keyshortcuts": draggable
       ? "Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight"
       : undefined,
@@ -221,5 +225,12 @@ export const useHierarchicalListRowInteractions = ({
     },
   };
 
-  return { draggable, dragging, insideDropTarget, pressed, rowProps };
+  return {
+    draggable,
+    dragging,
+    insideDropTarget,
+    pressed,
+    rowProps,
+    touchDragHandleProps,
+  };
 };

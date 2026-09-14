@@ -3,9 +3,9 @@ import { ContextMenu } from "@cloudflare/kumo/primitives/context-menu";
 import { Drawer } from "@cloudflare/kumo/primitives/drawer";
 import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretDownIcon, FolderIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import React, { useRef, useState, type ReactNode } from "react";
+import React, { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   HierarchicalListPrimitive,
   type HierarchicalListPrimitiveRowProps,
@@ -72,6 +72,9 @@ const StyledRow = ({
   renderContextMenu,
 }: StyledRowProps) => {
   const drawerPopupRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const restoreDrawerFocusRef = useRef(true);
+  const drawerTitleId = useId();
   const {
     item,
     depth,
@@ -83,8 +86,23 @@ const StyledRow = ({
   } = state;
   const highlighted = selected || actionsOpen || pressed;
   const contextMenu = renderContextMenu?.(item);
+  useEffect(() => {
+    if (!actionsOpen || !useActionDrawer) return;
+    restoreDrawerFocusRef.current = true;
+    const trackFocusDestination = (event: FocusEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node
+        && !drawerPopupRef.current?.contains(target)
+        && !rowRef.current?.contains(target)
+      ) restoreDrawerFocusRef.current = false;
+    };
+    document.addEventListener("focusin", trackFocusDestination, true);
+    return () => document.removeEventListener("focusin", trackFocusDestination, true);
+  }, [actionsOpen, useActionDrawer]);
   const row = (
     <Button
+      ref={rowRef}
       {...rowProps as React.ComponentProps<typeof Button>}
       type="button"
       variant="ghost"
@@ -106,7 +124,7 @@ const StyledRow = ({
         "group relative focus-visible:z-20",
         "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left active:!bg-kumo-recessed",
         state.draggable && "cursor-grab active:cursor-grabbing",
-        state.draggable && "touch-none",
+        state.draggable && "[@media(any-pointer:coarse)]:pr-11",
         highlighted && "bg-kumo-recessed",
         coarsePointer && (
           highlighted
@@ -153,6 +171,18 @@ const StyledRow = ({
           />
         )}
       </AnimatePresence>
+      {state.draggable && (
+        <span
+          {...state.touchDragHandleProps}
+          aria-hidden="true"
+          className={cn(
+            "absolute right-0 top-0 z-20 hidden size-11 touch-none cursor-grab items-center justify-center",
+            "text-kumo-subtle active:cursor-grabbing [@media(any-pointer:coarse)]:flex",
+          )}
+        >
+          <DotsSixVerticalIcon aria-hidden="true" size={18} />
+        </span>
+      )}
     </Button>
   );
 
@@ -169,7 +199,18 @@ const StyledRow = ({
   return (
     <>
       {row}
-      <Drawer.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+      <Drawer.Root
+        open={actionsOpen}
+        onOpenChange={onActionsOpenChange}
+        onOpenChangeComplete={(open) => {
+          if (
+            !open
+            && restoreDrawerFocusRef.current
+            && (document.activeElement === document.body
+              || drawerPopupRef.current?.contains(document.activeElement))
+          ) rowRef.current?.focus();
+        }}
+      >
         <Drawer.Portal>
           <Drawer.Backdrop
             onClick={() => onActionsOpenChange(false)}
@@ -194,14 +235,16 @@ const StyledRow = ({
               )}
             >
               <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-kumo-line" />
-              <Drawer.Title className="px-2 pb-2 text-xs text-kumo-subtle">
+              <Drawer.Title id={drawerTitleId} className="px-2 pb-2 text-xs text-kumo-subtle">
                 {item.name}
               </Drawer.Title>
               <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
-                <Menu.Trigger className="sr-only" tabIndex={-1} aria-hidden="true" />
                 <Menu.Portal container={drawerPopupRef}>
                   <Menu.Positioner className="!static !block !w-full !transform-none" sideOffset={0}>
-                    <Menu.Popup className="flex w-full flex-col gap-1">
+                    <Menu.Popup
+                      aria-labelledby={drawerTitleId}
+                      className="flex w-full flex-col gap-1"
+                    >
                       {contextMenu}
                     </Menu.Popup>
                   </Menu.Positioner>

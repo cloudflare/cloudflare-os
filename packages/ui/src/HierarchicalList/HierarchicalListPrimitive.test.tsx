@@ -194,7 +194,7 @@ describe("HierarchicalListPrimitive", () => {
     );
 
     const [source, target] = Array.from(container!.querySelectorAll("button"));
-    expect(source.style.touchAction).toBe("none");
+    expect(source.style.touchAction).not.toBe("none");
     source.getBoundingClientRect = () => DOMRect.fromRect({ y: 0, width: 300, height: 40 });
     target.getBoundingClientRect = () => DOMRect.fromRect({ y: 40, width: 300, height: 40 });
     const transfer = {
@@ -348,6 +348,127 @@ describe("HierarchicalListPrimitive", () => {
     expect(document.activeElement?.closest("[data-item-id='folder']")).not.toBeNull();
   });
 
+  it("does not restore focus after the user tabs away from a deferred move", () => {
+    vi.useFakeTimers();
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const movable: HierarchicalListItem = { id: "movable", name: "Movable", draggable: true };
+    const Example = () => {
+      const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
+      return (
+        <>
+          <HierarchicalListPrimitive
+            items={tree}
+            label="Resources"
+            initialExpandedIds={[folder.id]}
+            dragAndDrop={{
+              onMove: (item, destination) => {
+                if (destination.parent?.id !== folder.id) return;
+                setTimeout(() => setTree([{ ...folder, children: [item] }]), 0);
+              },
+            }}
+            renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+          />
+          <button>Outside</button>
+        </>
+      );
+    };
+    render(<Example />);
+    const movableRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Movable")!;
+    const outside = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Outside")!;
+    act(() => movableRow.focus());
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    })));
+    act(() => outside.focus());
+    act(() => vi.advanceTimersByTime(0));
+
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it("clears deferred focus restoration when a move fails", async () => {
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const movable: HierarchicalListItem = { id: "movable", name: "Movable", draggable: true };
+    const renderList = (tree: readonly HierarchicalListItem[]) => (
+      <HierarchicalListPrimitive
+        items={tree}
+        label="Resources"
+        initialExpandedIds={[folder.id]}
+        dragAndDrop={{ onMove: () => Promise.reject(new Error("Move failed")) }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />
+    );
+    render(renderList([folder, movable]));
+    const movableRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Movable")!;
+    act(() => movableRow.focus());
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+    await act(() => Promise.resolve());
+
+    act(() => root!.render(renderList([{ ...folder, children: [movable] }])));
+
+    expect(document.activeElement?.textContent).not.toBe("Movable");
+  });
+
+  it("abandons deferred focus restoration when the moved item disappears", () => {
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const movable: HierarchicalListItem = { id: "movable", name: "Movable", draggable: true };
+    const renderList = (tree: readonly HierarchicalListItem[]) => (
+      <HierarchicalListPrimitive
+        items={tree}
+        label="Resources"
+        initialExpandedIds={[folder.id]}
+        dragAndDrop={{ onMove: () => {} }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />
+    );
+    render(renderList([folder, movable]));
+    const movableRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Movable")!;
+    act(() => movableRow.focus());
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    act(() => root!.render(renderList([folder])));
+    act(() => root!.render(renderList([{ ...folder, children: [movable] }])));
+
+    expect(document.activeElement?.textContent).not.toBe("Movable");
+  });
+
   it("prevents browser shortcuts when an Alt+Arrow move is unavailable", () => {
     const onMove = vi.fn<(
       item: HierarchicalListItem,
@@ -376,7 +497,7 @@ describe("HierarchicalListPrimitive", () => {
     expect(onMove).not.toHaveBeenCalled();
   });
 
-  it("uses primary coarse-pointer capability for native dragging", () => {
+  it("keeps native mouse dragging on devices with a coarse primary pointer", () => {
     const matchMedia = vi.fn<(query: string) => {
       matches: boolean;
       addEventListener: () => void;
@@ -409,9 +530,18 @@ describe("HierarchicalListPrimitive", () => {
     );
 
     const row = container!.querySelector<HTMLButtonElement>("button")!;
-    expect(row.draggable).toBe(false);
+    expect(row.draggable).toBe(true);
     expect(row.getAttribute("data-coarse-pointer")).toBe("");
     expect(matchMedia).toHaveBeenCalledWith("(pointer: coarse)");
+    const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", {
+      value: {
+        effectAllowed: "none",
+        setData: vi.fn<(format: string, data: string) => void>(),
+      },
+    });
+    act(() => row.dispatchEvent(dragStart));
+    expect(row.closest("[data-hierarchical-list-item]")?.getAttribute("data-dragging")).toBe("");
   });
 
   it("handles touch gestures when the primary pointer is fine", () => {
@@ -729,5 +859,68 @@ describe("HierarchicalListPrimitive", () => {
     dragOver(199);
     act(() => frames.shift()?.(0));
     expect(scrollContainer.scrollTop).toBeGreaterThan(100);
+  });
+
+  it("auto-scrolls at viewport and clipping-ancestor edges", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn<(callback: FrameRequestCallback) => number>(
+      (callback) => frames.push(callback),
+    ));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn<(id: number) => void>());
+    const clippingAncestor = document.createElement("div");
+    clippingAncestor.style.overflowY = "hidden";
+    const scrollContainer = document.createElement("div");
+    scrollContainer.style.overflowY = "auto";
+    Object.defineProperties(scrollContainer, {
+      clientHeight: { value: 1000 },
+      scrollHeight: { value: 2000 },
+    });
+    clippingAncestor.append(scrollContainer);
+    document.body.append(clippingAncestor);
+    container = scrollContainer;
+    root = createRoot(container);
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn<(x: number, y: number) => Element | null>(() => scrollContainer),
+    });
+    scrollContainer.getBoundingClientRect = () => DOMRect.fromRect({ width: 300, height: 1000 });
+    clippingAncestor.getBoundingClientRect = () => DOMRect.fromRect({ width: 300, height: 400 });
+    act(() => root?.render(
+      <HierarchicalListPrimitive
+        items={[{ id: "source", name: "Source", draggable: true }]}
+        label="Resources"
+        dragAndDrop={{ onMove: () => {}, autoScroll: true }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    ));
+    const row = container.querySelector("button")!;
+    const transfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn<(format: string, data: string) => void>(),
+    };
+    const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", { value: transfer });
+    act(() => row.dispatchEvent(dragStart));
+    const dragOver = (clientY: number) => {
+      const event = new MouseEvent("dragover", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY,
+      });
+      Object.defineProperty(event, "dataTransfer", { value: transfer });
+      act(() => row.dispatchEvent(event));
+    };
+
+    dragOver(399);
+    act(() => frames.shift()?.(0));
+    expect(scrollContainer.scrollTop).toBeGreaterThan(0);
+
+    scrollContainer.scrollTop = 0;
+    clippingAncestor.style.overflowY = "visible";
+    dragOver(window.innerHeight - 1);
+    act(() => frames.shift()?.(0));
+    expect(scrollContainer.scrollTop).toBeGreaterThan(0);
   });
 });
