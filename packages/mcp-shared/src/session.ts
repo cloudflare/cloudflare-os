@@ -13,6 +13,7 @@ import type { WithClientOptions } from "./connection.js";
 import { isWholeEndpoint, type ToolScope } from "./scope.js";
 import { describeCall, toCallResult, toolInfo, type ClassifiedTool } from "./tools.js";
 import type { McpCallResult, McpToolInfo } from "./types";
+import { toMethodName } from "./session-methods.js";
 
 // A queued tool call, awaiting a decision. Persisted by the host in its own storage; the session
 // only ever reads one back by id.
@@ -97,7 +98,8 @@ export class McpSessionBase extends RpcTarget {
 
     const host = this.#host;
     const tools = await host.tools();
-    const entry = tools.find(candidate => candidate.tool.name === name);
+    const entry = tools.find(candidate =>
+      candidate.tool.name === name || toMethodName(candidate.tool.name) === name);
     if (!entry) {
       // Worded from the grant's point of view: on a scoped binding the tool may exist on the server,
       // and "no such tool" would send an agent looking for a typo.
