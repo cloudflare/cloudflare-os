@@ -27,14 +27,17 @@ let harness: Harness;
 const model = scriptedChatCompletions([
   { toolCall: { id: "create", name: "createGadget",
                 arguments: { title: "Notes", bindingName: "NOTES" } } },
-  // One step writes the file, reads it back, and requests a connection. The read sees the
-  // write. The request makes the barrier record a "connectionRequest" message between this
-  // step's tool-call message and its "changes" message, so the two are not adjacent in the log.
+  // One step writes the file, reads and searches it, and requests a connection. The read and
+  // the search see the write. The request makes the barrier record a "connectionRequest"
+  // message between this step's tool-call message and its "changes" message, so the two are
+  // not adjacent in the log.
   { toolCalls: [
     { id: "write", name: "writeFile",
       arguments: { workpiece: "NOTES", filename: "notes.txt", content: "secret = 42\n" } },
     { id: "read", name: "readFile",
       arguments: { workpiece: "NOTES", filename: "notes.txt" } },
+    { id: "grep", name: "grep",
+      arguments: { workpiece: "NOTES", pattern: "secret" } },
     { id: "connect", name: "requestConnection",
       arguments: { vendorId: TEST_VENDOR_ID, reason: "to test", bindingName: "THINGS" } },
   ] },
@@ -56,7 +59,7 @@ afterAll(async () => {
   }
 });
 
-it("elides a step's reads when the user reverts the step", async () => {
+it("elides a step's reads and searches when the user reverts the step", async () => {
   await using session = await openAgentSession(harness.url, {
     modelId: SCRIPTED_MODEL_ID,
     userModel: { profile: SCRIPTED_MODEL_PROFILE, config: SCRIPTED_MODEL_CONFIG },
@@ -79,7 +82,9 @@ it("elides a step's reads when the user reverts the step", async () => {
 
   const second = await session.runTurn("Anything else?");
   expect(second.outcome).toEqual({ status: "completed" });
-  expect(toolResultText(model.requests[2], "read")).toMatch(/elided from the chat history/);
-  expect(toolResultText(model.requests[2], "read")).not.toContain("secret = 42");
+  for (const id of ["read", "grep"]) {
+    expect(toolResultText(model.requests[2], id)).toMatch(/elided from the chat history/);
+    expect(toolResultText(model.requests[2], id)).not.toContain("secret = 42");
+  }
   expect(model.remainingSteps()).toBe(0);
 });
