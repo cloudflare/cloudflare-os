@@ -49,6 +49,11 @@ CLIENT_SECRET=your-application-secret-here
 Alternatively, export `GITLAB_CLIENT_ID` and `GITLAB_CLIENT_SECRET` in your shell; `pnpm dev-server`
 maps them into the worker's `CLIENT_ID`/`CLIENT_SECRET`.
 
+To develop against a self-hosted instance, set `GITLAB_URL` (and `GITLAB_API_URL`,
+`CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` as the instance needs -- see
+[Self-hosted instances](#self-hosted-instances)) in the root `.dev.vars` or your shell;
+`pnpm dev-server` passes them through to the worker, so nothing tracked has to change.
+
 > **Note**: The `.env` file is gitignored and should never be committed.
 
 ### Step 3: (Optional) Enable GitLab sign-in
