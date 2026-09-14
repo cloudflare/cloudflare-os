@@ -215,9 +215,10 @@ export const dispatchTouchDragEvent = (
   type: "dragover" | "drop",
   clientX: number,
   clientY: number,
+  root: HTMLElement | null,
 ) => {
   const target = document.elementFromPoint(clientX, clientY);
-  if (!target) return;
+  if (!target || target.closest("[data-hierarchical-list-root]") !== root) return;
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
   Object.defineProperty(event, "dataTransfer", {
     value: {
@@ -367,7 +368,12 @@ export const useHierarchicalListDragAndDrop = (
   useDragAutoScroll({
     enabled: options?.autoScroll ?? false,
     position: dragPosition,
-    onScroll: (position) => dispatchTouchDragEvent("dragover", position.x, position.y),
+    onScroll: (position) => dispatchTouchDragEvent(
+      "dragover",
+      position.x,
+      position.y,
+      listRef.current,
+    ),
   });
 
   useEffect(() => {

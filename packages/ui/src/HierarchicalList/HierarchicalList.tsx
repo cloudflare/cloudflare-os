@@ -163,7 +163,7 @@ const StyledRow = ({
         {state.insideDropTarget && (
           <motion.span
             data-folder-drop-outline=""
-            className="pointer-events-none absolute inset-0 z-20 rounded-lg border-[1.5px] border-black"
+            className="pointer-events-none absolute inset-0 z-20 rounded-lg border-[1.5px] border-kumo-brand"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -321,7 +321,7 @@ export const HierarchicalList = ({
         renderDropIndicator={(indicator) => (
           <motion.div
             data-drop-indicator=""
-            className="pointer-events-none absolute z-20 h-[1.5px] rounded-full bg-black"
+            className="pointer-events-none absolute z-20 h-[1.5px] rounded-full bg-kumo-brand"
             style={{ borderRadius: 9999, transformOrigin: "center" }}
             initial={{ ...indicator, opacity: 0 }}
             animate={{ ...indicator, opacity: indicator.visible ? 1 : 0 }}

@@ -89,7 +89,10 @@ export const useHierarchicalListTouchInteractions = ({
 }) => {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressPointerIdRef = useRef<number | null>(null);
   const touchDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchDragRootRef = useRef<HTMLElement | null>(null);
+  const touchPointerIdRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
   const touchDraggingRef = useRef(false);
   const [pressed, setPressed] = useState(false);
@@ -98,6 +101,7 @@ export const useHierarchicalListTouchInteractions = ({
     if (longPressTimerRef.current !== null) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = null;
     longPressStartRef.current = null;
+    longPressPointerIdRef.current = null;
   };
   useEffect(() => cancelLongPress, []);
 
@@ -112,6 +116,7 @@ export const useHierarchicalListTouchInteractions = ({
         cancelLongPress();
         setPressed(true);
         longPressStartRef.current = { x: event.clientX, y: event.clientY };
+        longPressPointerIdRef.current = event.pointerId;
         longPressTimerRef.current = setTimeout(() => {
           suppressClickRef.current = true;
           longPressStartRef.current = null;
@@ -120,7 +125,7 @@ export const useHierarchicalListTouchInteractions = ({
         }, Math.max(0, interaction?.longPressDelayMs ?? LONG_PRESS_DELAY_MS));
       },
       onPointerMove: (event) => {
-        if (event.pointerType !== "touch" || !event.isPrimary) return;
+        if (event.pointerType !== "touch" || event.pointerId !== longPressPointerIdRef.current) return;
         const start = longPressStartRef.current;
         if (!start || (
           Math.abs(event.clientX - start.x)
@@ -131,11 +136,13 @@ export const useHierarchicalListTouchInteractions = ({
         setPressed(false);
         cancelLongPress();
       },
-      onPointerUp: () => {
+      onPointerUp: (event) => {
+        if (event.pointerId !== longPressPointerIdRef.current) return;
         setPressed(false);
         cancelLongPress();
       },
-      onPointerCancel: () => {
+      onPointerCancel: (event) => {
+        if (event.pointerId !== longPressPointerIdRef.current) return;
         suppressClickRef.current = false;
         setPressed(false);
         cancelLongPress();
@@ -144,6 +151,8 @@ export const useHierarchicalListTouchInteractions = ({
 
   const clearTouchDrag = () => {
     touchDragStartRef.current = null;
+    touchDragRootRef.current = null;
+    touchPointerIdRef.current = null;
     if (!touchDraggingRef.current) return;
     touchDraggingRef.current = false;
     dragController.setTouchDragPosition(null);
@@ -162,14 +171,21 @@ export const useHierarchicalListTouchInteractions = ({
       if (event.pointerType !== "touch" || !event.isPrimary || !draggable) return;
       event.stopPropagation();
       touchDragStartRef.current = { x: event.clientX, y: event.clientY };
+      touchDragRootRef.current = event.currentTarget.closest("[data-hierarchical-list-root]");
+      touchPointerIdRef.current = event.pointerId;
       event.currentTarget.setPointerCapture?.(event.pointerId);
     },
     onPointerMove: (event) => {
-      if (event.pointerType !== "touch" || !event.isPrimary) return;
+      if (event.pointerType !== "touch" || event.pointerId !== touchPointerIdRef.current) return;
       if (touchDraggingRef.current) {
         event.preventDefault();
         dragController.setTouchDragPosition({ x: event.clientX, y: event.clientY });
-        dispatchTouchDragEvent("dragover", event.clientX, event.clientY);
+        dispatchTouchDragEvent(
+          "dragover",
+          event.clientX,
+          event.clientY,
+          touchDragRootRef.current,
+        );
         return;
       }
       const start = touchDragStartRef.current;
@@ -194,14 +210,16 @@ export const useHierarchicalListTouchInteractions = ({
       dragController.setDraggedItem(item);
     },
     onPointerUp: (event) => {
+      if (event.pointerId !== touchPointerIdRef.current) return;
       if (touchDraggingRef.current) {
         event.preventDefault();
         suppressClickRef.current = true;
-        dispatchTouchDragEvent("drop", event.clientX, event.clientY);
+        dispatchTouchDragEvent("drop", event.clientX, event.clientY, touchDragRootRef.current);
       }
       clearTouchDrag();
     },
-    onPointerCancel: () => {
+    onPointerCancel: (event) => {
+      if (event.pointerId !== touchPointerIdRef.current) return;
       suppressClickRef.current = false;
       clearTouchDrag();
     },

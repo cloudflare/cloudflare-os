@@ -430,9 +430,47 @@ describe("HierarchicalListPrimitive", () => {
     })));
     await act(() => Promise.resolve());
 
+    expect(container!.querySelector('[role="status"]')).toBeNull();
+
     act(() => root!.render(renderList([{ ...folder, children: [movable] }])));
 
     expect(document.activeElement?.textContent).not.toBe("Movable");
+  });
+
+  it("announces an asynchronous move only after it succeeds", async () => {
+    let resolveMove: (() => void) | undefined;
+    const move = new Promise<void>((resolve) => {
+      resolveMove = resolve;
+    });
+    render(
+      <HierarchicalListPrimitive
+        items={[
+          { id: "source", name: "Source", draggable: true },
+          { id: "target", name: "Target" },
+        ]}
+        label="Resources"
+        dragAndDrop={{ onMove: () => move }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+    const source = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Source")!;
+    act(() => source.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+    expect(container!.querySelector('[role="status"]')).toBeNull();
+
+    await act(async () => {
+      resolveMove?.();
+      await move;
+    });
+
+    expect(container!.querySelector('[role="status"]')?.textContent).toBe(
+      "Source moved to position 2 in Resources.",
+    );
   });
 
   it("abandons deferred focus restoration when the moved item disappears", () => {
@@ -495,6 +533,130 @@ describe("HierarchicalListPrimitive", () => {
       expect(event.defaultPrevented).toBe(true);
     }
     expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("leaves modified navigation and screen-reader arrow chords alone", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[
+          { id: "source", name: "Source", draggable: true },
+          { id: "target", name: "Target" },
+        ]}
+        label="Resources"
+        dragAndDrop={{ onMove }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+    const source = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Source")!;
+    act(() => source.focus());
+    for (const modifiers of [{ metaKey: true }, { altKey: true, ctrlKey: true }]) {
+      const event = new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        ...modifiers,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => source.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(document.activeElement).toBe(source);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("clears insertion feedback over an invalid row", () => {
+    const child: HierarchicalListItem = { id: "child", name: "Child" };
+    const source: HierarchicalListItem = {
+      id: "source",
+      name: "Source",
+      draggable: true,
+      droppable: true,
+      children: [child],
+    };
+    render(
+      <HierarchicalListPrimitive
+        items={[source, { id: "target", name: "Target" }]}
+        label="Resources"
+        expandAll
+        dragAndDrop={{ onMove: () => {} }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+        renderDropIndicator={(indicator) => (
+          <span data-indicator-visible={indicator.visible ? "" : undefined} />
+        )}
+      />,
+    );
+    const sourceRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Source")!;
+    const childRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Child")!;
+    sourceRow.getBoundingClientRect = () => DOMRect.fromRect({ width: 300, height: 40 });
+    childRow.getBoundingClientRect = () => DOMRect.fromRect({ y: 40, width: 300, height: 40 });
+    const transfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn<(format: string, data: string) => void>(),
+    };
+    const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", { value: transfer });
+    act(() => sourceRow.dispatchEvent(dragStart));
+    expect(container!.querySelector("[data-indicator-visible]")).not.toBeNull();
+    const dragOver = new MouseEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      clientY: 60,
+    });
+    Object.defineProperty(dragOver, "dataTransfer", { value: transfer });
+
+    act(() => childRow.dispatchEvent(dragOver));
+
+    expect(container!.querySelector("[data-indicator-visible]")).toBeNull();
+  });
+
+  it("provides a default hit area after the last root item", () => {
+    const source: HierarchicalListItem = { id: "source", name: "Source", draggable: true };
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[source, folder]}
+        label="Resources"
+        expandAll
+        dragAndDrop={{ onMove }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+    const sourceRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Source")!;
+    const transfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn<(format: string, data: string) => void>(),
+    };
+    const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", { value: transfer });
+    act(() => sourceRow.dispatchEvent(dragStart));
+    const afterZone = container!.querySelector<HTMLElement>(
+      "[data-item-id='folder'] [data-edge='after']",
+    )!;
+    expect(afterZone.style.height).toBe("12px");
+    const drop = new MouseEvent("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: transfer });
+
+    act(() => afterZone.dispatchEvent(drop));
+
+    expect(onMove).toHaveBeenCalledWith(source, { parent: null, index: 1 });
   });
 
   it("keeps native mouse dragging on devices with a coarse primary pointer", () => {

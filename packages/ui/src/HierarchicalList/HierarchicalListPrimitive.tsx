@@ -138,6 +138,12 @@ const PrimitiveDropZone = ({
   return (
     <div
       {...slot}
+      style={slot ? slot.style : {
+        position: "relative",
+        zIndex: 1,
+        height: 12,
+        marginBlock: -6,
+      }}
       aria-hidden="true"
       data-hierarchical-list-drop-zone=""
       data-edge={edge}
@@ -323,6 +329,7 @@ export const HierarchicalListPrimitive = ({
     origin: HTMLElement;
   } | null>(null);
   const announcementIdRef = useRef(0);
+  const moveOperationIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
     ...dragAndDrop,
     onMove: (
@@ -352,17 +359,25 @@ export const HierarchicalListPrimitive = ({
         };
         pendingFocusRef.current = pendingFocus;
       }
-      setMoveAnnouncement({
-        id: ++announcementIdRef.current,
-        text: `${item.name} moved to position ${normalizedDestination.index + 1} in ${
-          normalizedDestination.parent?.name ?? label
-        }.`,
-      });
+      const operationId = ++moveOperationIdRef.current;
+      const announceMove = () => {
+        if (moveOperationIdRef.current !== operationId) return;
+        setMoveAnnouncement({
+          id: ++announcementIdRef.current,
+          text: `${item.name} moved to position ${normalizedDestination.index + 1} in ${
+            normalizedDestination.parent?.name ?? label
+          }.`,
+        });
+      };
       try {
         const result = dragAndDrop.onMove(item, normalizedDestination);
-        if (result) void result.catch(() => {
-          if (pendingFocusRef.current === pendingFocus) pendingFocusRef.current = null;
-        });
+        if (result) {
+          void result.then(announceMove, () => {
+            if (pendingFocusRef.current === pendingFocus) pendingFocusRef.current = null;
+          });
+        } else {
+          announceMove();
+        }
       } catch (error) {
         if (pendingFocusRef.current === pendingFocus) pendingFocusRef.current = null;
         throw error;
@@ -372,6 +387,14 @@ export const HierarchicalListPrimitive = ({
   const dragController = useHierarchicalListDragAndDrop(normalizedDragAndDrop, listRef);
   const expandedIds = props.expandedIds ?? internalExpandedIds;
   const coarsePointer = useHierarchicalListCoarsePointer();
+
+  useEffect(() => {
+    const draggedItem = dragController.draggedItem;
+    if (draggedItem && (!dragAndDrop || !findItemPosition(items, draggedItem.id))) {
+      dragController.setDraggedItem(null);
+      dragController.setDropTargetId(null);
+    }
+  }, [dragAndDrop, dragController, items]);
 
   useLayoutEffect(() => {
     const pendingFocus = pendingFocusRef.current;

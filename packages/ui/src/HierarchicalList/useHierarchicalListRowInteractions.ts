@@ -164,7 +164,13 @@ export const useHierarchicalListRowInteractions = ({
     },
     onKeyDown: (event) => {
       if (event.defaultPrevented) return;
-      if (!event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      if (
+        !event.altKey
+        && !event.ctrlKey
+        && !event.metaKey
+        && !event.shiftKey
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")
+      ) {
         const root = event.currentTarget.closest("[data-hierarchical-list-root]");
         const rows = root
           ? [...root.querySelectorAll<HTMLElement>("[data-hierarchical-list-row]")]
@@ -178,7 +184,7 @@ export const useHierarchicalListRowInteractions = ({
         }
         return;
       }
-      if (!draggable || !event.altKey) return;
+      if (!draggable || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const direction = event.key === "ArrowUp"
         ? "up"
         : event.key === "ArrowDown"
@@ -201,7 +207,11 @@ export const useHierarchicalListRowInteractions = ({
     onDragOver: (event) => {
       if (event.defaultPrevented) return;
       const target = rowDropTarget(event.clientY, event.currentTarget);
-      if (!target) return;
+      if (!target) {
+        dragController.setDropTargetId(null);
+        dragController.updateDropIndicator(event.currentTarget, 0, "center", false);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = "move";

@@ -83,10 +83,12 @@ describe("HierarchicalList", () => {
     type: string,
     clientX: number,
     clientY: number,
+    pointerId = 1,
   ) => {
     const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY });
     Object.defineProperties(event, {
       isPrimary: { value: true },
+      pointerId: { value: pointerId },
       pointerType: { value: "touch" },
     });
     act(() => target.dispatchEvent(event));
@@ -236,7 +238,11 @@ describe("HierarchicalList", () => {
 
     dropAt(70);
     expect(onMove).not.toHaveBeenCalled();
-    dropAt(90);
+    dispatchDrag(source, "dragstart", transfer);
+    dispatchDrag(folder, "dragover", transfer, 90);
+    expect(container!.querySelector("[data-folder-drop-outline]")?.className)
+      .toContain("border-kumo-brand");
+    dispatchDrag(folder, "drop", transfer, 90);
     expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: folderItems[1], index: 0 });
     dropAt(110);
     expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: null, index: 1 });
@@ -309,6 +315,7 @@ describe("HierarchicalList", () => {
     const dropZones = container!.querySelectorAll<HTMLElement>("[data-hierarchical-list-drop-zone]");
     expect(indicator).not.toBeNull();
     expect(indicator?.className).toContain("h-[1.5px]");
+    expect(indicator?.className).toContain("bg-kumo-brand");
     expect(dropZones.length).toBeGreaterThan(0);
     expect([...dropZones].every((zone) => zone.className.includes("absolute"))).toBe(true);
     expect([...dropZones].every((zone) => !zone.className.includes("-my-"))).toBe(true);
@@ -385,6 +392,8 @@ describe("HierarchicalList", () => {
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
     dispatchTouchPointer(handle, "pointermove", 30, 30);
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
+    dispatchTouchPointer(handle, "pointerup", 20, 60, 2);
+    expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
     dispatchTouchPointer(handle, "pointermove", 20, 60);
     dispatchTouchPointer(handle, "pointerup", 20, 60);
 
@@ -418,6 +427,76 @@ describe("HierarchicalList", () => {
 
     expect(transfer.setData).toHaveBeenCalledWith("text/plain", "source");
     expect(source.closest("[data-hierarchical-list-item]")?.getAttribute("data-dragging")).toBe("");
+  });
+
+  it("does not dispatch touch drops outside the originating list", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    render(
+      <HierarchicalList
+        items={[
+          { id: "source", name: "Source", draggable: true },
+          { id: "target", name: "Target" },
+        ]}
+        label="Files"
+        dragAndDrop={{ onMove }}
+        interaction={{ touchDragThresholdPx: 8 }}
+      />,
+    );
+    const source = rowFor("Source")!;
+    const handle = source.querySelector<HTMLElement>(
+      "[data-hierarchical-list-touch-drag-handle]",
+    )!;
+    const target = rowFor("Target")!;
+    setRect(source, { top: 0 });
+    setRect(target, { top: 40 });
+    const unrelatedTarget = document.createElement("div");
+    const unrelatedDrop = vi.fn<() => void>();
+    unrelatedTarget.addEventListener("drop", unrelatedDrop);
+    document.body.append(unrelatedTarget);
+    let hitTarget: Element = target;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn<(x: number, y: number) => Element | null>(() => hitTarget),
+    });
+
+    dispatchTouchPointer(handle, "pointerdown", 10, 10);
+    dispatchTouchPointer(handle, "pointermove", 30, 30);
+    hitTarget = unrelatedTarget;
+    dispatchTouchPointer(handle, "pointerup", 30, 60);
+
+    expect(unrelatedDrop).not.toHaveBeenCalled();
+    expect(onMove).not.toHaveBeenCalled();
+    unrelatedTarget.remove();
+  });
+
+  it("clears touch drag feedback when the source row is removed", () => {
+    const renderList = (listItems: readonly HierarchicalListItem[]) => (
+      <HierarchicalList
+        items={listItems}
+        label="Files"
+        dragAndDrop={{ onMove: () => {} }}
+        interaction={{ touchDragThresholdPx: 8 }}
+      />
+    );
+    render(renderList([{ id: "source", name: "Source", draggable: true }]));
+    const source = rowFor("Source")!;
+    const handle = source.querySelector<HTMLElement>(
+      "[data-hierarchical-list-touch-drag-handle]",
+    )!;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn<(x: number, y: number) => Element | null>(() => source),
+    });
+    dispatchTouchPointer(handle, "pointerdown", 10, 10);
+    dispatchTouchPointer(handle, "pointermove", 30, 30);
+    expect(container!.querySelector("[data-touch-drag-preview]")).not.toBeNull();
+
+    act(() => root!.render(renderList([])));
+
+    expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
   });
 
   it("keeps rows natively draggable without disabling their touch scrolling", () => {
@@ -487,6 +566,30 @@ describe("HierarchicalList", () => {
     act(() => vi.advanceTimersByTime(1));
 
     expect(document.body.textContent).toContain("Delete");
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("does not cancel a long press when a different touch ends", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Review code" }]}
+        label="Skills"
+        interaction={{ longPressDelayMs: 100 }}
+        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
+      />,
+    );
+    const row = rowFor("Review code")!;
+
+    dispatchTouchPointer(row, "pointerdown", 20, 30, 1);
+    dispatchTouchPointer(row, "pointercancel", 25, 35, 2);
+    act(() => vi.advanceTimersByTime(100));
+
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
