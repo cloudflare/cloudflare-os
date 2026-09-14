@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react",
+    "jsxFactory": "h",
+    "types": ["@cloudflare/workers-types/experimental"],
+    "paths": {
+      "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"],
+      "@gadgets/gatekeeper-kit/*": ["../gatekeeper-kit/src/*"],
+      "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
+    }
+  },
+  "include": ["src", "__tests__/**/*.ts"],
+  "exclude": ["dist", "node_modules", ".wrangler"]
+}
