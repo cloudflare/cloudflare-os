@@ -1,0 +1,20 @@
+[
+  {
+    "name": "CLIENT_ID",
+    "kind": "secret",
+    "label": "OAuth application ID",
+    "consoleUrl": "https://gitlab.com/-/user_settings/applications",
+    "setupSteps": [
+      "In GitLab, open User settings → Applications (or a group's Settings → Applications) and add a new application.",
+      "Set the Redirect URI to the value below and leave Confidential checked.",
+      "Select the scopes: api, write_repository, and read_user.",
+      "Save the application, then copy the Application ID and Secret here."
+    ],
+    "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/gitlab/oauth"
+  },
+  {
+    "name": "CLIENT_SECRET",
+    "kind": "secret",
+    "label": "OAuth application secret"
+  }
+]

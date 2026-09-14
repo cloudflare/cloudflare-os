@@ -1,0 +1,27 @@
+{
+  "name": "gatekeeper-gitlab",
+  "main": ".wrangler/validate/src/gitlab.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
+  "rules": [
+    { "type": "Text", "globs": ["**/*.txt", "**/*.svg"], "fallthrough": false }
+  ],
+  // No `vars` block: GITLAB_URL defaults to https://gitlab.com in code, and GITLAB_API_URL to
+  // GITLAB_URL, so an unconfigured deployment talks to gitlab.com. Self-hosted instances set the
+  // vars (and, behind Cloudflare Access, the CF_ACCESS_CLIENT_ID/SECRET secrets) per deployment.
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": ["UserAccount", "GitLabGatekeeperImpl"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}
