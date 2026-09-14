@@ -22,8 +22,10 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 /**
  * How the turn divides the model's window. The reserved response capacity is both withheld from the
- * prompt's budget and sent as the request's response cap. A Cloudflare model configured by hand has
- * no SUGGESTED_MODELS entry to declare its reservation, so the provider's applies.
+ * prompt's budget and sent as the response cap. A model may declare a smaller `compactionInputBudget`
+ * when prompts near its full window are priced or paced worse; compaction then sizes against that
+ * instead of the window. A Cloudflare model configured by hand has no SUGGESTED_MODELS entry to
+ * declare its reservation, so the provider's applies.
  */
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
@@ -31,7 +33,8 @@ export function getModelTokenLimits(config: AiModelConfig):
   let maxOutputTokens = model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
   return {
-    inputBudget: (model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) - (maxOutputTokens ?? 0),
+    inputBudget: model?.compactionInputBudget ??
+        (model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) - (maxOutputTokens ?? 0),
     maxOutputTokens,
   };
 }

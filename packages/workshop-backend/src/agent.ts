@@ -293,17 +293,24 @@ export type CompactionCheckpoint = {
   proposedChange?: CodeChange;
 };
 
-/** The compaction state and policy for one call to `runAgent`. */
-export type CompactionContext = {
-  /** The checkpoint to replay from, if the thread has one. */
+/**
+ * The history one agent pass replays: the active compaction checkpoint, if any, the chat log from
+ * it on, and the token total the provider reported for the chat's last model step (zero when none
+ * is recorded). See AgentHooks.loadChatHistory.
+ */
+export type ChatHistory = {
   checkpoint?: CompactionCheckpoint;
-
-  /** The chosen model, whose window and reserved response capacity size the prompt budget. */
-  modelConfig: AiModelConfig;
-
-  /** The total tokens reported for the last measured model step, or zero if none are available. */
+  chatMessages: AiChatMessage[];
   measuredTokens: number;
 };
+
+// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop; a persisted tool
+// step left the next request over the compaction trigger, so the pass ended for a reload; or the
+// pass summarized instead of prompting the model and this is the checkpoint to publish.
+type AgentPassOutcome =
+  | {type: "finished"}
+  | {type: "reloadForCompaction"}
+  | {type: "compacted"; checkpoint: CompactionCheckpoint};
 
 /**
  * Summary of one of the workspace's gadgets, as needed by the agent: identity and its named
@@ -445,6 +452,15 @@ export interface AgentHooks {
       },
       totalTokens?: number, aiGatewayLogId?: string, aiGatewayLogRoute?: AiGatewayLogRoute,
       estimatedCost?: number): Promise<boolean>;
+
+  /**
+   * The history one agent pass replays (see ChatHistory). Read fresh before each pass, since a
+   * pass can compact or persist steps.
+   */
+  loadChatHistory(chatId: number): ChatHistory;
+
+  /** Publish a compaction checkpoint: later history loads start from it. */
+  commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void;
 
   /**
    * The gadget's current head commit (WorkpieceSummary.commitId), or undefined if it has none:
@@ -1127,20 +1143,40 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
 }
 
 /**
- * Runs one agent turn against the chat's history. Returns a checkpoint when the turn compacted
- * instead of prompting the model: the caller commits it, then reruns for a normal turn or stops for
- * `/compact`. Returns undefined when the turn ran.
+ * Runs one agent turn against the chat's history, compacting as needed. A pass over the history
+ * may compact instead of prompting the model, or end after a persisted tool step because the next
+ * request would cross the compaction trigger; either way the loop reloads the durable history,
+ * which the next pass compacts first, and goes again. Each compaction moves the boundary strictly
+ * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
+ * it has compacted; the model is never prompted.
  */
 export async function runAgent(
     hooks: AgentHooks,
     handle: ModelHandle,
     chatId: number,
     author: AiChatAuthorInfo,
-    chatMessages: AiChatMessage[],
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    compaction: CompactionContext): Promise<CompactionCheckpoint | undefined> {
-  let checkpoint = compaction.checkpoint;
+    modelConfig: AiModelConfig): Promise<void> {
+  while (true) {
+    let history = hooks.loadChatHistory(chatId);
+    let outcome = await runAgentPass(
+        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
+    if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
+    if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
+    abortSignal.throwIfAborted();
+  }
+}
+
+async function runAgentPass(
+    hooks: AgentHooks,
+    handle: ModelHandle,
+    chatId: number,
+    author: AiChatAuthorInfo,
+    {checkpoint, chatMessages, measuredTokens}: ChatHistory,
+    abortSignal: AbortSignal,
+    initiator: AiChatAuthorInfo,
+    modelConfig: AiModelConfig): Promise<AgentPassOutcome> {
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
   // to other chats are excluded -- they belong to those chats' proposed changes). This is the
@@ -2518,7 +2554,7 @@ export async function runAgent(
 
   // Some models charge their response to the same window as the prompt, so the reservation is both
   // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
-  let {inputBudget, maxOutputTokens} = getModelTokenLimits(compaction.modelConfig);
+  let {inputBudget, maxOutputTokens} = getModelTokenLimits(modelConfig);
 
   let projection: CompactionProjectionMessage[] = modelMessages.map((message, index) => ({
     message, ...modelMessageSources[index],
@@ -2528,8 +2564,8 @@ export async function runAgent(
   // `measuredTokens` covers the prompt and response of the last model step, so estimate only what
   // was added after it. A tool result carries the call's sequence but wasn't in that usage.
   // (The system prompt is not part of the projection, so the pure estimate adds it separately.)
-  let contextTokens = compaction.measuredTokens > 0 && lastMeasuredSequence !== undefined
-    ? compaction.measuredTokens + estimateProjectionTokens(
+  let contextTokens = measuredTokens > 0 && lastMeasuredSequence !== undefined
+    ? measuredTokens + estimateProjectionTokens(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||
            (sequence === lastMeasuredSequence && message.role === "toolResult"))))
@@ -2562,7 +2598,7 @@ export async function runAgent(
         // An empty summary would discard the compacted history, so keep the history instead.
         if (!summary) throw new Error("Compaction produced an empty summary.");
 
-        return {
+        let compacted: CompactionCheckpoint = {
           chatId,
           compactedTo,
           summary,
@@ -2575,6 +2611,7 @@ export async function runAgent(
               ]),
               checkpoint),
         };
+        return {type: "compacted", checkpoint: compacted};
       } catch (error) {
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
         // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
@@ -2593,7 +2630,7 @@ export async function runAgent(
     }
   }
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
-  if (compactionTurn) return;
+  if (compactionTurn) return {type: "finished"};
 
   // Wraps a plain-text tool result (the exact text the model sees) with optional recorded notes
   // (see AiToolCall: observedCodeVersion, recorded output) riding along as pi `details` for the
@@ -3264,8 +3301,9 @@ export async function runAgent(
   // failed turn is persisted.
   let turnFailure: {message: string} | undefined;
 
-  // Turn cap, replacing the old stepCountIs(30).
-  let turnCount = 0;
+  // Set after the persistence barrier when another provider request would cross the preferred
+  // compaction budget. The caller reloads durable history before doing any more model work.
+  let reloadForCompaction = false;
 
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
@@ -3468,7 +3506,7 @@ export async function runAgent(
     logger.warn("agent turn skipped: history ends with a completed assistant message", {
       event: "agent.turn.skipped", chatId,
     });
-    return undefined;
+    return {type: "finished"};
   }
 
   let context: AgentContext = {
@@ -3483,20 +3521,41 @@ export async function runAgent(
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
     maxTokens: maxOutputTokens,
-    shouldStopAfterTurn: () =>
-        // Cancelled during tool execution: the completed turn was persisted by the turn_end
-        // barrier just above; don't start another (doomed) model request.
-        abortSignal.aborted ||
-        // Hard cap on turns, as before.
-        ++turnCount >= 30 ||
-        // End the turn once the agent has successfully requested a connection: it must wait
-        // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
-        // fresh turn; deny just leaves the turn ended.) A rejected requestConnection (e.g.
-        // unresolvable resource) leaves this false so the agent can fix the request and retry
-        // in the same turn.
-        connectionRequested ||
-        // Wait for approval before continuing against state that may not reflect the action.
-        awaitingActionDecision,
+    shouldStopAfterTurn: ({message, toolResults}) => {
+      // The stop reasons that end the turn come first: a compaction reload must not resume work
+      // that one of them ended.
+      if (
+          // Cancelled during tool execution: the completed turn was persisted by the turn_end
+          // barrier just above; don't start another (doomed) model request.
+          abortSignal.aborted ||
+          // End the turn once the agent has successfully requested a connection: it must wait
+          // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
+          // fresh turn; deny just leaves the turn ended.) A rejected requestConnection (e.g.
+          // unresolvable resource) leaves this false so the agent can fix the request and retry
+          // in the same turn.
+          connectionRequested ||
+          // Wait for approval before continuing against state that may not reflect the action.
+          awaitingActionDecision) {
+        return true;
+      }
+      // The model stopped on its own; there is no next request to make room for.
+      if (toolResults.length === 0) return false;
+      // Otherwise the next request is this step's measured prompt plus the tool results just
+      // produced, weighed as the model will see them (pi's `details` can carry a second copy of a
+      // large output). Without usage there is nothing to measure against, so reload: the
+      // turn-start check estimates the whole prompt, as it does for that case there.
+      let measured = message.usage.totalTokens;
+      let next = measured + estimateProjectionTokens(
+          toolResults.map(({details: _, ...message}) => ({message})));
+      if (measured <= 0 || shouldCompactChat(next, inputBudget)) {
+        reloadForCompaction = true;
+        // The rerun's fresh preview manager knows of no active file; end this one's marker here,
+        // as a non-edit tool start would, so it doesn't outlive the run on the client.
+        codePreviewManager.clearActiveFile();
+        return true;
+      }
+      return false;
+    },
   }, emit, abortSignal, handle.stream);
 
   // (No end-of-turn flush: every completed step's effects were barrier-committed with its
@@ -3516,8 +3575,7 @@ export async function runAgent(
         turnFailure.message, httpStatusFromError(turnFailure.message, handle));
   }
 
-  // The turn ran, so there is no checkpoint to report.
-  return undefined;
+  return {type: reloadForCompaction ? "reloadForCompaction" : "finished"};
 }
 
 /**

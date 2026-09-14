@@ -30,12 +30,11 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess } from "./agent";
+import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldProposedChanges, isCompactionTurn,
-  type ChangeBatch } from "./agent-compaction";
+import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import { listFeaturedBlueprintsFromKv, readBlueprintContent, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive";
 import { WebFetchEnv } from "./web-fetch";
@@ -6971,13 +6970,18 @@ class OverseerImpl implements AgentHooks {
     return this.getChatCompactionBelow(chatId, sequence + 1);
   }
 
-  // Returns messages at and after the checkpoint boundary. Older messages stay in storage for
-  // history paging.
-  #listChatTail(chatId: number, checkpoint?: CompactionCheckpoint): AiChatMessage[] {
-    return [...this.storage.chats.list({
-      prefix: `${keyString(chatId)}.`,
-      start: checkpoint && compactionKey(chatId, checkpoint.compactedTo),
-    })];
+  // AgentHooks implementation: the history a pass replays. Messages before the checkpoint boundary
+  // stay in storage for history paging.
+  loadChatHistory(chatId: number): ChatHistory {
+    let checkpoint = this.getActiveChatCompaction(chatId);
+    return {
+      checkpoint,
+      chatMessages: [...this.storage.chats.list({
+        prefix: `${keyString(chatId)}.`,
+        start: checkpoint && compactionKey(chatId, checkpoint.compactedTo),
+      })],
+      measuredTokens: this.getChatMetaOrThrow(chatId).totalTokens ?? 0,
+    };
   }
 
   // Publishes a checkpoint: stores it and points the chat at it. `runAgent` produces the checkpoint,
@@ -6987,7 +6991,7 @@ class OverseerImpl implements AgentHooks {
   // that produced this checkpoint is still the chat's active agent, and every operation that could
   // invalidate it -- merge, revert, and the rollback a revert triggers -- refuses while a turn is
   // active. So the checkpoint cannot be stale by the time it lands.
-  #commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void {
+  commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void {
     this.ctx.storage.transactionSync(() => {
       let meta = this.storage.chatMeta.get(chatId);
       if (!meta) return;  // Chat deleted while the summary was being written.
@@ -7133,25 +7137,8 @@ class OverseerImpl implements AgentHooks {
       let controller = liveChat.cancelController;
       controller.signal.throwIfAborted();
 
-      while (true) {
-        let checkpoint = this.getActiveChatCompaction(chatId);
-        let chatMessages = this.#listChatTail(chatId, checkpoint);
-
-        let compactionTurn = isCompactionTurn(chatMessages);
-        let newCheckpoint = await runAgent(
-            this, chosenModel, chatId, aiModel.profile, chatMessages, controller.signal,
-            initiator, {
-              checkpoint,
-              modelConfig: aiModel.config,
-              measuredTokens: this.getChatMetaOrThrow(chatId).totalTokens ?? 0,
-            });
-        if (newCheckpoint) this.#commitChatCompaction(chatId, newCheckpoint);
-        // `/compact` is done once it has compacted. An automatic compaction returned before
-        // prompting the model, so rerun the turn now that the history is shorter. Each compaction
-        // moves the boundary strictly forward and can never pass the newest turn start, so this
-        // reruns a bounded number of times.
-        if (compactionTurn || !newCheckpoint) break;
-      }
+      await runAgent(
+          this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
       turnLogger.debug("agent run finished", {
         event: "agent.run.finished", outcome: "ok",
         durationMs: Date.now() - startedAt,

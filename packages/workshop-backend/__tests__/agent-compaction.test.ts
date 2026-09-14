@@ -103,6 +103,13 @@ describe("compaction trigger", () => {
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
   });
 
+  it("sizes GPT-5.6 compaction against its cheaper input tier, not its window", () => {
+    for (let model of ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+      expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
+          .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
+    }
+  });
+
   // Workers AI rejects a request whose prompt and response cap together exceed the window, so a
   // Cloudflare model configured by hand needs the reservation the model table can't declare for it.
   it("reserves Workers AI output capacity for a model the registry doesn't list", () => {
