@@ -1592,6 +1592,12 @@ class OverseerImpl implements AgentHooks {
   // #agentKeepAliveTime) and lets `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
 
+  // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
+  // for the connection. Held in memory only: a gatekeeper that gains a catalog in a later version
+  // is asked again on the next activation, so every chat converges. Ids are never reused, so an
+  // entry outliving its record is inert.
+  #catalogless = new Set<number>();
+
   // If `alarm()` is currently waiting for all agents to finish, this resolves its wait. Invoked
   // when the running-agent count drops to zero.
   #allAgentsIdleWaiters: (() => void)[] = [];
@@ -7883,13 +7889,14 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Load the discovery catalogs for the usable ambient set. A connection blocked pending a
-    // scope-widening restart is omitted, like the other enumerating routes.
+    // scope-widening restart is omitted, like the other enumerating routes; one that answered null
+    // before is not asked again (see #catalogless).
     //
     // Deliberately not cached on the chat. A catalog says what the session can reach now, so a
     // cached one can never show a skill added after the chat opened, and a cached failure reads as
     // an empty library for the rest of the chat.
     let catalogs = new Map(await Promise.all(ambientIds
-        .filter(id => this.gatekeeperUsable(id))
+        .filter(id => this.gatekeeperUsable(id) && !this.#catalogless.has(id))
         .map(async (gatekeeperId): Promise<[number, AgentCatalog | null]> => {
           let record = this.storage.gatekeepers.get(gatekeeperId);
           if (!record) return [gatekeeperId, null];  // disconnected since the chat froze its set.
@@ -7898,14 +7905,18 @@ class OverseerImpl implements AgentHooks {
                 this, gatekeeperId, {from: "agent", chatId}));
             // The catalog comes from the installed gatekeeper facet (gadget-side), authorized as an
             // observation via the approval queue. getAgentCatalog is optional on Gatekeeper; ambient
-            // resources always implement it (the agent relies on it for discovery), so we view the
-            // facet through CatalogGatekeeperFacet (derived from the contract) to call it directly.
-            // The DurableObjectStub proxy unstubifies the RpcStub param to its target type; the
-            // native stub forwards transparently at runtime.
+            // resources always implement it (the agent relies on it for discovery), answering null
+            // when they have none, so we view the facet through CatalogGatekeeperFacet (derived from
+            // the contract) to call it directly. The DurableObjectStub proxy unstubifies the RpcStub
+            // param to its target type; the native stub forwards transparently at runtime.
             let facet = this.getGatekeeperFacet(gatekeeperId) as unknown as CatalogGatekeeperFacet;
             let catalog = await facet.getAgentCatalog(
                 authorizer as unknown as ObservationAuthorizer);
-            return [gatekeeperId, catalog ? normalizeAgentCatalog(catalog) : null];
+            if (!catalog) {
+              this.#catalogless.add(gatekeeperId);
+              return [gatekeeperId, null];
+            }
+            return [gatekeeperId, normalizeAgentCatalog(catalog)];
           } catch (error) {
             reportIssue("overseer.catalog-fallback", error, {
               handled: true,

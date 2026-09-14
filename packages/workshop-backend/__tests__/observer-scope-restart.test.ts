@@ -1112,3 +1112,37 @@ describe("connections blocked pending restart", () => {
     expect(refreshed.find(seed => seed.target === 1)?.catalog?.entries[0]?.id).toBe("entry-3");
   }));
 });
+
+describe("ambient catalogs", () => {
+  it("a connection that answers null is not asked again, in any chat",
+      () => withImpl(async (impl) => {
+    let catalogLoads: number[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: async () => {
+        catalogLoads.push(id);
+        return id === 1 ? { entries: [] } : null;
+      },
+    });
+    for (let id of [1, 2]) {
+      seedGatekeeper(impl, id);
+      let record = impl.storage.gatekeepers.get(id);
+      record.creationSpec = { type: "ambient", vendorId: `v${id}` };
+      impl.storage.gatekeepers.put(record);
+    }
+    for (let chatId of [1, 2]) {
+      impl.storage.chatMeta.put(
+          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+    }
+
+    await impl.prepareChatBindings(1, []);
+    await impl.prepareChatBindings(1, []);
+    let other: SeedBindingInfo[] = await impl.prepareChatBindings(2, []);
+
+    // An empty catalog is asked for every time; null is remembered for the connection.
+    expect(catalogLoads).toEqual([1, 2, 1, 1]);
+    expect(other.find(seed => seed.target === 1)?.catalog).toEqual({ entries: [] });
+    expect(other.find(seed => seed.target === 2)?.catalog).toBeNull();
+  }));
+});

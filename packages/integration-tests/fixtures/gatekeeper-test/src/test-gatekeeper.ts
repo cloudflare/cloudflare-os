@@ -23,9 +23,9 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  AccountDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
-  GatekeeperUser, GatekeeperUserVerifier, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
+  GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, ObservationAuthorizer,
+  ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse,
@@ -390,6 +390,11 @@ export class TestGatekeeper
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
     return new TestSessionTarget(
         approvalQueue, control(this.ctx.exports), this.ctx.props.label);
+  }
+
+  /** No discovery index: the ambient fixture is reached through its session alone. */
+  async getAgentCatalog(_authorizer: RpcStub<ObservationAuthorizer>): Promise<AgentCatalog | null> {
+    return null;
   }
 
   /**

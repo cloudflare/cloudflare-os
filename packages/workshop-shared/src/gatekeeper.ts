@@ -815,9 +815,11 @@ export interface Gatekeeper<Session> extends DurableObject {
    * gatekeeper's session, without paging the full session API. Implemented only by gatekeepers
    * whose session benefits from a discovery index (e.g. an agent singleton like the Context
    * Library); most gatekeepers omit it. Catalog access is an observation, so the implementation
-   * must authorize it via `authorizer.authorizeObservation()` before returning metadata. Returns
-   * null when there is no catalog. Return the entries the agent most needs first and pass them
-   * through `boundAgentCatalog()`, since both that clamp and the Workshop's drop from the tail.
+   * must authorize it via `authorizer.authorizeObservation()` before returning metadata. Return
+   * null only when this gatekeeper has no catalog at all: the Workshop then stops asking this
+   * connection until the workspace next restarts. A catalog that is empty right now is
+   * `{entries: []}`. Return the entries the agent most needs first and pass them through
+   * `boundAgentCatalog()`, since both that clamp and the Workshop's drop from the tail.
    */
   getAgentCatalog?(
     authorizer: RpcStub<ObservationAuthorizer>,
