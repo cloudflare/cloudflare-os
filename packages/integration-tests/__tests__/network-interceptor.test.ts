@@ -58,6 +58,19 @@ it("passes an explicitly allowed external request to the real fetch", async () =
   expect(interceptor.getUnmockedCalls()).toEqual([]);
 });
 
+it("asks the origin of an allowed request for an untransformed body", async () => {
+  let forwarded: Request | undefined;
+  globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => {
+    forwarded = input instanceof Request ? input : new Request(input);
+    return new Response("from the real fetch");
+  };
+  const interceptor = new NetworkInterceptor({ allow: url => url.hostname === "model.test" });
+  interceptor.install();
+
+  await fetch("https://model.test/chat", { headers: { "accept-encoding": "gzip, br" } });
+  expect(forwarded?.headers.get("accept-encoding")).toBe("identity");
+});
+
 it("supports a handler that parks until the test provides an answer", async () => {
   // Load-bearing for the CF Access transfer mock: the Worker starts polling before the test knows
   // what to serve, so a handler must be able to wait (see the Handler type's doc comment).

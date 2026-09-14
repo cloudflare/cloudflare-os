@@ -73,7 +73,14 @@ export class NetworkInterceptor {
       const request = new Request(input, init);
       const method = request.method.toUpperCase();
 
-      if (this.#allow?.(url, method, request.headers)) return realFetch(request);
+      if (this.#allow?.(url, method, request.headers)) {
+        // Node's fetch decodes a compressed body yet relays the Content-Encoding it arrived with,
+        // and workerd then decodes the plaintext again ("Gzip decompression failed", which is how
+        // every Anthropic stream died in the local eval target). Ask the origin for an untransformed
+        // body, so what Node relays is what its headers say it is.
+        request.headers.set("accept-encoding", "identity");
+        return realFetch(request);
+      }
 
       for (const handler of this.#handlers) {
         const response = await handler(url, method, request.headers, request);
@@ -113,3 +120,4 @@ export class NetworkInterceptor {
     this.#unmockedCalls = [];
   }
 }
+
