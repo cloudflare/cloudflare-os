@@ -290,6 +290,44 @@ export const issueNotesResponse = docs("api/notes", [
   },
 ]);
 
+/**
+ * `GET …/issues/:iid/discussions` -- api/discussions "List all issue discussion items": a thread
+ * (two `DiscussionNote`s, the second a reply) and a standalone comment (`individual_note`).
+ * A reply never appears in the notes endpoint, which is why discussions are read instead.
+ */
+export const issueDiscussionsResponse = docs("api/discussions", [
+  {
+    id: "6a9c1750b37d513a43987b574953fceb50b03ce7",
+    individual_note: false,
+    notes: [
+      {
+        id: 1126, type: "DiscussionNote", body: "discussion text",
+        author: { id: 1, username: "root", name: "root", state: "active", avatar_url: null, web_url: "http://localhost:3000/root" },
+        created_at: "2018-03-03T21:54:39.668Z", updated_at: "2018-03-03T21:54:39.668Z",
+        system: false, noteable_id: 3, noteable_type: "Issue", project_id: 5, noteable_iid: 1, resolvable: false,
+      },
+      {
+        id: 1129, type: "DiscussionNote", body: "reply to the discussion",
+        author: { id: 1, username: "root", name: "root", state: "active", avatar_url: null, web_url: "http://localhost:3000/root" },
+        created_at: "2018-03-04T13:38:02.127Z", updated_at: "2018-03-04T13:38:02.127Z",
+        system: false, noteable_id: 3, noteable_type: "Issue", project_id: 5, noteable_iid: 1, resolvable: false,
+      },
+    ],
+  },
+  {
+    id: "87805b7c09016a7058e91bdbe7b29d1f284a39e6",
+    individual_note: true,
+    notes: [
+      {
+        id: 1128, type: null, body: "a single comment",
+        author: { id: 1, username: "root", name: "root", state: "active", avatar_url: null, web_url: "http://localhost:3000/root" },
+        created_at: "2018-03-04T09:17:22.520Z", updated_at: "2018-03-04T09:17:22.520Z",
+        system: false, noteable_id: 3, noteable_type: "Issue", project_id: 5, noteable_iid: 1, resolvable: false,
+      },
+    ],
+  },
+]);
+
 /** An MR diff discussion -- api/discussions "List all merge request discussion items". */
 export const diffDiscussionResponse = docs("api/discussions", {
   id: "87805b7c09016a7058e91bdbe7b29d1f284a39e6",
