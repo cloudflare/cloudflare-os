@@ -963,6 +963,8 @@ ${types.trim()}
 
 let READ_FILE_TOOL_DESCRIPTION = `
 Read the content of a file owned by one of the workspace's gadgets. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. This cannot read chat attachments; attachments are provided directly in the conversation.
+
+For a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -1125,6 +1127,31 @@ function findEditPos(content: string, textToReplace: string): number {
 // tools and history replay so the two can never drift.
 function jsonToolResultText(value: unknown): string {
   return JSON.stringify(value);
+}
+
+/** The line window a readFile call asked for (see AiToolCall's readFile input). */
+export type ReadFileWindow = {startLine?: number, lineCount?: number};
+
+/**
+ * Renders a readFile result as the exact text the model sees, for both the live tool and history
+ * replay. A read with no window returns the file verbatim. A windowed read returns the selected
+ * lines, then a blank line, then `[lines A-B of N; next startLine: B+1]` (without the continuation
+ * when B is the last line). Lines are 1-based; a final newline does not start a line. The tool
+ * schema already requires positive integers. Exported for tests.
+ */
+export function readFileWindow(text: string, {startLine, lineCount}: ReadFileWindow): string {
+  if (startLine === undefined && lineCount === undefined) return text;
+  let lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  let first = startLine ?? 1;
+  if (first > lines.length) {
+    throw new Error(`startLine ${first} is past the end of the file, which has ` +
+        `${lines.length} line${lines.length === 1 ? "" : "s"}.`);
+  }
+  let last = Math.min(lines.length, first - 1 + (lineCount ?? lines.length));
+  let note = `[lines ${first}-${last} of ${lines.length}` +
+      (last < lines.length ? `; next startLine: ${last + 1}]` : "]");
+  return `${lines.slice(first - 1, last).join("\n")}\n\n${note}`;
 }
 
 /**
@@ -1929,7 +1956,8 @@ async function runAgentPass(
                     if (oid === undefined) {
                       throw new Error("File missing from its observed commit.");
                     }
-                    toolOutput = {text: await hooks.readBlobText(oid, toolCall.input.filename)};
+                    toolOutput = {text: readFileWindow(
+                        await hooks.readBlobText(oid, toolCall.input.filename), toolCall.input)};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
@@ -1960,7 +1988,7 @@ async function runAgentPass(
                       throw new Error("File does not exist.");
                     }
 
-                    toolOutput = {text: value};
+                    toolOutput = {text: readFileWindow(value, toolCall.input)};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
@@ -2778,14 +2806,20 @@ async function runAgentPass(
       parameters: Type.Object({
         workpiece: workpieceParam,
         filename: Type.String({description: "Name of the file to read."}),
-        // TODO: line range?
-        // TODO: Claude Code apparently presents the code to the agent with line number
-        //   prefixes on each line. Is this worth doing?
+        startLine: Type.Optional(Type.Integer({
+          minimum: 1,
+          description: "First line to return, 1-based. Omit to start at the top.",
+        })),
+        lineCount: Type.Optional(Type.Integer({
+          minimum: 1,
+          description: "Number of lines to return from startLine. Omit for all remaining lines.",
+        })),
       }),
-      execute: async (toolCallId, {workpiece, filename}) => {
+      execute: async (toolCallId, {workpiece, filename, startLine, lineCount}) => {
         try {
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
+          let window = {startLine, lineCount};
 
           // An unpinned workpiece with committed code is read live at its base -- a gadget's
           // head (fixed for the turn; see observeHead) or a worktree's accepted commit -- by
@@ -2803,7 +2837,7 @@ async function runAgentPass(
                 throw new Error("File does not exist.");
               }
               markFileRead(resolved.workpieceId, filename, file.oid);
-              return toolResult(file.text, {observedOid: file.oid});
+              return toolResult(readFileWindow(file.text, window), {observedOid: file.oid});
             }
           }
 
@@ -2815,8 +2849,9 @@ async function runAgentPass(
           if (text === undefined) {
             throw new Error("File does not exist.");
           }
+          let shown = readFileWindow(text, window);
           markFileRead(resolved.workpieceId, filename);
-          return toolResult(text);
+          return toolResult(shown);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
