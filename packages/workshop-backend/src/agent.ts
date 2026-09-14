@@ -66,6 +66,43 @@ export const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
 export const STEP_CHANGE_BUDGET = 1536 * 1024;
 
 /**
+ * Cap on one tool result's text as the model sees it, live and on replay. About 8k tokens: a
+ * handful of results fit inside the compaction headroom of the smallest supported window, and a
+ * file the agent shouldn't read whole comes back as a window with a continuation line (see
+ * readFileWindow) instead. Recorded outputs are not affected; storage has its own caps.
+ */
+export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
+
+/**
+ * Bounds a tool result, note included, to MAX_TOOL_RESULT_CHARS by eliding its middle: the end of
+ * a result often carries what matters most, such as the uncaught exception at the end of an
+ * executeCode log. Both funnels to the model -- the live loop's afterToolCall (successes and
+ * errors alike) and the replay of recorded results -- go through here, so the model sees the same
+ * text either way, and a bounded text bounds to itself, so a recorded output may be stored
+ * already bounded. Exported for tests.
+ */
+export function boundToolResultText(text: string): string {
+  if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
+  let note = (elided: number) =>
+      `\n\n[... ${elided} of ${text.length} characters elided ...]\n\n`;
+  let keep = MAX_TOOL_RESULT_CHARS - note(text.length).length;
+  let tail = wholeCharactersFrom(text, text.length - (keep >> 2));
+  let head = wholeCharactersTo(text, keep - tail.length);
+  return head + note(text.length - head.length - tail.length) + tail;
+}
+
+// The first `end` code units of `text`, less one when that would split a surrogate pair -- a lone
+// surrogate is not valid Unicode for the provider -- and likewise the code units from `start`.
+function wholeCharactersTo(text: string, end: number): string {
+  let last = text.charCodeAt(end - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? end - 1 : end);
+}
+function wholeCharactersFrom(text: string, start: number): string {
+  let first = text.charCodeAt(start);
+  return text.slice(first >= 0xdc00 && first <= 0xdfff ? start + 1 : start);
+}
+
+/**
  * One buffered agent tool edit: an entry of the step buffer, which the step's persistence
  * barrier appends as one chat change row (see AgentHooks.commitAgentStep). One row per tool
  * call, in call order, never pre-composed: the client resolves streaming edit previews by
@@ -1006,7 +1043,7 @@ Fetch the contents of a public web URL via HTTPS GET. Use this to look up docume
 
 The Gadget's own code (server.js / client.js) still cannot make network requests at runtime; \`webFetch\` is a tool for *you*, not something you can call from gadget code.
 
-Only https:// URLs to public hosts are allowed; credentials in the URL are not permitted, and the request is sent with no cookies and no authorization headers. Responses are capped at ~1 MiB; if the cap is hit, the result will note that the body was truncated.
+Only https:// URLs to public hosts are allowed; credentials in the URL are not permitted, and the request is sent with no cookies and no authorization headers. Bodies longer than about 32K characters are cut off; the frontmatter's \`truncated\` field says so.
 
 By default, document responses are converted to Markdown for readability: HTML, PDF, DOCX, XLSX, ODT/ODS, CSV, XML, and Apple Numbers files are run through Cloudflare Workers AI's document-conversion service. Plain text, JSON, and other unknown content types are returned as-is. Pass \`raw: true\` to skip conversion and always receive the exact bytes the server sent.
 
@@ -1134,13 +1171,20 @@ export type ReadFileWindow = {startLine?: number, lineCount?: number};
 
 /**
  * Renders a readFile result as the exact text the model sees, for both the live tool and history
- * replay. A read with no window returns the file verbatim. A windowed read returns the selected
- * lines, then a blank line, then `[lines A-B of N; next startLine: B+1]` (without the continuation
- * when B is the last line). Lines are 1-based; a final newline does not start a line. The tool
- * schema already requires positive integers. Exported for tests.
+ * replay. A read with no window returns the file verbatim when it fits MAX_TOOL_RESULT_CHARS;
+ * otherwise, and for any windowed read, the result is the selected lines, a blank line, and
+ * `[lines A-B of N; next startLine: B+1]` (without the continuation when B is the last line).
+ * `lineCount` is an upper bound: a window ends where the next whole line would push the result
+ * past the cap, so a file read is never cut mid-line by boundToolResultText and the note always
+ * says where to continue. The one exception is a single line longer than the cap, which the
+ * generic bound cuts. Lines are 1-based; a final newline does not start a line. The tool schema
+ * already requires positive integers. Exported for tests.
  */
 export function readFileWindow(text: string, {startLine, lineCount}: ReadFileWindow): string {
-  if (startLine === undefined && lineCount === undefined) return text;
+  if (startLine === undefined && lineCount === undefined &&
+      text.length <= MAX_TOOL_RESULT_CHARS) {
+    return text;
+  }
   let lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
   let first = startLine ?? 1;
@@ -1148,10 +1192,19 @@ export function readFileWindow(text: string, {startLine, lineCount}: ReadFileWin
     throw new Error(`startLine ${first} is past the end of the file, which has ` +
         `${lines.length} line${lines.length === 1 ? "" : "s"}.`);
   }
-  let last = Math.min(lines.length, first - 1 + (lineCount ?? lines.length));
-  let note = `[lines ${first}-${last} of ${lines.length}` +
+  let note = (last: number) => `[lines ${first}-${last} of ${lines.length}` +
       (last < lines.length ? `; next startLine: ${last + 1}]` : "]");
-  return `${lines.slice(first - 1, last).join("\n")}\n\n${note}`;
+  // Whole lines, at least one, while they fit under the cap with the longest note this file can
+  // produce.
+  let limit = lineCount === undefined ? lines.length : Math.min(lines.length, first - 1 + lineCount);
+  let budget = MAX_TOOL_RESULT_CHARS - note(lines.length - 1).length - 2;
+  let last = first;
+  let chars = lines[first - 1].length;
+  while (last < limit && chars + 1 + lines[last].length <= budget) {
+    chars += 1 + lines[last].length;
+    ++last;
+  }
+  return `${lines.slice(first - 1, last).join("\n")}\n\n${note(last)}`;
 }
 
 /**
@@ -2139,7 +2192,7 @@ async function runAgentPass(
               role: "toolResult",
               toolCallId: toolCall.toolCallId,
               toolName: toolCall.toolName,
-              content: [{type: "text", text: toolOutput.text}],
+              content: [{type: "text", text: boundToolResultText(toolOutput.text)}],
               isError: toolOutput.isError ?? false,
               timestamp: msgTimestamp,
             });
@@ -2245,8 +2298,9 @@ async function runAgentPass(
                 toolCallId,
                 toolName: "observeUserChanges",
                 // Plain text, not JSON: a JSON-escaped diff full of quotes and braces would be
-                // needlessly hard to read, and the result is only ever fed to the model.
-                content: [{type: "text", text: observations.join("\n\n")}],
+                // needlessly hard to read, and the result is only ever fed to the model. Bounded
+                // like any tool result: a user's diff can be a whole file.
+                content: [{type: "text", text: boundToolResultText(observations.join("\n\n"))}],
                 isError: false,
                 timestamp: msgTimestamp,
               });
@@ -2772,10 +2826,11 @@ async function runAgentPass(
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
   if (compactionTurn) return {type: "finished"};
 
-  // Wraps a plain-text tool result (the exact text the model sees) with optional recorded notes
-  // (see AiToolCall: observedCodeVersion, recorded output) riding along as pi `details` for the
-  // turn_end persister to merge into the chat log. Success data rides details; error-path notes
-  // go through toolCallNotes instead, because pi drops `details` for thrown errors.
+  // Wraps a plain-text tool result (the exact text the model sees, once afterToolCall below has
+  // bounded it) with optional recorded notes (see AiToolCall: observedCodeVersion, recorded
+  // output) riding along as pi `details` for the turn_end persister to merge into the chat log.
+  // Success data rides details; error-path notes go through toolCallNotes instead, because pi
+  // drops `details` for thrown errors.
   let toolResult = (text: string, notes: Partial<AiToolCall> = {}) => ({
     content: [{type: "text" as const, text}],
     details: notes,
@@ -2883,7 +2938,9 @@ async function runAgentPass(
                 ? await hooks.readCommitFiles(head) : sessionContent.get(workpieceId) ?? new Map();
             scan = scanGadgetForGrep(files, path);
           }
-          let output = formatGrep(scan, re);
+          // Recorded already bounded: a broad match over several large files could otherwise
+          // exceed a storage record, and replay shows the model this text anyway.
+          let output = boundToolResultText(formatGrep(scan, re));
           return toolResult(output, {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
@@ -3062,6 +3119,14 @@ async function runAgentPass(
       execute: async (toolCallId, {url, raw}) => {
         try {
           let result = await webFetchImpl(hooks.getWebFetchEnv(), {url, raw});
+          // Cut the body here, not in the generic bound, so the frontmatter's `truncated` stays
+          // true to the text and the recorded output is what the model saw. The header counts
+          // against the cap too, so the formatted whole fits.
+          let overflow = formatWebFetchResult(result).length - MAX_TOOL_RESULT_CHARS;
+          if (overflow > 0) {
+            let body = wholeCharactersTo(result.body, result.body.length - overflow);
+            result = {...result, body, truncated: true};
+          }
 
           let host = new URL(result.finalUrl).host;
           await hooks.recordAgentObservation(
@@ -3719,6 +3784,13 @@ async function runAgentPass(
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
     maxTokens: maxOutputTokens,
+    // The live half of the tool-result bound (replay applies the same function to recorded
+    // results). This runs for thrown errors too, which pi has already rendered as text content,
+    // so an error message the model sees is bounded like any other result.
+    afterToolCall: async ({result}) => ({
+      content: result.content.map(part =>
+          part.type === "text" ? {...part, text: boundToolResultText(part.text)} : part),
+    }),
     shouldStopAfterTurn: ({message, toolResults}) => {
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
