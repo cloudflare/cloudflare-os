@@ -63,6 +63,8 @@ type StyledRowProps = {
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
 };
 
+type OpenActions = { itemId: string; drawer: boolean };
+
 const StyledRow = ({
   rowProps,
   state,
@@ -225,7 +227,8 @@ const StyledRow = ({
             <Drawer.Popup
               ref={drawerPopupRef}
               className={cn(
-                "pointer-events-auto w-full rounded-t-2xl bg-kumo-control px-2 pt-2",
+                "pointer-events-auto flex max-h-[calc(100dvh-1rem)] w-full flex-col overflow-hidden",
+                "rounded-t-2xl bg-kumo-control px-2 pt-2",
                 "pb-[max(0.5rem,env(safe-area-inset-bottom))] text-kumo-default shadow-xl",
                 "ring-1 ring-kumo-line",
                 "[transform:translateY(var(--drawer-swipe-movement-y))]",
@@ -240,7 +243,10 @@ const StyledRow = ({
               </Drawer.Title>
               <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
                 <Menu.Portal container={drawerPopupRef}>
-                  <Menu.Positioner className="!static !block !w-full !transform-none" sideOffset={0}>
+                  <Menu.Positioner
+                    className="!static !block !min-h-0 !w-full !flex-1 !transform-none overflow-y-auto overscroll-contain"
+                    sideOffset={0}
+                  >
                     <Menu.Popup
                       aria-labelledby={drawerTitleId}
                       className="flex w-full flex-col gap-1"
@@ -263,8 +269,12 @@ export const HierarchicalList = ({
   renderContextMenu,
   ...props
 }: HierarchicalListProps) => {
-  const [contextMenuId, setContextMenuId] = useState<string | null>(null);
+  const [openActions, setOpenActions] = useState<OpenActions | null>(null);
   const useActionDrawer = useHierarchicalListActionDrawer(props.interaction);
+
+  useEffect(() => {
+    if (openActions && openActions.drawer !== useActionDrawer) setOpenActions(null);
+  }, [openActions, useActionDrawer]);
 
   return (
     <LayerCard className="p-1">
@@ -274,7 +284,7 @@ export const HierarchicalList = ({
           ? (item) => Boolean(renderContextMenu(item))
           : undefined}
         onItemLongPress={renderContextMenu && useActionDrawer
-          ? (item) => setContextMenuId(item.id)
+          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
           : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{
@@ -312,9 +322,12 @@ export const HierarchicalList = ({
           <StyledRow
             rowProps={rowProps}
             state={state}
-            actionsOpen={contextMenuId === state.item.id}
+            actionsOpen={openActions?.itemId === state.item.id
+              && openActions.drawer === useActionDrawer}
             useActionDrawer={useActionDrawer}
-            onActionsOpenChange={(open) => setContextMenuId(open ? state.item.id : null)}
+            onActionsOpenChange={(open) => setOpenActions(open
+              ? { itemId: state.item.id, drawer: useActionDrawer }
+              : null)}
             renderContextMenu={renderContextMenu}
           />
         )}

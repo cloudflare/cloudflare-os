@@ -614,8 +614,10 @@ describe("HierarchicalList", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(document.body.textContent).toContain("Delete");
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.className).toContain("max-h-[calc(100dvh-1rem)]");
     const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(menu.parentElement?.className).toContain("overflow-y-auto");
     const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
     expect(label?.textContent).toBe("Review code");
     expect(document.querySelector("[aria-hidden='true'][data-popup-open]")).toBeNull();

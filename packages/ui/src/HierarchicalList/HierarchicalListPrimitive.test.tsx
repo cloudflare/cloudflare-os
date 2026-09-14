@@ -76,6 +76,7 @@ describe("HierarchicalListPrimitive", () => {
     expect(row.getAttribute("data-selected")).toBe("");
     expect(row.getAttribute("data-collapsed")).toBe("");
     expect(row.getAttribute("data-depth")).toBe("0");
+    expect(row.tabIndex).toBe(0);
     expect(row.textContent).toBe("Folder:selected:closed");
     expect(container!.querySelector("[data-item-id='folder']")?.getAttribute("data-depth")).toBe("0");
     expect(container!.textContent).not.toContain("Document");

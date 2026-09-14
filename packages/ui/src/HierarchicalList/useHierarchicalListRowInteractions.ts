@@ -121,11 +121,12 @@ export const useHierarchicalListRowInteractions = ({
       if (!event.defaultPrevented) rowPointerProps.onPointerMove?.(event);
     },
     onPointerUp: (event) => {
-      if (!event.defaultPrevented) rowPointerProps.onPointerUp?.(event);
+      rowPointerProps.onPointerUp?.(event);
     },
     onPointerCancel: (event) => {
-      if (!event.defaultPrevented) rowPointerProps.onPointerCancel?.(event);
+      rowPointerProps.onPointerCancel?.(event);
     },
+    tabIndex: 0,
     "data-hierarchical-list-row": "",
     "data-depth": depth,
     "data-expanded": collapsible ? (expanded ? "" : undefined) : undefined,
