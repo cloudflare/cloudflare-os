@@ -328,6 +328,12 @@ export const HierarchicalListPrimitive = ({
         ?.closest("[data-hierarchical-list-item]")
         ?.getAttribute("data-item-id");
       const normalizedDestination = normalizeDropDestination(items, item, destination);
+      const sourcePosition = findItemPosition(items, item.id);
+      if (
+        sourcePosition
+        && (sourcePosition.parent?.id ?? null) === (normalizedDestination.parent?.id ?? null)
+        && sourcePosition.index === normalizedDestination.index
+      ) return;
       if (focusedItemId === item.id) {
         pendingFocusRef.current = {
           itemId: item.id,

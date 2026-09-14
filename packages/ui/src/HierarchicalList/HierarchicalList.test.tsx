@@ -202,7 +202,8 @@ describe("HierarchicalList", () => {
     dispatchDrag(source, "dragstart", transfer);
     dispatchDrag(target, "dragover", transfer, 59);
     dispatchDrag(target, "drop", transfer, 59);
-    expect(onMove).toHaveBeenLastCalledWith(reorderItems[0], { parent: null, index: 0 });
+    expect(onMove).not.toHaveBeenCalled();
+    expect(container!.querySelector('[role="status"]')).toBeNull();
 
     dispatchDrag(source, "dragstart", transfer);
     dispatchDrag(target, "dragover", transfer, 60);
@@ -234,7 +235,7 @@ describe("HierarchicalList", () => {
     };
 
     dropAt(70);
-    expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: null, index: 0 });
+    expect(onMove).not.toHaveBeenCalled();
     dropAt(90);
     expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: folderItems[1], index: 0 });
     dropAt(110);
