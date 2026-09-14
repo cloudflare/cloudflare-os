@@ -127,8 +127,23 @@ The **Redirect URI** on the GitLab application must be exactly
 `CLIENT_ID` or `CLIENT_SECRET` is missing. Make sure the `.env` file exists at
 `packages/gatekeeper-gitlab/.env` and contains both values, then restart the dev server.
 
+### "GitLab did not answer the request: the API redirected to …"
+
+Every REST call is answered with a redirect to a login page: the instance is behind Cloudflare
+Access and the Access application in front of `GITLAB_API_URL` does not admit the gatekeeper's
+service token, or `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` are not set on the worker (see
+[Self-hosted instances](#self-hosted-instances)). Distinct from the rename message above: the
+gatekeeper tells them apart by where the redirect points.
+
 ### git fetch or push fails with a redirect or an HTML page
 
-The instance is behind Cloudflare Access and the Access application does not admit the service
-token on the `.git/` paths (see [Self-hosted instances](#self-hosted-instances)), or
-`CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET` are not set on the worker.
+The same cause on the `.git/` paths: the Access application admits the service token for
+`/api/v4` but not for the repository, or the token is not configured.
+
+### "This collaborator does not have read access to the GitLab project …"
+
+Someone sharing a workspace is not a member of the project it is bound to at **Reporter** or
+above — or is a member only at Guest. Being able to open the project in GitLab is not enough,
+even on an `internal` or `public` one: a project can hold confidential issues and internal notes
+that only members at those roles see, and the workspace may have read them. The remedy is for a
+project maintainer to add the collaborator as a Reporter (inherited group membership counts).

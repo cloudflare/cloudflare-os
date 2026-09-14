@@ -7,7 +7,7 @@
     "moduleResolution": "bundler",
     "jsx": "react",
     "jsxFactory": "h",
-    "types": ["@cloudflare/workers-types/experimental"],
+    "types": ["./worker-configuration.d.ts"],
     "paths": {
       "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"],
       "@gadgets/gatekeeper-kit/*": ["../gatekeeper-kit/src/*"],
