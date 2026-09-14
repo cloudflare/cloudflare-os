@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: Comma-separated model IDs; blank uses DeepSeek V4 Pro
+        description: Comma-separated model IDs; blank uses the eval default model
       trials:
         description: Repetitions per task and model
         default: "1"

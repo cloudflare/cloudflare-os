@@ -3,18 +3,16 @@ import {
   SUGGESTED_MODELS, type AiModelProvider, type SuggestedModelId,
 } from "@gadgets/workshop-shared/api";
 
-/** An eval model is a picker model: SUGGESTED_MODELS is the whole eval catalog. */
-export type EvalModelId = SuggestedModelId;
-/** An eval catalog model resolved to the provider that serves it. */
-export type EvalModel = { provider: AiModelProvider; model: EvalModelId };
+/** A picker model resolved to the provider that serves it: SUGGESTED_MODELS is the eval catalog. */
+export type EvalModel = { provider: AiModelProvider; model: SuggestedModelId };
 
-// The default must be a Workers AI picker model so it runs in both direct and gateway mode.
-const DEFAULT_MODELS: readonly SuggestedModelId<"cloudflare">[] =
-  ["@cf/deepseek-ai/deepseek-v4-pro-0813"];
+// Measured unless WORKSHOP_EVAL_MODELS says otherwise. A Workers AI picker model, so it runs under
+// direct credentials as well as through a gateway.
+const DEFAULT_MODEL: SuggestedModelId<"cloudflare"> = "@cf/zai-org/glm-5.3-flash";
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export type EvalIdentity = { gitCommit: string; taskVersion: string };
-export type EvalMatrix = { models: EvalModelId[]; trials: number };
+export type EvalMatrix = { models: SuggestedModelId[]; trials: number };
 
 function commaList(value: string): string[] {
   return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -49,7 +47,7 @@ export function resolveEvalCommit(
 export function resolveEvalModel(modelId: string): EvalModel {
   for (const [provider, models] of Object.entries(SUGGESTED_MODELS)) {
     if (Object.hasOwn(models, modelId)) {
-      return { provider: provider as AiModelProvider, model: modelId as EvalModelId };
+      return { provider: provider as AiModelProvider, model: modelId as SuggestedModelId };
     }
   }
   throw new Error(
@@ -65,5 +63,5 @@ export function evalMatrix(environment: NodeJS.ProcessEnv = process.env): EvalMa
   if (!Number.isInteger(trials) || trials < 1) {
     throw new Error("WORKSHOP_EVAL_TRIALS must be a positive integer");
   }
-  return { models: models.length > 0 ? models : [...DEFAULT_MODELS], trials };
+  return { models: models.length > 0 ? models : [DEFAULT_MODEL], trials };
 }
