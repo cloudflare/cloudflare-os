@@ -41,8 +41,8 @@ cost that would dominate the test:
 
 - The OAuth ones need a whole vendor auth surface mocked before an account exists at all.
 - The Context Library only refuses after an observation has been *recorded*, which takes a gadget read
-  session, a slash command, or an AI-chat catalog snapshot — and it is a singleton, so it cannot
-  produce two simultaneously failing bindings.
+  session or a slash command — and it is a singleton, so it cannot produce two simultaneously failing
+  bindings.
 
 Adding a test hook to those workers was considered and rejected: a "mark observed" hook would stub the
 very state the tracker maintains, and an injected dev credential for an OAuth gatekeeper would bypass

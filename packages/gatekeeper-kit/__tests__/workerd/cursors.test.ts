@@ -579,8 +579,7 @@ describe("TokenCursor", () => {
   });
 
   it("refuses a gated page through a real read-only authorizer stub", async () => {
-    // The gate needs only `ObservationAuthorizer` -- exactly what a catalog or slash-command
-    // handler is given.
+    // The gate needs only `ObservationAuthorizer` -- exactly what a slash-command handler is given.
     const { authorizer, seen } = makeAuthorizer();
     const strategy = trackedCollectionObservers<string[]>({
       kv: fakeKv(),

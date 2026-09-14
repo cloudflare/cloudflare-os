@@ -385,9 +385,9 @@ actions, and the gate over `queue.dup()` — and releases both when the session 
 }
 ```
 
-The gate only needs `ObservationAuthorizer`, the read-only capability, so a catalog or
-slash-command handler — which receives exactly that — constructs one from its own
-`authorizer.dup()`. Gate leases (`lease()`) are independent owners in the same way.
+The gate only needs `ObservationAuthorizer`, the read-only capability, so a slash-command
+handler — which receives exactly that — constructs one from its own `authorizer.dup()`. Gate
+leases (`lease()`) are independent owners in the same way.
 
 Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
 alongside them — that capability is what `aclObservers` and `trackedCollectionObservers` call to check a

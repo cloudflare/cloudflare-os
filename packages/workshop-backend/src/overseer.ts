@@ -7894,24 +7894,19 @@ class OverseerImpl implements AgentHooks {
     //
     // Deliberately not cached on the chat. A catalog says what the session can reach now, so a
     // cached one can never show a skill added after the chat opened, and a cached failure reads as
-    // an empty library for the rest of the chat.
+    // an empty library for the rest of the chat. Not an observation either: the catalog reaches
+    // every chat automatically, so by contract it holds nothing that needs observer verification.
     let catalogs = new Map(await Promise.all(ambientIds
         .filter(id => this.gatekeeperUsable(id) && !this.#catalogless.has(id))
         .map(async (gatekeeperId): Promise<[number, AgentCatalog | null]> => {
           let record = this.storage.gatekeepers.get(gatekeeperId);
           if (!record) return [gatekeeperId, null];  // disconnected since the chat froze its set.
           try {
-            using authorizer = new RpcStub<ObservationAuthorizer>(new ApprovalQueueImpl(
-                this, gatekeeperId, {from: "agent", chatId}));
-            // The catalog comes from the installed gatekeeper facet (gadget-side), authorized as an
-            // observation via the approval queue. getAgentCatalog is optional on Gatekeeper; ambient
-            // resources always implement it (the agent relies on it for discovery), answering null
-            // when they have none, so we view the facet through CatalogGatekeeperFacet (derived from
-            // the contract) to call it directly. The DurableObjectStub proxy unstubifies the RpcStub
-            // param to its target type; the native stub forwards transparently at runtime.
+            // getAgentCatalog is optional on Gatekeeper; ambient resources always implement it (the
+            // agent relies on it for discovery), answering null when they have none, so we view the
+            // facet through CatalogGatekeeperFacet (derived from the contract) to call it directly.
             let facet = this.getGatekeeperFacet(gatekeeperId) as unknown as CatalogGatekeeperFacet;
-            let catalog = await facet.getAgentCatalog(
-                authorizer as unknown as ObservationAuthorizer);
+            let catalog = await facet.getAgentCatalog();
             if (!catalog) {
               this.#catalogless.add(gatekeeperId);
               return [gatekeeperId, null];
