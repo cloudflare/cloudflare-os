@@ -1014,32 +1014,42 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
    are structurally identical to the kit's `GitDiff*`, and the agent-facing text must stay
    self-contained. Behavior-neutral; github's full suite is the proof.
 3. **gitlab: package skeleton + API design** — `package.json`, `tsconfig.json`, `vite.config.ts`,
-   both vitest configs, `wrangler.jsonc`, `deploy-inputs.json`, logo, `text-modules.d.ts`,
+   the node vitest config, `wrangler.jsonc`, `deploy-inputs.json`, logo, `text-modules.d.ts`,
    `observability.ts`, **`types.d.ts` + `types.txt`** (the review artifact, §5), `README.md`,
-   `storage-schema.md` skeleton, and `gitlab-api.ts` with its node tests (§2, incl. OAuth
-   helpers, PKCE, Access headers, git POST framing). Nothing yet implements `Gatekeeper`.
-   **Review checkpoint: `types.d.ts` is approved before commit 4 is written.** The doc-derived
-   fixtures (Verification, layer 1) land here.
-4. **gitlab: accounts, resources, configurators, read-only sessions** — HTTP entrypoint,
-   `GatekeeperVendor`, `UserAccount` (PKCE, refresh under mutex, staging, scope guard),
-   `GatekeeperUserImpl`, `GitLabVerifier`, `GitLabGatekeeperImpl` with caches and every
-   *observation* method (metadata, issue/MR details, listings and search, discussion, diff,
-   diff threads, branches, tags, commits, ref resolution, merge base — all advertising), the three
-   configurators, `addObserver`/`removeObserver`. `applyAction`/`rejectAction`/`revertAction`
-   throw "no actions yet". Workerd: `TestHooks` harness, `refresh.test.ts`,
-   `resource-order.test.ts`, `session-git.test.ts` (reads), stale-props/scope guards.
-5. **gitlab: actions and simulation** — the action union, `submitActionForApproval`,
-   provisional ids and `#~N`/`!~N` rewriting, all `prepare*`, `applyAction`/`rejectAction`/
-   `revertAction` for every non-push action, overlays, reject cascades, discussion/diff-thread
-   incremental sync state, draft-note reviews and approval, thread replies and resolution,
-   merge. Workerd: `review.test.ts`, action lifecycle matrix (queue → simulate → apply → revert;
-   reject cascades), watermark sync.
-6. **gitlab: git pull, push, and push simulation** — `gitPull`, `preparePush`/apply/revert,
-   `#simulateBranchHead`, pending-chain collection, simulated MR comparison and head overlays,
-   injected created branches, `isSimulatedCommitId` carve-outs. Workerd: `push.test.ts`,
-   `mr-simulation.test.ts`, protected-branch rejection text.
-7. **repo plumbing and docs** — `SHARED_GATEKEEPER_CREDS`, manifest fixture bundle + golden
-   regen, AGENTS.md bullet, write-gatekeeper skill reference. (Small; may fold into 3.)
+   `storage-schema.md` skeleton, `gitlab-api.ts` with its node tests (§2, incl. OAuth helpers,
+   PKCE, Access headers, git POST framing, redirect refusal), the documentation-derived fixtures
+   (Verification, layer 1), and the release-manifest fixture bundle + golden. Nothing yet
+   implements `Gatekeeper`. **Review checkpoint: `types.d.ts` was approved before commit 4.**
+4. **gitlab: accounts, resources, configurators, and every read** — the file layout diverges
+   from github's single `github.ts` for reviewability: `gitlab.ts` (entrypoint, vendor,
+   `UserAccount` with PKCE and refresh under a mutex, `GatekeeperUserImpl`, `GitLabVerifier`),
+   `gitlab-env.ts` (instance configuration and resource patterns), `gitlab-normalize.ts` (pure
+   REST→API mapping, `revisionFromDiffRefs`, `parsePatch`), `gitlab-cursors.ts`,
+   `gitlab-action-types.ts`, `gitlab-gatekeeper.ts` (the DO), `gitlab-sessions.ts`, and the
+   three configurators. Every observation method with caches and overlays; the action methods
+   throw "not available". Workerd: the `TestHooks` harness with undecorated `TestUser`/
+   `TestVerifier` subclasses, `account.test.ts` (refresh rotation and collapse, terminal vs
+   transient failure, the under-scoped-grant remedy via `ensureResources`, identity),
+   `resources.test.ts` (pattern order, URL parsing, stale props, the membership probe),
+   `reads.test.ts` (every read's shape, the
+   `diff_refs` inversion, MR commit order, discussion filtering, threads).
+5. **gitlab: actions and their simulation** — the action records, `submitActionForApproval`,
+   provisional ids and `#~N`/`!~N` rewriting, all `prepare*` (assignees resolved to ids; both MR
+   branches validated; a merged MR refused a reopen), `applyAction`/`rejectAction`/`revertAction`
+   for every non-push action, reject cascades, draft-note reviews (`approve` with `sha` first,
+   then drafts, then `bulk_publish` with `reviewer_state` — individual publish when foreign
+   drafts exist — each step recorded on the action record so a retry resumes), positions naming
+   a line by its kind and `line_range` line_codes from one hunk walk, thread replies and
+   resolution, merge with GitLab's error codes mapped. Workerd: `actions.test.ts` (lifecycle
+   scenarios including the review's retry and discard paths).
+6. **gitlab: git pull, push, and the simulation of queued pushes** — `gitPull`, `preparePush`/
+   apply/revert, `#collectPendingChain`, `#simulatedMergeRequestComparison` (compare + merge_base
+   against the anchor, local tree diff; degrades when a tree is not cached), head overlays on MR
+   details and summaries, injected created branches, pending-chain injection in `listCommits`,
+   the `isSimulatedCommitId` carve-outs. Workerd: `push.test.ts` (13 scenarios incl. GitLab's
+   pre-receive reason passed through) and `session-git.test.ts` (advertising wiring).
+7. **repo plumbing and docs** — `SHARED_GATEKEEPER_CREDS`, AGENTS.md bullet, the
+   write-gatekeeper skill's reference list, this section brought in line with what landed.
 
 **PR B — internal repo** (companion plan there has the specifics)
 
