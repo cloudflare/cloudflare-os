@@ -347,8 +347,9 @@ describe("HierarchicalList", () => {
       />,
     );
     const source = rowFor("Source")!;
-    const handle = source.closest("[data-hierarchical-list-item]")
-      ?.querySelector<HTMLElement>("[data-hierarchical-list-touch-drag-handle]")!;
+    const handle = source.querySelector<HTMLElement>(
+      "[data-hierarchical-list-touch-drag-handle]",
+    )!;
     const target = rowFor("Target")!;
     setRect(container!.firstElementChild!, { top: 0 });
     setRect(source, { top: 0 });
@@ -408,8 +409,9 @@ describe("HierarchicalList", () => {
       />,
     );
     const source = rowFor("Source")!;
-    const handle = source.closest("[data-hierarchical-list-item]")
-      ?.querySelector<HTMLElement>("[data-hierarchical-list-touch-drag-handle]")!;
+    const handle = source.querySelector<HTMLElement>(
+      "[data-hierarchical-list-touch-drag-handle]",
+    )!;
     const transfer = dataTransfer();
 
     dispatchDrag(handle, "dragstart", transfer);
