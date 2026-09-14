@@ -42,7 +42,7 @@ import type {
   GitLabTagSummary,
 } from "./types";
 
-const NO_ACTIONS_YET = "GitLab actions are not available in this build.";
+const PUSH_NOT_YET = "GitLab push actions are not available in this build.";
 
 /**
  * The page size a listing serves per `next()`: the caller's `resultsPerPage`, or the method's
@@ -88,12 +88,37 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return metadata;
   }
 
-  async createIssue(_options: GitLabCreateIssueOptions): Promise<GitLabIssue> {
-    throw new Error(NO_ACTIONS_YET);
+  async createIssue(options: GitLabCreateIssueOptions): Promise<GitLabIssue> {
+    if (options.assignees?.length) {
+      // Queue-time validation resolves assignee usernames to ids (see prepareCreateIssue).
+      await this.#approvalQueue.authorizeObservation({
+        title: `Look up users ${options.assignees.join(", ")}`,
+        description: `Look up the GitLab users ${options.assignees.join(", ")} in order to assign a new issue to them.`,
+      });
+    }
+    const action = await this.#gatekeeper.prepareCreateIssue(options);
+    await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
+      title: `Create issue ${options.title}`,
+      description: `Create a new issue in ${action.projectPath} titled "${options.title}".`,
+      implementsRevert: false,
+    });
+    return new GitLabIssueImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
   }
 
-  async createMergeRequest(_options: GitLabCreateMergeRequestOptions): Promise<GitLabMergeRequest> {
-    throw new Error(NO_ACTIONS_YET);
+  async createMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<GitLabMergeRequest> {
+    // Queue-time validation reads both branches' current heads (see prepareCreateMergeRequest).
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read heads of branches ${options.sourceBranch} and ${options.targetBranch}`,
+      description: `Read the current heads of branches "${options.sourceBranch}" and "${options.targetBranch}" ` +
+        `in order to create a merge request from one into the other.`,
+    });
+    const action = await this.#gatekeeper.prepareCreateMergeRequest(options);
+    await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
+      title: `Create merge request ${options.title}`,
+      description: `Create a new merge request in ${action.projectPath} from ${options.sourceBranch} into ${options.targetBranch}.`,
+      implementsRevert: false,
+    });
+    return new GitLabMergeRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
   }
 
   async getIssue(id: string): Promise<GitLabIssue> {
@@ -209,7 +234,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
   }
 
   async push(_branch: string, _commitId: string, _options?: { force?: boolean }): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+    throw new Error(PUSH_NOT_YET);
   }
 
   async listCommits(options?: GitLabCommitFilter): Promise<Cursor<GitLabCommitSummary>> {
@@ -253,28 +278,71 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     return `${this.kind === "issue" ? "#" : "!"}${this.logicalId}`;
   }
 
-  async setTitle(_title: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  protected async authorizeMutationPreparation(action: string): Promise<void> {
+    await this.approvalQueue.authorizeObservation({
+      title: `Read current state of ${this.reference()}`,
+      description: `Read the current state of ${this.reference()} in order to ${action} and capture revert information.`,
+    });
   }
 
-  async setBody(_bodyMarkdown: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async setTitle(title: string): Promise<void> {
+    await this.authorizeMutationPreparation("change its title");
+    const action = await this.gatekeeper.prepareSetTitle(this.kind, this.logicalId, title);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Rename ${this.reference()}`,
+      description: `Change the title from "${action.previousTitle}" to "${title}".`,
+      implementsRevert: true,
+    });
   }
 
-  async addLabels(_labels: string[]): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async setBody(bodyMarkdown: string): Promise<void> {
+    await this.authorizeMutationPreparation("edit its description");
+    const action = await this.gatekeeper.prepareSetBody(this.kind, this.logicalId, bodyMarkdown);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Edit description of ${this.reference()}`,
+      description: `Replace the Markdown description of ${this.reference()}.`,
+      implementsRevert: true,
+    });
   }
 
-  async removeLabels(_labels: string[]): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async addLabels(labels: string[]): Promise<void> {
+    await this.authorizeMutationPreparation("add labels");
+    const action = await this.gatekeeper.prepareAddLabels(this.kind, this.logicalId, labels);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Add labels to ${this.reference()}`,
+      description: `Add labels ${labels.join(", ")} to ${this.reference()}.`,
+      implementsRevert: true,
+    });
+  }
+
+  async removeLabels(labels: string[]): Promise<void> {
+    await this.authorizeMutationPreparation("remove labels");
+    const action = await this.gatekeeper.prepareRemoveLabels(this.kind, this.logicalId, labels);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Remove labels from ${this.reference()}`,
+      description: `Remove labels ${labels.join(", ")} from ${this.reference()}.`,
+      implementsRevert: true,
+    });
   }
 
   async close(): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+    await this.authorizeMutationPreparation("close it");
+    const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "closed");
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Close ${this.reference()}`,
+      description: `Close ${this.reference()}.`,
+      implementsRevert: true,
+    });
   }
 
   async reopen(): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+    await this.authorizeMutationPreparation("reopen it");
+    const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "opened");
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Reopen ${this.reference()}`,
+      description: `Reopen ${this.reference()}.`,
+      implementsRevert: true,
+    });
   }
 
   async readDiscussion(options?: GitLabPageOptions): Promise<Cursor<GitLabDiscussionEntry>> {
@@ -285,8 +353,13 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     return await this.gatekeeper.issueDiscussion(this.kind, this.logicalId, pageSize(options));
   }
 
-  async postComment(_bodyMarkdown: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async postComment(bodyMarkdown: string): Promise<void> {
+    const action = await this.gatekeeper.preparePostComment(this.kind, this.logicalId, bodyMarkdown);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Comment on ${this.reference()}`,
+      description: `Post a new Markdown comment on ${this.reference()}.`,
+      implementsRevert: true,
+    });
   }
 }
 
@@ -354,20 +427,47 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     return await this.gatekeeper.mergeRequestThreads(this.logicalId, pageSize(options, 20));
   }
 
-  async postReview(_review: GitLabMergeRequestReviewDraft): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async postReview(review: GitLabMergeRequestReviewDraft): Promise<void> {
+    const action = await this.gatekeeper.preparePostReview(this.logicalId, review);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Submit review for !${this.logicalId}`,
+      description: `Submit a ${review.decision} review for merge request !${this.logicalId}` +
+        `${review.diffComments?.length ? ` with ${review.diffComments.length} diff comment(s)` : ""}.`,
+      implementsRevert: false,
+    });
   }
 
-  async replyToDiffComment(_commentId: string, _bodyMarkdown: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async replyToDiffComment(commentId: string, bodyMarkdown: string): Promise<void> {
+    if (commentId.startsWith("~")) {
+      throw new Error(
+        "Replies to provisional diff comments are not supported until the parent review is approved and GitLab assigns real note IDs.");
+    }
+    const action = await this.gatekeeper.prepareReplyToDiffComment(this.logicalId, commentId, bodyMarkdown);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Reply to diff thread on !${this.logicalId}`,
+      description: `Reply to a diff discussion thread on merge request !${this.logicalId}.`,
+      implementsRevert: true,
+    });
   }
 
-  async resolveDiffThread(_threadId: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async resolveDiffThread(threadId: string): Promise<void> {
+    await this.#setThreadResolved(threadId, true);
   }
 
-  async unresolveDiffThread(_threadId: string): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async unresolveDiffThread(threadId: string): Promise<void> {
+    await this.#setThreadResolved(threadId, false);
+  }
+
+  async #setThreadResolved(threadId: string, resolved: boolean): Promise<void> {
+    if (threadId.startsWith("~")) {
+      throw new Error("A provisional diff thread cannot be resolved until its review is approved.");
+    }
+    const action = await this.gatekeeper.prepareResolveDiffThread(this.logicalId, threadId, resolved);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `${resolved ? "Resolve" : "Reopen"} a diff thread on !${this.logicalId}`,
+      description: `${resolved ? "Mark as resolved" : "Reopen"} a diff discussion thread on merge request !${this.logicalId}.`,
+      implementsRevert: true,
+    });
   }
 
   async listCommits(options?: GitLabPageOptions): Promise<Cursor<GitLabCommitSummary>> {
@@ -393,7 +493,17 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     return mergeBase;
   }
 
-  async merge(_options?: GitLabMergeRequestMergeOptions): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
+  async merge(options?: GitLabMergeRequestMergeOptions): Promise<void> {
+    // Binding the head the merge is approved against reads the merge request's current state.
+    await this.authorizeMutationPreparation("merge it");
+    const action = await this.gatekeeper.prepareMergeMergeRequest(this.logicalId, options);
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Merge merge request !${this.logicalId}`,
+      description: `Merge merge request !${this.logicalId} at its current head ${action.expectedHeadSha}` +
+        `${options?.squash ? ", squashing its commits" : ""}` +
+        `${options?.removeSourceBranch ? " and deleting the source branch" : ""}.` +
+        " The merge is refused if the head has moved by the time it applies.",
+      implementsRevert: false,
+    });
   }
 }

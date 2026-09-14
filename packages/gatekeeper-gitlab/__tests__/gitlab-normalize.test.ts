@@ -232,3 +232,18 @@ describe("diffAnchor", () => {
     expect(diffAnchor({ id: "e", individual_note: false, notes: [] })).toBeNull();
   });
 });
+
+describe("diffLinePositions", () => {
+  it("re-walks the hunk with both counters, like GitLab's own line_code, and names the line's kind", async () => {
+    const { diffLinePositions } = await import("../src/gitlab-normalize");
+    const hunks = parsePatch(fx.compareResponse.data.diffs[0].diff);
+    // Hunk @@ -24,8 +24,10 @@: three context lines, two removed (old 27, 28), three context, four added.
+    expect(diffLinePositions(hunks, "new", 24)).toEqual({ oldLine: 24, newLine: 24, kind: "context" });
+    // The first removed line sits at old 27; the new counter has not advanced past 27 yet.
+    expect(diffLinePositions(hunks, "old", 27)).toEqual({ oldLine: 27, newLine: 27, kind: "removed" });
+    // The first added line is new 30; the old counter is at 32 (after 3+2+3 old-side lines).
+    expect(diffLinePositions(hunks, "new", 30)).toEqual({ oldLine: 32, newLine: 30, kind: "added" });
+    expect(diffLinePositions(hunks, "new", 99)).toBeNull();
+    expect(diffLinePositions(hunks, "old", 30)).toEqual({ oldLine: 30, newLine: 28, kind: "context" });
+  });
+});

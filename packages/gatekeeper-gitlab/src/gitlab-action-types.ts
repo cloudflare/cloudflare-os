@@ -123,6 +123,13 @@ export type MergeMergeRequestAction = BaseAction & {
   type: "mergeMergeRequest";
   mergeRequestId: string;
   options?: GitLabMergeRequestMergeOptions;
+  /**
+   * The source head the merge was approved against: the agent's `expectedHeadSha`, else the head
+   * read at queue time. Sent as `sha`, so GitLab refuses (409) to merge commits that arrived
+   * after approval. Always present: a merge whose head cannot be determined is refused at
+   * prepare rather than queued unbound.
+   */
+  expectedHeadSha: string;
 };
 
 /**
@@ -156,12 +163,53 @@ export type GitLabAction =
   | MergeMergeRequestAction
   | PushAction;
 
+/**
+ * The Markdown an action will post, in which `#~N` / `!~N` provisional references are honoured
+ * (rewritten to the real number at apply; see `#rewriteKnownReferences`). This is the one list
+ * of those fields: the apply-time rewrite and the reject-time cascade both read it, so a text
+ * that would be rewritten is also a dependency -- reject the referenced resource and the action
+ * that names it can never apply.
+ */
+export function referenceBearingTexts(action: GitLabAction): string[] {
+  switch (action.type) {
+    case "createIssue":
+    case "createMergeRequest":
+      return action.options.bodyMarkdown ? [action.options.bodyMarkdown] : [];
+    case "setBody":
+    case "postComment":
+    case "replyToDiffComment":
+      return [action.bodyMarkdown];
+    case "postReview":
+      return [
+        ...(action.review.bodyMarkdown ? [action.review.bodyMarkdown] : []),
+        ...(action.review.diffComments ?? []).map(comment => comment.bodyMarkdown),
+      ];
+    case "setTitle": case "addLabels": case "removeLabels": case "changeState":
+    case "resolveDiffThread": case "mergeMergeRequest": case "push":
+      return [];
+  }
+}
+
+/** Whether `text` names the provisional `#~N` (issue) or `!~N` (merge request) `provisionalId`. */
+export function textReferences(text: string, kind: EntityKind, provisionalId: string): boolean {
+  return text.includes(`${kind === "issue" ? "#" : "!"}${provisionalId}`);
+}
+
 export type StoredActionRecord = {
   action: GitLabAction;
   state: StoredActionState;
   appliedAt?: number;
   rejectedAt?: number;
   revertInfo?: GitLabRevertInfo;
+  /**
+   * Steps of a multi-call apply that have already landed, so a retry after a later failure
+   * resumes rather than repeats them. For a review: `approved`, its `approve` (the
+   * compare-and-swap step, run first) succeeded; `publishedComments`, how many of its diff
+   * comments -- a prefix, in order -- are published; `draftIds`, the drafts it has created and
+   * not yet published, so a retry can tell its own leftovers from the user's parked drafts and
+   * clear them; `summaryPosted`, its summary note is on the merge request.
+   */
+  progress?: { approved?: true; publishedComments?: number; draftIds?: number[]; summaryPosted?: true };
 };
 
 /** A provisional issue/MR: what kind it is and, once created, its real number. */
