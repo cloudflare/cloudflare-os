@@ -185,9 +185,9 @@ export const useHierarchicalListRowInteractions = ({
               ? "right"
               : null;
       if (!direction) return;
+      event.preventDefault();
       const destination = getKeyboardMoveDestination(rootItems, item, direction);
       if (!destination) return;
-      event.preventDefault();
       dragAndDrop?.onMove(item, destination);
     },
     onDragEnd: () => {

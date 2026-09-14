@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import {
   canInsertInto,
+  findItemPosition,
   insertionTargetId,
   normalizeDropDestination,
   useHierarchicalListDragAndDrop,
@@ -310,7 +311,12 @@ export const HierarchicalListPrimitive = ({
   );
   const [moveAnnouncement, setMoveAnnouncement] = useState<{ id: number; text: string } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const pendingFocusRef = useRef<{ itemId: string; fallbackId: string | null } | null>(null);
+  const pendingFocusRef = useRef<{
+    itemId: string;
+    fallbackId: string | null;
+    parentId: string | null;
+    index: number;
+  } | null>(null);
   const announcementIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
     ...dragAndDrop,
@@ -326,6 +332,8 @@ export const HierarchicalListPrimitive = ({
         pendingFocusRef.current = {
           itemId: item.id,
           fallbackId: normalizedDestination.parent?.id ?? null,
+          parentId: normalizedDestination.parent?.id ?? null,
+          index: normalizedDestination.index,
         };
       }
       setMoveAnnouncement({
@@ -344,8 +352,14 @@ export const HierarchicalListPrimitive = ({
   useLayoutEffect(() => {
     const pendingFocus = pendingFocusRef.current;
     if (!pendingFocus) return;
+    const position = findItemPosition(items, pendingFocus.itemId);
+    if (
+      !position
+      || position.parent?.id !== pendingFocus.parentId
+      || position.index !== pendingFocus.index
+    ) return;
     const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-hierarchical-list-row]");
-    const rowFor = (id: string | null) => id
+    const rowFor = (id: string | null) => id !== null
       ? [...rows ?? []].find((candidate) => candidate
         .closest("[data-hierarchical-list-item]")
         ?.getAttribute("data-item-id") === id)
@@ -356,7 +370,7 @@ export const HierarchicalListPrimitive = ({
   });
 
   useEffect(() => {
-    if (!selectedId || !onSelectionClear) return;
+    if (selectedId === undefined || !onSelectionClear) return;
     const clearOutsideRow = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Element

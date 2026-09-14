@@ -124,6 +124,23 @@ describe("HierarchicalListPrimitive", () => {
     expect(container!.textContent).not.toContain("Document");
   });
 
+  it("clears a selected item with an empty ID from outside interaction", () => {
+    const onSelectionClear = vi.fn<() => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[{ id: "", name: "Inbox" }]}
+        label="Resources"
+        selectedId=""
+        onSelectionClear={onSelectionClear}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+
+    act(() => document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+
+    expect(onSelectionClear).toHaveBeenCalledOnce();
+  });
+
   it("does not toggle expansion state for leaf items", () => {
     const onExpandedChange = vi.fn<(ids: ReadonlySet<string>) => void>();
     render(
@@ -211,7 +228,7 @@ describe("HierarchicalListPrimitive", () => {
       const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
       return (
         <HierarchicalListPrimitive
-          items={tree}
+          items={[...tree]}
           label="Resources"
           initialExpandedIds={[folder.id]}
           dragAndDrop={{
@@ -255,7 +272,7 @@ describe("HierarchicalListPrimitive", () => {
       const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
       return (
         <HierarchicalListPrimitive
-          items={tree}
+          items={[...tree]}
           label="Resources"
           dragAndDrop={{
             onMove: (item, destination) => {
@@ -284,6 +301,79 @@ describe("HierarchicalListPrimitive", () => {
     act(() => (document.activeElement as HTMLButtonElement).click());
     expect(container!.querySelector("[data-item-id='movable']")).not.toBeNull();
     expect(document.activeElement?.textContent).toBe("Folder");
+  });
+
+  it("keeps focus on an empty-ID item after a deferred move", () => {
+    vi.useFakeTimers();
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      droppable: true,
+      children: [],
+    };
+    const movable: HierarchicalListItem = { id: "", name: "Movable", draggable: true };
+    const Example = () => {
+      const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
+      return (
+        <HierarchicalListPrimitive
+          items={[...tree]}
+          label="Resources"
+          initialExpandedIds={[folder.id]}
+          dragAndDrop={{
+            onMove: (item, destination) => {
+              if (destination.parent?.id !== folder.id) return;
+              setTimeout(() => setTree([{ ...folder, children: [item] }]), 0);
+            },
+          }}
+          renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+        />
+      );
+    };
+    render(<Example />);
+
+    const movableRow = [...container!.querySelectorAll("button")]
+      .find((button) => button.textContent === "Movable")!;
+    act(() => movableRow.focus());
+    act(() => movableRow.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+    expect(document.activeElement).toBe(movableRow);
+
+    act(() => vi.advanceTimersByTime(0));
+
+    expect(document.activeElement?.textContent).toBe("Movable");
+    expect(document.activeElement?.closest("[data-item-id='folder']")).not.toBeNull();
+  });
+
+  it("prevents browser shortcuts when an Alt+Arrow move is unavailable", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[{ id: "item", name: "Item", draggable: true }]}
+        label="Resources"
+        dragAndDrop={{ onMove }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+    const row = container!.querySelector("button")!;
+
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
+      const event = new KeyboardEvent("keydown", {
+        key,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => row.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(onMove).not.toHaveBeenCalled();
   });
 
   it("uses primary coarse-pointer capability for native dragging", () => {
@@ -537,6 +627,43 @@ describe("HierarchicalListPrimitive", () => {
     expect(onItemClick).not.toHaveBeenCalled();
     act(() => row.click());
     expect(onItemClick).toHaveBeenCalledOnce();
+    expect(onItemClick).toHaveBeenCalledWith(item);
+  });
+
+  it("does not suppress a new click after a long press is cancelled", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    const item: HierarchicalListItem = { id: "touch-item", name: "Touch item" };
+    const onItemClick = vi.fn<(clickedItem: HierarchicalListItem) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[item]}
+        label="Resources"
+        hasLongPressAction={() => true}
+        onItemLongPress={() => {}}
+        onItemClick={onItemClick}
+        interaction={{ longPressDelayMs: 100 }}
+        renderRow={(rowProps, { item: rowItem }) => (
+          <button {...rowProps}>{rowItem.name}</button>
+        )}
+      />,
+    );
+    const row = container!.querySelector("button")!;
+    const pointerDown = new MouseEvent("pointerdown", { bubbles: true });
+    Object.defineProperties(pointerDown, {
+      isPrimary: { value: true },
+      pointerType: { value: "touch" },
+    });
+
+    act(() => row.dispatchEvent(pointerDown));
+    act(() => vi.advanceTimersByTime(100));
+    act(() => row.dispatchEvent(new Event("pointercancel", { bubbles: true })));
+    act(() => row.click());
+
     expect(onItemClick).toHaveBeenCalledWith(item);
   });
 

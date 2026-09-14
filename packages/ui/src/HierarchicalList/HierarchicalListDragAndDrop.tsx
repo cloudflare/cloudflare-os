@@ -86,7 +86,8 @@ export const insertionTargetId = (parent: HierarchicalListItem | null, index: nu
 /** Builds the stable internal identity of an inside-item target. @internal */
 export const insideTargetId = (item: HierarchicalListItem) => `inside:${item.id}`;
 
-const findItemPosition = (
+/** Finds an item's current parent and index in a tree. @internal */
+export const findItemPosition = (
   items: readonly HierarchicalListItem[],
   id: string,
   parent: HierarchicalListItem | null = null,

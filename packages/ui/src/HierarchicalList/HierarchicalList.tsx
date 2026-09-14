@@ -95,6 +95,12 @@ const StyledRow = ({
         rowProps.onClick?.(event);
         if (!event.defaultPrevented && collapsible) state.toggleExpanded();
       }}
+      onContextMenu={(event) => {
+        rowProps.onContextMenu?.(event);
+        if (event.defaultPrevented || !useActionDrawer || !contextMenu) return;
+        event.preventDefault();
+        onActionsOpenChange(true);
+      }}
       className={cn(
         rowProps.className,
         "group relative focus-visible:z-20",
@@ -124,7 +130,7 @@ const StyledRow = ({
       <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
         {item.name}
       </Text>
-      {item.metadata && (
+      {item.metadata !== null && item.metadata !== undefined && (
         <Text
           as="span"
           size="xs"

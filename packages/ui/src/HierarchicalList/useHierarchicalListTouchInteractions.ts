@@ -154,6 +154,7 @@ export const useHierarchicalListTouchInteractions = ({
         cancelLongPress();
       },
       onPointerCancel: () => {
+        suppressClickRef.current = false;
         if (touchDraggingRef.current) {
           touchDraggingRef.current = false;
           dragController.setTouchDragPosition(null);

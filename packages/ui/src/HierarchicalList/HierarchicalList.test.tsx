@@ -125,6 +125,17 @@ describe("HierarchicalList", () => {
     expect(onItemClick).toHaveBeenCalledWith(items[0].children?.[0]);
   });
 
+  it("renders numeric zero metadata", () => {
+    render(
+      <HierarchicalList
+        items={[{ id: "empty", name: "Empty collection", metadata: 0 }]}
+        label="Collections"
+      />,
+    );
+
+    expect(rowFor("Empty collection")?.textContent).toContain("Empty collection0");
+  });
+
   it("reports valid drops and rejects drops into descendants", () => {
     const onMove = vi.fn<(
       item: HierarchicalListItem,
@@ -429,6 +440,28 @@ describe("HierarchicalList", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     act(() => vi.advanceTimersByTime(1));
 
+    expect(document.body.textContent).toContain("Delete");
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("opens an item's action drawer from a context-menu event on narrow layouts", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Review code" }]}
+        label="Skills"
+        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
+      />,
+    );
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+
+    act(() => rowFor("Review code")?.dispatchEvent(event));
+
+    expect(event.defaultPrevented).toBe(true);
     expect(document.body.textContent).toContain("Delete");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });
