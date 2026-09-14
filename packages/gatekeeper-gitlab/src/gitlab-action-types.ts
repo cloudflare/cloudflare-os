@@ -123,6 +123,13 @@ export type MergeMergeRequestAction = BaseAction & {
   type: "mergeMergeRequest";
   mergeRequestId: string;
   options?: GitLabMergeRequestMergeOptions;
+  /**
+   * The source head the merge was approved against: the agent's `expectedHeadSha`, else the head
+   * read at queue time. Sent as `sha`, so GitLab refuses (409) to merge commits that arrived
+   * after approval. Always present: a merge whose head cannot be determined is refused at
+   * prepare rather than queued unbound.
+   */
+  expectedHeadSha: string;
 };
 
 /**
@@ -162,6 +169,15 @@ export type StoredActionRecord = {
   appliedAt?: number;
   rejectedAt?: number;
   revertInfo?: GitLabRevertInfo;
+  /**
+   * Steps of a multi-call apply that have already landed, so a retry after a later failure
+   * resumes rather than repeats them. For a review: `approved`, its `approve` (the
+   * compare-and-swap step, run first) succeeded; `publishedComments`, how many of its diff
+   * comments -- a prefix, in order -- are published; `draftIds`, the drafts it has created and
+   * not yet published, so a retry can tell its own leftovers from the user's parked drafts and
+   * clear them; `summaryPosted`, its summary note is on the merge request.
+   */
+  progress?: { approved?: true; publishedComments?: number; draftIds?: number[]; summaryPosted?: true };
 };
 
 /** A provisional issue/MR: what kind it is and, once created, its real number. */

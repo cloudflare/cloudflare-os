@@ -313,6 +313,14 @@ describe("issues and merge requests", () => {
     expect(calls[1].url.pathname).toBe("/api/v4/projects/g%2Fp/merge_requests/11/draft_notes/bulk_publish");
     expect(JSON.parse(calls[1].body!)).toEqual({ note: "LGTM", reviewer_state: "requested_changes" });
   });
+
+  it("deletes a draft, and treats an already-gone draft (404) as deleted", async () => {
+    const calls = fakeFetch([new Response(null, { status: 204 }), json({ message: "404 Not found" }, { status: 404 })]);
+    await api().deleteDraftNote("g/p", 11, 5);
+    expect(calls[0].init.method).toBe("DELETE");
+    expect(calls[0].url.pathname).toBe("/api/v4/projects/g%2Fp/merge_requests/11/draft_notes/5");
+    await expect(api().deleteDraftNote("g/p", 11, 5)).resolves.toBeUndefined();
+  });
 });
 
 describe("repository", () => {

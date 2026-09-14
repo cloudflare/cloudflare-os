@@ -3,13 +3,13 @@
 // them onto everything it returns (so a caller sees the world as if its queued work had landed),
 // and mints the sessions agents talk to. Mirrors gatekeeper-github's `GitHubGatekeeperImpl`.
 //
-// This commit is the read side: every observation, with the overlay machinery the writes will
-// feed. `applyAction`/`rejectAction`/`revertAction`, the `prepare*` methods, and git pull/push
-// follow in later commits.
+// Git pull and push (`gitPull`, the `push` action's queue/apply/revert, and the simulation of
+// queued pushes onto reads) follow in a later commit.
 
 import { DurableObject, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
+  type ActionDescription,
   type ApprovalQueue,
   type Cursor,
   type Gatekeeper,
@@ -24,18 +24,32 @@ import { ZERO_OID } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitLabApi,
   GitLabApiError,
+  lineCode,
+  type GitLabDiffResponse,
   type GitLabDiscussionResponse,
   type GitLabMergeRequestResponse,
+  type GitLabPositionRequest,
   type GitLabSimpleUser,
 } from "./gitlab-api";
 import {
   apiKind,
+  type AddLabelsAction,
   type Cached,
+  type ChangeStateAction,
   type CreateIssueAction,
   type CreateMergeRequestAction,
   type EntityKind,
   type GitLabAction,
+  type GitLabRevertInfo,
+  type MergeMergeRequestAction,
+  type PostCommentAction,
+  type PostReviewAction,
   type PushAction,
+  type RemoveLabelsAction,
+  type ReplyToDiffCommentAction,
+  type ResolveDiffThreadAction,
+  type SetBodyAction,
+  type SetTitleAction,
   type StoredActionRecord,
   type StoredProvisionalResource,
 } from "./gitlab-action-types";
@@ -51,6 +65,7 @@ import {
   actorFromUsername,
   commentTargetFromPosition,
   dedupeLabels,
+  diffLinePositions,
   discussionCommentFromNote,
   isDiscussionComment,
   type GitLabDiscussionCommentEntry,
@@ -90,16 +105,22 @@ import type {
   GitLabCommitDetails,
   GitLabCommitFilter,
   GitLabCommitSummary,
+  GitLabCreateIssueOptions,
+  GitLabCreateMergeRequestOptions,
+  GitLabDiffCommentTarget,
   GitLabDiffThread,
   GitLabDiscussionEntry,
   GitLabIssue,
   GitLabIssueDetails,
   GitLabIssueFilter,
   GitLabIssueSearch,
+  GitLabIssueState,
   GitLabIssueSummary,
   GitLabMergeRequest,
   GitLabMergeRequestDetails,
   GitLabMergeRequestFilter,
+  GitLabMergeRequestMergeOptions,
+  GitLabMergeRequestReviewDraft,
   GitLabMergeRequestRevision,
   GitLabMergeRequestSearch,
   GitLabMergeRequestSummary,
@@ -122,9 +143,16 @@ const VIEWER_CACHE_TTL_MS = 5 * 60 * 1000;
 const DIFF_REFS_RETRY_DELAY_MS = 1500;
 
 const RECONNECT_MESSAGE = "GitLab credentials have expired or been revoked. Please reconnect the account.";
-const NO_ACTIONS_YET = "GitLab actions are not available in this build.";
+const PUSH_NOT_YET = "GitLab push actions are not available in this build.";
+/** Bound on following a chain of not-yet-applied replies back to a real thread. */
+const MAX_REPLY_TARGET_HOPS = 50;
 
 type StoredViewer = { actor: GitLabActor; fetchedAt: number };
+
+/** Label names are unique case-insensitively on GitLab, as the overlay treats them. */
+function hasLabel(labels: string[], name: string): boolean {
+  return labels.some(label => label.toLowerCase() === name.toLowerCase());
+}
 
 @validateRpc()
 export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImplProps>
@@ -222,6 +250,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const value = await loader();
     this.#storeCached(key, value, generation);
     return value;
+  }
+
+  #clearCaches(): void {
+    this.ctx.storage.kv.put("cacheGeneration", this.#cacheGeneration() + 1);
   }
 
   async #fetchAllPages<T>(loader: (page: number, perPage: number) => Promise<T[]>): Promise<T[]> {
@@ -1092,18 +1124,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
   }
 
-  async applyAction(_actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
-  }
-
-  async rejectAction(_actionId: number): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
-  }
-
-  async revertAction(_actionId: number): Promise<void> {
-    throw new Error(NO_ACTIONS_YET);
-  }
-
   /**
    * Observer tracking: the "ACL check (single unit)" strategy. Every binding is scoped to one
    * project, and issues/MRs inherit its permissions, so admitting an observer is one question --
@@ -1383,5 +1403,803 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         .map(c => normalizeCommitSummary(this.#instanceUrl(), projectPath, c))
         .toReversed());
     return new ArrayCursor(commits, pageSize);
+  }
+
+  // -- action records (write side) --------------------------------------------------------
+
+  #nextCounter(name: string): number {
+    const key = `counter:${name}`;
+    const value = (this.ctx.storage.kv.get<number>(key) ?? 0) + 1;
+    this.ctx.storage.kv.put(key, value);
+    return value;
+  }
+
+  #nextActionId(): number {
+    return this.#nextCounter("action");
+  }
+
+  #nextProvisionalResourceId(): string {
+    return `~${this.#nextCounter("resource")}`;
+  }
+
+  #nextProvisionalCommentId(prefix: string): string {
+    return `~${prefix}${this.#nextCounter(prefix)}`;
+  }
+
+  #actionRecordKey(approvalId: number): string {
+    return `action:${approvalId}`;
+  }
+
+  #retiredActionRecordKey(approvalId: number): string {
+    return `retiredAction:${approvalId}`;
+  }
+
+  #getActionRecord(approvalId: number): StoredActionRecord | undefined {
+    return this.ctx.storage.kv.get<StoredActionRecord>(this.#actionRecordKey(approvalId))
+      ?? this.ctx.storage.kv.get<StoredActionRecord>(this.#retiredActionRecordKey(approvalId));
+  }
+
+  #requireActionRecord(approvalId: number): StoredActionRecord {
+    const record = this.#getActionRecord(approvalId);
+    if (!record) throw new Error(`No queued GitLab action exists with id ${approvalId}.`);
+    return record;
+  }
+
+  #putActionRecord(approvalId: number, record: StoredActionRecord): void {
+    this.ctx.storage.kv.put(this.#actionRecordKey(approvalId), record);
+    this.#pendingActionsCache = undefined;
+  }
+
+  #retireActionRecord(approvalId: number, record: StoredActionRecord): void {
+    this.ctx.storage.kv.delete(this.#actionRecordKey(approvalId));
+    this.ctx.storage.kv.put(this.#retiredActionRecordKey(approvalId), record);
+    this.#pendingActionsCache = undefined;
+  }
+
+  #stageAction(action: GitLabAction): void {
+    this.#putActionRecord(action.approvalId, { action, state: "staged" });
+  }
+
+  #markActionPending(action: GitLabAction): void {
+    const record = this.#requireActionRecord(action.approvalId);
+    record.state = "pending";
+    this.#putActionRecord(action.approvalId, record);
+    if (action.type === "createIssue" || action.type === "createMergeRequest") {
+      this.#setProvisionalResource(action.provisionalId, {
+        kind: action.type === "createIssue" ? "issue" : "mergeRequest",
+      });
+    }
+  }
+
+  #markActionApproved(action: GitLabAction, revertInfo?: GitLabRevertInfo): void {
+    const record = this.#requireActionRecord(action.approvalId);
+    record.state = "approved";
+    record.appliedAt = Date.now();
+    if (revertInfo) record.revertInfo = revertInfo;
+    this.#retireActionRecord(action.approvalId, record);
+  }
+
+  #markActionRejected(action: GitLabAction): void {
+    const record = this.#requireActionRecord(action.approvalId);
+    record.state = "rejected";
+    record.rejectedAt = Date.now();
+    this.#retireActionRecord(action.approvalId, record);
+  }
+
+  #setProvisionalResource(id: string, record: StoredProvisionalResource): void {
+    this.ctx.storage.kv.put(`provisional:${id}`, record);
+  }
+
+  #actionDependsOnResource(action: GitLabAction, kind: EntityKind, provisionalId: string): boolean {
+    switch (action.type) {
+      case "createIssue":
+      case "createMergeRequest":
+        return action.provisionalId === provisionalId;
+      case "setTitle": case "setBody": case "addLabels": case "removeLabels": case "changeState": case "postComment":
+        return action.targetKind === kind && action.targetId === provisionalId;
+      case "postReview": case "replyToDiffComment": case "resolveDiffThread": case "mergeMergeRequest":
+        return kind === "mergeRequest" && action.mergeRequestId === provisionalId;
+      case "push":
+        return false;  // pushes target a branch, never an issue or merge request
+    }
+  }
+
+  #rejectActionsForResource(kind: EntityKind, provisionalId: string): void {
+    for (const pending of this.#listPendingActions()) {
+      if (this.#actionDependsOnResource(pending, kind, provisionalId)) {
+        this.#markActionRejected(pending);
+      }
+    }
+  }
+
+  /**
+   * Cascade for a rejected push: reject every queued `createMergeRequest` whose source or target
+   * branch no longer exists on the remote or as the outcome of the remaining queued pushes, along
+   * with everything queued against the doomed merge request. Returns whether anything cascaded.
+   */
+  async #rejectMergeRequestsForMissingBranches(): Promise<boolean> {
+    let cascaded = false;
+    for (const pending of this.#listPendingActions()) {
+      if (pending.type !== "createMergeRequest") continue;
+      for (const branch of [pending.options.sourceBranch, pending.options.targetBranch]) {
+        const real = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
+        if (this.#simulateBranchHead(branch, real) === null) {
+          this.#markActionRejected(pending);
+          this.#rejectActionsForResource("mergeRequest", pending.provisionalId);
+          this.ctx.storage.kv.delete(`provisional:${pending.provisionalId}`);
+          cascaded = true;
+          break;
+        }
+      }
+    }
+    return cascaded;
+  }
+
+  #rejectReplyDependencyChain(rootCommentIds: string[]): void {
+    const pendingReplies = this.#listPendingActions()
+      .filter((action): action is ReplyToDiffCommentAction => action.type === "replyToDiffComment");
+    const queue = [...rootCommentIds];
+    const seen = new Set<string>(rootCommentIds);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const reply of pendingReplies) {
+        if (reply.commentId === current) {
+          this.#markActionRejected(reply);
+          if (!seen.has(reply.provisionalCommentId)) {
+            seen.add(reply.provisionalCommentId);
+            queue.push(reply.provisionalCommentId);
+          }
+        }
+      }
+    }
+  }
+
+  #realIdOf(targetId: string): string | undefined {
+    return targetId.startsWith("~") ? this.#resolveProvisionalId(targetId) : targetId;
+  }
+
+  #requireRealId(targetId: string, what = "Target"): string {
+    const realId = this.#realIdOf(targetId);
+    if (!realId) throw new Error(`${what} ${targetId} has not been created on GitLab yet.`);
+    return realId;
+  }
+
+  async #currentState(kind: EntityKind, targetId: string): Promise<GitLabIssueState> {
+    // Pending state changes win over the remote (the caller sees the simulated world).
+    const latest = [...this.#pendingActionsForEntity(kind, targetId)].toReversed()
+      .find((action): action is ChangeStateAction | MergeMergeRequestAction =>
+        action.type === "changeState" || action.type === "mergeMergeRequest");
+    if (latest?.type === "changeState") return latest.state;
+    if (latest?.type === "mergeMergeRequest") return "closed";
+    const details = kind === "issue" ? await this.#getIssueDetails(targetId) : await this.#getMergeRequestDetails(targetId);
+    return details.state === "opened" ? "opened" : "closed";
+  }
+
+  // -- submit -----------------------------------------------------------------------------
+
+  async submitActionForApproval(
+    approvalQueue: RpcStub<ApprovalQueue>, action: GitLabAction, description: ActionDescription,
+  ): Promise<void> {
+    this.#stageAction(action);
+    try {
+      await approvalQueue.submitAction(action.approvalId, description);
+    } catch (error) {
+      this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
+      this.#pendingActionsCache = undefined;
+      throw error;
+    }
+    this.#markActionPending(action);
+    this.#clearCaches();
+  }
+
+  // -- prepare ----------------------------------------------------------------------------
+
+  #base() {
+    return { approvalId: this.#nextActionId(), submittedAt: Date.now(), projectPath: this.#projectPath() };
+  }
+
+  /**
+   * Assignees are usernames in the API and ids on GitLab; resolving them here (an observation
+   * the session records) means a typo fails now, not at apply.
+   */
+  async #resolveAssigneeIds(usernames: string[] | undefined): Promise<number[]> {
+    const ids: number[] = [];
+    for (const username of usernames ?? []) {
+      const users = await this.#withApi(api => api.findUsersByUsername(username));
+      const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+      if (!user) throw new Error(`No GitLab user named "${username}" exists on this instance.`);
+      ids.push(user.id);
+    }
+    return ids;
+  }
+
+  async prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<CreateIssueAction> {
+    const assigneeIds = await this.#resolveAssigneeIds(options.assignees);
+    return { type: "createIssue", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options, assigneeIds };
+  }
+
+  async prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<CreateMergeRequestAction> {
+    // Queue-time validation: both branches must exist -- on the remote, or as the not-yet-applied
+    // outcome of queued pushes. Failing here surfaces a typo'd or forgotten-to-push branch to the
+    // caller immediately, instead of queuing an action GitLab will later refuse.
+    for (const [role, branch] of [["source", options.sourceBranch], ["target", options.targetBranch]] as const) {
+      const real = await this.#getBranchHeadCached(branch);
+      if (this.#simulateBranchHead(branch, real) === null) {
+        throw new Error(role === "source"
+          ? `Cannot create a merge request from branch "${branch}": the branch does not exist in ` +
+            `${this.#projectPath()}. Push your commits to the branch first (see push()), then create the merge request.`
+          : `Cannot create a merge request into branch "${branch}": the target branch does not exist in ${this.#projectPath()}.`);
+      }
+    }
+    return { type: "createMergeRequest", ...this.#base(), provisionalId: this.#nextProvisionalResourceId(), options };
+  }
+
+  async #detailsOf(kind: EntityKind, targetId: string) {
+    return kind === "issue" ? await this.#getIssueDetails(targetId) : await this.#getMergeRequestDetails(targetId);
+  }
+
+  async prepareSetTitle(targetKind: EntityKind, targetId: string, title: string): Promise<SetTitleAction> {
+    const details = await this.#detailsOf(targetKind, targetId);
+    return { type: "setTitle", ...this.#base(), targetKind, targetId, title, previousTitle: details.title };
+  }
+
+  async prepareSetBody(targetKind: EntityKind, targetId: string, bodyMarkdown: string): Promise<SetBodyAction> {
+    const details = await this.#detailsOf(targetKind, targetId);
+    return { type: "setBody", ...this.#base(), targetKind, targetId, bodyMarkdown, previousBodyMarkdown: details.bodyMarkdown };
+  }
+
+  async prepareAddLabels(targetKind: EntityKind, targetId: string, labels: string[]): Promise<AddLabelsAction> {
+    const details = await this.#detailsOf(targetKind, targetId);
+    return { type: "addLabels", ...this.#base(), targetKind, targetId, labels, previousLabels: details.labels.map(l => l.name) };
+  }
+
+  async prepareRemoveLabels(targetKind: EntityKind, targetId: string, labels: string[]): Promise<RemoveLabelsAction> {
+    const details = await this.#detailsOf(targetKind, targetId);
+    return { type: "removeLabels", ...this.#base(), targetKind, targetId, labels, previousLabels: details.labels.map(l => l.name) };
+  }
+
+  async prepareChangeState(targetKind: EntityKind, targetId: string, state: GitLabIssueState): Promise<ChangeStateAction> {
+    if (targetKind === "mergeRequest") {
+      const details = await this.#getMergeRequestDetails(targetId);
+      if (details.state === "merged") {
+        throw new Error(`Merge request !${targetId} has been merged and cannot be ${state === "closed" ? "closed" : "reopened"}.`);
+      }
+    }
+    const previousState = await this.#currentState(targetKind, targetId);
+    return { type: "changeState", ...this.#base(), targetKind, targetId, state, previousState };
+  }
+
+  async preparePostComment(targetKind: EntityKind, targetId: string, bodyMarkdown: string): Promise<PostCommentAction> {
+    return {
+      type: "postComment", ...this.#base(), targetKind, targetId, bodyMarkdown,
+      provisionalCommentId: this.#nextProvisionalCommentId("comment"),
+    };
+  }
+
+  async preparePostReview(mergeRequestId: string, review: GitLabMergeRequestReviewDraft): Promise<PostReviewAction> {
+    if (review.decision !== "approve" && !review.bodyMarkdown && !(review.diffComments?.length)) {
+      // Nothing to publish: an approval still approves, but a comment or requestChanges review
+      // with no comments would make no request at all -- GitLab records `reviewer_state` only on
+      // a `bulk_publish`, and an empty one is a no-op it would be a lie to retire as done.
+      throw new Error(`A ${review.decision} review needs a summary comment or at least one diff comment.`);
+    }
+    return {
+      type: "postReview", ...this.#base(), mergeRequestId,
+      provisionalReviewId: this.#nextProvisionalCommentId("review"),
+      review: {
+        ...review,
+        diffComments: review.diffComments?.map(comment => ({
+          ...comment, provisionalCommentId: this.#nextProvisionalCommentId("diff"),
+        })),
+      },
+    };
+  }
+
+  async prepareReplyToDiffComment(mergeRequestId: string, commentId: string, bodyMarkdown: string): Promise<ReplyToDiffCommentAction> {
+    return {
+      type: "replyToDiffComment", ...this.#base(), mergeRequestId, commentId, bodyMarkdown,
+      provisionalCommentId: this.#nextProvisionalCommentId("reply"),
+    };
+  }
+
+  async prepareResolveDiffThread(mergeRequestId: string, threadId: string, resolved: boolean): Promise<ResolveDiffThreadAction> {
+    return { type: "resolveDiffThread", ...this.#base(), mergeRequestId, threadId, resolved };
+  }
+
+  /**
+   * Binds the head the merge is approved against (an observation the session records): without
+   * it, commits pushed between approval and apply -- a collaborator's, or the agent's own
+   * through another approved push -- would merge unreviewed. For a provisional merge request
+   * this is the simulated source head, the head it will have once created.
+   */
+  async prepareMergeMergeRequest(mergeRequestId: string, options?: GitLabMergeRequestMergeOptions): Promise<MergeMergeRequestAction> {
+    const details = await this.#getMergeRequestDetails(mergeRequestId);
+    const expectedHeadSha = options?.expectedHeadSha ?? (details.source.sha || undefined);
+    if (expectedHeadSha === undefined) {
+      // A provisional merge request whose source head could not be simulated reads an empty sha
+      // (its comparison degraded). Queuing anyway would send the merge without `sha`, and the
+      // approval would then cover whatever the branch holds when it applies -- the one thing the
+      // binding exists to prevent. Refuse instead; the head is knowable once the reads recover.
+      throw new Error(
+        `Merge request ${mergeRequestId.startsWith("~") ? mergeRequestId : `!${mergeRequestId}`}'s source head could not be ` +
+        "determined, so the merge cannot be bound to a reviewed state. Re-read the merge request and try again, " +
+        "or pass expectedHeadSha.");
+    }
+    return { type: "mergeMergeRequest", ...this.#base(), mergeRequestId, options, expectedHeadSha };
+  }
+
+  // -- apply ------------------------------------------------------------------------------
+
+  async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    const record = this.#requireActionRecord(actionId);
+    if (record.state === "approved") {
+      // Already applied: the overseer records completion only after this method returns, so a
+      // crash or lost reply in that window re-delivers the apply. The durable record answers it
+      // -- a desired-state re-check could not, since the world may have legitimately moved on --
+      // and throwing would strand the action as forever un-appliable.
+      return;
+    }
+    if (record.state !== "pending" && record.state !== "staged") {
+      throw new Error(`GitLab action ${actionId} is no longer pending.`);
+    }
+    const action = record.action;
+    const projectPath = this.#projectPath();
+
+    switch (action.type) {
+      case "createIssue": {
+        const response = await this.#withApi(api => api.createIssue(projectPath, {
+          title: action.options.title,
+          description: action.options.bodyMarkdown ? this.#rewriteKnownReferences(action.options.bodyMarkdown, true) : undefined,
+          labels: action.options.labels,
+          assignee_ids: action.assigneeIds.length > 0 ? action.assigneeIds : undefined,
+        }));
+        this.#setProvisionalResource(action.provisionalId, { kind: "issue", realId: String(response.iid) });
+        break;
+      }
+      case "createMergeRequest": {
+        let response;
+        try {
+          response = await this.#withApi(api => api.createMergeRequest(projectPath, {
+            source_branch: action.options.sourceBranch,
+            target_branch: action.options.targetBranch,
+            title: action.options.draft ? withDraftPrefix(action.options.title) : action.options.title,
+            description: action.options.bodyMarkdown ? this.#rewriteKnownReferences(action.options.bodyMarkdown, true) : undefined,
+            remove_source_branch: action.options.removeSourceBranch,
+            squash: action.options.squash,
+          }));
+        } catch (error) {
+          // The typical cause is ordering: the merge request was queued against a branch whose
+          // push is still awaiting approval, and this action was approved first. It stays
+          // pending; applying it again after the push works.
+          if (error instanceof GitLabApiError && (error.status === 400 || error.status === 409 || error.status === 422) &&
+              this.#pendingPushActions(action.options.sourceBranch).length > 0) {
+            throw new Error(
+              `Cannot create this merge request yet: branch "${action.options.sourceBranch}" has a queued ` +
+              `push that has not been applied. Approve the push to "${action.options.sourceBranch}" first, ` +
+              `then approve this merge request.`, { cause: error });
+          }
+          throw error;
+        }
+        this.#setProvisionalResource(action.provisionalId, { kind: "mergeRequest", realId: String(response.iid) });
+        break;
+      }
+      case "setTitle": {
+        const realId = this.#requireRealId(action.targetId);
+        await this.#updateIssuable(action.targetKind, realId, { title: action.title });
+        break;
+      }
+      case "setBody": {
+        const realId = this.#requireRealId(action.targetId);
+        await this.#updateIssuable(action.targetKind, realId, { description: this.#rewriteKnownReferences(action.bodyMarkdown, true) });
+        break;
+      }
+      case "addLabels": {
+        const realId = this.#requireRealId(action.targetId);
+        await this.#updateIssuable(action.targetKind, realId, { add_labels: action.labels });
+        break;
+      }
+      case "removeLabels": {
+        const realId = this.#requireRealId(action.targetId);
+        await this.#updateIssuable(action.targetKind, realId, { remove_labels: action.labels });
+        break;
+      }
+      case "changeState": {
+        const realId = this.#requireRealId(action.targetId);
+        await this.#updateIssuable(action.targetKind, realId, { state_event: action.state === "closed" ? "close" : "reopen" });
+        break;
+      }
+      case "postComment": {
+        const realId = this.#requireRealId(action.targetId);
+        const note = await this.#withApi(api => api.createNote(
+          projectPath, apiKind(action.targetKind), Number(realId), this.#rewriteKnownReferences(action.bodyMarkdown, true)));
+        this.#markActionApproved(action, { type: "note", kind: action.targetKind, noteId: note.id });
+        this.#clearCaches();
+        return;
+      }
+      case "postReview": {
+        await this.#publishReview(record, action);
+        break;
+      }
+      case "replyToDiffComment": {
+        const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
+        const discussionId = await this.#resolveReplyTarget(realId, action.commentId);
+        const note = await this.#withApi(api => api.addDiscussionNote(
+          projectPath, Number(realId), discussionId, this.#rewriteKnownReferences(action.bodyMarkdown, true)));
+        this.ctx.storage.kv.put(`diffAlias:${action.provisionalCommentId}`, String(note.id));
+        this.#markActionApproved(action, { type: "note", kind: "mergeRequest", noteId: note.id });
+        this.#clearCaches();
+        return;
+      }
+      case "resolveDiffThread": {
+        const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
+        await this.#withApi(api => api.setDiscussionResolved(projectPath, Number(realId), action.threadId, action.resolved));
+        break;
+      }
+      case "mergeMergeRequest": {
+        const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
+        await this.#mergeMergeRequest(realId, action.options, action.expectedHeadSha);
+        break;
+      }
+      case "push":
+        throw new Error(PUSH_NOT_YET);
+    }
+
+    this.#markActionApproved(action);
+    this.#clearCaches();
+  }
+
+  async #updateIssuable(kind: EntityKind, realId: string, patch: {
+    title?: string; description?: string; state_event?: "close" | "reopen"; add_labels?: string[]; remove_labels?: string[];
+  }): Promise<void> {
+    const projectPath = this.#projectPath();
+    await this.#withApi<unknown>(api => kind === "issue"
+      ? api.updateIssue(projectPath, Number(realId), patch)
+      : api.updateMergeRequest(projectPath, Number(realId), patch));
+  }
+
+  /** `PUT …/merge`, translating GitLab's documented failure codes into agent-actionable reasons. */
+  async #mergeMergeRequest(
+    realId: string, options: GitLabMergeRequestMergeOptions | undefined, expectedHeadSha: string,
+  ): Promise<void> {
+    const projectPath = this.#projectPath();
+    try {
+      await this.#withApi(api => api.mergeMergeRequest(projectPath, Number(realId), {
+        squash: options?.squash,
+        should_remove_source_branch: options?.removeSourceBranch,
+        merge_commit_message: options?.commitMessage,
+        squash_commit_message: options?.squashCommitMessage,
+        sha: expectedHeadSha,
+      }));
+    } catch (error) {
+      if (!(error instanceof GitLabApiError)) throw error;
+      switch (error.status) {
+        case 405: {
+          // "Cannot merge": re-read the merge status so the message names the reason.
+          let status = "unknown";
+          try {
+            status = (await this.#withApi(api => api.getMergeRequest(projectPath, Number(realId)))).detailed_merge_status ?? status;
+          } catch {}
+          const reason = status === "ci_must_pass" || status === "ci_still_running"
+            ? "the pipeline has not passed yet; pipeline status is not available through this connection -- check it in GitLab"
+            : `GitLab reports ${status}`;
+          throw new Error(`Merge request !${realId} cannot be merged: ${reason}.`, { cause: error });
+        }
+        case 409:
+          throw new Error(`Merge request !${realId}'s head has moved from ${expectedHeadSha} ` +
+            "since the merge was queued; re-read it and merge again so the new commits are reviewed.", { cause: error });
+        case 422:
+          throw new Error(`Merge request !${realId}'s branch cannot be merged (GitLab: ${error.message}).`, { cause: error });
+        case 401:
+          throw new Error(`The connected GitLab account is not allowed to merge !${realId}.`, { cause: error });
+        default:
+          throw error;
+      }
+    }
+  }
+
+  /**
+   * Resolve the discussion a reply belongs to. A reply may target a not-yet-applied reply (a
+   * chain of provisional ids), an alias recorded when its review was published, or a real note
+   * id, whose discussion is found in the merge request's discussions.
+   */
+  async #resolveReplyTarget(realId: string, commentId: string): Promise<string> {
+    const pendingReplies = new Map(this.#listPendingActions()
+      .filter((action): action is ReplyToDiffCommentAction => action.type === "replyToDiffComment")
+      .map(action => [action.provisionalCommentId, action]));
+
+    let resolved = commentId;
+    const seen = new Set<string>();
+    while (pendingReplies.has(resolved)) {
+      if (seen.size >= MAX_REPLY_TARGET_HOPS) throw new Error(`Reply chain for diff comment ${commentId} exceeded ${MAX_REPLY_TARGET_HOPS} hops.`);
+      if (seen.has(resolved)) throw new Error(`Reply chain for diff comment ${commentId} contains a cycle.`);
+      seen.add(resolved);
+      resolved = pendingReplies.get(resolved)!.commentId;
+    }
+
+    const aliased = this.ctx.storage.kv.get<string>(`diffAlias:${resolved}`) ?? resolved;
+    if (aliased.startsWith("~")) throw new Error(`Diff comment ${resolved} has not been created on GitLab yet.`);
+
+    // Bypass the TTL cache: a reply may follow a publish within the same window.
+    const discussions = await this.#fetchAllPages((page, perPage) =>
+      this.#withApi(api => api.listMergeRequestDiscussions(this.#projectPath(), Number(realId), page, perPage)));
+    const discussion = discussions.find(d => d.id === aliased || d.notes.some(note => String(note.id) === aliased));
+    if (!discussion) throw new Error(`Diff comment ${commentId} was not found on merge request !${realId}.`);
+    return discussion.id;
+  }
+
+  /**
+   * The `position` for a draft diff note, from the agent-facing target and the review's
+   * revision. `files` is the merge request's diff, fetched once per review: GitLab wants both
+   * paths always (for a renamed file the old path comes from the diff), and the line's kind
+   * decides how it is named -- an added line by `new_line` alone, a removed line by `old_line`
+   * alone, and an *unchanged* line by both (its number on each side, which differ once earlier
+   * hunks have shifted them). Naming an unchanged line by one side is the documented way to get
+   * a rejected or mis-anchored note, so the hunk walk that knows the kind supplies both numbers.
+   * A line the diff does not contain falls back to the caller's one-sided naming and lets GitLab
+   * judge it.
+   */
+  async #positionFor(
+    files: GitLabDiffResponse[], target: GitLabDiffCommentTarget, revision: GitLabMergeRequestRevision,
+  ): Promise<GitLabPositionRequest> {
+    const file = files.find(f => f.new_path === target.path || f.old_path === target.path);
+    const newPath = file?.new_path ?? target.path;
+    const oldPath = file?.old_path ?? target.path;
+    const shas = {
+      // Our names are GitHub's; GitLab's are inverted (see revisionFromDiffRefs).
+      base_sha: revision.mergeBaseSha ?? revision.baseSha,
+      start_sha: revision.baseSha,
+      head_sha: revision.headSha,
+    };
+    if (target.subjectType === "file") {
+      return { ...shas, position_type: "file", old_path: oldPath, new_path: newPath };
+    }
+    const hunks = file?.diff ? normalizeDiffFile(file).hunks : [];
+    const end = diffLinePositions(hunks, target.side, target.line);
+    const position: GitLabPositionRequest = {
+      ...shas,
+      position_type: "text",
+      old_path: oldPath,
+      new_path: newPath,
+      ...(end?.kind === "context" ? { old_line: end.oldLine, new_line: end.newLine }
+        : target.side === "new" ? { new_line: target.line } : { old_line: target.line }),
+    };
+    if (target.startLine !== undefined && end) {
+      const startSide = target.startSide ?? target.side;
+      const start = diffLinePositions(hunks, startSide, target.startLine);
+      if (start) {
+        position.line_range = {
+          start: { line_code: await lineCode(newPath, start.oldLine, start.newLine), type: startSide },
+          end: { line_code: await lineCode(newPath, end.oldLine, end.newLine), type: target.side },
+        };
+      }
+    }
+    return position;
+  }
+
+  /**
+   * Publish a review through GitLab's draft notes: `approve` first when the decision is
+   * `approve`, then one draft per diff comment, then a publish that carries the summary and
+   * reviewer state.
+   *
+   * Every step records itself on the action record before the next begins, because `applyAction`
+   * owes the queue idempotence (a failure is offered a retry) and this is the one action GitLab
+   * makes multi-call. Approval is the step with a compare-and-swap -- `sha` is the reviewed head,
+   * and GitLab answers 409 if the head has moved -- and the one whose failure is *expected*, so it
+   * runs before anything is posted: a stale head fails the action clean and a retry fails it
+   * again until the agent re-reads, rather than publishing the comments once per attempt. A
+   * retry then skips the comments already published, deletes the drafts it created but never
+   * published (GitLab keeps them parked, visible only to the user; mistaking them for the user's
+   * would send the retry down the individual-publish path below and lose the reviewer state),
+   * recreates the rest, and posts the summary only if it has not.
+   *
+   * `bulk_publish` publishes every draft the user has on the merge request -- a human's parked
+   * drafts included -- so when foreign drafts exist ours are published one by one and the
+   * summary posts as a plain note. That path cannot set the reviewer state, which for `comment`
+   * and `approve` is cosmetic but for `requestChanges` *is* the review: that decision refuses,
+   * before anything is posted, until the user publishes or discards their own drafts. The
+   * foreign set is read twice -- once to clear our leftovers, and again just before publishing,
+   * so a draft the user started while the comments were being created is not swept up; the one
+   * round trip between that read and the publish is the window GitLab's API leaves.
+   */
+  async #publishReview(record: StoredActionRecord, action: PostReviewAction): Promise<void> {
+    const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
+    const projectPath = this.#projectPath();
+    const iid = Number(realId);
+    const review = action.review;
+    const comments = review.diffComments ?? [];
+    const progress = record.progress ?? {};
+    const save = () => {
+      record.progress = progress;
+      this.#putActionRecord(action.approvalId, record);
+    };
+
+    if (review.decision === "approve" && !progress.approved) {
+      await this.#withApi(api => api.approveMergeRequest(projectPath, iid, review.revision.headSha));
+      progress.approved = true;
+      save();
+    }
+
+    // The user's parked drafts, as distinct from ours. A requestChanges review refuses over them
+    // (see above) -- the first time before anything of its own is posted, the second with its own
+    // drafts created and recorded, which the retry clears.
+    const foreignDrafts = async (ours: Set<number>) => {
+      const foreign = (await this.#withApi(api => api.listDraftNotes(projectPath, iid))).filter(draft => !ours.has(draft.id));
+      if (review.decision === "requestChanges" && foreign.length > 0) {
+        throw new Error(
+          `Cannot request changes on !${realId}: you have ${foreign.length} unpublished draft comment${foreign.length === 1 ? "" : "s"} ` +
+          "of your own on it in GitLab, and publishing this review would publish those too. Publish or delete them there first.");
+      }
+      return foreign;
+    };
+
+    // Leftovers of an earlier attempt: ours to clear before the user's drafts are counted.
+    const leftovers = progress.draftIds ?? [];
+    let foreign = await foreignDrafts(new Set(leftovers));
+    for (const draftId of leftovers) {
+      await this.#withApi(api => api.deleteDraftNote(projectPath, iid, draftId));
+    }
+    progress.draftIds = [];
+    save();
+
+    const published = progress.publishedComments ?? 0;
+    const pending = comments.slice(published);
+    const files = pending.length > 0
+      ? await this.#fetchAllPages((page, perPage) =>
+          this.#withApi(api => api.listMergeRequestDiffs(projectPath, iid, page, perPage)))
+      : [];
+    const created: number[] = [];
+    for (const comment of pending) {
+      const body = this.#rewriteKnownReferences(comment.bodyMarkdown, true);
+      const position = await this.#positionFor(files, comment.target, review.revision);
+      const draft = await this.#withApi(api => api.createDraftNote(projectPath, iid, { note: body, position }));
+      created.push(draft.id);
+      progress.draftIds = [...created];
+      save();
+    }
+
+    const summary = review.bodyMarkdown && !progress.summaryPosted
+      ? this.#rewriteKnownReferences(review.bodyMarkdown, true) : undefined;
+    const reviewerState = review.decision === "requestChanges" ? "requested_changes" : "reviewed";
+    // Re-read just before publishing: the drafts above took time to create.
+    if (created.length > 0 || summary) foreign = await foreignDrafts(new Set(created));
+    if (foreign.length === 0) {
+      if (created.length > 0 || summary) {
+        await this.#withApi(api => api.bulkPublishDraftNotes(projectPath, iid, { note: summary, reviewer_state: reviewerState }));
+        progress.publishedComments = comments.length;
+        progress.draftIds = [];
+        if (summary) progress.summaryPosted = true;
+        save();
+      }
+    } else {
+      logger.warn("publishing review drafts individually: the account has other drafts on this merge request", {
+        event: "merge.request.review.foreign.drafts",
+      });
+      for (const [index, draftId] of created.entries()) {
+        await this.#withApi(api => api.publishDraftNote(projectPath, iid, draftId));
+        progress.publishedComments = published + index + 1;
+        progress.draftIds = created.slice(index + 1);
+        save();
+      }
+      if (summary) {
+        await this.#withApi(api => api.createNote(projectPath, "merge_requests", iid, summary));
+        progress.summaryPosted = true;
+        save();
+      }
+    }
+  }
+
+  // -- reject and revert ------------------------------------------------------------------
+
+  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    const record = this.#requireActionRecord(actionId);
+    const action = record.action;
+    if (record.state !== "pending" && record.state !== "staged") {
+      throw new Error(`GitLab action ${actionId} is no longer pending.`);
+    }
+
+    if (action.type === "postReview") {
+      // A discarded review that had got partway (approve runs first; drafts are created one by
+      // one; a later step failed): take the approval back and clear the parked drafts, so
+      // discarding leaves nothing unpublished behind on GitLab. Comments already published stay,
+      // as the action's `implementsRevert: false` says. Before the record is retired: a cleanup
+      // that fails leaves the action pending, so the discard can be retried rather than stranding
+      // the approval.
+      const realId = this.#realIdOf(action.mergeRequestId);
+      if (realId) {
+        if (record.progress?.approved) {
+          await this.#withApi(api => api.unapproveMergeRequest(this.#projectPath(), Number(realId)));
+        }
+        for (const draftId of record.progress?.draftIds ?? []) {
+          await this.#withApi(api => api.deleteDraftNote(this.#projectPath(), Number(realId), draftId));
+        }
+      }
+    }
+
+    this.#markActionRejected(action);
+    if (action.type === "createIssue" || action.type === "createMergeRequest") {
+      this.#rejectActionsForResource(action.type === "createIssue" ? "issue" : "mergeRequest", action.provisionalId);
+      this.ctx.storage.kv.delete(`provisional:${action.provisionalId}`);
+      this.#clearCaches();
+      return { restart: true };
+    }
+
+    if (action.type === "push") {
+      const cascaded = await this.#rejectMergeRequestsForMissingBranches();
+      this.#clearCaches();
+      return cascaded ? { restart: true } : undefined;
+    }
+
+    if (action.type === "postReview") {
+      this.#rejectReplyDependencyChain((action.review.diffComments ?? []).map(comment => comment.provisionalCommentId));
+    } else if (action.type === "replyToDiffComment") {
+      this.#rejectReplyDependencyChain([action.provisionalCommentId]);
+    }
+
+    this.#clearCaches();
+  }
+
+  async revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+    const record = this.#requireActionRecord(actionId);
+    const action = record.action;
+    const gone = { message: "The target resource no longer exists on GitLab.", canRetry: false };
+    switch (action.type) {
+      case "setTitle": {
+        const realId = this.#realIdOf(action.targetId);
+        if (!realId) return gone;
+        await this.#updateIssuable(action.targetKind, realId, { title: action.previousTitle });
+        break;
+      }
+      case "setBody": {
+        const realId = this.#realIdOf(action.targetId);
+        if (!realId) return gone;
+        await this.#updateIssuable(action.targetKind, realId, { description: action.previousBodyMarkdown });
+        break;
+      }
+      case "addLabels": {
+        const realId = this.#realIdOf(action.targetId);
+        if (!realId) return gone;
+        // Only the labels the action introduced: one that was already there stays.
+        const introduced = action.labels.filter(label => !hasLabel(action.previousLabels, label));
+        if (introduced.length > 0) await this.#updateIssuable(action.targetKind, realId, { remove_labels: introduced });
+        break;
+      }
+      case "removeLabels": {
+        const realId = this.#realIdOf(action.targetId);
+        if (!realId) return gone;
+        // Only the labels the action removed: one that was never there is not added.
+        const removed = action.labels.filter(label => hasLabel(action.previousLabels, label));
+        if (removed.length > 0) await this.#updateIssuable(action.targetKind, realId, { add_labels: removed });
+        break;
+      }
+      case "changeState": {
+        const realId = this.#realIdOf(action.targetId);
+        if (!realId) return gone;
+        await this.#updateIssuable(action.targetKind, realId, { state_event: action.previousState === "closed" ? "close" : "reopen" });
+        break;
+      }
+      case "postComment":
+      case "replyToDiffComment": {
+        const info = record.revertInfo;
+        if (info?.type !== "note") return { message: "Missing note revert information.", canRetry: false };
+        const realId = this.#realIdOf(action.type === "postComment" ? action.targetId : action.mergeRequestId);
+        if (!realId) return gone;
+        await this.#withApi(api => api.deleteNote(this.#projectPath(), apiKind(info.kind), Number(realId), info.noteId));
+        break;
+      }
+      case "resolveDiffThread": {
+        const realId = this.#realIdOf(action.mergeRequestId);
+        if (!realId) return gone;
+        await this.#withApi(api => api.setDiscussionResolved(this.#projectPath(), Number(realId), action.threadId, !action.resolved));
+        break;
+      }
+      case "push":
+        throw new Error(PUSH_NOT_YET);
+      case "createIssue":
+      case "createMergeRequest":
+      case "postReview":
+      case "mergeMergeRequest":
+        return { message: "This GitLab action cannot be automatically reverted.", canRetry: false };
+    }
+    this.#clearCaches();
   }
 }

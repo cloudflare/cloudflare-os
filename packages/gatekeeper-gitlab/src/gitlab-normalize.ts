@@ -602,3 +602,48 @@ export function issuableComparator<T extends { id: string; createdAt: Date; upda
     return delta * factor;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Diff positions for review comments
+
+/** A diff line re-found in its hunks: both side counters, and which kind of line it is. */
+export type DiffLinePosition = {
+  oldLine: number;
+  newLine: number;
+  kind: "added" | "removed" | "context";
+};
+
+/**
+ * Both side positions of a diff line, as GitLab's `line_code` wants them, and its kind, which
+ * decides how the line is named in a `position`: GitLab's own diff walk keeps an old-side and a
+ * new-side counter and stamps every line with both -- an added line carries the old counter it
+ * sits after, a removed line the new counter -- so a line identified by one side's number is
+ * re-found here by re-walking the hunks with both counters. Returns null when the line is not in
+ * the diff.
+ */
+export function diffLinePositions(
+  hunks: GitDiffHunk[], side: "old" | "new", line: number,
+): DiffLinePosition | null {
+  for (const hunk of hunks) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk.header);
+    if (!match) continue;
+    let oldPos = Number(match[1]);
+    let newPos = Number(match[3]);
+    for (const entry of hunk.lines) {
+      if (entry.kind === "context" && entry.oldLineNumber === undefined) continue;  // "\ No newline" marker
+      const positions = { oldLine: oldPos, newLine: newPos, kind: entry.kind };
+      if (entry.kind === "added") {
+        if (side === "new" && newPos === line) return positions;
+        newPos += 1;
+      } else if (entry.kind === "removed") {
+        if (side === "old" && oldPos === line) return positions;
+        oldPos += 1;
+      } else {
+        if ((side === "new" && newPos === line) || (side === "old" && oldPos === line)) return positions;
+        oldPos += 1;
+        newPos += 1;
+      }
+    }
+  }
+  return null;
+}

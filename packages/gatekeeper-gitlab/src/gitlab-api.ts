@@ -955,6 +955,12 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/draft_notes/${draftNoteId}/publish`);
   }
 
+  /** Delete one of the user's unpublished drafts. A 404 means it is already gone, which is the goal. */
+  async deleteDraftNote(projectPath: string, iid: number, draftNoteId: number): Promise<void> {
+    await this.#request<unknown>("DELETE",
+      `/projects/${encodeProjectPath(projectPath)}/merge_requests/${iid}/draft_notes/${draftNoteId}`, { okStatuses: [404] });
+  }
+
   /**
    * Publish every pending draft of the token's user on this MR, optionally with a summary
    * `note` and a `reviewer_state`. `reviewer_state` does not record a formal approval.
