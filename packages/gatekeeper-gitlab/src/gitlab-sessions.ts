@@ -7,7 +7,8 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { commitIdsOfSummary } from "@gadgets/gatekeeper-kit/git-objects";
+import { commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
+import { ZERO_OID, validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
 import { SessionGitCache } from "./gitlab-cursors";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
@@ -41,8 +42,6 @@ import type {
   GitLabProjectMetadata,
   GitLabTagSummary,
 } from "./types";
-
-const PUSH_NOT_YET = "GitLab push actions are not available in this build.";
 
 /**
  * The page size a listing serves per `next()`: the caller's `resultsPerPage`, or the method's
@@ -233,8 +232,31 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     return details;
   }
 
-  async push(_branch: string, _commitId: string, _options?: { force?: boolean }): Promise<void> {
-    throw new Error(PUSH_NOT_YET);
+  async push(branch: string, commitId: string, options?: { force?: boolean }): Promise<void> {
+    validateBranchName(branch);
+    if (!isCommitOid(commitId)) {
+      throw new Error(
+        `push() requires a full 40-character commit id; got ${JSON.stringify(commitId)}. ` +
+        `Use resolveRef() to resolve a truncated id.`);
+    }
+    // Binding the push's expected old head reads the branch's current state.
+    await this.#approvalQueue.authorizeObservation({
+      title: `Read head of branch ${branch}`,
+      description: `Read the current head of branch "${branch}" in order to push to it.`,
+    });
+    const action = await this.#gatekeeper.preparePush(branch, commitId, options?.force ?? false, await this.#gitCache.stub());
+    if (action === null) return;  // the branch is already at commitId: nothing to do
+    const creating = action.expectedOldSha === ZERO_OID;
+    await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
+      title: `Push ${commitId.slice(0, 12)} to ${branch}`,
+      description: creating
+        ? `Push commit ${commitId} to ${action.projectPath}, creating branch "${branch}".`
+        : `Push commit ${commitId} to branch "${branch}" of ${action.projectPath}, ` +
+          `moving the branch from its current head ${action.expectedOldSha}.` +
+          (action.force ? " This is a force push: it rewrites the branch's history." : ""),
+      pushedCommits: [commitId],
+      implementsRevert: true,
+    });
   }
 
   async listCommits(options?: GitLabCommitFilter): Promise<Cursor<GitLabCommitSummary>> {

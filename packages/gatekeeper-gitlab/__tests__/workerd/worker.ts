@@ -9,7 +9,7 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
-import type { ActionDescription, GatekeeperConnectCallback, GitCache } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionDescription, GatekeeperConnectCallback, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
 import type { GitLabGatekeeperImplProps } from "../../src/gitlab-env.js";
@@ -86,6 +86,8 @@ type GatekeeperFacet = {
   resolveRef(ref: string | undefined, cache?: RpcStub<GitCache>): Promise<{ id: string; fromCache: boolean }>;
   listCommits(filter: undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   mergeRequestCommits(id: string, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
+  isSimulatedCommitId(commitId: string): boolean;
+  gitPull(oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
   addObserver(id: string, verifier: unknown): Promise<void>;
   // write side
   prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<GitLabAction>;
@@ -99,11 +101,15 @@ type GatekeeperFacet = {
   prepareReplyToDiffComment(id: string, commentId: string, body: string): Promise<GitLabAction>;
   prepareResolveDiffThread(id: string, threadId: string, resolved: boolean): Promise<GitLabAction>;
   prepareMergeMergeRequest(id: string, options?: GitLabMergeRequestMergeOptions): Promise<GitLabAction>;
+  preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>): Promise<GitLabAction | null>;
   submitActionForApproval(queue: unknown, action: GitLabAction, description: ActionDescription): Promise<void>;
   applyAction(actionId: number, cache: unknown): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
   revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
 };
+
+/** A stand-in for the action-scoped `GitCache` stub `applyAction` receives; nothing here reads it yet. */
+class NullGitCache extends RpcTarget {}
 
 /**
  * A test stand-in for the Workshop's connect callback. The account persists its callback in KV,
@@ -125,9 +131,6 @@ export class TestCallback extends WorkerEntrypoint<Cloudflare.Env, { userObjectI
     tally.expiredNotices += 1;
   }
 }
-
-/** A stand-in for the action-scoped `GitCache` stub `applyAction` receives; nothing here reads it yet. */
-class NullGitCache extends RpcTarget {}
 
 /** A test approval queue: accepts every action, records descriptions. */
 export class RecordingQueue extends RpcTarget {
@@ -188,8 +191,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#gatekeeper(facetName, props).openIssue(id));
   }
 
-  async openMergeRequest(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<GitLabMergeRequestDetails>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).openMergeRequest(id));
+  async openMergeRequest(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
+      Promise<Outcome<GitLabMergeRequestDetails>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).openMergeRequest(id, cache));
   }
 
   async discussionAll(facetName: string, props: GatekeeperProps, kind: "issue" | "mergeRequest", id: string, pageSize: number):
@@ -197,16 +201,16 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).issueDiscussion(kind, id, pageSize)));
   }
 
-  async diffAll(facetName: string, props: GatekeeperProps, id: string):
+  async diffAll(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
       Promise<Outcome<{ revision: GitLabMergeRequestRevision; files: GitLabDiffFile[] }>> {
     return await outcome(async () => {
-      const diff = await this.#gatekeeper(facetName, props).mergeRequestDiff(id, 20);
+      const diff = await this.#gatekeeper(facetName, props).mergeRequestDiff(id, 20, cache);
       return { revision: diff.revision, files: await drain(diff.files) };
     });
   }
 
-  async mergeBase(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<string>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).mergeRequestMergeBase(id));
+  async mergeBase(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>): Promise<Outcome<string>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).mergeRequestMergeBase(id, cache));
   }
 
   async threadsAll(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<GitLabDiffThread[]>> {
@@ -235,12 +239,23 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#gatekeeper(facetName, props).resolveRef(ref, cache));
   }
 
-  async listCommitsAll(facetName: string, props: GatekeeperProps, pageSize: number): Promise<Outcome<GitLabCommitSummary[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listCommits(undefined, pageSize)));
+  async listCommitsAll(facetName: string, props: GatekeeperProps, pageSize: number, cache?: RpcStub<GitCache>):
+      Promise<Outcome<GitLabCommitSummary[]>> {
+    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listCommits(undefined, pageSize, cache)));
   }
 
-  async mergeRequestCommitsAll(facetName: string, props: GatekeeperProps, id: string): Promise<Outcome<GitLabCommitSummary[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).mergeRequestCommits(id, 50)));
+  async mergeRequestCommitsAll(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):
+      Promise<Outcome<GitLabCommitSummary[]>> {
+    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).mergeRequestCommits(id, 50, cache)));
+  }
+
+  async isSimulatedCommitId(facetName: string, props: GatekeeperProps, commitId: string): Promise<Outcome<boolean>> {
+    return await outcome(async () => this.#gatekeeper(facetName, props).isSimulatedCommitId(commitId));
+  }
+
+  async gitPull(facetName: string, props: GatekeeperProps, oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints):
+      Promise<Outcome<void>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, cache, hints));
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */
@@ -273,17 +288,19 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
    * selects the prepare method; `args` are its arguments.
    */
   async queueAction(facetName: string, props: GatekeeperProps, method: string, args: unknown[], description: ActionDescription):
-      Promise<Outcome<GitLabAction>> {
+      Promise<Outcome<GitLabAction | null>> {
     return await outcome(async () => {
-      const gatekeeper = this.#gatekeeper(facetName, props) as unknown as Record<string, (...a: unknown[]) => Promise<GitLabAction>>;
+      const gatekeeper = this.#gatekeeper(facetName, props) as unknown as Record<string, (...a: unknown[]) => Promise<GitLabAction | null>>;
       const action = await gatekeeper[method](...args);
+      // `preparePush` answers null when the branch is already at the commit: nothing to queue.
+      if (action === null) return null;
       await (this.#gatekeeper(facetName, props)).submitActionForApproval(this.#queue(facetName), action, description);
       return action;
     });
   }
 
-  async applyAction(facetName: string, props: GatekeeperProps, actionId: number): Promise<Outcome<void>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).applyAction(actionId, new NullGitCache()));
+  async applyAction(facetName: string, props: GatekeeperProps, actionId: number, cache?: RpcStub<GitCache>): Promise<Outcome<void>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).applyAction(actionId, cache ?? new NullGitCache()));
   }
 
   async rejectAction(facetName: string, props: GatekeeperProps, actionId: number): Promise<Outcome<undefined | { restart?: boolean }>> {

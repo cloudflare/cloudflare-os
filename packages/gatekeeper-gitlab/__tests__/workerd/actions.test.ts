@@ -8,8 +8,15 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import * as fx from "../fixtures/gitlab-docs.js";
-import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap as unwrapOutcome } from "./fake-gitlab.js";
 import type { GatekeeperProps } from "./worker.js";
+
+/** `unwrap` that also rejects a null action (only `preparePush` can answer null). */
+async function unwrap<T>(outcome: { ok: T } | { error: string }): Promise<NonNullable<T>> {
+  const value = await unwrapOutcome(outcome);
+  if (value === null || value === undefined) throw new Error("unexpected null result");
+  return value as NonNullable<T>;
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -74,7 +81,7 @@ describe("issue creation", () => {
 
     // Same action without the dangling reference.
     const plain = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "Plain" }], DESC));
-    await unwrap(await hooks().applyAction(name, props, plain.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, plain.approvalId));
     const post = gitlab.requests.find(r => r.method === "POST" && r.url.pathname === `/api/v4/projects/${P}/issues`)!;
     expect(JSON.parse(post.body!)).toEqual({ title: "Plain" });
     // The provisional id now resolves to the real one; both lookups work.
@@ -88,7 +95,7 @@ describe("issue creation", () => {
     const create = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "Doomed" }], DESC));
     const comment = await unwrap(await hooks().queueAction(name, props, "preparePostComment", ["issue", "~1", "hello"], DESC));
     expect(comment).toMatchObject({ type: "postComment", targetId: "~1" });
-    expect(await unwrap(await hooks().rejectAction(name, props, create.approvalId))).toEqual({ restart: true });
+    expect(await unwrapOutcome(await hooks().rejectAction(name, props, create.approvalId))).toEqual({ restart: true });
     // The cascaded comment is no longer pending: applying it is refused, and the provisional is gone.
     await expect(unwrap(await hooks().applyAction(name, props, comment.approvalId))).rejects.toThrow(/no longer pending/);
     await expect(unwrap(await hooks().openIssue(name, props, "~1"))).rejects.toThrow(/No provisional issue exists/);
@@ -124,7 +131,7 @@ describe("issue creation", () => {
     const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest", [{ title: "x", sourceBranch: "feature", targetBranch: "main" }], DESC));
     await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "Tracks", bodyMarkdown: "Tracks !~1" }], DESC));
     const onIssue = await unwrap(await hooks().queueAction(name, props, "preparePostComment", ["issue", "~2", "note"], DESC));
-    expect(await unwrap(await hooks().rejectAction(name, props, mr.approvalId))).toEqual({ restart: true });
+    expect(await unwrapOutcome(await hooks().rejectAction(name, props, mr.approvalId))).toEqual({ restart: true });
     await expect(unwrap(await hooks().openIssue(name, props, "~2"))).rejects.toThrow(/No provisional issue exists/);
     await expect(unwrap(await hooks().applyAction(name, props, onIssue.approvalId))).rejects.toThrow(/no longer pending/);
   });
@@ -157,11 +164,11 @@ describe("issue mutations", () => {
     expect((await unwrap(await hooks().openIssue(name, props, "1"))).title).toBe("New");  // simulated
     expect(state.issue.title).toBe("Old");  // not yet on GitLab
 
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(state.issue.title).toBe("New");
     expect(gitlab.requests.filter(r => r.method === "PUT").map(r => JSON.parse(r.body!))).toEqual([{ title: "New" }]);
 
-    await unwrap(await hooks().revertAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, action.approvalId));
     expect(state.issue.title).toBe("Old");
   });
 
@@ -175,24 +182,24 @@ describe("issue mutations", () => {
     const simulated = await unwrap(await hooks().openIssue(name, props, "1"));
     // Case-insensitive dedupe: "Bug" is already there as "bug".
     expect(simulated.labels.map(l => l.name)).toEqual(["bug", "urgent"]);
-    await unwrap(await hooks().applyAction(name, props, add.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, add.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ add_labels: "urgent,Bug" });
     // Revert removes only what the action introduced: "Bug" was there before (as "bug") and stays.
-    await unwrap(await hooks().revertAction(name, props, add.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, add.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ remove_labels: "urgent" });
 
     // Removing a label that is there and one that is not: revert re-adds only the one that was.
     const remove = await unwrap(await hooks().queueAction(name, props, "prepareRemoveLabels", ["issue", "1", ["bug", "ghost"]], DESC));
-    await unwrap(await hooks().applyAction(name, props, remove.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, remove.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ remove_labels: "bug,ghost" });
-    await unwrap(await hooks().revertAction(name, props, remove.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, remove.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ add_labels: "bug" });
 
     // Nothing to undo -- every added label was already present -- makes no request at all.
     const noop = await unwrap(await hooks().queueAction(name, props, "prepareAddLabels", ["issue", "1", ["BUG"]], DESC));
-    await unwrap(await hooks().applyAction(name, props, noop.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, noop.approvalId));
     const before = gitlab.requests.length;
-    await unwrap(await hooks().revertAction(name, props, noop.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, noop.approvalId));
     expect(gitlab.requests.length).toBe(before);
   });
 
@@ -202,14 +209,14 @@ describe("issue mutations", () => {
     withIssue(gitlab, state);
     gitlab.install();
     const action = await unwrap(await hooks().queueAction(name, props, "prepareSetTitle", ["issue", "1", "New"], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     const puts = gitlab.count("PUT", /issues\/1$/);
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(gitlab.count("PUT", /issues\/1$/)).toBe(puts);  // not applied twice
     // A rejected action, by contrast, is a real error to apply.
     const other = await unwrap(await hooks().queueAction(name, props, "prepareSetTitle", ["issue", "1", "Other"], DESC));
-    await unwrap(await hooks().rejectAction(name, props, other.approvalId));
-    await expect(unwrap(await hooks().applyAction(name, props, other.approvalId))).rejects.toThrow(/no longer pending/);
+    await unwrapOutcome(await hooks().rejectAction(name, props, other.approvalId));
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, other.approvalId))).rejects.toThrow(/no longer pending/);
   });
 
   it("keeps paging past a full remote page that holds a touched issue", async () => {
@@ -263,7 +270,7 @@ describe("issue mutations", () => {
     const read = hooks().openIssue(name, props, "1");
     await readStarted;
     // The apply lands while the read is in flight.
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(state.issue.title).toBe("New");
     const stale = await unwrap(await read);
     expect(stale.title).toBe("Old");  // a valid read when it was made
@@ -283,9 +290,9 @@ describe("issue mutations", () => {
     const simulated = await unwrap(await hooks().openIssue(name, props, "1"));
     expect(simulated.state).toBe("closed");
     expect(simulated.closedAt).toBeInstanceOf(Date);
-    await unwrap(await hooks().applyAction(name, props, close.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, close.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ state_event: "close" });
-    await unwrap(await hooks().revertAction(name, props, close.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, close.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ state_event: "reopen" });
   });
 
@@ -303,9 +310,9 @@ describe("issue mutations", () => {
     expect(before).toHaveLength(1);
     expect(before[0]).toMatchObject({ id: "~comment1", bodyMarkdown: "Looks good", author: { username: "john_smith" } });
 
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(gitlab.count("POST", /notes$/)).toBe(1);
-    await unwrap(await hooks().revertAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, action.approvalId));
     expect(gitlab.count("DELETE", /notes\/555$/)).toBe(1);
   });
 });
@@ -340,7 +347,7 @@ describe("merge requests", () => {
     const provisional = await unwrap(await hooks().openMergeRequest(name, props, "~1"));
     expect(provisional).toMatchObject({ id: "~1", title: "Draft: Feature", draft: true, state: "opened", source: { branch: "feature" }, target: { branch: "main" } });
 
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(posted).toEqual({ source_branch: "feature", target_branch: "main", title: "Draft: Feature", remove_source_branch: true });
 
     const dup = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
@@ -432,7 +439,7 @@ describe("merge requests", () => {
     expect(threads.slice(-2).map(t => t.id)).toEqual(["~diff1", "~diff2"]);
 
     gitlab.requests.length = 0;
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(drafts).toHaveLength(2);
     expect(drafts[0]).toMatchObject({
       note: "Nit here",
@@ -457,7 +464,7 @@ describe("merge requests", () => {
     const reply = await unwrap(await hooks().queueAction(name, props, "prepareReplyToDiffComment", ["133", "9001", "thanks"], DESC));
     gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/discussions/disc-1/notes$`), () =>
       json({ ...fx.issueNotesResponse.data[1], id: 9002 }, { status: 201 }));
-    await unwrap(await hooks().applyAction(name, props, reply.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, reply.approvalId));
     expect(gitlab.count("POST", /discussions\/disc-1\/notes$/)).toBe(1);
   });
 
@@ -497,7 +504,7 @@ describe("merge requests", () => {
       ],
     };
     const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", review], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
 
     const lines = drafts.map(d => [d.position.old_line ?? null, d.position.new_line ?? null]);
     expect(lines).toEqual([
@@ -579,11 +586,11 @@ describe("merge requests", () => {
     //    second line -- exercised here by a fake that still lists the reviewed head.
     liveSha = "f".repeat(40);
     for (let attempt = 0; attempt < 2; attempt++) {
-      await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/moved on from the reviewed revision/);
+      await expect(unwrapOutcome(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/moved on from the reviewed revision/);
     }
     expect(gitlab.count("POST", /\/approve$/)).toBe(0);
     liveSha = MR.sha;
-    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/SHA does not match/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/SHA does not match/);
     expect(gitlab.count("POST", /\/approve$/)).toBe(1);
     expect(parked).toEqual([]);
     expect(gitlab.count("POST", /bulk_publish$/)).toBe(0);
@@ -593,7 +600,7 @@ describe("merge requests", () => {
     //    and publishes through bulk_publish -- with the reviewer state, which the foreign-drafts
     //    path would have dropped had the leftover been mistaken for the user's.
     approveStatus = 201;
-    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
     expect(gitlab.count("POST", /\/approve$/)).toBe(2);
     expect(parked).toEqual([1]);
     //    A push lands between the failure and the retry. The approval is recorded as done, so
@@ -601,12 +608,12 @@ describe("merge requests", () => {
     //    refuses before publishing comments positioned in a diff that no longer exists.
     liveSha = "e".repeat(40);
     const publishesBefore = gitlab.count("POST", /bulk_publish$/);
-    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/moved on from the reviewed revision/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/moved on from the reviewed revision/);
     expect(parked).toEqual([1]);
     expect(gitlab.count("POST", /bulk_publish$/)).toBe(publishesBefore);
     liveSha = MR.sha;
     publishStatus = 200;
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(gitlab.count("POST", /\/approve$/)).toBe(2);
     expect(gitlab.count("DELETE", /draft_notes\/1$/)).toBe(1);
     expect(gitlab.count("PUT", /\/publish$/)).toBe(0);
@@ -618,10 +625,10 @@ describe("merge requests", () => {
     //    takes the approval back and clears its parked draft.
     const second = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", twoComments], DESC));
     draftBudget = 1;
-    await expect(unwrap(await hooks().applyAction(name, props, second.approvalId))).rejects.toThrow(/500/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, second.approvalId))).rejects.toThrow(/500/);
     expect(gitlab.count("POST", /\/approve$/)).toBe(3);
     expect(parked).toEqual([3]);
-    await unwrap(await hooks().rejectAction(name, props, second.approvalId));
+    await unwrapOutcome(await hooks().rejectAction(name, props, second.approvalId));
     expect(gitlab.count("POST", /\/unapprove$/)).toBe(1);
     expect(parked).toEqual([]);
 
@@ -632,11 +639,11 @@ describe("merge requests", () => {
     draftBudget = Infinity;
     const third = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", twoComments], DESC));
     failPublishOf = 5;  // ids 4 and 5 are this attempt's drafts
-    await expect(unwrap(await hooks().applyAction(name, props, third.approvalId))).rejects.toThrow(/500/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, third.approvalId))).rejects.toThrow(/500/);
     expect(parked).toEqual([99, 5]);
     expect(summaries).toEqual([]);
     const requestsBefore = gitlab.requests.length;
-    await unwrap(await hooks().applyAction(name, props, third.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, third.approvalId));
     const retry = gitlab.requests.slice(requestsBefore).filter(r => r.method !== "GET")
       .map(r => `${r.method} ${r.url.pathname.split("/").slice(-2).join("/")}`);
     expect(retry).toEqual([
@@ -662,7 +669,7 @@ describe("merge requests", () => {
     const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
       revision: { baseSha: MR.diff_refs.start_sha, headSha: MR.sha }, decision: "requestChanges", bodyMarkdown: "Please fix",
     }], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(published).toEqual({ note: "Please fix", reviewer_state: "requested_changes" });
     expect(gitlab.count("POST", /approve$/)).toBe(0);
   });
@@ -695,7 +702,7 @@ describe("merge requests", () => {
     const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
       revision: { baseSha: MR.diff_refs.start_sha, headSha: MR.sha }, decision: "comment", bodyMarkdown: "Summary", diffComments,
     }], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(gitlab.count("POST", /bulk_publish$/)).toBe(0);
     expect(gitlab.count("PUT", /\/publish$/)).toBe(100);
     expect(gitlab.count("POST", /merge_requests\/133\/notes$/)).toBe(1);
@@ -719,7 +726,7 @@ describe("merge requests", () => {
       revision: { baseSha: MR.diff_refs.start_sha, headSha: MR.sha }, decision: "comment", bodyMarkdown: "Summary",
       diffComments: [{ target: { path: "README", subjectType: "file" }, bodyMarkdown: "File-level" }],
     }], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(gitlab.count("POST", /bulk_publish$/)).toBe(0);
     expect(gitlab.count("PUT", /draft_notes\/42\/publish$/)).toBe(1);
     expect(gitlab.count("POST", /merge_requests\/133\/notes$/)).toBe(1);
@@ -731,19 +738,26 @@ describe("merge requests", () => {
       revision: { baseSha: MR.diff_refs.start_sha, headSha: MR.sha }, decision: "requestChanges", bodyMarkdown: "Please fix",
       diffComments: [{ target: { path: "README", subjectType: "file" }, bodyMarkdown: "Here" }],
     }], DESC));
-    await expect(unwrap(await hooks().applyAction(name, props, changes.approvalId)))
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, changes.approvalId)))
       .rejects.toThrow(/you have 1 unpublished draft comment of your own on it in GitLab/);
     expect(gitlab.requests.filter(r => r.method !== "GET").length).toBe(before);
   });
 
-  it("refuses an empty requestChanges review at queue time: it would publish nothing, so it could request nothing", async () => {
-    const { gitlab, props, name } = await setup("empty-request-changes");
+  it("refuses an empty comment or requestChanges review at queue time: it would publish nothing", async () => {
+    const { gitlab, props, name } = await setup("empty-review");
     withMergeRequest(gitlab);
+    gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/approve$`), () => json({}, { status: 201 }));
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/draft_notes(\\?|$)`), () => json([]));
     gitlab.install();
-    await expect(unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
-      revision: { baseSha: MR.diff_refs.start_sha, headSha: MR.sha }, decision: "requestChanges",
-    }], DESC))).rejects.toThrow(/needs a summary comment or at least one diff comment/);
-    // An empty plain comment review is a legitimate no-op; approve with nothing else still approves.
+    const revision = { baseSha: MR.diff_refs.start_sha, headSha: MR.sha };
+    for (const decision of ["requestChanges", "comment"] as const) {
+      await expect(unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", { revision, decision }], DESC)))
+        .rejects.toThrow(new RegExp(`A ${decision} review needs a summary comment or at least one diff comment`));
+    }
+    // An approval with nothing else still approves.
+    const approve = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", { revision, decision: "approve" }], DESC));
+    await unwrapOutcome(await hooks().applyAction(name, props, approve.approvalId));
+    expect(gitlab.count("POST", /\/approve$/)).toBe(1);
     expect(gitlab.count("POST", /draft_notes/)).toBe(0);
   });
 
@@ -778,7 +792,7 @@ describe("merge requests", () => {
         { target: { path: "VERSION", line: 1, side: "new" }, bodyMarkdown: "Two" },
       ],
     }], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     // The first listing saw no foreign drafts; the second, just before publishing, did -- so ours
     // went out one by one and the human's draft is still parked.
     expect(gitlab.count("POST", /bulk_publish$/)).toBe(0);
@@ -801,12 +815,12 @@ describe("merge requests", () => {
       diffComments: [{ target: { path: "README", line: 1, side: "new" }, bodyMarkdown: "Nit" }],
     }], DESC));
     // Approval lands, the draft fails: the action is retryable, and so is its discard.
-    await expect(unwrap(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
-    await expect(unwrap(await hooks().rejectAction(name, props, action.approvalId))).rejects.toThrow(/500/);
+    await expect(unwrapOutcome(await hooks().applyAction(name, props, action.approvalId))).rejects.toThrow(/500/);
+    await expect(unwrapOutcome(await hooks().rejectAction(name, props, action.approvalId))).rejects.toThrow(/500/);
     unapproveStatus = 201;
-    await unwrap(await hooks().rejectAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().rejectAction(name, props, action.approvalId));
     expect(gitlab.count("POST", /\/unapprove$/)).toBe(2);
-    await expect(unwrap(await hooks().rejectAction(name, props, action.approvalId))).rejects.toThrow(/no longer pending/);
+    await expect(unwrapOutcome(await hooks().rejectAction(name, props, action.approvalId))).rejects.toThrow(/no longer pending/);
   });
 
   it("resolves a thread, reverts by unresolving, and refuses to reopen a merged MR", async () => {
@@ -815,9 +829,9 @@ describe("merge requests", () => {
     gitlab.on("PUT", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/discussions/abc$`), () => json({}));
     gitlab.install();
     const action = await unwrap(await hooks().queueAction(name, props, "prepareResolveDiffThread", ["133", "abc", true], DESC));
-    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, action.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ resolved: true });
-    await unwrap(await hooks().revertAction(name, props, action.approvalId));
+    await unwrapOutcome(await hooks().revertAction(name, props, action.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ resolved: false });
     await expect(unwrap(await hooks().queueAction(name, props, "prepareChangeState", ["mergeRequest", "133", "opened"], DESC)))
       .rejects.toThrow(/has been merged and cannot be reopened/);
@@ -841,7 +855,7 @@ describe("merge requests", () => {
     expect(ok).toMatchObject({ expectedHeadSha: "f".repeat(40) });
     // Simulated: the MR reads as merged.
     expect((await unwrap(await hooks().openMergeRequest(name, props, "133"))).state).toBe("merged");
-    await unwrap(await hooks().applyAction(name, props, ok.approvalId));
+    await unwrapOutcome(await hooks().applyAction(name, props, ok.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({
       squash: true, should_remove_source_branch: true, merge_commit_message: "msg", sha: "f".repeat(40),
     });
