@@ -1,7 +1,8 @@
-// The worktree search shared by the Worktree binding's grep()/structuredGrep() and the agent's
-// grep tool: resolve a path argument to the searchable files of the overlay-over-base view, pull
-// the missing base blobs in one batch, and match lines. Kept apart from worktree-session.ts so the
-// tool side (agent.ts) can call it without importing the RpcTarget.
+// File search for the agent's grep tool and the Worktree binding's grep()/structuredGrep(): resolve
+// a path argument to the searchable files, match lines, and render `grep -n` output. Worktrees
+// scan the overlay-over-base view and pull missing base blobs in one batch; a gadget's files are
+// already in hand. Kept apart from worktree-session.ts so agent.ts can call it without importing
+// the RpcTarget.
 
 import type { GrepFileError } from "./worktree-binding";
 import type { WorkpieceId } from "@gadgets/workshop-shared/api";
@@ -9,7 +10,7 @@ import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { UnreadableContentError, type WorkspaceGitCache } from "./git-cache";
 import type { WorktreeTurnAccess } from "./agent";
 
-/** A searchable file: its worktree path and full text. */
+/** A searchable file: its path within the workpiece and full text. */
 export type GrepFile = { path: string, text: string };
 
 /**
@@ -20,6 +21,24 @@ export type GrepScan = { files: GrepFile[], errors: GrepFileError[], single: boo
 
 // One file to search: an overlay path (text in hand) or a base tree entry (blob by oid).
 type GrepCandidate = { path: string, oid?: GitOid };
+
+/**
+ * The gadget counterpart of scanWorktreeForGrep: a gadget's files are all in hand, so the scan is
+ * a filter. `path` names a file or a directory (its files, recursively); absent means every file.
+ * Throws when `path` names neither, matching the worktree scan's failed-scope error.
+ */
+export function scanGadgetForGrep(files: ReadonlyMap<string, string>, path?: string): GrepScan {
+  let single = path !== undefined && files.has(path);
+  let prefix = path === undefined ? "" : `${path}/`;
+  let matching = [...files]
+      .filter(([file]) => single ? file === path : file.startsWith(prefix))
+      .map(([file, text]) => ({ path: file, text }))
+      .toSorted((a, b) => a.path < b.path ? -1 : 1);
+  if (matching.length === 0 && path !== undefined) {
+    throw new Error(`${path}: no such file or directory`);
+  }
+  return { files: matching, errors: [], single };
+}
 
 /**
  * Resolves a grep path argument to the searchable files' text. Each listed scope is a file or a

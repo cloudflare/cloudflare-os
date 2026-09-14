@@ -27,6 +27,7 @@ import {
   getModelTokenLimits, isCompactionTurn, protectRetainedReverts, shouldCompactChat,
   type CompactionProjectionMessage,
 } from "./agent-compaction";
+import { formatGrep, scanGadgetForGrep, type GrepScan } from "./grep";
 
 const logger = createWorkshopLogger("workshop.agent");
 
@@ -560,6 +561,14 @@ export interface AgentHooks {
   assertWorktreePathWritable(commit: string, path: string): Promise<void>;
 
   /**
+   * The grep tool's worktree half: the searchable files under `path` in the worktree's
+   * overlay-over-base view at `base`, with missing blobs pulled in one batch (see
+   * scanWorktreeForGrep). The gadget half needs no hook: a gadget's files are already in hand.
+   */
+  grepWorktree(turn: WorktreeTurnAccess, worktreeId: WorkpieceId, base: string, path?: string)
+      : Promise<GrepScan>;
+
+  /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
    * for the agent's describeBinding tool. (`envName` is provided here only so that it can be
    * incorporated into the returned description.)
@@ -724,7 +733,7 @@ Draft requested text directly in chat; do not look up blueprints or create a Gad
 
 Note that users rarely ask for "a Gadget" in those words. They ask for a thing: a doc, a deck, a tracker, a tool that does X. "Summarize this doc", "draft an email", or "check these figures" usually asks for an answer or one-off task, not a new Gadget. Work on an existing Gadget when the request refers to it. If a useful answer completes the task, give that answer. Ask a brief clarification when it's unclear whether the user wants something created; otherwise, proceed. When the goal is unclear, ask what the user wants to accomplish before suggesting an application.
 
-Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`) take a \`gadget\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`gadget\` is omitted; even so, prefer passing the name explicitly.
+Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
 # Writing Gadgets
 
@@ -965,11 +974,17 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
-Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
+Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
 \`commitId\` is a git commit id (a full 40-hex SHA-1, or an unambiguous prefix) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
+`.trim();
+
+let GREP_TOOL_DESCRIPTION = `
+Search a workpiece's files for lines matching a regular expression (JavaScript syntax, case-sensitive, matched one line at a time). Each match is reported as \`path:line:text\`, like \`grep -n\`. With \`path\` omitted the whole workpiece is searched; a file path searches that file, a directory path searches it recursively.
+
+Search before reading when you don't know where something lives, especially in a worktree.
 `.trim();
 
 let LIST_BLUEPRINTS_TOOL_DESCRIPTION = `
@@ -1669,7 +1684,7 @@ async function runAgentPass(
   // step; but the step's edits land in a "changes" message written right *after* the tool-call
   // message in the same barrier (see commitAgentStep), and a revert of just the step starts
   // there, leaving the tool-call message unmarked. So that next message is checked too: it is
-  // where a write in this step landed, and a read that followed the write saw it.
+  // where a write in this step landed, and a read or search that followed the write saw it.
   let sawRevertedContent = (index: number): boolean => {
     if (chatMessageStatus.get(chatMessages[index].sequence) === "reverted") return true;
     let next = chatMessages[index + 1];
@@ -2054,9 +2069,24 @@ async function runAgentPass(
                   // Obsolete tool: no longer offered, replayed for old chat logs only.
                   toolOutput = {text: jsonToolResultText({rejected: true})};
                   break;
+                case "grep":
+                  // A search over content the user later reverted would replay as current-looking
+                  // source; elide it the way a reverted readFile is.
+                  if (sawRevertedContent(msgIndex)) {
+                    toolOutput = {
+                      text: "This call succeeded when the agent first invoked it, but " +
+                          "the results have been elided from the chat history because " +
+                          "the user later reverted the files to an earlier version.",
+                      isError: true,
+                    };
+                    break;
+                  }
+                  // fallthrough
                 case "webFetch":
+                  // Recorded rather than re-run: a fetch would re-issue the request and a search
+                  // would re-pull blobs, and either could return something different.
                   if (toolCall.output === undefined) {
-                    throw new Error("webFetch tool call in log is missing output");
+                    throw new Error(`${toolCall.toolName} tool call in log is missing output`);
                   }
                   toolOutput = {text: toolCall.output};
                   break;
@@ -2791,6 +2821,44 @@ async function runAgentPass(
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
           });
+          throw error;
+        }
+      }
+    }),
+
+    grep: defineTool({
+      name: "grep",
+      label: "Search files",
+      description: GREP_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        workpiece: workpieceParam,
+        pattern: Type.String({description: "Regular expression matched against each line."}),
+        path: Type.Optional(Type.String({
+          description: "File or directory to search, relative to the workpiece root. Omit to " +
+              "search every file.",
+        })),
+      }),
+      execute: async (toolCallId, {workpiece, pattern, path}) => {
+        try {
+          let {workpieceId} =
+              hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
+          let re = new RegExp(pattern);
+          let scan: GrepScan;
+          let worktreeBase = worktreePinBases.get(workpieceId);
+          if (worktreeBase !== undefined && pinnedGadgets.has(workpieceId)) {
+            scan = await hooks.grepWorktree(worktreeTurnAccess, workpieceId, worktreeBase, path);
+          } else {
+            // The same source readFile reads: committed code at the observed head for an
+            // unpinned gadget, else the session content.
+            let head = pinnedGadgets.has(workpieceId) ? undefined : observeHead(workpieceId);
+            let files = head !== undefined
+                ? await hooks.readCommitFiles(head) : sessionContent.get(workpieceId) ?? new Map();
+            scan = scanGadgetForGrep(files, path);
+          }
+          let output = formatGrep(scan, re);
+          return toolResult(output, {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
           throw error;
         }
       }
