@@ -20,6 +20,7 @@ import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import { RenameInput } from "./RenameInput";
 import {
+  canMoveSkillNavigatorNode,
   moveSkillNavigatorNode,
   type SkillNavigatorMoveSource,
   type SkillNavigatorMoveTarget,
@@ -418,11 +419,11 @@ export const SkillsNavigatorTree = ({
       expandAll={expandAll}
       dragAndDrop={{
         autoScroll: true,
-        canMoveTo: (item, parent) => Boolean(
-          parent
-          && moveSourcesById.has(item.id)
-          && collectionIdsByItemId.get(item.id) === collectionIdsByItemId.get(parent.id),
-        ),
+        canMoveTo: (item, parent) => {
+          const source = moveSourcesById.get(item.id);
+          const target = parent && moveTargetsById.get(parent.id);
+          return Boolean(source && target && canMoveSkillNavigatorNode(source, target));
+        },
         onMove: handleMove,
       }}
       onItemClick={(item) => {

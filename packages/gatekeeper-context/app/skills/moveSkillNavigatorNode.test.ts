@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ContextApi } from "../../src/context-types";
-import { moveSkillNavigatorNode } from "./moveSkillNavigatorNode";
+import { canMoveSkillNavigatorNode, moveSkillNavigatorNode } from "./moveSkillNavigatorNode";
 
 type MoveApi = Pick<ContextApi, "moveContextSkill">;
 
 const createApi = (): MoveApi => ({ moveContextSkill: vi.fn() });
 
 describe("moveSkillNavigatorNode", () => {
+  it("does not offer moves within the current parent directory", () => {
+    expect(canMoveSkillNavigatorNode({
+      collectionId: "one",
+      manifestPath: "skills/release/SKILL.md",
+      directoryPath: "skills/release",
+    }, { collectionId: "one", directoryPath: "skills" })).toBe(false);
+  });
+
   it("moves the complete skill directory into an existing legacy folder", async () => {
     const context = createApi();
 

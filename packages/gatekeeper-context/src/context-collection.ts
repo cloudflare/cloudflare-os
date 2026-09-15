@@ -433,6 +433,22 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (directoryOccupied) {
       throw new Error(`Skill directory already exists: ${directory}`);
     }
+    let parentDirectory = dirName(directory);
+    if (parentDirectory) {
+      let parentExists = false;
+      for (let record of this.storage.documents.list({ prefix: parentDirectory + "/" })) {
+        parentExists = record.path.length > 0;
+        break;
+      }
+      if (!parentExists) throw new Error(`Directory not found: ${parentDirectory}`);
+      let ancestor = parentDirectory;
+      while (ancestor) {
+        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
+          throw new Error("Cannot create a skill inside another skill.");
+        }
+        ancestor = dirName(ancestor);
+      }
+    }
     await this.#writeContextDocument(path, doc, true);
   }
 

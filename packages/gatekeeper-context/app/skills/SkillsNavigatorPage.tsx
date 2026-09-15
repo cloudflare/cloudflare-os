@@ -144,8 +144,9 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               <Loader size="lg" />
             </LayerCard>
           ) : status === "error" ? (
-            <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
+            <LayerCard className="flex min-h-[240px] flex-col items-center justify-center gap-3 bg-kumo-control p-1">
               <Text variant="secondary" size="sm">Skills could not be loaded.</Text>
+              <Button variant="secondary" onClick={reload}>Retry</Button>
             </LayerCard>
           ) : navigator.length > 0 ? (
             <SkillsNavigatorTree

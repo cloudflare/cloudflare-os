@@ -29,6 +29,7 @@ export const uniqueSkillDirectory = (
 ): string => {
   const existing = new Set<string>();
   for (const document of documents.get(collectionId) ?? []) {
+    existing.add(document.path);
     let directory = dirName(document.path);
     while (directory) {
       existing.add(directory);

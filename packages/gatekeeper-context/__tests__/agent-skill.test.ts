@@ -135,15 +135,14 @@ Instructions
 
 describe("updateSkillManifestName", () => {
   it("updates CRLF frontmatter while preserving other fields and body content", () => {
-    const source = "\uFEFF--- \r\nname: old-name\r\ndescription: Existing skill.\r\nowner: platform\r\n---\r\nInstructions\r\n";
+    const source = "\uFEFF--- \r\nname: \"old-name\" # keep\r\ndescription: Existing skill.\r\nowner: platform\r\n---\r\n\r\nInstructions\r\n";
     const updated = updateSkillManifestName(source, "new-name");
 
     expect(parseSkillManifest("new-name/SKILL.md", updated)).toEqual({
       name: "new-name",
       description: "Existing skill.",
     });
-    expect(updated).toContain("owner: platform");
-    expect(updated).toContain("Instructions\r\n");
+    expect(updated).toBe(source.replace("\"old-name\"", "\"new-name\""));
   });
 });
 
