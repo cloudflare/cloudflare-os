@@ -104,6 +104,16 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     () => new Map(vendors.map(v => [v.id.toLowerCase(), v])),
     [vendors],
   )
+  // Derive validity synchronously so account updates cannot leave a one-render window where Create
+  // still submits a stale assignment. The effect below then removes the stale state permanently.
+  const usableDraftAssignments = useMemo(
+    () => blueprint
+      ? removeUnavailableGatekeeperAssignments(
+          draftAssignments, blueprint, accountsReady ? accounts : [],
+        )
+      : draftAssignments,
+    [accounts, accountsReady, blueprint, draftAssignments],
+  )
   // Fetch blueprint metadata.
   useEffect(() => {
     let cancelled = false
@@ -217,6 +227,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       subscription[Symbol.dispose]()
     }
   }, [isAuthenticated, authenticatedApi])
+
+  useEffect(() => {
+    if (!accountsReady || !blueprint) return
+    setDraftAssignments(prev => removeUnavailableGatekeeperAssignments(prev, blueprint, accounts))
+  }, [accounts, accountsReady, blueprint])
 
   const handleConnectAccount = useCallback(async (vendorId: string, resourceUrlPatterns?: string[]) => {
     if (!authenticatedApi) return
@@ -440,13 +455,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     return providerScopedMatches.length === 1 ? providerScopedMatches[0].id : null
   }, [models])
 
-  const getFirstUnresolvedBindingName = useCallback((assignments = draftAssignments) => {
+  const getFirstUnresolvedBindingName = useCallback((assignments = usableDraftAssignments) => {
     if (!blueprint) return null
     for (let name of Object.keys(blueprint.metadata.bindings)) {
       if (!assignments[name]) return name
     }
     return null
-  }, [blueprint, draftAssignments])
+  }, [blueprint, usableDraftAssignments])
 
   const openBindingConfigurator = useCallback((name: string) => {
     if (!blueprint) return
@@ -455,7 +470,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setGatekeeperReady(prev => ({ ...prev, [name]: false }))
     collectorsRef.current.delete(name)
-    const existing = draftAssignments[name]
+    const existing = usableDraftAssignments[name]
     let initial: any = existing ? { ...existing } : { type: binding.type }
     if (binding.type === 'gatekeeper') {
       initial = {
@@ -476,7 +491,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
     setBindingForm(prev => ({ ...prev, [name]: initial }))
     setActiveBindingName(name)
-  }, [blueprint, draftAssignments])
+  }, [blueprint, usableDraftAssignments])
 
   useEffect(() => {
     if (!blueprint || !isAuthenticated) return
@@ -609,7 +624,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setCreating(true)
     setError(null)
-    const overseer = authenticatedApi.newGadgetFromBlueprint(id, draftAssignments)
+    const overseer = authenticatedApi.newGadgetFromBlueprint(id, usableDraftAssignments)
     try {
       let metadata = await overseer.getMetadata()
       window.location.href = `/workspace/${metadata.id}`
@@ -799,7 +814,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   let meta = blueprint.metadata
   let bindingEntries = Object.entries(meta.bindings)
   let activeBinding = activeBindingName ? meta.bindings[activeBindingName] : undefined
-  let readyCount = bindingEntries.filter(([name]) => draftAssignments[name]).length
+  let readyCount = bindingEntries.filter(([name]) => usableDraftAssignments[name]).length
   let unresolvedBindingName = getFirstUnresolvedBindingName()
   let remainingCount = bindingEntries.length - readyCount
   let primaryActionLabel: string
@@ -825,7 +840,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   } | null = null
   if (authenticatedApi && accountsReady && activeBindingName === null) {
     for (const [name, binding] of bindingEntries) {
-      if (draftAssignments[name] || binding.type !== 'gatekeeper' || !binding.resourceUrl) continue
+      if (usableDraftAssignments[name] || binding.type !== 'gatekeeper' || !binding.resourceUrl) continue
       const account = suggestedResourceAccount(binding, accounts)
       if (account) {
         const key = `${name}\n${account.id}\n${binding.typeUrlPattern}\n${binding.resourceUrl}`
@@ -1069,7 +1084,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     key={name}
                     name={name}
                     binding={binding}
-                    assignment={draftAssignments[name]}
+                    assignment={usableDraftAssignments[name]}
                     vendor={binding.type === 'gatekeeper' ? vendorById.get(binding.gatekeeperName.toLowerCase()) : undefined}
                     models={models}
                     onConfigure={() => isAuthenticated ? openBindingConfigurator(name) : setShowLogin(true)}
@@ -1569,17 +1584,39 @@ function suggestedResourceAccount(
   if (!binding.resourceUrl ||
       !matchesResourceUrlPattern(binding.typeUrlPattern, binding.resourceUrl)) return null
 
-  const matches = accounts.filter(account => {
-    if (!account.credentialsValid ||
-        account.vendorId.toLowerCase() !== binding.gatekeeperName.toLowerCase()) return false
-    const resource = account.supportedResources.find(
-      candidate => candidate.urlPattern === binding.typeUrlPattern,
-    )
-    if (!resource) return false
-    const granted = account.description.grantedResourceUrlPatterns
-    return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
-  })
+  const matches = accounts.filter(account => accountCanConfigureBinding(binding, account))
   return matches.length === 1 ? matches[0] : null
+}
+
+function accountCanConfigureBinding(
+  binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>,
+  account: AccountOption,
+): boolean {
+  if (!account.credentialsValid ||
+      account.vendorId.toLowerCase() !== binding.gatekeeperName.toLowerCase()) return false
+  const resource = account.supportedResources.find(
+    candidate => candidate.urlPattern === binding.typeUrlPattern,
+  )
+  if (!resource) return false
+  const granted = account.description.grantedResourceUrlPatterns
+  return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
+}
+
+function removeUnavailableGatekeeperAssignments(
+  assignments: Record<string, BlueprintBindingAssignment>,
+  blueprint: BlueprintPublicInfo,
+  accounts: AccountOption[],
+): Record<string, BlueprintBindingAssignment> {
+  let next = assignments
+  for (const [name, assignment] of Object.entries(assignments)) {
+    const binding = blueprint.metadata.bindings[name]
+    if (assignment.type !== 'gatekeeper' || binding?.type !== 'gatekeeper') continue
+    const account = accounts.find(candidate => candidate.id === assignment.accountId)
+    if (account && accountCanConfigureBinding(binding, account)) continue
+    if (next === assignments) next = { ...assignments }
+    delete next[name]
+  }
+  return next
 }
 
 function formatSuggestedResource(resourceUrl: string): string {

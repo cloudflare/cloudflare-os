@@ -359,6 +359,28 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     }])
   })
 
+  it('invalidates a ready suggestion when its account disconnects', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
+
+    await act(async () => harness.removeAccount(7))
+
+    await vi.waitFor(() => expect(findButton('Configure 1 remaining connection')).toBeDefined())
+    expect(findButton('Change')).toBeUndefined()
+  })
+
+  it('invalidates a ready suggestion when its account loses the required grant', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
+
+    await act(async () => harness.updateGrants([GMAIL_PATTERN]))
+
+    await vi.waitFor(() => expect(findButton('Configure 1 remaining connection')).toBeDefined())
+    expect(findButton('Change')).toBeUndefined()
+  })
+
   it('does not automatically use a suggestion outside the declared resource type', async () => {
     const harness = gatekeeperApi([CALENDAR_PATTERN])
     const mismatchedBlueprint: BlueprintPublicInfo = {
