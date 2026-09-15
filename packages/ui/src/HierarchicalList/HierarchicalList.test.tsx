@@ -351,7 +351,7 @@ describe("HierarchicalList", () => {
       <HierarchicalList
         items={[{ id: "skill", name: "Review code" }]}
         label="Skills"
-        interaction={{ longPressDelayMs: 100, actionDrawerMaxWidthPx: 800 }}
+        interaction={{ actionDrawerMaxWidthPx: 800 }}
         renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
       />,
     );
@@ -362,38 +362,12 @@ describe("HierarchicalList", () => {
       pointerType: { value: "touch" },
     });
     act(() => rowFor("Review code")?.dispatchEvent(pointerDown));
-    act(() => vi.advanceTimersByTime(99));
+    act(() => vi.advanceTimersByTime(499));
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     act(() => vi.advanceTimersByTime(1));
 
     expect(document.body.textContent).toContain("Delete");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-  });
-
-  it("uses the configured long-press delay for a wide-layout context menu", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
-    render(
-      <HierarchicalList
-        items={[{ id: "skill", name: "Review code" }]}
-        label="Skills"
-        interaction={{ longPressDelayMs: 700 }}
-        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
-      />,
-    );
-    const row = rowFor("Review code")!;
-
-    dispatchTouchPointer(row, "pointerdown", 20, 30, 1);
-    act(() => vi.advanceTimersByTime(500));
-    expect(document.querySelector('[role="menu"]')).toBeNull();
-    act(() => vi.advanceTimersByTime(200));
-
-    expect(document.body.textContent).toContain("Delete");
-    expect(document.querySelector('[role="menu"]')).not.toBeNull();
   });
 
   it("does not cancel a long press when a different touch ends", () => {
@@ -407,7 +381,6 @@ describe("HierarchicalList", () => {
       <HierarchicalList
         items={[{ id: "skill", name: "Review code" }]}
         label="Skills"
-        interaction={{ longPressDelayMs: 100 }}
         renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
       />,
     );
@@ -415,7 +388,7 @@ describe("HierarchicalList", () => {
 
     dispatchTouchPointer(row, "pointerdown", 20, 30, 1);
     dispatchTouchPointer(row, "pointercancel", 25, 35, 2);
-    act(() => vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(500));
 
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   });

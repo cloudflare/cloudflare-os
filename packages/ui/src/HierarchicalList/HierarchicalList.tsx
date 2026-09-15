@@ -47,7 +47,7 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   expandAll?: boolean;
   /** Enables item movement and its mouse and touch drag interactions. */
   dragAndDrop?: HierarchicalListDragAndDropOptions;
-  /** Customizes touch gesture thresholds and the action-drawer breakpoint. */
+  /** Customizes the touch-drag threshold and action-drawer breakpoint. */
   interaction?: HierarchicalListInteractionOptions;
   onItemClick?: (item: HierarchicalListItem) => void;
   onSelectionClear?: () => void;
@@ -191,17 +191,7 @@ const StyledRow = ({
   if (!contextMenu) return row;
   if (!useActionDrawer) {
     return (
-      <ContextMenu.Root
-        open={actionsOpen}
-        onOpenChange={(open, details) => {
-          const event = details.event;
-          const touchPress = details.reason === "trigger-press" && (
-            event.type.startsWith("touch")
-            || ("pointerType" in event && event.pointerType === "touch")
-          );
-          if (!open || !touchPress) onActionsOpenChange(open);
-        }}
-      >
+      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
         <ContextMenu.Trigger render={row} />
         <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
       </ContextMenu.Root>
@@ -290,11 +280,11 @@ export const HierarchicalList = ({
     <LayerCard className="p-1">
       <HierarchicalListPrimitive
         {...props}
-        hasLongPressAction={renderContextMenu
+        hasLongPressAction={renderContextMenu && useActionDrawer
           ? (item) => Boolean(renderContextMenu(item))
           : undefined}
-        onItemLongPress={renderContextMenu
-          ? (item) => setOpenActions({ itemId: item.id, drawer: useActionDrawer })
+        onItemLongPress={renderContextMenu && useActionDrawer
+          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
           : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{

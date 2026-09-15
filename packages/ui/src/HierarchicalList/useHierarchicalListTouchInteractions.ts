@@ -15,10 +15,8 @@ import type { HierarchicalListItem } from "./HierarchicalList.types";
 const LONG_PRESS_DELAY_MS = 500;
 const DRAG_MOVE_TOLERANCE_PX = 8;
 
-/** Optional thresholds for touch gestures. */
+/** Optional threshold for touch dragging. */
 export type HierarchicalListTouchInteractionOptions = {
-  /** Delay before a touch press opens item actions. Defaults to 500ms. */
-  longPressDelayMs?: number;
   /** Pointer travel that starts touch dragging and cancels long press. Defaults to 8px. */
   touchDragThresholdPx?: number;
 };
@@ -127,7 +125,7 @@ export const useHierarchicalListTouchInteractions = ({
           longPressStartRef.current = null;
           onItemLongPress?.(item);
           longPressTimerRef.current = null;
-        }, Math.max(0, interaction?.longPressDelayMs ?? LONG_PRESS_DELAY_MS));
+        }, LONG_PRESS_DELAY_MS);
       },
       onPointerMove: (event) => {
         if (event.pointerType !== "touch" || event.pointerId !== longPressPointerIdRef.current) return;

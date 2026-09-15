@@ -812,7 +812,6 @@ describe("HierarchicalListPrimitive", () => {
         dragAndDrop={{ onMove: () => {} }}
         hasLongPressAction={() => true}
         onItemLongPress={onItemLongPress}
-        interaction={{ longPressDelayMs: 100 }}
         renderRow={(rowProps, { item: rowItem }) => (
           <button {...rowProps}>{rowItem.name}</button>
         )}
@@ -831,7 +830,7 @@ describe("HierarchicalListPrimitive", () => {
     });
 
     act(() => row.dispatchEvent(pointerDown));
-    act(() => vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(500));
     expect(onItemLongPress).toHaveBeenCalledWith(item);
   });
 
@@ -845,7 +844,6 @@ describe("HierarchicalListPrimitive", () => {
         label="Resources"
         hasLongPressAction={() => hasAction}
         onItemLongPress={onItemLongPress}
-        interaction={{ longPressDelayMs: 100 }}
         renderRow={(rowProps, { item: rowItem }) => (
           <button {...rowProps}>{rowItem.name}</button>
         )}
@@ -862,7 +860,7 @@ describe("HierarchicalListPrimitive", () => {
     act(() => row.dispatchEvent(pointerDown));
     expect(row.getAttribute("data-pressed")).toBe("");
     act(() => root!.render(renderList(false)));
-    act(() => vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(500));
 
     expect(row.hasAttribute("data-pressed")).toBe(false);
     expect(onItemLongPress).not.toHaveBeenCalled();
@@ -1003,7 +1001,6 @@ describe("HierarchicalListPrimitive", () => {
         hasLongPressAction={() => true}
         onItemLongPress={() => {}}
         onItemClick={onItemClick}
-        interaction={{ longPressDelayMs: 100 }}
         renderRow={(rowProps, { item: rowItem }) => (
           <button {...rowProps}>{rowItem.name}</button>
         )}
@@ -1021,7 +1018,7 @@ describe("HierarchicalListPrimitive", () => {
     });
 
     act(() => row.dispatchEvent(pointerDown));
-    act(() => vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(500));
     act(() => row.click());
     expect(onItemClick).not.toHaveBeenCalled();
     act(() => row.click());
@@ -1045,7 +1042,6 @@ describe("HierarchicalListPrimitive", () => {
         hasLongPressAction={() => true}
         onItemLongPress={() => {}}
         onItemClick={onItemClick}
-        interaction={{ longPressDelayMs: 100 }}
         renderRow={(rowProps, { item: rowItem }) => (
           <button {...rowProps}>{rowItem.name}</button>
         )}
@@ -1059,7 +1055,7 @@ describe("HierarchicalListPrimitive", () => {
     });
 
     act(() => row.dispatchEvent(pointerDown));
-    act(() => vi.advanceTimersByTime(100));
+    act(() => vi.advanceTimersByTime(500));
     act(() => row.dispatchEvent(new Event("pointercancel", { bubbles: true })));
     act(() => row.click());
 
