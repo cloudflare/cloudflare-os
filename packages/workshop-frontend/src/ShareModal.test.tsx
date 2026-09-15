@@ -267,7 +267,7 @@ describe('ShareModal', () => {
     })
     // Let the load effects settle.
     await act(async () => { await Promise.resolve() })
-    return container
+    return document.body
   }
 
   it('reveals the workspace link to send after a direct invite', async () => {
@@ -665,43 +665,42 @@ describe('ShareModal', () => {
     expect(addCollaborator).not.toHaveBeenCalled()
   })
 
-  it('scrolls the keyboard-active directory result into view', async () => {
-    const scrollIntoView = vi.fn<Element['scrollIntoView']>()
-    const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      configurable: true,
-      value: scrollIntoView,
+  it('scrolls only the result list for keyboard navigation', async () => {
+    const results = Array.from({ length: 10 }, (_, index) => ({
+      id: `user${index}@example.com`,
+      name: `User ${index}`,
+    }))
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers: async () => results }),
+    )
+    await typeDirectorySearch(rendered, 'user')
+
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    const listbox = rendered.querySelector<HTMLDivElement>('[role="listbox"]')!
+    const modalScroller = input.closest<HTMLDivElement>('.chat-panel')!
+    expect(listbox.closest('[role="dialog"]')).toBeNull()
+    const targetId = `${input.getAttribute('aria-controls')}-option-6`
+    const target = document.getElementById(targetId)!
+    listbox.getBoundingClientRect = () => ({
+      top: 100, bottom: 286, left: 0, right: 600, width: 600, height: 186,
+      x: 0, y: 100, toJSON: () => ({}),
+    })
+    target.getBoundingClientRect = () => ({
+      top: 388, bottom: 436, left: 0, right: 600, width: 600, height: 48,
+      x: 0, y: 388, toJSON: () => ({}),
+    })
+    modalScroller.scrollTop = 31
+
+    await act(async () => {
+      for (let index = 0; index < 6; index++) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+      }
     })
 
-    try {
-      const results = Array.from({ length: 10 }, (_, index) => ({
-        id: `user${index}@example.com`,
-        name: `User ${index}`,
-      }))
-      const rendered = await render(
-        fakeOverseer(),
-        fakeAuthenticatedApi({ searchUsers: async () => results }),
-      )
-      await typeDirectorySearch(rendered, 'user')
-
-      const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
-      await act(async () => {
-        for (let index = 0; index < 6; index++) {
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
-        }
-      })
-
-      const activeId = input.getAttribute('aria-activedescendant')
-      expect(activeId).toBe(`${input.getAttribute('aria-controls')}-option-6`)
-      expect(scrollIntoView.mock.instances.at(-1)).toBe(document.getElementById(activeId!))
-      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' })
-    } finally {
-      if (originalScrollIntoView) {
-        Object.defineProperty(Element.prototype, 'scrollIntoView', originalScrollIntoView)
-      } else {
-        Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
-      }
-    }
+    expect(input.getAttribute('aria-activedescendant')).toBe(targetId)
+    expect(listbox.scrollTop).toBe(150)
+    expect(modalScroller.scrollTop).toBe(31)
   })
 
   it('keeps share links available while directory search loads or fails', async () => {

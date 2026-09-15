@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import type { PortalContainer } from '@cloudflare/kumo'
 import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
@@ -321,6 +322,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [directoryDismissed, setDirectoryDismissed] = useState(true)
   const directoryListboxId = useId()
   const activeDirectoryOptionRef = useRef<HTMLButtonElement>(null)
+  const directoryListboxRef = useRef<HTMLDivElement>(null)
+  const directoryAnchorRef = useRef<HTMLDivElement>(null)
   const wasOpenRef = useRef(false)
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
   const directoryQuery = addUsername.trim()
@@ -373,7 +376,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
-  const [menuContainer, setMenuContainer] = useState<PortalContainer>(null)
+  const [menuContainer, setMenuContainer] = useState<HTMLDivElement | null>(null)
   const [scrolled, setScrolled] = useState(false)
   const [landedPersonId, setLandedPersonId] = useState<string | null>(null)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
@@ -439,9 +442,45 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
 
+  // The popover is portaled out of the dialog so it can outgrow the dialog's clipped, scrolling
+  // body; pin it under the search row by hand since it no longer shares an offset parent.
   useLayoutEffect(() => {
-    if (directoryOpen) {
-      activeDirectoryOptionRef.current?.scrollIntoView({ block: 'nearest' })
+    if (!directoryOpen) return
+    const position = () => {
+      const anchor = directoryAnchorRef.current
+      const listbox = directoryListboxRef.current
+      if (!anchor || !listbox) return
+      const { left, bottom, width } = anchor.getBoundingClientRect()
+      const top = bottom + 8
+      listbox.style.left = `${left}px`
+      listbox.style.top = `${top}px`
+      listbox.style.width = `${width}px`
+      listbox.style.maxHeight = `${Math.min(205, window.innerHeight - top - 12)}px`
+    }
+    position()
+    window.addEventListener('resize', position)
+    window.addEventListener('scroll', position, true)
+    return () => {
+      window.removeEventListener('resize', position)
+      window.removeEventListener('scroll', position, true)
+    }
+  }, [directoryOpen])
+
+  useLayoutEffect(() => {
+    if (!directoryOpen) return
+
+    const listbox = directoryListboxRef.current
+    const option = activeDirectoryOptionRef.current
+    if (!listbox || !option) return
+
+    // scrollIntoView() also scrolls the modal's ancestor scroller. Adjust only the result list so
+    // keyboard navigation cannot move the modal underneath its sticky search field.
+    const listboxRect = listbox.getBoundingClientRect()
+    const optionRect = option.getBoundingClientRect()
+    if (optionRect.top < listboxRect.top) {
+      listbox.scrollTop -= listboxRect.top - optionRect.top
+    } else if (optionRect.bottom > listboxRect.bottom) {
+      listbox.scrollTop += optionRect.bottom - listboxRect.bottom
     }
   }, [activeDirectoryIndex, directoryOpen, directory.results])
 
@@ -920,7 +959,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           )}
           <div className={`sticky top-0 z-10 bg-kumo-base pb-3 transition-shadow duration-200 ${scrolled ? 'themed-bottom-shadow border-b border-kumo-line/60' : ''}`}>
           <div
-            className="themed-compact-shadow relative grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
+            ref={directoryAnchorRef}
+            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
             data-keeper-ignore="true"
             data-1p-ignore="true"
             data-lpignore="true"
@@ -984,8 +1024,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
-            {directoryOpen && (
+            {directoryOpen && menuContainer && createPortal(
               <div
+                ref={directoryListboxRef}
                 id={directoryListboxId}
                 role="listbox"
                 aria-label="Matching people"
@@ -993,7 +1034,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 // Pressing anywhere in the popover (an option, its padding, the scrollbar) must not
                 // blur the combobox, which would dismiss the popover before the click lands.
                 onMouseDown={(event) => event.preventDefault()}
-                className="themed-floating-shadow-lg absolute left-0 top-full z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-kumo-line/70 bg-kumo-base p-2 sm:w-96"
+                className="chat-panel themed-floating-shadow-lg fixed overscroll-contain overflow-y-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-2"
               >
                 {directory.status === 'loading' ? (
                   <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">Searching…</p>
@@ -1058,7 +1099,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                     </button>
                   </>
                 )}
-              </div>
+              </div>,
+              menuContainer,
             )}
           </div>
 
