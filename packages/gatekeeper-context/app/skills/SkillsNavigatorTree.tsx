@@ -207,6 +207,7 @@ export const SkillsNavigatorTree = ({
         title: error instanceof Error ? error.message : "Failed to move skill",
         variant: "error",
       });
+      throw error;
     } finally {
       setMoving(false);
     }
@@ -358,12 +359,13 @@ export const SkillsNavigatorTree = ({
       label="Skills"
       expandAll={expandAll}
       dragAndDrop={{
+        autoScroll: true,
         canMoveTo: (item, parent) => Boolean(
           parent
           && moveSourcesById.has(item.id)
           && collectionIdsByItemId.get(item.id) === collectionIdsByItemId.get(parent.id),
         ),
-        onMove: (item, destination) => void handleMove(item, destination),
+        onMove: handleMove,
       }}
       onItemClick={(item) => {
         const skill = skillsById.get(item.id);
