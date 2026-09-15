@@ -5,6 +5,7 @@ import type { RpcStub } from 'capnweb'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { ResolveButton } from './components/ResolveButton'
+import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
 import {
   formatRelativeTime,
   PENDING_CHECKING_COPY,
@@ -17,6 +18,9 @@ import { useResolveAction } from './useResolveAction'
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
   onViewActivity: (view: ActivityView) => void
+  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData):
+  // the approver is the leak check, so each request is shown in full with a notice saying so.
+  restricted?: boolean
 }
 
 const PREVIEW_LIMIT = 3
@@ -24,6 +28,7 @@ const PREVIEW_LIMIT = 3
 export default function ActivityNotifications({
   overseer,
   onViewActivity,
+  restricted,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
@@ -76,6 +81,7 @@ export default function ActivityNotifications({
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">
+            {restricted && <RestrictedApprovalNotice className="mx-3.5 mb-1 mt-0.5 px-2.5 py-2" />}
             {pending.slice(0, PREVIEW_LIMIT).map((action, index) => {
               const isProcessing = processing.has(action.id)
               return (
@@ -97,7 +103,7 @@ export default function ActivityNotifications({
                         <span className="px-1">·</span>
                         {formatRelativeTime(action.createdAt)}
                       </span>
-                      <span className="mt-1.5 block line-clamp-2 text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle">
+                      <span className={`mt-1.5 block whitespace-pre-wrap text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle ${restricted ? '' : 'line-clamp-2'}`}>
                         {action.description.description}
                       </span>
                     </button>
