@@ -59,6 +59,16 @@ describe("hierarchical list drag-and-drop targeting", () => {
     expect(rowTarget(folder, 80, { open: true })?.destination).toEqual({ parent: folder, index: 0 });
   });
 
+  it("does not advertise insertion below an expanded non-droppable folder row", () => {
+    const folder: HierarchicalListItem = {
+      id: "folder",
+      name: "Folder",
+      children: [{ id: "child", name: "Child" }],
+    };
+
+    expect(rowTarget(folder, 80, { open: true })).toBeNull();
+  });
+
   it("rejects moving a folder into its descendant", () => {
     const child: HierarchicalListItem = { id: "child", name: "Child", droppable: true, children: [] };
     const folder: HierarchicalListItem = {

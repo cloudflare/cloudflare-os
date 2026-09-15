@@ -200,6 +200,7 @@ export const getRowDropTarget = ({
   if (!canInsertInto(source, parent)) return null;
 
   const after = verticalRatio >= 0.5;
+  if (after && open && item.children?.length) return null;
   const destinationIndex = index + (after ? 1 : 0);
   return {
     id: insertionTargetId(parent, destinationIndex),

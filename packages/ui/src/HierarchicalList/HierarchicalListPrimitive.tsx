@@ -319,7 +319,10 @@ export const HierarchicalListPrimitive = ({
   const [internalExpandedIds, setInternalExpandedIds] = useState<ReadonlySet<string>>(
     () => new Set(props.initialExpandedIds),
   );
-  const [moveAnnouncement, setMoveAnnouncement] = useState("");
+  const [moveAnnouncement, setMoveAnnouncement] = useState<{
+    message: string;
+    channel: 0 | 1;
+  }>({ message: "", channel: 1 });
   const listRef = useRef<HTMLDivElement>(null);
   const pendingFocusRef = useRef<{
     itemId: string;
@@ -361,9 +364,13 @@ export const HierarchicalListPrimitive = ({
       const operationId = ++moveOperationIdRef.current;
       const announceMove = () => {
         if (moveOperationIdRef.current !== operationId) return;
-        setMoveAnnouncement(`${item.name} moved to position ${normalizedDestination.index + 1} in ${
+        const message = `${item.name} moved to position ${normalizedDestination.index + 1} in ${
           normalizedDestination.parent?.name ?? label
-        }.`);
+        }.`;
+        setMoveAnnouncement((current) => ({
+          message,
+          channel: current.channel === 0 ? 1 : 0,
+        }));
       };
       try {
         const result = dragAndDrop.onMove(item, normalizedDestination);
@@ -386,7 +393,10 @@ export const HierarchicalListPrimitive = ({
 
   useEffect(() => {
     const draggedItem = dragController.draggedItem;
-    if (draggedItem && (!dragAndDrop || !findItemPosition(items, draggedItem.id))) {
+    if (!draggedItem) return;
+    const position = findItemPosition(items, draggedItem.id);
+    const currentItem = position && (position.parent?.children ?? items)[position.index];
+    if (!dragAndDrop || !currentItem?.draggable) {
       dragController.setDraggedItem(null);
       dragController.setDropTargetId(null);
     }
@@ -482,9 +492,7 @@ export const HierarchicalListPrimitive = ({
           />
         ))}
       </ul>
-      <span
-        role="status"
-        aria-live="polite"
+      <div
         style={{
           position: "absolute",
           width: 1,
@@ -497,8 +505,13 @@ export const HierarchicalListPrimitive = ({
           border: 0,
         }}
       >
-        {moveAnnouncement}
-      </span>
+        <span role="status" aria-live="polite">
+          {moveAnnouncement.channel === 0 ? moveAnnouncement.message : ""}
+        </span>
+        <span role="status" aria-live="polite">
+          {moveAnnouncement.channel === 1 ? moveAnnouncement.message : ""}
+        </span>
+      </div>
       {dragController.draggedItem && dragController.dropIndicator
         && renderDropIndicator?.(dragController.dropIndicator)}
       {dragController.draggedItem && dragController.touchDragPosition && (

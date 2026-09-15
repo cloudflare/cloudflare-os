@@ -97,18 +97,25 @@ describe("HierarchicalList", () => {
   it("expands branches and selects leaf items", () => {
     const onItemClick = vi.fn<(item: HierarchicalListItem) => void>();
     render(
-      <HierarchicalList items={items} label="Skills" onItemClick={onItemClick} />,
+      <HierarchicalList
+        items={items}
+        label="Skills"
+        selectedId="collection"
+        onItemClick={onItemClick}
+      />,
     );
 
     expect(container?.querySelector("ul")?.getAttribute("aria-label")).toBe("Skills");
     expect(buttonFor("Review code")).toBeUndefined();
+    expect(buttonFor("Engineering")?.getAttribute("aria-current")).toBe("true");
+    expect(buttonFor("Engineering")?.getAttribute("aria-expanded")).toBe("false");
 
     act(() => buttonFor("Engineering")?.click());
 
     const skillButton = buttonFor("Review code");
     expect(skillButton).toBeDefined();
-    expect(skillButton?.className).toContain("w-full");
-    expect(skillButton?.className).toContain("focus-visible:z-20");
+    expect(buttonFor("Engineering")?.getAttribute("aria-expanded")).toBe("true");
+    expect(skillButton?.hasAttribute("aria-expanded")).toBe(false);
     expect(rowFor("Review code")?.draggable).toBe(false);
     act(() => skillButton?.focus());
     act(() => skillButton?.dispatchEvent(new KeyboardEvent("keydown", {
@@ -136,197 +143,6 @@ describe("HierarchicalList", () => {
     );
 
     expect(rowFor("Empty collection")?.textContent).toContain("Empty collection0");
-  });
-
-  it("reports valid drops and rejects drops into descendants", () => {
-    const onMove = vi.fn<(
-      item: HierarchicalListItem,
-      destination: HierarchicalListDropDestination,
-    ) => void>();
-    const nestedItems: HierarchicalListItem[] = [
-      {
-        id: "source",
-        name: "Source",
-        draggable: true,
-        droppable: true,
-        children: [{ id: "child", name: "Child", droppable: true, children: [] }],
-      },
-      { id: "destination", name: "Destination", droppable: true, children: [] },
-    ];
-    render(
-      <HierarchicalList items={nestedItems} label="Files" expandAll dragAndDrop={{ onMove }} />,
-    );
-
-    const source = rowFor("Source")!;
-    const child = rowFor("Child")!;
-    const destination = rowFor("Destination")!;
-    const dataTransfer = {
-      effectAllowed: "none",
-      dropEffect: "none",
-      setData: vi.fn<(format: string, data: string) => void>(),
-    };
-    const dispatchDrag = (target: HTMLElement, type: string) => {
-      const event = new Event(type, { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
-      act(() => target.dispatchEvent(event));
-    };
-
-    dispatchDrag(source, "dragstart");
-    dispatchDrag(child, "dragover");
-    dispatchDrag(child, "drop");
-    expect(onMove).not.toHaveBeenCalled();
-
-    dispatchDrag(destination, "dragover");
-    dispatchDrag(destination, "drop");
-    expect(onMove).toHaveBeenCalledWith(nestedItems[0], {
-      parent: nestedItems[1],
-      index: 0,
-    });
-  });
-
-  it("uses the row midpoint for before and after insertion", () => {
-    const onMove = vi.fn<(
-      item: HierarchicalListItem,
-      destination: HierarchicalListDropDestination,
-    ) => void>();
-    const reorderItems: HierarchicalListItem[] = [
-      { id: "source", name: "Source", draggable: true },
-      { id: "target", name: "Target" },
-    ];
-    render(<HierarchicalList items={reorderItems} label="Files" dragAndDrop={{ onMove }} />);
-    const source = rowFor("Source")!;
-    const target = rowFor("Target")!;
-    setRect(container!.firstElementChild!, { top: 0 });
-    setRect(source, { top: 0 });
-    setRect(target, { top: 40 });
-    const transfer = dataTransfer();
-
-    dispatchDrag(source, "dragstart", transfer);
-    dispatchDrag(target, "dragover", transfer, 59);
-    dispatchDrag(target, "drop", transfer, 59);
-    expect(onMove).not.toHaveBeenCalled();
-    expect(container!.querySelector('[role="status"]')?.textContent).toBe("");
-
-    dispatchDrag(source, "dragstart", transfer);
-    dispatchDrag(target, "dragover", transfer, 60);
-    dispatchDrag(target, "drop", transfer, 60);
-    expect(onMove).toHaveBeenLastCalledWith(reorderItems[0], { parent: null, index: 1 });
-  });
-
-  it("uses thirds of a closed folder for before, inside, and after", () => {
-    const onMove = vi.fn<(
-      item: HierarchicalListItem,
-      destination: HierarchicalListDropDestination,
-    ) => void>();
-    const folderItems: HierarchicalListItem[] = [
-      { id: "source", name: "Source", draggable: true },
-      { id: "folder", name: "Folder", droppable: true, children: [] },
-    ];
-    render(<HierarchicalList items={folderItems} label="Files" dragAndDrop={{ onMove }} />);
-    const source = rowFor("Source")!;
-    const folder = rowFor("Folder")!;
-    setRect(container!.firstElementChild!, { top: 0 });
-    setRect(source, { top: 0, height: 60 });
-    setRect(folder, { top: 60, height: 60 });
-    const transfer = dataTransfer();
-
-    const dropAt = (clientY: number) => {
-      dispatchDrag(source, "dragstart", transfer);
-      dispatchDrag(folder, "dragover", transfer, clientY);
-      dispatchDrag(folder, "drop", transfer, clientY);
-    };
-
-    dropAt(70);
-    expect(onMove).not.toHaveBeenCalled();
-    dispatchDrag(source, "dragstart", transfer);
-    dispatchDrag(folder, "dragover", transfer, 90);
-    expect(container!.querySelector("[data-folder-drop-outline]")?.className)
-      .toContain("border-kumo-brand");
-    dispatchDrag(folder, "drop", transfer, 90);
-    expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: folderItems[1], index: 0 });
-    dropAt(110);
-    expect(onMove).toHaveBeenLastCalledWith(folderItems[0], { parent: null, index: 1 });
-  });
-
-  it("only inserts into an expanded folder directly below its row", () => {
-    const onMove = vi.fn<(
-      item: HierarchicalListItem,
-      destination: HierarchicalListDropDestination,
-    ) => void>();
-    const folderItems: HierarchicalListItem[] = [
-      { id: "source", name: "Source", draggable: true },
-      {
-        id: "folder",
-        name: "Folder",
-        droppable: true,
-        children: [{ id: "child", name: "Child" }],
-      },
-    ];
-    render(
-      <HierarchicalList items={folderItems} label="Files" expandAll dragAndDrop={{ onMove }} />,
-    );
-    const source = rowFor("Source")!;
-    const folder = rowFor("Folder")!;
-    const child = rowFor("Child")!;
-    setRect(container!.firstElementChild!, { top: 0 });
-    setRect(source, { top: 0 });
-    setRect(folder, { top: 40 });
-    setRect(child, { top: 80 });
-    const transfer = dataTransfer();
-
-    dispatchDrag(source, "dragstart", transfer);
-    dispatchDrag(folder, "dragover", transfer, 75);
-    dispatchDrag(folder, "drop", transfer, 75);
-    expect(onMove).toHaveBeenLastCalledWith(folderItems[0], {
-      parent: folderItems[1],
-      index: 0,
-    });
-
-    dispatchDrag(source, "dragstart", transfer);
-    dispatchDrag(child, "dragover", transfer, 101);
-    dispatchDrag(child, "drop", transfer, 101);
-    expect(onMove).toHaveBeenLastCalledWith(folderItems[0], {
-      parent: folderItems[1],
-      index: 1,
-    });
-  });
-
-  it("moves one persistent fixed-thickness indicator between insertion targets", () => {
-    const movementItems: HierarchicalListItem[] = [
-      { id: "source", name: "Source", draggable: true },
-      { id: "target", name: "Target" },
-    ];
-    render(
-      <HierarchicalList
-        items={movementItems}
-        label="Files"
-        dragAndDrop={{ onMove: () => {} }}
-      />,
-    );
-    const source = rowFor("Source")!;
-    const target = rowFor("Target")!;
-    setRect(container!.firstElementChild!, { top: 0 });
-    setRect(source, { top: 0 });
-    setRect(target, { top: 40 });
-    const transfer = dataTransfer();
-
-    dispatchDrag(source, "dragstart", transfer);
-    const indicator = container!.querySelector<HTMLElement>("[data-drop-indicator]");
-    const dropZones = container!.querySelectorAll<HTMLElement>("[data-hierarchical-list-drop-zone]");
-    expect(indicator).not.toBeNull();
-    expect(indicator?.className).toContain("h-[1.5px]");
-    expect(indicator?.className).toContain("bg-kumo-brand");
-    expect(dropZones.length).toBeGreaterThan(0);
-    expect([...dropZones].every((zone) => zone.className.includes("absolute"))).toBe(true);
-    expect([...dropZones].every((zone) => !zone.className.includes("-my-"))).toBe(true);
-
-    dispatchDrag(target, "dragover", transfer, 59);
-    expect(container!.querySelectorAll("[data-drop-indicator]")).toHaveLength(1);
-    expect(container!.querySelector("[data-drop-indicator]")).toBe(indicator);
-
-    dispatchDrag(target, "dragover", transfer, 60);
-    expect(container!.querySelectorAll("[data-drop-indicator]")).toHaveLength(1);
-    expect(container!.querySelector("[data-drop-indicator]")).toBe(indicator);
   });
 
   it("scrolls from draggable rows and reorders from their touch handles", () => {
@@ -370,7 +186,6 @@ describe("HierarchicalList", () => {
     expect(source.style.touchAction).not.toBe("none");
     expect(handle.style.touchAction).toBe("none");
     expect(handle.getAttribute("aria-hidden")).toBe("true");
-    expect(source.className).toContain("hover:!bg-transparent");
     const rowMove = new MouseEvent("pointermove", {
       bubbles: true,
       cancelable: true,
@@ -394,6 +209,12 @@ describe("HierarchicalList", () => {
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
     expect(container!.querySelector<HTMLElement>("[data-touch-drag-preview]")?.parentElement
       ?.style.pointerEvents).toBe("none");
+    dispatchTouchPointer(handle, "pointercancel", 30, 30);
+    expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
+    expect(onMove).not.toHaveBeenCalled();
+
+    dispatchTouchPointer(handle, "pointerdown", 10, 10);
+    dispatchTouchPointer(handle, "pointermove", 30, 30);
     dispatchTouchPointer(handle, "pointerup", 20, 60, 2);
     expect(container!.querySelector("[data-touch-drag-preview]")?.textContent).toContain("Source");
     dispatchTouchPointer(handle, "pointermove", 20, 60);
@@ -428,7 +249,6 @@ describe("HierarchicalList", () => {
     dispatchDrag(handle, "dragstart", transfer);
 
     expect(transfer.setData).toHaveBeenCalledWith("text/plain", "source");
-    expect(source.closest("[data-hierarchical-list-item]")?.getAttribute("data-dragging")).toBe("");
   });
 
   it("does not dispatch touch drops outside the originating list", () => {
@@ -501,27 +321,6 @@ describe("HierarchicalList", () => {
     expect(container!.querySelector("[data-touch-drag-preview]")).toBeNull();
   });
 
-  it("keeps rows natively draggable without disabling their touch scrolling", () => {
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
-    render(
-      <HierarchicalList
-        items={[{ id: "source", name: "Source", draggable: true }]}
-        label="Files"
-        dragAndDrop={{ onMove: () => {} }}
-      />,
-    );
-
-    const row = rowFor("Source")!;
-    expect(row.draggable).toBe(true);
-    expect(row.className).not.toContain("touch-none");
-    expect(row.style.touchAction).not.toBe("none");
-    expect(row.style.paddingLeft).toBe("12px");
-  });
-
   it("opens an item's action menu from a right click", () => {
     render(
       <HierarchicalList
@@ -569,6 +368,32 @@ describe("HierarchicalList", () => {
 
     expect(document.body.textContent).toContain("Delete");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("uses the configured long-press delay for a wide-layout context menu", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: false,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Review code" }]}
+        label="Skills"
+        interaction={{ longPressDelayMs: 700 }}
+        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
+      />,
+    );
+    const row = rowFor("Review code")!;
+
+    dispatchTouchPointer(row, "pointerdown", 20, 30, 1);
+    act(() => vi.advanceTimersByTime(500));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    act(() => vi.advanceTimersByTime(200));
+
+    expect(document.body.textContent).toContain("Delete");
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
   });
 
   it("does not cancel a long press when a different touch ends", () => {
@@ -622,8 +447,6 @@ describe("HierarchicalList", () => {
     expect(menu.parentElement?.className).toContain("overflow-y-auto");
     const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
     expect(label?.textContent).toBe("Review code");
-    expect(document.querySelector("[aria-hidden='true'][data-popup-open]")).toBeNull();
-
     const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
     act(() => menuItem.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Escape",

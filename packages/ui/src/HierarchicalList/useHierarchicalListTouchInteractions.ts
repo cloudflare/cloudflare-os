@@ -104,6 +104,11 @@ export const useHierarchicalListTouchInteractions = ({
     longPressPointerIdRef.current = null;
   };
   useEffect(() => cancelLongPress, []);
+  useEffect(() => {
+    if (enabled && longPressAction) return;
+    cancelLongPress();
+    setPressed(false);
+  }, [enabled, longPressAction]);
 
   const rowPointerProps: {
     onPointerDown?: PointerEventHandler<HTMLElement>;

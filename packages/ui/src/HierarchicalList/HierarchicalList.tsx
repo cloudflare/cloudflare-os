@@ -191,7 +191,17 @@ const StyledRow = ({
   if (!contextMenu) return row;
   if (!useActionDrawer) {
     return (
-      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+      <ContextMenu.Root
+        open={actionsOpen}
+        onOpenChange={(open, details) => {
+          const event = details.event;
+          const touchPress = details.reason === "trigger-press" && (
+            event.type.startsWith("touch")
+            || ("pointerType" in event && event.pointerType === "touch")
+          );
+          if (!open || !touchPress) onActionsOpenChange(open);
+        }}
+      >
         <ContextMenu.Trigger render={row} />
         <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
       </ContextMenu.Root>
@@ -280,11 +290,11 @@ export const HierarchicalList = ({
     <LayerCard className="p-1">
       <HierarchicalListPrimitive
         {...props}
-        hasLongPressAction={renderContextMenu && useActionDrawer
+        hasLongPressAction={renderContextMenu
           ? (item) => Boolean(renderContextMenu(item))
           : undefined}
-        onItemLongPress={renderContextMenu && useActionDrawer
-          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
+        onItemLongPress={renderContextMenu
+          ? (item) => setOpenActions({ itemId: item.id, drawer: useActionDrawer })
           : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{
