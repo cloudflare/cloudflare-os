@@ -3,6 +3,7 @@ import type { CalendarConfiguratorRpc, CalendarConfiguratorValues } from "./cale
 
 export default {
   initial: { availabilityMode: "thisCalendar" },
+  verifiesInitialResource: true,
 
   isReady({ values }) {
     return typeof values.calendarId === "string" &&

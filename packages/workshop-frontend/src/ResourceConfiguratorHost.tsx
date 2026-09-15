@@ -21,7 +21,7 @@ export default function ResourceConfiguratorHost({
   error: string | null
   disabled: boolean
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
-  onSelectionReadyChange?: (ready: boolean | null) => void
+  onSelectionReadyChange?: (ready: boolean | null, initialResourceVerified?: boolean) => void
   topOffset?: number
   hidden?: boolean
   initialResourceUrl?: string

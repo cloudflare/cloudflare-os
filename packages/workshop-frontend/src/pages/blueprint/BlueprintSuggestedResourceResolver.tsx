@@ -6,8 +6,8 @@ import {
   type ResourceConfiguratorFrame,
 } from '@gadgets/workshop-shared/gatekeeper'
 
-import ResourceConfiguratorHost from './ResourceConfiguratorHost'
-import { normalizeResourceUrl } from './resourceMatching'
+import ResourceConfiguratorHost from '../../ResourceConfiguratorHost'
+import { normalizeResourceUrl } from '../../resourceMatching'
 
 type Props = {
   accountId: number
@@ -84,9 +84,13 @@ const BlueprintSuggestedResourceResolver = ({
     tryResolve()
   }, [tryResolve])
 
-  const handleReadyChange = useCallback((ready: boolean | null) => {
-    readyRef.current = ready === true
-    if (ready === false) reject()
+  const handleReadyChange = useCallback((
+    ready: boolean | null,
+    initialResourceVerified?: boolean,
+  ) => {
+    const accepted = ready === true && initialResourceVerified === true
+    readyRef.current = accepted
+    if (ready !== null && !accepted) reject()
     else tryResolve()
   }, [reject, tryResolve])
 

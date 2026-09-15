@@ -25,7 +25,7 @@ import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer
 import { openConnectWindow } from './connectHandoff'
 import BlueprintSuggestedResourceResolver, {
   disposeConfiguratorFrame,
-} from './BlueprintSuggestedResourceResolver'
+} from './pages/blueprint/BlueprintSuggestedResourceResolver'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -1678,9 +1678,9 @@ function BlueprintGatekeeperBindingField({
     }
     const first = matchingAccounts.find(a => a.credentialsValid)
     if (first) {
-      onChangeRef.current({ accountId: first.id } as any)
+      onChangeRef.current({ accountId: first.id, resourceUrl: undefined } as any)
     } else if (selectedAccountId !== null) {
-      onChangeRef.current({ accountId: undefined } as any)
+      onChangeRef.current({ accountId: undefined, resourceUrl: undefined } as any)
     }
   }, [matchingAccounts, selectedAccountId])
 
@@ -1789,7 +1789,10 @@ function BlueprintGatekeeperBindingField({
         reconnectingAccountId={reconnectingAccountId}
         requiredResourceUrlPatterns={requiredResourceUrlPatterns}
         grantingAccountId={grantingAccountId}
-        onSelect={(id) => onChange({ accountId: id } as any)}
+        onSelect={(id) => onChange({
+          accountId: id,
+          resourceUrl: id === selectedAccountId ? initialResourceUrl : undefined,
+        } as any)}
         onConnect={() => onConnectAccount(
           binding.gatekeeperName,
           requiredResourceUrlPatterns.length > 0 ? requiredResourceUrlPatterns : undefined,

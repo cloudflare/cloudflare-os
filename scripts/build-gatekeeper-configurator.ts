@@ -202,7 +202,7 @@ function postSelectionState() {
     && Boolean(spec.isReady({ values }));
   if (ready === lastPostedReady) return;
   lastPostedReady = ready;
-  host?.setSelectionReady(ready);
+  host?.setSelectionReady(ready, spec.verifiesInitialResource === true);
 }
 
 function setValues(patch) {

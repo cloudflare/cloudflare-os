@@ -27,11 +27,22 @@ const checkboxConfiguratorSource =
   '      onChange={tools => setValues({ tools })} />;\n' +
   '  },\n' +
   '};\n';
+const attestingConfiguratorSource =
+  'import { h } from "@gadgets/configurator-ui";\n' +
+  'export default {\n' +
+  '  initial: {},\n' +
+  '  verifiesInitialResource: true,\n' +
+  '  initialValuesFromResourceUrl({ resourceUrl }) { return { resourceUrl }; },\n' +
+  '  isReady({ values }) { return typeof values.resourceUrl === "string"; },\n' +
+  '  resourceUrl({ values }) { return values.resourceUrl; },\n' +
+  '  render() { return <div />; },\n' +
+  '};\n';
 let fixtureDir: string;
 let disabledFixtureDir: string;
 let devModeFixtureDir: string;
 let devEnvWithoutDevFlagFixtureDir: string;
 let checkboxFixtureDir: string;
+let attestingFixtureDir: string;
 
 // `envFile` is the `.env.*` file that enables reporting, so which one is written decides which build
 // mode picks it up. `staleArtifacts` pre-seeds the outputs a reporting-disabled build must remove.
@@ -67,7 +78,13 @@ async function readRuntime(directory: string): Promise<string> {
   return decodeURIComponent(match[1]);
 }
 
-async function runConfiguratorRuntime(directory: string) {
+async function runConfiguratorRuntime(directory: string, {
+  initialResource = null,
+  readySelector = ".checkbox-rows",
+}: {
+  initialResource?: { resourceUrl: string; resourceUrlPattern: string } | null;
+  readySelector?: string;
+} = {}) {
   const dom = new JSDOM("<!DOCTYPE html><div id=\"root\"></div>", {
     pretendToBeVisual: true,
     runScripts: "outside-only",
@@ -75,6 +92,7 @@ async function runConfiguratorRuntime(directory: string) {
   const runtime = (await readRuntime(directory)).replace(/^import .*;\n/gm, "");
   Object.defineProperty(dom.window, "postMessage", { value: () => {} });
   dom.window.eval(`
+    globalThis.selectionStates = [];
     class MessageChannel {
       constructor() { this.port1 = {}; this.port2 = {}; }
     }
@@ -87,8 +105,8 @@ async function runConfiguratorRuntime(directory: string) {
     function newMessagePortRpcSession() {
       return {
         gatekeeper: {},
-        getInitialResource: async () => null,
-        setSelectionReady() {},
+        getInitialResource: async () => (${JSON.stringify(initialResource)}),
+        setSelectionReady(...args) { globalThis.selectionStates.push(args); },
         resize() {},
         forwardScroll() {},
       };
@@ -97,12 +115,12 @@ async function runConfiguratorRuntime(directory: string) {
   `);
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    if (dom.window.document.querySelector(".checkbox-rows")) return dom;
+    if (dom.window.document.querySelector(readySelector)) return dom;
     await new Promise(done => setTimeout(done, 0));
   }
   const error = dom.window.document.getElementById("root")?.textContent;
   dom.window.close();
-  throw new Error(`Configurator did not render its checkbox list: ${error}`);
+  throw new Error(`Configurator did not render ${readySelector}: ${error}`);
 }
 
 function readConfiguratorModule(runtime: string): string {
@@ -184,6 +202,8 @@ before(async () => {
     { envFile: ".env.development", staleArtifacts: true });
   checkboxFixtureDir = await createFixture(
     "configurator-checkbox-", { source: checkboxConfiguratorSource });
+  attestingFixtureDir = await createFixture(
+    "configurator-attesting-", { source: attestingConfiguratorSource });
 });
 
 after(async () => {
@@ -192,6 +212,7 @@ after(async () => {
   await rm(devModeFixtureDir, { recursive: true, force: true });
   await rm(devEnvWithoutDevFlagFixtureDir, { recursive: true, force: true });
   await rm(checkboxFixtureDir, { recursive: true, force: true });
+  await rm(attestingFixtureDir, { recursive: true, force: true });
 });
 
 describe("generated configurator error reporting", () => {
@@ -294,6 +315,25 @@ describe("generated configurator error reporting", () => {
     assert.doesNotMatch(runtime, /sourceURL=.*serialize-exception/);
     await assert.rejects(access(join(generatedDir, "test-ui.js")), { code: "ENOENT" });
     await assert.rejects(access(join(generatedDir, "test-ui.js.map")), { code: "ENOENT" });
+  });
+});
+
+describe("generated configurator initial-resource verification", () => {
+  it("forwards an explicit verification declaration with readiness", async () => {
+    const dom = await runConfiguratorRuntime(attestingFixtureDir, {
+      initialResource: {
+        resourceUrl: "https://example.com/resource/one",
+        resourceUrlPattern: "https://example.com/resource/:id",
+      },
+      readySelector: "#layout-root",
+    });
+    try {
+      const selectionStates = JSON.parse(JSON.stringify(
+        (dom.window as unknown as { selectionStates: unknown[] }).selectionStates));
+      assert.deepEqual(selectionStates, [[true, true]]);
+    } finally {
+      dom.window.close();
+    }
   });
 });
 

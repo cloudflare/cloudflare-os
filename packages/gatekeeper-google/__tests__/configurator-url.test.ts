@@ -122,6 +122,10 @@ describe("Gmail configurator URLs", () => {
 });
 
 describe("Calendar configurator URLs", () => {
+  it("attests that readiness includes exact access verification", () => {
+    expect(calendarConfigurator.verifiesInitialResource).toBe(true);
+  });
+
   it("resolves an account-relative primary prefill to a stable calendar ID", async () => {
     const ui = {
       getPrimaryCalendarId: vi.fn(async () => "person@example.com"),

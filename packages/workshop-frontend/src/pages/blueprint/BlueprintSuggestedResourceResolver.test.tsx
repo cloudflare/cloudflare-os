@@ -14,12 +14,12 @@ type HostProps = {
   initialResourceUrl?: string
   resourceUrlPattern?: string
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
-  onSelectionReadyChange?: (ready: boolean | null) => void
+  onSelectionReadyChange?: (ready: boolean | null, initialResourceVerified?: boolean) => void
 }
 
 const testState = vi.hoisted(() => ({ hostProps: null as HostProps | null }))
 
-vi.mock('./ResourceConfiguratorHost', () => {
+vi.mock('../../ResourceConfiguratorHost', () => {
   const ResourceConfiguratorHost = (props: HostProps) => {
     testState.hostProps = props
     return null
@@ -91,7 +91,7 @@ describe('BlueprintSuggestedResourceResolver', () => {
       'https://calendar.google.com/calendar/recipient%40example.com/*'
     await act(async () => {
       testState.hostProps!.onCollectResourceUrlChange?.(() => Promise.resolve(collectedUrl))
-      testState.hostProps!.onSelectionReadyChange?.(true)
+      testState.hostProps!.onSelectionReadyChange?.(true, true)
       await Promise.resolve()
     })
 
@@ -117,6 +117,25 @@ describe('BlueprintSuggestedResourceResolver', () => {
     await vi.waitFor(() => expect(testState.hostProps).not.toBeNull())
 
     act(() => testState.hostProps!.onSelectionReadyChange?.(false))
+
+    expect(onResolved).not.toHaveBeenCalled()
+    expect(onRejected).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('rejects readiness that does not attest the initial resource', async () => {
+    const dispose = vi.fn<() => void>()
+    const startResourceConfigurator = vi.fn<
+      (accountId: number, resourceUrlPattern: string) => Promise<ResourceConfiguratorFrame>
+    >().mockResolvedValue(configuratorFrame(dispose))
+    const { onResolved, onRejected } = await renderResolver(startResourceConfigurator)
+    await vi.waitFor(() => expect(testState.hostProps).not.toBeNull())
+
+    await act(async () => {
+      testState.hostProps!.onCollectResourceUrlChange?.(() => Promise.resolve(SUGGESTED_RESOURCE_URL))
+      testState.hostProps!.onSelectionReadyChange?.(true, false)
+      await Promise.resolve()
+    })
 
     expect(onResolved).not.toHaveBeenCalled()
     expect(onRejected).toHaveBeenCalledOnce()

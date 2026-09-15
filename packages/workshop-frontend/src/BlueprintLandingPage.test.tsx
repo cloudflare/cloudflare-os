@@ -69,14 +69,14 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     initialResourceUrl?: string
     resourceUrlPattern?: string
     onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
-    onSelectionReadyChange?: (ready: boolean | null) => void
+    onSelectionReadyChange?: (ready: boolean | null, initialResourceVerified?: boolean) => void
   }) => {
     const mounted = Boolean(frame && !loading && !disabled)
     useEffect(() => {
       if (!mounted) return
       testState.configuratorMounts.push({ hidden, initialResourceUrl, resourceUrlPattern })
       onCollectResourceUrlChange?.(() => testState.collectResourceUrl())
-      onSelectionReadyChange?.(testState.selectionReady(initialResourceUrl))
+      onSelectionReadyChange?.(testState.selectionReady(initialResourceUrl), hidden ? true : undefined)
       return () => {
         onCollectResourceUrlChange?.(null)
         onSelectionReadyChange?.(null)
@@ -305,6 +305,10 @@ function gatekeeperApi(
       if (!subscriber) throw new Error('account subscriber is not ready')
       subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
     },
+    removeAccount(id: number) {
+      if (!subscriber) throw new Error('account subscriber is not ready')
+      subscriber.remove(id)
+    },
     markAccountsReady() {
       if (!subscriber) throw new Error('account subscriber is not ready')
       subscriber.ready()
@@ -424,6 +428,52 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
 
     expect(findButton('Change')).toBeUndefined()
     expect(findButton('Configure 1 remaining connection')).toBeDefined()
+  })
+
+  it('clears a saved resource when switching accounts', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Change')).toBeDefined())
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    testState.configuratorMounts = []
+    await act(async () => findButton('Change')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBe(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    )
+
+    const secondAccount = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.includes('recipient-8@example.com'))!
+    await act(async () => secondAccount.click())
+    await vi.waitFor(() => expect(
+      testState.configuratorMounts.at(-1)?.initialResourceUrl,
+    ).toBeUndefined())
+
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('clears a saved resource when replacing a disconnected account', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Change')).toBeDefined())
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    testState.configuratorMounts = []
+    await act(async () => findButton('Change')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBe(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    )
+
+    await act(async () => harness.removeAccount(7))
+    await vi.waitFor(() => expect(
+      testState.configuratorMounts.at(-1)?.initialResourceUrl,
+    ).toBeUndefined())
+
+    expect(findButton('Save connection')!.disabled).toBe(true)
   })
 
   it('continues to later suggestions when the first cannot be verified', async () => {

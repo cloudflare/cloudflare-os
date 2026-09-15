@@ -25,7 +25,7 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
   constructor(
     configurator: any,
     private readonly onResize: (height: number, layoutHeight: number) => void,
-    private readonly onSelectionReady: (ready: boolean) => void,
+    private readonly onSelectionReady: (ready: boolean, initialResourceVerified?: boolean) => void,
     private readonly onScroll: (deltaX: number, deltaY: number) => void,
     private readonly getInitialResourceImpl: () => { resourceUrl: string; resourceUrlPattern: string } | null,
   ) {
@@ -53,8 +53,8 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
     this.onResize(height, layoutHeight)
   }
 
-  setSelectionReady(ready: boolean): void {
-    this.onSelectionReady(ready)
+  setSelectionReady(ready: boolean, initialResourceVerified?: boolean): void {
+    this.onSelectionReady(ready, initialResourceVerified)
   }
 
   forwardScroll(deltaX: number, deltaY: number): void {
@@ -75,7 +75,7 @@ export default function SandboxedResourceConfigurator({
   topOffset?: number,
   hidden?: boolean,
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void,
-  onSelectionReadyChange?: (ready: boolean | null) => void,
+  onSelectionReadyChange?: (ready: boolean | null, initialResourceVerified?: boolean) => void,
   /**
    * When set, the configurator opens pre-filled to this concrete resource URL (e.g. supplied by an
    * AI agent's connection request). `resourceUrlPattern` is this resource's pattern, used by the
@@ -222,7 +222,8 @@ export default function SandboxedResourceConfigurator({
         const layoutHeight = Number.isFinite(nextLayoutHeight) ? nextLayoutHeight : nextHeight
         setLayoutHeight(clamp(Math.ceil(layoutHeight), MIN_CONFIGURATOR_HEIGHT, maxHeight))
       },
-      ready => onSelectionReadyChange?.(Boolean(ready)),
+      (ready, initialResourceVerified) =>
+        onSelectionReadyChange?.(Boolean(ready), initialResourceVerified === true),
       (deltaX, deltaY) => applyForwardedScroll(
         clamp(Number(deltaX) || 0, -SCROLL_FORWARD_MAX_DELTA, SCROLL_FORWARD_MAX_DELTA),
         clamp(Number(deltaY) || 0, -SCROLL_FORWARD_MAX_DELTA, SCROLL_FORWARD_MAX_DELTA),
