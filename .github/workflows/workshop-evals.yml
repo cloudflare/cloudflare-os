@@ -33,7 +33,7 @@ jobs:
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0
         with:
           node-version: "24.19.0"
           cache: true
@@ -54,7 +54,7 @@ jobs:
         run: test -f packages/workshop-evals/.wrangler/evals/results.json
 
       - name: Upload eval results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: workshop-evals
           path: packages/workshop-evals/.wrangler/evals/results.json
