@@ -984,6 +984,11 @@ export const SUGGESTED_MODELS: Record<
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
   },
   "ollama": {
+    "gemma4-code:latest": {name: "Gemma 4 Code (Local Ollama)", contextWindow: 32768, outputLimit: 8192},
+    "gemma4:latest": {name: "Gemma 4 (Local Ollama)", contextWindow: 32768, outputLimit: 8192},
+    "mistral-nemo:latest": {name: "Mistral Nemo 12B (Local Ollama)", contextWindow: 131072, outputLimit: 8192},
+    "command-r7b:latest": {name: "Command R 7B (Local Ollama)", contextWindow: 131072, outputLimit: 8192},
+    "qwen2.5-coder:14b": {name: "Qwen 2.5 Coder 14B (Local Ollama)", contextWindow: 32768, outputLimit: 8192},
   },
 };
 

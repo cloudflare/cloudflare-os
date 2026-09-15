@@ -503,6 +503,31 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
+    // Auto-seed default local Ollama model if not configured
+    if (!this.storage.aiModels.get("gemma4-code:latest")) {
+      this.storage.aiModels.put({
+        profile: {
+          type: "agent",
+          id: "gemma4-code:latest",
+          name: "Gemma 4 Code (Local Ollama)",
+        },
+        config: {
+          provider: "ollama",
+          model: "gemma4-code:latest",
+          apiUrl: "https://ollama-internal.iare.digital",
+          apiToken: "",
+        },
+      });
+    }
+    const pref = this.storage.preferredModel.get();
+    if (!pref || pref.startsWith("gemma3:") || pref.startsWith("qwen")) {
+      this.storage.preferredModel.put("gemma4-code:latest");
+    }
+    const quick = this.storage.quickModel.get();
+    if (!quick || quick.startsWith("gemma3:") || quick.startsWith("qwen")) {
+      this.storage.quickModel.put("gemma4-code:latest");
+    }
+
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include all suggested models for enabled providers.
@@ -666,6 +691,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
     let gwConfig = getAiGatewayConfig(this.env);
 
+    if (modelId && (modelId.startsWith("gemma3:") || modelId.startsWith("qwen") || modelId === "undefined")) {
+      modelId = "gemma4-code:latest";
+    }
+
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
@@ -676,6 +705,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
       if (!result.aiModel) {
         result.aiModel = this.storage.aiModels.get(modelId);
+      }
+      if (!result.aiModel && modelId === "gemma4-code:latest") {
+        result.aiModel = {
+          profile: {
+            type: "agent",
+            id: "gemma4-code:latest",
+            name: "Gemma 4 Code (Local Ollama)",
+          },
+          config: {
+            provider: "ollama",
+            model: "gemma4-code:latest",
+            apiUrl: "https://ollama-internal.iare.digital",
+            apiToken: "",
+          },
+        };
+        this.storage.aiModels.put(result.aiModel);
       }
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
     }
@@ -1303,6 +1348,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       result.push({ accountId: rec.id, vendorId: rec.vendorId, description: rec.description });
     }
     return result;
+  }
+
+  async listConnectedAccounts(): Promise<{ id: number; vendorId: string }[]> {
+    return [...this.#connectedAccountRecords()].map(rec => ({ id: rec.id, vendorId: rec.vendorId }));
   }
 
   // Get the gatekeeper class implementing a singleton account's agent session. The overseer installs

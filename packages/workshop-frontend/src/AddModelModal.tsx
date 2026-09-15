@@ -30,7 +30,7 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   openai: 'sk-...',
   google: 'AIza...',
   cloudflare: 'Cloudflare API token',
-  ollama: '(optional)',
+  ollama: 'Client ID:Client Secret (if Access-protected)',
 }
 
 // Example used in the custom-model placeholders for providers that have no suggested models
@@ -144,7 +144,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     }
     setApiToken('')
     setAccountId('')
-    setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
+    setApiUrl(sel.provider === 'ollama' ? 'https://ollama-internal.iare.digital' : '')
   }
 
   const validate = (): boolean => {
@@ -314,7 +314,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
               description={
                 isOllama
-                  ? 'Optional for local Ollama access'
+                  ? 'Optional for local Ollama access (automatically authenticated for ollama-internal.iare.digital)'
                   : isCloudflare
                   ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
                   : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
@@ -330,7 +330,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {showCredentials && isOllama && (
             <Input
               label="API URL"
-              placeholder="http://localhost:11434"
+              placeholder="https://ollama-internal.iare.digital"
               description="URL of your Ollama server"
               value={apiUrl}
               onChange={(e) => { setApiUrl(e.target.value); setErrors(prev => ({ ...prev, apiUrl: '' })) }}

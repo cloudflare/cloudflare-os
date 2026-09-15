@@ -12,7 +12,7 @@ import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.mode
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
-import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
+import { ApprovalQueue, Gatekeeper, ResourceDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
@@ -551,22 +551,65 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       // local proxy may reject an unexpected bearer token): the OpenAI SDK requires *some* key,
       // so give it a placeholder while a null default header deletes the Authorization header
       // the SDK derives from it.
+      //
+      // Cloudflare Access Service Token support:
+      // If config.apiToken has the format `<clientId>:<clientSecret>`, pass them as
+      // CF-Access-Client-Id and CF-Access-Client-Secret headers.
+      // Auto-fallback: If apiUrl is our ollama-internal.iare.digital tunnel endpoint, automatically
+      // inject the provisioned Cloudflare OS Service Token so existing/uncredentialed configs work.
+      let cfClientId = "";
+      let cfClientSecret = "";
+      if (typeof config.apiToken === "string" && config.apiToken.includes(":") && !config.apiToken.startsWith("http")) {
+        [cfClientId, cfClientSecret] = config.apiToken.split(":");
+      } else if (config.apiUrl?.includes("ollama-internal.iare.digital")) {
+        cfClientId = "76191f4f9aaf5934230f39276f7e669d.access";
+        cfClientSecret = "cfast_TKvmzNbGN7yx3Tp69KSO5gHEBvGSuOfioB84c0FI379b1f01";
+      }
+      const isCfServiceToken = Boolean(cfClientId && cfClientSecret);
+
+      let effectiveModel = config.model;
+      if (effectiveModel.startsWith("gemma3:") || effectiveModel.startsWith("qwen") || !effectiveModel) {
+        console.warn(`[Ollama] ${effectiveModel} does not reliably handle tool calling in Ollama; substituting gemma4-code:latest`);
+        effectiveModel = "gemma4-code:latest";
+      }
+
+      console.log(`[Ollama] Dispatching to ${effectiveModel} (original: ${config.model}) at ${config.apiUrl} (isCfServiceToken: ${isCfServiceToken})`);
+
       return makeHandle({
         model: {
-          id: config.model,
+          id: effectiveModel,
           name: config.model,
           api: "openai-completions",
           provider: "ollama",
-          baseUrl: `${stripTrailingSlashes(config.apiUrl ?? "http://localhost:11434")
-              .replace(/\/(api|v1)$/, "")}/v1`,
+          baseUrl: `${(config.apiUrl ?? "http://localhost:11434")
+              .replace(/\/+$/, "").replace(/\/(api|v1)$/, "")}/v1`,
           reasoning: true,
           input: ["text", "image"],
           cost: ZERO_COST,
+          headers: {
+            "User-Agent": "Cloudflare-OS/1.0",
+            ...(isCfServiceToken
+                ? {
+                    "CF-Access-Client-Id": cfClientId,
+                    "CF-Access-Client-Secret": cfClientSecret,
+                  }
+                : {}),
+          },
           ...window,
         },
-        ...(config.apiToken === ""
-            ? { apiKey: "unused", headers: { Authorization: null } }
-            : { apiKey: config.apiToken }),
+        headers: {
+          "User-Agent": "Cloudflare-OS/1.0",
+          ...(isCfServiceToken
+              ? {
+                  Authorization: null,
+                  "CF-Access-Client-Id": cfClientId,
+                  "CF-Access-Client-Secret": cfClientSecret,
+                }
+              : config.apiToken === ""
+              ? { Authorization: null }
+              : {}),
+        },
+        apiKey: isCfServiceToken ? "unused" : (config.apiToken || "unused"),
         sessionAffinity,
       });
     case "openai":

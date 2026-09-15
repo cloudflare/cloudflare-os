@@ -4389,6 +4389,89 @@ class OverseerImpl implements AgentHooks {
     }));
   }
 
+  // Ensure default homelab MCP server bindings (Navidrome, Kiwix, Gitea, Observability)
+  // are connected and bound to the default gadget for the workspace.
+  // Idempotent: checks existing gatekeepers and gadget bindings before provisioning.
+  async ensureHomelabMcpBindings(): Promise<void> {
+    if (!this.ownerId) return;
+    this.ensureDefaultGadget();
+    let defId = this.defaultGadgetId;
+    if (defId === undefined) return;
+    let gadgetRecord = this.storage.gadgets.get(defId);
+    if (!gadgetRecord) return;
+
+    const SERVERS = ["navidrome", "kiwix", "gitea", "observability"];
+    let existingGatekeepers = Array.from(this.storage.gatekeepers.list());
+    let boundTargets = new Set(Object.values(gadgetRecord.bindings).map(b => b.target));
+
+    let allBound = SERVERS.every(serverId => {
+      let resourceUrl = `https://mcp-internal.iare.digital/mcp#server=${serverId}`;
+      let gk = existingGatekeepers.find(
+        g => g.creationSpec?.type === "gatekeeper" &&
+             g.creationSpec.vendorId === "mcp_portal" &&
+             g.creationSpec.resourceUrl === resourceUrl
+      );
+      return gk && boundTargets.has(gk.id);
+    });
+    if (allBound) return;
+
+    let ownerDo = this.#ownerUserDo();
+    let accounts = await ownerDo.listConnectedAccounts();
+    let mcpAccount = accounts.find(a => a.vendorId === "mcp_portal");
+    if (!mcpAccount) return;
+
+    for (let serverId of SERVERS) {
+      let resourceUrl = `https://mcp-internal.iare.digital/mcp#server=${serverId}`;
+      let existingGk = existingGatekeepers.find(
+        gk => gk.creationSpec?.type === "gatekeeper" &&
+              gk.creationSpec.vendorId === "mcp_portal" &&
+              gk.creationSpec.resourceUrl === resourceUrl
+      );
+
+      if (existingGk && boundTargets.has(existingGk.id)) {
+        continue;
+      }
+
+      try {
+        let gkId: number;
+        if (existingGk) {
+          gkId = existingGk.id;
+        } else {
+          let { class: cls, vendorId, typeUrlPattern } =
+              await ownerDo.getGatekeeperClassFor(mcpAccount.id, resourceUrl);
+          let creationSpec: GatekeeperCreationSpec = {
+            type: "gatekeeper",
+            vendorId,
+            resourceUrl,
+            typeUrlPattern,
+          };
+          let gk = await this.addGatekeeper(cls, creationSpec);
+          gkId = await gk.getId();
+          let createdGk = this.storage.gatekeepers.get(gkId);
+          if (createdGk) existingGatekeepers.push(createdGk);
+        }
+
+        if (!boundTargets.has(gkId)) {
+          let description = await this.getGatekeeperFacet(gkId).describe();
+          let suggestedName = description.suggestedBindingName;
+          let i = 1;
+          gadgetRecord = this.getGadgetRecord(defId);
+          while (gadgetRecord.bindings[suggestedName] !== undefined) {
+            suggestedName = `${description.suggestedBindingName}_${++i}`;
+          }
+          this.bindWorkpiece(defId, suggestedName, gkId);
+          boundTargets.add(gkId);
+        }
+      } catch (err) {
+        this.logger.error(`failed to auto-bind homelab MCP server ${serverId}`, {
+          event: "homelab.mcp.bind.failed",
+          vendorId: "mcp_portal",
+          error: err,
+        });
+      }
+    }
+  }
+
   // Derive the workspace's default binding list -- the seed binding layer for new (non-spawned)
   // chats. Deliberately *not stored*: reconstructed on demand (only at chat seeding time) from
   // non-pending gadget records in ID order -- first every gadget under its bindingName (unique,
@@ -6396,8 +6479,16 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         event: "singleton.capsules.ensure.failed", error: err,
       });
     });
+    let ensureHomelab = this.impl.ensureHomelabMcpBindings().catch((err) => {
+      this.impl.logger.error("failed to ensure homelab mcp bindings", {
+        event: "homelab.mcp.ensure.failed", error: err,
+      });
+    });
     if (firstOpen) {
       await ensureCapsules;
+      await ensureHomelab;
+    } else if (isOwner) {
+      await ensureHomelab;
     }
 
     let owner = this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId!));
