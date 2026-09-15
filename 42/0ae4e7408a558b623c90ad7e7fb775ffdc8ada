@@ -45,6 +45,7 @@ packages/bundled-blueprints/__tests__/files.test.ts
   s_257b4539981478::t_6ed819244d9d09 1-565
 packages/workshop-backend/vite.config.ts
   s_257b4539981478::t_6ed819244d9d09 14,17,20,23,26-27,45,47,59,66,74
+  s_b7b043b4e942ef::t_fb9d634e10bb06 91
 scripts/env-passthrough.test.ts
   s_257b4539981478::t_6ed819244d9d09 24,59,64,80,166
 packages/workshop-backend/src/admin-settings.ts
@@ -84,6 +85,14 @@ pnpm-lock.yaml
       "agent_id": {
         "tool": "claude",
         "id": "ec2780f3-3866-4c3e-bc33-af0ba1c8cd6e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b7b043b4e942ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f0a4752-b491-431f-99d9-8e3d868d0a1d",
         "model": "claude-fable-5-1"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
