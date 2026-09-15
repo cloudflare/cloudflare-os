@@ -129,6 +129,7 @@ type OverseerOverrides = {
   requirements?: Partial<Record<CollaboratorRole, ObserverBindingNeed[]>>
   listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
   collaborators?: CollaboratorInfo[]
+  listCollaborators?: () => Promise<CollaboratorInfo[]>
   shareLinks?: ShareLinkInfo[]
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
   addCollaborator?: (
@@ -141,7 +142,7 @@ type OverseerOverrides = {
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   const requirements = overrides.requirements ?? { use: [], build: [] }
   return {
-    listCollaborators: async () => overrides.collaborators ?? [],
+    listCollaborators: overrides.listCollaborators ?? (async () => overrides.collaborators ?? []),
     listShareLinks: async () => overrides.shareLinks ?? [],
     listObserverRequirements:
       overrides.listObserverRequirements ??
@@ -339,6 +340,27 @@ describe('ShareModal', () => {
     expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
   })
 
+  it('submits the highlighted result from the primary Invite action', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Ada Lovelace' },
+      role,
+      addedBy: [],
+    }))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({
+        searchUsers: async () => [{ id: 'ada@cloudflare.com', name: 'Ada Lovelace' }],
+      }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada')
+    expect(rendered.querySelector('[role="option"][aria-selected="true"]')?.textContent)
+      .toContain('Ada Lovelace')
+    await click(button(rendered, 'Invite'))
+
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+  })
+
   it('excludes the workspace owner when the caller is a collaborator', async () => {
     const searchUsers = vi.fn<(
       query: string,
@@ -352,6 +374,41 @@ describe('ShareModal', () => {
 
     await typeDirectorySearch(rendered, 'own')
     expect(searchUsers).toHaveBeenCalledWith('own', ['dan@cloudflare.com', 'owner@cloudflare.com'])
+  })
+
+  it('waits for the membership list before searching', async () => {
+    const membership = deferred<CollaboratorInfo[]>()
+    const existingCollaborator: CollaboratorInfo = {
+      profile: { type: 'user', id: 'maximo@cloudflare.com', name: 'Maximo' },
+      role: 'use',
+      addedBy: [],
+    }
+    const searchUsers = vi.fn<NonNullable<AuthenticatedApiOverrides['searchUsers']>>(async () => [])
+    const rendered = await render(
+      fakeOverseer({ listCollaborators: () => membership.promise }),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada')
+    expect(searchUsers).not.toHaveBeenCalled()
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        membership.resolve([existingCollaborator])
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await act(async () => vi.advanceTimersByTimeAsync(225))
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(searchUsers).toHaveBeenCalledWith('ada', [
+      'dan@cloudflare.com',
+      'maximo@cloudflare.com',
+    ])
   })
 
   it('submits a typed exact id when the directory has not indexed the account', async () => {
@@ -460,8 +517,10 @@ describe('ShareModal', () => {
     // The directory is backfilled lazily, so "alex" may be a real account it has not indexed yet.
     await typeDirectorySearch(rendered, 'alex')
     expect(rendered.textContent).toContain('Alexander')
-    expect(button(rendered, 'Invite').disabled).toBe(false)
-    await click(button(rendered, 'Invite'))
+    const exactOption = [...rendered.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find(option => option.textContent?.includes('Invite “alex” exactly'))
+    expect(exactOption).toBeDefined()
+    await click(exactOption!)
     expect(addCollaborator).toHaveBeenCalledWith('alex', 'use', undefined)
   })
 
@@ -578,6 +637,32 @@ describe('ShareModal', () => {
     const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(input.value).toBe('Grace Hopper')
+  })
+
+  it('does not expose results from the previous query', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>()
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({
+        searchUsers: async query => query === 'ada'
+          ? [{ id: 'ada@example.com', name: 'Ada Lovelace' }]
+          : [],
+      }),
+    )
+    await typeDirectorySearch(rendered, 'ada')
+    expect(rendered.textContent).toContain('Ada Lovelace')
+
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    await act(async () => {
+      setValue.call(input, 'grace')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    expect(input.value).toBe('grace')
+    expect(rendered.textContent).not.toContain('Ada Lovelace')
+    expect(addCollaborator).not.toHaveBeenCalled()
   })
 
   it('scrolls the keyboard-active directory result into view', async () => {

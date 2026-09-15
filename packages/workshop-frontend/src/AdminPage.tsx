@@ -451,6 +451,7 @@ export default function AdminPage() {
                 </p>
               </div>
               <Switch
+                aria-label="Allow new sign-ups"
                 checked={signupsEnabled}
                 disabled={savingSignups}
                 onCheckedChange={handleSignupsToggle}
@@ -472,6 +473,7 @@ export default function AdminPage() {
                 </p>
               </div>
               <Switch
+                aria-label="Allow user search"
                 checked={userSearchEnabled}
                 disabled={savingUserSearch}
                 onCheckedChange={handleUserSearchToggle}

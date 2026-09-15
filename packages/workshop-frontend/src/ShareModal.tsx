@@ -31,6 +31,10 @@ type DirectorySearch = {
   results: UserDirectoryRecord[]
 }
 const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
+type DirectorySelection = {
+  user: UserDirectoryRecord
+  exclusionsKey: string
+}
 
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -306,16 +310,18 @@ function sameRequirements(
 export default function ShareModal({ open, onClose, overseer, metadata, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
+  const [membershipStatus, setMembershipStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
   const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
-  const [selectedUser, setSelectedUser] = useState<UserDirectoryRecord | null>(null)
+  const [selectedUser, setSelectedUser] = useState<DirectorySelection | null>(null)
   const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
   // The result popover is dismissed when focus leaves the combobox or on Escape; typing or
   // refocusing brings it back. The query and its search survive a dismissal.
   const [directoryDismissed, setDirectoryDismissed] = useState(true)
   const directoryListboxId = useId()
   const activeDirectoryOptionRef = useRef<HTMLButtonElement>(null)
+  const wasOpenRef = useRef(false)
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
   const directoryQuery = addUsername.trim()
   // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
@@ -325,15 +331,29 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     ...(metadata.owner ? [metadata.owner.id] : []),
     ...collaborators.map(({ profile }) => profile.id),
   ], [collaborators, currentUser, metadata.owner])
-  const directorySearching = userSearchEnabled && selectedUser === null && directoryQuery !== ''
-  const directoryOpen = directorySearching && !directoryDismissed
-  const directorySettled = directory.status !== 'loading' && directory.query === directoryQuery
+  const directoryExclusionsKey = JSON.stringify(directoryExcludeIds)
+  const selectedDirectoryUser = selectedUser?.exclusionsKey === directoryExclusionsKey
+    ? selectedUser.user
+    : null
+  const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
+  const membershipReady = membershipSettled && membershipStatus === 'ready'
+  const directorySearching = userSearchEnabled && membershipReady &&
+    selectedDirectoryUser === null && directoryQuery !== ''
+  const directoryCurrent = directory.query === directoryQuery
+  const directoryOpen = directorySearching && directoryCurrent && !directoryDismissed
+  const directorySettled = directory.status !== 'loading' && directoryCurrent
+  const showDirectDirectoryOption = directory.status === 'ready' && directory.results.length > 0
+  const directoryOptionCount = directory.results.length + (showDirectDirectoryOption ? 1 : 0)
+  const activeDirectoryOptionId = directoryOpen && activeDirectoryIndex < directoryOptionCount
+    ? `${directoryListboxId}-option-${activeDirectoryIndex}`
+    : undefined
   // Once the search has settled, the typed text can always be submitted as a canonical id: the
   // directory is a lazily backfilled convenience, so a valid id may be missing from it (or
   // shadowed by unrelated substring matches), and a directory outage must not block invites.
-  // With user search off there is no search to wait for.
-  const canInviteUser = selectedUser !== null ||
-    (directoryQuery !== '' && (!userSearchEnabled || directorySettled))
+  // A membership-load failure also falls back to the authoritative direct-invite path.
+  const canInviteUser = selectedDirectoryUser !== null ||
+    (directoryQuery !== '' && (!userSearchEnabled ||
+      (membershipSettled && (!membershipReady || directorySettled))))
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -350,7 +370,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [showLinkComposer, setShowLinkComposer] = useState(false)
   const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget | null>(null)
   const [confirmationBusy, setConfirmationBusy] = useState(false)
-  const wasOpenRef = useRef(false)
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
@@ -449,10 +468,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       ])
       setCollaborators(collabs)
       setShareLinks(keys)
+      setMembershipStatus('ready')
       return { collaborators: collabs, shareLinks: keys }
     } catch (err) {
       console.error('Failed to load share data:', err)
       toasts.add({ title: 'Failed to load sharing info', variant: 'error' })
+      setMembershipStatus(current => current === 'ready' ? current : 'failed')
       return null
     }
   }, [overseer])
@@ -489,6 +510,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   useEffect(() => {
     if (open) {
+      setMembershipStatus('loading')
       loadData()
       if (!wasOpenRef.current) {
         setAddUsername('')
@@ -511,6 +533,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         }
         copiedUrlsRef.current.clear()
       }
+    } else {
+      setMembershipStatus('loading')
     }
     wasOpenRef.current = open
   }, [open, loadData])
@@ -626,7 +650,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const selectDirectoryUser = (user: UserDirectoryRecord) => {
-    setSelectedUser(user)
+    setSelectedUser({ user, exclusionsKey: directoryExclusionsKey })
     setAddUsername(user.name)
   }
 
@@ -647,7 +671,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       setDirectoryDismissed(true)
       return
     }
-    if (directory.results.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    if (directoryOptionCount > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
       if (!directoryOpen) {
         setDirectoryDismissed(false)
@@ -655,12 +679,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       }
       const direction = event.key === 'ArrowDown' ? 1 : -1
       setActiveDirectoryIndex(current =>
-        (current + direction + directory.results.length) % directory.results.length)
+        (current + direction + directoryOptionCount) % directoryOptionCount)
     }
   }
 
-  const handleAddCollaborator = async () => {
-    const userId = selectedUser?.id ?? (canInviteUser ? directoryQuery : '')
+  const handleAddCollaborator = async (userIdOverride?: string) => {
+    const userId = userIdOverride ?? selectedDirectoryUser?.id ??
+      (canInviteUser ? directoryQuery : '')
     if (!userId || addingRef.current) return
 
     addingRef.current = true
@@ -913,9 +938,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 aria-autocomplete={userSearchEnabled ? 'list' : undefined}
                 aria-expanded={userSearchEnabled ? directoryOpen : undefined}
                 aria-controls={directoryOpen ? directoryListboxId : undefined}
-                aria-activedescendant={directoryOpen && directory.results[activeDirectoryIndex]
-                  ? `${directoryListboxId}-option-${activeDirectoryIndex}`
-                  : undefined}
+                aria-activedescendant={activeDirectoryOptionId}
                 value={addUsername}
                 onChange={(event) => {
                   setAddUsername(event.target.value)
@@ -947,7 +970,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             <WorkshopButton
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
-              onClick={handleAddCollaborator}
+              onMouseDown={(event) => {
+                // Keep the visible result highlighted until the click handler chooses it.
+                if (directoryOpen) event.preventDefault()
+              }}
+              onClick={() => {
+                const highlightedUser = directoryOpen
+                  ? directory.results[activeDirectoryIndex]
+                  : undefined
+                void handleAddCollaborator(highlightedUser?.id)
+              }}
               disabled={!canInviteUser || adding}
             >
               {adding ? 'Inviting…' : 'Invite'}
@@ -971,31 +1003,61 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                   </p>
                 ) : directory.results.length === 0 ? (
                   <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">No users found.</p>
-                ) : directory.results.map((user, index) => (
-                  <button
-                    key={user.id}
-                    ref={index === activeDirectoryIndex ? activeDirectoryOptionRef : undefined}
-                    id={`${directoryListboxId}-option-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeDirectoryIndex}
-                    onMouseEnter={() => setActiveDirectoryIndex(index)}
-                    onClick={() => selectDirectoryUser(user)}
-                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
-                      index === activeDirectoryIndex ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/70'
-                    }`}
-                  >
-                    <PersonAvatar api={authenticatedApi} userId={user.id} name={user.name} size={32} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-[13px] font-medium text-kumo-default">
-                        {user.name}
+                ) : (
+                  <>
+                    {directory.results.map((user, index) => (
+                      <button
+                        key={user.id}
+                        ref={index === activeDirectoryIndex ? activeDirectoryOptionRef : undefined}
+                        id={`${directoryListboxId}-option-${index}`}
+                        type="button"
+                        role="option"
+                        aria-selected={index === activeDirectoryIndex}
+                        onMouseEnter={() => setActiveDirectoryIndex(index)}
+                        onClick={() => selectDirectoryUser(user)}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
+                          index === activeDirectoryIndex ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/70'
+                        }`}
+                      >
+                        <PersonAvatar api={authenticatedApi} userId={user.id} name={user.name} size={32} />
+                        <span className="min-w-0">
+                          <span className="block truncate text-[13px] font-medium text-kumo-default">
+                            {user.name}
+                          </span>
+                          <span className="block truncate font-mono text-[11px] text-kumo-subtle">
+                            {user.id}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      ref={activeDirectoryIndex === directory.results.length
+                        ? activeDirectoryOptionRef
+                        : undefined}
+                      id={`${directoryListboxId}-option-${directory.results.length}`}
+                      type="button"
+                      role="option"
+                      aria-selected={activeDirectoryIndex === directory.results.length}
+                      onMouseEnter={() => setActiveDirectoryIndex(directory.results.length)}
+                      onClick={() => void handleAddCollaborator(directoryQuery)}
+                      className={`mt-1 flex w-full items-center gap-3 rounded-xl border-t border-kumo-line/60 px-3 py-2 text-left ${
+                        activeDirectoryIndex === directory.results.length
+                          ? 'bg-kumo-tint'
+                          : 'hover:bg-kumo-tint/70'
+                      }`}
+                    >
+                      <UserPlus size={15} className="shrink-0 text-kumo-subtle" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] font-medium text-kumo-default">
+                          Invite &ldquo;{directoryQuery}&rdquo; exactly
+                        </span>
+                        <span className="block text-[11px] text-kumo-subtle">
+                          Use the text as a username or email
+                        </span>
                       </span>
-                      <span className="block truncate font-mono text-[11px] text-kumo-subtle">
-                        {user.id}
-                      </span>
-                    </span>
-                  </button>
-                ))}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
