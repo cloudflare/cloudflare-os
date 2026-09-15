@@ -65,6 +65,7 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
 export default function SandboxedResourceConfigurator({
   frame,
   topOffset = 0,
+  hidden = false,
   onCollectResourceUrlChange,
   onSelectionReadyChange,
   initialResourceUrl,
@@ -72,6 +73,7 @@ export default function SandboxedResourceConfigurator({
 }: {
   frame: ResourceConfiguratorFrame,
   topOffset?: number,
+  hidden?: boolean,
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void,
   onSelectionReadyChange?: (ready: boolean | null) => void,
   /**
@@ -385,7 +387,11 @@ export default function SandboxedResourceConfigurator({
 
   return (
     <>
-      <div ref={placeholderRef} style={{ height: layoutHeight + topOffset }} />
+      <div
+        ref={placeholderRef}
+        aria-hidden={hidden || undefined}
+        style={{ height: hidden ? 0 : layoutHeight + topOffset }}
+      />
       {frameRect && createPortal(<iframe
         ref={iframeRef}
         srcDoc={frame.iframeHtml}
@@ -395,20 +401,23 @@ export default function SandboxedResourceConfigurator({
         scrolling="no"
         style={{
           position: 'fixed',
-          top: frameRect.top,
-          left: frameRect.left,
+          top: hidden ? 0 : frameRect.top,
+          left: hidden ? 0 : frameRect.left,
           zIndex: 2147483647,
           display: 'block',
-          width: frameRect.width,
-          height,
-          clipPath: clipInsets
+          visibility: hidden ? 'hidden' : undefined,
+          width: hidden ? 1 : frameRect.width,
+          height: hidden ? 1 : height,
+          clipPath: !hidden && clipInsets
             ? `inset(${clipInsets.top}px ${clipInsets.right}px ${clipInsets.bottom}px ${clipInsets.left}px)`
             : undefined,
           border: 0,
           background: 'transparent',
           colorScheme: resolvedThemeMode,
-          pointerEvents: 'auto',
+          pointerEvents: hidden ? 'none' : 'auto',
         }}
+        aria-hidden={hidden || undefined}
+        tabIndex={hidden ? -1 : undefined}
       />, document.body)}
     </>
   )

@@ -11,6 +11,7 @@ export default function ResourceConfiguratorHost({
   onCollectResourceUrlChange,
   onSelectionReadyChange,
   topOffset = 0,
+  hidden = false,
   initialResourceUrl,
   resourceUrlPattern,
 }: {
@@ -22,6 +23,7 @@ export default function ResourceConfiguratorHost({
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
   onSelectionReadyChange?: (ready: boolean | null) => void
   topOffset?: number
+  hidden?: boolean
   initialResourceUrl?: string
   resourceUrlPattern?: string
 }) {
@@ -34,6 +36,7 @@ export default function ResourceConfiguratorHost({
     key={frameKey}
     frame={frame}
     topOffset={topOffset}
+    hidden={hidden}
     onCollectResourceUrlChange={onCollectResourceUrlChange}
     onSelectionReadyChange={onSelectionReadyChange}
     initialResourceUrl={initialResourceUrl}
