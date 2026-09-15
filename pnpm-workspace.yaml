@@ -8,7 +8,7 @@ packages:
 # needing to hand edit a bunch of different package.json files.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.22.0
-  '@cloudflare/workers-types': ^5.20260903.1
+  '@cloudflare/workers-types': ^5.20260908.1
   capnweb: ^0.12.0
   # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
   # simulated PR diff's hunks). One catalog entry so the two can't drift apart.
@@ -25,7 +25,7 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.11
-  wrangler: ^4.128.0
+  wrangler: ^4.129.1
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
