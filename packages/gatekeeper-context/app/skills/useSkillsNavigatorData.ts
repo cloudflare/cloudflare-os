@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
-import type { ContextApi, ContextDocumentSummary, EnabledCollectionInfo } from "../../src/context-types";
+import type {
+  ContextApi,
+  ContextCollectionMetadata,
+  ContextDocumentSummary,
+  EnabledCollectionInfo,
+} from "../../src/context-types";
 
 type SkillsNavigatorData = {
   collections: EnabledCollectionInfo[];
+  collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
   documents: Map<string, ContextDocumentSummary[]>;
+  manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
+  viewerInfo: { isAdmin: boolean; supportsGitCollections: boolean };
   status: "loading" | "ready" | "error";
 };
 
@@ -15,8 +23,11 @@ export const useSkillsNavigatorData = (
 ): SkillsNavigatorData => {
   const [data, setData] = useState<SkillsNavigatorData>({
     collections: [],
+    collectionMetadata: new Map(),
     documents: new Map(),
+    manageableCollectionIds: new Set(),
     writableCollectionIds: new Set(),
+    viewerInfo: { isAdmin: false, supportsGitCollections: false },
     status: "loading",
   });
 
@@ -24,8 +35,14 @@ export const useSkillsNavigatorData = (
     let cancelled = false;
     const load = async () => {
       try {
-        const collections = await context.listEnabledContextCollections();
-        const [documentResults, writableIds] = await Promise.all([
+        const [collections, viewerInfo] = await Promise.all([
+          context.listEnabledContextCollections(),
+          context.getViewerInfo().catch(() => ({
+            isAdmin: false,
+            supportsGitCollections: false,
+          })),
+        ]);
+        const [documentResults, accessResults] = await Promise.all([
           Promise.all(collections.map(async (collection) => {
             try {
               return [collection.id, await context.listContextDocuments(collection.id)] as const;
@@ -38,7 +55,7 @@ export const useSkillsNavigatorData = (
               context.canWriteContextCollection(collection.id).catch(() => false),
               context.getContextCollectionMetadata(collection.id).catch(() => null),
             ]);
-            return canWrite && metadata?.content.source === "web" ? collection.id : null;
+            return { id: collection.id, canWrite, metadata };
           })),
         ]);
         if (cancelled) return;
@@ -48,11 +65,20 @@ export const useSkillsNavigatorData = (
           id,
           documents ?? [],
         ] as const);
+        const collectionMetadata = new Map(accessResults.flatMap(({ id, metadata }) =>
+          metadata ? [[id, metadata] as const] : []));
+        const manageableCollectionIds = new Set(accessResults.flatMap(({ id, canWrite, metadata }) =>
+          canWrite && metadata ? [id] : []));
         setData({
           collections,
+          collectionMetadata,
           documents: new Map(loadedDocuments),
-          writableCollectionIds: new Set(writableIds.filter((id): id is string =>
-            id !== null && !failedCollectionIds.has(id))),
+          manageableCollectionIds,
+          writableCollectionIds: new Set(accessResults.flatMap(({ id, canWrite, metadata }) =>
+            canWrite && metadata?.content.source === "web" && !failedCollectionIds.has(id)
+              ? [id]
+              : [])),
+          viewerInfo,
           status: "ready",
         });
       } catch {

@@ -4,8 +4,12 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { RpcStub } from "capnweb";
 import { Toasty } from "@cloudflare/kumo";
-import { afterEach, describe, expect, it } from "vitest";
-import type { ContextApi, EnabledCollectionInfo } from "../../src/context-types";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  ContextApi,
+  ContextCollectionMetadata,
+  EnabledCollectionInfo,
+} from "../../src/context-types";
 import { ContextApiProvider } from "../bridge";
 import type { SkillNavigatorCollection } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
@@ -38,6 +42,19 @@ const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
   }],
 }];
 
+const metadata = (source: "web" | "git"): ContextCollectionMetadata => ({
+  id: "collection",
+  title: "collection",
+  description: "",
+  visibility: "private",
+  created: new Date(),
+  lastUpdated: new Date(),
+  documentCount: 1,
+  content: source === "web"
+    ? { source }
+    : { source, remote: "", branch: "main", lastRefreshedAt: new Date() },
+});
+
 describe("SkillsNavigatorTree", () => {
   let container: HTMLDivElement | undefined;
   let root: ReturnType<typeof createRoot> | undefined;
@@ -47,17 +64,34 @@ describe("SkillsNavigatorTree", () => {
     container?.remove();
   });
 
-  const renderTree = (writable: boolean) => {
+  const renderTree = ({
+    writable,
+    manageable = writable,
+    source = "web",
+  }: {
+    writable: boolean;
+    manageable?: boolean;
+    source?: "web" | "git";
+  }) => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    const api = { renameContextSkill: async () => {} } as unknown as RpcStub<ContextApi>;
+    const syncContextCollectionArtifactSource = vi.fn<
+      ContextApi["syncContextCollectionArtifactSource"]
+    >(async () => {});
+    const api = {
+      renameContextSkill: async () => {},
+      syncContextCollectionArtifactSource,
+    } as unknown as RpcStub<ContextApi>;
     act(() => root?.render(
       <ContextApiProvider value={api}>
         <Toasty>
           <SkillsNavigatorTree
             navigator={navigator("collection")}
+            collectionMetadata={new Map([["collection", metadata(source)]])}
+            manageableCollectionIds={manageable ? new Set(["collection"]) : new Set()}
             writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
+            supportsGitCollections
             expandAll
             onSelectSkill={() => {}}
             onAddSkill={() => {}}
@@ -68,6 +102,7 @@ describe("SkillsNavigatorTree", () => {
         </Toasty>
       </ContextApiProvider>,
     ));
+    return { syncContextCollectionArtifactSource };
   };
 
   const row = (name: string) => [...container!.querySelectorAll<HTMLElement>(
@@ -75,7 +110,7 @@ describe("SkillsNavigatorTree", () => {
   )].find((candidate) => candidate.textContent?.includes(name));
 
   it("provides no actions or movement for a read-only collection", () => {
-    renderTree(false);
+    renderTree({ writable: false });
     const skillRow = row("Incident Response");
 
     expect(skillRow?.draggable).toBe(false);
@@ -88,7 +123,7 @@ describe("SkillsNavigatorTree", () => {
   });
 
   it("moves skills but not legacy directories in a writable collection", () => {
-    renderTree(true);
+    renderTree({ writable: true });
 
     expect(row("Incident Response")?.draggable).toBe(true);
     expect(row("Incident Response")?.textContent).toContain("Review code");
@@ -96,5 +131,29 @@ describe("SkillsNavigatorTree", () => {
     expect(row("Incident Response")?.querySelector('[aria-label="Updated just now"]'))
       .not.toBeNull();
     expect(row("legacy")?.draggable).toBe(false);
+  });
+
+  it("identifies and refreshes a manageable Git collection", async () => {
+    const { syncContextCollectionArtifactSource } = renderTree({
+      writable: false,
+      manageable: true,
+      source: "git",
+    });
+    const collectionRow = row("collection");
+
+    expect(collectionRow?.textContent).toContain("Git managed");
+    act(() => collectionRow?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const refresh = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent?.includes("Refresh"));
+    expect(refresh).toBeDefined();
+
+    await act(async () => {
+      refresh?.click();
+      await Promise.resolve();
+    });
+    expect(syncContextCollectionArtifactSource).toHaveBeenCalledWith("collection");
   });
 });

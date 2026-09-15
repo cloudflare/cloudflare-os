@@ -45,10 +45,12 @@ organizational directory.
 
 ## Permissions and sources
 
-Navigator actions are offered only when the account can write the collection and the collection is
-web-backed. Git-backed and otherwise read-only collections remain browsable but expose no mutation
-actions and are not offered as Add Skill targets. If loading a collection's documents fails, that
-collection also fails closed as non-writable for the current view.
+Skill and directory actions are offered only when the account can write the collection and the
+collection is web-backed. Git-backed collections remain read-only at the skill level but owners and
+admins can still edit their collection settings, manage Git tokens, refresh them, or delete them.
+Otherwise read-only collections expose no mutation actions and are not offered as Add Skill targets.
+If loading a collection's documents fails, that collection also fails closed as non-writable for
+skill mutations in the current view.
 
 The server remains the authority for every mutation. The client-side checks control affordances and
 provide earlier feedback; they are not the security boundary.

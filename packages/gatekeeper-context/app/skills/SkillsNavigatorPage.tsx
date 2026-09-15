@@ -13,7 +13,7 @@ import {
   PlusIcon,
 } from "@phosphor-icons/react";
 import { useDeferredValue, useMemo, useState } from "react";
-import type { EnabledCollectionInfo } from "../../src/context-types";
+import type { ContextCollectionMetadata } from "../../src/context-types";
 import { useContextApi } from "../bridge";
 import { AddSkillDialog, type AddSkillTarget } from "./AddSkillDialog";
 import { CreateCollectionDialog } from "./CreateCollectionDialog";
@@ -33,16 +33,21 @@ type SkillsNavigatorPageProps = {
 export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps) => {
   const context = useContextApi();
   const [reloadKey, setReloadKey] = useState(0);
-  const { collections, documents, writableCollectionIds, status } = useSkillsNavigatorData(
-    context,
-    reloadKey,
-  );
+  const {
+    collections,
+    collectionMetadata,
+    documents,
+    manageableCollectionIds,
+    writableCollectionIds,
+    viewerInfo,
+    status,
+  } = useSkillsNavigatorData(context, reloadKey);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
 
   const [pendingAdd, setPendingAdd] = useState<AddSkillTarget | null>(null);
   const [pendingAddCollection, setPendingAddCollection] = useState(false);
-  const [pendingEditCollection, setPendingEditCollection] = useState<EnabledCollectionInfo | null>(null);
+  const [pendingEditCollection, setPendingEditCollection] = useState<ContextCollectionMetadata | null>(null);
   const [pendingRemove, setPendingRemove] = useState<NavigatorDeleteTarget | null>(null);
 
   const writableCollections = useMemo(
@@ -101,7 +106,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             <DropdownMenu.Content align="end" sideOffset={6}>
               {writableCollections.length === 0 ? (
                 <Tooltip
-                  content="Add a collection before adding a skill."
+                  content="Add an editable collection before adding a skill."
                   render={(
                     <DropdownMenu.Item
                       icon={<PlusIcon size={13} className="mr-2" />}
@@ -145,7 +150,10 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           ) : navigator.length > 0 ? (
             <SkillsNavigatorTree
               navigator={navigator}
+              collectionMetadata={collectionMetadata}
+              manageableCollectionIds={manageableCollectionIds}
               writableCollectionIds={writableCollectionIds}
+              supportsGitCollections={viewerInfo.supportsGitCollections}
               expandAll={deferredQuery.trim().length > 0}
               onSelectSkill={onSelectSkill}
               onAddSkill={startAdd}
@@ -175,6 +183,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       )}
       {pendingAddCollection && (
         <CreateCollectionDialog
+          viewerInfo={viewerInfo}
           onCreated={reload}
           onClose={() => setPendingAddCollection(false)}
         />
@@ -182,6 +191,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       {pendingEditCollection && (
         <EditCollectionDialog
           collection={pendingEditCollection}
+          supportsGitCollections={viewerInfo.supportsGitCollections}
           onUpdated={reload}
           onClose={() => setPendingEditCollection(null)}
         />
