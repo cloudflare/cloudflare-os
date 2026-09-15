@@ -23,6 +23,9 @@ import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import BlueprintSuggestedResourceResolver, {
+  disposeConfiguratorFrame,
+} from './BlueprintSuggestedResourceResolver'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -458,7 +461,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       initial = {
         type: 'gatekeeper',
         accountId: existing?.type === 'gatekeeper' ? existing.accountId : undefined,
-        resourceUrl: existing?.type === 'gatekeeper' ? existing.resourceUrl : binding.resourceUrl || '',
+        resourceUrl: existing?.type === 'gatekeeper' ? existing.resourceUrl : undefined,
       }
     } else if (binding.type === 'aiModel') {
       initial = {
@@ -1559,13 +1562,6 @@ function BindingField({
   return null
 }
 
-// Dispose the host-side capability bundle returned with a configurator frame, releasing the
-// gatekeeper-side resources backing the iframe.
-function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
-  const uiDisposable = frame?.ui as any
-  uiDisposable?.[Symbol.dispose]?.()
-}
-
 function suggestedResourceAccount(
   binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>,
   accounts: AccountOption[],
@@ -1584,124 +1580,6 @@ function suggestedResourceAccount(
     return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
   })
   return matches.length === 1 ? matches[0] : null
-}
-
-function BlueprintSuggestedResourceResolver({
-  accountId,
-  resourceUrl,
-  resourceUrlPattern,
-  authenticatedApi,
-  onResolved,
-  onRejected,
-}: {
-  accountId: number
-  resourceUrl: string
-  resourceUrlPattern: string
-  authenticatedApi: RpcStub<AuthenticatedApi>
-  onResolved: (resourceUrl: string) => void
-  onRejected: () => void
-}) {
-  const [frameState, setFrameState] = useState<{
-    key: number,
-    frame: ResourceConfiguratorFrame,
-  } | null>(null)
-  const frameRef = useRef<ResourceConfiguratorFrame | null>(null)
-  const frameKeyRef = useRef(0)
-  const collectorRef = useRef<(() => Promise<string>) | null>(null)
-  const readyRef = useRef(false)
-  const attemptedRef = useRef(false)
-  const generationRef = useRef(0)
-  const onResolvedRef = useRef(onResolved)
-  onResolvedRef.current = onResolved
-  const onRejectedRef = useRef(onRejected)
-  onRejectedRef.current = onRejected
-
-  const stop = useCallback(() => {
-    generationRef.current++
-    collectorRef.current = null
-    readyRef.current = false
-    const frame = frameRef.current
-    frameRef.current = null
-    if (frame) disposeConfiguratorFrame(frame)
-    setFrameState(null)
-  }, [])
-
-  const reject = useCallback(() => {
-    stop()
-    onRejectedRef.current()
-  }, [stop])
-
-  const tryResolve = useCallback(() => {
-    const collect = collectorRef.current
-    if (!readyRef.current || !collect || attemptedRef.current) return
-    attemptedRef.current = true
-    const generation = generationRef.current
-    collect().then(resolvedUrl => {
-      if (generation !== generationRef.current || !readyRef.current) return
-      if (matchesResourceUrlPattern(resourceUrlPattern, resolvedUrl)) {
-        stop()
-        onResolvedRef.current(normalizeResourceUrl(resolvedUrl))
-      } else {
-        reject()
-      }
-    }).catch(() => {
-      if (generation === generationRef.current) reject()
-    })
-  }, [reject, resourceUrlPattern, stop])
-
-  const handleCollectorChange = useCallback((collect: (() => Promise<string>) | null) => {
-    collectorRef.current = collect
-    tryResolve()
-  }, [tryResolve])
-
-  const handleReadyChange = useCallback((ready: boolean | null) => {
-    readyRef.current = ready === true
-    if (ready === false) reject()
-    else tryResolve()
-  }, [reject, tryResolve])
-
-  useEffect(() => {
-    let cancelled = false
-    const generation = ++generationRef.current
-    setFrameState(null)
-    collectorRef.current = null
-    readyRef.current = false
-    attemptedRef.current = false
-
-    authenticatedApi.startResourceConfigurator(accountId, resourceUrlPattern).then(frame => {
-      if (cancelled || generation !== generationRef.current) {
-        disposeConfiguratorFrame(frame)
-        return
-      }
-      frameRef.current = frame
-      setFrameState({ key: ++frameKeyRef.current, frame })
-    }).catch(() => {
-      if (!cancelled && generation === generationRef.current) reject()
-    })
-
-    return () => {
-      cancelled = true
-      generationRef.current++
-      disposeConfiguratorFrame(frameRef.current)
-      frameRef.current = null
-      collectorRef.current = null
-    }
-  }, [accountId, authenticatedApi, reject, resourceUrl, resourceUrlPattern])
-
-  return frameState ? (
-    <ResourceConfiguratorHost
-      frame={frameState.frame}
-      frameKey={frameState.key}
-      loading={false}
-      error={null}
-      disabled={false}
-      hidden
-      initialResourceUrl={resourceUrl}
-      resourceUrlPattern={resourceUrlPattern}
-      onCollectResourceUrlChange={handleCollectorChange}
-      onSelectionReadyChange={handleReadyChange}
-    />
-  ) : null
 }
 
 function formatSuggestedResource(resourceUrl: string): string {

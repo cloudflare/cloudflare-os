@@ -398,6 +398,18 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     expect(findButton('Configure 1 remaining connection')).toBeDefined()
   })
 
+  it('does not prefill an unverified suggestion in visible configuration', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN], [CALENDAR_PATTERN])
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBeUndefined()
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
   it('does not assign a suggestion after account eligibility becomes ambiguous', async () => {
     let resolveCollection: ((resourceUrl: string) => void) | undefined
     testState.collectResourceUrl = () => new Promise(resolve => { resolveCollection = resolve })
@@ -475,7 +487,7 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
       .toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN))
     await vi.waitFor(() => expect(testState.configuratorMounts).toEqual([{
       hidden: undefined,
-      initialResourceUrl: CREATOR_CALENDAR_URL,
+      initialResourceUrl: undefined,
       resourceUrlPattern: CALENDAR_PATTERN,
     }]))
   })
