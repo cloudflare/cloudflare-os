@@ -1,6 +1,8 @@
 import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
 import {
+  ArrowClockwise,
   CalendarBlankIcon,
+  GitBranch,
   PencilSimple,
   PlusIcon,
   ScrollIcon,
@@ -12,6 +14,7 @@ import {
   type HierarchicalListItem,
 } from "@gadgets/ui/hierarchical-list";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ContextCollectionMetadata } from "../../src/context-types";
 import { useContextApi } from "../bridge";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
@@ -34,11 +37,14 @@ import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
 
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
+  collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
+  manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
+  supportsGitCollections: boolean;
   expandAll: boolean;
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
   onAddSkill: (target: AddSkillTarget) => void;
-  onEditCollection: (collection: SkillNavigatorCollection["collection"]) => void;
+  onEditCollection: (collection: ContextCollectionMetadata) => void;
   onDelete: (target: NavigatorDeleteTarget) => void;
   onChanged: () => void;
 };
@@ -121,7 +127,10 @@ const toListItem = (
 /** Interactive skill hierarchy with actions limited to writable collections. */
 export const SkillsNavigatorTree = ({
   navigator,
+  collectionMetadata,
+  manageableCollectionIds,
   writableCollectionIds,
+  supportsGitCollections,
   expandAll,
   onSelectSkill,
   onAddSkill,
@@ -139,6 +148,7 @@ export const SkillsNavigatorTree = ({
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [refreshingCollectionId, setRefreshingCollectionId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const treeRef = useRef<HTMLDivElement>(null);
   const skillsById = new Map<string, SkillNavigatorSkill>();
@@ -153,11 +163,22 @@ export const SkillsNavigatorTree = ({
     collectionIdsByItemId.set(id, collection.id);
     collectionsById.set(id, { collection, children });
     if (writable) moveTargetsById.set(id, { collectionId: collection.id, directoryPath: "" });
+    const metadata = collectionMetadata.get(collection.id);
     return {
       id,
       name: collection.title,
       icon: collection.icon ? <span aria-hidden>{collection.icon}</span> : undefined,
-      metadata: skillCountLabel(countSkills(children)),
+      metadata: (
+        <span className="flex items-center gap-3">
+          {metadata?.content.source === "git" && (
+            <span className="flex items-center gap-1">
+              <GitBranch aria-hidden size={12} />
+              Git managed
+            </span>
+          )}
+          <span>{skillCountLabel(countSkills(children))}</span>
+        </span>
+      ),
       droppable: writable,
       children: children.map((child) => toListItem(
         collection.id,
@@ -250,9 +271,79 @@ export const SkillsNavigatorTree = ({
     }
   };
 
+  const handleRefresh = async (collectionId: string) => {
+    if (refreshingCollectionId) return;
+    setRefreshingCollectionId(collectionId);
+    try {
+      await context.syncContextCollectionArtifactSource(collectionId);
+      toasts.add({ title: "Collection refreshed", variant: "success" });
+      onChanged();
+    } catch (error) {
+      toasts.add({
+        title: error instanceof Error ? error.message : "Failed to refresh collection",
+        variant: "error",
+      });
+    } finally {
+      setRefreshingCollectionId(null);
+    }
+  };
+
   const renderContextMenu = (item: HierarchicalListItem) => {
     const collectionId = collectionIdsByItemId.get(item.id);
-    if (!collectionId || !writableCollectionIds.has(collectionId)) return null;
+    if (!collectionId) return null;
+
+    const collectionInfo = collectionsById.get(item.id);
+    if (collectionInfo) {
+      const metadata = collectionMetadata.get(collectionId);
+      if (!metadata || !manageableCollectionIds.has(collectionId)) return null;
+      const writable = writableCollectionIds.has(collectionId);
+      const refreshable = metadata.content.source === "git" && supportsGitCollections;
+      return (
+        <>
+          {writable && (
+            <DropdownMenu.Item
+              icon={<PlusIcon size={13} className="mr-2" />}
+              onClick={() => onAddSkill({
+                collectionId,
+                directoryPath: "",
+                collectionEditable: false,
+              })}
+            >
+              Add skill
+            </DropdownMenu.Item>
+          )}
+          {refreshable && (
+            <DropdownMenu.Item
+              icon={<ArrowClockwise size={13} className="mr-2" />}
+              disabled={refreshingCollectionId !== null}
+              onClick={() => void handleRefresh(collectionId)}
+            >
+              Refresh
+            </DropdownMenu.Item>
+          )}
+          {(writable || refreshable) && <DropdownMenu.Separator />}
+          <DropdownMenu.Item
+            icon={<PencilSimple size={13} className="mr-2" />}
+            onClick={() => onEditCollection(metadata)}
+          >
+            Edit
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            icon={<TrashIcon size={13} className="mr-2" />}
+            variant="danger"
+            onClick={() => onDelete({
+              type: "collection",
+              collectionId,
+              name: collectionInfo.collection.title,
+            })}
+          >
+            Delete
+          </DropdownMenu.Item>
+        </>
+      );
+    }
+
+    if (!writableCollectionIds.has(collectionId)) return null;
 
     const skill = skillsById.get(item.id);
     if (skill) {
@@ -316,40 +407,7 @@ export const SkillsNavigatorTree = ({
       );
     }
 
-    const collectionInfo = collectionsById.get(item.id);
-    if (!collectionInfo) return null;
-    return (
-      <>
-        <DropdownMenu.Item
-          icon={<PlusIcon size={13} className="mr-2" />}
-          onClick={() => onAddSkill({
-            collectionId,
-            directoryPath: "",
-            collectionEditable: false,
-          })}
-        >
-          Add skill
-        </DropdownMenu.Item>
-        <DropdownMenu.Separator />
-        <DropdownMenu.Item
-          icon={<PencilSimple size={13} className="mr-2" />}
-          onClick={() => onEditCollection(collectionInfo.collection)}
-        >
-          Edit
-        </DropdownMenu.Item>
-        <DropdownMenu.Item
-          icon={<TrashIcon size={13} className="mr-2" />}
-          variant="danger"
-          onClick={() => onDelete({
-            type: "collection",
-            collectionId,
-            name: collectionInfo.collection.title,
-          })}
-        >
-          Delete
-        </DropdownMenu.Item>
-      </>
-    );
+    return null;
   };
 
   return (
