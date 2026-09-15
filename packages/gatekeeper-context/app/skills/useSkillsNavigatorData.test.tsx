@@ -30,7 +30,7 @@ const metadata = (id: string, source: "web" | "git"): ContextCollectionMetadata 
 });
 
 describe("useSkillsNavigatorData", () => {
-  it("offers only writable web collections as skill add targets", async () => {
+  it("tracks capabilities and reports partial document failures", async () => {
     const collections = [
       collection("owned-web", "private"),
       collection("organization", "public"),
@@ -52,6 +52,7 @@ describe("useSkillsNavigatorData", () => {
     let manageableIds: readonly string[] = [];
     let loadedMetadata: ReadonlyMap<string, ContextCollectionMetadata> = new Map();
     let viewerInfo = { isAdmin: false, supportsGitCollections: false };
+    let status = "loading";
 
     const Harness = () => {
       const data = useSkillsNavigatorData(api, 0);
@@ -59,6 +60,7 @@ describe("useSkillsNavigatorData", () => {
       manageableIds = [...data.manageableCollectionIds];
       loadedMetadata = data.collectionMetadata;
       viewerInfo = data.viewerInfo;
+      status = data.status;
       return null;
     };
 
@@ -74,6 +76,7 @@ describe("useSkillsNavigatorData", () => {
     expect(manageableIds).toEqual(["owned-web", "owned-git", "failed-web"]);
     expect(loadedMetadata.get("owned-git")?.content.source).toBe("git");
     expect(viewerInfo).toEqual({ isAdmin: true, supportsGitCollections: true });
+    expect(status).toBe("error");
     act(() => root.unmount());
   });
 });

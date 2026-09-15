@@ -36,6 +36,18 @@ describe("uniqueSkillDirectory", () => {
     expect(uniqueSkillDirectory(documents, "collection", "", "legacy")).toBe("legacy-2");
   });
 
+  it("reserves extensionless document paths", () => {
+    const documents = new Map([["collection", [{
+      path: "release",
+      name: "release",
+      description: "",
+      contentType: "text/plain",
+      lastUpdated: new Date(),
+    }]]]);
+
+    expect(uniqueSkillDirectory(documents, "collection", "", "release")).toBe("release-2");
+  });
+
   it("keeps collision suffixes within the metadata name limit", () => {
     const name = "a".repeat(64);
     const documents = new Map([[

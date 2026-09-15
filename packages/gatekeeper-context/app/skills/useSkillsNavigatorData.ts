@@ -79,7 +79,7 @@ export const useSkillsNavigatorData = (
               ? [id]
               : [])),
           viewerInfo,
-          status: "ready",
+          status: failedCollectionIds.size > 0 ? "error" : "ready",
         });
       } catch {
         if (!cancelled) setData((current) => ({ ...current, status: "error" }));
