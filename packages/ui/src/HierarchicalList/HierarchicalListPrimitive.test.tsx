@@ -866,6 +866,52 @@ describe("HierarchicalListPrimitive", () => {
     expect(onItemLongPress).not.toHaveBeenCalled();
   });
 
+  it("cancels a pending long press when composed pointer movement is prevented", () => {
+    vi.useFakeTimers();
+    const item: HierarchicalListItem = { id: "touch-item", name: "Touch item" };
+    const onItemLongPress = vi.fn<(pressedItem: HierarchicalListItem) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[item]}
+        label="Resources"
+        hasLongPressAction={() => true}
+        onItemLongPress={onItemLongPress}
+        renderRow={(rowProps, { item: rowItem }) => (
+          <button
+            {...rowProps}
+            onPointerMove={(event) => {
+              event.preventDefault();
+              rowProps.onPointerMove?.(event);
+            }}
+          >
+            {rowItem.name}
+          </button>
+        )}
+      />,
+    );
+    const row = container!.querySelector("button")!;
+    const pointerDown = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    const pointerMove = new MouseEvent("pointermove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 20,
+    });
+    for (const event of [pointerDown, pointerMove]) {
+      Object.defineProperties(event, {
+        isPrimary: { value: true },
+        pointerId: { value: 1 },
+        pointerType: { value: "touch" },
+      });
+    }
+
+    act(() => row.dispatchEvent(pointerDown));
+    act(() => row.dispatchEvent(pointerMove));
+    act(() => vi.advanceTimersByTime(500));
+
+    expect(row.hasAttribute("data-pressed")).toBe(false);
+    expect(onItemLongPress).not.toHaveBeenCalled();
+  });
+
   it("lets row slots cancel internal click and keyboard behavior", () => {
     const folder: HierarchicalListItem = {
       id: "folder",
@@ -923,6 +969,45 @@ describe("HierarchicalListPrimitive", () => {
     expect(onItemClick).not.toHaveBeenCalled();
     expect(onMove).not.toHaveBeenCalled();
     expect(container!.textContent).not.toContain("Child");
+  });
+
+  it("ignores row keyboard shortcuts from interactive descendants", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    render(
+      <HierarchicalListPrimitive
+        items={[
+          { id: "source", name: "Source", draggable: true },
+          { id: "target", name: "Target" },
+        ]}
+        label="Resources"
+        dragAndDrop={{ onMove }}
+        renderRow={(rowProps, { item }) => (
+          <div {...rowProps}>
+            {item.name}
+            {item.id === "source" && <input aria-label="Rename source" />}
+          </div>
+        )}
+      />,
+    );
+    const input = container!.querySelector<HTMLInputElement>('input[aria-label="Rename source"]')!;
+    act(() => input.focus());
+
+    for (const altKey of [false, true]) {
+      const event = new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        altKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => input.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+    }
+
+    expect(document.activeElement).toBe(input);
+    expect(onMove).not.toHaveBeenCalled();
   });
 
   it("clears drag state even when a row slot cancels drag end", () => {
@@ -985,7 +1070,7 @@ describe("HierarchicalListPrimitive", () => {
       ?.hasAttribute("data-dragging")).toBe(false);
   });
 
-  it("suppresses only the click immediately following a long press", () => {
+  it("consumes a prevented compatibility click after a long press", () => {
     vi.useFakeTimers();
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true,
@@ -994,6 +1079,7 @@ describe("HierarchicalListPrimitive", () => {
     })));
     const item: HierarchicalListItem = { id: "touch-item", name: "Touch item" };
     const onItemClick = vi.fn<(clickedItem: HierarchicalListItem) => void>();
+    let preventNextClick = true;
     render(
       <HierarchicalListPrimitive
         items={[item]}
@@ -1002,7 +1088,18 @@ describe("HierarchicalListPrimitive", () => {
         onItemLongPress={() => {}}
         onItemClick={onItemClick}
         renderRow={(rowProps, { item: rowItem }) => (
-          <button {...rowProps}>{rowItem.name}</button>
+          <button
+            {...rowProps}
+            onClick={(event) => {
+              if (preventNextClick) {
+                preventNextClick = false;
+                event.preventDefault();
+              }
+              rowProps.onClick?.(event);
+            }}
+          >
+            {rowItem.name}
+          </button>
         )}
       />,
     );

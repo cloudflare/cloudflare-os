@@ -118,7 +118,7 @@ export const useHierarchicalListRowInteractions = ({
       if (!event.defaultPrevented) rowPointerProps.onPointerDown?.(event);
     },
     onPointerMove: (event) => {
-      if (!event.defaultPrevented) rowPointerProps.onPointerMove?.(event);
+      rowPointerProps.onPointerMove?.(event);
     },
     onPointerUp: (event) => {
       rowPointerProps.onPointerUp?.(event);
@@ -140,8 +140,9 @@ export const useHierarchicalListRowInteractions = ({
       : undefined,
     "aria-description": draggable ? "Move with Alt plus an arrow key." : undefined,
     onClick: (event) => {
+      const suppressed = consumeSuppressedClick();
       if (event.defaultPrevented) return;
-      if (consumeSuppressedClick()) {
+      if (suppressed) {
         event.preventDefault();
         event.stopPropagation();
         return;
@@ -164,7 +165,7 @@ export const useHierarchicalListRowInteractions = ({
       dragController.setDraggedItem(item);
     },
     onKeyDown: (event) => {
-      if (event.defaultPrevented) return;
+      if (event.target !== event.currentTarget || event.defaultPrevented) return;
       if (
         !event.altKey
         && !event.ctrlKey
