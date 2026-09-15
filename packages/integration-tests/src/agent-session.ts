@@ -216,6 +216,12 @@ class TurnObserver {
     return Promise.race([operation, this.timeoutFailure]);
   }
 
+  /** The RPC session died under the turn; nothing more can be observed. */
+  broken(error: unknown): void {
+    const message = `RPC session broken: ${error instanceof Error ? error.message : String(error)}`;
+    if (this.#finish({ status: "error", message })) this.#rejectTimeout(new Error(message));
+  }
+
   dispose(): void {
     clearTimeout(this.#timer);
     this.#signal?.removeEventListener("abort", this.#onAbort);
@@ -332,6 +338,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   #closePromise: Promise<void> | undefined;
   #terminal = false;
   #closed = false;
+  #broken = false;
   #lastHistory: AiChatMessage[] = [];
   #lastWorkpieces: WorkpieceSummary[] = [];
   #lastUsage: AgentTurnResult["usage"] = {};
@@ -354,6 +361,14 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     this.#accounts = options.accounts;
     this.#turnTimeoutMs = options.turnTimeoutMs;
     this.#costAccountingTimeoutMs = options.costAccountingTimeoutMs;
+    // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
+    // #openGadgetInternal), expecting a browser to reconnect. Without this the session would sit
+    // on the dead socket until the turn budget ran out; the first eval run lost 28 minutes that way.
+    this.#publicApi.onRpcBroken(error => {
+      this.#broken = true;
+      this.#terminal = true;
+      this.#activeTurn?.broken(error);
+    });
   }
 
   async initialize(): Promise<void> {
@@ -673,6 +688,11 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#broken) {
+      // The server ended the session; every RPC would fail the same way, so only release the stubs.
+      this.#disposeStubs();
+      return;
+    }
     const deadline = Date.now() + CANCELLATION_TIMEOUT_MS;
     let stopError: Error | undefined;
     let deleteError: Error | undefined;
@@ -699,19 +719,23 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
         deleteError = error instanceof Error ? error : new Error(String(error));
       }
     } finally {
-      this.#chatSubscription?.[Symbol.dispose]();
-      this.#chatSubscriberStub?.[Symbol.dispose]();
-      for (const rpc of this.#pendingRpcs) rpc[Symbol.dispose]();
-      this.#pendingRpcs.clear();
-      this.#workspace[Symbol.dispose]();
-      this.#authenticatedApi[Symbol.dispose]();
-      this.#publicApi[Symbol.dispose]();
+      this.#disposeStubs();
     }
     if (stopError !== undefined && deleteError !== undefined) {
       throw new AggregateError([stopError, deleteError], "Agent shutdown and workspace deletion failed");
     }
     if (stopError !== undefined) throw stopError;
     if (deleteError !== undefined) throw deleteError;
+  }
+
+  #disposeStubs(): void {
+    this.#chatSubscription?.[Symbol.dispose]();
+    this.#chatSubscriberStub?.[Symbol.dispose]();
+    for (const rpc of this.#pendingRpcs) rpc[Symbol.dispose]();
+    this.#pendingRpcs.clear();
+    this.#workspace[Symbol.dispose]();
+    this.#authenticatedApi[Symbol.dispose]();
+    this.#publicApi[Symbol.dispose]();
   }
 
   #assertOpen(): void {
