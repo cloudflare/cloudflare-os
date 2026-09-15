@@ -20,7 +20,7 @@
     "temporal-polyfill": "1.0.2"
   },
   "devDependencies": {
-    "@cloudflare/kumo": "^2.12.0",
+    "@cloudflare/kumo": "^2.13.1",
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
