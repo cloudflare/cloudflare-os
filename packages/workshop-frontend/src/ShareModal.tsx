@@ -377,6 +377,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
   const [menuContainer, setMenuContainer] = useState<HTMLDivElement | null>(null)
+  const [directoryPortalContainer, setDirectoryPortalContainer] =
+    useState<HTMLDivElement | null>(null)
   const [scrolled, setScrolled] = useState(false)
   const [landedPersonId, setLandedPersonId] = useState<string | null>(null)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
@@ -442,27 +444,34 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
 
-  // The popover is portaled out of the dialog so it can outgrow the dialog's clipped, scrolling
-  // body; pin it under the search row by hand since it no longer shares an offset parent.
+  // Keep the listbox inside the dialog's accessibility tree, but outside its scrolling body so
+  // opening results cannot make the dialog itself scroll.
   useLayoutEffect(() => {
     if (!directoryOpen) return
     const position = () => {
       const anchor = directoryAnchorRef.current
       const listbox = directoryListboxRef.current
-      if (!anchor || !listbox) return
-      const { left, bottom, width } = anchor.getBoundingClientRect()
-      const top = bottom + 8
-      listbox.style.left = `${left}px`
-      listbox.style.top = `${top}px`
-      listbox.style.width = `${width}px`
-      listbox.style.maxHeight = `${Math.min(205, window.innerHeight - top - 12)}px`
+      const dialog = listbox?.parentElement
+      if (!anchor || !listbox || !dialog) return
+      const anchorRect = anchor.getBoundingClientRect()
+      const dialogRect = dialog.getBoundingClientRect()
+      listbox.style.left = `${anchorRect.left - dialogRect.left}px`
+      listbox.style.top = `${anchorRect.bottom - dialogRect.top + 8}px`
+      listbox.style.width = `${anchorRect.width}px`
+      listbox.style.maxHeight = `${Math.max(0, Math.min(
+        205,
+        dialogRect.bottom - anchorRect.bottom - 20,
+      ))}px`
     }
     position()
+    const viewport = window.visualViewport
     window.addEventListener('resize', position)
-    window.addEventListener('scroll', position, true)
+    viewport?.addEventListener('resize', position)
+    viewport?.addEventListener('scroll', position)
     return () => {
       window.removeEventListener('resize', position)
-      window.removeEventListener('scroll', position, true)
+      viewport?.removeEventListener('resize', position)
+      viewport?.removeEventListener('scroll', position)
     }
   }, [directoryOpen])
 
@@ -942,7 +951,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         </div>
 
         <div
-          className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6"
+          className={`chat-panel min-h-0 flex-1 overscroll-contain px-4 pb-6 sm:px-6 ${directoryOpen ? 'overflow-hidden' : 'overflow-y-auto'}`}
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
           {containsRestrictedData && (
@@ -1024,7 +1033,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
-            {directoryOpen && menuContainer && createPortal(
+            {directoryOpen && directoryPortalContainer && createPortal(
               <div
                 ref={directoryListboxRef}
                 id={directoryListboxId}
@@ -1034,7 +1043,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 // Pressing anywhere in the popover (an option, its padding, the scrollbar) must not
                 // blur the combobox, which would dismiss the popover before the click lands.
                 onMouseDown={(event) => event.preventDefault()}
-                className="chat-panel themed-floating-shadow-lg fixed overscroll-contain overflow-y-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-2"
+                className="chat-panel themed-floating-shadow-lg pointer-events-auto absolute overscroll-contain overflow-y-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-2"
               >
                 {directory.status === 'loading' ? (
                   <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">Searching…</p>
@@ -1100,7 +1109,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                   </>
                 )}
               </div>,
-              menuContainer,
+              directoryPortalContainer,
             )}
           </div>
 
@@ -1388,6 +1397,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           </section>
           )}
         </div>
+        <div ref={setDirectoryPortalContainer} className="pointer-events-none absolute inset-0 z-30" />
       </Dialog>
     </Dialog.Root>
   )

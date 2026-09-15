@@ -44,7 +44,7 @@ afterAll(() => {
 
 vi.mock('@cloudflare/kumo', () => {
   const Dialog = Object.assign(
-    ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    ({ children }: { children: ReactNode }) => <dialog open>{children}</dialog>,
     {
       Root: ({ children }: { children: ReactNode }) => <>{children}</>,
       Title: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
@@ -332,7 +332,14 @@ describe('ShareModal', () => {
     expect(rendered.textContent).toContain('Ada Lovelace')
     expect(rendered.textContent).toContain('ada@cloudflare.com')
 
-    await click(rendered.querySelector<HTMLButtonElement>('[role="option"]')!)
+    const option = rendered.querySelector<HTMLButtonElement>('[role="option"]')!
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    await act(async () => option.dispatchEvent(mouseDown))
+    expect(mouseDown.defaultPrevented).toBe(true)
+    await act(async () => {
+      option.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+      option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
     expect(rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')?.value)
       .toBe('Ada Lovelace')
     await click(button(rendered, 'Invite'))
@@ -679,7 +686,7 @@ describe('ShareModal', () => {
     const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
     const listbox = rendered.querySelector<HTMLDivElement>('[role="listbox"]')!
     const modalScroller = input.closest<HTMLDivElement>('.chat-panel')!
-    expect(listbox.closest('[role="dialog"]')).toBeNull()
+    expect(listbox.closest('dialog')).not.toBeNull()
     const targetId = `${input.getAttribute('aria-controls')}-option-6`
     const target = document.getElementById(targetId)!
     listbox.getBoundingClientRect = () => ({
