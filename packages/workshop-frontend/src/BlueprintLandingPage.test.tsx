@@ -25,7 +25,7 @@ const testState = vi.hoisted(() => ({
   collectResourceUrl: () => Promise.resolve(
     'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
   ),
-  selectionReady: (_resourceUrl?: string) => true,
+  selectionReady: (_resourceUrl?: string): boolean => true,
   configuratorMounts: [] as {
     hidden?: boolean,
     initialResourceUrl?: string,
@@ -142,7 +142,7 @@ const GOOGLE_VENDOR: VendorDescription = {
   displayName: 'Google',
   url: 'https://google.com',
 }
-const CALENDAR_BLUEPRINT: BlueprintPublicInfo = {
+const CALENDAR_BLUEPRINT = {
   ...BLUEPRINT,
   metadata: {
     ...BLUEPRINT.metadata,
@@ -159,7 +159,7 @@ const CALENDAR_BLUEPRINT: BlueprintPublicInfo = {
       },
     },
   },
-}
+} satisfies BlueprintPublicInfo
 
 function subscription() {
   return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
@@ -328,7 +328,10 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     openConnectWindow.mockReset()
   })
 
-  async function render(harness: GatekeeperApiHarness, blueprint = CALENDAR_BLUEPRINT) {
+  async function render(
+    harness: GatekeeperApiHarness,
+    blueprint: BlueprintPublicInfo = CALENDAR_BLUEPRINT,
+  ) {
     testState.authenticatedApi = harness.api
     rootContainer = document.createElement('div')
     document.body.appendChild(rootContainer)
