@@ -1,0 +1,49 @@
+packages/gatekeeper-google/__tests__/configurator-url.test.ts
+  s_b235d7e85db519::t_78ff5d93330faa 149-189
+packages/gatekeeper-google/src/configurator/calendar-configurator-types.d.ts
+  s_c57fbc57db258e::t_59c797e46c72a9 15-17
+packages/gatekeeper-google/src/configurator/calendar-configurator-ui.tsx
+  s_c57fbc57db258e::t_e5dae4012eccd6 14-20,22
+packages/gatekeeper-google/src/google-configurators.ts
+  s_58367f93b79243::t_4049746495aa4f 140-143
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_c57fbc57db258e::t_44f9a383a676b9 12-13,16-21,25-33,36-37,50-91,131-163,182,184,188-192,235-552
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_c57fbc57db258e::t_add91a96bfad2f 6,50-51,54,63-66,68,96-99,106-107,111,118,125,128,130,137,174,176,181-182,201-203,218,222,232-268,481,489,512,817-834,838-873,1061,1138,1142,1437,1441,1455,1458-1459,1477,1481,1569-1706,1727,1731,1743,1746-1747,1768-1783,1847,1880-1881,1912-1913,1915-1919,1931-1944
+packages/workshop-frontend/src/ResourceConfiguratorHost.tsx
+  s_b235d7e85db519::t_7a54e59f54dea3 14,26,39
+packages/workshop-frontend/src/SandboxedResourceConfigurator.tsx
+  s_b235d7e85db519::t_cd75bd7140a510 68,76,390-394,404-405,408-411,417,419-420
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "750f46983f38a25b1e2ed241508fe1e608ea58c4",
+  "prompts": {},
+  "sessions": {
+    "s_58367f93b79243": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f598cbe98ffeMAuO9VHkfYSKxN",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_c57fbc57db258e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5990b83cffeLKZGa8awZwvHKE",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
