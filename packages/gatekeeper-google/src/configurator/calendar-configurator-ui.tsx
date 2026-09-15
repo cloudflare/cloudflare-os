@@ -3,6 +3,7 @@ import type { CalendarConfiguratorRpc, CalendarConfiguratorValues } from "./cale
 
 export default {
   initial: { availabilityMode: "thisCalendar" },
+  verifiesInitialResource: true,
 
   isReady({ values }) {
     return typeof values.calendarId === "string" &&
@@ -11,9 +12,15 @@ export default {
 
   async initialValuesFromResourceUrl({ resourceUrl, ui }) {
     const parsed = new URL(resourceUrl);
-    const calendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
+    const suggestedCalendarId = decodeURIComponent(parsed.pathname.split("/")[2] ?? "");
+    let calendarId: string | undefined;
+    if (suggestedCalendarId === "primary") {
+      calendarId = await ui.getPrimaryCalendarId();
+    } else if (suggestedCalendarId && await ui.canWriteCalendar(suggestedCalendarId)) {
+      calendarId = suggestedCalendarId;
+    }
     return {
-      calendarId: calendarId === "primary" ? await ui.getPrimaryCalendarId() : calendarId,
+      ...(calendarId ? { calendarId } : {}),
       availabilityMode: parsed.searchParams.get("availability") === "allVisible"
         ? "allVisible" : "thisCalendar",
     };

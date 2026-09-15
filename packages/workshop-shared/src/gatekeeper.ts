@@ -396,8 +396,13 @@ export interface ResourceConfiguratorHost extends RpcTarget {
   /**
    * Tell Workshop whether the current selection is ready to submit.
    * Workshop uses this to determine whether `Add connection` button should be enabled/disabled.
+   *
+   * `initialResourceVerified` is true only when the configurator explicitly attests that readiness
+   * includes semantic and account-access verification of the resource URL supplied by
+   * `getInitialResource()`. Older configurators omit it and therefore cannot authorize automatic
+   * resource resolution.
    */
-  setSelectionReady(ready: boolean): void;
+  setSelectionReady(ready: boolean, initialResourceVerified?: boolean): void;
 
   /**
    * Forward scroll gestures from iframe to parent.

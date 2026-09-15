@@ -24,14 +24,15 @@ export type GoogleCalendarListOptions = {
 const CALENDAR_ACCESS_ROLE_RANK: Record<string, number> = {
   owner: 0,
   writer: 1,
-  reader: 2,
-  freeBusyReader: 3,
-  none: 4,
+  writerWithoutPrivateAccess: 2,
+  reader: 3,
+  freeBusyReader: 4,
+  none: 5,
 };
 
 export function calendarPickerRank(calendar: GoogleCalendarInfo): number {
   if (calendar.primary) return -1;
-  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 5;
+  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 6;
 }
 
 type GoogleCalendarTime = {
@@ -167,6 +168,12 @@ export function validateCalendarTimeWindow(timeMin: Date, timeMax: Date, maxDays
   }
 }
 
+class GoogleCalendarApiError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`Google Calendar API request failed: ${status} ${body}`);
+  }
+}
+
 export class GoogleCalendarApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -186,7 +193,7 @@ export class GoogleCalendarApi {
 
     if (!response.ok) {
       let text = await response.text();
-      throw new Error(`Google Calendar API request failed: ${response.status} ${text}`);
+      throw new GoogleCalendarApiError(response.status, text);
     }
 
     if (response.status === 204) return undefined as T;
@@ -202,7 +209,7 @@ export class GoogleCalendarApi {
       let params = new URLSearchParams({
         maxResults: "250",
         // Only surface calendars the user can edit.
-        minAccessRole: "writer",
+        minAccessRole: "writerWithoutPrivateAccess",
         fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
       });
       if (pageToken) params.set("pageToken", pageToken);
@@ -232,6 +239,18 @@ export class GoogleCalendarApi {
       ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
       ...(cal.primary ? { primary: cal.primary } : {}),
     };
+  }
+
+  /** Returns whether the connected account can write the exact calendar. */
+  async canWriteCalendar(calendarId: string): Promise<boolean> {
+    try {
+      let calendar = await this.getCalendar(calendarId);
+      return calendar.accessRole === "writerWithoutPrivateAccess" ||
+        calendar.accessRole === "writer" || calendar.accessRole === "owner";
+    } catch (error) {
+      if (error instanceof GoogleCalendarApiError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   /** Lists all events in the window, paginating fully. */

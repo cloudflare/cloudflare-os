@@ -43,6 +43,14 @@ export type ConfiguratorUISpec<
   initial: TValues;
 
   /**
+   * Explicitly attest that `isReady()` includes semantic and account-access verification of values
+   * seeded from `initialValuesFromResourceUrl()`. Set this only when a ready seeded form represents
+   * the original URL without broadening its authority. Configurators that omit this can still
+   * pre-fill visible forms, but the Workshop will not use them for automatic resource resolution.
+   */
+  verifiesInitialResource?: true;
+
+  /**
    * Optional: derive initial form values from a concrete resource URL, so the form opens
    * pre-filled and editable. This is used when something (e.g. an AI agent's connection request)
    * already knows the exact resource — the configurator opens populated rather than blank.

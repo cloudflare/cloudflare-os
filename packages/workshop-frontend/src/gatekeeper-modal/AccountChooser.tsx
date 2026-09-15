@@ -84,6 +84,7 @@ export function AccountChooser({
               : []
           const needsAccess = !expired && accountMissing.length > 0
           const granting = grantingAccountId === account.id
+          const grantInProgress = grantingAccountId !== null
           return (
             <div
               key={account.id}
@@ -128,7 +129,7 @@ export function AccountChooser({
                 <button
                   type="button"
                   onClick={() => onGrantAccess?.(account.id)}
-                  disabled={granting}
+                  disabled={grantInProgress}
                   className="shrink-0 cursor-pointer rounded-md border border-kumo-line px-2 py-1 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-default transition-colors hover:bg-kumo-elevated disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {granting ? 'Opening...' : 'Grant access'}

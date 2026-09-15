@@ -9,12 +9,31 @@ import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
   BlueprintPublicInfo,
+  ConnectedAccountsSubscriber,
+  ConnectFlowStart,
   PublicApi,
 } from '@gadgets/workshop-shared/api'
+import type {
+  AccountDescription,
+  ResourceConfiguratorFrame,
+  SupportedResource,
+  VendorDescription,
+} from '@gadgets/workshop-shared/gatekeeper'
 
 const testState = vi.hoisted(() => ({
   authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
+  collectResourceUrl: () => Promise.resolve(
+    'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+  ),
+  selectionReady: (_resourceUrl?: string): boolean => true,
+  configuratorMounts: [] as {
+    hidden?: boolean,
+    initialResourceUrl?: string,
+    resourceUrlPattern?: string,
+  }[],
 }))
+
+const openConnectWindow = vi.hoisted(() => vi.fn<(flow: ConnectFlowStart) => void>())
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cloudflare/kumo')>()),
@@ -27,6 +46,48 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   useParams: () => ({ id: 'blueprint-one' }),
   useRouter: () => ({ history: { back: vi.fn<() => void>(), canGoBack: () => false } }),
 }))
+
+vi.mock('./connectHandoff', () => ({ openConnectWindow }))
+
+vi.mock('./ResourceConfiguratorHost', async () => {
+  const { useEffect } = await import('react')
+
+  const ResourceConfiguratorHost = ({
+    frame,
+    loading,
+    disabled,
+    hidden,
+    initialResourceUrl,
+    resourceUrlPattern,
+    onCollectResourceUrlChange,
+    onSelectionReadyChange,
+  }: {
+    frame: ResourceConfiguratorFrame | null
+    loading: boolean
+    disabled: boolean
+    hidden?: boolean
+    initialResourceUrl?: string
+    resourceUrlPattern?: string
+    onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
+    onSelectionReadyChange?: (ready: boolean | null, initialResourceVerified?: boolean) => void
+  }) => {
+    const mounted = Boolean(frame && !loading && !disabled)
+    useEffect(() => {
+      if (!mounted) return
+      testState.configuratorMounts.push({ hidden, initialResourceUrl, resourceUrlPattern })
+      onCollectResourceUrlChange?.(() => testState.collectResourceUrl())
+      onSelectionReadyChange?.(testState.selectionReady(initialResourceUrl), hidden ? true : undefined)
+      return () => {
+        onCollectResourceUrlChange?.(null)
+        onSelectionReadyChange?.(null)
+      }
+    }, [mounted, hidden, initialResourceUrl, resourceUrlPattern,
+      onCollectResourceUrlChange, onSelectionReadyChange])
+    return mounted ? <div data-testid="resource-configurator" /> : null
+  }
+
+  return { default: ResourceConfiguratorHost }
+})
 
 vi.mock('./useAuth', () => ({
   useAuth: () => ({
@@ -67,6 +128,39 @@ const BLUEPRINT: BlueprintPublicInfo = {
   },
 }
 
+const CALENDAR_PATTERN = 'https://calendar.google.com/calendar/:calendarId/*'
+const GMAIL_PATTERN = 'https://mail.google.com/*'
+const CREATOR_CALENDAR_URL =
+  'https://calendar.google.com/calendar/creator%40example.com/?availability=thisCalendar'
+const CALENDAR_RESOURCE: SupportedResource = {
+  urlPattern: CALENDAR_PATTERN,
+  title: 'Google Calendar',
+  description: 'Read and manage one selected calendar.',
+  grantable: true,
+}
+const GOOGLE_VENDOR: VendorDescription = {
+  displayName: 'Google',
+  url: 'https://google.com',
+}
+const CALENDAR_BLUEPRINT = {
+  ...BLUEPRINT,
+  metadata: {
+    ...BLUEPRINT.metadata,
+    title: 'Calendar blueprint',
+    description: 'Requires Google Calendar.',
+    bindings: {
+      CALENDAR: {
+        type: 'gatekeeper',
+        title: 'Google Calendar',
+        description: '',
+        gatekeeperName: 'google',
+        typeUrlPattern: CALENDAR_PATTERN,
+        resourceUrl: CREATOR_CALENDAR_URL,
+      },
+    },
+  },
+} satisfies BlueprintPublicInfo
+
 function subscription() {
   return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
     [Symbol.dispose]() {},
@@ -85,10 +179,15 @@ function authenticatedApi(): RpcStub<AuthenticatedApi> {
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
-function publicApi(): RpcStub<PublicApi> {
+function publicApi(blueprint = BLUEPRINT): RpcStub<PublicApi> {
   return {
-    getBlueprint: async () => BLUEPRINT,
+    getBlueprint: async () => blueprint,
   } as unknown as RpcStub<PublicApi>
+}
+
+function findButton(label: string) {
+  return Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+    .find(candidate => candidate.textContent === label)
 }
 
 describe('BlueprintLandingPage model configuration', () => {
@@ -131,5 +230,410 @@ describe('BlueprintLandingPage model configuration', () => {
     const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Save connection')!
     expect(save.disabled).toBe(false)
+  })
+})
+
+type GatekeeperApiHarness = ReturnType<typeof gatekeeperApi>
+
+function googleAccount(id: number, grantedResourceUrlPatterns: string[]): AccountDescription {
+  return {
+    displayName: `Recipient ${id}`,
+    uniqueName: `recipient-${id}@example.com`,
+    avatar: { url: 'https://example.com/avatar' },
+    grantedResourceUrlPatterns,
+  }
+}
+
+function gatekeeperApi(
+  initialGrants: string[] | null,
+  secondAccountGrants?: string[],
+  deferAccountReady = false,
+) {
+  let subscriber: ConnectedAccountsSubscriber | null = null
+  const disposeConfigurator = vi.fn<() => void>()
+  const startResourceConfigurator = vi.fn<
+    (accountId: number, resourceUrlPattern: string) => Promise<ResourceConfiguratorFrame>
+  >().mockResolvedValue({
+    iframeHtml: '<!doctype html>',
+    ui: { [Symbol.dispose]: disposeConfigurator } as ResourceConfiguratorFrame['ui'],
+  })
+  const ensureAccountResources = vi.fn<
+    (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>
+  >().mockResolvedValue({ url: 'https://accounts.example.com/grant', nonce: 'g'.repeat(64) })
+  const connectAccount = vi.fn<
+    (vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>
+  >().mockResolvedValue({ url: 'https://accounts.example.com/connect', nonce: 'c'.repeat(64) })
+  const reconnectAccount = vi.fn<
+    (accountId: number) => Promise<ConnectFlowStart>
+  >().mockResolvedValue({ url: 'https://accounts.example.com/reconnect', nonce: 'r'.repeat(64) })
+  const api = {
+    ...(authenticatedApi() as object),
+    listGatekeeperVendors: async () => [{
+      id: 'google',
+      description: GOOGLE_VENDOR,
+      supportedResources: [CALENDAR_RESOURCE],
+    }],
+    subscribeConnectedAccounts: (nextSubscriber: ConnectedAccountsSubscriber) => {
+      subscriber = nextSubscriber
+      if (initialGrants) {
+        subscriber.add(7, googleAccount(7, initialGrants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+      }
+      if (secondAccountGrants) {
+        subscriber.add(8, googleAccount(8, secondAccountGrants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+      }
+      if (!deferAccountReady) subscriber.ready()
+      return subscription()
+    },
+    startResourceConfigurator,
+    ensureAccountResources,
+    connectAccount,
+    reconnectAccount,
+  } as unknown as RpcStub<AuthenticatedApi>
+
+  return {
+    api,
+    startResourceConfigurator,
+    ensureAccountResources,
+    connectAccount,
+    reconnectAccount,
+    disposeConfigurator,
+    updateGrants(grants: string[]) {
+      if (!subscriber) throw new Error('account subscriber is not ready')
+      subscriber.add(7, googleAccount(7, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+    },
+    addAccount(id: number, grants: string[]) {
+      if (!subscriber) throw new Error('account subscriber is not ready')
+      subscriber.add(id, googleAccount(id, grants), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+    },
+    removeAccount(id: number) {
+      if (!subscriber) throw new Error('account subscriber is not ready')
+      subscriber.remove(id)
+    },
+    markAccountsReady() {
+      if (!subscriber) throw new Error('account subscriber is not ready')
+      subscriber.ready()
+    },
+  }
+}
+
+describe('BlueprintLandingPage gatekeeper configuration', () => {
+  let root: Root | undefined
+  let rootContainer: HTMLDivElement | undefined
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    rootContainer?.remove()
+    testState.authenticatedApi = null
+    testState.collectResourceUrl = () => Promise.resolve(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    )
+    testState.selectionReady = () => true
+    testState.configuratorMounts = []
+    openConnectWindow.mockReset()
+  })
+
+  async function render(
+    harness: GatekeeperApiHarness,
+    blueprint: BlueprintPublicInfo = CALENDAR_BLUEPRINT,
+  ) {
+    testState.authenticatedApi = harness.api
+    rootContainer = document.createElement('div')
+    document.body.appendChild(rootContainer)
+    root = createRoot(rootContainer)
+    await act(async () => root!.render(
+      <BlueprintLandingPage rpcStub={publicApi(blueprint)} />,
+    ))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+
+  it('automatically uses a suggestion configured for the recipient account', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+
+    await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
+    expect(findButton('Change')).toBeDefined()
+    expect(testState.configuratorMounts).toEqual([{
+      hidden: true,
+      initialResourceUrl: CREATOR_CALENDAR_URL,
+      resourceUrlPattern: CALENDAR_PATTERN,
+    }])
+  })
+
+  it('invalidates a ready suggestion when its account disconnects', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
+
+    await act(async () => harness.removeAccount(7))
+
+    await vi.waitFor(() => expect(findButton('Configure 1 remaining connection')).toBeDefined())
+    expect(findButton('Change')).toBeUndefined()
+  })
+
+  it('invalidates a ready suggestion when its account loses the required grant', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
+
+    await act(async () => harness.updateGrants([GMAIL_PATTERN]))
+
+    await vi.waitFor(() => expect(findButton('Configure 1 remaining connection')).toBeDefined())
+    expect(findButton('Change')).toBeUndefined()
+  })
+
+  it('does not automatically use a suggestion outside the declared resource type', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    const mismatchedBlueprint: BlueprintPublicInfo = {
+      ...CALENDAR_BLUEPRINT,
+      metadata: {
+        ...CALENDAR_BLUEPRINT.metadata,
+        bindings: {
+          CALENDAR: {
+            ...CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR,
+            resourceUrl: 'https://example.com/calendar/creator@example.com',
+          },
+        },
+      },
+    }
+    await render(harness, mismatchedBlueprint)
+
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+  })
+
+  it('disposes hidden configuration when the suggestion is not ready', async () => {
+    testState.selectionReady = () => false
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+
+    await vi.waitFor(() => expect(harness.disposeConfigurator).toHaveBeenCalledOnce())
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+  })
+
+  it('waits for the complete account census before automatically using a suggestion', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN], undefined, true)
+    await render(harness)
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+
+    await act(async () => {
+      harness.addAccount(8, [CALENDAR_PATTERN])
+      harness.markAccountsReady()
+    })
+
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+  })
+
+  it('does not prefill an unverified suggestion in visible configuration', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN], [CALENDAR_PATTERN])
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBeUndefined()
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('does not assign a suggestion after account eligibility becomes ambiguous', async () => {
+    let resolveCollection: ((resourceUrl: string) => void) | undefined
+    testState.collectResourceUrl = () => new Promise(resolve => { resolveCollection = resolve })
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+    await act(async () => resolveCollection!(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    ))
+
+    expect(findButton('Change')).toBeUndefined()
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+  })
+
+  it('clears a saved resource when switching accounts', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Change')).toBeDefined())
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    testState.configuratorMounts = []
+    await act(async () => findButton('Change')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBe(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    )
+
+    const secondAccount = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.includes('recipient-8@example.com'))!
+    await act(async () => secondAccount.click())
+    await vi.waitFor(() => expect(
+      testState.configuratorMounts.at(-1)?.initialResourceUrl,
+    ).toBeUndefined())
+
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('clears a saved resource when replacing a disconnected account', async () => {
+    testState.selectionReady = resourceUrl => resourceUrl !== undefined
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(findButton('Change')).toBeDefined())
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+
+    testState.configuratorMounts = []
+    await act(async () => findButton('Change')!.click())
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+    expect(testState.configuratorMounts[0].initialResourceUrl).toBe(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    )
+
+    await act(async () => harness.removeAccount(7))
+    await vi.waitFor(() => expect(
+      testState.configuratorMounts.at(-1)?.initialResourceUrl,
+    ).toBeUndefined())
+
+    expect(findButton('Save connection')!.disabled).toBe(true)
+  })
+
+  it('continues to later suggestions when the first cannot be verified', async () => {
+    testState.selectionReady = resourceUrl => !resourceUrl?.includes('creator%40example.com')
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    const twoCalendarBlueprint: BlueprintPublicInfo = {
+      ...CALENDAR_BLUEPRINT,
+      metadata: {
+        ...CALENDAR_BLUEPRINT.metadata,
+        bindings: {
+          FIRST: CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR,
+          SECOND: {
+            ...CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR,
+            resourceUrl:
+              'https://calendar.google.com/calendar/shared%40example.com/?availability=thisCalendar',
+          },
+        },
+      },
+    }
+    await render(harness, twoCalendarBlueprint)
+
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(2))
+    expect(findButton('Change')).toBeDefined()
+    expect(findButton('Configure 1 remaining connection')).toBeDefined()
+  })
+
+  it('ignores hidden collection after the user opens visible configuration', async () => {
+    let resolveCollection: ((resourceUrl: string) => void) | undefined
+    testState.collectResourceUrl = () => new Promise(resolve => { resolveCollection = resolve })
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness)
+    await vi.waitFor(() => expect(testState.configuratorMounts).toHaveLength(1))
+
+    await act(async () => findButton('Configure')!.click())
+    await act(async () => resolveCollection!(
+      'https://calendar.google.com/calendar/recipient%40example.com/?availability=thisCalendar',
+    ))
+
+    expect(findButton('Change')).toBeUndefined()
+    expect(findButton('Save connection')).toBeDefined()
+  })
+
+  it('expands a Gmail-only account before starting the Calendar configurator', async () => {
+    const harness = gatekeeperApi([GMAIL_PATTERN])
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Grant access')).toBeDefined())
+    expect(harness.startResourceConfigurator).not.toHaveBeenCalled()
+
+    await act(async () => findButton('Grant access')!.click())
+    expect(harness.ensureAccountResources).toHaveBeenCalledExactlyOnceWith(7, [CALENDAR_PATTERN])
+    expect(harness.reconnectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).toHaveBeenCalledExactlyOnceWith({
+      url: 'https://accounts.example.com/grant',
+      nonce: 'g'.repeat(64),
+    })
+
+    await act(async () => harness.updateGrants([GMAIL_PATTERN, CALENDAR_PATTERN]))
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN))
+    await vi.waitFor(() => expect(testState.configuratorMounts).toEqual([{
+      hidden: undefined,
+      initialResourceUrl: undefined,
+      resourceUrlPattern: CALENDAR_PATTERN,
+    }]))
+  })
+
+  it('requests only Calendar access when connecting a new account', async () => {
+    const harness = gatekeeperApi(null)
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Connect Google')).toBeDefined())
+    await act(async () => findButton('Connect Google')!.click())
+
+    expect(harness.connectAccount).toHaveBeenCalledExactlyOnceWith('google', [CALENDAR_PATTERN])
+  })
+
+  it('unblocks configuration when the server says the resource is already granted', async () => {
+    const harness = gatekeeperApi([GMAIL_PATTERN])
+    harness.ensureAccountResources.mockResolvedValueOnce(null)
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Grant access')).toBeDefined())
+    await act(async () => findButton('Grant access')!.click())
+
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN))
+    expect(openConnectWindow).not.toHaveBeenCalled()
+
+    await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
+    expect(findButton('Grant access')).toBeUndefined()
+    expect(document.body.querySelector('[data-testid="resource-configurator"]')).not.toBeNull()
+  })
+
+  it('expands the account whose Grant access button was clicked', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN], [GMAIL_PATTERN])
+    await render(harness, {
+      ...CALENDAR_BLUEPRINT,
+      metadata: {
+        ...CALENDAR_BLUEPRINT.metadata,
+        bindings: {
+          CALENDAR: {
+            ...CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR,
+            resourceUrl: undefined,
+          },
+        },
+      },
+    })
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Grant access')).toBeDefined())
+    await act(async () => findButton('Grant access')!.click())
+
+    expect(harness.ensureAccountResources).toHaveBeenCalledExactlyOnceWith(8, [CALENDAR_PATTERN])
+  })
+
+  it('disables every grant action while an authorization flow is starting', async () => {
+    const harness = gatekeeperApi([GMAIL_PATTERN], [GMAIL_PATTERN])
+    let resolveGrant: ((flow: ConnectFlowStart | null) => void) | undefined
+    harness.ensureAccountResources.mockReturnValueOnce(new Promise(resolve => { resolveGrant = resolve }))
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    let grantButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .filter(candidate => candidate.textContent === 'Grant access')
+    expect(grantButtons).toHaveLength(2)
+    act(() => grantButtons[0].click())
+
+    await vi.waitFor(() => {
+      grantButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .filter(candidate => candidate.textContent === 'Grant access')
+      expect(grantButtons).toHaveLength(1)
+      expect(grantButtons[0].disabled).toBe(true)
+    })
+
+    await act(async () => resolveGrant!(null))
   })
 })
