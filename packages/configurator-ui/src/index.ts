@@ -63,7 +63,10 @@ export type ConfiguratorUISpec<
     ui: TUI;
   }): Partial<TValues> | Promise<Partial<TValues>>;
 
-  /** Return if the current iframe-owned state is ready to submit. */
+  /**
+   * Return whether the current iframe-owned state is ready to submit. If omitted, the generated
+   * iframe reports ready after its initial render succeeds.
+   */
   isReady?(context: { values: TValues }): boolean;
 
   /** Return the resource URL chosen by current UI state. */

@@ -752,7 +752,7 @@ export default function GatekeeperModal({
         configuratorFrameState?.frame &&
         configuratorFrameState.accountId === selectedAccountId &&
         configuratorFrameState.resourceUrlPattern === resourceUrlPattern &&
-        configuratorSelectionReady !== false &&
+        configuratorSelectionReady === true &&
         !hasMissingResourceGrants,
       )
     }

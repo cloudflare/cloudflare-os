@@ -394,6 +394,8 @@ export interface ResourceConfiguratorHost extends RpcTarget {
   /**
    * Tell Workshop whether the current selection is ready to submit.
    * Workshop uses this to determine whether `Add connection` button should be enabled/disabled.
+   * A custom frame must report `true` after it initializes successfully; generated configurator
+   * frames do this automatically when their optional readiness predicate is omitted.
    */
   setSelectionReady(ready: boolean): void;
 

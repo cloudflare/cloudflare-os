@@ -126,6 +126,7 @@ let checkboxOptionsByName = {};
 let checkboxFilterByName = {};
 let renderedCheckboxNames = new Set();
 let isRendering = false;
+let renderFailed = false;
 let suppressAutocompleteFocusRefresh = false;
 let renderGeneration = 0;
 let parentViewport = { iframeTop: 0, viewportHeight: 0 };
@@ -188,6 +189,12 @@ function getFocusState() {
 }
 
 let lastPostedReady;
+function postReady(ready) {
+  if (ready === lastPostedReady) return;
+  lastPostedReady = ready;
+  host?.setSelectionReady(ready);
+}
+
 function hasBlockingCheckboxFailure(entries) {
   return Object.values(entries).some(entry => entry.status === "failed" && !entry.disabled);
 }
@@ -197,18 +204,14 @@ function pruneCheckboxEntries(entries, renderedNames) {
 }
 
 function postSelectionState() {
-  if (typeof spec?.isReady !== "function") return;
   const ready = !hasBlockingCheckboxFailure(checkboxOptionsByName)
-    && Boolean(spec.isReady({ values }));
-  if (ready === lastPostedReady) return;
-  lastPostedReady = ready;
-  host?.setSelectionReady(ready);
+    && (typeof spec?.isReady !== "function" || Boolean(spec.isReady({ values })));
+  postReady(ready);
 }
 
 function setValues(patch) {
   const active = getFocusState();
   values = { ...values, ...patch };
-  postSelectionState();
   render(active, true);
 }
 
@@ -660,37 +663,54 @@ function render(focusState = undefined, preserveCheckboxScroll = false) {
   renderGeneration++;
   renderedCheckboxNames = new Set();
   isRendering = true;
-  root.replaceChildren(el("div", { id: "layout-root" }, [
-    spec.render({ ui, values, setValues, clearFields, components }),
-  ]));
-  isRendering = false;
-  if (checkboxScrollOffsets) {
-    for (const list of root.querySelectorAll(".checkbox-list[data-name]")) {
-      const offset = checkboxScrollOffsets.get(list.getAttribute("data-name"));
-      const rows = list.querySelector(".checkbox-rows");
-      if (rows && offset !== undefined) rows.scrollTop = offset;
-    }
-  }
-  pruneCheckboxEntries(checkboxOptionsByName, renderedCheckboxNames);
-  if (focusState?.name) {
-    const input = root.querySelector('[data-configurator-input="' + CSS.escape(focusState.name) + '"]');
-    if (input instanceof HTMLInputElement) {
-      input.focus();
-      if (focusState.start !== null && focusState.end !== null) {
-        input.setSelectionRange(Math.min(focusState.start, input.value.length), Math.min(focusState.end, input.value.length), focusState.direction ?? "none");
+  try {
+    root.replaceChildren(el("div", { id: "layout-root" }, [
+      spec.render({ ui, values, setValues, clearFields, components }),
+    ]));
+    if (checkboxScrollOffsets) {
+      for (const list of root.querySelectorAll(".checkbox-list[data-name]")) {
+        const offset = checkboxScrollOffsets.get(list.getAttribute("data-name"));
+        const rows = list.querySelector(".checkbox-rows");
+        if (rows && offset !== undefined) rows.scrollTop = offset;
       }
     }
+    pruneCheckboxEntries(checkboxOptionsByName, renderedCheckboxNames);
+    if (focusState?.name) {
+      const input = root.querySelector('[data-configurator-input="' + CSS.escape(focusState.name) + '"]');
+      if (input instanceof HTMLInputElement) {
+        input.focus();
+        if (focusState.start !== null && focusState.end !== null) {
+          input.setSelectionRange(Math.min(focusState.start, input.value.length), Math.min(focusState.end, input.value.length), focusState.direction ?? "none");
+        }
+      }
+    }
+    renderFailed = false;
+    postSelectionState();
+    postHeightAfterLayout();
+  } catch (error) {
+    renderFailed = true;
+    postReady(false);
+    throw error;
+  } finally {
+    isRendering = false;
   }
-  postSelectionState();
-  postHeightAfterLayout();
 }
 
 class ResourceConfiguratorIframe extends RpcTarget {
   async collectResourceUrl() {
+    if (renderFailed) throw new Error("Configurator failed to render its current state.");
     if (hasBlockingCheckboxFailure(checkboxOptionsByName)) {
       throw new Error("Configurator options did not load.");
     }
-    const resourceUrl = await spec?.resourceUrl?.({ values, ui });
+    const renderedValues = values;
+    const resourceUrl = await spec?.resourceUrl?.({ values: renderedValues, ui });
+    if (renderFailed) throw new Error("Configurator failed to render its current state.");
+    if (hasBlockingCheckboxFailure(checkboxOptionsByName)) {
+      throw new Error("Configurator options did not load.");
+    }
+    if (values !== renderedValues) {
+      throw new Error("Configurator changed while its resource URL was being collected. Please try again.");
+    }
     if (typeof resourceUrl !== "string" || resourceUrl.length === 0) {
       throw new Error("Configurator did not provide a resource URL.");
     }
@@ -785,11 +805,12 @@ async function main() {
   if (!spec) throw new Error("Configurator UI module did not define a configurator UI.");
   values = { ...(spec.initial || {}) };
   await seedInitialValues();
-  postSelectionState();
   render();
 }
 
 main().catch(error => {
+  renderFailed = true;
+  postReady(false);
   reportFrontendIssue("configurator.startup", error, {
     handled: false, severity: "fatal",
   });

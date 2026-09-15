@@ -21,10 +21,16 @@ const checkboxConfiguratorSource =
   '  value: `tool-${index}`, title: `Tool ${index}`,\n' +
   '}));\n' +
   'export default {\n' +
-  '  initial: { tools: null },\n' +
-  '  render({ values, setValues }) {\n' +
-  '    return <CheckboxList name="tools" value={values.tools} loadOptions={async () => options}\n' +
-  '      onChange={tools => setValues({ tools })} />;\n' +
+  '  initial: { tools: null, failRender: false, listName: "tools" },\n' +
+  '  resourceUrl({ ui }) { return ui.resourceUrl(); },\n' +
+  '  render({ ui, values, setValues }) {\n' +
+  '    if (values.failRender) throw new Error("state-driven render failure");\n' +
+  '    return <div><button id="fail-render" onClick={() => setValues({ failRender: true })}>Fail</button>\n' +
+  '      <button id="recover-render" onClick={() => setValues({ failRender: false })}>Recover</button>\n' +
+  '      <button id="fail-options" onClick={() => setValues({ listName: "failing" })}>Fail options</button>\n' +
+  '      <CheckboxList name={values.listName} value={values.tools}\n' +
+  '        loadOptions={values.listName === "tools" ? async () => options : () => ui.failOptions()}\n' +
+  '        onChange={tools => setValues({ tools })} /></div>;\n' +
   '  },\n' +
   '};\n';
 let fixtureDir: string;
@@ -67,7 +73,10 @@ async function readRuntime(directory: string): Promise<string> {
   return decodeURIComponent(match[1]);
 }
 
-async function runConfiguratorRuntime(directory: string) {
+async function runConfiguratorRuntime(
+  directory: string,
+  waitFor: "checkbox" | "render-error" = "checkbox",
+) {
   const dom = new JSDOM("<!DOCTYPE html><div id=\"root\"></div>", {
     pretendToBeVisual: true,
     runScripts: "outside-only",
@@ -84,11 +93,25 @@ async function runConfiguratorRuntime(directory: string) {
     }
     class RpcTarget {}
     const CSS = { escape: value => String(value) };
-    function newMessagePortRpcSession() {
+    globalThis.selectionReadyEvents = [];
+    function newMessagePortRpcSession(_port, iframe) {
+      globalThis.configuratorIframe = iframe;
       return {
-        gatekeeper: {},
+        gatekeeper: {
+          resourceUrl() {
+            return new Promise(resolve => { globalThis.resolveResourceUrl = resolve; });
+          },
+          failOptions() {
+            return new Promise((_, reject) => { globalThis.rejectOptions = reject; });
+          },
+        },
         getInitialResource: async () => null,
-        setSelectionReady() {},
+        setSelectionReady(ready) {
+          globalThis.selectionReadyEvents.push({
+            ready,
+            rendered: Boolean(document.getElementById("layout-root")),
+          });
+        },
         resize() {},
         forwardScroll() {},
       };
@@ -97,7 +120,9 @@ async function runConfiguratorRuntime(directory: string) {
   `);
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    if (dom.window.document.querySelector(".checkbox-rows")) return dom;
+    if (waitFor === "checkbox"
+        ? dom.window.document.querySelector(".checkbox-rows")
+        : dom.window.document.querySelector(".error")) return dom;
     await new Promise(done => setTimeout(done, 0));
   }
   const error = dom.window.document.getElementById("root")?.textContent;
@@ -383,6 +408,131 @@ describe("generated configurator checkbox behavior", () => {
       filter.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 
       assert.equal(root.querySelector(".checkbox-rows")?.scrollTop, 0);
+    } finally {
+      dom.window.close();
+    }
+  });
+});
+
+describe("generated configurator readiness", () => {
+  it("reports ready after rendering when the optional readiness predicate is absent", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const selectionReadyEvents = (dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+      }).selectionReadyEvents;
+      assert.equal(selectionReadyEvents.length, 1);
+      assert.equal(selectionReadyEvents[0].ready, true);
+      assert.equal(selectionReadyEvents[0].rendered, true);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("does not report ready when the initial render fails", async () => {
+    const dom = await runConfiguratorRuntime(fixtureDir, "render-error");
+    try {
+      const selectionReadyEvents = (dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+      }).selectionReadyEvents;
+      assert.equal(selectionReadyEvents.length, 1);
+      assert.equal(selectionReadyEvents[0].ready, false);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("retracts readiness and refuses collection after a state-driven render fails", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const failRender = dom.window.document.querySelector("#fail-render");
+      assert.ok(failRender);
+      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
+      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+      const runtime = dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+      };
+      assert.deepEqual(Array.from(runtime.selectionReadyEvents, event => event.ready), [true, false]);
+      await assert.rejects(
+        runtime.configuratorIframe.collectResourceUrl(),
+        /failed to render its current state/i,
+      );
+
+      const recoverRender = dom.window.document.querySelector("#recover-render");
+      assert.ok(recoverRender);
+      recoverRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+      assert.deepEqual(
+        Array.from(runtime.selectionReadyEvents, event => event.ready),
+        [true, false, true],
+      );
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when rendering fails", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        resolveResourceUrl(url: string): void;
+      };
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      const failRender = dom.window.document.querySelector("#fail-render");
+      assert.ok(failRender);
+      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
+      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /failed to render its current state/i);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when its rendered values change", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        resolveResourceUrl(url: string): void;
+      };
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
+      assert.ok(checkbox);
+      checkbox.click();
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /changed while its resource URL was being collected/i);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when configurator options fail", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const failOptions = dom.window.document.querySelector("#fail-options");
+      assert.ok(failOptions);
+      failOptions.click();
+      assert.ok(dom.window.document.querySelector('[data-name="failing"]'));
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        rejectOptions(error: Error): void;
+        resolveResourceUrl(url: string): void;
+      };
+      for (let attempt = 0; attempt < 20 && !runtime.rejectOptions; attempt++) {
+        await new Promise(done => setTimeout(done, 0));
+      }
+      assert.ok(runtime.rejectOptions);
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      runtime.rejectOptions(new Error("options unavailable"));
+      await new Promise(done => setTimeout(done, 0));
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /options did not load/i);
     } finally {
       dom.window.close();
     }
