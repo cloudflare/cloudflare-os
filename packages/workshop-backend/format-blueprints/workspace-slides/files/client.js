@@ -371,6 +371,7 @@ const COMPONENTS = {
           fontFamily: FONT,
           fontSize: (props.fontSize || 19) + "px",
           fontWeight: String(props.weight || 400),
+          letterSpacing: props.letterSpacing || "normal",
           color: props.color || "#000000",
           textAlign: props.align || "left",
           lineHeight: String(props.lineHeight || 1.6),

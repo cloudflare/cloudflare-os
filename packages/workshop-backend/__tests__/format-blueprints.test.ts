@@ -106,6 +106,7 @@ describe("bundled format blueprints", () => {
       "format.slides": [
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+        'id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"',
       ],
       "format.spreadsheet": [
         'const CSV_FORMAT_PREFIX = "csv:"',
@@ -124,6 +125,19 @@ describe("bundled format blueprints", () => {
         expect(serverCode, `${entry.blueprintId}: ${declaration}`).toContain(declaration);
       }
     }
+  });
+
+  // The slides PPTX exporter depends on two sibling files that a dynamic Gadget can only reach if
+  // they ship in the same archive; the ZIP writer is the sheets blueprint's, copied verbatim.
+  it("bundles the slides PowerPoint exporter with its blueprint-local dependencies", async () => {
+    let slides = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.slides")!;
+    let sheets = FORMAT_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.spreadsheet")!;
+
+    expect(await readBlueprintFile(slides, "server.js")).toContain('import { MAX_TOTAL_TEXT_LENGTH, deckToPptx, measureText } from "./pptx.js"');
+    expect(await readBlueprintFile(slides, "pptx.js")).toContain('import { createZip, crc32 } from "./zip.js"');
+    let zip = await readBlueprintFile(slides, "zip.js");
+    expect(zip.length).toBeGreaterThan(0);
+    expect(zip).toBe(await readBlueprintFile(sheets, "zip.js"));
   });
 
   // Skipped when the deployment bundles nothing, which FORMAT_BLUEPRINTS_DIR makes a supported
