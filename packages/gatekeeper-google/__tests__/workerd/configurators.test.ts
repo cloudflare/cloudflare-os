@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
+import { calendarPickerRank } from "../../src/calendar-api";
 import { BigQueryConfiguratorUI, CalendarConfiguratorUI } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 
@@ -33,12 +34,21 @@ describe("Google resource configurators", () => {
 
     await new CalendarConfiguratorUI(getToken).listCalendars("");
 
-    expect(requestUrl?.searchParams.get("minAccessRole")).toBe("writer");
+    expect(requestUrl?.searchParams.get("minAccessRole")).toBe("writerWithoutPrivateAccess");
+  });
+
+  it("ranks limited writers ahead of read-only calendars", () => {
+    expect(calendarPickerRank({
+      id: "limited-writer", summary: "Limited writer", accessRole: "writerWithoutPrivateAccess",
+    })).toBeLessThan(calendarPickerRank({
+      id: "reader", summary: "Reader", accessRole: "reader",
+    }));
   });
 
   it.each([
     ["owner", true],
     ["writer", true],
+    ["writerWithoutPrivateAccess", true],
     ["reader", false],
   ] as const)("reports %s access accurately for an exact calendar", async (accessRole, expected) => {
     let getToken = vi.fn(async () => token("access-token"));

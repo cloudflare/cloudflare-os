@@ -24,14 +24,15 @@ export type GoogleCalendarListOptions = {
 const CALENDAR_ACCESS_ROLE_RANK: Record<string, number> = {
   owner: 0,
   writer: 1,
-  reader: 2,
-  freeBusyReader: 3,
-  none: 4,
+  writerWithoutPrivateAccess: 2,
+  reader: 3,
+  freeBusyReader: 4,
+  none: 5,
 };
 
 export function calendarPickerRank(calendar: GoogleCalendarInfo): number {
   if (calendar.primary) return -1;
-  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 5;
+  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 6;
 }
 
 type GoogleCalendarTime = {
@@ -208,7 +209,7 @@ export class GoogleCalendarApi {
       let params = new URLSearchParams({
         maxResults: "250",
         // Only surface calendars the user can edit.
-        minAccessRole: "writer",
+        minAccessRole: "writerWithoutPrivateAccess",
         fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
       });
       if (pageToken) params.set("pageToken", pageToken);
@@ -244,7 +245,8 @@ export class GoogleCalendarApi {
   async canWriteCalendar(calendarId: string): Promise<boolean> {
     try {
       let calendar = await this.getCalendar(calendarId);
-      return calendar.accessRole === "writer" || calendar.accessRole === "owner";
+      return calendar.accessRole === "writerWithoutPrivateAccess" ||
+        calendar.accessRole === "writer" || calendar.accessRole === "owner";
     } catch (error) {
       if (error instanceof GoogleCalendarApiError && error.status === 404) return false;
       throw error;
