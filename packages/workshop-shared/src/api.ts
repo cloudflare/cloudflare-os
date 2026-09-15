@@ -3139,7 +3139,18 @@ export type AiToolCall = {
    * the pair of a workpiece reference (the `workpiece` chat binding name) and `filename`.
    */
   toolName: "readFile";
-  input: {workpiece?: string, filename: string};
+  input: {
+    workpiece?: string;
+    filename: string;
+
+    /**
+     * Optional line window: `startLine` is 1-based and `lineCount` is the number of lines to return
+     * from there, each defaulting to the file's edge. A windowed read ends with a line stating the
+     * range shown and where to continue. Absent on reads recorded before ranges existed.
+     */
+    startLine?: number;
+    lineCount?: number;
+  };
 
   /**
    * Present when the read was served from committed code rather than the chat's uncommitted
@@ -3150,6 +3161,24 @@ export type AiToolCall = {
    * content, which cannot go stale within an epoch, and carry no stamp.
    */
   observedCommit?: string;
+} | {
+  /**
+   * Search a workpiece's files for lines matching a regular expression, in `grep -n` form. The
+   * output, bounded as the model saw it, is recorded so replay doesn't re-run the search, and is
+   * stripped from client deliveries: for a worktree it is repository content, which never reaches
+   * clients, and the UI shows only the call.
+   */
+  toolName: "grep";
+  input: {
+    workpiece: string;
+
+    /** JavaScript regular expression, matched against each line. */
+    pattern: string;
+
+    /** A file to search, or a directory to search recursively. Absent means the whole workpiece. */
+    path?: string;
+  };
+  output?: string;
 } | {
   toolName: "writeFile";
   input: {

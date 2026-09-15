@@ -32,6 +32,7 @@ import {
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
+import { scanWorktreeForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
@@ -2933,6 +2934,12 @@ class OverseerImpl implements AgentHooks {
     return this.gitCache.assertWorktreePathWritable(commit, path);
   }
 
+  // AgentHooks implementation: the grep tool's worktree scan (see scanWorktreeForGrep).
+  grepWorktree(turn: WorktreeTurnAccess, worktreeId: WorkpieceId, base: string, path?: string)
+      : Promise<GrepScan> {
+    return scanWorktreeForGrep(this.gitCache, turn, worktreeId, base, path);
+  }
+
   // AgentHooks implementation: per-file oid diff between two commits (see GitStore.changedPaths).
   changedPaths(a: string | undefined, b: string | undefined): Promise<Set<string>> {
     return this.gitStore.changedPaths(a, b);
@@ -5662,9 +5669,10 @@ class OverseerImpl implements AgentHooks {
   // (non-image attachments are fetched on demand via getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see git-migration.ts) but nothing can apply it, so it must not ship as
-  // dead weight on the wire (it is not part of the message's API type) -- and strip worktree
+  // dead weight on the wire (it is not part of the message's API type) -- strip worktree
   // content and pins (see stripWorktreeChangeEntries; `createdWorktrees` stays, ids being
-  // deliberately visible).
+  // deliberately visible), and strip grep outputs, which are replay-only and, for a worktree,
+  // repository content.
   hydrateChatMessageForClient(msg: AiChatMessage): AiChatMessage {
     if (msg.type === "changes" && "update" in msg) {
       let {update: _, ...rest} = msg as AiChatMessage & {update?: Uint8Array};
@@ -5681,6 +5689,16 @@ class OverseerImpl implements AgentHooks {
         if (pins === undefined || pins.length === 0) delete msg.pins;
         else msg.pins = pins;
       }
+    }
+    if (msg.type === "message" && msg.toolCalls?.some(tc => tc.toolName === "grep")) {
+      msg = {
+        ...msg,
+        toolCalls: msg.toolCalls.map(tc => {
+          if (tc.toolName !== "grep") return tc;
+          let {output: _, ...rest} = tc;
+          return rest;
+        }),
+      };
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
