@@ -100,6 +100,7 @@ describe("bundled format blueprints", () => {
     let expectedFormats: Record<string, string[]> = {
       "format.document": [
         'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
+        'id: "docx", label: "Word Document", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"',
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
       ],
