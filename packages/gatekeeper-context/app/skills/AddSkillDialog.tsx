@@ -40,7 +40,9 @@ export const AddSkillDialog = ({
   const toasts = useKumoToastManager();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [collectionId, setCollectionId] = useState(target.collectionId);
+  const [collectionId, setCollectionId] = useState(
+    target.collectionId || (writableCollections.length === 1 ? writableCollections[0].id : ""),
+  );
   const [adding, setAdding] = useState(false);
   const dialog = useMutationDialog(adding, onClose);
   const metadataName = skillNameFromTitle(name);
@@ -114,7 +116,7 @@ export const AddSkillDialog = ({
             placeholder="What this skill does"
             rows={3}
           />
-          {target.collectionEditable && (
+          {target.collectionEditable && writableCollections.length > 1 && (
             <Select
               label="Collection"
               className="w-full"
