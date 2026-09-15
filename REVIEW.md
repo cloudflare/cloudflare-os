@@ -39,7 +39,7 @@ through logs and errors, then everything else.
   annotations, a tool is an observation only when the server declares `readOnlyHint: true`, and
   auto-applying a write additionally requires a `vetted` endpoint. Every SDK OAuth operation must be
   given `sdkFetch(...)` so endpoint and SSRF checks survive redirects.
-- `format-blueprints/`: a `blueprintId` is never edited after deploy — installs and promotion are
+- `packages/bundled-blueprints/blueprints/`: a `blueprintId` is never edited after deploy — installs and promotion are
   keyed on it, so a rename orphans the old entry.
 
 ## Logging, errors and secrets
@@ -113,7 +113,7 @@ contributor to broaden scope, add refactors, or take on adjacent cleanup.
 ## Ignore during review
 
 - Generated files, which are gitignored and rebuilt: `packages/*/src/generated/**` (`app.txt`,
-  `*-configurator-ui.*`, `format-blueprints.ts`, `browser-export-runtime.txt`) and any `dist/`.
+  `*-configurator-ui.*`, `bundled-blueprints.ts`, `browser-export-runtime.txt`) and any `dist/`.
 - `pnpm-lock.yaml`, unless the change is itself a dependency change — then check it against the
   `minimumReleaseAge` supply-chain policy in `pnpm-workspace.yaml`.
-- Committed `format-blueprints/*.gadget` archives, which are opaque data.
+- Committed `*.gadget` archives in a blueprint directory, which are opaque data.

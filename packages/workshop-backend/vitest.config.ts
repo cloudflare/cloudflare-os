@@ -54,6 +54,7 @@ export default defineConfig({
           // Never addressed by name: a binding is what puts the class in `ctx.exports`, from
           // which the overseer instantiates it (with props) as one of its own facets.
           TEST_AGENT_SPAWNER: { className: 'AgentSpawnerGatekeeper', useSQLite: true },
+          TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
         },
       },
     }),

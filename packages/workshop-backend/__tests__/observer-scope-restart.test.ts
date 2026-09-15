@@ -13,6 +13,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { SeedBindingInfo } from "../src/agent.js";
 import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -1066,33 +1067,82 @@ describe("connections blocked pending restart", () => {
     expect(names).not.toContain("blocked");
   }));
 
-  it("a blocked connection is skipped by the ambient catalog load",
+  it("usable ambient catalogs retry and refresh while blocked connections stay skipped",
       () => withImpl(async (impl) => {
     joinSession(impl);
     let catalogLoads: number[] = [];
+    let catalogAttempt = 0;
     impl.getGatekeeperFacet = (id: number) => ({
       describe: async () =>
           ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: "RES" }),
-      getAgentCatalog: async () => { catalogLoads.push(id); return { entries: [] }; },
+      getAgentCatalog: async () => {
+        catalogLoads.push(id);
+        if (++catalogAttempt === 1) throw new Error("transient catalog failure");
+        return {
+          entries: [{
+            id: `entry-${catalogAttempt}`,
+            title: `Entry ${catalogAttempt}`,
+            description: "test",
+          }],
+        };
+      },
     });
-    impl.storage.gatekeepers.put({
-      id: 1, resourceTitle: "Usable", class: {} as any,
-      creationSpec: { type: "ambient", vendorId: "v1" },
-    });
-    let added = await impl.addGatekeeper({} as any, { type: "ambient", vendorId: "v2" });
+    seedGatekeeper(impl, 1);
+    let usable = impl.storage.gatekeepers.get(1);
+    usable.resourceTitle = "Usable";
+    usable.creationSpec = { type: "ambient", vendorId: "v1" };
+    impl.storage.gatekeepers.put(usable);
+    let added = await impl.addGatekeeper(
+        usable.class, { type: "ambient", vendorId: "v2" });
     let blockedId = await added.getId();
     impl.storage.chatMeta.put(
         { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
 
-    let seeds = await impl.prepareChatBindings(1, []);
+    let prepare = (): Promise<SeedBindingInfo[]> => impl.prepareChatBindings(1, []);
+    let failed = await prepare();
+    let recovered = await prepare();
+    let refreshed = await prepare();
 
-    // The blocked connection is left out entirely, like the other enumerating routes: its
-    // catalog is neither queried nor cached, and even its seed entry's metadata belongs to a
-    // scope nobody live was verified against. It reappears once the reset lands and clients
-    // reconnect; the next turn then loads its catalog as a missing id.
-    expect(catalogLoads).toEqual([1]);
-    expect(seeds.some((seed: any) => seed.target === blockedId)).toBe(false);
-    expect(impl.storage.chatContext.get(1).alwaysAvailableCatalogs
-        .map((entry: any) => entry.gatekeeperId)).toEqual([1]);
+    expect(catalogLoads).toEqual([1, 1, 1]);
+    for (let seeds of [failed, recovered, refreshed]) {
+      expect(seeds.some(seed => seed.target === blockedId)).toBe(false);
+    }
+    expect(failed.find(seed => seed.target === 1)?.catalog).toBeNull();
+    expect(recovered.find(seed => seed.target === 1)?.catalog?.entries[0]?.id).toBe("entry-2");
+    expect(refreshed.find(seed => seed.target === 1)?.catalog?.entries[0]?.id).toBe("entry-3");
+  }));
+});
+
+describe("ambient catalogs", () => {
+  it("a connection that answers null is not asked again, in any chat",
+      () => withImpl(async (impl) => {
+    let catalogLoads: number[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: async () => {
+        catalogLoads.push(id);
+        return id === 1 ? { entries: [] } : null;
+      },
+    });
+    for (let id of [1, 2]) {
+      seedGatekeeper(impl, id);
+      let record = impl.storage.gatekeepers.get(id);
+      record.creationSpec = { type: "ambient", vendorId: `v${id}` };
+      impl.storage.gatekeepers.put(record);
+    }
+    for (let chatId of [1, 2]) {
+      impl.storage.chatMeta.put(
+          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+    }
+
+    await impl.prepareChatBindings(1, []);
+    await impl.prepareChatBindings(1, []);
+    let other: SeedBindingInfo[] = await impl.prepareChatBindings(2, []);
+
+    // An empty catalog is asked for every time; null is remembered for the connection.
+    expect(catalogLoads).toEqual([1, 2, 1, 1]);
+    expect(other.find(seed => seed.target === 1)?.catalog).toEqual({ entries: [] });
+    expect(other.find(seed => seed.target === 2)?.catalog).toBeNull();
   }));
 });

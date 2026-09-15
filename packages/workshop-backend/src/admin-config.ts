@@ -20,6 +20,12 @@ export type AdminConfig = {
    */
   signupsEnabled: boolean;
   /**
+   * Whether users may search the deployment-wide user directory to find collaborators. When not
+   * explicitly configured, this defaults to the opposite of `signupsEnabled`. The directory itself
+   * is maintained either way, and this switch just controls user access.
+   */
+  userSearchEnabled: boolean;
+  /**
    * Site name shown next to the top-bar logo, or "" to use DEFAULT_SITE_NAME. Resolve it for
    * display with `resolveSiteName()`.
    */
@@ -81,6 +87,7 @@ export type FormatCuration = {
 
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   signupsEnabled: true,
+  userSearchEnabled: false,
   siteName: "",
   siteLogoConfigured: false,
   instanceInstructions: "",
@@ -281,39 +288,52 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+/**
+ * Apply defaults to a partial admin config loaded from either authoritative DO
+ * storage or its KV mirror.
+ */
+export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
+  let disabledResources: Record<string, string[]> = {};
+  if (p.disabledResources && typeof p.disabledResources === "object") {
+    for (let [vendorId, patterns] of Object.entries(p.disabledResources)) {
+      let list = strings(patterns);
+      if (list.length > 0) disabledResources[vendorId] = list;
+    }
+  }
+  let ambientGatekeeperModes: Record<string, AmbientGatekeeperMode> = {};
+  if (p.ambientGatekeeperModes && typeof p.ambientGatekeeperModes === "object") {
+    for (let [vendorId, mode] of Object.entries(p.ambientGatekeeperModes)) {
+      if (isAmbientGatekeeperMode(mode)) ambientGatekeeperModes[vendorId.toLowerCase()] = mode;
+    }
+  }
+  let signupsEnabled = typeof p.signupsEnabled === "boolean"
+    ? p.signupsEnabled
+    : DEFAULT_ADMIN_CONFIG.signupsEnabled;
+  return {
+    signupsEnabled,
+    userSearchEnabled: typeof p.userSearchEnabled === "boolean"
+      ? p.userSearchEnabled
+      : !signupsEnabled,
+    siteName: typeof p.siteName === "string" ? p.siteName : "",
+    siteLogoConfigured: typeof p.siteLogoConfigured === "boolean" ? p.siteLogoConfigured : false,
+    instanceInstructions: typeof p.instanceInstructions === "string" ? p.instanceInstructions : "",
+    announcement: typeof p.announcement === "string" ? p.announcement : "",
+    banner: {
+      text: typeof p.banner?.text === "string" ? p.banner.text : "",
+      color: isBannerColor(p.banner?.color) ? p.banner!.color : DEFAULT_BANNER_COLOR,
+    },
+    accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
+    disabledResources,
+    disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
+    ambientGatekeeperModes,
+    formats: parseFormats(p.formats),
+  };
+}
+
 export function parseAdminConfig(raw: string | null): AdminConfig {
   if (!raw) return { ...DEFAULT_ADMIN_CONFIG };
   try {
-    let p = JSON.parse(raw) as Partial<AdminConfig>;
-    let disabledResources: Record<string, string[]> = {};
-    if (p.disabledResources && typeof p.disabledResources === "object") {
-      for (let [vendorId, patterns] of Object.entries(p.disabledResources)) {
-        let list = strings(patterns);
-        if (list.length > 0) disabledResources[vendorId] = list;
-      }
-    }
-    let ambientGatekeeperModes: Record<string, AmbientGatekeeperMode> = {};
-    if (p.ambientGatekeeperModes && typeof p.ambientGatekeeperModes === "object") {
-      for (let [vendorId, mode] of Object.entries(p.ambientGatekeeperModes)) {
-        if (isAmbientGatekeeperMode(mode)) ambientGatekeeperModes[vendorId.toLowerCase()] = mode;
-      }
-    }
-    return {
-      signupsEnabled: typeof p.signupsEnabled === "boolean" ? p.signupsEnabled : true,
-      siteName: typeof p.siteName === "string" ? p.siteName : "",
-      siteLogoConfigured: typeof p.siteLogoConfigured === "boolean" ? p.siteLogoConfigured : false,
-      instanceInstructions: typeof p.instanceInstructions === "string" ? p.instanceInstructions : "",
-      announcement: typeof p.announcement === "string" ? p.announcement : "",
-      banner: {
-        text: typeof p.banner?.text === "string" ? p.banner.text : "",
-        color: isBannerColor(p.banner?.color) ? p.banner!.color : DEFAULT_BANNER_COLOR,
-      },
-      accentColor: typeof p.accentColor === "string" ? p.accentColor : "",
-      disabledResources,
-      disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
-      ambientGatekeeperModes,
-      formats: parseFormats(p.formats),
-    };
+    return normalizeAdminConfig(JSON.parse(raw) as Partial<AdminConfig>);
   } catch {
     return { ...DEFAULT_ADMIN_CONFIG };
   }

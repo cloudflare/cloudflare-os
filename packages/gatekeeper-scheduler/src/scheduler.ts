@@ -20,7 +20,6 @@ import type {
   HookController,
   HookInitiator,
   HookTargetMetadata,
-  ObservationAuthorizer,
   ResourceConfiguratorFrame,
   ResourceDescription,
   SupportedResource,
@@ -269,9 +268,7 @@ export class SchedulerGatekeeper
   }
 
   /** Returns no catalog because schedule discovery happens through list(). */
-  async getAgentCatalog(
-    _authorizer: NativeRpcStub<ObservationAuthorizer>,
-  ): Promise<AgentCatalog | null> {
+  async getAgentCatalog(): Promise<AgentCatalog | null> {
     return null;
   }
 

@@ -318,27 +318,16 @@ export class ContextGatekeeper
     };
   }
 
-  async getAgentCatalog(
-      authorizer: NativeRpcStub<ObservationAuthorizer>): Promise<AgentCatalog> {
+  /**
+   * Not an observation: the catalog reaches every chat's prompt automatically, so nothing in it may
+   * need observer verification. Reading an item through the session is the observation.
+   */
+  async getAgentCatalog(): Promise<AgentCatalog> {
     let domain = this.ctx.props.sharingDomain;
     let userLibrary = this.#userLibraries().get(
       this.#userLibraries().idFromName(domainName(domain, this.ctx.props.accountId)));
     let collections = await loadEnabledContextCollections(this.env, domain, userLibrary);
-    let catalog = buildContextCatalog(collections, await this.#loadSkills(collections));
-    if (catalog.entries.length > 0) {
-      let collectionIds = [...new Set(catalog.entries.map(entry => {
-        let slash = entry.id.indexOf("/");
-        return slash < 0 ? entry.id : entry.id.slice(0, slash);
-      }))];
-      let check = await this.#observers().prepareObservation(collectionIds);
-      await authorizer.authorizeObservation({
-        title: "Context catalog",
-        description: `Listed ${catalog.entries.length} available Context item(s).`,
-        excludeObservers: check.excludeObservers,
-      });
-      check.commit();
-    }
-    return catalog;
+    return buildContextCatalog(collections, await this.#loadSkills(collections));
   }
 
   /** Read-only gatekeeper: no side-effecting actions, so nothing is ever auto-approvable. */

@@ -253,6 +253,14 @@ function makeUserStorage(storage: DurableObjectStorage) {
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
       passwordHashHash: <Uint8Array | null>null,
+      // Current profile revision, bumped every time the user updates their
+      // public-facing profile. Currently this is only bumped when the user
+      // changes their display name.
+      profileRev: 0,
+      // Profile revision the deployment-wide user directory last acknowledged
+      // (-1 = never, which also lazily backfills users created before the
+      // directory existed). See #syncDirectory().
+      directoryRev: -1,
     }
   });
 }
@@ -333,6 +341,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.vendors = buildGatekeeperVendorMap(env);
   }
 
+  // Mirrors the profile into the deployment-wide user directory. Best-effort
+  // and does not block the caller. The `syncUser` call opens this DO's input
+  // gate, so a rename can start a second sync while one is in flight, and the
+  // two can reach the directory in either order. Each sync carries its
+  // `profileRev` and the directory keeps the highest, so no ordering is needed
+  // here. The revision counter only increases, and a failed sync leaves it
+  // behind so the next authentication retries.
+  #syncDirectory(): void {
+    const rev = this.storage.profileRev.get();
+    if (rev === this.storage.directoryRev.get()) return;
+    const profile = this.storage.profile.get();
+    this.ctx.exports.UserDirectoryDurableObject.getByName("")
+        .syncUser({ id: profile.id, name: profile.name }, rev)
+        .then(() => {
+          if (rev > this.storage.directoryRev.get()) this.storage.directoryRev.put(rev);
+        }, (error: unknown) => {
+          logger.warn("failed to sync user directory record", {
+            event: "user.directory.sync.failed",
+            error,
+          });
+        });
+  }
+
   async authenticate(token: string): Promise<void> {
     let tokenBytes: Uint8Array;
     try {
@@ -348,6 +379,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!session) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    this.#syncDirectory();
   }
 
   /**
@@ -356,7 +388,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * existing users can still sign in.
    */
   async authenticateFromCfAccess(email: string, allowCreate: boolean): Promise<boolean> {
-    if (!this.storage.created.get()) {
+    const isNew = !this.storage.created.get();
+    if (isNew) {
       if (!allowCreate) {
         throw new Error("New sign-ups are currently disabled on this deployment.");
       }
@@ -367,10 +400,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         name: email.split("@")[0],
         id: email,
       });
-      return true;
     }
-
-    return false;
+    this.#syncDirectory();
+    return isNew;
   }
 
   async #newSessionToken(): Promise<string> {
@@ -551,6 +583,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let profile = this.storage.profile.get();
     profile.name = name;
     this.storage.profile.put(profile);
+    this.storage.profileRev.put(this.storage.profileRev.get() + 1);
+    this.#syncDirectory();
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
