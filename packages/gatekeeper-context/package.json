@@ -15,6 +15,7 @@
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
+    "@gadgets/ui": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",

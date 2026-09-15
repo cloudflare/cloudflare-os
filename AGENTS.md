@@ -51,6 +51,7 @@ Frontend conventions (Workshop, gatekeeper management apps, and shared UI):
 * Keep small stateless render helpers private. Extract a component or hook when it owns meaningful state, effects, interactions, accessibility behavior, or a reusable responsibility.
 * Cross-application UI belongs in `@gadgets/ui`. An app's local `components/` directory is shared only within that app. Product-specific compositions stay with the product even when they use shared primitives.
 * Use Kumo components and semantic Kumo tokens by default. Check Kumo and `@gadgets/ui` before creating a control or interaction pattern. Do not add custom color literals, feature-local token systems, or wrappers that only restyle Kumo.
+* Consult the installed Kumo API before implementing or changing Kumo UI: run `npx @cloudflare/kumo docs <Component>` (for example, `npx @cloudflare/kumo docs Select`).
 * Tailwind is appropriate for structure, spacing, sizing, positioning, responsive behavior, and typography. Custom CSS is for technical behavior Kumo and utilities cannot express.
 * Represent props that are valid only together as an object or discriminated union. Controlled values require a change callback. Name callbacks `on<Action>` and pass domain values rather than React setters or browser events.
 * Add slots, variants, DOM passthrough, imperative refs, and other customization surface only for current callers. Do not generalize based on speculative reuse.
