@@ -20,6 +20,8 @@ The project structure is:
     * The RPC protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC system, while being able to run in a browser over WebSocket. Read the readme for details.
 * packages/configurator-ui: Type-only component helpers used by optional gatekeeper resource configurator UI modules.
     * Gatekeeper configurator UI modules are compiled by `scripts/build-gatekeeper-configurator.ts` as part of package builds.
+* packages/ui: Shared runtime React UI used across the Workshop and gatekeeper management apps.
+    * Kumo remains the primitive and token foundation. Reusable Gadgets interaction patterns and composed controls belong here rather than being reimplemented in individual apps.
 * packages/gatekeeper-*: Gatekeeper workers for external service integrations.
     * Each gatekeeper runs as a separate Cloudflare Worker — with one exception the prefix does not capture: a `gatekeeper-*` package with **no `wrangler.jsonc` is a library, not a worker** (`gatekeeper-kit` here; `gatekeeper-shared` in the internal repo). Deployable discovery is config-gated, not name-gated — `readDeployablePackages` in `scripts/release/manifest-lib.ts` keys solely on the presence of `wrangler.jsonc`, and `run-dev-server.ts` requires it too — so adding one to a library package is what would make it deployable, at which point `workerKind` would classify it a gatekeeper by prefix and the deploy wizard would demand `CLIENT_ID`/`CLIENT_SECRET` for it. `manifest-lib.test.ts` fails first if that ever happens.
     * Gatekeepers handle OAuth flows and provide sandboxed access to external APIs. A connect URL is a bearer capability, so every connect/reconnect flow ends on the kit's `connectHandoffPageHtml`, which sends the popup to the Workshop's `/connect/handoff` page, and that page redeems the single-use ticket over the popup's own session together with a per-flow nonce (see `docs/connect-handoff.md`); a reconnect stages its new credentials via `gatekeeper-kit/credential-stage` until the Workshop calls `GatekeeperUser.commitReconnect(stageId)` with the id that completion reported; completion is confirmed through the ticket, never through the URL alone.
@@ -39,6 +41,24 @@ The project structure is:
     * Tests are two vitest projects: `vitest.config.ts` (Node, pure logic) and `vitest.worker.config.ts` (workerd, for `RpcTarget`/`RpcStub`/Durable Objects). The workerd suite reaches the gatekeeper through a `TestHooks` Durable Object because a `DurableObjectClass` carrying `ctx.props` is only reachable via `ctx.facets` — the way the overseer instantiates it.
     * `src/configurator/*.tsx` duplicate the resource-URL grammar from `resources.ts` and **must**: `build-gatekeeper-configurator.mjs` transpiles each per-file, stripping only `@gadgets/configurator-ui` and type-only imports, so they cannot import runtime helpers. `__tests__/configurator-url.test.ts` keeps the copies in step, and `configurator-fields.test.ts` drives `render` against a mocked runtime — the runtime's `clearFields` only drops an autocomplete's typed query, so a dependent field must *also* be nulled through `setValues` or the stale value silently survives into the resource URL.
 * packages/router: The public origin of a deployed gadgets instance. Serves the workshop-frontend assets and routes by path prefix: `/api/*` and `/blueprint-screenshot/*` to the workshop backend, `/gatekeeper/<name>/*` to whichever gatekeepers are bound (discovered by scanning its own `GATEKEEPER_*` service bindings, so installing a gatekeeper is purely a binding change). The same worker doubles as the dev router (`pnpm dev-server`): with no `ASSETS` binding it proxies frontend requests to the Vite dev server instead.
+
+Frontend conventions (Workshop, gatekeeper management apps, and shared UI):
+
+* IMPORTANT: Load the `frontend-conventions` skill before creating, materially changing, moving, or reviewing React frontend code anywhere under `packages/`. The bullets below are the mandatory summary; the skill contains the complete conventions and examples.
+
+* Organize code by product ownership before implementation type. Keep feature-owned components, hooks, tests, and utilities together; start directories flat and introduce responsibility-named subdirectories only when a subsystem grows.
+* Use PascalCase filenames for components and camelCase filenames for hooks and non-component modules. Colocate `*.test.ts(x)` files with their subject.
+* Keep small stateless render helpers private. Extract a component or hook when it owns meaningful state, effects, interactions, accessibility behavior, or a reusable responsibility.
+* Cross-application UI belongs in `@gadgets/ui`. An app's local `components/` directory is shared only within that app. Product-specific compositions stay with the product even when they use shared primitives.
+* Use Kumo components and semantic Kumo tokens by default. Check Kumo and `@gadgets/ui` before creating a control or interaction pattern. Do not add custom color literals, feature-local token systems, or wrappers that only restyle Kumo.
+* Tailwind is appropriate for structure, spacing, sizing, positioning, responsive behavior, and typography. Custom CSS is for technical behavior Kumo and utilities cannot express.
+* Represent props that are valid only together as an object or discriminated union. Controlled values require a change callback. Name callbacks `on<Action>` and pass domain values rather than React setters or browser events.
+* Add slots, variants, DOM passthrough, imperative refs, and other customization surface only for current callers. Do not generalize based on speculative reuse.
+* Treat Effects as synchronization with external systems, not as derived-state machinery. Keep state close to its owner, calculate render data during render, clean up subscriptions, and avoid chains of Effects.
+* Prefer named arrow-function components and hooks. Do not add `useMemo` or `useCallback` without a concrete identity or performance need.
+* Preserve keyboard behavior, focus management, accessible names, and announcements when building or extracting interactions.
+* Tests should protect observable behavior, product rules, accessibility, state transitions, races, and failure paths. Do not test framework behavior or implementation details merely for coverage.
+* Prefer code that communicates intent through names and types. Comments should explain non-obvious constraints and reasons, not narrate the next line.
 
 Deployment admin settings (the `/admin` panel) follow a few conventions worth knowing when extending them:
 
