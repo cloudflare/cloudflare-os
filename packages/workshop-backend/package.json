@@ -24,18 +24,18 @@
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
-    "diff3": "^0.0.3",
-    "isomorphic-git": "^1.40.0",
-    "jose": "^6.2.8",
+    "diff3": "^0.0.4",
+    "isomorphic-git": "^1.41.9",
+    "jose": "^6.2.12",
     "pako": "^2.1.0",
     "yjs": "^13.6.32",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "@types/pako": "^2.0.4",
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.15",
     "esbuild": "^0.28.1",
     "typescript": "catalog:",
     "vitest": "catalog:",

@@ -18,9 +18,9 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "isomorphic-git": "^1.40.5",
+    "isomorphic-git": "^1.41.9",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.12.0",

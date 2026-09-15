@@ -31,7 +31,7 @@
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "jose": "^6.2.8"
+    "jose": "^6.2.12"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
