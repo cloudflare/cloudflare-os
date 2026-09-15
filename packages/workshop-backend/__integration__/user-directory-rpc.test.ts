@@ -2,7 +2,7 @@ import { createExecutionContext } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import type { PublicApi } from "@gadgets/workshop-shared/api";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import server from "../src/server";
 
 const PASSWORD_HASH = new Uint8Array([1, 2, 3]);
@@ -59,7 +59,7 @@ describe("authenticated user directory RPC", () => {
     await expect(viewerApi.searchUsers("target bef", [])).resolves.toEqual([]);
   });
 
-  it("hides the directory from users while search is off, without dropping the index", async () => {
+  it("caches the search policy for thirty seconds without dropping the index", async () => {
     await setUserSearchEnabled(true);
     using publicApi = await connect();
     const viewer = await createAccount(publicApi, "policyviewer", "Policy Viewer");
@@ -69,12 +69,26 @@ describe("authenticated user directory RPC", () => {
     const record = { id: target.username, name: "Policy Target" };
     await expect.poll(() => viewerApi.searchUsers("policy target", [])).toEqual([record]);
 
-    await setUserSearchEnabled(false);
-    await expect(viewerApi.searchUsers("policy target", [])).resolves.toEqual([]);
-    await expect(viewerApi.searchUsers(target.username, [])).resolves.toEqual([]);
+    // Use a fresh capability whose policy cache has not been populated by the indexing poll.
+    using cachedViewerApi = await publicApi.authenticate(viewer.token);
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await expect(cachedViewerApi.searchUsers("policy target", [])).resolves.toEqual([record]);
 
-    // Indexing continued while search was off: the record is there the moment it's turned back on.
-    await setUserSearchEnabled(true);
-    await expect(viewerApi.searchUsers("policy target", [])).resolves.toEqual([record]);
+      await setUserSearchEnabled(false);
+      await expect(cachedViewerApi.searchUsers("policy target", [])).resolves.toEqual([record]);
+
+      dateNow.mockReturnValue(now + 30_000);
+      await expect(cachedViewerApi.searchUsers("policy target", [])).resolves.toEqual([]);
+
+      await setUserSearchEnabled(true);
+      await expect(cachedViewerApi.searchUsers("policy target", [])).resolves.toEqual([]);
+
+      dateNow.mockReturnValue(now + 60_000);
+      await expect(cachedViewerApi.searchUsers("policy target", [])).resolves.toEqual([record]);
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 });
