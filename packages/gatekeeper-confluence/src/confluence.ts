@@ -342,13 +342,15 @@ export class UserAccount extends DurableObject<Env> {
       // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
       // gadgets keep reading the current token meanwhile.
       const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
-      handoff = await callback.reconnectComplete(stageId, new Date(grant.expiresAt));
+      // No expiry is reported: the access token is refreshed transparently from the rotating
+      // refresh token, and GatekeeperConnectCallback says not to report a token-cache expiry.
+      handoff = await callback.reconnectComplete(stageId);
     } else {
       this.#storeGrant(grant);
       await this.#refreshSitesAndIdentity(grant.accessToken);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }), new Date(grant.expiresAt));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("grant");
         throw err;
@@ -399,7 +401,7 @@ export class UserAccount extends DurableObject<Env> {
       const next = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
       this.#storeGrant(next); // rotating refresh token: always persist the new one
       const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-      callback?.credentialsRestored(new Date(next.expiresAt)).catch(() => {});
+      callback?.credentialsRestored().catch(() => {});
       return next.accessToken;
     } catch (err) {
       if (err instanceof ConfluenceApiError && (err.isAuthError || err.status === 400 || err.status === 403)) {
