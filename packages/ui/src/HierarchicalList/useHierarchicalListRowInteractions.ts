@@ -200,6 +200,7 @@ export const useHierarchicalListRowInteractions = ({
       event.preventDefault();
       const destination = getKeyboardMoveDestination(rootItems, item, direction);
       if (!destination) return;
+      onSelectionClear?.();
       dragAndDrop?.onMove(item, destination);
     },
     onDragEnd: () => {

@@ -332,6 +332,7 @@ export const HierarchicalListPrimitive = ({
     origin: HTMLElement;
   } | null>(null);
   const moveOperationIdRef = useRef(0);
+  const latestSuccessfulMoveIdRef = useRef(0);
   const normalizedDragAndDrop = dragAndDrop && {
     ...dragAndDrop,
     onMove: (
@@ -363,7 +364,8 @@ export const HierarchicalListPrimitive = ({
       }
       const operationId = ++moveOperationIdRef.current;
       const announceMove = () => {
-        if (moveOperationIdRef.current !== operationId) return;
+        if (operationId < latestSuccessfulMoveIdRef.current) return;
+        latestSuccessfulMoveIdRef.current = operationId;
         const message = `${item.name} moved to position ${normalizedDestination.index + 1} in ${
           normalizedDestination.parent?.name ?? label
         }.`;

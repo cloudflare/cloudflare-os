@@ -234,6 +234,7 @@ describe("HierarchicalListPrimitive", () => {
       children: [],
     };
     const movable: HierarchicalListItem = { id: "movable", name: "Movable", draggable: true };
+    const onSelectionClear = vi.fn<() => void>();
     const Example = () => {
       const [tree, setTree] = React.useState<readonly HierarchicalListItem[]>([folder, movable]);
       return (
@@ -241,6 +242,7 @@ describe("HierarchicalListPrimitive", () => {
           items={[...tree]}
           label="Resources"
           initialExpandedIds={[folder.id]}
+          onSelectionClear={onSelectionClear}
           dragAndDrop={{
             onMove: (item, destination) => {
               if (destination.parent?.id !== folder.id) return;
@@ -265,6 +267,7 @@ describe("HierarchicalListPrimitive", () => {
 
     expect(document.activeElement?.textContent).toBe("Movable");
     expect(document.activeElement?.closest("[data-item-id='folder']")).not.toBeNull();
+    expect(onSelectionClear).toHaveBeenCalledOnce();
     expect(container!.querySelector('[role="status"]')?.textContent).toBe(
       "Movable moved to position 1 in Folder.",
     );
@@ -522,6 +525,49 @@ describe("HierarchicalListPrimitive", () => {
     expect([...container!.querySelectorAll('[role="status"]')]
       .map((status) => status.textContent).join(""))
       .toBe("Second moved to position 1 in Resources.");
+  });
+
+  it("announces an older move when every newer move fails", async () => {
+    const controls = new Map<string, {
+      resolve: () => void;
+      reject: () => void;
+    }>();
+    render(
+      <HierarchicalListPrimitive
+        items={[
+          { id: "first", name: "First", draggable: true },
+          { id: "second", name: "Second", draggable: true },
+        ]}
+        label="Resources"
+        dragAndDrop={{
+          onMove: (item) => new Promise<void>((resolve, reject) => controls.set(item.id, {
+            resolve,
+            reject: () => reject(new Error("Move failed")),
+          })),
+        }}
+        renderRow={(rowProps, { item }) => <button {...rowProps}>{item.name}</button>}
+      />,
+    );
+    const [first, second] = container!.querySelectorAll("button");
+    act(() => first.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+    act(() => second.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowUp",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    await act(async () => controls.get("second")?.reject());
+    await act(async () => controls.get("first")?.resolve());
+
+    expect([...container!.querySelectorAll('[role="status"]')]
+      .map((status) => status.textContent).join(""))
+      .toBe("First moved to position 2 in Resources.");
   });
 
   it("mutates a live region for identical consecutive move announcements", () => {
