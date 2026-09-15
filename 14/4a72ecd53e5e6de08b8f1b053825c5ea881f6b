@@ -2,6 +2,7 @@ packages/format-blueprints/tsconfig.server-tests.json
   s_257b4539981478::t_9e36a920597365 1-49
 packages/format-blueprints/tsconfig.client.json
   s_257b4539981478::t_e62cb68b3bbfd4 1-45
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 46
 packages/workshop-backend/scripts/build-format-blueprints.ts
   s_257b4539981478::t_cab855b09e703b 4-10,17-18,20,24-26,29-31,45,49
 packages/format-blueprints/libraries/README.md
@@ -11,6 +12,7 @@ packages/format-blueprints/tsconfig.tests.json
   s_257b4539981478::t_9e36a920597365 11-15,42-43
   s_257b4539981478::t_411dca8f8b0cdb 1-7,9,16-36
   s_257b4539981478::t_2ccdd14d53f192 10,37
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 8,38-41,44
 packages/workshop-backend/package.json
   s_257b4539981478::t_94ce0873fe1e3a 12,36
 AGENTS.md
@@ -21,6 +23,7 @@ packages/format-blueprints/__tests__/files.test.ts
   s_257b4539981478::t_cb0c6bb1479508 1-565
 packages/format-blueprints/vitest.config.ts
   s_257b4539981478::t_ed15362cb9adee 1-53
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 54-55
 packages/format-blueprints/README.md
   s_257b4539981478::t_9c90d160cd23f9 3-77,79-91,93-103,124-165
   s_257b4539981478::t_9e36a920597365 78,92,104-110
@@ -32,6 +35,7 @@ REVIEW.md
   s_257b4539981478::t_6629823f8e831b 42,119
 packages/format-blueprints/package.json
   s_257b4539981478::t_c648169f838d4a 2-21
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 1,22-26
 packages/format-blueprints/tsconfig.node.json
   s_257b4539981478::t_43f615a5fe9113 1-21
 packages/format-blueprints/__tests__/stubs/cloudflare-workers.ts
@@ -53,6 +57,7 @@ packages/format-blueprints/blueprints/workspace-slides/__tests__/server.test.ts
   s_257b4539981478::t_9e36a920597365 8,16
 packages/format-blueprints/tsconfig.server.json
   s_257b4539981478::t_acb2ac9285b524 1-50
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 51
 packages/workshop-backend/vite.config.ts
   s_257b4539981478::t_94ce0873fe1e3a 22-24,65-67,83
 packages/format-blueprints/src/index.ts
@@ -72,6 +77,7 @@ packages/format-blueprints/blueprints/workspace-sheets/files/README.md
 packages/format-blueprints/vite.config.ts
   s_257b4539981478::t_9e36a920597365 9,16-17,28
   s_257b4539981478::t_faddd4cb9af617 10-15,18-21,29
+  s_b7b043b4e942ef::t_43f7f3f2c879fa 1-8,22-27,30-34
 pnpm-lock.yaml
   s_257b4539981478::t_2fa85b2e602fde 110-114,125-127,1012-1014
 ---
@@ -85,6 +91,14 @@ pnpm-lock.yaml
       "agent_id": {
         "tool": "claude",
         "id": "ec2780f3-3866-4c3e-bc33-af0ba1c8cd6e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b7b043b4e942ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f0a4752-b491-431f-99d9-8e3d868d0a1d",
         "model": "claude-fable-5-1"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
