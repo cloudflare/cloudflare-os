@@ -5,6 +5,7 @@ import {
   LayerCard,
   Loader,
   Text,
+  Tooltip,
 } from "@cloudflare/kumo";
 import {
   FolderPlus,
@@ -98,12 +99,26 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               )}
             />
             <DropdownMenu.Content align="end" sideOffset={6}>
-              <DropdownMenu.Item
-                icon={<PlusIcon size={13} className="mr-2" />}
-                onClick={startAddSkillFromMenu}
-              >
-                Add skill
-              </DropdownMenu.Item>
+              {writableCollections.length === 0 ? (
+                <Tooltip
+                  content="Add a collection before adding a skill."
+                  render={(
+                    <DropdownMenu.Item
+                      icon={<PlusIcon size={13} className="mr-2" />}
+                      disabled
+                    />
+                  )}
+                >
+                  Add skill
+                </Tooltip>
+              ) : (
+                <DropdownMenu.Item
+                  icon={<PlusIcon size={13} className="mr-2" />}
+                  onClick={startAddSkillFromMenu}
+                >
+                  Add skill
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Item
                 icon={<FolderPlus size={13} className="mr-2" />}
                 onClick={() => setPendingAddCollection(true)}
