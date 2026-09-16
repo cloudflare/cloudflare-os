@@ -7,8 +7,10 @@
 // Host labels that say nothing about which service this is.
 const GENERIC_HOST_LABELS = new Set(["mcp", "api", "www", "server", "app"]);
 
-// A readable slug for an endpoint: `https://mcp.linear.app/mcp` -> `linear`. Never empty, since the
-// result is interpolated into a TypeScript identifier.
+/**
+ * A readable slug for an endpoint: `https://mcp.linear.app/mcp` -> `linear`. Never empty, since the
+ * result is interpolated into a TypeScript identifier.
+ */
 export function serverIdFromEndpoint(endpoint: string): string {
   const labels = new URL(endpoint).hostname.split(".");
   const chosen = labels.find(label => !GENERIC_HOST_LABELS.has(label)) ?? labels[0];

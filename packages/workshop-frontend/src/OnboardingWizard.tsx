@@ -1,16 +1,13 @@
+import { logRpcFailure } from './rpcErrors'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
-import { RpcTarget } from 'capnweb'
 import { useAuthenticatedApi } from './AuthContext'
 import {
   AiChatAuthorInfo,
   AiGatewayInfo,
-  ConnectedAccountsSubscriber,
 } from '@gadgets/workshop-shared/api'
 import {
   VendorDescription,
-  AccountDescription,
-  SupportedResource,
 } from '@gadgets/workshop-shared/gatekeeper'
 import {
   Camera,
@@ -34,6 +31,8 @@ import { useTheme } from './ThemeContext'
 import { useSiteName } from './ServerConfigContext'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
+import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { openConnectWindow } from './connectHandoff'
 
 // ─── constants ──────────────────────────────────────────────────────────────────
 
@@ -186,15 +185,8 @@ export default function OnboardingWizard({
         if (!cancelled) setVendorsLoading(false)
       })
 
-    class AccountsSubscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(
-        id: number,
-        _description: AccountDescription,
-        vendor: VendorDescription,
-        _supportedResources: SupportedResource[] = [],
-        _credentialsValid: boolean = true,
-        _vendorId: string = '',
-      ) {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, vendor }) {
         if (cancelled) return
         const url = vendor.url
         accountIdToUrl.set(id, url)
@@ -204,8 +196,8 @@ export default function OnboardingWizard({
         } else {
           pendingUrls.push(url)
         }
-      }
-      remove(id: number) {
+      },
+      remove(id) {
         const url = accountIdToUrl.get(id)
         if (url) {
           accountIdToUrl.delete(id)
@@ -213,29 +205,18 @@ export default function OnboardingWizard({
           if (!stillHas) connectedUrls.delete(url)
           refreshConnectedIds()
         }
-      }
-      ready() {}
-    }
+      },
+    })
 
-    const subscriber = new AccountsSubscriber()
-    let subscriptionStub: { [Symbol.dispose](): void } | null = null
-
-    authenticatedApi
-      .subscribeConnectedAccounts(subscriber)
-      .then((stub) => {
-        if (cancelled) {
-          stub[Symbol.dispose]()
-        } else {
-          subscriptionStub = stub
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to subscribe to connected accounts:', err)
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch((err) => {
+      if (cancelled) return
+      logRpcFailure('Failed to subscribe to connected accounts:', err)
+    })
 
     return () => {
       cancelled = true
-      subscriptionStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 
@@ -271,8 +252,7 @@ export default function OnboardingWizard({
   const handleConnect = async (vendorId: string) => {
     setConnectingVendorId(vendorId)
     try {
-      const { url } = await authenticatedApi.connectAccount(vendorId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
     } catch (err) {
       console.error('Failed to start connection:', err)
       toasts.add({ title: 'Failed to start connection', variant: 'error' })
@@ -335,7 +315,8 @@ export default function OnboardingWizard({
 
   return (
     <>
-    <div className="fixed inset-0 bg-kumo-base dotted-bg flex items-center justify-center overflow-y-auto py-8">
+    {/* visual-viewport-fixed already insets by the safe areas, so plain padding suffices. */}
+    <div className="visual-viewport-fixed dotted-bg flex items-start justify-center overflow-y-auto bg-kumo-base p-4 sm:py-8">
       {/* Soft radial glow at the top for depth */}
       <div
         className="absolute inset-x-0 top-0 h-[50vh] pointer-events-none"
@@ -346,13 +327,13 @@ export default function OnboardingWizard({
       />
 
       <div
-        className={`relative w-full max-w-lg mx-4 transition-all duration-500 ease-out ${
+        className={`relative my-auto w-full max-w-lg transition-all duration-500 ease-out ${
           mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
         }`}
       >
         {/* Gadgets brand */}
         <div
-          className={`flex items-center justify-center gap-2 mb-10 transition-all duration-500 ${
+          className={`mb-6 flex items-center justify-center gap-2 transition-all duration-500 sm:mb-10 ${
             mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1'
           }`}
         >
@@ -365,7 +346,7 @@ export default function OnboardingWizard({
         </div>
 
         {/* Header */}
-        <div className="text-center mb-8">
+        <div className="mb-6 text-center sm:mb-8">
           <h1
             className={`text-3xl font-semibold text-kumo-default tracking-tight transition-all duration-500 delay-100 ${
               mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
@@ -383,7 +364,7 @@ export default function OnboardingWizard({
         </div>
 
         {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2 mb-8">
+        <div className="mb-6 flex items-center justify-center gap-2 sm:mb-8">
           {Array.from({ length: totalSteps }).map((_, i) => (
             <div
               key={i}
@@ -405,7 +386,7 @@ export default function OnboardingWizard({
             style={{ transform: `translateX(-${step * 100}%)` }}
           >
             {/* ── Step 0: Profile ───────────────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <h2 className="text-lg font-medium text-kumo-default mb-1">
                 Create your profile
               </h2>
@@ -414,7 +395,7 @@ export default function OnboardingWizard({
               </p>
 
               {/* Avatar + Display name side by side */}
-              <div className="flex items-start gap-5">
+              <div className="flex flex-col items-start gap-5 min-[380px]:flex-row">
                 {/* Avatar */}
                 <div className="flex flex-col items-center flex-shrink-0">
                   <button
@@ -486,14 +467,14 @@ export default function OnboardingWizard({
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                     placeholder="How should we call you?"
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:border-kumo-brand transition-colors"
+                    className="w-full rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5 text-[16px] text-kumo-default transition-colors placeholder:text-kumo-inactive focus:border-kumo-brand focus:outline-none sm:text-sm"
                   />
                 </div>
               </div>
             </div>
 
             {/* ── Step 1: Model selection ───────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
                   Choose your model
@@ -577,7 +558,7 @@ export default function OnboardingWizard({
             </div>
 
             {/* ── Step 2: Connections ───────────────────────────────────────── */}
-            <div className={`w-full flex-shrink-0 p-8 min-h-[420px] ${showConnectionsStep ? '' : 'hidden'}`}>
+            <div className={`min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8 ${showConnectionsStep ? '' : 'hidden'}`}>
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
                   Connect your services
@@ -597,7 +578,7 @@ export default function OnboardingWizard({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1">
+                  <div className="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto pr-1 min-[360px]:grid-cols-2">
                     {sortedVendors.map((vendor) => {
                       const Logo = logoComponents[vendor.logoKey]
                       const isConnected = connectedVendorIds.has(vendor.id)
@@ -661,13 +642,13 @@ export default function OnboardingWizard({
             </div>
 
             {/* ── Final step: What you can do ────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <ShowcaseStep active={step === showcaseStep} siteName={siteName} />
             </div>
           </div>
 
           {/* Fixed footer — stays put across all steps */}
-          <div className="flex items-center justify-between gap-3 px-8 py-5 border-t border-kumo-line bg-kumo-elevated">
+          <div className="flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-elevated px-5 py-4 sm:px-8 sm:py-5">
             {/* Back button (hidden on first step) */}
             {step > 0 ? (
               <button

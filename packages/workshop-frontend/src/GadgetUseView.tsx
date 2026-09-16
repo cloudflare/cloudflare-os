@@ -23,7 +23,7 @@ import GadgetExportMenu from './GadgetExportMenu'
 // Gadget/Code/Connections controls, workspace activity, and every editor-only control. The
 // overseer and gadget passed in here are the restricted capabilities returned by openGadget() for
 // "use" sessions; calling anything outside getMetadata()/subscribeToMetadata()/subscribeToPresence()/
-// subscribeToWorkpieces()/getGadget() (and, on the gadget, getUiBundle()/connectToGadget()/exportPdf())
+// subscribeToWorkpieces()/getGadget() (and, on the gadget, UI connection and export methods)
 // would throw.
 //
 // When the workspace has more than one gadget, a simple picker in the top bar switches between
@@ -55,7 +55,7 @@ export default function GadgetUseView({
   currentUserId,
 }: Props) {
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-kumo-base relative">
+    <div className="relative flex h-full flex-col overflow-hidden bg-kumo-base">
       {/* ═══ TOP BAR ════════════════════════════════════════════════════════════ */}
       <div
         className="relative flex items-center justify-between px-4 sm:px-6 backdrop-blur-md border-b border-kumo-line flex-shrink-0 gap-3"
@@ -85,7 +85,7 @@ export default function GadgetUseView({
 
         {/* Center: gadget picker (only when there's a real choice) */}
         {gadgets.length > 1 && (
-          <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          <div className="hidden min-w-0 items-center gap-1 overflow-x-auto md:flex">
             {gadgets.map(g => (
               <button
                 key={g.id}
@@ -113,14 +113,36 @@ export default function GadgetUseView({
             gadget={gadget}
             gadgetTitle={gadgets.find(g => g.id === selectedGadgetId)?.title ?? 'Gadget'}
           />
-          <GadgetPresence
-            overseer={overseer}
-            authenticatedApi={authenticatedApi}
-            currentUserId={currentUserId}
-          />
+          <span className="hidden md:inline-flex">
+            <GadgetPresence
+              overseer={overseer}
+              authenticatedApi={authenticatedApi}
+              currentUserId={currentUserId}
+            />
+          </span>
           <UserMenu />
         </div>
       </div>
+
+      {gadgets.length > 1 && (
+        <div className="flex h-12 shrink-0 items-center gap-1 overflow-x-auto border-b border-kumo-line px-2 md:hidden">
+          {gadgets.map(g => (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => onSelectGadget(g.id)}
+              aria-current={g.id === selectedGadgetId ? 'true' : undefined}
+              className={`h-9 max-w-[180px] shrink-0 truncate rounded-lg px-3 text-[14px] font-medium ${
+                g.id === selectedGadgetId
+                  ? 'bg-kumo-tint text-kumo-default'
+                  : 'text-kumo-subtle'
+              }`}
+            >
+              {g.title}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ═══ GADGET UI ══════════════════════════════════════════════════════════ */}
       <div className="flex-1 min-h-0 overflow-hidden">
@@ -128,7 +150,7 @@ export default function GadgetUseView({
           <GadgetUI
             key={selectedGadgetId}
             gadget={gadget}
-            height={`calc(100vh - ${TOPBAR_H}px)`}
+            height="100%"
             isVisible={true}
           />
         ) : (

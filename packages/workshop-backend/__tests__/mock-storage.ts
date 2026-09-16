@@ -1,10 +1,12 @@
 // oxlint-disable-next-line typescript/triple-slash-reference -- Wrangler declarations are globals.
 /// <reference path="../worker-configuration.d.ts" />
 
-// Map-backed mock DurableObjectStorage for unit tests, mirroring
-// packages/typed-storage/__tests__/index.test.ts. structuredClone on every read/write mimics the
-// serialization boundary of real DO storage, and the iterator-invalidation check mirrors the real
-// kv.list() contract.
+/**
+ * Map-backed mock DurableObjectStorage for unit tests, mirroring
+ * packages/typed-storage/__tests__/index.test.ts. structuredClone on every read/write mimics the
+ * serialization boundary of real DO storage, and the iterator-invalidation check mirrors the real
+ * kv.list() contract.
+ */
 export function makeMockStorage(): DurableObjectStorage {
   let map = new Map<string, any>();
   let currentList: object | undefined;

@@ -1,0 +1,52 @@
+{
+  "name": "@gadgets/scripts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "gadgets-with-timeout": "./with-timeout.ts",
+    "gadgets-build-configurator": "./build-gatekeeper-configurator.ts",
+    "gadgets-clean-error-reporting": "./clean-error-reporting-artifacts.ts"
+  },
+  "exports": {
+    "./vitest-task": {
+      "types": "./vitest-task-vite-config.ts",
+      "import": "./vitest-task-vite-config.ts"
+    },
+    "./gatekeeper-configurator": {
+      "types": "./gatekeeper-configurator-vite-config.ts",
+      "import": "./gatekeeper-configurator-vite-config.ts"
+    },
+    "./assert-workerd": {
+      "types": "./assert-workerd.ts",
+      "import": "./assert-workerd.ts"
+    },
+    "./bin-entry": {
+      "types": "./bin-entry.ts",
+      "import": "./bin-entry.ts"
+    },
+    "./pnpm-command": {
+      "types": "./pnpm-command.ts",
+      "import": "./pnpm-command.ts"
+    },
+    "./kill-process-tree": {
+      "types": "./kill-process-tree.ts",
+      "import": "./kill-process-tree.ts"
+    },
+    "./release/manifest-lib": {
+      "types": "./release/manifest-lib.ts",
+      "import": "./release/manifest-lib.ts"
+    },
+    "./oxlint-plugin": "./oxlint-plugin.mjs"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "jsonc-parser": "^3.3.1",
+    "typescript6": "npm:typescript@6.0.3",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "jsdom": "^26.1.0"
+  }
+}

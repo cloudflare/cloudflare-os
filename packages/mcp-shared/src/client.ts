@@ -15,6 +15,7 @@
 
 import {
   guardedFetch,
+  FetchNotStartedError,
   MAX_RESPONSE_BYTES,
   readTextCapped,
   type FetchOptions,
@@ -28,21 +29,45 @@ import type {
   ToolAnnotations,
 } from "@modelcontextprotocol/client";
 
-// MCP revision this client speaks. Sent in `initialize` and the `MCP-Protocol-Version` header.
+/** MCP revision this client speaks. Sent in `initialize` and the `MCP-Protocol-Version` header. */
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 
-// A server's tool catalog, and whether listing it ran out of room.
-//
-// `truncated` has to travel with the tools because absence of evidence is not evidence of absence:
-// code that decides what an endpoint *is* from the tools it advertises (`looksLikePortal`) would
-// otherwise read a cut-short catalog as a complete one and conclude the endpoint lacks a tool that
-// is merely past the cut.
+/**
+ * A server's tool catalog, and whether listing it ran out of room.
+ *
+ * `truncated` has to travel with the tools because absence of evidence is not evidence of absence:
+ * code that decides what an endpoint *is* from the tools it advertises (`looksLikePortal`) would
+ * otherwise read a cut-short catalog as a complete one and conclude the endpoint lacks a tool that
+ * is merely past the cut.
+ */
 export type ToolCatalog = {
   tools: McpTool[];
   truncated: boolean;
 };
 
-// Only to make a non-terminating cursor terminate; generous next to MAX_TOOLS_PER_SERVER.
+/** One tool identity retained to validate names or recover portal membership. */
+export type IndexedTool = {
+  /** Exact wire name advertised by the endpoint. */
+  name: string;
+};
+
+/** A bounded survey of endpoint tool identities without schemas, descriptions, or policy claims. */
+export type ToolIndex = {
+  /** Retained tool identities. */
+  tools: IndexedTool[];
+  /** Whether count, byte, page, or scan limits cut the survey short. */
+  truncated: boolean;
+};
+
+/** Longest tool name retained from a server or accepted from a Gadget. */
+export const MAX_TOOL_NAME_CHARS = 512;
+
+/** Whether a value is a non-empty tool name small enough to retain or look up. */
+export function isValidToolName(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_TOOL_NAME_CHARS;
+}
+
+// Independent bound for a non-terminating cursor that returns only tiny or empty pages.
 const MAX_TOOL_PAGES = 50;
 
 // Caps on the size of a tool catalog, as opposed to its length. `maxTools` alone bounds nothing:
@@ -57,19 +82,32 @@ const MAX_TOOL_PAGES = 50;
 // Oversized text is truncated rather than the tool dropped, since the name is what a grant is made
 // of and a callable tool with a clipped description beats one that vanished.
 const MAX_TOOL_DESCRIPTION_CHARS = 4000;
+// Search is a discovery hint; full schemas come from `listTools({ name })`. Keeping each text field small
+// lets ordinary twenty-result searches stay well below the catalog byte budget.
+const MAX_TOOL_SEARCH_SUMMARY_CHARS = 256;
 const MAX_TOOL_SCHEMA_CHARS = 20_000;
 const MAX_CATALOG_BYTES = 96 * 1024;
+// Filtered discovery can skip every tool on a page, so its retained-result budget would otherwise
+// permit fifty maximum-sized responses. Bound what was inspected independently of what matched.
+const MAX_SCANNED_TOOL_BYTES = 4 * 1024 * 1024;
+const MAX_SCANNED_TOOLS = 5000;
+const encoder = new TextEncoder();
 
-// Content block returned by a tool call.
+/** Content block returned by a tool call. */
 export type McpContentBlock = ContentBlock;
 
-// Per-tool behaviour hints from the server (MCP `ToolAnnotations`). Claims the server makes about
-// itself, not guarantees: `readOnlyHint` classifies reads on every server, but the remaining hints
-// influence auto-approval only for an administrator-configured endpoint. See `classifyTool()`.
+/**
+ * Per-tool behaviour hints from the server (MCP `ToolAnnotations`). Claims the server makes about
+ * itself, not guarantees: `readOnlyHint` classifies reads on every server, but the remaining hints
+ * influence auto-approval only for an administrator-configured endpoint. See `classifyTool()`.
+ */
 export type McpToolAnnotations = ToolAnnotations;
 
-// One entry of the server's `tools/list` response.
+/** One entry of the server's `tools/list` response. */
 export type McpWireTool = Tool;
+
+/** Selects which wire tools count toward a bounded catalog. */
+export type McpToolFilter = (tool: McpWireTool) => boolean;
 
 export type McpTool = {
   name: string;
@@ -80,7 +118,7 @@ export type McpTool = {
   annotations?: McpToolAnnotations;
 };
 
-// The subset of JSON Schema this gatekeeper understands when generating TypeScript.
+/** The subset of JSON Schema this gatekeeper understands when generating TypeScript. */
 export type JsonSchema = {
   type?: string | string[];
   description?: string;
@@ -99,15 +137,15 @@ export type JsonSchema = {
   [key: string]: unknown;
 };
 
-// Result of `tools/call` as returned by the server.
+/** Result of `tools/call` as returned by the server. */
 export type McpToolCallResult = CallToolResult;
 
-// Server identity and capabilities reported by `initialize`.
+/** Server identity and capabilities reported by `initialize`. */
 export type McpServerInfo = Partial<Pick<
   InitializeResult, "protocolVersion" | "serverInfo" | "instructions" | "capabilities"
 >>;
 
-// Thrown when the server demands OAuth. Carries the RFC 9728 resource-metadata URL if advertised.
+/** Thrown when the server demands OAuth. Carries the RFC 9728 resource-metadata URL if advertised. */
 export class McpAuthRequiredError extends Error {
   readonly resourceMetadataUrl: string | null;
   constructor(message: string, resourceMetadataUrl: string | null) {
@@ -117,7 +155,7 @@ export class McpAuthRequiredError extends Error {
   }
 }
 
-// Thrown when the server dropped our transport session; the caller should re-initialize.
+/** Thrown when the server dropped our transport session; the caller should re-initialize. */
 export class McpSessionExpiredError extends Error {
   constructor() {
     super("The MCP server no longer recognizes this session.");
@@ -125,20 +163,32 @@ export class McpSessionExpiredError extends Error {
   }
 }
 
-// What a failed call is known to have done to the server.
-//
-// Only two answers are useful, and the difference is not one the caller can work out afterwards. A
-// server that answered with a 401 or 403 told us it did not act. A generic HTTP or tools/call error,
-// connection that dropped, a reply that would not parse, or a body too large to read leaves no way
-// to tell whether the request arrived and was carried out before the failure. Retrying the second
-// kind is how one approval becomes two writes.
+/** A connector-side failure that happened before the requested MCP tool was dispatched. */
+export class McpCallNotDispatchedError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "McpCallNotDispatchedError";
+  }
+}
+
+/**
+ * What a failed call is known to have done to the server.
+ *
+ * Only two answers are useful, and the difference is not one the caller can work out afterwards. A
+ * server that answered with a 401 or 403 told us it did not act. A generic HTTP or tools/call error,
+ * connection that dropped, a reply that would not parse, or a body too large to read leaves no way
+ * to tell whether the request arrived and was carried out before the failure. Retrying the second
+ * kind is how one approval becomes two writes.
+ */
 export type CallOutcome = "declined" | "unknown";
 
-// Thrown for JSON-RPC error responses and transport-level failures.
+/** Thrown for JSON-RPC error responses and transport-level failures. */
 export class McpProtocolError extends Error {
   readonly code: number | undefined;
-  // Defaults to `"unknown"`, so a throw site that has not thought about it is treated as unsafe to
-  // retry rather than silently assumed harmless.
+  /**
+   * Defaults to `"unknown"`, so a throw site that has not thought about it is treated as unsafe to
+   * retry rather than silently assumed harmless.
+   */
   readonly outcome: CallOutcome;
   constructor(message: string, code?: number, outcome: CallOutcome = "unknown") {
     super(message);
@@ -148,12 +198,15 @@ export class McpProtocolError extends Error {
   }
 }
 
-// Whether a failed call might already have taken effect on the server.
-//
-// Fails safe: anything this cannot positively identify as declined is treated as possibly performed.
-// The cost of being wrong that way is a call the user has to stage again; the cost of being wrong
-// the other way is a duplicated write that MCP offers no way to undo.
+/**
+ * Whether a failed call might already have taken effect on the server.
+ *
+ * Fails safe: anything this cannot positively identify as declined is treated as possibly performed.
+ * The cost of being wrong that way is a call the user has to stage again; the cost of being wrong
+ * the other way is a duplicated write that MCP offers no way to undo.
+ */
 export function callMayHaveTakenEffect(err: unknown): boolean {
+  if (err instanceof McpCallNotDispatchedError) return false;
   // The server demanded authorization, so it never reached the tool.
   if (err instanceof McpAuthRequiredError) return false;
   // A genuine MCP session-expiry response means the server rejected the request before dispatch,
@@ -179,7 +232,7 @@ type JsonRpcResponse = {
   error?: { code: number; message: string; data?: unknown };
 };
 
-function extractResponse(bodyText: string, id: number): JsonRpcResponse {
+function extractResponse(bodyText: string, id: number | string): JsonRpcResponse {
   let parsed: JsonRpcResponse;
   try {
     parsed = JSON.parse(bodyText) as JsonRpcResponse;
@@ -194,7 +247,10 @@ function extractResponse(bodyText: string, id: number): JsonRpcResponse {
 
 // Reads completed SSE events until this request's response arrives. Streamable HTTP servers may
 // keep the stream open after responding, so waiting for EOF would hang an otherwise-complete call.
-async function readSseResponse(response: Response, id: number): Promise<JsonRpcResponse> {
+async function readSseResponse(
+  response: Response,
+  id: number | string,
+): Promise<{ parsed: JsonRpcResponse; bytes: number }> {
   if (!response.body) {
     throw new McpProtocolError("MCP server's event stream contained no response to the request.");
   }
@@ -229,7 +285,7 @@ async function readSseResponse(response: Response, id: number): Promise<JsonRpcR
       if (done) {
         buffered += `${decoder.decode()}\n\n`;
         const parsed = consume();
-        if (parsed) return parsed;
+        if (parsed) return { parsed, bytes: total };
         throw new McpProtocolError(
           "MCP server's event stream contained no response to the request.");
       }
@@ -243,7 +299,7 @@ async function readSseResponse(response: Response, id: number): Promise<JsonRpcR
       const parsed = consume();
       if (parsed) {
         await reader.cancel().catch(() => undefined);
-        return parsed;
+        return { parsed, bytes: total };
       }
     }
   } finally {
@@ -261,13 +317,31 @@ function clampText(value: unknown, max: number): string | undefined {
 // Trims one tool down to what is worth keeping, before it reaches storage or the agent. A schema too
 // large to render is dropped rather than clipped, so the generated method degrades to
 // `Record<string, unknown>`.
-function clampTool(tool: McpWireTool): McpTool {
+// Keeps only the hints this gatekeeper understands, so a server cannot attach unbounded text to a
+// tool under `annotations` and have it stored or rendered. Each retained field is a boolean or
+// absent.
+function clampAnnotations(
+  annotations: McpToolAnnotations | undefined,
+): McpToolAnnotations | undefined {
+  return annotations && {
+    readOnlyHint: typeof annotations.readOnlyHint === "boolean"
+      ? annotations.readOnlyHint : undefined,
+    destructiveHint: typeof annotations.destructiveHint === "boolean"
+      ? annotations.destructiveHint : undefined,
+    idempotentHint: typeof annotations.idempotentHint === "boolean"
+      ? annotations.idempotentHint : undefined,
+    openWorldHint: typeof annotations.openWorldHint === "boolean"
+      ? annotations.openWorldHint : undefined,
+  };
+}
+
+/** Reduces one untrusted wire tool to the bounded fields this gatekeeper understands. */
+export function clampToolDefinition(tool: McpWireTool | McpTool): McpTool {
   const schema = tool.inputSchema && typeof tool.inputSchema === "object"
     ? tool.inputSchema as JsonSchema
     : undefined;
   const oversized = schema !== undefined &&
     JSON.stringify(schema).length > MAX_TOOL_SCHEMA_CHARS;
-  const annotations = tool.annotations;
   return {
     // Pick known fields rather than spreading an untrusted JSON object. Unknown extensions are not
     // used anywhere, and retaining one would let it bypass every per-field cap before caching.
@@ -275,27 +349,40 @@ function clampTool(tool: McpWireTool): McpTool {
     title: clampText(tool.title, MAX_TOOL_DESCRIPTION_CHARS),
     description: clampText(tool.description, MAX_TOOL_DESCRIPTION_CHARS),
     inputSchema: oversized ? undefined : schema,
-    annotations: annotations && {
-      readOnlyHint: annotations.readOnlyHint,
-      destructiveHint: annotations.destructiveHint,
-      idempotentHint: annotations.idempotentHint,
-      openWorldHint: annotations.openWorldHint,
-    },
+    annotations: clampAnnotations(tool.annotations),
   };
 }
 
-// Bearer token supplier; returns null for servers that need no authorization.
-export type AuthorizationProvider = () => Promise<string | null>;
+// Reduces one tool to an index entry. Bounded by its already-validated name.
+function indexTool(tool: McpWireTool): IndexedTool {
+  return { name: tool.name };
+}
 
-// A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
-// across calls is the transport session id, which the caller owns (see `sessionId`).
+/** Reduces one tool to the bounded, schema-free form returned by search. */
+export function clampToolSummary(tool: McpWireTool | McpTool): McpTool {
+  return {
+    name: tool.name,
+    title: clampText(tool.title, MAX_TOOL_SEARCH_SUMMARY_CHARS),
+    description: clampText(tool.description, MAX_TOOL_SEARCH_SUMMARY_CHARS),
+    annotations: clampAnnotations(tool.annotations),
+  };
+}
+
+/** Supplies a bearer token for an MCP method, or null for a public server. */
+export type AuthorizationProvider = (method: string) => Promise<string | null>;
+
+/**
+ * A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
+ * across calls is the transport session id, which the caller owns (see `sessionId`).
+ */
 export class McpClient {
   #endpoint: string;
   #getAuthorization: AuthorizationProvider;
   #fetchOptions: FetchOptions;
+  #requestPrefix = crypto.randomUUID();
   #requestId = 0;
 
-  // Transport session id, assigned by the server during `initialize`. Persist and pass it back.
+  /** Transport session id, assigned by the server during `initialize`. Persist and pass it back. */
   sessionId: string | null;
 
   constructor(
@@ -307,20 +394,22 @@ export class McpClient {
     this.#endpoint = endpoint;
     this.#getAuthorization = getAuthorization;
     this.sessionId = sessionId ?? null;
-    this.#fetchOptions = fetchOptions;
+    this.#fetchOptions = fetchOptions.timeoutMs !== undefined && fetchOptions.deadline === undefined
+      ? { ...fetchOptions, deadline: Date.now() + fetchOptions.timeoutMs }
+      : fetchOptions;
   }
 
   // The credential most recently sent, kept only so it can be recognised if it comes back. See
   // `#quoteServerText`.
   #lastCredential: string | null = null;
 
-  async #headers(): Promise<Headers> {
+  async #headers(method: string): Promise<Headers> {
     const headers = new Headers({
       "Content-Type": "application/json",
       "Accept": "application/json, text/event-stream",
       "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
     });
-    const authorization = await this.#getAuthorization();
+    const authorization = await this.#getAuthorization(method);
     this.#lastCredential = authorization;
     if (authorization) headers.set("Authorization", `Bearer ${authorization}`);
     if (this.sessionId) headers.set("Mcp-Session-Id", this.sessionId);
@@ -328,34 +417,64 @@ export class McpClient {
   }
 
   async #post(body: unknown): Promise<Response> {
-    const response = await guardedFetch(this.#endpoint, {
-      method: "POST",
-      headers: await this.#headers(),
-      body: JSON.stringify(body),
-    }, this.#fetchOptions);
+    let headers: Headers;
+    try {
+      const method = typeof body === "object" && body !== null && "method" in body
+        ? String((body as { method: unknown }).method)
+        : "unknown";
+      headers = await this.#headers(method);
+    } catch (err) {
+      throw new McpCallNotDispatchedError(
+        err instanceof Error ? err.message : String(err), err);
+    }
+    let response: Response;
+    try {
+      response = await guardedFetch(this.#endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      }, this.#fetchOptions);
+    } catch (err) {
+      if (err instanceof FetchNotStartedError) {
+        throw new McpCallNotDispatchedError(err.message, err);
+      }
+      throw err;
+    }
 
     // Only 401 means the credentials are the problem. A 403 is an authenticated caller refused this
     // particular tool; treating it as an auth failure would mark the account expired and prompt a
     // reconnect that cannot help.
     if (response.status === 401) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpAuthRequiredError(
         "The MCP server requires authorization.",
         parseResourceMetadataUrl(response.headers.get("WWW-Authenticate")));
     }
     if (response.status === 403) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpProtocolError(
         "The MCP server refused this request. The connected account may not have access to it.",
         undefined, "declined");
     }
-    if (response.status === 404 && this.sessionId) throw new McpSessionExpiredError();
+    if (response.status === 404 && this.sessionId) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new McpSessionExpiredError();
+    }
     return response;
   }
 
-  async #call<T>(method: string, params?: unknown): Promise<T> {
-    const id = ++this.#requestId;
+  async #callMeasured<T>(
+    method: string,
+    params?: unknown,
+  ): Promise<{ result: T; responseBytes: number }> {
+    // A transport session is persisted on the account and can be used by several short-lived client
+    // instances concurrently. Prefixing IDs per instance prevents two active requests from both
+    // being JSON-RPC id 1 and confusing the server's SSE response routing.
+    const id = `${this.#requestPrefix}:${++this.#requestId}`;
     const response = await this.#post({ jsonrpc: "2.0", id, method, params });
 
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       throw new McpProtocolError(
         `MCP server returned HTTP ${response.status} for "${method}".`);
     }
@@ -365,8 +484,11 @@ export class McpClient {
 
     const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase();
     let parsed: JsonRpcResponse;
+    let responseBytes: number;
     if (contentType.includes("text/event-stream")) {
-      parsed = await readSseResponse(response, id);
+      const measured = await readSseResponse(response, id);
+      parsed = measured.parsed;
+      responseBytes = measured.bytes;
     } else {
       // Capped: a JSON tool result is server-controlled and unbounded, and has to be buffered whole
       // before it can be parsed. The catalog limits above bound what is kept, not what arrives.
@@ -378,6 +500,7 @@ export class McpClient {
           `MCP server's response to "${method}" was too large to read: ` +
           `${err instanceof Error ? err.message : String(err)}`);
       }
+      responseBytes = encoder.encode(bodyText).byteLength;
       parsed = extractResponse(bodyText, id);
     }
 
@@ -386,7 +509,11 @@ export class McpClient {
         `MCP server rejected "${method}": ${this.#quoteServerText(parsed.error.message)}`,
         parsed.error.code, method === "tools/call" ? "unknown" : "declined");
     }
-    return parsed.result as T;
+    return { result: parsed.result as T, responseBytes };
+  }
+
+  async #call<T>(method: string, params?: unknown): Promise<T> {
+    return (await this.#callMeasured<T>(method, params)).result;
   }
 
   // Prepares text the server wrote for inclusion in an error message.
@@ -409,7 +536,7 @@ export class McpClient {
     await this.#post({ jsonrpc: "2.0", method, params }).catch(() => undefined);
   }
 
-  // Performs the `initialize` handshake and the follow-up `notifications/initialized`.
+  /** Performs the `initialize` handshake and the follow-up `notifications/initialized`. */
   async initialize(clientName: string): Promise<McpServerInfo> {
     const info = await this.#call<InitializeResult>("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
@@ -422,39 +549,137 @@ export class McpClient {
     return info;
   }
 
-  // Lists every tool the server offers, following `nextCursor` pagination to exhaustion. Bounded by
-  // pages, tool count, and bytes: a server answering with empty pages and a fresh cursor each time
-  // would otherwise loop until the Worker's limits killed it.
-  async listTools(maxTools: number): Promise<ToolCatalog> {
-    const tools: McpTool[] = [];
+  /** Best-effort termination for a transport session this client no longer owns. */
+  async closeSession(): Promise<void> {
+    if (!this.sessionId) return;
+    const response = await guardedFetch(this.#endpoint, {
+      method: "DELETE",
+      headers: await this.#headers("DELETE"),
+    }, this.#fetchOptions);
+    await response.body?.cancel();
+    this.sessionId = null;
+  }
+
+  /**
+   * Lists tools the server offers, following pagination to exhaustion.
+   *
+   * `include`, when present, is applied before count and byte budgets so an aggregator's unrelated
+   * tools cannot crowd the requested server or exact grant names out of the bounded result.
+   */
+  async listTools(maxTools: number, include?: McpToolFilter): Promise<ToolCatalog> {
+    return this.#list({ maxTools, include, project: clampToolDefinition });
+  }
+
+  /**
+   * Surveys names without retaining descriptions, schemas, or policy annotations. Resolve a full
+   * definition with `findTool` before use.
+   */
+  async listToolIndex(maxTools: number): Promise<ToolIndex> {
+    return this.#list({ maxTools, project: indexTool });
+  }
+
+  /** Collects at most `maxTools` matching index entries without scanning later pages. */
+  async listMatchingToolIndex(maxTools: number, include: McpToolFilter): Promise<ToolIndex> {
+    return this.#list({ maxTools, include, project: indexTool, stopWhenFull: true });
+  }
+
+  /** Finds one exact tool without reading pages after the match. */
+  async findTool(name: string): Promise<McpTool | undefined> {
+    if (!isValidToolName(name)) return undefined;
+    return (await this.#list({
+      maxTools: 1,
+      include: tool => tool.name === name,
+      project: clampToolDefinition,
+      stopWhenFull: true,
+      requireCompleteScan: true,
+    })).tools[0];
+  }
+
+  /** Collects at most `maxTools` bounded matching summaries without scanning later pages. */
+  async listMatchingToolSummaries(maxTools: number, include: McpToolFilter): Promise<McpTool[]> {
+    return (await this.#list({
+      maxTools,
+      include,
+      project: clampToolSummary,
+      stopWhenFull: true,
+      requireCompleteScan: true,
+    })).tools;
+  }
+
+  // The shared listing loop. `project` decides how much of each tool is retained, and therefore how
+  // much of the byte budget each one costs; the budget itself is applied to whatever it returns.
+  async #list<T extends { name: string }>({
+    maxTools,
+    include,
+    project,
+    stopWhenFull = false,
+    requireCompleteScan = false,
+  }: {
+    maxTools: number;
+    include?: McpToolFilter;
+    project: (tool: McpWireTool) => T;
+    stopWhenFull?: boolean;
+    requireCompleteScan?: boolean;
+  }): Promise<{ tools: T[]; truncated: boolean }> {
+    const tools: T[] = [];
     let budget = MAX_CATALOG_BYTES;
+    let scannedBytes = 0;
+    let scannedTools = 0;
     let cursor: string | undefined;
+    const scanLimit = (): { tools: T[]; truncated: boolean } => {
+      if (requireCompleteScan) {
+        throw new McpProtocolError(
+          "MCP tool discovery exceeded its scan budget.", undefined, "declined");
+      }
+      return { tools, truncated: true };
+    };
 
     for (let page = 0; page < MAX_TOOL_PAGES; page++) {
-      const body = await this.#call<{ tools?: McpWireTool[]; nextCursor?: string }>(
-        "tools/list", cursor ? { cursor } : {});
-      for (const tool of body.tools ?? []) {
+      const measured = await this.#callMeasured<{ tools?: McpWireTool[]; nextCursor?: string }>(
+        "tools/list", cursor === undefined ? {} : { cursor });
+      const body = measured.result;
+      scannedBytes += measured.responseBytes;
+      if (scannedBytes > MAX_SCANNED_TOOL_BYTES) return scanLimit();
+      const pageTools = body.tools ?? [];
+      const remainingTools = Math.max(0, MAX_SCANNED_TOOLS - scannedTools);
+      const scanCount = Math.min(pageTools.length, remainingTools);
+      scannedTools += scanCount;
+      for (let index = 0; index < scanCount; index++) {
+        const tool = pageTools[index];
+        if (!isValidToolName(tool?.name)) continue;
+        if (include && !include(tool)) continue;
         // A cap was reached with tools still arriving, so the catalog is known to be incomplete.
         // Reported rather than inferred from `tools.length`, since the byte budget can stop the
         // listing well short of `maxTools` and leaves no trace in the array itself.
         if (tools.length >= maxTools || budget <= 0) return { tools, truncated: true };
-        if (typeof tool?.name !== "string" || tool.name.length === 0) continue;
-        const trimmed = clampTool(tool);
+        const trimmed = project(tool);
         // Include a comma's byte for every array member. Brackets are covered by the 32 KiB storage
         // headroom. Refuse the whole next tool rather than storing half a schema or an invalid value.
-        const bytes = new TextEncoder().encode(JSON.stringify(trimmed)).byteLength + 1;
+        const bytes = encoder.encode(JSON.stringify(trimmed)).byteLength + 1;
         if (bytes > budget) return { tools, truncated: true };
         budget -= bytes;
         tools.push(trimmed);
+        if (stopWhenFull && tools.length >= maxTools) {
+          // Discovery only asks for a bounded prefix and does not need to prove whether another
+          // match exists. The public discovery methods discard `truncated`; ordinary listings retain
+          // the precise semantics above and still paginate to completion.
+          return { tools, truncated: true };
+        }
       }
-      cursor = body.nextCursor;
-      if (!cursor) return { tools, truncated: false };
+      // Inspect the bounded prefix before reporting the scan limit: an exact requested tool may be
+      // the first entry in a page whose remaining entries cross the aggregate tool budget.
+      if (scanCount < pageTools.length) return scanLimit();
+      const nextCursor = body.nextCursor;
+      if (nextCursor === undefined) return { tools, truncated: false };
+      if (typeof nextCursor !== "string") {
+        throw new McpProtocolError('MCP server returned an invalid "tools/list" cursor.');
+      }
+      cursor = nextCursor;
     }
-    throw new McpProtocolError(
-      `MCP server kept paginating "tools/list" past ${MAX_TOOL_PAGES} pages.`);
+    return scanLimit();
   }
 
-  // Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error.
+  /** Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error. */
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
     return this.#call<McpToolCallResult>("tools/call", { name, arguments: args });
   }

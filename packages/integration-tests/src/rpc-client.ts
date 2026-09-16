@@ -10,6 +10,8 @@ import type {
   AccountDescription, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 
+export { RpcTarget };
+
 /**
  * Poll `attempt` until it returns non-null.
  *
@@ -77,6 +79,14 @@ export async function signUp(
   return (await api.authenticate(token)) as unknown as RpcStub<AuthenticatedApi>;
 }
 
+/** Authenticate an existing integration-test account. */
+export async function logIn(
+    api: RpcStub<PublicApi>, username: string): Promise<RpcStub<AuthenticatedApi>> {
+  const token = await api.login(username, passwordHashFor(username));
+  if (token === null) throw new Error(`Login failed for "${username}"`);
+  return (await api.authenticate(token)) as unknown as RpcStub<AuthenticatedApi>;
+}
+
 export type ConnectedAccount = {
   id: number;
   vendorId: string;
@@ -95,7 +105,7 @@ export function accountLabel(account: ConnectedAccount): string {
   return uniqueName || displayName || `account ${account.id}`;
 }
 
-// Read the user's connected accounts by driving subscribeConnectedAccounts() to its ready() call.
+/** Read the user's connected accounts by driving subscribeConnectedAccounts() to its ready() call. */
 export async function listConnectedAccounts(
     api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount[]> {
   const accounts: ConnectedAccount[] = [];
@@ -130,16 +140,23 @@ export async function listConnectedAccounts(
  */
 export const MAX_OBSERVER_PROMPTS = 2;
 
-// Records every configure() call the overseer makes and answers from a scripted queue.
-//
-// The recording is the assertion surface for these tests: "did the overseer prompt a second time,
-// and did that prompt carry `failure`?" is answered by inspecting `calls`.
+/**
+ * Records every configure() call the overseer makes and answers from a scripted queue.
+ *
+ * The recording is the assertion surface for these tests: "did the overseer prompt a second time,
+ * and did that prompt carry `failure`?" is answered by inspecting `calls`.
+ */
 export class ObserverConfigRecorder extends RpcTarget implements ObserverConfigCallback {
   readonly calls: ObserverBindingNeed[][] = [];
-  #responses: ((needs: ObserverBindingNeed[]) => ObserverAccountChoice[])[] = [];
+  #responses: ((needs: ObserverBindingNeed[]) =>
+      ObserverAccountChoice[] | Promise<ObserverAccountChoice[]>)[] = [];
 
-  /** Queue one response. The nth configure() call is answered by the nth queued responder. */
-  respondWith(responder: (needs: ObserverBindingNeed[]) => ObserverAccountChoice[]): this {
+  /**
+   * Queue one response. The nth configure() call is answered by the nth queued responder; a
+   * responder may be async (e.g. to flip gatekeeper control state between verification passes).
+   */
+  respondWith(responder: (needs: ObserverBindingNeed[]) =>
+      ObserverAccountChoice[] | Promise<ObserverAccountChoice[]>): this {
     this.#responses.push(responder);
     return this;
   }

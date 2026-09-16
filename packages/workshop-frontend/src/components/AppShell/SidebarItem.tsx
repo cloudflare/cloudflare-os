@@ -1,10 +1,12 @@
 import { Link, useRouterState, type LinkProps } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
-// A single nav row in the sidebar. Renders as a TanStack <Link>. Active state is computed from the
-// current router pathname so we can also tint the icon (TanStack's activeProps only swaps top-level
-// className, not child styles). When `collapsed` is true the label is hidden but kept in the DOM for
-// screen readers / hover-tooltips.
+/**
+ * A single nav row in the sidebar. Renders as a TanStack <Link>. Active state is computed from the
+ * current router pathname so we can also tint the icon (TanStack's activeProps only swaps top-level
+ * className, not child styles). When `collapsed` is true the label is hidden but kept in the DOM for
+ * screen readers / hover-tooltips.
+ */
 export type SidebarItemProps = {
   icon: ReactNode
   label: string
@@ -46,7 +48,7 @@ export default function SidebarItem({
       {...linkProps}
       title={collapsed ? label : undefined}
       className={[
-        'group relative flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] leading-[18px] tracking-[-0.25px] transition-colors',
+        'group relative flex h-11 items-center gap-2.5 rounded-lg px-2.5 text-[14px] leading-5 transition-colors md:h-8 md:text-[13px] md:leading-[18px]',
         isActive
           ? 'bg-kumo-fill font-medium text-kumo-strong'
           : 'font-normal text-kumo-default hover:bg-kumo-tint',

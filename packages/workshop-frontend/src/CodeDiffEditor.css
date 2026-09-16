@@ -1,3 +1,11 @@
+/*
+ * Diff view styling (see CodeDiffEditor.tsx and src/diff/diffRenderer.ts). The editors are
+ * CodeMirror 6; the shared code theme (components/codeTheme.ts) provides the base chrome, and
+ * these rules add the diff layer: changed-line tints, the 3px change-bar gutter, char-level
+ * highlights, deletion zones (block widgets plus their gutter columns), and the hatched blank
+ * zones that keep the split layout aligned.
+ */
+
 :where(.gadgets-diff-surface) {
   --gd-bg: #fffdfb;
   --gd-fg: #1f1d1a;
@@ -32,25 +40,11 @@
   --gd-omitted-hover-bg: color-mix(in srgb, var(--gd-del-bg) 72%, var(--gd-bg));
 }
 
-.gadgets-diff-surface .monaco-editor,
-.gadgets-diff-surface .monaco-editor .overflow-guard,
-.gadgets-diff-surface .monaco-editor-background,
-.gadgets-diff-surface .monaco-editor .margin,
-.gadgets-diff-surface .monaco-editor .margin-view-overlays,
-.gadgets-diff-surface .monaco-editor .inputarea.ime-input {
-  background-color: var(--gd-bg) !important;
-}
-
-.gadgets-diff-surface .monaco-editor .line-numbers {
-  color: var(--gd-fg-num) !important;
-  font-size: 12px !important;
-  font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
-.gadgets-diff-surface .monaco-editor .margin {
+.gadgets-diff-surface .cm-gutters {
   box-shadow: inset -1px 0 0 var(--gd-margin-line);
 }
+
+/* ---- changed lines ---- */
 
 .gadgets-diff-surface .gadgets-diff-line-add {
   background: var(--gd-add-bg);
@@ -62,79 +56,49 @@
   mix-blend-mode: multiply;
 }
 
+/* ---- gutters: the 3px change bar and the line-number tints ---- */
+
+.gadgets-diff-surface .cm-gutter.gadgets-diff-gutter-bar {
+  width: 3px;
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-add {
+  background: var(--gd-add-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-modified,
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-delete-modified {
+  background: var(--gd-mod-bar);
+}
+
+.gadgets-diff-surface .gadgets-diff-gutter-bar .gadgets-diff-gutter-delete {
+  background: var(--gd-del-bar);
+}
+
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-add,
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-modified {
+  background: var(--gd-add-bg);
+  color: var(--gd-add-num);
+  mix-blend-mode: multiply;
+}
+
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete,
+.gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete-modified {
+  background: var(--gd-del-bg);
+  color: var(--gd-del-num);
+  mix-blend-mode: multiply;
+}
+
 [data-mode="dark"] .gadgets-diff-surface .gadgets-diff-line-add,
 [data-mode="dark"] .gadgets-diff-surface .gadgets-diff-line-delete,
-[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-margin-add,
-[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-margin-delete,
-[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-margin-delete-modified,
-[data-mode="dark"] .gadgets-diff-surface .gadgets-diff-margin-modified {
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-add,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-modified,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete,
+[data-mode="dark"] .gadgets-diff-surface .cm-lineNumbers .gadgets-diff-gutter-delete-modified {
   mix-blend-mode: normal;
 }
 
-.gadgets-diff-surface .gadgets-diff-margin-add {
-  position: relative;
-  background: var(--gd-add-bg);
-  mix-blend-mode: multiply;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-add::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--gd-add-bar);
-  mix-blend-mode: normal;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-delete,
-.gadgets-diff-surface .gadgets-diff-margin-delete-modified {
-  position: relative;
-  background: var(--gd-del-bg);
-  mix-blend-mode: multiply;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-delete::before,
-.gadgets-diff-surface .gadgets-diff-margin-delete-modified::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--gd-del-bar);
-  mix-blend-mode: normal;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-delete-modified::before {
-  background: var(--gd-mod-bar);
-}
-
-.gadgets-diff-surface .gadgets-diff-num-add.line-numbers {
-  color: var(--gd-add-num) !important;
-}
-
-.gadgets-diff-surface .gadgets-diff-num-delete.line-numbers {
-  color: var(--gd-del-num) !important;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-modified {
-  position: relative;
-  background: var(--gd-add-bg);
-  mix-blend-mode: multiply;
-}
-
-.gadgets-diff-surface .gadgets-diff-margin-modified::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--gd-mod-bar);
-  mix-blend-mode: normal;
-}
+/* ---- char-level highlights ---- */
 
 .gadgets-diff-surface .gadgets-diff-inline-add {
   background: color-mix(in srgb, var(--gd-add-bg) 55%, var(--gd-add-bar));
@@ -146,17 +110,10 @@
   border-radius: 2px;
 }
 
-.gadgets-diff-surface .monaco-editor .current-line {
-  border: 0 !important;
-  background: transparent !important;
-}
+/* ---- blank zones (split-layout alignment filler) ---- */
 
-.gadgets-diff-surface .monaco-scrollable-element > .scrollbar > .slider {
-  border-radius: 999px !important;
-}
-
-.gadgets-diff-surface .gadgets-diff-blank-margin,
-.gadgets-diff-surface .gadgets-diff-blank-zone {
+.gadgets-diff-surface .gadgets-diff-blank-zone,
+.gadgets-diff-surface .cm-gutterElement.gadgets-diff-blank-margin {
   background-color: var(--gd-blank-bg);
   background-image: repeating-linear-gradient(
     -45deg,
@@ -167,23 +124,26 @@
   );
 }
 
-.gadgets-diff-surface .gadgets-diff-blank-margin {
-  box-shadow: inset -1px 0 0 var(--gd-margin-line);
-}
+/* ---- deletion zones ---- */
 
-.gadgets-diff-surface .gadgets-deleted-margin,
 .gadgets-diff-surface .gadgets-deleted-code-zone {
   background: var(--gd-del-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 13px;
   line-height: 20px;
   color: var(--gd-fg);
+  white-space: pre;
+  overflow: hidden;
 }
 
-.gadgets-diff-surface .gadgets-deleted-margin {
-  z-index: 1;
-  text-align: right;
-  padding-right: 12px;
+.gadgets-diff-surface .gadgets-deleted-code-row {
+  height: 20px;
+  padding: 0 16px 0 12px;
+}
+
+/* The deleted lines' original numbers, rendered into the line-number gutter. */
+.gadgets-diff-surface .cm-gutterElement.gadgets-deleted-margin {
+  background: var(--gd-del-bg);
   color: var(--gd-del-num);
   user-select: none;
   font-variant-numeric: tabular-nums;
@@ -191,33 +151,19 @@
 }
 
 .gadgets-diff-surface .gadgets-deleted-num-row {
-  position: relative;
   height: 20px;
 }
 
-.gadgets-diff-surface .gadgets-deleted-num-row::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
+/* The change-bar gutter's rows for a deletion zone. */
+.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-deleted-num-row {
   background: var(--gd-del-bar);
 }
 
-.gadgets-diff-surface .gadgets-replacement-num-row::before {
+.gadgets-diff-surface .gadgets-deleted-bar-zone .gadgets-replacement-num-row {
   background: var(--gd-mod-bar);
 }
 
-.gadgets-diff-surface .gadgets-deleted-code-zone {
-  white-space: pre;
-  overflow: hidden;
-}
-
-.gadgets-diff-surface .gadgets-deleted-code-row {
-  height: 20px;
-}
-
+/* The truncation row: "..." in the gutter, an expand button in the content. */
 .gadgets-diff-surface .gadgets-deleted-omitted-row {
   color: var(--gd-del-num);
   font-family: ui-sans-serif, system-ui, sans-serif;
@@ -228,6 +174,7 @@
 .gadgets-diff-surface button.gadgets-deleted-omitted-row {
   display: block;
   width: 100%;
+  height: 20px;
   border: 0;
   padding: 0 12px;
   background: var(--gd-omitted-bg);

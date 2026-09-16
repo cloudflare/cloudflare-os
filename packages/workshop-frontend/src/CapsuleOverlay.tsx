@@ -18,15 +18,17 @@ export interface CapsuleOverlayProps {
   activeIndex?: number
   onItems?: (items: SelectableItem[]) => void
   activateRef?: MutableRefObject<((index: number) => void) | null>
-  // Distance from the bottom of the positioning parent to the line the URL is on, so the panel sits
-  // with that line rather than above the whole composer.
+  /**
+   * Distance from the bottom of the positioning parent to the line the URL is on, so the panel sits
+   * with that line rather than above the whole composer.
+   */
   lineOffset?: number
 }
 
 // Minimum URL length to trigger showing the overlay (show once the scheme is complete).
 const MIN_URL_LENGTH = 'http://'.length
 
-// Gap between the panel and the line it points at. Matches the offset in CapsuleOverlay.module.css.
+/** Gap between the panel and the line it points at. Matches the offset in CapsuleOverlay.module.css. */
 export const CAPSULE_OVERLAY_GAP = 8
 
 // Breathing room kept between the top of the panel and the top of the window. Generous, because the

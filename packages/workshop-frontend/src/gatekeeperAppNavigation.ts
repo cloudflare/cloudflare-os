@@ -5,8 +5,10 @@ const WORKSPACE_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 export type GatekeeperAppWorkspaceTarget = { workspaceId: string; gadgetId?: number };
 
-// Validates a workspace target arriving from a sandboxed gatekeeper app before the host navigates
-// to it. The app is untrusted input, so the shape is checked here rather than at the router.
+/**
+ * Validates a workspace target arriving from a sandboxed gatekeeper app before the host navigates
+ * to it. The app is untrusted input, so the shape is checked here rather than at the router.
+ */
 export function parseGatekeeperAppWorkspaceTarget(
   workspaceId: unknown,
   gadgetId: unknown,

@@ -23,6 +23,8 @@ export default defineConfig({
   ],
   test: {
     include: ["__integration__/*.test.ts"],
+    // Asserts the pool actually started, rather than trusting a green run to mean workerd.
+    setupFiles: ["@gadgets/scripts/assert-workerd"],
     // Whichever test runs first pays for workerd booting and instantiating the whole backend
     // bundle -- ~6s on a dev machine and roughly 3x that on a CI runner, while every subsequent
     // test in the file finishes in tens of milliseconds. The timeout has to clear that cold
@@ -33,6 +35,12 @@ export default defineConfig({
     onUnhandledError(error) {
       const code = "code" in error ? error.code : undefined;
       if (typeof code === "string" && EXPECTED_OPEN_ERROR_CODES.has(code)) return false;
+      // The reset-recovery tests abort every Durable Object mid-session; capabilities that were
+      // held across the abort (e.g. the fire-and-forget AdminSettings install kicked off by the
+      // fetch handler) reject on their own schedule, independent of any awaited call.
+      if (error.message?.includes("abortAllDurableObjects")) return false;
+      // Same, for the test that aborts only the user DO (state.abort with this reason).
+      if (error.message?.includes("user-DO reset injected by test")) return false;
     },
   },
 });

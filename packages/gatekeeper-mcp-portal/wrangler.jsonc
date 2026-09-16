@@ -5,7 +5,7 @@
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"
   },
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
 
   // See `gatekeeper-mcp`'s wrangler.jsonc. The portal URL is administrator-supplied rather than user
   // input, but the endpoints reached from it are not: OAuth discovery follows a `WWW-Authenticate`
@@ -51,6 +51,10 @@
   //     a portal is an aggregator, and those annotations are written by whichever upstream server it
   //     proxies, not by the administrator who chose the portal. Only set it where the upstreams
   //     themselves are trusted.
+  //
+  //   MCP_PORTAL_HIDDEN_SERVER_IDS
+  //     Comma-separated upstream server IDs to omit from the resource configurator and reject if a
+  //     caller supplies one directly in a resource URL.
   "vars": {
     // Set to "true" to permit http:// and private-network endpoints. Local development only.
     "MCP_ALLOW_INSECURE": "false"

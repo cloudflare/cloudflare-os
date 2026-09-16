@@ -5,23 +5,27 @@
   "main": "./src/google.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
-    "deploy": "pnpm run build:configurator && wrangler deploy",
-    "build": "pnpm run build:configurator && tsc",
-    "types:check": "pnpm run build:configurator && tsc --noEmit",
-    "clean": "rm -rf dist src/generated"
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
+    "clean": "rm -rf dist src/generated",
+    "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "capnweb": "^0.8.0",
-    "capnweb-validate": "0.2.1",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
     "mimetext": "^3.0.28",
-    "postal-mime": "^2.7.5"
+    "postal-mime": "^2.7.6"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "wrangler": "^4.119.0"
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "miniflare": "5.20260801.0-alpha",
+    "typescript": "catalog:",
+    "typescript6": "npm:typescript@6.0.3",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

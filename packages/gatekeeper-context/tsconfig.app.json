@@ -1,6 +1,8 @@
 {
   // SPA-only TS config; the worker uses tsconfig.json.
   "compilerOptions": {
+    // Standalone config (no extends): mirror the root tsconfig's singleThreaded.
+    "singleThreaded": true,
     "target": "ES2022",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",

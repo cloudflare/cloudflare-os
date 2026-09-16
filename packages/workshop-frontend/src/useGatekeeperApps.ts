@@ -10,19 +10,23 @@ const appsRequestByApi = new WeakMap<object, Promise<GatekeeperAppInfo[]>>()
 // Mounted useGatekeeperApps() hooks register here so an explicit refresh can prompt them to refetch.
 const refreshListeners = new Set<() => void>()
 
-// Drop the cached apps request and prompt mounted hooks to refetch. Unlike connected accounts, the
-// apps list has no live subscription, so callers must invoke this after an action that changes which
-// gatekeepers provide a UI (opting into or disconnecting an optional ambient gatekeeper).
+/**
+ * Drop the cached apps request and prompt mounted hooks to refetch. Unlike connected accounts, the
+ * apps list has no live subscription, so callers must invoke this after an action that changes which
+ * gatekeepers provide a UI (opting into or disconnecting an optional ambient gatekeeper).
+ */
 export function refreshGatekeeperApps(api: object): void {
   appsRequestByApi.delete(api)
   for (const listener of refreshListeners) listener()
 }
 
-// The gatekeeper-served management apps available to the current user (one per gatekeeper that sets
-// `providesUi`, e.g. the Context Library). The Workshop hosts each at `/gatekeepers/$appId` and lists
-// them in the nav — no gatekeeper is hardcoded here; the set comes from the backend's discovery of
-// bound gatekeepers. Returns [] until authenticated/loaded. `GatekeeperAppInfo` is plain data
-// (id/title/icon), so it's safe to hold in state.
+/**
+ * The gatekeeper-served management apps available to the current user (one per gatekeeper that sets
+ * `providesUi`, e.g. the Context Library). The Workshop hosts each at `/gatekeepers/$appId` and lists
+ * them in the nav — no gatekeeper is hardcoded here; the set comes from the backend's discovery of
+ * bound gatekeepers. Returns [] until authenticated/loaded. `GatekeeperAppInfo` is plain data
+ * (id/title/icon), so it's safe to hold in state.
+ */
 export function useGatekeeperApps(): GatekeeperAppInfo[] {
   const auth = useOptionalAuthenticatedApi()
   const [apps, setApps] = useState<GatekeeperAppInfo[]>([])

@@ -7,7 +7,7 @@ export function GatekeeperIcon({
   className = 'h-8 w-8 rounded-lg',
 }: {
   vendorId?: string
-  // Text whose first letter is shown when no logo is available (e.g. the resource title).
+  /** Text whose first letter is shown when no logo is available (e.g. the resource title). */
   fallbackText?: string
   logoUrl?: string
   /**

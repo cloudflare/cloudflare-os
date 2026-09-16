@@ -6,7 +6,7 @@
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src",
   },
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
   // ScheduleDriver persists HookInitiator capabilities in SQLite-backed KV.
   "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
   "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": false }],

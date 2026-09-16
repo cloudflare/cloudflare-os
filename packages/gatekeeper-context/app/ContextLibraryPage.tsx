@@ -1173,42 +1173,13 @@ function CollectionOverview({
                     Refresh
                   </WorkshopButton>
                 )}
-                <KebabMenu
-                  trigger={
-                    <WorkshopIconButton
-                      aria-label="Collection options"
-                      title="Options"
-                      className="!h-9 !w-9 data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
-                    >
-                      <DotsThree size={18} weight="bold" />
-                    </WorkshopIconButton>
-                  }
-                >
-                  <DropdownMenu.Item
-                    icon={<PencilSimple size={13} className="mr-2" />}
-                    onClick={onEditDetails}
-                    className={MENU_ITEM}
-                  >
-                    Edit details
-                  </DropdownMenu.Item>
-                  {isSynced && supportsGitCollections && (
-                    <DropdownMenu.Item
-                      icon={<Key size={13} className="mr-2" />}
-                      onClick={onManageGitTokens}
-                      className={MENU_ITEM}
-                    >
-                      Manage git tokens
-                    </DropdownMenu.Item>
-                  )}
-                  <DropdownMenu.Separator />
-                  <DropdownMenu.Item
-                    icon={<Trash size={13} className="mr-2" />}
-                    onClick={onDelete}
-                    className={`${MENU_ITEM_DANGER} text-kumo-danger`}
-                  >
-                    Delete collection
-                  </DropdownMenu.Item>
-                </KebabMenu>
+                <CollectionOptionsMenu
+                  isSynced={isSynced}
+                  supportsGitCollections={supportsGitCollections}
+                  onEditDetails={onEditDetails}
+                  onManageGitTokens={onManageGitTokens}
+                  onDelete={onDelete}
+                />
               </div>
             )}
           </div>
@@ -1283,6 +1254,59 @@ function CollectionOverview({
         )}
       </div>
     </div>
+  );
+}
+
+function CollectionOptionsMenu({
+  isSynced,
+  supportsGitCollections,
+  onEditDetails,
+  onManageGitTokens,
+  onDelete,
+}: {
+  isSynced: boolean;
+  supportsGitCollections: boolean;
+  onEditDetails: () => void;
+  onManageGitTokens: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <KebabMenu
+      trigger={
+        <WorkshopIconButton
+          aria-label="Collection options"
+          title="Options"
+          className="!h-9 !w-9 data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default"
+        >
+          <DotsThree size={18} weight="bold" />
+        </WorkshopIconButton>
+      }
+    >
+      <DropdownMenu.Item
+        icon={<PencilSimple size={13} className="mr-2" />}
+        onClick={onEditDetails}
+        className={MENU_ITEM}
+      >
+        Edit details
+      </DropdownMenu.Item>
+      {isSynced && supportsGitCollections && (
+        <DropdownMenu.Item
+          icon={<Key size={13} className="mr-2" />}
+          onClick={onManageGitTokens}
+          className={MENU_ITEM}
+        >
+          Manage git tokens
+        </DropdownMenu.Item>
+      )}
+      <DropdownMenu.Separator />
+      <DropdownMenu.Item
+        icon={<Trash size={13} className="mr-2" />}
+        onClick={onDelete}
+        className={`${MENU_ITEM_DANGER} text-kumo-danger`}
+      >
+        Delete collection
+      </DropdownMenu.Item>
+    </KebabMenu>
   );
 }
 
@@ -2631,19 +2655,32 @@ function CollectionEditor({
             <div className="px-3 py-2.5">
               {/* The collection root doubles as a nav target back to the overview, and sits active
                   when nothing is selected. */}
-              <button
-                onClick={() => setSelectedPath(null)}
-                title="Collection overview"
-                aria-current={selectedPath ? undefined : "page"}
-                className={`flex w-full transform-none items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring/30 active:scale-100 ${
-                  selectedPath ? "hover:bg-kumo-tint" : "bg-kumo-recessed"
-                }`}
+              <div
+                className={`flex items-center rounded-lg ${selectedPath ? "hover:bg-kumo-tint" : "bg-kumo-recessed"}`}
               >
-                <CollectionIconTile icon={metadata.icon} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 tracking-[-0.25px] text-kumo-default">
-                  {metadata.title}
-                </span>
-              </button>
+                <button
+                  onClick={() => setSelectedPath(null)}
+                  title="Collection overview"
+                  aria-current={selectedPath ? undefined : "page"}
+                  className="flex min-w-0 flex-1 transform-none items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring/30 active:scale-100"
+                >
+                  <CollectionIconTile icon={metadata.icon} size="sm" />
+                  <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 tracking-[-0.25px] text-kumo-default">
+                    {metadata.title}
+                  </span>
+                </button>
+                {canWrite && (
+                  <div className="pr-1 sm:hidden">
+                    <CollectionOptionsMenu
+                      isSynced={metadata.content.source === "git"}
+                      supportsGitCollections={supportsGitCollections}
+                      onEditDetails={() => openSettings("edit")}
+                      onManageGitTokens={() => setGitTokensOpen(true)}
+                      onDelete={() => openSettings("delete")}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

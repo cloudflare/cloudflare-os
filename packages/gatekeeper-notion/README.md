@@ -7,7 +7,7 @@ databases. Runs as its own Cloudflare Worker and is auto-discovered by the backe
 ## Auth
 
 OAuth 2.0 public connection. Configure a Notion **public integration** and provide its client
-credentials to the worker as `CLIENT_ID` / `CLIENT_SECRET`. For local dev, `run-dev-server.js`
+credentials to the worker as `CLIENT_ID` / `CLIENT_SECRET`. For local dev, `run-dev-server.ts`
 maps `NOTION_CLIENT_ID` / `NOTION_CLIENT_SECRET` (e.g. from a root `.dev.vars`) into those vars.
 
 The integration's **redirect URI** must match `<BASE_URL>/oauth`, which in local dev defaults to
@@ -54,6 +54,6 @@ consistent. This split is hidden from the Session API.
 ## Build & test
 
 ```
-pnpm --filter @gadgets/notion-gatekeeper build   # build:configurator + tsc
-pnpm --filter @gadgets/notion-gatekeeper test    # vitest
+pnpm exec vp run -F @gadgets/notion-gatekeeper build   # build:configurator + tsc
+pnpm --filter @gadgets/notion-gatekeeper test:run    # vitest
 ```

@@ -5,9 +5,7 @@ import { useState, useEffect } from 'react'
 import { logoComponents } from './ConnectionLogos'
 import { getVendorIconBackground } from './vendorColors'
 import { useTheme } from '../ThemeContext'
-import { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
-import { AccountDescription, VendorDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
-import { RpcTarget } from 'capnweb'
+import { AccountsSubscriberAdapter } from '../accountsSubscriber'
 
 interface ConnectedAccount {
   id: number
@@ -22,41 +20,30 @@ export default function ConnectionChips() {
 
   useEffect(() => {
     let cancelled = false
-    let subscriptionStub: { [Symbol.dispose](): void } | null = null
 
     const accountMap = new Map<number, ConnectedAccount>()
 
-    class ChipsSubscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(id: number, description: AccountDescription, vendor: VendorDescription, _supportedResources: SupportedResource[] = [], _credentialsValid: boolean = true, vendorId: string = '') {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, description, vendor, vendorId }) {
         if (cancelled) return
-        const logoKey = vendorId
         accountMap.set(id, {
           id,
           name: description.displayName ?? description.uniqueName ?? vendor.displayName,
-          logo: logoKey,
+          logo: vendorId,
         })
-        if (!cancelled) setAccounts(Array.from(accountMap.values()))
-      }
-      remove(id: number) {
+        setAccounts(Array.from(accountMap.values()))
+      },
+      remove(id) {
         accountMap.delete(id)
         if (!cancelled) setAccounts(Array.from(accountMap.values()))
-      }
-      ready() {}
-    }
-
-    const subscriber = new ChipsSubscriber()
-    const subPromise = authenticatedApi.subscribeConnectedAccounts(subscriber)
-    subPromise.then((stub) => {
-      if (cancelled) {
-        stub[Symbol.dispose]()
-      } else {
-        subscriptionStub = stub
-      }
-    }).catch(() => {})
+      },
+    })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    subscription.catch(() => {})
 
     return () => {
       cancelled = true
-      subscriptionStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 

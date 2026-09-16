@@ -7,8 +7,19 @@ on:
     types: [created]
 
 jobs:
+  # This `if:` is a prefilter, not the authorization: it only keeps the job from starting a runner
+  # on every comment in the repository. Authorization is the permission lookup in the first step.
+  #
+  # Do not put `author_association` back here. GitHub computes that field with no viewer, so it
+  # cannot see private organization membership, and a maintainer whose Cloudflare membership is
+  # private and who reaches this repository through a team rather than a direct collaborator grant
+  # arrives as `CONTRIBUTOR` — which silently ignored them. The mention terms below mirror the
+  # `mentions:` input, so the job starts on the same comments the action would act on.
   bonk:
-    if: github.event.sender.type != 'Bot'
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (contains(github.event.comment.body, '/bonk') ||
+       contains(github.event.comment.body, '@ask-bonk'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -20,21 +31,39 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # First, before checkout and before any step can reference a secret. `issue_comment` and
+      # `pull_request_review_comment` both run privileged with the AI gateway secrets available,
+      # and anyone can comment on a public repository, so this is the whole gate.
+      - name: Verify the commenter is a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$COMMENTER/permission" \
+            --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$COMMENTER has '$permission' on $GH_REPO; Bonk requires write access."
+            exit 1
+          fi
+
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@c3f6dd354ca1f14329e8ea298958c000f0bfef3e
+        uses: ask-bonk/ask-bonk/github@5d4fe8f4a557afb1b73ec8c0ffcf60359a28865f
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-5.6-sol":{}}}}}'
         with:
-          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
+          oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
+          model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
           variant: "high"
           mentions: "/bonk,@ask-bonk"
-          forks: "false"
+          forks: "true"
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
-          opencode_version: 1.15.13 # pin to this version as certain ones cause ProviderInitError issues
+          opencode_version: 1.18.24

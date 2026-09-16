@@ -2,13 +2,117 @@ name: Bonk PR Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, unlabeled]
+  issue_comment:
+    types: [created]
 
 jobs:
+  # Break-glass invariants:
+  # - The main ruleset requires `bonk` from GitHub Actions app 15368.
+  # - A workflow token may not patch an Actions-created check run (forbidden since
+  #   2025-03-31), so the bypass posts its own passing `bonk` check for the current
+  #   head SHA and labels the PR so later head SHAs pass too.
+  # - The `bonk` job reads that label live, so re-runs honour it as well.
+  # - Removing the label re-triggers a real review via `unlabeled`.
+  # - Authorized users may bypass Bonk even for changes to this workflow.
+  #
+  # Authorization is the permission lookup in the step below, not this `if:`. Do not add
+  # `author_association` back to it: GitHub computes that field with no viewer, so it cannot see
+  # private organization membership, and a maintainer whose Cloudflare membership is private and
+  # who reaches this repository through a team rather than a direct collaborator grant arrives as
+  # `CONTRIBUTOR`. The exact-match body check keeps this from starting on ordinary comments.
+  break-glass:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.sender.type != 'Bot' &&
+      github.event.comment.body == 'bonk break glass'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ${{ github.workflow }}-break-glass-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      actions: write
+      checks: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Skip Bonk review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          INITIAL_ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          # A re-run keeps the original actor's privileges but re-resolves the head
+          # SHA, so it could bypass a commit no comment ever authorized.
+          if [[ "$INITIAL_ACTOR" != "$TRIGGERING_ACTOR" ]]; then
+            echo "Re-runs may not bypass Bonk. Post a new break-glass comment."
+            exit 1
+          fi
+
+          permission=$(gh api \
+            "repos/$GH_REPO/collaborators/$COMMENTER/permission" \
+            --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$COMMENTER does not have permission to bypass Bonk."
+            exit 1
+          fi
+
+          pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
+          head_repo=$(jq -r '.head.repo.full_name' <<< "$pr")
+          head_sha=$(jq -r '.head.sha' <<< "$pr")
+          if [[ "$head_repo" != "$GH_REPO" ]]; then
+            echo "Bonk reviews do not run on fork pull requests."
+            exit 1
+          fi
+
+          gh label create bonk-break-glass \
+            --color B60205 \
+            --description "Skip automatic Bonk PR review" \
+            --force
+          gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+            -f 'labels[]=bonk-break-glass'
+
+          # A review still running would report after the check below and bury it,
+          # so stop every in-flight run and wait for the SHA to go quiet. Re-list
+          # each pass to catch runs that start during the wait.
+          deadline=$(( SECONDS + 300 ))
+          while :; do
+            run_ids=$(gh api --paginate \
+              "repos/$GH_REPO/actions/workflows/bonk-pr.yml/runs?event=pull_request&head_sha=$head_sha&per_page=100" \
+              --jq '.workflow_runs[] | select(.status != "completed") | .id')
+            [[ -z "$run_ids" ]] && break
+            (( SECONDS < deadline )) || {
+              echo "Bonk runs for $head_sha did not stop in time."
+              exit 1
+            }
+            for run_id in $run_ids; do
+              gh api --method POST "repos/$GH_REPO/actions/runs/$run_id/cancel" >/dev/null || \
+                echo "note: could not cancel run $run_id yet; re-checking"
+            done
+            sleep 5
+          done
+
+          gh api --method POST "repos/$GH_REPO/check-runs" \
+            -f name=bonk \
+            -f head_sha="$head_sha" \
+            -f status=completed \
+            -f conclusion=success \
+            -f "details_url=$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+            -f "output[title]=Bonk review bypassed by @$COMMENTER" \
+            -f "output[summary]=@$COMMENTER ran the break-glass command on $head_sha."
+
   bonk:
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      github.event.sender.type != 'Bot'
+      github.event.sender.type != 'Bot' &&
+      (github.event.action != 'unlabeled' ||
+       github.event.label.name == 'bonk-break-glass')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -20,20 +124,44 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # Read the label from the API rather than the event payload: a re-run replays
+      # the payload captured before the label existed, which is how a bypassed PR
+      # used to get reviewed anyway and end up red again.
+      - name: Check break-glass state
+        id: break_glass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          labels=$(gh api --paginate \
+            "repos/$GH_REPO/issues/$PR_NUMBER/labels" \
+            --jq '.[].name')
+          if grep -qxF bonk-break-glass <<< "$labels"; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping Bonk review because bonk-break-glass is set."
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
-        uses: actions/checkout@v7
+        if: steps.break_glass.outputs.active != 'true'
+        uses: actions/checkout@v7.0.1
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@c3f6dd354ca1f14329e8ea298958c000f0bfef3e
+        if: steps.break_glass.outputs.active != 'true'
+        uses: ask-bonk/ask-bonk/github@5d4fe8f4a557afb1b73ec8c0ffcf60359a28865f
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-5.6-sol":{}}}}}'
         with:
-          model: "cloudflare-ai-gateway/anthropic/claude-opus-4-8"
+          oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
+          model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
           variant: "high"
           forks: "false"
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
-          opencode_version: 1.15.13 # pin to this version as certain ones cause ProviderInitError issues
+          opencode_version: 1.18.24

@@ -81,6 +81,19 @@ export type FrontendErrorReportV1 = Readonly<{
   captureMechanism: FrontendCaptureMechanism;
   surface: FrontendErrorSurface;
   sessionId?: string;
+  /**
+   * Origin and pathname of the host page where the failure was captured.
+   *
+   * Rebuilt by `normalizePageLocation`, so credentials, query and fragment are all excluded and
+   * URL-borne secrets never leave the tab — notably the `#share=` bearer capability.
+   */
+  pageLocation?: string;
+  /**
+   * Diagnostic user identifier as *reported* by the client, which is what the name records. Not
+   * authoritative: it is an unverified claim, and nothing may read it to make a decision or grant
+   * access.
+   */
+  reportedUserId?: string;
   exception?: ErrorExceptionV1;
   gadgetId?: string;
   gatekeeperVendorId?: string;
@@ -126,12 +139,46 @@ function clipped(value: string, maximum: number): { value: string; truncated: bo
     : { value: value.slice(0, maximum), truncated: true };
 }
 
+/**
+ * Reduces a URL to its origin and pathname, or `undefined` when it is not an ordinary page URL.
+ *
+ * Rebuilt from the parsed URL rather than trimmed as text, because an `href` retains any
+ * `user:password@` credentials, which a textual strip of the query and fragment would carry
+ * through to the Reporter. Only `http(s)` survives, which is what makes the concatenation safe:
+ * every other scheme either has an opaque origin that serializes to a meaningless `"null"` prefix,
+ * or keeps its content in the path, as `data:` does.
+ */
+export function normalizePageLocation(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  return `${url.origin}${url.pathname}`;
+}
+
 function boundedString(
     value: unknown, maximum: number, mark: () => void): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   const result = clipped(value, maximum);
   if (result.truncated) mark();
   return result.value;
+}
+
+/**
+ * Bounds a captured page location, reduced to origin and pathname.
+ *
+ * The Workshop producer already sends that shape, but this is the trust boundary: the endpoint
+ * carries no credential, so any client can claim any string, and it is dropped here rather than
+ * relying on every present and future producer to have dropped it.
+ */
+function boundedPageLocation(value: unknown, mark: () => void): string | undefined {
+  // Normalize before bounding so a long query never consumes the budget for the part we keep, and
+  // so a policy strip is not reported as a truncated value.
+  return boundedString(normalizePageLocation(value), MAX_STRING_CHARS, mark);
 }
 
 function boundedContent(
@@ -207,6 +254,8 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
     if (!frame) return null;
     const surfaceValue = ownValue(input, "surface");
     const sessionId = boundedString(ownValue(input, "sessionId"), MAX_STRING_CHARS, mark);
+    const pageLocation = boundedPageLocation(ownValue(input, "pageLocation"), mark);
+    const reportedUserId = boundedString(ownValue(input, "reportedUserId"), MAX_STRING_CHARS, mark);
     const gadgetId = boundedString(ownValue(input, "gadgetId"), MAX_STRING_CHARS, mark);
     const gatekeeperVendorId = boundedString(
       ownValue(input, "gatekeeperVendorId"), MAX_STRING_CHARS, mark,
@@ -217,6 +266,8 @@ export function normalizeFrontendErrorReport(input: unknown): FrontendErrorRepor
       ...frame,
       surface: allowlistedString(surfaceValue, surfaces) ?? "workshop",
       ...(sessionId && { sessionId }),
+      ...(pageLocation && { pageLocation }),
+      ...(reportedUserId && { reportedUserId }),
       ...(gadgetId !== undefined && { gadgetId }),
       ...(gatekeeperVendorId !== undefined && { gatekeeperVendorId }),
       ...(browser && { browser }),

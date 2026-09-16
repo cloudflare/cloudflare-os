@@ -1,0 +1,37 @@
+"backend/utils":
+  - changed-files:
+      - any-glob-to-any-file: "packages/backend-utils/**"
+
+"kernel":
+  - changed-files:
+      - any-glob-to-any-file: "packages/workshop-backend/**"
+
+"workshop/shared":
+  - changed-files:
+      - any-glob-to-any-file: "packages/workshop-shared/**"
+
+"workshop/frontend":
+  - changed-files:
+      - any-glob-to-any-file: "packages/workshop-frontend/**"
+
+"gatekeeper":
+  - changed-files:
+      - any-glob-to-any-file: "packages/gatekeeper-*/**"
+
+"configurator":
+  - changed-files:
+      - any-glob-to-any-file: "packages/configurator-ui/**"
+
+"mcp/shared":
+  - changed-files:
+      - any-glob-to-any-file: "packages/mcp-shared/**"
+
+"router":
+  - changed-files:
+      - any-glob-to-any-file: "packages/router/**"
+
+"delivery":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - "scripts/release/**"

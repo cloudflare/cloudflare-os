@@ -1,382 +1,378 @@
-import type { editor } from 'monaco-editor'
+import {
+  Decoration, EditorView, GutterMarker, WidgetType, gutter, lineNumberMarkers,
+  lineNumberWidgetMarker,
+} from '@codemirror/view'
+import type { DecorationSet } from '@codemirror/view'
+import { RangeSet, StateEffect, StateField } from '@codemirror/state'
+import type { Extension, Range, Text } from '@codemirror/state'
 import {
   type ChangeRun,
   type DiffModel,
   type LineSlice,
+  type Side,
   DELETED_HEAD_TAIL,
-  forEachLineSliceOfCharChange,
   MAX_DELETED_ROWS,
   MAX_INLINE_DIFF_LINE_LENGTH,
 } from './diffModel'
 
-/** Editor line height in px; matches CSS `.gadgets-deleted-num-row` height. */
+// The diff view's renderer: turns a DiffModel (see ./diffModel) into CodeMirror decorations
+// and gutter markers for one side of the view.
+//
+// - Added/deleted lines get whole-line decorations; char-level changes on paired (replacement)
+//   lines get mark decorations.
+// - Each line's color coding (green add / yellow replacement / red delete) is one GutterMarker
+//   class shared by two gutters: a dedicated 3px change-bar gutter and the line-number gutter
+//   (which tints and recolors the number).
+// - Deleted content renders as block widgets above the modified line it preceded (stacked
+//   layout), with the deleted lines' own numbers rendered into the real gutters via the
+//   widget-marker hooks, and truncation past MAX_DELETED_ROWS behind an expand button.
+// - In the split layout, each side instead gets hatched blank-zone widgets where the other
+//   side has more lines, keeping unchanged lines vertically aligned (both editors disable
+//   wrapping and share a fixed line height).
+//
+// The host component dispatches `setDiffRender` whenever the model, layout, or expansion state
+// changes (rAF-coalesced per keystroke); between dispatches the decorations map through
+// document changes, and everything clamps to the current document so a transiently stale model
+// never throws.
+
+/** Editor line height in px; matches the code theme's `lineHeight` and the deletion-row CSS. */
 const LINE_HEIGHT_PX = 20
 
-export type RenderArgs = {
-  editor: editor.IStandaloneCodeEditor
-  monaco: typeof import('monaco-editor')
+export type DiffLayout = 'stacked' | 'split'
+
+export type DiffRenderInput = {
   model: DiffModel
-  expandedDeletions: Set<string>
-  decorationCollection: editor.IEditorDecorationsCollection | null
-  /** View zone IDs from the previous render; will be removed before adding new ones. */
-  previousViewZoneIds: readonly string[]
-  onExpandDeletion: (deletionKey: string) => void
+  layout: DiffLayout
+  /** Deletion-block keys (ChangeRun.key) the user has expanded past truncation. */
+  expandedDeletions: ReadonlySet<string>
+  onExpandDeletion: (key: string) => void
 }
+
+/** Replaces the diff layer's rendering state (see the module comment). */
+export const setDiffRender = StateEffect.define<DiffRenderInput>()
+
+type DiffRenderState = {
+  deco: DecorationSet
+  gutter: RangeSet<GutterMarker>
+}
+
+const EMPTY_STATE: DiffRenderState = { deco: Decoration.none, gutter: RangeSet.empty }
 
 /**
- * Apply decorations and view zones for the given diff model. Returns the IDs
- * of the newly created view zones; the caller should pass these back as
- * `previousViewZoneIds` on the next render so they can be removed.
+ * The diff layer for one editor: a state field holding the decorations plus the change-bar
+ * gutter and line-number gutter hooks. Place before `lineNumbers()` in the editor's extension
+ * list so the bar gutter renders leftmost.
  */
-export function renderDiffLayer({
-  editor: ed,
-  monaco,
-  model,
-  expandedDeletions,
-  decorationCollection,
-  previousViewZoneIds,
-  onExpandDeletion,
-}: RenderArgs): string[] {
-  const editorModel = ed.getModel()
-  if (!editorModel) return []
-
-  const decorations: editor.IModelDeltaDecoration[] = []
-  const deletions: ChangeRun[] = []
-  const editorLineCount = editorModel.getLineCount()
-
-  const stickiness = monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
-
-  for (const run of model.changes) {
-    // Whole-line decorations: yellow for paired (replacement) lines, green
-    // for pure inserts.
-    for (let line = run.modifiedStart; line < run.modifiedStart + run.modifiedCount; line++) {
-      if (line < 1 || line > editorLineCount) continue
-      const paired = run.pairedModifiedLines.has(line)
-      decorations.push({
-        range: new monaco.Range(line, 1, line, editorModel.getLineMaxColumn(line)),
-        options: {
-          isWholeLine: true,
-          className: 'gadgets-diff-line-add',
-          marginClassName: paired ? 'gadgets-diff-margin-modified' : 'gadgets-diff-margin-add',
-          lineNumberClassName: 'gadgets-diff-num-add',
-          stickiness,
-        },
-      })
-    }
-
-    const pushModifiedInline = (line: number, startCol: number, endCol: number) => {
-      if (line < 1 || line > editorLineCount) return
-      if (!run.pairedModifiedLines.has(line)) return
-      if (editorModel.getLineLength(line) > MAX_INLINE_DIFF_LINE_LENGTH) return
-      const clampedEnd = Math.min(endCol, editorModel.getLineMaxColumn(line))
-      if (startCol >= clampedEnd) return
-      decorations.push({
-        range: new monaco.Range(line, startCol, line, clampedEnd),
-        options: { inlineClassName: 'gadgets-diff-inline-add', stickiness },
-      })
-    }
-    for (const cc of run.charChanges) {
-      forEachLineSliceOfCharChange(cc, 'modified', pushModifiedInline)
-    }
-    for (const [line, slices] of run.whitespaceModifiedRanges) {
-      for (const slice of slices) pushModifiedInline(line, slice.startCol, slice.endCol)
-    }
-
-    if (run.originalCount > 0) deletions.push(run)
-  }
-
-  decorationCollection?.set(decorations)
-
-  const newViewZoneIds: string[] = []
-  ed.changeViewZones(accessor => {
-    for (const id of previousViewZoneIds) accessor.removeZone(id)
-
-    for (const run of deletions) {
-      const nodes = createDeletionZoneNodes({
-        run,
-        expanded: expandedDeletions.has(run.key),
-        onExpand: () => onExpandDeletion(run.key),
-      })
-      // Anchor before the change run's added lines (or before the next line
-      // for pure deletions).
-      const anchor = run.modifiedStart - 1
-      newViewZoneIds.push(accessor.addZone({
-        afterLineNumber: Math.max(0, Math.min(anchor, editorLineCount)),
-        heightInPx: nodes.heightInPx,
-        domNode: nodes.domNode,
-        marginDomNode: nodes.marginDomNode,
-      }))
-    }
+export function diffRenderExtension(side: Side): Extension {
+  const field = StateField.define<DiffRenderState>({
+    create: () => EMPTY_STATE,
+    update(value, tr) {
+      let next = value
+      if (tr.docChanged) {
+        next = { deco: next.deco.map(tr.changes), gutter: next.gutter.map(tr.changes) }
+      }
+      for (const effect of tr.effects) {
+        if (effect.is(setDiffRender)) {
+          next = buildRenderState(side, effect.value, tr.state.doc)
+        }
+      }
+      return next
+    },
+    provide: f => EditorView.decorations.from(f, state => state.deco),
   })
-
-  return newViewZoneIds
+  return [
+    field,
+    gutter({
+      class: 'gadgets-diff-gutter-bar',
+      markers: view => view.state.field(field).gutter,
+      widgetMarker: (_view, widget) => widgetGutterMarker(widget, 'bar'),
+    }),
+    lineNumberMarkers.compute([field], state => state.field(field).gutter),
+    lineNumberWidgetMarker.of((_view, widget) => widgetGutterMarker(widget, 'num')),
+  ]
 }
 
-export type SplitRenderArgs = {
-  editor: editor.IStandaloneCodeEditor
-  monaco: typeof import('monaco-editor')
-  model: DiffModel
-  side: 'original' | 'modified'
-  decorationCollection: editor.IEditorDecorationsCollection | null
-  previousViewZoneIds: readonly string[]
-}
-
-export function renderSplitDiffLayer({
-  editor: ed,
-  monaco,
-  model,
-  side,
-  decorationCollection,
-  previousViewZoneIds,
-}: SplitRenderArgs): string[] {
-  const editorModel = ed.getModel()
-  if (!editorModel) return []
-
-  const decorations: editor.IModelDeltaDecoration[] = []
-  const blankZones: Array<{ afterLineNumber: number, heightInPx: number }> = []
-  const editorLineCount = editorModel.getLineCount()
-  const stickiness = monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+function buildRenderState(side: Side, input: DiffRenderInput, doc: Text): DiffRenderState {
+  const { model, layout, expandedDeletions, onExpandDeletion } = input
+  const deco: Range<Decoration>[] = []
+  const gutterMarks: Range<GutterMarker>[] = []
 
   for (const run of model.changes) {
     if (side === 'modified') {
-      renderModifiedSideDecorations({ run, monaco, editorModel, decorations, stickiness })
-
-      if (run.originalCount > run.modifiedCount) {
-        blankZones.push({
-          afterLineNumber: run.modifiedStart + run.modifiedCount - 1,
-          heightInPx: (run.originalCount - run.modifiedCount) * LINE_HEIGHT_PX,
-        })
+      pushLineDecorations({ deco, gutterMarks, doc, run, side })
+      pushInlineMarks(deco, doc, run, side)
+      if (layout === 'stacked') {
+        if (run.originalCount > 0) {
+          pushZoneBefore(deco, doc, run.modifiedStart,
+            new DeletionZoneWidget(run, expandedDeletions.has(run.key), onExpandDeletion))
+        }
+      } else if (run.originalCount > run.modifiedCount) {
+        pushZoneAfter(deco, doc, run.modifiedStart + run.modifiedCount - 1,
+          new BlankZoneWidget(run.originalCount - run.modifiedCount))
       }
     } else {
-      renderOriginalSideDecorations({ run, monaco, editorModel, decorations, stickiness })
-
+      pushLineDecorations({ deco, gutterMarks, doc, run, side })
+      pushInlineMarks(deco, doc, run, side)
       if (run.modifiedCount > run.originalCount) {
-        blankZones.push({
-          afterLineNumber: run.originalStart + run.originalCount - 1,
-          heightInPx: (run.modifiedCount - run.originalCount) * LINE_HEIGHT_PX,
-        })
+        pushZoneAfter(deco, doc, run.originalStart + run.originalCount - 1,
+          new BlankZoneWidget(run.modifiedCount - run.originalCount))
       }
     }
   }
 
-  decorationCollection?.set(decorations)
+  return {
+    deco: Decoration.set(deco, true),
+    gutter: RangeSet.of(gutterMarks, true),
+  }
+}
 
-  const newViewZoneIds: string[] = []
-  ed.changeViewZones(accessor => {
-    for (const id of previousViewZoneIds) accessor.removeZone(id)
+// ---- line + inline decorations -------------------------------------------------------------
 
-    for (const zone of blankZones) {
-      const nodes = createBlankZoneNodes()
-      newViewZoneIds.push(accessor.addZone({
-        afterLineNumber: Math.max(0, Math.min(zone.afterLineNumber, editorLineCount)),
-        heightInPx: Math.max(LINE_HEIGHT_PX, zone.heightInPx),
-        domNode: nodes.domNode,
-        marginDomNode: nodes.marginDomNode,
-      }))
+const ADD_LINE = Decoration.line({ class: 'gadgets-diff-line-add' })
+const DELETE_LINE = Decoration.line({ class: 'gadgets-diff-line-delete' })
+const INLINE_ADD = Decoration.mark({ class: 'gadgets-diff-inline-add' })
+const INLINE_DELETE = Decoration.mark({ class: 'gadgets-diff-inline-delete' })
+
+/** A class-only marker shared by the change-bar and line-number gutters. */
+class LineClassMarker extends GutterMarker {
+  constructor(readonly className: string) {
+    super()
+    this.elementClass = className
+  }
+  eq(other: GutterMarker): boolean {
+    return other instanceof LineClassMarker && other.className === this.className
+  }
+}
+
+const ADD_MARKER = new LineClassMarker('gadgets-diff-gutter-add')
+const MODIFIED_MARKER = new LineClassMarker('gadgets-diff-gutter-modified')
+const DELETE_MARKER = new LineClassMarker('gadgets-diff-gutter-delete')
+const DELETE_MODIFIED_MARKER = new LineClassMarker('gadgets-diff-gutter-delete-modified')
+
+function pushLineDecorations({
+  deco,
+  gutterMarks,
+  doc,
+  run,
+  side,
+}: {
+  deco: Range<Decoration>[]
+  gutterMarks: Range<GutterMarker>[]
+  doc: Text
+  run: ChangeRun
+  side: Side
+}) {
+  const start = side === 'modified' ? run.modifiedStart : run.originalStart
+  const count = side === 'modified' ? run.modifiedCount : run.originalCount
+  const paired = side === 'modified' ? run.pairedModifiedLines : run.pairedOriginalLines
+  const lineDeco = side === 'modified' ? ADD_LINE : DELETE_LINE
+  for (let lineNumber = start; lineNumber < start + count; lineNumber++) {
+    if (lineNumber < 1 || lineNumber > doc.lines) continue
+    const from = doc.line(lineNumber).from
+    deco.push(lineDeco.range(from))
+    const marker = side === 'modified'
+      ? (paired.has(lineNumber) ? MODIFIED_MARKER : ADD_MARKER)
+      : (paired.has(lineNumber) ? DELETE_MODIFIED_MARKER : DELETE_MARKER)
+    gutterMarks.push(marker.range(from))
+  }
+}
+
+function pushInlineMarks(deco: Range<Decoration>[], doc: Text, run: ChangeRun, side: Side) {
+  const paired = side === 'modified' ? run.pairedModifiedLines : run.pairedOriginalLines
+  const ranges = side === 'modified' ? run.inlineModifiedRanges : run.inlineOriginalRanges
+  const mark = side === 'modified' ? INLINE_ADD : INLINE_DELETE
+  for (const [lineNumber, slices] of ranges) {
+    if (!paired.has(lineNumber)) continue
+    if (lineNumber < 1 || lineNumber > doc.lines) continue
+    const line = doc.line(lineNumber)
+    if (line.length > MAX_INLINE_DIFF_LINE_LENGTH) continue
+    for (const slice of slices) {
+      const from = line.from + slice.startCol - 1
+      const to = Math.min(line.from + slice.endCol - 1, line.to)
+      if (from < to) deco.push(mark.range(from, to))
     }
-  })
-
-  return newViewZoneIds
-}
-
-function renderModifiedSideDecorations({
-  run,
-  monaco,
-  editorModel,
-  decorations,
-  stickiness,
-}: {
-  run: ChangeRun
-  monaco: typeof import('monaco-editor')
-  editorModel: editor.ITextModel
-  decorations: editor.IModelDeltaDecoration[]
-  stickiness: editor.TrackedRangeStickiness
-}) {
-  const editorLineCount = editorModel.getLineCount()
-
-  for (let line = run.modifiedStart; line < run.modifiedStart + run.modifiedCount; line++) {
-    if (line < 1 || line > editorLineCount) continue
-    const paired = run.pairedModifiedLines.has(line)
-    decorations.push({
-      range: new monaco.Range(line, 1, line, editorModel.getLineMaxColumn(line)),
-      options: {
-        isWholeLine: true,
-        className: 'gadgets-diff-line-add',
-        marginClassName: paired ? 'gadgets-diff-margin-modified' : 'gadgets-diff-margin-add',
-        lineNumberClassName: 'gadgets-diff-num-add',
-        stickiness,
-      },
-    })
-  }
-
-  const pushModifiedInline = (line: number, startCol: number, endCol: number) => {
-    if (line < 1 || line > editorLineCount) return
-    if (!run.pairedModifiedLines.has(line)) return
-    if (editorModel.getLineLength(line) > MAX_INLINE_DIFF_LINE_LENGTH) return
-    const clampedEnd = Math.min(endCol, editorModel.getLineMaxColumn(line))
-    if (startCol >= clampedEnd) return
-    decorations.push({
-      range: new monaco.Range(line, startCol, line, clampedEnd),
-      options: { inlineClassName: 'gadgets-diff-inline-add', stickiness },
-    })
-  }
-  for (const cc of run.charChanges) {
-    forEachLineSliceOfCharChange(cc, 'modified', pushModifiedInline)
-  }
-  for (const [line, slices] of run.whitespaceModifiedRanges) {
-    for (const slice of slices) pushModifiedInline(line, slice.startCol, slice.endCol)
   }
 }
 
-function renderOriginalSideDecorations({
-  run,
-  monaco,
-  editorModel,
-  decorations,
-  stickiness,
-}: {
-  run: ChangeRun
-  monaco: typeof import('monaco-editor')
-  editorModel: editor.ITextModel
-  decorations: editor.IModelDeltaDecoration[]
-  stickiness: editor.TrackedRangeStickiness
-}) {
-  const editorLineCount = editorModel.getLineCount()
+// ---- block zones ---------------------------------------------------------------------------
 
-  for (let line = run.originalStart; line < run.originalStart + run.originalCount; line++) {
-    if (line < 1 || line > editorLineCount) continue
-    const paired = run.pairedOriginalLines.has(line)
-    decorations.push({
-      range: new monaco.Range(line, 1, line, editorModel.getLineMaxColumn(line)),
-      options: {
-        isWholeLine: true,
-        className: 'gadgets-diff-line-delete',
-        marginClassName: paired ? 'gadgets-diff-margin-delete-modified' : 'gadgets-diff-margin-delete',
-        lineNumberClassName: 'gadgets-diff-num-delete',
-        stickiness,
-      },
-    })
-  }
-
-  const pushOriginalInline = (line: number, startCol: number, endCol: number) => {
-    if (line < 1 || line > editorLineCount) return
-    if (!run.pairedOriginalLines.has(line)) return
-    if (editorModel.getLineLength(line) > MAX_INLINE_DIFF_LINE_LENGTH) return
-    const clampedEnd = Math.min(endCol, editorModel.getLineMaxColumn(line))
-    if (startCol >= clampedEnd) return
-    decorations.push({
-      range: new monaco.Range(line, startCol, line, clampedEnd),
-      options: { inlineClassName: 'gadgets-diff-inline-delete', stickiness },
-    })
-  }
-  for (const cc of run.charChanges) {
-    forEachLineSliceOfCharChange(cc, 'original', pushOriginalInline)
-  }
-  for (const [line, slices] of run.whitespaceOriginalRanges) {
-    for (const slice of slices) pushOriginalInline(line, slice.startCol, slice.endCol)
-  }
-}
-
-function createBlankZoneNodes() {
-  const marginDomNode = document.createElement('div')
-  marginDomNode.className = 'gadgets-diff-blank-margin'
-
-  const domNode = document.createElement('div')
-  domNode.className = 'gadgets-diff-blank-zone'
-
-  return { domNode, marginDomNode }
-}
-
-function createDeletionZoneNodes({
-  run,
-  expanded,
-  onExpand,
-}: {
-  run: ChangeRun
-  expanded: boolean
-  onExpand: () => void
-}) {
-  const margin = document.createElement('div')
-  margin.className = 'gadgets-deleted-margin'
-
-  const code = document.createElement('div')
-  code.className = 'gadgets-deleted-code-zone'
-
-  const total = run.originalCount
-  const truncate = !expanded && total > MAX_DELETED_ROWS
-  const visibleIndices: number[] = []
-  if (truncate) {
-    for (let i = 0; i < DELETED_HEAD_TAIL; i++) visibleIndices.push(i)
-    for (let i = total - DELETED_HEAD_TAIL; i < total; i++) visibleIndices.push(i)
+/** Anchor a zone before the given 1-based line (past-the-end anchors after the last line). */
+function pushZoneBefore(deco: Range<Decoration>[], doc: Text, lineNumber: number,
+                        widget: WidgetType) {
+  if (lineNumber <= doc.lines) {
+    const from = doc.line(Math.max(1, lineNumber)).from
+    deco.push(Decoration.widget({ widget, block: true, side: -10 }).range(from))
   } else {
-    for (let i = 0; i < total; i++) visibleIndices.push(i)
+    deco.push(Decoration.widget({ widget, block: true, side: 10 }).range(doc.length))
   }
-
-  // Bucket inline highlights by original line. Multi-line `ICharChange`s get
-  // split into per-line slices; whitespace ranges are already per-line.
-  const inlineByLine = new Map<number, LineSlice[]>()
-  const getOriginalLineLength = (line: number): number => {
-    const idx = line - run.originalStart
-    return idx >= 0 && idx < run.deletedText.length ? run.deletedText[idx].length : 0
-  }
-  const addOriginalSlice = (line: number, startCol: number, endCol: number) => {
-    const lineLen = getOriginalLineLength(line)
-    const clampedEnd = Math.min(endCol, lineLen + 1)
-    if (startCol >= clampedEnd) return
-    const arr = inlineByLine.get(line) ?? []
-    arr.push({ startCol, endCol: clampedEnd })
-    inlineByLine.set(line, arr)
-  }
-  for (const cc of run.charChanges) {
-    forEachLineSliceOfCharChange(cc, 'original', addOriginalSlice)
-  }
-  for (const [line, slices] of run.whitespaceOriginalRanges) {
-    for (const slice of slices) addOriginalSlice(line, slice.startCol, slice.endCol)
-  }
-
-  visibleIndices.forEach((localIndex, position) => {
-    if (truncate && position === DELETED_HEAD_TAIL) {
-      const numRow = document.createElement('div')
-      numRow.className = 'gadgets-deleted-num-row gadgets-deleted-omitted-row'
-      numRow.textContent = '...'
-      margin.append(numRow)
-
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'gadgets-deleted-code-row gadgets-deleted-omitted-row'
-      const hidden = total - 2 * DELETED_HEAD_TAIL
-      button.textContent = `Show ${hidden} hidden deleted line${hidden === 1 ? '' : 's'}`
-      button.addEventListener("click", onExpand)
-      code.append(button)
-    }
-
-    const originalLine = run.originalStart + localIndex
-    const text = run.deletedText[localIndex] ?? ''
-    const isPaired = run.pairedOriginalLines.has(originalLine)
-
-    const numRow = document.createElement('div')
-    numRow.className = isPaired
-      ? 'gadgets-deleted-num-row gadgets-replacement-num-row'
-      : 'gadgets-deleted-num-row'
-    numRow.textContent = isPaired ? '' : String(originalLine)
-    margin.append(numRow)
-
-    const codeRow = document.createElement('div')
-    codeRow.className = 'gadgets-deleted-code-row'
-    appendDeletedLineContent(codeRow, text, isPaired ? inlineByLine.get(originalLine) ?? [] : [])
-    code.append(codeRow)
-  })
-
-  const rowCount = visibleIndices.length + (truncate ? 1 : 0)
-  const heightInPx = Math.max(LINE_HEIGHT_PX, rowCount * LINE_HEIGHT_PX)
-  return { domNode: code, marginDomNode: margin, heightInPx }
 }
 
-function appendDeletedLineContent(
-  row: HTMLElement,
-  text: string,
-  slices: LineSlice[],
-) {
+/** Anchor a zone after the given 1-based line (line 0 anchors before the first line). */
+function pushZoneAfter(deco: Range<Decoration>[], doc: Text, lineNumber: number,
+                       widget: WidgetType) {
+  if (lineNumber <= 0) {
+    deco.push(Decoration.widget({ widget, block: true, side: -10 }).range(0))
+  } else {
+    const to = doc.line(Math.min(lineNumber, doc.lines)).to
+    deco.push(Decoration.widget({ widget, block: true, side: 10 }).range(to))
+  }
+}
+
+function widgetGutterMarker(widget: WidgetType, kind: 'bar' | 'num'): GutterMarker | null {
+  if (widget instanceof DeletionZoneWidget) return new DeletionZoneGutterMarker(widget, kind)
+  if (widget instanceof BlankZoneWidget) return BLANK_ZONE_MARKER
+  return null
+}
+
+/** Hatched filler aligning this side with the other side's extra lines (split layout). */
+class BlankZoneWidget extends WidgetType {
+  constructor(readonly lines: number) {
+    super()
+  }
+  override eq(other: BlankZoneWidget): boolean {
+    return other.lines === this.lines
+  }
+  override get estimatedHeight(): number {
+    return Math.max(1, this.lines) * LINE_HEIGHT_PX
+  }
+  override toDOM(): HTMLElement {
+    const dom = document.createElement('div')
+    dom.className = 'gadgets-diff-blank-zone'
+    dom.style.height = `${this.estimatedHeight}px`
+    return dom
+  }
+}
+
+class BlankZoneClassMarker extends GutterMarker {
+  constructor() {
+    super()
+    this.elementClass = 'gadgets-diff-blank-margin'
+  }
+  eq(other: GutterMarker): boolean {
+    return other instanceof BlankZoneClassMarker
+  }
+}
+
+const BLANK_ZONE_MARKER = new BlankZoneClassMarker()
+
+// ---- deletion zones ------------------------------------------------------------------------
+
+type ZoneRow =
+  | { kind: 'line'; index: number }
+  /** The truncation row: an expand button in the content area, "..." in the gutter. */
+  | { kind: 'omitted'; hidden: number }
+
+function zoneRows(run: ChangeRun, expanded: boolean): ZoneRow[] {
+  const total = run.originalCount
+  if (expanded || total <= MAX_DELETED_ROWS) {
+    return Array.from({ length: total }, (_, index) => ({ kind: 'line', index }))
+  }
+  const rows: ZoneRow[] = []
+  for (let i = 0; i < DELETED_HEAD_TAIL; i++) rows.push({ kind: 'line', index: i })
+  rows.push({ kind: 'omitted', hidden: total - 2 * DELETED_HEAD_TAIL })
+  for (let i = total - DELETED_HEAD_TAIL; i < total; i++) rows.push({ kind: 'line', index: i })
+  return rows
+}
+
+/** Everything a deletion zone renders, for cheap widget/marker equality across model rebuilds. */
+function zoneSignature(run: ChangeRun, expanded: boolean): string {
+  const parts: string[] = [run.key, expanded ? 'x' : '-', String(run.originalStart)]
+  for (let i = 0; i < run.originalCount; i++) {
+    const lineNumber = run.originalStart + i
+    const paired = run.pairedOriginalLines.has(lineNumber)
+    parts.push(
+      run.deletedText[i] ?? '',
+      paired ? 'p' : '-',
+      paired ? JSON.stringify(run.inlineOriginalRanges.get(lineNumber) ?? null) : '',
+    )
+  }
+  return parts.join('\u0000')
+}
+
+/** A change run's deleted lines, rendered as a block above the modified line they preceded. */
+class DeletionZoneWidget extends WidgetType {
+  readonly signature: string
+  constructor(
+    readonly run: ChangeRun,
+    readonly expanded: boolean,
+    readonly onExpand: (key: string) => void,
+  ) {
+    super()
+    this.signature = zoneSignature(run, expanded)
+  }
+  override eq(other: DeletionZoneWidget): boolean {
+    return other.signature === this.signature
+  }
+  override get estimatedHeight(): number {
+    return Math.max(1, zoneRows(this.run, this.expanded).length) * LINE_HEIGHT_PX
+  }
+  override toDOM(): HTMLElement {
+    const zone = document.createElement('div')
+    zone.className = 'gadgets-deleted-code-zone'
+    for (const row of zoneRows(this.run, this.expanded)) {
+      if (row.kind === 'omitted') {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'gadgets-deleted-code-row gadgets-deleted-omitted-row'
+        button.textContent =
+          `Show ${row.hidden} hidden deleted line${row.hidden === 1 ? '' : 's'}`
+        button.addEventListener('click', () => this.onExpand(this.run.key))
+        zone.append(button)
+        continue
+      }
+      const lineNumber = this.run.originalStart + row.index
+      const codeRow = document.createElement('div')
+      codeRow.className = 'gadgets-deleted-code-row'
+      appendDeletedLineContent(
+        codeRow,
+        this.run.deletedText[row.index] ?? '',
+        this.run.pairedOriginalLines.has(lineNumber)
+          ? this.run.inlineOriginalRanges.get(lineNumber) ?? []
+          : [],
+      )
+      zone.append(codeRow)
+    }
+    return zone
+  }
+}
+
+/**
+ * A deletion zone's gutter column: the change bars (`bar`) or the deleted lines' original
+ * numbers (`num`), row-aligned with the widget's content.
+ */
+class DeletionZoneGutterMarker extends GutterMarker {
+  constructor(readonly widget: DeletionZoneWidget, readonly kind: 'bar' | 'num') {
+    super()
+    this.elementClass =
+      kind === 'bar' ? 'gadgets-deleted-bar-zone' : 'gadgets-deleted-margin'
+  }
+  eq(other: GutterMarker): boolean {
+    return other instanceof DeletionZoneGutterMarker && other.kind === this.kind &&
+      other.widget.signature === this.widget.signature
+  }
+  override toDOM(): Node {
+    const { run, expanded } = this.widget
+    const column = document.createElement('div')
+    for (const row of zoneRows(run, expanded)) {
+      const rowDom = document.createElement('div')
+      if (row.kind === 'omitted') {
+        rowDom.className = 'gadgets-deleted-num-row gadgets-deleted-omitted-row'
+        if (this.kind === 'num') rowDom.textContent = '...'
+      } else {
+        const lineNumber = run.originalStart + row.index
+        const paired = run.pairedOriginalLines.has(lineNumber)
+        rowDom.className = paired
+          ? 'gadgets-deleted-num-row gadgets-replacement-num-row'
+          : 'gadgets-deleted-num-row'
+        if (this.kind === 'num' && !paired) rowDom.textContent = String(lineNumber)
+      }
+      column.append(rowDom)
+    }
+    return column
+  }
+}
+
+function appendDeletedLineContent(row: HTMLElement, text: string, slices: LineSlice[]) {
   if (slices.length === 0 || text.length > MAX_INLINE_DIFF_LINE_LENGTH) {
     row.textContent = text
     return
@@ -384,14 +380,17 @@ function appendDeletedLineContent(
   const sorted = [...slices].toSorted((a, b) => a.startCol - b.startCol)
   let column = 1
   for (const slice of sorted) {
+    const clampedEnd = Math.min(slice.endCol, text.length + 1)
     if (slice.startCol > column) {
       row.append(text.slice(column - 1, slice.startCol - 1))
     }
-    const span = document.createElement('span')
-    span.className = 'gadgets-diff-inline-delete'
-    span.textContent = text.slice(slice.startCol - 1, slice.endCol - 1)
-    row.append(span)
-    column = Math.max(column, slice.endCol)
+    if (clampedEnd > slice.startCol) {
+      const span = document.createElement('span')
+      span.className = 'gadgets-diff-inline-delete'
+      span.textContent = text.slice(slice.startCol - 1, clampedEnd - 1)
+      row.append(span)
+    }
+    column = Math.max(column, clampedEnd)
   }
   if (column - 1 < text.length) {
     row.append(text.slice(column - 1))

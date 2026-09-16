@@ -20,8 +20,10 @@
 
 import type { AiGatewayConfig } from "./ai-gateway";
 
-// The bits of the Workers AI binding and gateway config that `webFetch` needs. Kept narrow
-// so the caller can pass a stub in tests without constructing a full Cloudflare.Env.
+/**
+ * The bits of the Workers AI binding and gateway config that `webFetch` needs. Kept narrow
+ * so the caller can pass a stub in tests without constructing a full Cloudflare.Env.
+ */
 export type WebFetchEnv = {
   ai: Ai;
   gateway: AiGatewayConfig | null;
@@ -29,11 +31,13 @@ export type WebFetchEnv = {
 
 export type WebFetchInput = {
   url: string;
-  // If true, return the exact response bytes (decoded as UTF-8) without any document
-  // conversion. If false or omitted, supported document formats (HTML, PDF, DOCX, ...) are
-  // converted to Markdown via env.WORKERS_AI.toMarkdown().
+  /**
+   * If true, return the exact response bytes (decoded as UTF-8) without any document
+   * conversion. If false or omitted, supported document formats (HTML, PDF, DOCX, ...) are
+   * converted to Markdown via env.WORKERS_AI.toMarkdown().
+   */
   raw?: boolean;
-  // Caller-requested cap on body length (characters). Server enforces its own hard cap on top.
+  /** Caller-requested cap on body length (characters). Server enforces its own hard cap on top. */
   maxBytes?: number;
 };
 
@@ -51,12 +55,14 @@ const DEFAULT_MAX_BYTES = 1 * 1024 * 1024;  // 1 MiB default cap when caller did
 const FETCH_TIMEOUT_MS = 30_000;
 const USER_AGENT = "GadgetsWebFetch/1.0";
 
-// Validate a URL string for use with webFetch. Throws on bad input. Returns the parsed URL
-// on success.
-//
-// Note: we do NOT inspect the hostname for "looks-internal" patterns here. That kind of
-// blocklist is fundamentally unsound because a symbolic hostname can resolve to any IP at
-// fetch time. SSRF protection is provided post-DNS-lookup by workerd (see the file header).
+/**
+ * Validate a URL string for use with webFetch. Throws on bad input. Returns the parsed URL
+ * on success.
+ *
+ * Note: we do NOT inspect the hostname for "looks-internal" patterns here. That kind of
+ * blocklist is fundamentally unsound because a symbolic hostname can resolve to any IP at
+ * fetch time. SSRF protection is provided post-DNS-lookup by workerd (see the file header).
+ */
 export function validateWebFetchUrl(input: string): URL {
   let parsed: URL;
   try {
@@ -171,14 +177,15 @@ const TO_MARKDOWN_MIME_TYPES = new Set([
   "application/vnd.apple.numbers",                                           // .numbers
 ]);
 
-// `toMarkdown()` uses the Workers AI binding, so only apply the same-account Workers AI gateway
-// resolved by AiGatewayConfig. A cross-account platform gateway cannot be used by this binding.
+// `toMarkdown()` uses the Workers AI binding, and binding calls only reach gateways in the
+// Worker's own account -- so apply the platform gateway only when AiGatewayConfig resolves it
+// as same-account (CF_AI_GATEWAY_USE_BINDING=false marks it cross-account).
 function buildGatewayOptions(
   gateway: AiGatewayConfig | null,
 ): GatewayOptions | undefined {
   if (!gateway) return undefined;
-  if (!gateway.workersAiGateway) return undefined;
-  return { id: gateway.workersAiGateway, metadata: { tool: "webFetch", automated: true } };
+  if (!gateway.sameAccountGateway) return undefined;
+  return { id: gateway.sameAccountGateway, metadata: { tool: "webFetch", automated: true } };
 }
 
 // Attempt to convert a document to Markdown using the Workers AI binding. Returns the
@@ -239,9 +246,11 @@ function contentSignalDenies(response: Response, signal: string): boolean {
   return false;
 }
 
-// Format a `WebFetchResult` as a single string for the agent: a small YAML frontmatter
-// header followed by `---` then the body. This is friendlier to LLMs than a JSON-wrapped
-// object, since the body lives inline rather than as an escaped JSON string.
+/**
+ * Format a `WebFetchResult` as a single string for the agent: a small YAML frontmatter
+ * header followed by `---` then the body. This is friendlier to LLMs than a JSON-wrapped
+ * object, since the body lives inline rather than as an escaped JSON string.
+ */
 export function formatWebFetchResult(result: WebFetchResult): string {
   const lines = [
     "---",

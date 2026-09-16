@@ -30,6 +30,10 @@ type TestHooks = HookInitiator<ScheduleHookTarget> & {
   }>;
   release(): Promise<void>;
   reset(): Promise<void>;
+  waitForDisposals(
+    target: { approvalQueues: number; callbacks: number },
+    budgetMs: number,
+  ): Promise<void>;
   waitUntilBlocked(): Promise<void>;
 };
 
@@ -318,12 +322,7 @@ describe("ScheduleDriver", () => {
     expect(
       (await testEnv.TEST_HOOKS.read()).events.filter((event) => event.startsWith("callback:")),
     ).toHaveLength(2);
-    await vi.waitFor(async () => {
-      expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
-        disposedApprovalQueues: 2,
-        disposedCallbacks: 2,
-      });
-    }, { timeout: 5_000 });
+    await testEnv.TEST_HOOKS.waitForDisposals({ approvalQueues: 2, callbacks: 2 }, 2_000);
 
     await driver.disable("workspace-a", "schedule-a");
     const keys = await runInDurableObject(driver, (_instance, state) =>
@@ -540,12 +539,7 @@ describe("ScheduleDriver", () => {
       "authorize",
       `callback:${runId}`,
     ]);
-    await vi.waitFor(async () => {
-      expect(await testEnv.TEST_HOOKS.read()).toMatchObject({
-        disposedApprovalQueues: 2,
-        disposedCallbacks: 2,
-      });
-    }, { timeout: 5_000 });
+    await testEnv.TEST_HOOKS.waitForDisposals({ approvalQueues: 2, callbacks: 2 }, 2_000);
     expect(reportIssue).not.toHaveBeenCalled();
   });
 
@@ -1182,20 +1176,25 @@ describe("ScheduleDriver", () => {
   it("permanently fences mutations and cleans revoked storage in bounded alarm passes", async () => {
     const driver = testEnv.SCHEDULE_DRIVER.getByName("revocation");
     const activationTime = Date.now();
-    for (let index = 0; index < 60; index++) {
-      await enableSchedule(
-        driver,
-        {
-          workspaceId: "workspace-a",
-          scheduleId: `schedule-${index}`,
-          spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
-          title: `Task ${index}`,
-          description: "Test revocation cleanup.",
-          gadgetId,
-        },
-        activationTime,
-      );
-    }
+    // Seeded through the real enable() path, so each schedule gets its capabilities row too, but
+    // in a single Durable Object invocation: this fixture has to exceed the cleanup batch size,
+    // and sixty separate round-trips spent most of the default test timeout on their own.
+    await runInDurableObject(driver, async (instance) => {
+      for (let index = 0; index < 60; index++) {
+        await instance.enable(
+          {
+            workspaceId: "workspace-a",
+            scheduleId: `schedule-${index}`,
+            spec: { kind: "interval", everyMs: 60_000, anchorMs: activationTime },
+            title: `Task ${index}`,
+            description: "Test revocation cleanup.",
+            gadgetId,
+          },
+          testInitiator(instance),
+          activationTime,
+        );
+      }
+    });
 
     await driver.revoke();
     await expect(driver.disable("workspace-a", "schedule-0")).resolves.toBeUndefined();

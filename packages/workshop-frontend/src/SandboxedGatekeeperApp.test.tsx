@@ -13,10 +13,18 @@ import {
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  GatekeeperAppTheme,
+  GatekeeperAppThemeReceiver,
+} from "@gadgets/workshop-shared/theme";
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
 
 vi.mock("./ThemeContext", () => ({
   useTheme: () => ({ resolvedThemeMode: "light" }),
+}));
+
+vi.mock("./ServerConfigContext", () => ({
+  useServerConfig: () => ({ accentColor: "#7c3aed" }),
 }));
 
 vi.mock("./errorReporting", () => ({
@@ -28,20 +36,30 @@ const WORKSPACE_ID = "a".repeat(64);
 const listGadgets = vi.fn<() => Promise<{ id: string; title: string }[]>>(async () => [
   { id: WORKSPACE_ID, title: "Daily Brief" },
 ]);
+const authenticatedApi = { listGadgets };
 
 vi.mock("./AuthContext", () => ({
-  useAuthenticatedApi: () => ({ authenticatedApi: { listGadgets } }),
+  useAuthenticatedApi: () => ({ authenticatedApi }),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface TestHost extends RpcTarget {
+  subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
+  setPresenting(active: boolean): Promise<{
+    rect: { left: number; top: number; width: number; height: number } | null;
+    willResize: boolean;
+  }>;
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;
 }
 
 class EmptyUi extends RpcTarget {}
+
+class TestThemeReceiver extends RpcTarget implements GatekeeperAppThemeReceiver {
+  setTheme(_theme: GatekeeperAppTheme): void {}
+}
 
 describe("SandboxedGatekeeperApp navigation", () => {
   let container: HTMLDivElement | undefined;
@@ -59,7 +77,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     vi.restoreAllMocks();
   });
 
-  it("routes validated targets and bounded prompts from the iframe host", async () => {
+  it("provides the deployment theme and routes bounded iframe requests", async () => {
     const frame = {
       iframeHtml: "<!doctype html><title>Scheduler</title>",
       ui: new RpcStub(new EmptyUi()),
@@ -95,6 +113,32 @@ describe("SandboxedGatekeeperApp navigation", () => {
         ports: [port2],
       }),
     );
+
+    const themeReceiver = new TestThemeReceiver();
+    await expect(host.subscribeTheme(themeReceiver)).resolves.toEqual({
+      mode: "light",
+      accentColor: "#7c3aed",
+    });
+
+    await act(async () => {
+      await host!.setPresenting(true);
+    });
+    expect(iframe.style.position).toBe("fixed");
+    expect(iframe.style.top).toBe("calc(var(--app-top) + env(safe-area-inset-top))");
+    expect(iframe.style.bottom).toBe("calc(var(--app-bottom) + env(safe-area-inset-bottom))");
+    expect(iframe.style.width).toBe(
+      "calc(100vw - (env(safe-area-inset-left) + env(safe-area-inset-right)))",
+    );
+    expect(iframe.style.height).toBe(
+      "calc(100vh - var(--app-top) - var(--app-bottom) - env(safe-area-inset-top) - env(safe-area-inset-bottom))",
+    );
+
+    await act(async () => {
+      await host!.setPresenting(false);
+    });
+    expect(iframe.style.position).toBe("");
+    expect(iframe.style.width).toBe("100%");
+    expect(iframe.style.height).toBe("100%");
 
     await act(async () => {
       await host!.openWorkspace(WORKSPACE_ID, 2);

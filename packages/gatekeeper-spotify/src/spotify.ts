@@ -5,6 +5,7 @@ import {
   stripTrailingSlashes,
   type AccountDescription,
   type ActionDescription,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperConnectOptions,
@@ -16,6 +17,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   SpotifyApi,
   SpotifyApiError,
@@ -72,6 +75,23 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
+};
+
+/**
+ * The live credential keys a grant is written to, held as one unit while a reconnect awaits
+ * confirmation (see UserAccount.commitReconnect).
+ */
+type StoredCredentials = {
+  refreshToken: string;
+  accessToken: string;
+  accessTokenExpiresAt: number;
+  scopes: string[];
 };
 
 type ResourceKind = "account" | "playlist";
@@ -128,14 +148,6 @@ const PLAYLIST_RESOURCE: SupportedResource = {
 };
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [ACCOUNT_RESOURCE, PLAYLIST_RESOURCE];
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -440,12 +452,12 @@ export default {
       const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
         ctx.exports.UserAccount.idFromString(doId),
       );
-      const accepted = await stub.acceptAuthCode(code, oauthNonce);
-      if (!accepted) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
-      return new Response(SELF_CLOSING_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
 
     return new Response("Not Found", { status: 404 });
@@ -507,12 +519,12 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -527,15 +539,20 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return { oauthNonce, scopes: OAUTH_SCOPES };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -550,20 +567,25 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Spotify did not return a refresh token.");
     }
 
-    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
-    this.ctx.storage.kv.put("accessToken", grant.accessToken);
-    this.ctx.storage.kv.put("accessTokenExpiresAt", Date.now() + grant.expiresIn * 1000);
-    this.ctx.storage.kv.put("scopes", grant.scopes);
-    this.ctx.storage.kv.put("expiredNotified", false);
+    const credentials: StoredCredentials = {
+      refreshToken: grant.refreshToken,
+      accessToken: grant.accessToken,
+      accessTokenExpiresAt: Date.now() + grant.expiresIn * 1000,
+      scopes: grant.scopes,
+    };
 
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, credentials, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.#storeCredentials(credentials);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("refreshToken");
         this.ctx.storage.kv.delete("accessToken");
@@ -572,7 +594,22 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     await this.ctx.storage.deleteAlarm();
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const credentials = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!credentials) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeCredentials(credentials);
+  }
+
+  #storeCredentials(credentials: StoredCredentials): void {
+    this.ctx.storage.kv.put("refreshToken", credentials.refreshToken);
+    this.ctx.storage.kv.put("accessToken", credentials.accessToken);
+    this.ctx.storage.kv.put("accessTokenExpiresAt", credentials.accessTokenExpiresAt);
+    this.ctx.storage.kv.put("scopes", credentials.scopes);
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
   async getAccessToken(): Promise<string> {
@@ -664,7 +701,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     });
   }
 
-  // Spotify is not offered as a sign-in identity provider (no verified-email flag exposed).
+  /** Spotify is not offered as a sign-in identity provider (no verified-email flag exposed). */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
@@ -727,11 +764,17 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account. Spotify uses the "low-stakes" observer strategy (see
-  // SpotifyGatekeeperImpl.addObserver): a personal Spotify account is not the kind of restricted
-  // corporate data the information-flow model is designed to protect, so any collaborator may
-  // observe. The verifier therefore carries no identity and is never consulted — but the overseer
-  // mints one on every open, so it must exist and not throw.
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
+  }
+
+  /**
+   * Mint a verifier representing this account. Spotify uses the "low-stakes" observer strategy (see
+   * SpotifyGatekeeperImpl.addObserver): a personal Spotify account is not the kind of restricted
+   * corporate data the information-flow model is designed to protect, so any collaborator may
+   * observe. The verifier therefore carries no identity and is never consulted — but the overseer
+   * mints one on every open, so it must exist and not throw.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.SpotifyVerifier({});
@@ -1037,11 +1080,13 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return new SpotifyAccountSessionImpl(this, queue);
   }
 
-  // Observer tracking: Spotify uses the "low-stakes" strategy. A personal Spotify account (profile,
-  // library, playlists, playback) is not the kind of restricted, access-controlled corporate data
-  // the information-flow model exists to protect — if you share a Gadget that can read your
-  // playlists, that is your call. So any collaborator may observe: addObserver/removeObserver are
-  // no-ops and we never set excludeObservers on observations.
+  /**
+   * Observer tracking: Spotify uses the "low-stakes" strategy. A personal Spotify account (profile,
+   * library, playlists, playback) is not the kind of restricted, access-controlled corporate data
+   * the information-flow model exists to protect — if you share a Gadget that can read your
+   * playlists, that is your call. So any collaborator may observe: addObserver/removeObserver are
+   * no-ops and we never set excludeObservers on observations.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
 
@@ -1214,9 +1259,11 @@ export class SpotifyGatekeeperImpl extends DurableObject<Env, SpotifyGatekeeperI
     return entries;
   }
 
-  // Verify the connected user may edit this playlist (owns it, or it's collaborative) before
-  // queueing a content edit, and return the current (simulated) track count for bounds checks.
-  // Provisional (not-yet-created) playlists are always owned by the user.
+  /**
+   * Verify the connected user may edit this playlist (owns it, or it's collaborative) before
+   * queueing a content edit, and return the current (simulated) track count for bounds checks.
+   * Provisional (not-yet-created) playlists are always owned by the user.
+   */
   async assertEditablePlaylist(logicalId: string): Promise<{ trackCount: number }> {
     const realId = this.#resolveRealPlaylistId(logicalId);
     if (!realId) {

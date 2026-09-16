@@ -5,9 +5,11 @@ import { Warning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
 import { useCloudflareLimitsEnabled } from '../../ServerConfigContext'
 
-// Global, mandatory modal that forces the user to pick which Cloudflare account to bill whenever
-// they're connected but have access to more than one account. Auto-opens (and re-opens) as long as
-// the selection is pending, so it can't be missed after connecting. Mounted once in the app shell.
+/**
+ * Global, mandatory modal that forces the user to pick which Cloudflare account to bill whenever
+ * they're connected but have access to more than one account. Auto-opens (and re-opens) as long as
+ * the selection is pending, so it can't be missed after connecting. Mounted once in the app shell.
+ */
 export default function AccountSelectionModal() {
   const limitsEnabled = useCloudflareLimitsEnabled()
   const auth = useOptionalAuthenticatedApi()
@@ -68,7 +70,7 @@ export default function AccountSelectionModal() {
     // role="alertdialog" + no close affordance: the choice is mandatory, so it isn't dismissible by
     // clicking outside.
     <Dialog.Root open role="alertdialog">
-      <Dialog className="p-6 sm:w-[480px]" size="base">
+      <Dialog className="responsive-dialog overflow-y-auto p-6 sm:w-[480px]" size="base">
         <Dialog.Title className="text-lg font-semibold mb-2 flex items-center gap-2">
           <Warning size={22} weight="bold" className="text-kumo-warning" />
           Choose a Cloudflare account

@@ -5,19 +5,24 @@
   "main": "./src/cloudflare.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "wrangler deploy",
-    "build": "tsc",
-    "types:check": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
+    "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
+    "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "capnweb": "^0.8.0",
-    "capnweb-validate": "0.2.1"
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "wrangler": "^4.119.0"
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "miniflare": "5.20260801.0-alpha",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

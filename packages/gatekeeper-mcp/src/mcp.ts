@@ -2,7 +2,7 @@
 //
 // Every call is either an observation or an approval-gated action, `readOnlyHint` decides which,
 // writes are queued rather than performed inline, and per-tool TypeScript is generated from the
-// server's schemas so Code Mode works.
+// server's schemas so Gadget code gets typed methods.
 //
 // The endpoint is whatever a user typed, so annotations never earn auto-approval here and a Gadget
 // bound to it is owner-only. See `sharing-policy.ts` and the README.
@@ -26,6 +26,7 @@ import {
 import type { ToolCatalog } from "@gadgets/mcp-shared/client";
 import {
   classifyTool,
+  MAX_TOOLS_PER_SERVER,
   type ServerTrust,
 } from "@gadgets/mcp-shared/tools";
 import { bindingNameFragment, hostOf } from "@gadgets/mcp-shared/util";
@@ -34,7 +35,7 @@ import { generateSessionTypes, sessionTypeName } from "@gadgets/mcp-shared/schem
 import { McpAccountBase, type ConnectedServer, type ConnectOutcome }
   from "@gadgets/mcp-shared/account";
 import { generateNonce } from "@gadgets/mcp-shared/connect-nonce";
-import { fetchTools, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
+import { fetchTools, withClient, type ConnectionAccount } from "@gadgets/mcp-shared/connection";
 import { McpSessionBase } from "@gadgets/mcp-shared/session";
 import { McpFacetBase } from "@gadgets/mcp-shared/facet";
 import { looksLikePortal } from "@gadgets/mcp-shared/portal";
@@ -51,9 +52,9 @@ import {
 import { validateCustomEndpoint } from "@gadgets/mcp-shared/endpoint";
 import { fetchOptions } from "@gadgets/mcp-shared/fetch";
 import {
+  connectHandoffPageHtml,
   htmlResponse,
   INVALID_LINK_HTML,
-  SELF_CLOSING_HTML,
 } from "@gadgets/mcp-shared/html";
 import { handleMcpHttpRequest } from "@gadgets/mcp-shared/http";
 import {
@@ -159,7 +160,7 @@ async function continueConnect(
 
   if (outcome.kind === "invalid") return htmlResponse(INVALID_LINK_HTML, 400);
   if (outcome.kind === "redirect") return Response.redirect(outcome.url, 302);
-  return htmlResponse(SELF_CLOSING_HTML);
+  return htmlResponse(connectHandoffPageHtml(outcome.handoff));
 }
 
 // ---------------------------------------------------------------------------
@@ -204,8 +205,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // ---------------------------------------------------------------------------
 // Account DO — owns the endpoint choice and every credential for it.
 
-// One connected MCP server, for one user: `McpAccountBase` plus where this Worker lives and how it
-// mints an account. Nothing outside this object ever sees a credential.
+/**
+ * One connected MCP server, for one user: `McpAccountBase` plus where this Worker lives and how it
+ * mints an account. Nothing outside this object ever sees a credential.
+ */
 export class McpAccount extends McpAccountBase<Env> {
   protected baseUrl(): string {
     return getBaseUrl(this.env);
@@ -220,8 +223,10 @@ export class McpAccount extends McpAccountBase<Env> {
     return this.ctx.exports.GatekeeperUserImpl({ props });
   }
 
-  // The connect handler needs both over RPC: one to decide whether to show the endpoint form, the
-  // other to reject a stale link before doing any work.
+  /**
+   * The connect handler needs both over RPC: one to decide whether to show the endpoint form, the
+   * other to reject a stale link before doing any work.
+   */
   async hasEndpoint(): Promise<boolean> {
     return this.hasConnectedServer();
   }
@@ -278,8 +283,21 @@ export class GatekeeperUserImpl
         `do. Connect this endpoint through the MCP Server Portals connector instead.`);
     }
     if (scope.tools !== undefined) {
+      const selected = new Set(scope.tools);
       validateToolScopeAgainstCatalog(
-        scope, await fetchTools(this.env, this.#account(), server.endpoint));
+        scope,
+        selected.size === 0
+          ? { tools: [], truncated: false }
+          : await withClient(
+            this.env,
+            this.#account(),
+            server.endpoint,
+            client => client.listMatchingToolIndex(
+              selected.size,
+              tool => selected.has(tool.name),
+            ),
+          ),
+      );
     }
 
     const props: McpGatekeeperImplProps = {
@@ -350,7 +368,10 @@ class McpServerConfiguratorUI extends RpcTarget implements McpServerConfigurator
   async listToolOptions(): Promise<ConfiguratorUIOption[]> {
     const { tools, truncated } = await this.#tools();
     requireCompleteCatalogForToolSelection(truncated);
-    const isPortal = looksLikePortal(tools, truncated);
+    // `fetchTools` lists with the ordinary catalog cap, so that is the cap reaching it would be
+    // evidence of. Unlike the portal connector, this form refuses a truncated catalog outright
+    // rather than surveying past it, so `truncated` is already known to be false here.
+    const isPortal = looksLikePortal(tools, { truncated, cap: MAX_TOOLS_PER_SERVER });
 
     return tools
       .filter(tool => scopeAllows({}, tool.name, isPortal))
@@ -387,15 +408,17 @@ export class McpGatekeeperImpl
     return logger.with({ serverHost: hostOf(this.ctx.props.endpoint) });
   }
 
-  // Namespaces this binding's action-kind tags, so a pre-approval for one server's `create_issue`
-  // cannot apply to another's.
-  //
-  // The whole endpoint is the identity, matching `sameEndpoint` and every other place a grant is
-  // compared. `serverId` is a display slug and collides across hosts, but the origin is not enough
-  // either: one host can front `/mcp` and `/mcp-v2` as unrelated servers, and keying on the origin
-  // let an always-approve decision for a tool on one of them silently auto-apply to the same tool
-  // name on the other. `endpointTag` is that identity, shared with `sameEndpoint` so the two
-  // cannot drift.
+  /**
+   * Namespaces this binding's action-kind tags, so a pre-approval for one server's `create_issue`
+   * cannot apply to another's.
+   *
+   * The whole endpoint is the identity, matching `sameEndpoint` and every other place a grant is
+   * compared. `serverId` is a display slug and collides across hosts, but the origin is not enough
+   * either: one host can front `/mcp` and `/mcp-v2` as unrelated servers, and keying on the origin
+   * let an always-approve decision for a tool on one of them silently auto-apply to the same tool
+   * name on the other. `endpointTag` is that identity, shared with `sameEndpoint` so the two
+   * cannot drift.
+   */
   protected get actionScopeTag(): string {
     return `mcp:${endpointTag(this.ctx.props.endpoint)}`;
   }
@@ -431,7 +454,8 @@ export class McpGatekeeperImpl
     const snippet = scope.tools
       ? `${scope.tools.length} named MCP tool${scope.tools.length === 1 ? "" : "s"} on ` +
         `${serverName} \u2014 ${counts}. Other tools are refused.`
-      : `All ${tools.length} MCP tool${plural} on ${serverName} \u2014 ${counts}.`;
+      : `All tools on ${serverName}; ${tools.length} tool definition${plural} shown here ` +
+        `(${counts}).`;
 
     return {
       url: this.resourceUrl,

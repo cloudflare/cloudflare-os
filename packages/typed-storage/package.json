@@ -11,15 +11,15 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "types:check": "tsc --noEmit",
     "build:watch": "tsc --watch",
-    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "test:run": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
-    "@cloudflare/workers-types": "^5.20260722.1",
-    "vitest": "^4.1.10"
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "vitest": "catalog:"
   }
 }

@@ -19,7 +19,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
 
 type Values = McpServerConfiguratorValues;
 
-// The module caches tool lists at module scope, which is safe only because the host hands it a fresh
+// The module caches the server list at module scope, which is safe only because the host hands it a fresh
 // iframe -- and so a fresh realm -- for every account and resource pattern. Re-importing per test
 // reproduces that; without it one test's cached list is served to the next.
 async function loadSpec() {
@@ -66,6 +66,14 @@ function unreachableRpc(): McpServerConfiguratorRpc {
   } as unknown as McpServerConfiguratorRpc;
 }
 
+function rpcWithServers(...serverIds: string[]): McpServerConfiguratorRpc {
+  return {
+    getEndpoint: async () => "https://gw.example.com/mcp",
+    listServerOptions: async () => serverIds.map(value => ({ value, title: value })),
+    listToolOptions: async () => [],
+  } as unknown as McpServerConfiguratorRpc;
+}
+
 describe("portal configurator", () => {
   it("blocks the grant when the portal cannot be listed, rather than granting all of it", async () => {
     // "We asked and it is not a portal" and "we could not ask" are different answers. Failure used
@@ -88,7 +96,7 @@ describe("portal configurator", () => {
     expect(rendered).not.toContain("CheckboxList");
   });
 
-  it("keeps an empty portal ungrantable instead of serializing its future servers", async () => {
+  it("shows neutral guidance when no servers are grantable", async () => {
     const ui = {
       getEndpoint: async () => "https://gw.example.com/mcp",
       listServerOptions: async () => [],
@@ -99,11 +107,32 @@ describe("portal configurator", () => {
     }, ui);
 
     app.render();
-    await vi.waitFor(() => expect(app.values.endpointKind).toBe("portal"));
+    await vi.waitFor(() => expect(app.values.endpointKind).toBe("empty"));
     expect(app.values.server).toBeNull();
     expect(spec.isReady({ values: app.values })).toBe(false);
-    await expect(spec.resourceUrl({ values: app.values, ui } as never))
-      .rejects.toThrow(/Choose a server/);
+    const rendered = JSON.stringify(app.render());
+    expect(rendered).toContain("No grantable servers");
+    expect(rendered).not.toContain("Could not reach the portal");
+  });
+
+  it("clears a prefilled server that the filtered portal list does not offer", async () => {
+    const ui = {
+      getEndpoint: async () => "https://gw.example.com/mcp",
+      listServerOptions: async () => [{ value: "gitlab", title: "GitLab" }],
+      listToolOptions: async () => [],
+    } as unknown as McpServerConfiguratorRpc;
+    const values = await spec.initialValuesFromResourceUrl({
+      resourceUrl: "https://gw.example.com/mcp#server=jira&tool=jira_search",
+      ui,
+    } as never) as Values;
+
+    expect(values.server).toBeNull();
+    expect(values.tools).toBeNull();
+    expect(spec.isReady({ values })).toBe(false);
+    const rendered = JSON.stringify(harness(spec, values, ui).render());
+    expect(rendered).toContain("Autocomplete");
+    expect(rendered).not.toContain("jira");
+    expect(rendered).not.toContain("CheckboxList");
   });
 
   it("shows every tool as a disabled preview for an all-tools grant", () => {
@@ -120,14 +149,16 @@ describe("a grant whose tool list is empty", () => {
 
   it("reopens pinned and empty rather than as a grant over everything", async () => {
     const loaded = await loadSpec();
-    const values = loaded.initialValuesFromResourceUrl({ resourceUrl: url } as never) as Values;
+    const values = await loaded.initialValuesFromResourceUrl(
+      { resourceUrl: url, ui: rpcWithServers("linear") } as never) as Values;
     expect(values.mode).toBe("choose");
     expect(values.tools).toBeNull();
   });
 
   it("cannot be submitted until tools are actually chosen", async () => {
     const loaded = await loadSpec();
-    const values = loaded.initialValuesFromResourceUrl({ resourceUrl: url } as never) as Values;
+    const values = await loaded.initialValuesFromResourceUrl(
+      { resourceUrl: url, ui: rpcWithServers("linear") } as never) as Values;
     expect(loaded.isReady({ values } as never)).toBe(false);
     expect(loaded.isReady({ values: { ...values, tools: " , , " } } as never)).toBe(false);
     expect(loaded.isReady({ values: { ...values, tools: "linear_search" } } as never)).toBe(true);
@@ -136,11 +167,12 @@ describe("a grant whose tool list is empty", () => {
 
 describe("tool-name transport", () => {
   it("round-trips tool names containing delimiters", async () => {
-    const values = spec.initialValuesFromResourceUrl({
+    const ui = rpcWithServers("linear");
+    const values = await spec.initialValuesFromResourceUrl({
       resourceUrl: "https://gw.example.com/mcp#server=linear&tool=linear_a%2Cb&tool=linear_percent%25name",
+      ui,
     } as never) as Values;
     expect(values.tools).toBe("linear_a%2Cb,linear_percent%25name");
-    const ui = { getEndpoint: async () => "https://gw.example.com/mcp" } as never;
     await expect(spec.resourceUrl({ values, ui } as never)).resolves.toBe(
       "https://gw.example.com/mcp#server=linear&tool=linear_a%2Cb&tool=linear_percent%25name");
   });
@@ -159,9 +191,11 @@ describe("a resource URL the form cannot decode", () => {
   // show nothing at all rather than let the grant be repaired.
   it("opens instead of throwing", async () => {
     const loaded = await loadSpec();
-    const values = loaded.initialValuesFromResourceUrl(
-      { resourceUrl: "https://gw.example.com/mcp#server=%&tool=%" } as never) as Values;
-    expect(values.server).toBe("%");
-    expect(values.tools).toBe("%25");
+    const values = await loaded.initialValuesFromResourceUrl({
+      resourceUrl: "https://gw.example.com/mcp#server=%&tool=%",
+      ui: rpcWithServers("linear"),
+    } as never) as Values;
+    expect(values.server).toBeNull();
+    expect(values.tools).toBeNull();
   });
 });

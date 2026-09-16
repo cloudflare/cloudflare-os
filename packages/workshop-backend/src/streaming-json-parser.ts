@@ -56,29 +56,31 @@ export class StreamingToolInputParser {
     this.#streamingFieldName = streamingFieldName;
   }
 
-  // Feed a new chunk of raw JSON text from the tool-call input stream.
+  /** Feed a new chunk of raw JSON text from the tool-call input stream. */
   append(delta: string): void {
     this.#buffer += delta;
     this.#scan();
   }
 
-  // The parsed fields that precede the streaming field.  Non-null once the streaming
-  // field's opening quote has been found (meaning all prefix fields are complete).
+  /**
+   * The parsed fields that precede the streaming field.  Non-null once the streaming
+   * field's opening quote has been found (meaning all prefix fields are complete).
+   */
   get prefixFields(): Record<string, unknown> | null {
     return this.#prefixFields;
   }
 
-  // The decoded value of the streaming field accumulated so far.
+  /** The decoded value of the streaming field accumulated so far. */
   get streamingValue(): string {
     return this.#decodedValue;
   }
 
-  // Whether the streaming field's string value has been fully received.
+  /** Whether the streaming field's string value has been fully received. */
   get streamComplete(): boolean {
     return this.#streamComplete;
   }
 
-  // Whether a JSON parse error was encountered.
+  /** Whether a JSON parse error was encountered. */
   get hasError(): boolean {
     return this.#phase === "error";
   }

@@ -1,0 +1,9 @@
+// Type-checks the Google gatekeeper tests separately so Worker-pool declarations stay out of the
+// production source check.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-pool-workers/types"]
+  },
+  "include": ["src", "__tests__"]
+}

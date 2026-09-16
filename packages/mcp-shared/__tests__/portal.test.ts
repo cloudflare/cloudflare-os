@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  groupToolsByServer,
   isPortalNativeTool,
   looksLikePortal,
   parsePortalServers,
@@ -9,18 +8,23 @@ import {
 } from "../src/portal.js";
 import { scopeAllows } from "../src/scope.js";
 import { MAX_TOOLS_PER_SERVER } from "../src/tools.js";
-import type { McpTool } from "../src/client.js";
+
+// What a caller passes when it fetched with the ordinary catalog cap and the listing completed.
+const COMPLETE = { truncated: false, cap: MAX_TOOLS_PER_SERVER };
 
 describe("portal detection", () => {
   it("recognizes a portal by its built-in server listing", () => {
-    expect(looksLikePortal([{ name: "portal_list_servers" }, { name: "gh_list_issues" }]))
+    expect(looksLikePortal([{ name: "ordinary_tool" }], COMPLETE)).toBe(false);
+    expect(looksLikePortal(
+      [{ name: "portal_list_servers" }, { name: "gh_list_issues" }], COMPLETE))
       .toBe(true);
   });
 
   it("does not infer a portal from prefixed-looking names alone", () => {
     // Plenty of ordinary servers name tools `verb_noun`. Only the portal's own tool is evidence.
-    expect(looksLikePortal([{ name: "search" }, { name: "create_issue" }])).toBe(false);
-    expect(looksLikePortal([{ name: "list_issues" }, { name: "create_issue" }])).toBe(false);
+    expect(looksLikePortal([{ name: "search" }, { name: "create_issue" }], COMPLETE)).toBe(false);
+    expect(looksLikePortal([{ name: "list_issues" }, { name: "create_issue" }], COMPLETE))
+      .toBe(false);
   });
 
   it("assumes a portal when the catalog was truncated", () => {
@@ -29,8 +33,8 @@ describe("portal detection", () => {
     // from evidence we could not have seen would fail open; the next test shows what it costs.
     const truncated = Array.from(
       { length: MAX_TOOLS_PER_SERVER }, (_unused, index) => ({ name: `gh_tool_${index}` }));
-    expect(looksLikePortal(truncated)).toBe(true);
-    expect(looksLikePortal(truncated.slice(0, -1))).toBe(false);
+    expect(looksLikePortal(truncated, COMPLETE)).toBe(true);
+    expect(looksLikePortal(truncated.slice(0, -1), COMPLETE)).toBe(false);
   });
 
   it("assumes a portal when the byte budget cut the catalog short", () => {
@@ -39,8 +43,8 @@ describe("portal detection", () => {
     // would then be granted at its bare endpoint, leaving `portal_toggle_servers` callable by a
     // Gadget that could widen its own reach with it.
     const short = [{ name: "gh_list_issues" }, { name: "gh_create_issue" }];
-    expect(looksLikePortal(short, true)).toBe(true);
-    expect(looksLikePortal(short, false)).toBe(false);
+    expect(looksLikePortal(short, { truncated: true, cap: MAX_TOOLS_PER_SERVER })).toBe(true);
+    expect(looksLikePortal(short, COMPLETE)).toBe(false);
   });
 
   it("keeps refusing portal-native tools when the listing tool falls outside the cap", () => {
@@ -51,7 +55,8 @@ describe("portal detection", () => {
       ...Array.from(
         { length: MAX_TOOLS_PER_SERVER - 1 }, (_unused, index) => ({ name: `gh_tool_${index}` })),
     ];
-    expect(scopeAllows({}, "portal_toggle_single_server", looksLikePortal(truncated))).toBe(false);
+    expect(scopeAllows({}, "portal_toggle_single_server", looksLikePortal(truncated, COMPLETE)))
+      .toBe(false);
   });
 });
 
@@ -70,9 +75,6 @@ describe("server id recovery", () => {
       expect(toolBelongsToServer(name, "search"), name).toBe(false);
       expect(toolBelongsToServer(name, ""), name).toBe(false);
     }
-    expect([...groupToolsByServer([
-      { name: "search" }, { name: "_leading" }, { name: "trailing_" },
-    ] as McpTool[]).keys()]).toEqual([]);
   });
 
   it("matches membership exactly, not by string prefix", () => {
@@ -87,21 +89,6 @@ describe("server id recovery", () => {
     expect(isPortalNativeTool("portal_list_servers")).toBe(true);
     expect(isPortalNativeTool("portal_toggle_single_server")).toBe(true);
     expect(isPortalNativeTool("portalish_tool")).toBe(false);
-  });
-});
-
-describe("groupToolsByServer", () => {
-  it("groups by prefix and drops portal-native and unprefixed tools", () => {
-    const grouped = groupToolsByServer([
-      { name: "portal_list_servers" },
-      { name: "gh_list_issues" },
-      { name: "gh_create_issue" },
-      { name: "linear_list_comments" },
-      { name: "unprefixed" },
-    ]);
-    expect([...grouped.keys()]).toEqual(["gh", "linear"]);
-    expect(grouped.get("gh")!.map(tool => tool.name))
-      .toEqual(["gh_list_issues", "gh_create_issue"]);
   });
 });
 
@@ -122,12 +109,13 @@ describe("parsePortalServers", () => {
     // The heading and the trailing instruction are not bullet lines, and the instruction names a
     // portal tool, so neither may become a server. Each display name pairs with the id that
     // prefixes that server's tools, which is what a grant actually matches on.
-    const servers = parsePortalServers(REAL_PORTAL_REPLY);
-    expect(servers).toEqual([
+    const listing = parsePortalServers(REAL_PORTAL_REPLY);
+    expect(listing).toEqual({ complete: true, servers: [
       { id: "test", name: "Cloudflare documentation", enabled: true },
       { id: "linear", name: "Linear", enabled: true },
-    ]);
-    expect(toolBelongsToServer("test_search_cloudflare_documentation", servers[0].id)).toBe(true);
+    ] });
+    expect(toolBelongsToServer(
+      "test_search_cloudflare_documentation", listing.servers[0].id)).toBe(true);
   });
 
   it("reports a disabled server, and shows one whose wording it cannot read", () => {
@@ -138,21 +126,65 @@ describe("parsePortalServers", () => {
         text: "- Linear (linear): \u2713 enabled\n- GitHub (github): \u2717 disabled"
           + "\n- Jira (jira): active",
       }],
-    })).toEqual([
+    })).toEqual({ complete: true, servers: [
       { id: "linear", name: "Linear", enabled: true },
       { id: "github", name: "GitHub", enabled: false },
       { id: "jira", name: "Jira", enabled: true },
-    ]);
+    ] });
   });
 
-  it("reads structuredContent, and returns nothing rather than throwing otherwise", () => {
-    // Not a failure: `reconcilePortalServers` then names each group by the id from its tool prefixes.
+  it("reads structuredContent and distinguishes complete empty from unrecognized", () => {
     expect(parsePortalServers({
       structuredContent: [{ id: "gh", name: "GitHub", enabled: false }],
-    })).toEqual([{ id: "gh", name: "GitHub", enabled: false }]);
-    expect(parsePortalServers({})).toEqual([]);
-    expect(parsePortalServers({ content: [{ type: "text", text: "no servers today" }] })).toEqual([]);
-    expect(parsePortalServers({ structuredContent: "a string" })).toEqual([]);
+    })).toEqual({
+      complete: true,
+      servers: [{ id: "gh", name: "GitHub", enabled: false }],
+    });
+    expect(parsePortalServers({ structuredContent: [] }))
+      .toEqual({ complete: true, servers: [] });
+    expect(parsePortalServers({})).toEqual({ complete: false, servers: [] });
+    expect(parsePortalServers({ content: [{ type: "text", text: "no servers today" }] }))
+      .toEqual({ complete: false, servers: [] });
+    expect(parsePortalServers({ structuredContent: "a string" }))
+      .toEqual({ complete: false, servers: [] });
+  });
+
+  it("falls back to valid text when structured content has an unrecognized shape", () => {
+    expect(parsePortalServers({
+      structuredContent: { servers: [{ id: "ignored" }] },
+      content: [{ type: "text", text: "- GitHub (gh): enabled" }],
+    })).toEqual({
+      complete: true,
+      servers: [{ id: "gh", name: "GitHub", enabled: true }],
+    });
+    expect(parsePortalServers({
+      structuredContent: [{ type: "text", text: "not a server record" }],
+      content: [{ type: "text", text: "- Linear (linear): enabled" }],
+    })).toEqual({
+      complete: true,
+      servers: [{ id: "linear", name: "Linear", enabled: true }],
+    });
+  });
+
+  it("marks a partially malformed server list incomplete", () => {
+    expect(parsePortalServers({
+      content: [
+        { type: "text", text: "Available MCP Servers:" },
+        { type: "text", text: "- Linear (linear): enabled" },
+        { type: "text", text: "- malformed" },
+      ],
+    })).toEqual({
+      complete: false,
+      servers: [{ id: "linear", name: "Linear", enabled: true }],
+    });
+  });
+
+  it("marks unrecognized list formats incomplete so tool prefixes can recover them", () => {
+    for (const entry of ["+ GitHub (gh): enabled", "1. GitHub (gh): enabled"]) {
+      expect(parsePortalServers({
+        content: [{ type: "text", text: `Available MCP Servers:\n${entry}` }],
+      })).toEqual({ complete: false, servers: [] });
+    }
   });
 });
 
@@ -162,6 +194,7 @@ describe("reconcilePortalServers", () => {
     { name: "portal_list_servers" },
     { name: "gh_list_issues" },
     { name: "linear_list_comments" },
+    { name: "unprefixed" },
   ];
 
   it("names groups from the reported list", () => {
@@ -188,18 +221,6 @@ describe("reconcilePortalServers", () => {
       [{ name: "gh_list_issues" }],
     );
     expect(servers).toEqual([{ id: "gh", name: "GitHub", enabled: true }]);
-  });
-
-  it("retains reported servers when the tool catalog is truncated", () => {
-    const servers = reconcilePortalServers(
-      [{ id: "gh", name: "GitHub", enabled: true }, { id: "jira", name: "Jira", enabled: false }],
-      [{ name: "gh_list_issues" }],
-      true,
-    );
-    expect(servers).toEqual([
-      { id: "gh", name: "GitHub", enabled: true },
-      { id: "jira", name: "Jira", enabled: false },
-    ]);
   });
 
   it("sorts by display name", () => {

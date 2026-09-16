@@ -10,52 +10,75 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "22.14.0"
+  NODE_VERSION: "24.19.0"
 
 jobs:
+  # Parallel to `test` so lint and test failures surface on the same run. Package type checking
+  # lives in Build; `scripts/` is checked here instead, because it is deliberately kept off
+  # `pnpm build`'s hot path (see AGENTS.md) and this is the cheap job.
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      #
+      # No `cache` here, unlike `test`: this job is fast anyway, and both caching
+      # means they race to reserve the same lockfile-keyed entry.
+      # TODO(someday): It would be great if the setup-vp action could share a cache key with the test job but disable writes to cache
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@1b32467adbe183473499fd9d5d372c3ed9641754 # v1.18.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: false
+          run-install: true
 
       - name: Lint
-        run: pnpm lint
+        run: pnpm lint:check
+
+      - name: Type-check scripts/
+        run: pnpm types:scripts
 
   test:
     name: Build and test
     runs-on: ubuntu-latest
+    # Install, build and test together take ~2.5 minutes. Without an explicit cap a wedged test
+    # process (a spawned child that outlives its reap keeps `node --test` alive forever) burns the
+    # 6-hour default instead of failing, on every run of the branch.
+    timeout-minutes: 20
     steps:
       - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH for the steps below.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@1b32467adbe183473499fd9d5d372c3ed9641754 # v1.18.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
 
+      # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases this).
       - name: Build
         run: pnpm build
 

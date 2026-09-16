@@ -56,9 +56,11 @@ export interface DataRow {
   unread: boolean
 }
 
-// -----------------------------------------------
-// Sample permission requests (toasts)
-// -----------------------------------------------
+/**
+ * -----------------------------------------------
+ * Sample permission requests (toasts)
+ * -----------------------------------------------
+ */
 export const samplePermissions: PermissionRequest[] = [
   {
     id: 'perm-1',
@@ -80,9 +82,11 @@ export const samplePermissions: PermissionRequest[] = [
   },
 ]
 
-// -----------------------------------------------
-// Sample app files (right panel "App" tab)
-// -----------------------------------------------
+/**
+ * -----------------------------------------------
+ * Sample app files (right panel "App" tab)
+ * -----------------------------------------------
+ */
 export const sampleAppFiles: AppFile[] = [
   {
     name: 'worker.ts',
@@ -174,9 +178,11 @@ SLACK_TOKEN = ""`,
   },
 ]
 
-// -----------------------------------------------
-// Sample data for the "Data" tab
-// -----------------------------------------------
+/**
+ * -----------------------------------------------
+ * Sample data for the "Data" tab
+ * -----------------------------------------------
+ */
 export const sampleDataRows: DataRow[] = [
   { id: '1', channel: '#general', messages: 847, lastActive: '2 min ago', unread: true },
   { id: '2', channel: '#engineering', messages: 1243, lastActive: '5 min ago', unread: true },
@@ -188,9 +194,11 @@ export const sampleDataRows: DataRow[] = [
   { id: '8', channel: '#standup', messages: 445, lastActive: '12 hours ago', unread: false },
 ]
 
-// -----------------------------------------------
-// The sample chat conversation
-// -----------------------------------------------
+/**
+ * -----------------------------------------------
+ * The sample chat conversation
+ * -----------------------------------------------
+ */
 export const sampleMessages: ChatMessage[] = [
   {
     id: 'm1',

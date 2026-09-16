@@ -6,7 +6,7 @@ import { ContextCollectionMetadata, ContextCollectionSummary } from "./context-t
 // Namespaces sharing domains; NUL never appears in configured domains.
 const KV_SEP = "\u0000";
 
-// A domain's public-collections snapshot.
+/** A domain's public-collections snapshot. */
 export function publicCollectionsKvKey(domain: string): string {
   return `${domain}${KV_SEP}.public`;
 }
@@ -19,7 +19,7 @@ function parsePublicCollections(raw: string): ContextCollectionSummary[] {
   return list;
 }
 
-// The public collections for a domain (readable by every user in that domain).
+/** The public collections for a domain (readable by every user in that domain). */
 export async function listPublicCollectionsFromKv(
   env: Pick<Cloudflare.Env, 'CONTEXT_COLLECTIONS'>,
   domain: string,

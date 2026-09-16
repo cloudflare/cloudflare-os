@@ -1,6 +1,7 @@
 import {
   MAX_STRING_CHARS,
   extractFrontendFrameReport,
+  normalizePageLocation,
   serializeException,
   type ErrorExceptionV1,
   type FrontendBrowserFacts,
@@ -25,6 +26,8 @@ type BrowserReporterOptions = Readonly<{
   browser?: FrontendBrowserFacts
   transport(report: FrontendErrorReportV1): void | Promise<void>
   now?: () => number
+  /** Reads the diagnostic identity at report time; absent means reports carry none. */
+  reportedUserId?: () => string | undefined
 }>
 
 type BrowserReporter = Readonly<{
@@ -35,6 +38,30 @@ type BrowserReporter = Readonly<{
     options?: BrowserReportOptions,
   ): void
 }>
+
+/**
+ * The diagnostic identity attached to subsequent reports.
+ *
+ * Named apart from the `reportedUserId` report field so a setter parameter or a local read of it
+ * cannot shadow this and silently write nowhere.
+ */
+let currentReportedUserId: string | undefined
+
+/**
+ * Returns the current page's origin and pathname, or '' when there is nothing safe to report.
+ *
+ * Shares `normalizePageLocation` with the backend boundary rather than trimming the URL here: a
+ * share link carries a bearer capability in its fragment and an `href` retains any credentials, so
+ * both ends need the same grammar and only one of them should define it. A failure resolves to ''
+ * rather than throwing, because the caller's catch would discard an entire report over one field.
+ */
+function getPageLocation(): string {
+  try {
+    return normalizePageLocation(window.location.href) ?? ''
+  } catch {
+    return ''
+  }
+}
 
 /** Creates the Workshop-owned browser reporter with one per-tab throttle per trusted surface. */
 export function createBrowserErrorReporter(options: BrowserReporterOptions): BrowserReporter {
@@ -54,12 +81,20 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
       fingerprintsBySurface.set(surface, fingerprints)
       if (fingerprints.size >= 10) return
       const failureSite = site.slice(0, MAX_STRING_CHARS)
+      // The route is deliberately absent from the fingerprint: the same fault on two routes is one
+      // issue, and including it would let a single navigation loop exhaust the per-surface cap.
+      const fingerprint = `${failureSite}\n${exception?.type ?? ''}\n${firstStackFrame(exception?.stack)}`
+      if (fingerprints.has(fingerprint)) return
+
+      // Read only once the report is known to be sent, so a suppressed one costs nothing.
+      const pageLocation = getPageLocation()
+      const reportedUserId = options.reportedUserId?.()
       const contextTruncated = [
         reportOptions?.gadgetId,
         reportOptions?.gatekeeperVendorId,
+        pageLocation,
+        reportedUserId,
       ].some(value => value !== undefined && value.length > MAX_STRING_CHARS)
-      const fingerprint = `${failureSite}\n${exception?.type ?? ''}\n${firstStackFrame(exception?.stack)}`
-      if (fingerprints.has(fingerprint)) return
 
       const report: FrontendErrorReportV1 = {
         schemaVersion: 1,
@@ -69,6 +104,8 @@ export function createBrowserErrorReporter(options: BrowserReporterOptions): Bro
         captureMechanism: reportOptions?.captureMechanism ?? 'explicit',
         surface,
         ...(options.sessionId && { sessionId: options.sessionId }),
+        ...(pageLocation && { pageLocation: pageLocation.slice(0, MAX_STRING_CHARS) }),
+        ...(reportedUserId && { reportedUserId: reportedUserId.slice(0, MAX_STRING_CHARS) }),
         ...(exception && { exception }),
         ...(reportOptions?.gadgetId && {
           gadgetId: reportOptions.gadgetId.slice(0, MAX_STRING_CHARS),
@@ -150,6 +187,7 @@ const reporter: BrowserReporter = reportingEnabled
       surface: 'workshop',
       sessionId: getSessionId(),
       browser: getBrowserFacts(),
+      reportedUserId: () => currentReportedUserId,
       transport: (report) => fetch('/api/client-errors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -161,6 +199,15 @@ const reporter: BrowserReporter = reportingEnabled
 /** Reports an unexpected Workshop failure without affecting the user-facing operation. */
 export function reportIssue(site: string, caught: unknown, options?: BrowserReportOptions): void {
   reporter.reportIssue(site, caught, options)
+}
+
+/**
+ * Sets or clears the diagnostic identity attached to subsequent reports.
+ *
+ * The value is a label only: it reaches the backend unverified and is never treated as authority.
+ */
+export function setReportedUserId(reportedUserId: string | undefined): void {
+  currentReportedUserId = reportedUserId || undefined
 }
 
 /** Installs automatic capture before the Workshop opens its RPC WebSocket. */

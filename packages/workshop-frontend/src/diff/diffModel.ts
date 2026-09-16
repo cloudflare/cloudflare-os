@@ -1,4 +1,22 @@
-import type { editor } from 'monaco-editor'
+import { Text } from '@codemirror/state'
+import { diff, presentableDiff } from '@codemirror/merge'
+
+// The diff view's model, built in two passes with @codemirror/merge's Myers diff:
+//
+// 1. A line-level diff (each distinct line mapped to a one-char token, the standard trick)
+//    yields Monaco-style changed line ranges: exact line alignment, with unchanged lines never
+//    swallowed into a neighboring change. (@codemirror/merge's own Chunk.build was tried
+//    first, but its chunking merges changes separated by a single unchanged line, and its
+//    word-aligned diff can expand a plain line deletion over an unchanged neighbor. Neither
+//    problem applies inside a region pass 1 already fixed, so pass 2 can use it freely.)
+// 2. A word-aligned diff (presentableDiff) over each changed region provides the inline
+//    highlights and the replacement-vs-unrelated heuristic. Word granularity matters for
+//    both: a char-minimal diff highlights the letters two unrelated sentences happen to
+//    share, and counting those letters as "preserved" fools the replacement heuristic into
+//    pairing lines that should render as a plain deletion plus addition.
+//
+// Both texts are split on "\n" only, matching the editors' lineSeparator facet, so every
+// offset and line number in the model maps exactly onto the editor documents.
 
 export type DiffStatus = 'Added' | 'Deleted' | 'Modified' | 'Unchanged'
 
@@ -19,7 +37,7 @@ export type LineSlice = {
 export type ChangeRun = {
   /** Stable identifier across rebuilds while editing in the same session. */
   key: string
-  /** 1-based modified-doc line. `modifiedCount === 0` ⇒ pure deletion. */
+  /** 1-based modified-doc line. `modifiedCount === 0` ⇒ pure deletion (anchored before it). */
   modifiedStart: number
   modifiedCount: number
   /** 1-based original-doc line. `originalCount === 0` ⇒ pure addition. */
@@ -27,18 +45,17 @@ export type ChangeRun = {
   originalCount: number
   /** Original text for each deleted line, indexed [0, originalCount). */
   deletedText: string[]
-  charChanges: editor.ICharChange[]
   /** Lines paired with an opposite-side line (replacement). Unpaired lines are pure adds/deletes. */
   pairedModifiedLines: Set<number>
   pairedOriginalLines: Set<number>
-  /** Leading-whitespace highlights synthesized to fill `ignoreTrimWhitespace` gaps. */
-  whitespaceModifiedRanges: Map<number, LineSlice[]>
-  whitespaceOriginalRanges: Map<number, LineSlice[]>
+  /** Word-aligned changed spans by 1-based line number, rendered only on paired lines. */
+  inlineModifiedRanges: Map<number, LineSlice[]>
+  inlineOriginalRanges: Map<number, LineSlice[]>
 }
 
 export type Side = 'modified' | 'original'
 
-/** Max line length (chars) eligible for inline char-level highlighting. */
+/** Max line length (chars) eligible for inline highlighting. */
 export const MAX_INLINE_DIFF_LINE_LENGTH = 1024
 
 /** Max deleted lines shown in a single change before truncation kicks in. */
@@ -50,12 +67,14 @@ export const DELETED_HEAD_TAIL = 48
 /** Minimum non-whitespace preservation on both sides to count as a real replacement. */
 const MIN_REPLACEMENT_PRESERVATION = 0.3
 
+// Bound the underlying char diff on pathological inputs, like MergeView's default does.
+const DIFF_CONFIG = { scanLimit: 500 }
+
 export type BuildArgs = {
   original: string
   modified: string
   hasOriginal: boolean
   hasModified: boolean
-  lineChanges: editor.ILineChange[] | null
 }
 
 export function buildDiffModel({
@@ -63,21 +82,18 @@ export function buildDiffModel({
   modified,
   hasOriginal,
   hasModified,
-  lineChanges,
 }: BuildArgs): DiffModel {
-  const originalLines = splitLines(original)
-  const modifiedLines = splitLines(modified)
-
   if (!hasOriginal && hasModified) {
     return {
       status: 'Added',
-      additions: modifiedLines.length,
+      additions: lineCountOf(modified),
       deletions: 0,
       changes: [],
     }
   }
 
   if (hasOriginal && !hasModified) {
+    const originalLines = original.length === 0 ? [] : original.split('\n')
     if (originalLines.length === 0) {
       return { status: 'Deleted', additions: 0, deletions: 0, changes: [] }
     }
@@ -92,47 +108,45 @@ export function buildDiffModel({
         originalStart: 1,
         originalCount: originalLines.length,
         deletedText: originalLines,
-        charChanges: [],
         ...emptyChangeRunFields(),
       }],
     }
   }
 
-  if (lineChanges === null || lineChanges.length === 0) {
-    return { status: 'Unchanged', additions: 0, deletions: 0, changes: [] }
-  }
+  const originalLines = original.split('\n')
+  const modifiedLines = modified.split('\n')
+  // Text.of(x.split('\n')) round-trips the string exactly (only "\n" separates lines, as in
+  // the editors), so Text offsets equal string indices on both sides.
+  const originalText = Text.of(originalLines)
+  const modifiedText = Text.of(modifiedLines)
 
   const changes: ChangeRun[] = []
   let additions = 0
   let deletions = 0
 
-  for (let i = 0; i < lineChanges.length; i++) {
-    const change = lineChanges[i]
-    const modCount = lineCount(change, 'modified')
-    const origCount = lineCount(change, 'original')
+  const lineRanges = diffLineRanges(originalLines, modifiedLines)
+  for (let i = 0; i < lineRanges.length; i++) {
+    const range = lineRanges[i]
+    const origStart = range.fromA + 1
+    const origCount = range.toA - range.fromA
+    const modStart = range.fromB + 1
+    const modCount = range.toB - range.fromB
     additions += modCount
     deletions += origCount
 
-    const deletedText: string[] = []
-    if (origCount > 0) {
-      const start = change.originalStartLineNumber
-      for (let j = 0; j < origCount; j++) {
-        deletedText.push(originalLines[start - 1 + j] ?? '')
-      }
-    }
+    const deletedText = originalLines.slice(range.fromA, range.toA)
 
-    const charChanges = change.charChanges ? [...change.charChanges] : []
-
-    for (const run of splitChangeIntoRuns({
-      change,
-      changeIndex: i,
-      charChanges,
-      modCount,
+    for (const changeRun of buildRangeRuns({
+      rangeIndex: i,
+      originalText,
+      modifiedText,
+      origStart,
       origCount,
+      modStart,
+      modCount,
       deletedText,
-      modifiedLines,
     })) {
-      changes.push(run)
+      changes.push(changeRun)
     }
   }
 
@@ -144,263 +158,238 @@ export function buildDiffModel({
   }
 }
 
-/** Walk each line covered by an `ICharChange` on the given side, splitting multi-line ranges. */
-export function forEachLineSliceOfCharChange(
-  cc: editor.ICharChange,
-  side: Side,
-  fn: (line: number, startCol: number, endCol: number) => void,
-) {
-  const startLine = side === 'modified' ? cc.modifiedStartLineNumber : cc.originalStartLineNumber
-  const startCol = side === 'modified' ? cc.modifiedStartColumn : cc.originalStartColumn
-  const endLine = side === 'modified' ? cc.modifiedEndLineNumber : cc.originalEndLineNumber
-  const endCol = side === 'modified' ? cc.modifiedEndColumn : cc.originalEndColumn
+type LineRange = { fromA: number, toA: number, fromB: number, toB: number }
 
-  if (startLine === 0 || endLine === 0 || endLine < startLine) return
-  if (startLine === endLine) {
-    if (startCol < endCol) fn(startLine, startCol, endCol)
-    return
+/**
+ * Line-level diff: changed line ranges as 0-based [from, to) line indices, at most one side
+ * empty per range. Runs the char-level Myers diff over token strings in which every distinct
+ * line is one BMP character.
+ */
+function diffLineRanges(originalLines: string[], modifiedLines: string[]): LineRange[] {
+  const tokens = new Map<string, string>()
+  const encodeLine = (line: string): string | null => {
+    let token = tokens.get(line)
+    if (token === undefined) {
+      const id = tokens.size
+      // Skip the surrogate range so every token is one UTF-16 unit the diff can't split. The
+      // ~60k-distinct-lines capacity is far beyond any real file; past it, fall back to a
+      // single prefix/suffix-trimmed range.
+      if (id >= 0xd800 + 0x2000) return null
+      token = String.fromCharCode(id < 0xd800 ? id : id + 0x800)
+      tokens.set(line, token)
+    }
+    return token
   }
-  fn(startLine, startCol, Number.MAX_SAFE_INTEGER)
-  for (let line = startLine + 1; line < endLine; line++) {
-    fn(line, 1, Number.MAX_SAFE_INTEGER)
+  const encode = (lines: string[]): string | null => {
+    let out = ''
+    for (const line of lines) {
+      const token = encodeLine(line)
+      if (token === null) return null
+      out += token
+    }
+    return out
   }
-  if (endCol > 1) fn(endLine, 1, endCol)
+
+  const encodedA = encode(originalLines)
+  const encodedB = encodedA !== null ? encode(modifiedLines) : null
+  if (encodedA === null || encodedB === null) {
+    return [trimmedLineRange(originalLines, modifiedLines)].filter(
+      range => range.toA > range.fromA || range.toB > range.fromB)
+  }
+
+  return diff(encodedA, encodedB, DIFF_CONFIG)
+    .map(change => ({
+      fromA: change.fromA, toA: change.toA, fromB: change.fromB, toB: change.toB,
+    }))
+}
+
+/** Fallback line range: everything but the common prefix and suffix lines. */
+function trimmedLineRange(originalLines: string[], modifiedLines: string[]): LineRange {
+  const maxPrefix = Math.min(originalLines.length, modifiedLines.length)
+  let prefix = 0
+  while (prefix < maxPrefix && originalLines[prefix] === modifiedLines[prefix]) prefix++
+  const maxSuffix = maxPrefix - prefix
+  let suffix = 0
+  while (suffix < maxSuffix &&
+    originalLines[originalLines.length - 1 - suffix] ===
+      modifiedLines[modifiedLines.length - 1 - suffix]) {
+    suffix++
+  }
+  return {
+    fromA: prefix,
+    toA: originalLines.length - suffix,
+    fromB: prefix,
+    toB: modifiedLines.length - suffix,
+  }
 }
 
 function emptyChangeRunFields() {
   return {
     pairedModifiedLines: new Set<number>(),
     pairedOriginalLines: new Set<number>(),
-    whitespaceModifiedRanges: new Map<number, LineSlice[]>(),
-    whitespaceOriginalRanges: new Map<number, LineSlice[]>(),
+    inlineModifiedRanges: new Map<number, LineSlice[]>(),
+    inlineOriginalRanges: new Map<number, LineSlice[]>(),
   }
 }
 
-function sideLines(change: editor.ILineChange, side: Side): { start: number, end: number } {
-  return side === 'modified'
-    ? { start: change.modifiedStartLineNumber, end: change.modifiedEndLineNumber }
-    : { start: change.originalStartLineNumber, end: change.originalEndLineNumber }
+function lineCountOf(value: string): number {
+  return value.length === 0 ? 0 : value.split('\n').length
 }
 
-function lineCount(change: editor.ILineChange, side: Side): number {
-  const { start, end } = sideLines(change, side)
-  if (start === 0 || end === 0 || end < start) return 0
-  return end - start + 1
+/** Line number at `pos`, tolerating positions one past the end of the document. */
+function lineNumberAt(text: Text, pos: number): number {
+  return pos > text.length ? text.lines + 1 : text.lineAt(pos).number
 }
 
-/** 1-based anchor; for empty ranges, shifts past Monaco's "line before insertion" convention. */
-function changeStart(change: editor.ILineChange, side: Side): number {
-  const { start } = sideLines(change, side)
-  return lineCount(change, side) > 0 ? start : start + 1
+function changeRunKey(
+  modStart: number, origStart: number, modCount: number, origCount: number, suffix: string,
+): string {
+  return `${modStart}-${origStart}-${modCount}-${origCount}-${suffix}`
 }
 
-function changeKey(change: editor.ILineChange, suffix: string): string {
-  return `${change.modifiedStartLineNumber}-${change.originalStartLineNumber}-${change.modifiedEndLineNumber}-${change.originalEndLineNumber}-${suffix}`
+/** Add per-line column slices covering the span [from, to) of `text` to `map`. */
+function addLineSlices(map: Map<number, LineSlice[]>, text: Text, from: number, to: number) {
+  const end = Math.min(to, text.length)
+  let pos = Math.max(0, from)
+  while (pos < end) {
+    const line = text.lineAt(pos)
+    const sliceEnd = Math.min(end, line.to)
+    if (sliceEnd > pos) {
+      const slices = map.get(line.number) ?? []
+      slices.push({ startCol: pos - line.from + 1, endCol: sliceEnd - line.from + 1 })
+      map.set(line.number, slices)
+    }
+    pos = line.to + 1
+  }
+}
+
+function addTouchedLines(lines: Set<number>, text: Text, from: number, to: number) {
+  const first = lineNumberAt(text, Math.min(from, text.length))
+  const last = lineNumberAt(text, Math.min(Math.max(from, to - 1), text.length))
+  for (let line = first; line <= last; line++) lines.add(line)
 }
 
 /**
- * A real replacement returns one run; unrelated deletion+addition pairs
- * (Monaco merged adjacent chunks) return separate deletion and addition runs.
+ * A real replacement returns one run; unrelated deletion+addition pairs return separate
+ * deletion and addition runs.
  */
-function splitChangeIntoRuns({
-  change,
-  changeIndex,
-  charChanges,
-  modCount,
-  origCount,
-  deletedText,
-  modifiedLines,
-}: {
-  change: editor.ILineChange
-  changeIndex: number
-  charChanges: editor.ICharChange[]
-  modCount: number
-  origCount: number
-  deletedText: string[]
-  modifiedLines: string[]
-}): ChangeRun[] {
-  if (modCount === 0 || origCount === 0) {
-    return [{
-      key: changeKey(change, `${changeIndex}`),
-      modifiedStart: changeStart(change, 'modified'),
-      modifiedCount: modCount,
-      originalStart: changeStart(change, 'original'),
-      originalCount: origCount,
-      deletedText,
-      charChanges,
-      ...emptyChangeRunFields(),
-    }]
-  }
-
-  const isReplacement = isRealReplacement({
-    charChanges,
-    origStart: change.originalStartLineNumber,
-    origCount,
-    modStart: change.modifiedStartLineNumber,
-    modCount,
-    deletedText,
-    modifiedLines,
-  })
-
-  if (isReplacement) {
-    const pairedModifiedLines = new Set<number>()
-    const pairedOriginalLines = new Set<number>()
-    for (const cc of charChanges) {
-      if (cc.originalStartLineNumber === 0 || cc.modifiedStartLineNumber === 0) continue
-      for (let l = cc.modifiedStartLineNumber; l <= cc.modifiedEndLineNumber; l++) {
-        pairedModifiedLines.add(l)
-      }
-      for (let l = cc.originalStartLineNumber; l <= cc.originalEndLineNumber; l++) {
-        pairedOriginalLines.add(l)
-      }
-    }
-    // Fallback when Monaco skipped char-level analysis: pair positionally.
-    if (pairedModifiedLines.size === 0) {
-      const pairCount = Math.min(modCount, origCount)
-      for (let i = 0; i < pairCount; i++) {
-        pairedModifiedLines.add(change.modifiedStartLineNumber + i)
-        pairedOriginalLines.add(change.originalStartLineNumber + i)
-      }
-    }
-
-    const { whitespaceModifiedRanges, whitespaceOriginalRanges } = computeWhitespaceRanges({
-      modStart: change.modifiedStartLineNumber,
-      modCount,
-      origStart: change.originalStartLineNumber,
-      origCount,
-      modifiedLines,
-      deletedText,
-    })
-
-    return [{
-      key: changeKey(change, `${changeIndex}`),
-      modifiedStart: change.modifiedStartLineNumber,
-      modifiedCount: modCount,
-      originalStart: change.originalStartLineNumber,
-      originalCount: origCount,
-      deletedText,
-      charChanges,
-      pairedModifiedLines,
-      pairedOriginalLines,
-      whitespaceModifiedRanges,
-      whitespaceOriginalRanges,
-    }]
-  }
-
-  // Anchor both runs at the same modified line so red renders directly above green.
-  return [
-    {
-      key: changeKey(change, `${changeIndex}-d`),
-      modifiedStart: change.modifiedStartLineNumber,
-      modifiedCount: 0,
-      originalStart: change.originalStartLineNumber,
-      originalCount: origCount,
-      deletedText,
-      charChanges: [],
-      ...emptyChangeRunFields(),
-    },
-    {
-      key: changeKey(change, `${changeIndex}-a`),
-      modifiedStart: change.modifiedStartLineNumber,
-      modifiedCount: modCount,
-      originalStart: change.originalStartLineNumber + origCount + 1,
-      originalCount: 0,
-      deletedText: [],
-      charChanges: [],
-      ...emptyChangeRunFields(),
-    },
-  ]
-}
-
-/** True iff both sides preserve enough non-whitespace content to be a meaningful edit. */
-function isRealReplacement({
-  charChanges,
+function buildRangeRuns({
+  rangeIndex,
+  originalText,
+  modifiedText,
   origStart,
   origCount,
   modStart,
   modCount,
   deletedText,
-  modifiedLines,
 }: {
-  charChanges: editor.ICharChange[]
+  rangeIndex: number
+  originalText: Text
+  modifiedText: Text
   origStart: number
   origCount: number
   modStart: number
   modCount: number
   deletedText: string[]
-  modifiedLines: string[]
-}): boolean {
-  if (charChanges.length === 0) return true
+}): ChangeRun[] {
+  if (modCount === 0 || origCount === 0) {
+    return [{
+      key: changeRunKey(modStart, origStart, modCount, origCount, `${rangeIndex}`),
+      modifiedStart: modStart,
+      modifiedCount: modCount,
+      originalStart: origStart,
+      originalCount: origCount,
+      deletedText,
+      ...emptyChangeRunFields(),
+    }]
+  }
 
-  const origPreservation = preservedFraction({
-    charChanges,
-    side: 'original',
-    startLine: origStart,
-    count: origCount,
-    getLine: idx => deletedText[idx] ?? '',
-  })
-  const modPreservation = preservedFraction({
-    charChanges,
-    side: 'modified',
-    startLine: modStart,
-    count: modCount,
-    getLine: idx => modifiedLines[modStart - 1 + idx] ?? '',
-  })
+  // Word-aligned diff over the changed region, in absolute document offsets.
+  const origFrom = originalText.line(origStart).from
+  const origRegion = originalText.sliceString(origFrom,
+    originalText.line(origStart + origCount - 1).to)
+  const modFrom = modifiedText.line(modStart).from
+  const modRegion = modifiedText.sliceString(modFrom,
+    modifiedText.line(modStart + modCount - 1).to)
+  const charChanges = presentableDiff(origRegion, modRegion, DIFF_CONFIG)
 
-  return origPreservation >= MIN_REPLACEMENT_PRESERVATION
-    && modPreservation >= MIN_REPLACEMENT_PRESERVATION
+  const isReplacement =
+    preservedFraction(origRegion, charChanges.map(c => [c.fromA, c.toA]))
+      >= MIN_REPLACEMENT_PRESERVATION &&
+    preservedFraction(modRegion, charChanges.map(c => [c.fromB, c.toB]))
+      >= MIN_REPLACEMENT_PRESERVATION
+
+  if (!isReplacement) {
+    // Anchor both runs at the same modified line so red renders directly above green.
+    return [
+      {
+        key: changeRunKey(modStart, origStart, modCount, origCount, `${rangeIndex}-d`),
+        modifiedStart: modStart,
+        modifiedCount: 0,
+        originalStart: origStart,
+        originalCount: origCount,
+        deletedText,
+        ...emptyChangeRunFields(),
+      },
+      {
+        key: changeRunKey(modStart, origStart, modCount, origCount, `${rangeIndex}-a`),
+        modifiedStart: modStart,
+        modifiedCount: modCount,
+        // Anchored directly past the deletion run's lines, so the split layout's blank zone
+        // (rendered after originalStart - 1, i.e. after the last red line) keeps the sides
+        // aligned: [red|blank][blank|green], with the following unchanged lines level again.
+        originalStart: origStart + origCount,
+        originalCount: 0,
+        deletedText: [],
+        ...emptyChangeRunFields(),
+      },
+    ]
+  }
+
+  const fields = emptyChangeRunFields()
+  for (const change of charChanges) {
+    addLineSlices(fields.inlineOriginalRanges, originalText,
+      origFrom + change.fromA, origFrom + change.toA)
+    addLineSlices(fields.inlineModifiedRanges, modifiedText,
+      modFrom + change.fromB, modFrom + change.toB)
+    // Lines touched by a two-sided change correspond across the diff: replacements, not pure
+    // adds/deletes.
+    if (change.toA > change.fromA && change.toB > change.fromB) {
+      addTouchedLines(fields.pairedOriginalLines, originalText,
+        origFrom + change.fromA, origFrom + change.toA)
+      addTouchedLines(fields.pairedModifiedLines, modifiedText,
+        modFrom + change.fromB, modFrom + change.toB)
+    }
+  }
+  // Fallback when no change pairs the sides (e.g. a word inserted into an existing line yields
+  // a one-sided change): pair positionally so inline highlights still render.
+  if (fields.pairedModifiedLines.size === 0) {
+    const pairCount = Math.min(modCount, origCount)
+    for (let i = 0; i < pairCount; i++) {
+      fields.pairedModifiedLines.add(modStart + i)
+      fields.pairedOriginalLines.add(origStart + i)
+    }
+  }
+
+  return [{
+    key: changeRunKey(modStart, origStart, modCount, origCount, `${rangeIndex}`),
+    modifiedStart: modStart,
+    modifiedCount: modCount,
+    originalStart: origStart,
+    originalCount: origCount,
+    deletedText,
+    ...fields,
+  }]
 }
 
-function preservedFraction({
-  charChanges,
-  side,
-  startLine,
-  count,
-  getLine,
-}: {
-  charChanges: editor.ICharChange[]
-  side: Side
-  startLine: number
-  count: number
-  getLine: (lineIndex: number) => string
-}): number {
-  let totalNonWs = 0
-  let changedNonWs = 0
-  const changesByLine = new Map<number, editor.ICharChange[]>()
-
-  for (const cc of charChanges) {
-    const startLn = side === 'original' ? cc.originalStartLineNumber : cc.modifiedStartLineNumber
-    const endLn = side === 'original' ? cc.originalEndLineNumber : cc.modifiedEndLineNumber
-    if (startLn === 0 || endLn === 0) continue
-
-    const firstLine = Math.max(startLine, startLn)
-    const lastLine = Math.min(startLine + count - 1, endLn)
-    for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber++) {
-      const changes = changesByLine.get(lineNumber) ?? []
-      changes.push(cc)
-      changesByLine.set(lineNumber, changes)
-    }
+function preservedFraction(text: string, changedSpans: [number, number][]): number {
+  const total = countNonWhitespace(text, 0, text.length)
+  if (total === 0) return 1
+  let changed = 0
+  for (const [spanFrom, spanTo] of changedSpans) {
+    changed += countNonWhitespace(text, spanFrom, spanTo)
   }
-
-  for (let i = 0; i < count; i++) {
-    const lineNumber = startLine + i
-    const text = getLine(i)
-    totalNonWs += countNonWhitespace(text, 0, text.length)
-    for (const cc of changesByLine.get(lineNumber) ?? []) {
-      const startLn = side === 'original' ? cc.originalStartLineNumber : cc.modifiedStartLineNumber
-      const endLn = side === 'original' ? cc.originalEndLineNumber : cc.modifiedEndLineNumber
-      const startCol = lineNumber === startLn
-        ? (side === 'original' ? cc.originalStartColumn : cc.modifiedStartColumn)
-        : 1
-      const endCol = lineNumber === endLn
-        ? (side === 'original' ? cc.originalEndColumn : cc.modifiedEndColumn)
-        : text.length + 1
-      changedNonWs += countNonWhitespace(text, startCol - 1, endCol - 1)
-    }
-  }
-
-  if (totalNonWs === 0) return 1
-  return Math.max(0, totalNonWs - changedNonWs) / totalNonWs
+  return Math.max(0, total - changed) / total
 }
 
 function countNonWhitespace(text: string, start: number, end: number): number {
@@ -413,64 +402,4 @@ function countNonWhitespace(text: string, start: number, end: number): number {
     if (c !== 32 && c !== 9 && c !== 10 && c !== 13 && c !== 11 && c !== 12) count++
   }
   return count
-}
-
-/** Synthesize highlights for leading-whitespace diffs Monaco skips via `ignoreTrimWhitespace`. */
-function computeWhitespaceRanges({
-  modStart,
-  modCount,
-  origStart,
-  origCount,
-  modifiedLines,
-  deletedText,
-}: {
-  modStart: number
-  modCount: number
-  origStart: number
-  origCount: number
-  modifiedLines: string[]
-  deletedText: string[]
-}): {
-  whitespaceModifiedRanges: Map<number, LineSlice[]>
-  whitespaceOriginalRanges: Map<number, LineSlice[]>
-} {
-  const whitespaceModifiedRanges = new Map<number, LineSlice[]>()
-  const whitespaceOriginalRanges = new Map<number, LineSlice[]>()
-  const pairCount = Math.min(modCount, origCount)
-
-  for (let i = 0; i < pairCount; i++) {
-    const modText = modifiedLines[modStart - 1 + i] ?? ''
-    const origText = deletedText[i] ?? ''
-    const modIndent = leadingWhitespaceLength(modText)
-    const origIndent = leadingWhitespaceLength(origText)
-
-    if (modIndent > origIndent) {
-      whitespaceModifiedRanges.set(modStart + i, [{
-        startCol: origIndent + 1,
-        endCol: modIndent + 1,
-      }])
-    } else if (origIndent > modIndent) {
-      whitespaceOriginalRanges.set(origStart + i, [{
-        startCol: modIndent + 1,
-        endCol: origIndent + 1,
-      }])
-    }
-  }
-
-  return { whitespaceModifiedRanges, whitespaceOriginalRanges }
-}
-
-function leadingWhitespaceLength(text: string): number {
-  let i = 0
-  while (i < text.length) {
-    const c = text.charCodeAt(i)
-    if (c !== 32 && c !== 9 && c !== 10 && c !== 13 && c !== 11 && c !== 12) break
-    i++
-  }
-  return i
-}
-
-function splitLines(value: string): string[] {
-  if (value.length === 0) return []
-  return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
 }

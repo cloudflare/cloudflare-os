@@ -16,7 +16,7 @@ type SlashCommandSource = {
   gatekeeper: Fetcher<Gatekeeper<any>>;
 };
 
-// Collect the complete slash-command catalog from the attached Gatekeepers that advertise one.
+/** Collect the complete slash-command catalog from the attached Gatekeepers that advertise one. */
 export async function collectSlashCommands(
     sources: SlashCommandSource[]): Promise<SlashCommandChoice[]> {
   let catalogs = await Promise.all(sources.map(async source => {
@@ -44,7 +44,7 @@ export async function collectSlashCommands(
     left.selection.commandId.localeCompare(right.selection.commandId));
 }
 
-// Invoke one command on its selected attached Gatekeeper.
+/** Invoke one command on its selected attached Gatekeeper. */
 export async function invokeSlashCommand(
     gatekeeper: Fetcher<Gatekeeper<any>>, request: SlashCommandRequest,
     authorizer: RpcStub<ObservationAuthorizer>): Promise<SlashCommandResult> {

@@ -39,35 +39,40 @@ export type ConfiguratorUISpec<
   TUI,
   TValues extends ConfiguratorUIValues = ConfiguratorUIValues,
 > = {
-  // Initial form values shown before the user makes any changes.
+  /** Initial form values shown before the user makes any changes. */
   initial: TValues;
 
-  // Optional: derive initial form values from a concrete resource URL, so the form opens
-  // pre-filled and editable. This is used when something (e.g. an AI agent's connection request)
-  // already knows the exact resource — the configurator opens populated rather than blank.
-  //
-  // `resourceUrl` is the concrete URL; `resourceUrlPattern` is this resource's URLPattern; `ui` is
-  // the gatekeeper capability (in case resolving display values requires an RPC). Return the form
-  // values that represent the URL (partial is fine).
-  //
-  // If omitted, the runtime falls back to extracting URLPattern named groups from
-  // `resourceUrlPattern` and seeding any values whose keys match a group name. So a configurator
-  // whose value keys already match its pattern groups (e.g. `:areaId` -> `areaId`) needs nothing
-  // here; implement this only when the mapping differs (e.g. GitHub's `:owner/:repo` ->
-  // `repoFullName`).
+  /**
+   * Optional: derive initial form values from a concrete resource URL, so the form opens
+   * pre-filled and editable. This is used when something (e.g. an AI agent's connection request)
+   * already knows the exact resource — the configurator opens populated rather than blank.
+   *
+   * `resourceUrl` is the concrete URL; `resourceUrlPattern` is this resource's URLPattern; `ui` is
+   * the gatekeeper capability (in case resolving display values requires an RPC). Return the form
+   * values that represent the URL (partial is fine).
+   *
+   * If omitted, the runtime falls back to extracting URLPattern named groups from
+   * `resourceUrlPattern` and seeding any values whose keys match a group name. So a configurator
+   * whose value keys already match its pattern groups (e.g. `:areaId` -> `areaId`) needs nothing
+   * here; implement this only when the mapping differs (e.g. GitHub's `:owner/:repo` ->
+   * `repoFullName`).
+   */
   initialValuesFromResourceUrl?(context: {
     resourceUrl: string;
     resourceUrlPattern: string;
     ui: TUI;
   }): Partial<TValues> | Promise<Partial<TValues>>;
 
-  // Return if the current iframe-owned state is ready to submit.
+  /**
+   * Return whether the current iframe-owned state is ready to submit. If omitted, the generated
+   * iframe reports ready after its initial render succeeds.
+   */
   isReady?(context: { values: TValues }): boolean;
 
-  // Return the resource URL chosen by current UI state.
+  /** Return the resource URL chosen by current UI state. */
   resourceUrl(context: ConfiguratorUIResourceContext<TUI, TValues>): Promise<string> | string;
 
-  // Render the configuration UI for the current state.
+  /** Render the configuration UI for the current state. */
   render(context: ConfiguratorUIRenderContext<TUI, TValues>): unknown;
 }
 
@@ -165,7 +170,7 @@ export function Fragment(_props: { children?: unknown }): unknown {
 
 // JSX ambient types for configurator UI `.tsx` modules. These globals only apply when something
 // imports this package, which is intended only for sandboxed configurator UI modules compiled by
-// `scripts/build-gatekeeper-configurator.mjs`. Workshop and gatekeeper-server code should NOT
+// `scripts/build-gatekeeper-configurator.ts`. Workshop and gatekeeper-server code should NOT
 // import from this package to avoid clashing with React's `JSX` namespace.
 declare global {
   namespace JSX {

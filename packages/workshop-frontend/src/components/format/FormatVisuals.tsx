@@ -212,9 +212,11 @@ const WIREFRAMES: Record<FormatWireframe, () => React.JSX.Element> = {
 
 // ─── thumbnail ───────────────────────────────────────────────────────────────
 
-// A wireframe on a "page" that floats over a tinted backdrop and bleeds off the bottom edge, the
-// way a document manager previews a file. `inset` scales the page for small cards; `chrome`
-// borders it for use outside a card that already has a border.
+/**
+ * A wireframe on a "page" that floats over a tinted backdrop and bleeds off the bottom edge, the
+ * way a document manager previews a file. `inset` scales the page for small cards; `chrome`
+ * borders it for use outside a card that already has a border.
+ */
 export function FormatThumbnail({
   output,
   className = '',
@@ -240,8 +242,10 @@ export function FormatThumbnail({
 const PREVIEW_WIDTH = 200
 const PREVIEW_HEIGHT = 150
 
-// A self-contained miniature of the Outputs card at any width, for showing the thumbnail itself
-// (the admin icon picker) rather than filling a card.
+/**
+ * A self-contained miniature of the Outputs card at any width, for showing the thumbnail itself
+ * (the admin icon picker) rather than filling a card.
+ */
 export function FormatPreview({ output, width = 120 }: { output?: BlueprintOutput; width?: number }) {
   const scale = width / PREVIEW_WIDTH
   return (
@@ -259,8 +263,10 @@ export function FormatPreview({ output, width = 120 }: { output?: BlueprintOutpu
   )
 }
 
-// The same drawing at card-inset scale, for places that need a small self-contained picture rather
-// than an absolutely-positioned backdrop (e.g. the chat "created app" card). Sized by its parent.
+/**
+ * The same drawing at card-inset scale, for places that need a small self-contained picture rather
+ * than an absolutely-positioned backdrop (e.g. the chat "created app" card). Sized by its parent.
+ */
 export function FormatMiniature({ output }: { output?: BlueprintOutput }) {
   const Wireframe = WIREFRAMES[wireframeOf(output)]
   return (

@@ -89,7 +89,7 @@ export function FigmaLogo({ size = 20 }: { size?: number }) {
   )
 }
 
-// Map logo IDs to components
+/** Map logo IDs to components */
 export const logoComponents: Record<string, React.FC<{ size?: number }>> = {
   slack: SlackLogo,
   discord: DiscordLogo,

@@ -15,8 +15,10 @@ import type { RpcStub } from 'capnweb'
 import type { ContextApi } from '../src/context-types'
 import { getThemeMode, subscribeThemeMode, type ResolvedThemeMode } from './theme'
 
-// Subscribe a component to the resolved light/dark mode, for widgets that can't theme via CSS
-// variables alone (the CodeMirror editor, the emoji picker).
+/**
+ * Subscribe a component to the resolved light/dark mode, for widgets that can't theme via CSS
+ * variables alone (the CodeMirror editor, the emoji picker).
+ */
 export function useResolvedThemeMode(): ResolvedThemeMode {
   return useSyncExternalStore(subscribeThemeMode, getThemeMode)
 }
@@ -39,16 +41,20 @@ export function useContextApi(): RpcStub<ContextApi> {
 // host grows the iframe to cover the viewport while we pin the page content to its pane rect.
 // ---------------------------------------------------------------------------
 
-// The content-pane rect, in viewport coordinates, where the app holds its page fixed while the
-// iframe expands to full-viewport.
+/**
+ * The content-pane rect, in viewport coordinates, where the app holds its page fixed while the
+ * iframe expands to full-viewport.
+ */
 export type OverlayRect = { left: number; top: number; width: number; height: number }
 
-// The host's reply to setPresenting. On open, `rect` is where the app holds its page fixed while
-// the iframe expands to full-viewport (null on restore); `willResize` is whether switching the iframe
-// to/from full-viewport actually changes its pixel size (it won't if the pane already fills the window).
+/**
+ * The host's reply to setPresenting. On open, `rect` is where the app holds its page fixed while
+ * the iframe expands to full-viewport (null on restore); `willResize` is whether switching the iframe
+ * to/from full-viewport actually changes its pixel size (it won't if the pane already fills the window).
+ */
 export type PresentAck = { rect: OverlayRect | null; willResize: boolean }
 
-// Enter/leave overlay mode.
+/** Enter/leave overlay mode. */
 export type PresentationController = {
   present(): void
   dismiss(): void
@@ -67,15 +73,19 @@ export function usePresentation(): PresentationController {
 }
 
 export type PresentWhileOpen = {
-  // True once the overlay is ready. Gate the Dialog's `open` on this.
+  /** True once the overlay is ready. Gate the Dialog's `open` on this. */
   presenting: boolean
-  // Pass to <Dialog.Root onOpenChangeComplete>. Restores the iframe to pane size once the close
-  // animation finishes.
+  /**
+   * Pass to <Dialog.Root onOpenChangeComplete>. Restores the iframe to pane size once the close
+   * animation finishes.
+   */
   onOpenChangeComplete: (open: boolean) => void
 }
 
-// Drives a modal's overlay lifecycle: presents when it wants to open, and dismisses once its close
-// animation completes.
+/**
+ * Drives a modal's overlay lifecycle: presents when it wants to open, and dismisses once its close
+ * animation completes.
+ */
 export function usePresentWhileOpen(open: boolean): PresentWhileOpen {
   const presentation = usePresentation()
   const presenting = useContext(PresentationActiveContext)

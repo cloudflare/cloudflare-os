@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import type { PortalContainer } from '@cloudflare/kumo'
 import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
@@ -13,14 +14,28 @@ import {
   AiChatAuthorInfo,
   CollaboratorRole,
   ObserverBindingNeed,
+  UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
 import { copyToClipboard } from './clipboard'
+import { isImeComposing } from './keyboardEvent'
+import { useServerConfig } from './ServerConfigContext'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
   | { kind: 'collaborator'; info: CollaboratorInfo }
+
+type DirectorySearch = {
+  status: 'loading' | 'failed' | 'ready'
+  query: string
+  results: UserDirectoryRecord[]
+}
+const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
+type DirectorySelection = {
+  user: UserDirectoryRecord
+  exclusionsKey: string
+}
 
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -296,8 +311,52 @@ function sameRequirements(
 export default function ShareModal({ open, onClose, overseer, metadata, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
+  const [membershipStatus, setMembershipStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
+  const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
+  const [selectedUser, setSelectedUser] = useState<DirectorySelection | null>(null)
+  const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
+  // The result popover is dismissed when focus leaves the combobox or on Escape; typing or
+  // refocusing brings it back. The query and its search survive a dismissal.
+  const [directoryDismissed, setDirectoryDismissed] = useState(true)
+  const directoryListboxId = useId()
+  const activeDirectoryOptionRef = useRef<HTMLButtonElement>(null)
+  const directoryListboxRef = useRef<HTMLDivElement>(null)
+  const directoryAnchorRef = useRef<HTMLDivElement>(null)
+  const wasOpenRef = useRef(false)
+  const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
+  const directoryQuery = addUsername.trim()
+  // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
+  // when the caller is a collaborator), and every collaborator.
+  const directoryExcludeIds = useMemo(() => [
+    ...(currentUser ? [currentUser.id] : []),
+    ...(metadata.owner ? [metadata.owner.id] : []),
+    ...collaborators.map(({ profile }) => profile.id),
+  ], [collaborators, currentUser, metadata.owner])
+  const directoryExclusionsKey = JSON.stringify(directoryExcludeIds)
+  const selectedDirectoryUser = selectedUser?.exclusionsKey === directoryExclusionsKey
+    ? selectedUser.user
+    : null
+  const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
+  const membershipReady = membershipSettled && membershipStatus === 'ready'
+  const directorySearching = userSearchEnabled && membershipReady &&
+    selectedDirectoryUser === null && directoryQuery !== ''
+  const directoryCurrent = directory.query === directoryQuery
+  const directoryOpen = directorySearching && directoryCurrent && !directoryDismissed
+  const directorySettled = directory.status !== 'loading' && directoryCurrent
+  const showDirectDirectoryOption = directory.status === 'ready' && directory.results.length > 0
+  const directoryOptionCount = directory.results.length + (showDirectDirectoryOption ? 1 : 0)
+  const activeDirectoryOptionId = directoryOpen && activeDirectoryIndex < directoryOptionCount
+    ? `${directoryListboxId}-option-${activeDirectoryIndex}`
+    : undefined
+  // Once the search has settled, the typed text can always be submitted as a canonical id: the
+  // directory is a lazily backfilled convenience, so a valid id may be missing from it (or
+  // shadowed by unrelated substring matches), and a directory outage must not block invites.
+  // A membership-load failure also falls back to the authoritative direct-invite path.
+  const canInviteUser = selectedDirectoryUser !== null ||
+    (directoryQuery !== '' && (!userSearchEnabled ||
+      (membershipSettled && (!membershipReady || directorySettled))))
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -314,11 +373,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [showLinkComposer, setShowLinkComposer] = useState(false)
   const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget | null>(null)
   const [confirmationBusy, setConfirmationBusy] = useState(false)
-  const wasOpenRef = useRef(false)
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
-  const [menuContainer, setMenuContainer] = useState<PortalContainer>(null)
+  const [menuContainer, setMenuContainer] = useState<HTMLDivElement | null>(null)
+  const [directoryPortalContainer, setDirectoryPortalContainer] =
+    useState<HTMLDivElement | null>(null)
   const [scrolled, setScrolled] = useState(false)
   const [landedPersonId, setLandedPersonId] = useState<string | null>(null)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
@@ -359,6 +419,81 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [])
 
   useEffect(() => {
+    if (!open || !directorySearching) {
+      setDirectory(NO_DIRECTORY_SEARCH)
+      return
+    }
+    let cancelled = false
+    setDirectory({ status: 'loading', query: directoryQuery, results: [] })
+    setActiveDirectoryIndex(0)
+    // Debounced: every keystroke from every user would otherwise hit the one directory DO.
+    const timer = window.setTimeout(() => {
+      authenticatedApi.searchUsers(directoryQuery, directoryExcludeIds).then(
+        results => {
+          if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
+        },
+        error => {
+          if (cancelled) return
+          console.error('Failed to search user directory:', error)
+          setDirectory({ status: 'failed', query: directoryQuery, results: [] })
+        })
+    }, 200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
+
+  // Keep the listbox inside the dialog's accessibility tree, but outside its scrolling body so
+  // opening results cannot make the dialog itself scroll.
+  useLayoutEffect(() => {
+    if (!directoryOpen) return
+    const position = () => {
+      const anchor = directoryAnchorRef.current
+      const listbox = directoryListboxRef.current
+      const dialog = listbox?.parentElement
+      if (!anchor || !listbox || !dialog) return
+      const anchorRect = anchor.getBoundingClientRect()
+      const dialogRect = dialog.getBoundingClientRect()
+      listbox.style.left = `${anchorRect.left - dialogRect.left}px`
+      listbox.style.top = `${anchorRect.bottom - dialogRect.top + 8}px`
+      listbox.style.width = `${anchorRect.width}px`
+      listbox.style.maxHeight = `${Math.max(0, Math.min(
+        205,
+        dialogRect.bottom - anchorRect.bottom - 20,
+      ))}px`
+    }
+    position()
+    const viewport = window.visualViewport
+    window.addEventListener('resize', position)
+    viewport?.addEventListener('resize', position)
+    viewport?.addEventListener('scroll', position)
+    return () => {
+      window.removeEventListener('resize', position)
+      viewport?.removeEventListener('resize', position)
+      viewport?.removeEventListener('scroll', position)
+    }
+  }, [directoryOpen])
+
+  useLayoutEffect(() => {
+    if (!directoryOpen) return
+
+    const listbox = directoryListboxRef.current
+    const option = activeDirectoryOptionRef.current
+    if (!listbox || !option) return
+
+    // scrollIntoView() also scrolls the modal's ancestor scroller. Adjust only the result list so
+    // keyboard navigation cannot move the modal underneath its sticky search field.
+    const listboxRect = listbox.getBoundingClientRect()
+    const optionRect = option.getBoundingClientRect()
+    if (optionRect.top < listboxRect.top) {
+      listbox.scrollTop -= listboxRect.top - optionRect.top
+    } else if (optionRect.bottom > listboxRect.bottom) {
+      listbox.scrollTop += optionRect.bottom - listboxRect.bottom
+    }
+  }, [activeDirectoryIndex, directoryOpen, directory.results])
+
+  useEffect(() => {
     const element = document.createElement('div')
     element.style.position = 'relative'
     element.style.zIndex = '1100'
@@ -371,7 +506,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [])
 
   const isOwner = !metadata.owner
-  const sharingProhibited = metadata.sharingProhibited === true
+  const containsRestrictedData = metadata.containsRestrictedData === true
 
   const loadData = useCallback(async () => {
     try {
@@ -381,10 +516,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       ])
       setCollaborators(collabs)
       setShareLinks(keys)
+      setMembershipStatus('ready')
       return { collaborators: collabs, shareLinks: keys }
     } catch (err) {
       console.error('Failed to load share data:', err)
       toasts.add({ title: 'Failed to load sharing info', variant: 'error' })
+      setMembershipStatus(current => current === 'ready' ? current : 'failed')
       return null
     }
   }, [overseer])
@@ -421,10 +558,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
 
   useEffect(() => {
     if (open) {
+      setMembershipStatus('loading')
       loadData()
       if (!wasOpenRef.current) {
         setAddUsername('')
         setNewShareLink(null)
+        setSelectedUser(null)
         setNewShareLinkId(null)
         setNewShareLinkCopied(false)
         setInvitedName(null)
@@ -442,6 +581,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         }
         copiedUrlsRef.current.clear()
       }
+    } else {
+      setMembershipStatus('loading')
     }
     wasOpenRef.current = open
   }, [open, loadData])
@@ -556,27 +697,66 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }, 2200)
   }
 
-  const handleAddCollaborator = async () => {
-    const username = addUsername.trim()
-    if (!username || sharingProhibited || addingRef.current) return
+  const selectDirectoryUser = (user: UserDirectoryRecord) => {
+    setSelectedUser({ user, exclusionsKey: directoryExclusionsKey })
+    setAddUsername(user.name)
+  }
+
+  const handleDirectoryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event)) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const user = directoryOpen ? directory.results[activeDirectoryIndex] : undefined
+      if (user) selectDirectoryUser(user)
+      else void handleAddCollaborator()
+      return
+    }
+    if (!directorySearching) return
+    if (event.key === 'Escape' && directoryOpen) {
+      // Closes only the popover; the dialog would otherwise take the same keypress.
+      event.preventDefault()
+      event.stopPropagation()
+      setDirectoryDismissed(true)
+      return
+    }
+    if (directoryOptionCount > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault()
+      if (!directoryOpen) {
+        setDirectoryDismissed(false)
+        return
+      }
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      setActiveDirectoryIndex(current =>
+        (current + direction + directoryOptionCount) % directoryOptionCount)
+    }
+  }
+
+  const handleAddCollaborator = async (userIdOverride?: string) => {
+    const userId = userIdOverride ?? selectedDirectoryUser?.id ??
+      (canInviteUser ? directoryQuery : '')
+    if (!userId || addingRef.current) return
 
     addingRef.current = true
     setAdding(true)
     try {
-      const result = await overseer.addCollaborator(username, addRole, undefined)
+      const result = await overseer.addCollaborator(userId, addRole, undefined)
       if (result === null) {
-        toasts.add({ title: 'No account found for that username.', variant: 'error' })
+        toasts.add({ title: 'No account found for that username or email.', variant: 'error' })
       } else {
         const landedId = result.profile.id
         setAddUsername('')
+        setSelectedUser(null)
         setInvitedName(result.profile.name)
         setInvitedLinkCopied(false)
         await loadData()
         showLandedRow('person', landedId)
         toasts.add({ title: `Added ${result.profile.name} as a collaborator.`, variant: 'success' })
       }
-    } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to add collaborator.', variant: 'error' })
+    } catch (error: unknown) {
+      toasts.add({
+        title: error instanceof Error ? error.message : 'Failed to add collaborator.',
+        variant: 'error',
+      })
     } finally {
       addingRef.current = false
       setAdding(false)
@@ -584,7 +764,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleCreateShareLink = async () => {
-    if (sharingProhibited || creatingLinkRef.current) return
+    if (creatingLinkRef.current) return
     creatingLinkRef.current = true
     setCreatingLink(true)
     try {
@@ -610,7 +790,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Copy a share link again. Secrets are never stored, so the previously-shown URL can't be
   // re-displayed. We mint a new secret for the same logical link and copy that.
   const handleCopyShareLink = async (linkId: string) => {
-    if (sharingProhibited || copyingLinkRef.current) return
+    if (copyingLinkRef.current) return
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
     try {
@@ -749,7 +929,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog
-        className="!z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none"
+        className="responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none"
         size="lg"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
@@ -771,29 +951,25 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         </div>
 
         <div
-          className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6"
+          className={`chat-panel min-h-0 flex-1 overscroll-contain px-4 pb-6 sm:px-6 ${directoryOpen ? 'overflow-hidden' : 'overflow-y-auto'}`}
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
-          {sharingProhibited ? (
-            <div className="flex h-full flex-col items-center justify-center px-6 py-12 text-center">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-kumo-warning-tint text-kumo-warning">
-                <ShieldWarning size={22} weight="duotone" />
+          {containsRestrictedData && (
+            <div className="mb-3 flex items-start gap-2.5 rounded-2xl bg-kumo-warning-tint px-3 py-2.5">
+              <div className="grid h-6 w-6 shrink-0 place-items-center text-kumo-warning">
+                <ShieldWarning size={18} weight="duotone" />
               </div>
-              <p className="mt-3 text-[14px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
-                This workspace can’t be shared
-              </p>
-              <p className="mt-1.5 max-w-[320px] text-balance text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-subtle">
-                It has observed sensitive data that can only be accessed by you, the owner.
-              </p>
-              <p className="mt-2 max-w-[320px] text-balance text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-subtle">
-                To share something similar, create a blueprint from a gadget in this workspace, then use it to create a new workspace.
+              <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
+                This workspace has read sensitive data. People you invite are asked to verify their
+                own access to the connections it uses at their access level — some may be unable to
+                open it. Anything the workspace has already saved is visible to everyone who can.
               </p>
             </div>
-          ) : (
-          <>
+          )}
           <div className={`sticky top-0 z-10 bg-kumo-base pb-3 transition-shadow duration-200 ${scrolled ? 'themed-bottom-shadow border-b border-kumo-line/60' : ''}`}>
           <div
-            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex sm:overflow-hidden"
+            ref={directoryAnchorRef}
+            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
             data-keeper-ignore="true"
             data-1p-ignore="true"
             data-lpignore="true"
@@ -802,41 +978,139 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
               <UserPlus size={15} weight="duotone" />
             </div>
-            <input
-              type="search"
-              placeholder="Username or email"
-              aria-label="Username or email"
-              value={addUsername}
-              onChange={(e) => setAddUsername(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddCollaborator() }}
-              name="gadget-share-people-search"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              data-keeper-ignore="true"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              data-bwignore="true"
-              data-form-type="other"
-              className="h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
-              disabled={sharingProhibited}
-            />
+            <div className="relative min-w-0 flex-1">
+              <input
+                type="search"
+                role={userSearchEnabled ? 'combobox' : undefined}
+                placeholder={userSearchEnabled ? 'Search by name or email' : 'Username or email'}
+                aria-label={userSearchEnabled ? 'Search people' : 'Username or email'}
+                aria-autocomplete={userSearchEnabled ? 'list' : undefined}
+                aria-expanded={userSearchEnabled ? directoryOpen : undefined}
+                aria-controls={directoryOpen ? directoryListboxId : undefined}
+                aria-activedescendant={activeDirectoryOptionId}
+                value={addUsername}
+                onChange={(event) => {
+                  setAddUsername(event.target.value)
+                  setSelectedUser(null)
+                  setDirectoryDismissed(false)
+                }}
+                onFocus={() => setDirectoryDismissed(false)}
+                onBlur={() => setDirectoryDismissed(true)}
+                onKeyDown={handleDirectoryKeyDown}
+                name="gadget-share-people-search"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                data-keeper-ignore="true"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                className="h-9 w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
+              />
+            </div>
             <RoleMenu
               ariaLabel="Access to grant"
               value={addRole}
               onValueChange={setAddRole}
-              disabled={sharingProhibited}
               container={menuContainer}
             />
             <WorkshopButton
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
-              onClick={handleAddCollaborator}
-              disabled={!addUsername.trim() || adding || sharingProhibited}
+              onMouseDown={(event) => {
+                // Keep the visible result highlighted until the click handler chooses it.
+                if (directoryOpen) event.preventDefault()
+              }}
+              onClick={() => {
+                const highlightedUser = directoryOpen
+                  ? directory.results[activeDirectoryIndex]
+                  : undefined
+                void handleAddCollaborator(highlightedUser?.id)
+              }}
+              disabled={!canInviteUser || adding}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
+            {directoryOpen && directoryPortalContainer && createPortal(
+              <div
+                ref={directoryListboxRef}
+                id={directoryListboxId}
+                role="listbox"
+                aria-label="Matching people"
+                aria-busy={directory.status === 'loading'}
+                // Pressing anywhere in the popover (an option, its padding, the scrollbar) must not
+                // blur the combobox, which would dismiss the popover before the click lands.
+                onMouseDown={(event) => event.preventDefault()}
+                className="chat-panel themed-floating-shadow-lg pointer-events-auto absolute overscroll-contain overflow-y-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-2"
+              >
+                {directory.status === 'loading' ? (
+                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">Searching…</p>
+                ) : directory.status === 'failed' ? (
+                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-danger">
+                    User search is temporarily unavailable.
+                  </p>
+                ) : directory.results.length === 0 ? (
+                  <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">No users found.</p>
+                ) : (
+                  <>
+                    {directory.results.map((user, index) => (
+                      <button
+                        key={user.id}
+                        ref={index === activeDirectoryIndex ? activeDirectoryOptionRef : undefined}
+                        id={`${directoryListboxId}-option-${index}`}
+                        type="button"
+                        role="option"
+                        aria-selected={index === activeDirectoryIndex}
+                        onMouseEnter={() => setActiveDirectoryIndex(index)}
+                        onClick={() => selectDirectoryUser(user)}
+                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
+                          index === activeDirectoryIndex ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/70'
+                        }`}
+                      >
+                        <PersonAvatar api={authenticatedApi} userId={user.id} name={user.name} size={32} />
+                        <span className="min-w-0">
+                          <span className="block truncate text-[13px] font-medium text-kumo-default">
+                            {user.name}
+                          </span>
+                          <span className="block truncate font-mono text-[11px] text-kumo-subtle">
+                            {user.id}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      ref={activeDirectoryIndex === directory.results.length
+                        ? activeDirectoryOptionRef
+                        : undefined}
+                      id={`${directoryListboxId}-option-${directory.results.length}`}
+                      type="button"
+                      role="option"
+                      aria-selected={activeDirectoryIndex === directory.results.length}
+                      onMouseEnter={() => setActiveDirectoryIndex(directory.results.length)}
+                      onClick={() => void handleAddCollaborator(directoryQuery)}
+                      className={`mt-1 flex w-full items-center gap-3 rounded-xl border-t border-kumo-line/60 px-3 py-2 text-left ${
+                        activeDirectoryIndex === directory.results.length
+                          ? 'bg-kumo-tint'
+                          : 'hover:bg-kumo-tint/70'
+                      }`}
+                    >
+                      <UserPlus size={15} className="shrink-0 text-kumo-subtle" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] font-medium text-kumo-default">
+                          Invite &ldquo;{directoryQuery}&rdquo; exactly
+                        </span>
+                        <span className="block text-[11px] text-kumo-subtle">
+                          Use the text as a username or email
+                        </span>
+                      </span>
+                    </button>
+                  </>
+                )}
+              </div>,
+              directoryPortalContainer,
+            )}
           </div>
 
           {invitedName && (
@@ -906,20 +1180,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       ref={linkNameRef}
                       value={newLinkNote}
                       onChange={(e) => setNewLinkNote(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') handleCreateShareLink() }}
+                      onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleCreateShareLink() }}
                       placeholder="Name this link (optional)…"
                       aria-label="Share link name (optional)"
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
-                      disabled={creatingLink || sharingProhibited}
+                      disabled={creatingLink}
                     />
                     <RoleMenu
                       ariaLabel="Access granted by link"
                       value={newLinkRole}
                       onValueChange={setNewLinkRole}
-                      disabled={creatingLink || sharingProhibited}
+                      disabled={creatingLink}
                       container={menuContainer}
                     />
-                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink || sharingProhibited}>
+                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
                     <WorkshopIconButton aria-label="Cancel creating link" onClick={() => setShowLinkComposer(false)}>
@@ -931,7 +1205,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               <button
                 type="button"
                 onClick={() => setShowLinkComposer(true)}
-                disabled={sharingProhibited}
                 className="themed-compact-shadow flex h-12 w-full cursor-pointer items-center justify-center gap-1.5 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 text-[13px] font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-elevated/60 hover:text-kumo-default active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Link size={14} /> Create a share link
@@ -1040,6 +1313,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               value={editingShareLinkNote}
                               onChange={(e) => setEditingShareLinkNote(e.target.value)}
                               onKeyDown={(e) => {
+                                if (isImeComposing(e)) return
                                 if (e.key === 'Enter') handleSaveShareLinkNote()
                                 if (e.key === 'Escape') cancelRenameShareLink()
                               }}
@@ -1076,7 +1350,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               className="!h-7 !w-7"
                               onClick={() => handleCopyShareLink(sk.linkId)}
                               aria-label={`Copy ${sk.note || 'share link'}`}
-                              disabled={confirmationBusy || copyingLinkId === sk.linkId || sharingProhibited}
+                              disabled={confirmationBusy || copyingLinkId === sk.linkId}
                             >
                               {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                             </WorkshopIconButton>
@@ -1122,9 +1396,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               </div>
           </section>
           )}
-          </>
-          )}
         </div>
+        <div ref={setDirectoryPortalContainer} className="pointer-events-none absolute inset-0 z-30" />
       </Dialog>
     </Dialog.Root>
   )

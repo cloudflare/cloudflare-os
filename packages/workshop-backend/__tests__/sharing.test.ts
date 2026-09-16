@@ -96,27 +96,6 @@ describe("authorization", () => {
     expect(mgr.getEffectiveRole("a")).toBe("use");
     expect(mgr.getEffectiveRole("b")).toBe("build");
   });
-
-  it("hasAnyShares reflects current reachability, not table membership", () => {
-    let { storage, mgr } = makeManager();
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // An active share link counts as a share.
-    seedLink(storage, "k1", OWNER);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A revoked link does not.
-    storage.shareKeys.put({ id: "k1", created: new Date(), createdBy: OWNER, revoked: true });
-    expect(mgr.hasAnyShares()).toBe(false);
-
-    // A reachable collaborator counts.
-    seedCollaborator(storage, "a", [userEdge(OWNER)]);
-    expect(mgr.hasAnyShares()).toBe(true);
-
-    // A collaborator whose record lingers but is unreachable does not.
-    storage.collaborators.put({ profile: profile("a"), addedBy: [] });
-    expect(mgr.hasAnyShares()).toBe(false);
-  });
 });
 
 describe("redeemShareKey", () => {

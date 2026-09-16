@@ -9,7 +9,12 @@
 // A subscription is exposed so imperative widgets that can't rely on CSS variables — the CodeMirror
 // editor and the emoji picker — can react when the mode changes at runtime.
 
-// The two concrete modes the host resolves `light`/`dark`/`system` down to before pushing it here.
+import {
+  applyAccentColor,
+  type GatekeeperAppTheme,
+} from "@gadgets/workshop-shared/theme";
+
+/** The two concrete modes the host resolves `light`/`dark`/`system` down to before pushing it here. */
 export type ResolvedThemeMode = "light" | "dark";
 
 // Seed from the pre-paint `data-mode` the bootstrap script in index.html set from the OS preference,
@@ -22,7 +27,7 @@ export function getThemeMode(): ResolvedThemeMode {
   return current;
 }
 
-// Apply a resolved mode to <html> and notify subscribers. Idempotent per value.
+/** Apply a resolved mode to <html> and notify subscribers. Idempotent per value. */
 export function applyThemeMode(mode: ResolvedThemeMode): void {
   const root = document.documentElement;
   root.setAttribute("data-mode", mode);
@@ -32,7 +37,12 @@ export function applyThemeMode(mode: ResolvedThemeMode): void {
   for (const listener of listeners) listener(mode);
 }
 
-// Subscribe to mode changes. Returns an unsubscribe function.
+export function applyAppTheme(theme: GatekeeperAppTheme): void {
+  applyThemeMode(theme.mode);
+  applyAccentColor(document.documentElement.style, theme.accentColor);
+}
+
+/** Subscribe to mode changes. Returns an unsubscribe function. */
 export function subscribeThemeMode(
   listener: (mode: ResolvedThemeMode) => void,
 ): () => void {

@@ -4,6 +4,7 @@ import {
   ApprovalQueue,
   stripTrailingSlashes,
   type AccountDescription,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperUser,
@@ -14,6 +15,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   SupabaseApi,
   SupabaseApiError,
@@ -21,6 +24,7 @@ import {
   refreshAccessToken,
   revokeRefreshToken,
   type ProjectResponse,
+  type SupabaseOAuthGrant,
 } from "./supabase-api";
 import { describeTable, listSchemas, listTables } from "./supabase-introspection";
 import {
@@ -75,12 +79,36 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 };
 
 type StoredToken = {
   token: string;
   expiresAt: number;
 };
+
+/**
+ * A grant as persisted (or staged for a reconnect): the expiry is absolute, since the provider's
+ * relative `expiresIn` counts from the exchange, not from whenever the grant is later made live.
+ */
+type StoredGrant = {
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresAt: number;
+};
+
+function toStoredGrant(grant: SupabaseOAuthGrant, now: number): StoredGrant {
+  return {
+    accessToken: grant.accessToken,
+    refreshToken: grant.refreshToken,
+    accessTokenExpiresAt: now + grant.expiresIn * 1000,
+  };
+}
 
 // A mutating SQL statement queued for human approval and applied once approved.
 type StoredExecuteAction = {
@@ -134,14 +162,6 @@ const ORGANIZATION_RESOURCE: SupportedResource = {
 };
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [PROJECT_RESOURCE, ORGANIZATION_RESOURCE];
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -321,12 +341,12 @@ export default {
       const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
         ctx.exports.UserAccount.idFromString(doId),
       );
-      const accepted = await stub.acceptAuthCode(code, oauthNonce);
-      if (!accepted) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
-      return new Response(SELF_CLOSING_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
 
     return new Response("Not Found", { status: 404 });
@@ -390,16 +410,16 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
-  // Verify the initiation nonce and mint a one-time OAuth `state` nonce. Returns null if invalid.
+  /** Verify the initiation nonce and mint a one-time OAuth `state` nonce. Returns null if invalid. */
   async beginOAuthFlow(initiationNonce: string): Promise<string | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" || Date.now() >= stored.expiresAt
@@ -412,15 +432,20 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return oauthNonce;
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt
         || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -435,18 +460,24 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Took too long to complete authorization. Please try again.");
     }
 
-    const grant = await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`);
-    this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
-    this.ctx.storage.kv.put("expiredNotified", false);
+    const grant = toStoredGrant(
+      await exchangeAuthCode(code, clientId, clientSecret, `${getBaseUrl(this.env)}/oauth`),
+      Date.now(),
+    );
 
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.#storeGrant(grant);
+      this.ctx.storage.kv.put("expiredNotified", false);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (error) {
         this.ctx.storage.kv.delete("accessToken");
         this.ctx.storage.kv.delete("refreshToken");
@@ -456,16 +487,24 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     await this.ctx.storage.deleteAlarm();
-    return true;
+    return handoff;
   }
 
-  #storeGrant(accessToken: string, refreshToken: string, expiresIn: number): void {
-    this.ctx.storage.kv.put("accessToken", accessToken);
-    this.ctx.storage.kv.put("refreshToken", refreshToken);
-    this.ctx.storage.kv.put<number>("accessTokenExpiresAt", Date.now() + expiresIn * 1000);
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeGrant(grant);
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
-  // Returns a valid access token (and its expiry), transparently refreshing when close to expiry.
+  #storeGrant(grant: StoredGrant): void {
+    this.ctx.storage.kv.put("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
+    this.ctx.storage.kv.put<number>("accessTokenExpiresAt", grant.accessTokenExpiresAt);
+  }
+
+  /** Returns a valid access token (and its expiry), transparently refreshing when close to expiry. */
   async getAccessToken(): Promise<StoredToken> {
     const accessToken = this.ctx.storage.kv.get<string>("accessToken");
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
@@ -499,9 +538,10 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     try {
-      const grant = await refreshAccessToken(refreshToken, clientId, clientSecret);
-      this.#storeGrant(grant.accessToken, grant.refreshToken, grant.expiresIn);
-      return { token: grant.accessToken, expiresAt: Date.now() + grant.expiresIn * 1000 };
+      const grant = toStoredGrant(
+        await refreshAccessToken(refreshToken, clientId, clientSecret), Date.now());
+      this.#storeGrant(grant);
+      return { token: grant.accessToken, expiresAt: grant.accessTokenExpiresAt };
     } catch (error) {
       // A revoked/expired refresh token surfaces as an auth error; record it so the UI prompts a
       // reconnect rather than surfacing a cryptic failure.
@@ -658,10 +698,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account, used by SupabaseGatekeeperImpl.addObserver to confirm
-  // a prospective observer may read a bound project (and, for org bindings, the org and each
-  // accessed project). The verifier carries this user's own account id, so the access checks run
-  // against the observer's *own* Supabase token.
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
+  }
+
+  /**
+   * Mint a verifier representing this account, used by SupabaseGatekeeperImpl.addObserver to confirm
+   * a prospective observer may read a bound project (and, for org bindings, the org and each
+   * accessed project). The verifier carries this user's own account id, so the access checks run
+   * against the observer's *own* Supabase token.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     const props: SupabaseVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -685,8 +731,10 @@ type SupabaseVerifierProps = {
   userObjectId: string;
 };
 
-// The non-standard methods the Supabase gatekeeper calls on its own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard methods the Supabase gatekeeper calls on its own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface SupabaseVerifierApi extends GatekeeperUserVerifier {
   hasProjectAccess(refs: string[]): Promise<boolean[]>;
   hasOrgAccess(slug: string): Promise<boolean>;
@@ -1079,8 +1127,10 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
     return new SupabaseOrganizationImpl(context, this.#requireSlug());
   }
 
-  // Approved: run the queued SQL statement for real, then drop it and invalidate cached schema
-  // metadata (the database may have changed).
+  /**
+   * Approved: run the queued SQL statement for real, then drop it and invalidate cached schema
+   * metadata (the database may have changed).
+   */
   async applyAction(actionId: number): Promise<void> {
     const pending = new PendingActionStore(this.ctx.storage.kv);
     const action = pending.get(actionId);
@@ -1102,13 +1152,15 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
     new SupabaseCache(this.ctx.storage.kv).bumpGeneration();
   }
 
-  // Rejected: discard the queued statement. There is no simulation state to roll back.
+  /** Rejected: discard the queued statement. There is no simulation state to roll back. */
   async rejectAction(actionId: number): Promise<void> {
     new PendingActionStore(this.ctx.storage.kv).remove(actionId);
   }
 
-  // Arbitrary SQL changes can't be reliably undone, so we don't offer automatic revert
-  // (submitAction sets implementsRevert: false, so this is not normally reached).
+  /**
+   * Arbitrary SQL changes can't be reliably undone, so we don't offer automatic revert
+   * (submitAction sets implementsRevert: false, so this is not normally reached).
+   */
   async revertAction(_action: number): Promise<void | { message?: string; canRetry?: boolean }> {
     return {
       message:
@@ -1117,22 +1169,24 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
     };
   }
 
-  // Observer tracking. Strategy depends on the binding's granularity:
-  //
-  // - Project binding — "ACL check (single unit)". Arbitrary read-only SQL can read anything in the
-  //   project's database, so the project is the atomic unit. We just confirm the observer can access
-  //   the project (their own `/v1/projects` lists it). Nothing read later could be outside that unit,
-  //   so no observers are tracked and removeObserver is a no-op.
-  //
-  // - Organization binding — "data-set tracking (by project)". Org members may have access to
-  //   different projects, so we track which projects' data the Gadget has actually observed and
-  //   verify each observer against them. addObserver requires org membership (so org-level metadata
-  //   like the project list is fine to show) plus access to every already-observed project; later,
-  //   the first observation of a *new* project excludes any observer lacking it (see
-  //   #prepareProjectObservation). Verified observers are remembered (their verifier stored) so that
-  //   forward-exclusion check can run.
-  //
-  // The overseer re-runs addObserver on every open, catching loss of access promptly.
+  /**
+   * Observer tracking. Strategy depends on the binding's granularity:
+   *
+   * - Project binding — "ACL check (single unit)". Arbitrary read-only SQL can read anything in the
+   *   project's database, so the project is the atomic unit. We just confirm the observer can access
+   *   the project (their own `/v1/projects` lists it). Nothing read later could be outside that unit,
+   *   so no observers are tracked and removeObserver is a no-op.
+   *
+   * - Organization binding — "data-set tracking (by project)". Org members may have access to
+   *   different projects, so we track which projects' data the Gadget has actually observed and
+   *   verify each observer against them. addObserver requires org membership (so org-level metadata
+   *   like the project list is fine to show) plus access to every already-observed project; later,
+   *   the first observation of a *new* project excludes any observer lacking it (see
+   *   #prepareProjectObservation). Verified observers are remembered (their verifier stored) so that
+   *   forward-exclusion check can run.
+   *
+   * The overseer re-runs addObserver on every open, catching loss of access promptly.
+   */
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<SupabaseVerifierApi>;
 

@@ -1,13 +1,13 @@
 import { clone, fetch, listFiles as listGitFiles, listServerRefs, readBlob, resolveRef } from "isomorphic-git";
 import { request as baseHttpRequest } from "isomorphic-git/http/web";
 import type { GitHttpResponse, HttpClient } from "isomorphic-git/http/web";
-import { Buffer } from "node:buffer";
 import * as fs from "node:fs";
 import { promises as fsp } from "node:fs";
 import { posix as posixPath } from "node:path";
 import {
-  ContextDocument, MAX_DOCUMENT_BODY_BYTES, contentTypeFromPath, isTextContentType, VENDOR_ID,
+  MAX_DOCUMENT_BODY_BYTES, contentTypeFromPath, isTextContentType, VENDOR_ID,
 } from "./context-types.js";
+import { truncateContextDescription } from "./context-storage.js";
 import { extractDescription } from "./description-extractors.js";
 import { obsContext } from "./observability.js";
 
@@ -97,8 +97,32 @@ function isEnoent(err: unknown): boolean {
   return err instanceof Error && "code" in err && err.code === "ENOENT";
 }
 
+export type ArtifactContextDocument = {
+  path: string;
+  name: string;
+  description: string;
+  contentType: string;
+  body: Uint8Array;
+  lastUpdated: Date;
+};
+
+export function artifactContextDocument(path: string, blob: Uint8Array): ArtifactContextDocument {
+  let contentType = contentTypeFromPath(path);
+  let body = isTextContentType(contentType) ? new TextDecoder().decode(blob) : undefined;
+  return {
+    path,
+    name: posixPath.basename(path),
+    description: truncateContextDescription(
+      body === undefined ? "" : extractDescription(contentType, body) ?? "",
+    ),
+    contentType,
+    body: blob,
+    lastUpdated: new Date(),
+  };
+}
+
 export type ArtifactRepoReadResult =
-  | { commit: string; changed: true; documents: ContextDocument[] }
+  | { commit: string; changed: true; documents: ArtifactContextDocument[] }
   | { commit: string; changed: false };
 
 async function cloneRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }): Promise<void> {
@@ -134,7 +158,7 @@ async function recloneRepo(dir: string, url: string, branch: string, onAuth: () 
 }
 
 async function fetchRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }, maxBytes: number): Promise<string> {
-  await fetch({
+  let result = await fetch({
     fs,
     http: makeHttp(maxBytes),
     dir,
@@ -145,7 +169,8 @@ async function fetchRepo(dir: string, url: string, branch: string, onAuth: () =>
     prune: true,
     onAuth,
   });
-  return resolveRef({ fs, dir, ref: "HEAD" });
+  if (!result.fetchHead) throw new Error("Git fetch did not return a commit.");
+  return result.fetchHead;
 }
 
 async function fetchOrRecloneRepo(dir: string, url: string, branch: string, onAuth: () => { username: string; password: string }): Promise<string> {
@@ -171,12 +196,6 @@ async function fetchOrRecloneRepo(dir: string, url: string, branch: string, onAu
     });
     return recloneRepo(dir, url, branch, onAuth);
   }
-}
-
-function encodedBodyBytes(contentType: string, blob: Uint8Array): number {
-  return isTextContentType(contentType)
-    ? blob.byteLength
-    : Math.ceil(blob.byteLength / 3) * 4;
 }
 
 export function readArtifactRepoDocuments(
@@ -233,11 +252,10 @@ async function readArtifactRepoDocumentsWithContext(
     if (!commit) return { commit: "", changed: true, documents: [] };
 
     let filepaths = await listGitFiles({ fs, dir, ref: commit });
-    let documents: ContextDocument[] = [];
+    let documents: ArtifactContextDocument[] = [];
     for (let filepath of filepaths) {
       let { blob } = await readBlob({ fs, dir, oid: commit, filepath });
-      let contentType = contentTypeFromPath(filepath);
-      let bodyBytes = encodedBodyBytes(contentType, blob);
+      let bodyBytes = blob.byteLength;
       if (bodyBytes > MAX_DOCUMENT_BODY_BYTES) {
         logger.warn("skipping oversized mirrored context file", {
           event: "context.file.oversized.skipped",
@@ -247,15 +265,7 @@ async function readArtifactRepoDocumentsWithContext(
         });
         continue;
       }
-      let body = isTextContentType(contentType) ? new TextDecoder().decode(blob) : Buffer.from(blob).toString("base64");
-      documents.push({
-        path: filepath,
-        name: posixPath.basename(filepath),
-        description: isTextContentType(contentType) ? extractDescription(contentType, body) ?? "" : "",
-        contentType,
-        body,
-        lastUpdated: new Date(),
-      });
+      documents.push(artifactContextDocument(filepath, blob));
     }
 
     return { commit, changed: true, documents };

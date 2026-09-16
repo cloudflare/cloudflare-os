@@ -22,6 +22,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import { MENU_CONTENT } from '../menuStyles'
 import { FORMAT_ICONS, GENERIC_OUTPUT } from './formats'
 import { FormatGlyph, FormatPreview } from './FormatVisuals'
+import { isImeComposing } from '../../keyboardEvent'
 
 // A blueprint the admin could promote. `declared` is what it says it produces, when we know --
 // known for the deployment's featured blueprints, unknown for the admin's own published ones.
@@ -34,8 +35,10 @@ export default function AdminFormatsPanel({
 }: {
   admin: RpcStub<AdminApi>
   formats: AdminFormat[]
-  // Re-fetch after a mutation. Formats are edited rarely, so re-reading beats an optimistic local
-  // copy that could disagree about order.
+  /**
+   * Re-fetch after a mutation. Formats are edited rarely, so re-reading beats an optimistic local
+   * copy that could disagree about order.
+   */
   onChanged: () => Promise<void>
 }) {
   const { authenticatedApi } = useAuthenticatedApi()
@@ -501,6 +504,7 @@ function OverrideField({
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
+          if (isImeComposing(e)) return
           if (e.key === 'Enter') e.currentTarget.blur()
           if (e.key === 'Escape') setDraft(value)
         }}

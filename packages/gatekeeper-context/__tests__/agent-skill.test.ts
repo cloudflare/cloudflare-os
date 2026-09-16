@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_SKILL_CATALOG_MAX_ENTRIES,
   isSkillManifestPath, buildAgentSkillCatalogEntries, buildAgentSkillCommands,
-  buildAgentSkillMessage, parseSkillManifest,
+  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
   type CollectionSkills,
 } from "../src/agent-skill";
 import { isTextContentType } from "../src/context-types";
@@ -235,35 +236,84 @@ describe("skill manifest content types", () => {
 });
 
 describe("buildAgentSkillMessage", () => {
+  // A quote in the path is why the root is named in prose rather than an element attribute.
+  let docId = 'lib/skills/de"ck/SKILL.md';
+  let root = 'skill root: lib/skills/de"ck/ — read the documents it references before following ' +
+    "it: prefix skill-local paths with this root, shared paths with the collection ID alone. " +
+    "Read by ID.";
+
   it("replaces $ARGUMENT with the full argument text", () => {
     expect(buildAgentSkillMessage(
+      docId,
       "Create a presentation about $ARGUMENT.",
       "CloudflareOS",
     )).toBe(
-      "<agent_skill>\nCreate a presentation about CloudflareOS.\n</agent_skill>",
+      `<agent_skill>\nCreate a presentation about CloudflareOS.\n</agent_skill>\n\n${root}`,
     );
   });
 
   it("inserts dollar signs without replacement-string expansion", () => {
     let args = "$& $$ $` $' $1";
-    expect(buildAgentSkillMessage("Use $ARGUMENT exactly.", args)).toBe(
-      `<agent_skill>\nUse ${args} exactly.\n</agent_skill>`,
+    expect(buildAgentSkillMessage(docId, "Use $ARGUMENT exactly.", args)).toBe(
+      `<agent_skill>\nUse ${args} exactly.\n</agent_skill>\n\n${root}`,
     );
   });
 
   it("appends the argument when the skill has no placeholder", () => {
     expect(buildAgentSkillMessage(
+      docId,
       "Create a clear presentation.",
       "Make it nice and clean",
     )).toBe(
-      "<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n" +
+      `<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n${root}\n\n` +
       "ARGUMENT: Make it nice and clean",
     );
   });
 
   it("does not append an empty argument", () => {
-    expect(buildAgentSkillMessage("Create a clear presentation.", "")).toBe(
-      "<agent_skill>\nCreate a clear presentation.\n</agent_skill>",
+    expect(buildAgentSkillMessage(docId, "Create a clear presentation.", "")).toBe(
+      `<agent_skill>\nCreate a clear presentation.\n</agent_skill>\n\n${root}`,
     );
+  });
+});
+
+describe("buildContextCatalog", () => {
+  let collection = (id: string, title: string) => ({
+    id, title, description: `${title} description`,
+    source: "public" as const, lastUpdated: new Date(),
+  });
+
+  it("keeps every collection when skills exceed their cap", () => {
+    let collections = Array.from({length: 40}, (_, index) =>
+      collection(`c${index}`, `Zulu collection ${String(index).padStart(2, "0")}`));
+    let loaded: CollectionSkills[] = [{
+      collection: collections[0],
+      // Named to sort ahead of every collection title, which is what used to evict them.
+      skills: Array.from({length: AGENT_SKILL_CATALOG_MAX_ENTRIES + 50}, (_, index) => ({
+        path: `aa-skill-${index}/SKILL.md`,
+        description: `Skill ${index}`,
+        skillName: `aa-skill-${String(index).padStart(4, "0")}`,
+      })),
+    }];
+
+    let catalog = buildContextCatalog(collections, loaded);
+
+    let ids = new Set(catalog.entries.map(entry => entry.id));
+    expect(collections.every(each => ids.has(each.id))).toBe(true);
+    expect(catalog.entries).toHaveLength(collections.length + AGENT_SKILL_CATALOG_MAX_ENTRIES);
+    expect(catalog.truncated).toBe(true);
+  });
+
+  it("reports no truncation when every skill fits", () => {
+    let collections = [collection("c0", "Runbooks")];
+    let loaded: CollectionSkills[] = [{
+      collection: collections[0],
+      skills: [{path: "deploy/SKILL.md", description: "Deploy", skillName: "deploy"}],
+    }];
+
+    let catalog = buildContextCatalog(collections, loaded);
+
+    expect(catalog.entries.map(entry => entry.id)).toEqual(["c0", "c0/deploy/SKILL.md"]);
+    expect(catalog.truncated).toBe(false);
   });
 });

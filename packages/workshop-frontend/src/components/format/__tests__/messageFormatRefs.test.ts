@@ -1,18 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { OutputFormatOffer } from '@gadgets/workshop-shared/api'
+import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
 import { locateMessageFormatRefs } from '../messageFormatRefs'
 
-function offer(blueprintId: string, noun: string): OutputFormatOffer {
-  return {
-    blueprintId,
-    output: { id: noun.toLowerCase(), noun, plural: `${noun}s`, icon: 'fileText' },
-    description: '',
-    requiresSetup: false,
-  }
+function format(noun: string): Pick<MessageFormatRef, 'noun' | 'icon'> {
+  return { noun, icon: 'fileText' }
 }
 
-const doc = offer('format.document', 'Doc')
-const slides = offer('format.slides', 'Slides')
+const doc = format('Doc')
+const slides = format('Slides')
 
 describe('locateMessageFormatRefs', () => {
   it('finds each noun where it ended up in the sent text', () => {

@@ -1,0 +1,44 @@
+// Type-checks each bundled blueprint's `files/server.ts` -- the gadget's Durable Object -- and each
+// library's `server.ts`, with the `lib/**` or `src/**` modules they import, under the Workers
+// runtime types.
+//
+// A standalone program with the Workers types from `@cloudflare/workers-types/experimental`, not
+// the Workshop backend's generated `worker-configuration.d.ts`, and the reason is what a gadget's
+// Durable Object is given at runtime: `{ GADGET, ...visibleBindings }`, never the backend's
+// bindings. Under the generated file a bare `extends DurableObject` or `extends WorkerEntrypoint`
+// types `this.env` as `Cloudflare.Env` -- the backend's KV, R2 and service bindings -- and
+// `ctx.exports` as the backend's own classes, so a blueprint reaching for `this.env.BLUEPRINTS`
+// would type-check against bindings it will never receive. Under the package's types
+// `Cloudflare.Env` and `GlobalProps` are empty, so a bare class sees an empty environment and a
+// blueprint that wants its bindings has to declare them (`DurableObject<GadgetEnv>`). This package
+// has no wrangler config of its own to generate types from, which is the other reason.
+//
+// The client side stays separate (`tsconfig.client.json`): the two gadget runtimes need different
+// globals, and neither side's should leak into the other -- a Durable Object must not see
+// `document`, and iframe code must not be able to import `cloudflare:workers`.
+//
+// Only the entries are listed, not `lib/` or `src/`: tsc follows imports, so a module a server
+// imports is checked here, while a DOM-touching editor module the server never reaches is checked
+// only by the client program.
+//
+// `files: []` alongside `include`: a blueprint set with no TypeScript is a valid state (every
+// blueprint may be plain JavaScript), and without it tsc reports "no inputs found" as an error.
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // Gadget modules import each other by on-disk name (`./lib/blocks.ts`), the way esbuild
+    // resolves them when it bundles the archive.
+    "allowImportingTsExtensions": true,
+    // Each entry is bundled alone, so an entry with no import or export must still be a module here
+    // rather than a global script sharing its declarations with another blueprint's.
+    "moduleDetection": "force",
+    "types": ["@cloudflare/workers-types/experimental"],
+    "noEmit": true
+  },
+  "files": [],
+  "include": ["blueprints/*/files/server.ts", "libraries/*/server.ts"]
+}

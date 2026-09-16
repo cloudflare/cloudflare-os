@@ -4,9 +4,11 @@ import { RpcStub } from 'capnweb'
 import { Overseer } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 
-// Enables an auto-approval rule for the action's (gatekeeperId, actionKind.tag), and tracks
-// which tags were just enabled so callers can hide the affordance immediately on every same-tag
-// pending row, rather than waiting for the action-log subscription to catch up.
+/**
+ * Enables an auto-approval rule for the action's (gatekeeperId, actionKind.tag), and tracks
+ * which tags were just enabled so callers can hide the affordance immediately on every same-tag
+ * pending row, rather than waiting for the action-log subscription to catch up.
+ */
 export function useAlwaysApproveTag(
     overseer: RpcStub<Overseer>,
     setProcessingActions: Dispatch<SetStateAction<Set<number>>>,

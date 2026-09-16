@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
-import { RpcStub, RpcTarget } from 'capnweb'
+import { RpcStub } from 'capnweb'
 import {
   AuthenticatedApi,
-  ConnectedAccountsSubscriber,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   ObserverAccountChoice,
@@ -17,6 +16,8 @@ import {
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
+import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { openConnectWindow } from './connectHandoff'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -60,12 +61,11 @@ function requiredResourceUrlPatterns(
   return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
 }
 
-// Filter required resource types down to those the account has not granted yet. An omitted
-// granted-resource list denotes a legacy or full-scope account and therefore satisfies every
-// requirement.
+// Older account records may not list which resources were granted. Ask the gatekeeper to check
+// instead of assuming the account has access.
 function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
   const granted = account.description.grantedResourceUrlPatterns
-  return granted === undefined ? [] : required.filter(pattern => !granted.includes(pattern))
+  return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
 }
 
 interface ObserverConfigModalProps {
@@ -101,18 +101,11 @@ export default function ObserverConfigModal({
 
   // ── subscribe to the user's connected accounts ────────────────────────────────
   useEffect(() => {
-    let subStub: { [Symbol.dispose](): void } | null = null
     let cancelled = false
 
-    class Subscriber extends RpcTarget implements ConnectedAccountsSubscriber {
-      add(
-        id: number,
-        description: AccountDescription,
-        vendor: VendorDescription,
-        supportedResources: SupportedResource[] = [],
-        credentialsValid: boolean = true,
-        vendorId: string = '',
-      ) {
+    const subscriber = new AccountsSubscriberAdapter({
+      add({ id, description, vendor, supportedResources, credentialsValid, vendorId }) {
+        if (cancelled) return
         setAccounts(prev => {
           const next = new Map(prev)
           next.set(id, { id, description, vendor, vendorId, supportedResources, credentialsValid })
@@ -127,36 +120,35 @@ export default function ObserverConfigModal({
             setConnecting(null)
           }
         }
-      }
-
-      remove(id: number) {
+      },
+      remove(id) {
+        if (cancelled) return
         setAccounts(prev => {
           if (!prev.has(id)) return prev
           const next = new Map(prev)
           next.delete(id)
           return next
         })
-      }
-
+      },
       ready() {
+        if (cancelled) return
         setReady(true)
-      }
-    }
+      },
+    })
 
-    authenticatedApi
-      .subscribeConnectedAccounts(new Subscriber(), { includeForcedAutoProvisionedAccounts: true })
-      .then(stub => {
-        if (cancelled) { stub[Symbol.dispose](); return }
-        subStub = stub
-      })
-      .catch(err => {
-        console.error('Failed to subscribe to connected accounts:', err)
-        toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
-      })
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
+    subscription.catch(err => {
+      if (cancelled) return
+      // Loud on purpose: the modal has no retry path, so a quieted transient failure would
+      // strand the user on a permanent loader.
+      console.error('Failed to subscribe to connected accounts:', err)
+      toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
+    })
 
     return () => {
       cancelled = true
-      subStub?.[Symbol.dispose]()
+      subscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 
@@ -220,11 +212,10 @@ export default function ObserverConfigModal({
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
         const required = requiredResourceUrlPatterns(need, vendor)
-        const { url } = await authenticatedApi.connectAccount(
+        openConnectWindow(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
-        )
-        window.open(url, '_blank', 'noopener,noreferrer')
+        ))
       }
     } catch (err) {
       console.error('Failed to initiate connection:', err)
@@ -237,9 +228,9 @@ export default function ObserverConfigModal({
   const handleReconnect = async (accountId: number) => {
     setReconnecting(accountId)
     try {
-      const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
-      // Subscription fires add() with credentialsValid:true on completion, clearing `reconnecting`.
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      // The popup redeems the ticket itself; the account arrives through the accounts subscription,
+      // whose add() with credentialsValid:true clears `reconnecting`.
     } catch (err) {
       console.error('Failed to initiate reconnection:', err)
       toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
@@ -257,9 +248,31 @@ export default function ObserverConfigModal({
     if (missing.length === 0) return
     setGranting(account.id)
     try {
-      const { url } = await authenticatedApi.ensureAccountResources(account.id, missing)
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
-      else setGranting(null)
+      const flow = await authenticatedApi.ensureAccountResources(account.id, missing)
+      if (flow) openConnectWindow(flow)
+      else {
+        // The gatekeeper confirmed this account already has access. Update the modal so the user can
+        // continue without an OAuth flow.
+        setAccounts(prev => {
+          const current = prev.get(account.id)
+          if (!current) return prev
+          const next = new Map(prev)
+          next.set(account.id, {
+            ...current,
+            description: {
+              ...current.description,
+              grantedResourceUrlPatterns: [
+                ...new Set([
+                  ...(current.description.grantedResourceUrlPatterns ?? []),
+                  ...missing,
+                ]),
+              ],
+            },
+          })
+          return next
+        })
+        setGranting(null)
+      }
     } catch (err) {
       console.error('Failed to request additional access:', err)
       toasts.add({ title: 'Failed to request additional access', variant: 'error' })
@@ -300,7 +313,7 @@ export default function ObserverConfigModal({
 
   return (
     <Dialog.Root open disablePointerDismissal onOpenChange={open => { if (!open) onCancel() }}>
-      <Dialog className="p-6" size="lg">
+      <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
         <Dialog.Title className="mb-2 text-lg font-semibold">
           {isRetry ? 'Verify your access again' : 'Verify your access'}
         </Dialog.Title>
