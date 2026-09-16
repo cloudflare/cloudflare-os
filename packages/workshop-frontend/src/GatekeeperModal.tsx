@@ -22,7 +22,7 @@ import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from 
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from './AuthContext'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
-import ResourceConfiguratorHost from './ResourceConfiguratorHost'
+import ResourceConfiguratorHost, { disposeConfiguratorFrame } from './ResourceConfiguratorHost'
 import {
   AgentSpawnerConfigForm,
   SpawnerEnvRow,
@@ -179,10 +179,6 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
       account.supportedResources.some(resource => resource.urlPattern === connection.resourceUrlPattern))
 }
 
-function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
-  const uiDisposable = frame?.ui as any
-  uiDisposable?.[Symbol.dispose]?.()
-}
 
 export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
