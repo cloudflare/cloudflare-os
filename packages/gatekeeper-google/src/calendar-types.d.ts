@@ -22,7 +22,7 @@ export type GoogleCalendarInfo = {
   /** Calendar time zone, e.g. `America/Los_Angeles`. */
   timeZone?: string;
   /** User's Google Calendar access role on this calendar. */
-  accessRole?: "none" | "freeBusyReader" | "reader" | "writer" | "owner";
+  accessRole?: "none" | "freeBusyReader" | "reader" | "writerWithoutPrivateAccess" | "writer" | "owner";
   /** Whether this is the user's primary calendar. */
   primary?: boolean;
 };
