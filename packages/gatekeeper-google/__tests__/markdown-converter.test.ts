@@ -56,6 +56,40 @@ describe("docTabToMarkdown", () => {
       "# Title\n\n## Sub\n\nHello **bold** and *it* and [link](https://e.com).\n\n- one\n- two\n");
   });
 
+  it("renders subtitles as one italic span", () => {
+    let snapshot = docTabToMarkdown(buildTab([
+      { runs: ["Release summary\n"], namedStyleType: "SUBTITLE" },
+    ]));
+
+    expect(snapshot.markdown).toBe("*Release summary*\n");
+  });
+
+  it("renders visible smart-chip content", () => {
+    let snapshot = docTabToMarkdown(buildTab([{ runs: [
+      { person: { name: "Ada Lovelace", email: "ada@example.com" } },
+      " owns ",
+      { richLink: { title: "Launch plan", uri: "https://docs.google.com/document/d/plan" } },
+      " due ",
+      { date: "Sep 16, 2026" },
+      "\n",
+    ] }]));
+
+    expect(snapshot.markdown).toBe(
+      "Ada Lovelace owns [Launch plan](https://docs.google.com/document/d/plan) due Sep 16, 2026\n",
+    );
+  });
+
+  it("refuses edits to smart-chip display text", () => {
+    let snapshot = docTabToMarkdown(buildTab([{ runs: [
+      { date: "Sep 16, 2026" }, "\n",
+    ] }]));
+    let start = snapshot.markdown.indexOf("Sep 16, 2026");
+
+    expect(() => computeReplaceOperations(
+      snapshot.sourceMap, snapshot.markdown, start, start + 12, "Sep 17, 2026", TAB_ID,
+    )).toThrow("replaceText: structured content cannot be edited");
+  });
+
   it("carries the tab's identity, position and body end index through", () => {
     let snapshot = docTabToMarkdown({
       ...buildTab([{ runs: ["abc\n"] }]),
@@ -85,15 +119,122 @@ describe("Google Docs tables", () => {
       "Before\n\n" +
       "<table>\n" +
       "  <tr>\n" +
-      "    <td>Owner</td>\n" +
-      "    <td>Status</td>\n" +
+      "    <td><p>Owner</p></td>\n" +
+      "    <td><p>Status</p></td>\n" +
       "  </tr>\n" +
       "  <tr>\n" +
-      "    <td>R&amp;D &lt;ops&gt;</td>\n" +
-      "    <td>Ready</td>\n" +
+      "    <td><p>R&amp;D &lt;ops&gt;</p></td>\n" +
+      "    <td><p>Ready</p></td>\n" +
       "  </tr>\n" +
       "</table>\n\n" +
       "After\n",
+    );
+  });
+
+  it("preserves each run's link and text styles in cells", () => {
+    let linked = {
+      text: "Runbook <now>",
+      style: {
+        bold: true,
+        italic: true,
+        strikethrough: true,
+        link: { url: 'https://example.com/runbook?a=1&team="ops"' },
+      },
+    };
+    let tab = buildTab([{ table: [[{
+      paragraphs: [{ runs: ["See ", linked, " today\n"] }],
+    }]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      'See <a href="https://example.com/runbook?a=1&amp;team=&quot;ops&quot;">' +
+      "<strong><em><s>Runbook &lt;now&gt;</s></em></strong></a> today",
+    );
+  });
+
+  it("preserves subtitle styling without redundant emphasis", () => {
+    let tab = buildTab([{ table: [[{ paragraphs: [{
+      runs: ["Release ", { text: "summary", style: { italic: true } }, "\n"],
+      namedStyleType: "SUBTITLE",
+    }] }]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      "<td><p><em>Release summary</em></p></td>",
+    );
+  });
+
+  it("renders visible smart-chip content in cells", () => {
+    let tab = buildTab([{ table: [[{ paragraphs: [{ runs: [
+      { person: { email: "owner@example.com" } },
+      " · ",
+      { richLink: { title: "Launch plan", uri: "https://docs.google.com/document/d/plan" } },
+      " · ",
+      { date: "Sep 16, 2026" },
+      "\n",
+    ] }] }]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      "<p>owner@example.com · " +
+      '<a href="https://docs.google.com/document/d/plan">Launch plan</a> · Sep 16, 2026</p>',
+    );
+  });
+
+  it("defaults an omitted list nesting level to zero", () => {
+    let tab = buildTab([{ table: [[{ paragraphs: [{
+      runs: ["Step\n"], bullet: { listId: "L1" },
+    }] }]] }], {
+      L1: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } },
+    });
+
+    expect(docTabToMarkdown(tab).markdown).toContain("<p>1. Step</p>");
+  });
+
+  it("renders a horizontal rule in a cell as HTML", () => {
+    let tab = buildTab([{ table: [[{ paragraphs: [{
+      runs: [{ horizontalRule: true }, "\n"],
+    }] }]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain("<td><hr></td>");
+  });
+
+  it("preserves merged-cell spans", () => {
+    let tab = buildTab([{ table: [[{
+      paragraphs: [{ runs: ["Merged\n"] }],
+      tableCellStyle: { rowSpan: 2, columnSpan: 2 },
+    }], []] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      '<td rowspan="2" colspan="2"><p>Merged</p></td>',
+    );
+  });
+
+  it("separates multiple paragraphs within a cell", () => {
+    let tab = buildTab([{ table: [[{
+      paragraphs: [{ runs: ["First\n"] }, { runs: ["Second\n"] }],
+    }]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      "<td>\n      <p>First</p>\n      <p>Second</p>\n    </td>",
+    );
+  });
+
+  it("preserves headings, lists, and blank paragraphs within a cell", () => {
+    let tab = buildTab([{ table: [[{ paragraphs: [
+      { runs: ["Heading\n"], namedStyleType: "HEADING_2" },
+      { runs: ["First\n"], bullet: { listId: "L1", nestingLevel: 0 } },
+      { runs: ["Second\n"], bullet: { listId: "L1", nestingLevel: 0 } },
+      { runs: ["\n"] },
+      { runs: ["Step\n"], bullet: { listId: "L2", nestingLevel: 0 } },
+    ] }]] }], {
+      ...BULLET_LIST,
+      L2: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } },
+    });
+
+    expect(docTabToMarkdown(tab).markdown).toContain(
+      "<h2>Heading</h2>\n" +
+      "      <p>- First</p>\n" +
+      "      <p>- Second</p>\n" +
+      "      <p></p>\n" +
+      "      <p>1. Step</p>",
     );
   });
 
@@ -105,7 +246,7 @@ describe("Google Docs tables", () => {
       snapshot.markdown.trimEnd().length,
       "Updated",
       TAB_ID,
-    )).toThrow("replaceText: table content cannot be edited");
+    )).toThrow("replaceText: structured content cannot be edited");
   });
 });
 

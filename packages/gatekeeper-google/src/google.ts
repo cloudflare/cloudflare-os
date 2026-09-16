@@ -1139,7 +1139,7 @@ const DOC_SNAPSHOT_TTL_MS = 10_000;
 /** The last document read. Pending actions overlay it, so it outlives none. */
 const DOC_SNAPSHOT_KEY = "docSnapshot";
 /** Rendering schema stored under {@link DOC_SNAPSHOT_KEY}; bump whenever cached output changes. */
-const DOC_SNAPSHOT_FORMAT_VERSION = 2;
+const DOC_SNAPSHOT_FORMAT_VERSION = 6;
 /** Name prefix of the named range that marks one Gadgets write. Permanent: retries match on it. */
 const WRITE_MARKER_PREFIX = "gadgets-write-";
 

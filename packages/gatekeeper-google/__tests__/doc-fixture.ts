@@ -2,16 +2,24 @@ import type {
   GoogleDocsTab, ParagraphElement, StructuralElement, TextStyle,
 } from "../src/docs-api";
 
-/** A styled span of text within a paragraph. */
-export type Run = { text: string; style?: TextStyle };
+type ParagraphPart =
+  | { text: string; style?: TextStyle }
+  | { person: { name?: string; email: string }; style?: TextStyle }
+  | { richLink: { title: string; uri: string }; style?: TextStyle }
+  | { date: string; style?: TextStyle }
+  | { horizontalRule: true };
 
 type ParagraphSpec = {
-  runs: (Run | string)[];
+  runs: (ParagraphPart | string)[];
   namedStyleType?: string;
-  bullet?: { listId: string; nestingLevel: number };
+  bullet?: { listId: string; nestingLevel?: number };
 };
 
-type TableSpec = { table: string[][] };
+type TableCellSpec = string | {
+  paragraphs: ParagraphSpec[];
+  tableCellStyle?: { rowSpan?: number; columnSpan?: number };
+};
+type TableSpec = { table: TableCellSpec[][] };
 type BlockSpec = ParagraphSpec | TableSpec;
 
 /**
@@ -34,26 +42,9 @@ export function buildTab(
       index = table.endIndex;
       continue;
     }
-    let start = index;
-    let elements: ParagraphElement[] = spec.runs.map(run => {
-      let { text, style } = typeof run === "string" ? { text: run, style: undefined } : run;
-      let runStart = index;
-      index += text.length;
-      return {
-        startIndex: runStart,
-        endIndex: index,
-        textRun: { content: text, textStyle: style ?? {} },
-      };
-    });
-    content.push({
-      startIndex: start,
-      endIndex: index,
-      paragraph: {
-        elements,
-        paragraphStyle: { namedStyleType: spec.namedStyleType ?? "NORMAL_TEXT" },
-        bullet: spec.bullet,
-      },
-    });
+    let paragraph = buildParagraph(index, spec);
+    content.push(paragraph);
+    index = paragraph.endIndex;
   }
 
   return {
@@ -67,30 +58,70 @@ export function buildTab(
   };
 }
 
+function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElement {
+  let index = startIndex;
+  let elements: ParagraphElement[] = spec.runs.map(run => {
+    if (typeof run === "string" || "text" in run) {
+      let { text, style } = typeof run === "string" ? { text: run, style: undefined } : run;
+      let runStart = index;
+      index += text.length;
+      return {
+        startIndex: runStart,
+        endIndex: index,
+        textRun: { content: text, textStyle: style ?? {} },
+      };
+    }
+    let runStart = index++;
+    if ("person" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        person: { personProperties: run.person, textStyle: run.style ?? {} },
+      };
+    }
+    if ("richLink" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        richLink: { richLinkProperties: run.richLink, textStyle: run.style ?? {} },
+      };
+    }
+    if ("date" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        dateElement: { dateElementProperties: { displayText: run.date }, textStyle: run.style ?? {} },
+      };
+    }
+    return { startIndex: runStart, endIndex: index, horizontalRule: {} };
+  });
+  return {
+    startIndex,
+    endIndex: index,
+    paragraph: {
+      elements,
+      paragraphStyle: { namedStyleType: spec.namedStyleType ?? "NORMAL_TEXT" },
+      bullet: spec.bullet,
+    },
+  };
+}
+
 /** Build a Google Docs table element with the provider's nested index layout. */
-export function buildTable(startIndex: number, rows: string[][]): StructuralElement {
+export function buildTable(startIndex: number, rows: TableCellSpec[][]): StructuralElement {
   let index = startIndex + 1;
   let tableRows = rows.map(row => {
     let rowStart = index++;
-    let tableCells = row.map(text => {
+    let tableCells = row.map(cell => {
       let cellStart = index++;
-      let paragraphStart = index;
-      index += text.length;
+      let paragraphs = typeof cell === "string" ? [{ runs: [cell] }] : cell.paragraphs;
+      let tableCellStyle = typeof cell === "string" ? undefined : cell.tableCellStyle;
+      let content = paragraphs.map(spec => {
+        let paragraph = buildParagraph(index, spec);
+        index = paragraph.endIndex;
+        return paragraph;
+      });
       return {
         startIndex: cellStart,
         endIndex: index,
-        content: [{
-          startIndex: paragraphStart,
-          endIndex: index,
-          paragraph: {
-            elements: [{
-              startIndex: paragraphStart,
-              endIndex: index,
-              textRun: { content: text, textStyle: {} },
-            }],
-            paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
-          },
-        }],
+        content,
+        ...(tableCellStyle ? { tableCellStyle } : {}),
       };
     });
     return { startIndex: rowStart, endIndex: index, tableCells };

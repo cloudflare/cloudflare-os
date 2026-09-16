@@ -3,7 +3,7 @@
 // to Google Docs batchUpdate operations.
 
 import type {
-  GoogleDocsTab, Paragraph, StructuralElement, Table, TableCell,
+  GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell, TextStyle,
 } from "./docs-api";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,15 @@ export type Segment =
   | { mdStart: number; mdEnd: number; docStart: number; docEnd: number }
   | { mdStart: number; mdEnd: number; syntaxOnly: true };
 
+type ParagraphListItem = { numbered: boolean; nestingLevel: number };
+type VisibleParagraphElement = {
+  text: string;
+  style: TextStyle;
+  link: string | undefined;
+};
+
+const EMPTY_TEXT_STYLE: TextStyle = {};
+
 // ---------------------------------------------------------------------------
 // Google Docs → Markdown
 // ---------------------------------------------------------------------------
@@ -84,7 +93,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     if (elem.table) {
       if (md.length > 0) md += "\n";
       let mdStart = md.length;
-      md += tableToHtml(elem.table);
+      md += tableToHtml(elem.table, tab.lists);
       protectedRanges.push({ mdStart, mdEnd: md.length });
       md += "\n";
       lastWasListItem = false;
@@ -98,26 +107,8 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     let docStart = elem.startIndex;
     let docEnd = elem.endIndex;
 
-    let isListItem = !!para.bullet;
-    let isBullet = false;
-    let isNumbered = false;
-    let nestingLevel = 0;
-
-    if (para.bullet) {
-      nestingLevel = para.bullet.nestingLevel;
-      let list = tab.lists[para.bullet.listId];
-      if (list) {
-        let level = list.listProperties.nestingLevels[nestingLevel];
-        if (level) {
-          isBullet = !!level.glyphSymbol;
-          isNumbered = !!level.glyphType;
-        }
-      }
-      // Default to bullet if we can't determine the type.
-      if (!isBullet && !isNumbered) {
-        isBullet = true;
-      }
-    }
+    let listItem = paragraphListItem(para, tab.lists);
+    let isListItem = listItem !== undefined;
 
     // Blank line between paragraphs, but not between consecutive list items.
     if (md.length > 0) {
@@ -130,15 +121,16 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     }
 
     // Paragraph prefix (heading markers, list markers, etc.).
-    let prefix = getParagraphPrefix(para, isBullet, isNumbered, nestingLevel);
+    let prefix = getParagraphPrefix(para, listItem);
     if (prefix) {
       let prefixStart = md.length;
       md += prefix;
       segments.push({ mdStart: prefixStart, mdEnd: md.length, syntaxOnly: true });
     }
 
-    // Emit paragraph content (text runs).
-    emitParagraphContent(para, segments, () => md.length, (text) => { md += text; });
+    // Emit paragraph content.
+    emitParagraphContent(
+      para, segments, protectedRanges, () => md.length, (text) => { md += text; });
 
     // Trailing newline. Every Google Docs paragraph ends with \n in the doc
     // character space. In Markdown, we use \n as the line terminator.
@@ -164,13 +156,53 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   };
 }
 
+function visibleParagraphElement(element: ParagraphElement): VisibleParagraphElement | undefined {
+  let textRun = element.textRun;
+  if (textRun) {
+    return {
+      text: textRun.content,
+      style: textRun.textStyle,
+      link: textRun.textStyle.link?.url,
+    };
+  }
+
+  let person = element.person;
+  let personText = person?.personProperties?.name || person?.personProperties?.email;
+  if (personText) {
+    return {
+      text: personText, style: person?.textStyle ?? EMPTY_TEXT_STYLE,
+      link: undefined,
+    };
+  }
+
+  let richLink = element.richLink;
+  let richLinkText = richLink?.richLinkProperties?.title;
+  if (richLinkText) {
+    return {
+      text: richLinkText, style: richLink?.textStyle ?? EMPTY_TEXT_STYLE,
+      link: richLink?.richLinkProperties?.uri,
+    };
+  }
+
+  let dateElement = element.dateElement;
+  let dateText = dateElement?.dateElementProperties?.displayText;
+  if (dateText) {
+    return {
+      text: dateText, style: dateElement?.textStyle ?? EMPTY_TEXT_STYLE,
+      link: undefined,
+    };
+  }
+
+  return undefined;
+}
+
 /** Render a table as raw HTML, which Markdown preserves without inventing a header row. */
-function tableToHtml(table: Table): string {
+function tableToHtml(table: Table, lists: GoogleDocsTab["lists"]): string {
   let lines = ["<table>"];
   for (let row of Array.isArray(table.tableRows) ? table.tableRows : []) {
     lines.push("  <tr>");
     for (let cell of Array.isArray(row.tableCells) ? row.tableCells : []) {
-      lines.push(tableCellToHtml(cell));
+      lines.push(tableCellToHtml(cell, lists));
     }
     lines.push("  </tr>");
   }
@@ -178,27 +210,59 @@ function tableToHtml(table: Table): string {
   return lines.join("\n");
 }
 
-function tableCellToHtml(cell: TableCell): string {
+function tableCellToHtml(cell: TableCell, lists: GoogleDocsTab["lists"]): string {
   let style = cell.tableCellStyle;
   let attributes = htmlSpan("rowspan", style?.rowSpan) + htmlSpan("colspan", style?.columnSpan);
   let parts: string[] = [];
   for (let element of Array.isArray(cell.content) ? cell.content : []) {
-    let part = tableCellElementToHtml(element);
-    if (part) parts.push(part);
+    let part = tableCellElementToHtml(element, lists);
+    if (part !== undefined) parts.push(part);
   }
-  let content = parts.join("<br>\n");
+  let content = parts.join("\n");
   if (!content.includes("\n")) return `    <td${attributes}>${content}</td>`;
   return `    <td${attributes}>\n${indentHtml(content, 6)}\n    </td>`;
 }
 
-function tableCellElementToHtml(element: StructuralElement): string {
-  if (element.table) return tableToHtml(element.table);
-  if (!element.paragraph) return "";
-  let text = element.paragraph.elements.map(part => {
-    if (part.textRun) return part.textRun.content;
-    return part.horizontalRule ? "---" : "";
-  }).join("").replace(/\n$/, "");
-  return escapeHtml(text);
+function tableCellElementToHtml(
+  element: StructuralElement,
+  lists: GoogleDocsTab["lists"],
+): string | undefined {
+  if (element.table) return tableToHtml(element.table, lists);
+  if (!element.paragraph) return undefined;
+  let paragraph = element.paragraph;
+  if (paragraph.elements.some(part => part.horizontalRule)) return "<hr>";
+  let isSubtitle = paragraph.paragraphStyle.namedStyleType === "SUBTITLE";
+  let content = paragraph.elements.map((part, index, elements) => {
+    let visible = visibleParagraphElement(part);
+    if (!visible) return "";
+    let text = visible.text;
+    if (part.textRun && index === elements.length - 1) text = text.replace(/\n$/, "");
+    return styledTextToHtml(text, visible.style, isSubtitle, visible.link);
+  }).join("");
+  if (isSubtitle && content) content = `<em>${content}</em>`;
+  let listItem = paragraphListItem(paragraph, lists);
+  if (listItem) {
+    let indent = "&nbsp;&nbsp;".repeat(listItem.nestingLevel);
+    return `<p>${indent}${listItem.numbered ? "1. " : "- "}${content}</p>`;
+  }
+  let headingLevel = paragraphHeadingLevel(paragraph);
+  let tag = headingLevel ? `h${headingLevel}` : "p";
+  return `<${tag}>${content}</${tag}>`;
+}
+
+function styledTextToHtml(
+  text: string,
+  style: TextStyle,
+  inheritedItalic = false,
+  link = style.link?.url,
+): string {
+  if (!text) return "";
+  let html = escapeHtml(text);
+  if (style.strikethrough) html = `<s>${html}</s>`;
+  if (style.italic && !inheritedItalic) html = `<em>${html}</em>`;
+  if (style.bold) html = `<strong>${html}</strong>`;
+  if (link) html = `<a href="${escapeHtmlAttribute(link)}">${html}</a>`;
+  return html;
 }
 
 function htmlSpan(name: string, value: number | undefined): string {
@@ -210,41 +274,46 @@ function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+function escapeHtmlAttribute(text: string): string {
+  return escapeHtml(text).replaceAll('"', "&quot;");
+}
+
 function indentHtml(text: string, spaces: number): string {
   let prefix = " ".repeat(spaces);
   return prefix + text.replaceAll("\n", `\n${prefix}`);
 }
 
 /** Determine the Markdown prefix for a paragraph based on its style. */
-function getParagraphPrefix(
-  para: Paragraph,
-  isBullet: boolean,
-  isNumbered: boolean,
-  nestingLevel: number,
-): string {
-  let style = para.paragraphStyle.namedStyleType;
-
-  if (isBullet || isNumbered) {
-    let indent = "  ".repeat(nestingLevel);
-    return isNumbered ? `${indent}1. ` : `${indent}- `;
+function getParagraphPrefix(para: Paragraph, listItem: ParagraphListItem | undefined): string {
+  if (listItem) {
+    let indent = "  ".repeat(listItem.nestingLevel);
+    return listItem.numbered ? `${indent}1. ` : `${indent}- `;
   }
+  let headingLevel = paragraphHeadingLevel(para);
+  return headingLevel ? `${"#".repeat(headingLevel)} ` : "";
+}
 
-  switch (style) {
-    case "HEADING_1":
+function paragraphListItem(
+  paragraph: Paragraph,
+  lists: GoogleDocsTab["lists"],
+): ParagraphListItem | undefined {
+  let bullet = paragraph.bullet;
+  if (!bullet) return undefined;
+  let nestingLevel = bullet.nestingLevel ?? 0;
+  let level = lists[bullet.listId]?.listProperties.nestingLevels[nestingLevel];
+  return { numbered: !!level?.glyphType, nestingLevel };
+}
+
+function paragraphHeadingLevel(paragraph: Paragraph): number | undefined {
+  switch (paragraph.paragraphStyle.namedStyleType) {
     case "TITLE":
-      return "# ";
-    case "HEADING_2":
-      return "## ";
-    case "HEADING_3":
-      return "### ";
-    case "HEADING_4":
-      return "#### ";
-    case "HEADING_5":
-      return "##### ";
-    case "HEADING_6":
-      return "###### ";
-    default:
-      return "";
+    case "HEADING_1": return 1;
+    case "HEADING_2": return 2;
+    case "HEADING_3": return 3;
+    case "HEADING_4": return 4;
+    case "HEADING_5": return 5;
+    case "HEADING_6": return 6;
+    default: return undefined;
   }
 }
 
@@ -258,6 +327,7 @@ function getParagraphPrefix(
 function emitParagraphContent(
   para: Paragraph,
   segments: Segment[],
+  protectedRanges: MarkdownRange[],
   getMdPos: () => number,
   emit: (text: string) => void,
 ): void {
@@ -269,13 +339,6 @@ function emitParagraphContent(
 
   let isSubtitle = para.paragraphStyle.namedStyleType === "SUBTITLE";
 
-  // If subtitle, open italic.
-  if (isSubtitle) {
-    let pos = getMdPos();
-    emit("*");
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-  }
-
   for (let element of para.elements) {
     if (element.horizontalRule) {
       let pos = getMdPos();
@@ -284,16 +347,15 @@ function emitParagraphContent(
       continue;
     }
 
-    if (!element.textRun) continue;
+    let visible = visibleParagraphElement(element);
+    if (!visible) continue;
 
-    let text = element.textRun.content;
-    let style = element.textRun.textStyle;
+    let { style } = visible;
+    let text = visible.text;
     let docStart = element.startIndex;
 
-    // Strip the trailing \n from the last element — we handle paragraph
-    // termination separately.
     let isLastElement = element === para.elements[para.elements.length - 1];
-    if (isLastElement && text.endsWith("\n")) {
+    if (element.textRun && isLastElement && text.endsWith("\n")) {
       text = text.slice(0, -1);
     }
 
@@ -302,7 +364,7 @@ function emitParagraphContent(
     let wantBold = !!style.bold;
     let wantItalic = !!style.italic || isSubtitle;
     let wantStrikethrough = !!style.strikethrough;
-    let wantLink = style.link?.url;
+    let wantLink = visible.link;
 
     // Close formatting that is no longer wanted (reverse order of opening).
     if (currentLink && currentLink !== wantLink) {
@@ -356,16 +418,21 @@ function emitParagraphContent(
       currentLink = wantLink;
     }
 
-    // Emit the actual text content with a content segment.
     let mdContentStart = getMdPos();
     emit(text);
     let mdContentEnd = getMdPos();
-    segments.push({
-      mdStart: mdContentStart,
-      mdEnd: mdContentEnd,
-      docStart: docStart,
-      docEnd: docStart + text.length,
-    });
+    if (element.textRun) {
+      segments.push({
+        mdStart: mdContentStart,
+        mdEnd: mdContentEnd,
+        docStart,
+        docEnd: docStart + text.length,
+      });
+    } else {
+      let range = { mdStart: mdContentStart, mdEnd: mdContentEnd };
+      segments.push({ ...range, syntaxOnly: true });
+      protectedRanges.push(range);
+    }
   }
 
   // Close any remaining open formatting at end of paragraph.
@@ -384,12 +451,7 @@ function emitParagraphContent(
     emit("**");
     segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
   }
-  if (currentItalic && !isSubtitle) {
-    let pos = getMdPos();
-    emit("*");
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-  }
-  if (isSubtitle) {
+  if (currentItalic) {
     let pos = getMdPos();
     emit("*");
     segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
@@ -750,7 +812,7 @@ export function assertMarkdownRangeEditable(
 ): void {
   if (protectedRanges.some(range => mdStart < range.mdEnd && mdEnd > range.mdStart)) {
     throw new Error(
-      "replaceText: table content cannot be edited. Narrow the match to text outside the table.",
+      "replaceText: structured content cannot be edited. Narrow the match to plain text.",
     );
   }
 }

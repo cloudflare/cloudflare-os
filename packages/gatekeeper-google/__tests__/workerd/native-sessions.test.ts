@@ -191,7 +191,7 @@ describe("Drive nested native sessions", () => {
     using doc = await session.openGoogleDoc("doc-1");
 
     await expect(doc.getContent()).resolves.toContain(
-      "<tr>\n    <td>Alice</td>\n    <td>Ready</td>\n  </tr>",
+      "<tr>\n    <td><p>Alice</p></td>\n    <td><p>Ready</p></td>\n  </tr>",
     );
   });
 

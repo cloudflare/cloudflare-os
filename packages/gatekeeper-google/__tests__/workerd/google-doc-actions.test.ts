@@ -287,7 +287,7 @@ describe("Google Doc tables", () => {
     docs.install();
 
     await expect(hooks().readContent("table-read")).resolves.toContain(
-      "<tr>\n    <td>Alice</td>\n    <td>Ready</td>\n  </tr>",
+      "<tr>\n    <td><p>Alice</p></td>\n    <td><p>Ready</p></td>\n  </tr>",
     );
   });
 
@@ -300,7 +300,7 @@ describe("Google Doc tables", () => {
 
     await expect(Promise.resolve(
       hooks().submitReplace("table-edit", content.trimEnd(), "Updated"),
-    )).rejects.toThrow("replaceText: table content cannot be edited");
+    )).rejects.toThrow("replaceText: structured content cannot be edited");
     expect(await hooks().lastActionDescription).toBe("");
     expect(docs.contentBatches).toBe(0);
   });
@@ -752,7 +752,7 @@ function tabSnapshot(tabId: string, title: string) {
 // the only place the migration refusal can be reached.
 describe("Google Doc edits stored before tab support", () => {
   const snapshot = {
-    formatVersion: 2 as const,
+    formatVersion: 6 as const,
     title: "Test document",
     revisionId: "revision-1",
     tabs: [tabSnapshot(MAIN_TAB, "Main")],

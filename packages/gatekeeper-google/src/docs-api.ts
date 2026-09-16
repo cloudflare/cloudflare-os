@@ -112,15 +112,27 @@ export type ParagraphStyle = {
 /** Present on paragraphs that are list items. */
 export type Bullet = {
   listId: string;
-  nestingLevel: number;
+  nestingLevel?: number;
 }
 
-/** An element within a paragraph (text run, horizontal rule, etc.). */
+/** An element within a paragraph (text run, smart chip, horizontal rule, etc.). */
 export type ParagraphElement = {
   startIndex: number;
   endIndex: number;
   textRun?: TextRun;
   horizontalRule?: {};
+  person?: {
+    textStyle?: TextStyle;
+    personProperties?: { name?: string; email?: string };
+  };
+  richLink?: {
+    textStyle?: TextStyle;
+    richLinkProperties?: { title?: string; uri?: string };
+  };
+  dateElement?: {
+    textStyle?: TextStyle;
+    dateElementProperties?: { displayText?: string };
+  };
 }
 
 export type TextRun = {
