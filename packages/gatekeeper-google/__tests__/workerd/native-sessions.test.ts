@@ -489,7 +489,7 @@ describe("folder-scoped native sessions", () => {
   });
 
   // The move lands while the Docs call is in flight. The content reaches neither the approval
-  // queue nor caller; only the owner-relative failed membership check is authorized.
+  // queue nor the caller, and the moved file stays visible, so nothing is authorized at all.
   it("discards content when the move lands during the provider read", async () => {
     const nodes = subtree();
     installFolderProvider(nodes, () => {
@@ -501,9 +501,7 @@ describe("folder-scoped native sessions", () => {
     const authorizedBefore = queue.observations.length;
 
     await expect(Promise.resolve(doc.getContent())).rejects.toThrow(OUTSIDE);
-    expect(queue.observations.slice(authorizedBefore)).toEqual([
-      expect.objectContaining({ title: "Check Google Drive folder" }),
-    ]);
+    expect(queue.observations.slice(authorizedBefore)).toEqual([]);
   });
 
   it("keeps child-folder and native capabilities alive after their parents are disposed", async () => {

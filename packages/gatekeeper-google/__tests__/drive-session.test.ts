@@ -613,6 +613,16 @@ describe("positioned Drive folder session", () => {
       .rejects.toThrow(/outside this Drive binding/);
   });
 
+  it("fences an invisible probe but not a visible non-child", async () => {
+    const visible = positioned([root, nested, nestedDoc]);
+    await expect(visible.session.getEntry("D1")).rejects.toThrow(/outside this Drive binding/);
+    expect(visible.events).toEqual([]);
+
+    const invisible = positioned([root]);
+    await expect(invisible.session.getEntry("gone")).rejects.toThrow(/outside this Drive binding/);
+    expect(invisible.events).toEqual(["authorize", "latch"]);
+  });
+
   it("audits and rejects an empty folder search", async () => {
     const { session, authorizations, events } =
       positioned([root], undefined, async () => ({ files: [] }));

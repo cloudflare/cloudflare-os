@@ -606,12 +606,15 @@ export class DriveFolderSessionCore {
   async #requireDirectFile(fileId: string): Promise<DriveFile> {
     let path = await this.#readLocation();
     let file = await this.#tryFetchFile(fileId);
-    if (!file || file.id !== fileId || !isDirectChild(file, path[path.length - 1])) {
+    if (!file || file.id !== fileId) {
+      // Invisible to this account, which is an owner-relative answer: fence it. Whether a visible
+      // file is a direct child is objective, so refusing that discloses nothing and stays open.
       await this.#authorizeWithheld(
         "Check Google Drive folder",
         "Check whether a requested file is a direct child of this Drive folder.");
       outsideScope();
     }
+    if (!isDirectChild(file, path[path.length - 1])) outsideScope();
     await this.#readLocation();
     return file;
   }
