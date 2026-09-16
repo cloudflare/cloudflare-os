@@ -72,3 +72,6 @@ test runs against a stub of `cloudflare:workers` that the package's vitest confi
   registry with presence seeding and broadcast, and versioned upserts; on the client a save scheduler
   with retry backoff, a presence roster and a subscribe helper. The Docs, Sheets and Slides
   blueprints build on it.
+- `zip` -- a server-only streaming ZIP32 writer shared by the Sheets XLSX exporter and PPTX library.
+- `pptx` -- a server-only PresentationML renderer for block-based slide decks. A blueprint adapts
+  its brand-specific blocks before calling the renderer.

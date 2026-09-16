@@ -1,4 +1,4 @@
-import { createZip, type ZipEntry } from "./zip.ts";
+import { createZip, type ZipEntry } from "@gadgets/bundled-blueprints/libraries/zip/server";
 import type { CellFmt, CellMap, Dims, SheetMeta, SheetsDocument } from "./protocol.ts";
 
 const encoder = new TextEncoder();
