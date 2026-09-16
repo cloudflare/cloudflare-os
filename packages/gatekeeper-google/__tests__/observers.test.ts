@@ -674,6 +674,20 @@ describe("withheld observations", () => {
     expect(withholdKeys()).toHaveLength(1);
   });
 
+  // The fence can land while the candidate's access checks are in flight, after the entry check.
+  it("refuses a per-set candidate withheld during its access checks", async () => {
+    let tracker = makeTracker({
+      hasAccess: async () => {
+        tracker.prepareWithheld().commit();
+        return true;
+      },
+    });
+    (await tracker.prepareObservation(["one"])).commit();
+
+    await expect(tracker.addObserver("late", allow("one")))
+      .rejects.toThrow(/can no longer be observed/);
+  });
+
   it("latches admission closed for good once the read is authorized", async () => {
     let tracker = makeTracker();
     tracker.prepareWithheld().commit();

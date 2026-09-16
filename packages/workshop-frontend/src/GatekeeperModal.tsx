@@ -19,10 +19,11 @@ import {
   Overseer,
 } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
-import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from './AuthContext'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
-import ResourceConfiguratorHost, { disposeConfiguratorFrame } from './ResourceConfiguratorHost'
+import ResourceConfiguratorHost, {
+  currentConfiguratorFrame, disposeConfiguratorFrame, type ConfiguratorFrameState,
+} from './ResourceConfiguratorHost'
 import {
   AgentSpawnerConfigForm,
   SpawnerEnvRow,
@@ -109,13 +110,6 @@ type VendorOption = {
   id: string
   description: VendorDescription
   supportedResources: SupportedResource[]
-}
-
-type ConfiguratorFrameState = {
-  key: number
-  frame: ResourceConfiguratorFrame
-  accountId: number
-  resourceUrlPattern: string
 }
 
 function platformConnectionTypes(siteName: string): ConnectionType[] {
@@ -711,9 +705,9 @@ export default function GatekeeperModal({
     let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
     let transferred = false
     try {
-      if (!configuratorFrameState?.frame || configuratorFrameState.accountId !== selectedAccountId || configuratorFrameState.resourceUrlPattern !== resourceUrlPattern) {
-        throw new Error('Configurator is not ready.')
-      }
+      const current = currentConfiguratorFrame(
+        configuratorFrameState, selectedAccountId, resourceUrlPattern)
+      if (!current) throw new Error('Configurator is not ready.')
       const resourceUrl = await configuratorCollectResourceUrlRef.current?.()
       if (!resourceUrl) throw new Error('Configurator did not provide a resource URL.')
       const overseer = await getOverseer()
@@ -743,11 +737,7 @@ export default function GatekeeperModal({
     if (selectedConnection.resourceUrlPattern) {
       const resourceUrlPattern = selectedConnection.resourceUrlPattern
       return Boolean(
-        selectedAccountId !== null &&
-        resourceUrlPattern &&
-        configuratorFrameState?.frame &&
-        configuratorFrameState.accountId === selectedAccountId &&
-        configuratorFrameState.resourceUrlPattern === resourceUrlPattern &&
+        currentConfiguratorFrame(configuratorFrameState, selectedAccountId, resourceUrlPattern) &&
         configuratorSelectionReady === true &&
         !hasMissingResourceGrants,
       )
@@ -835,8 +825,8 @@ export default function GatekeeperModal({
 
                 {selectedConnection.resourceUrlPattern && !hasMissingResourceGrants && (
                   <ResourceConfiguratorHost
-                    frame={configuratorFrameState?.frame ?? null}
-                    frameKey={configuratorFrameState?.key ?? null}
+                    state={configuratorFrameState}
+                    accountId={selectedAccountId}
                     loading={configuratorLoading}
                     error={configuratorError}
                     disabled={needsAccount && !selectedAccount}

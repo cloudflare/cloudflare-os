@@ -1,9 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import type {
-  ResourceConfiguratorAuthorization,
-  ResourceConfiguratorFrame,
-} from '@gadgets/workshop-shared/gatekeeper'
-import { WorkshopButton } from './components/WorkshopControls'
+import type { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
+import { ResourceAuthorizationAction } from './ResourceAuthorizationAction'
 import SandboxedResourceConfigurator from './SandboxedResourceConfigurator'
 
 /** Releases every capability owned by a resource-configurator frame. */
@@ -24,10 +20,33 @@ function disposeRpcStub(stub: unknown): void {
   if (typeof dispose === 'function') dispose.call(stub)
 }
 
+/** A started configurator frame together with the selection it was started for. */
+export type ConfiguratorFrameState = {
+  key: number
+  frame: ResourceConfiguratorFrame
+  accountId: number
+  resourceUrlPattern: string
+}
+
+/**
+ * The frame only while it still belongs to the current selection.
+ *
+ * Both hosts clear a superseded frame from an effect, so one committed render can pair the new
+ * account with the old frame; acting on it would configure or authorize the wrong account.
+ */
+export function currentConfiguratorFrame(
+  state: ConfiguratorFrameState | null,
+  accountId: number | null,
+  resourceUrlPattern: string | null,
+): ConfiguratorFrameState | null {
+  if (!state || state.accountId !== accountId) return null
+  return state.resourceUrlPattern === resourceUrlPattern ? state : null
+}
+
 /** Renders the trusted controls and sandboxed resource configurator. */
 export default function ResourceConfiguratorHost({
-  frame,
-  frameKey,
+  state,
+  accountId,
   loading,
   error,
   disabled,
@@ -37,8 +56,8 @@ export default function ResourceConfiguratorHost({
   initialResourceUrl,
   resourceUrlPattern,
 }: {
-  frame: ResourceConfiguratorFrame | null
-  frameKey: number | null
+  state: ConfiguratorFrameState | null
+  accountId: number | null
   loading: boolean
   error: string | null
   disabled: boolean
@@ -46,23 +65,26 @@ export default function ResourceConfiguratorHost({
   onSelectionReadyChange?: (ready: boolean | null) => void
   topOffset?: number
   initialResourceUrl?: string
-  resourceUrlPattern?: string
+  resourceUrlPattern: string
 }) {
   if (disabled) return <Placeholder>Choose an account before selecting a resource.</Placeholder>
   if (loading) return <Placeholder>Loading configurator...</Placeholder>
   if (error) return <Placeholder>{error}</Placeholder>
-  if (!frame) return null
+
+  const current = currentConfiguratorFrame(state, accountId, resourceUrlPattern)
+  if (!current) return null
+  const { frame, key } = current
 
   return (
     <>
       {frame.authorization && (
-        <AuthorizationAction
-          key={`authorization:${frameKey}`}
+        <ResourceAuthorizationAction
+          key={`authorization:${key}`}
           authorization={frame.authorization}
         />
       )}
       <SandboxedResourceConfigurator
-        key={`configurator:${frameKey}`}
+        key={`configurator:${key}`}
         frame={frame}
         topOffset={topOffset}
         onCollectResourceUrlChange={onCollectResourceUrlChange}
@@ -71,80 +93,6 @@ export default function ResourceConfiguratorHost({
         resourceUrlPattern={resourceUrlPattern}
       />
     </>
-  )
-}
-
-function AuthorizationAction({
-  authorization,
-}: {
-  authorization: ResourceConfiguratorAuthorization
-}) {
-  const [pending, setPending] = useState(false)
-  const [message, setMessage] = useState<string | null>(null)
-  const requestId = useRef(0)
-  const blankPopup = useRef<Window | null>(null)
-
-  useEffect(() => () => {
-    requestId.current++
-    blankPopup.current?.close()
-    blankPopup.current = null
-  }, [])
-
-  const requestAuthorization = async () => {
-    const popup = window.open('about:blank', '_blank')
-    if (!popup) {
-      setMessage('Allow popups and try again.')
-      return
-    }
-
-    popup.opener = null
-    const currentRequest = ++requestId.current
-    blankPopup.current = popup
-    setPending(true)
-    setMessage(null)
-
-    try {
-      const result = await authorization.request()
-      if (currentRequest !== requestId.current) return
-
-      if (!result.url) {
-        popup.close()
-        blankPopup.current = null
-        setMessage('Access is already available. Retry the shared-drive selector below.')
-        return
-      }
-
-      const url = new URL(result.url)
-      if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
-        throw new Error('Invalid authorization URL')
-      }
-
-      popup.location.replace(url.href)
-      blankPopup.current = null
-      setMessage('Complete authorization in the new tab, then return and retry the shared-drive selector below.')
-    } catch {
-      if (currentRequest !== requestId.current) return
-      popup.close()
-      blankPopup.current = null
-      setMessage('Could not start authorization. Please try again.')
-    } finally {
-      if (currentRequest === requestId.current) setPending(false)
-    }
-  }
-
-  return (
-    <section className="mb-3 rounded-xl border border-kumo-line bg-kumo-elevated px-3 py-3 text-[12px] leading-4">
-      <div className="font-medium text-kumo-default">{authorization.title}</div>
-      <p className="mt-1 text-kumo-subtle">{authorization.description}</p>
-      <WorkshopButton
-        className="mt-2"
-        disabled={pending}
-        onClick={() => void requestAuthorization()}
-      >
-        {authorization.title}
-      </WorkshopButton>
-      {message && <p className="mt-2 text-kumo-subtle" aria-live="polite">{message}</p>}
-    </section>
   )
 }
 

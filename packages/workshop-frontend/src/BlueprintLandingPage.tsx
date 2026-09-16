@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
-import { SupportedResource, VendorDescription, ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
+import { SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
@@ -16,7 +16,9 @@ import {
   saveStreamToFile,
 } from './fileTransfers'
 import { AccountChooser, AccountOption } from './gatekeeper-modal/AccountChooser'
-import ResourceConfiguratorHost, { disposeConfiguratorFrame } from './ResourceConfiguratorHost'
+import ResourceConfiguratorHost, {
+  disposeConfiguratorFrame, type ConfiguratorFrameState,
+} from './ResourceConfiguratorHost'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
@@ -1540,13 +1542,13 @@ function BlueprintGatekeeperBindingField({
 
   // Configurator iframe state. We re-spin the iframe whenever the (account, resource) pair
   // changes; each frame is disposed when replaced or when the component unmounts.
-  const [frameState, setFrameState] = useState<{ key: number, frame: ResourceConfiguratorFrame } | null>(null)
+  const [frameState, setFrameState] = useState<ConfiguratorFrameState | null>(null)
   const [frameLoading, setFrameLoading] = useState(false)
   const [frameError, setFrameError] = useState<string | null>(null)
-  const frameRef = useRef<{ key: number, frame: ResourceConfiguratorFrame } | null>(null)
+  const frameRef = useRef<ConfiguratorFrameState | null>(null)
   const frameKeyRef = useRef(0)
 
-  const replaceFrameState = useCallback((next: { key: number, frame: ResourceConfiguratorFrame } | null) => {
+  const replaceFrameState = useCallback((next: ConfiguratorFrameState | null) => {
     const prev = frameRef.current
     if (prev?.frame !== next?.frame) disposeConfiguratorFrame(prev?.frame ?? null)
     frameRef.current = next
@@ -1596,7 +1598,12 @@ function BlueprintGatekeeperBindingField({
           disposeConfiguratorFrame(frame)
           return
         }
-        replaceFrameState({ key: ++frameKeyRef.current, frame })
+        replaceFrameState({
+          key: ++frameKeyRef.current,
+          frame,
+          accountId: selectedAccount.id,
+          resourceUrlPattern: resource.urlPattern,
+        })
       })
       .catch(err => {
         console.error('Failed to start resource configurator:', err)
@@ -1654,8 +1661,9 @@ function BlueprintGatekeeperBindingField({
           )}
 
           <ResourceConfiguratorHost
-            frame={frameState?.frame ?? null}
-            frameKey={frameState?.key ?? null}
+            state={frameState}
+            accountId={selectedAccount?.id ?? null}
+            resourceUrlPattern={resource.urlPattern}
             loading={frameLoading}
             error={frameError}
             disabled={false}

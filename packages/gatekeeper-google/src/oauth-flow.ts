@@ -1,8 +1,9 @@
-import { resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from "./resources";
+import {
+  DRIVE_READONLY_SCOPE, resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns,
+} from "./resources";
 
 const FLOW_KEY = "oauthFlow";
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;
-const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const LEGACY_FLOW_KEYS = [
   "nonce", "requestedScopes", "requestedResources", "reconnecting", "ephemeral",
 ] as const;

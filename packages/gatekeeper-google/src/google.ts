@@ -77,7 +77,7 @@ import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
+  grantedResourceUrlPatterns, grantsDriveDiscovery, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
 import {
@@ -426,10 +426,8 @@ export class UserAccount extends DurableObject<Env> {
   /** Prepare a reconnect or scope-expansion attempt for this account. */
   async prepareReconnect(
       initiationNonce: string, requestedResources: string[], requestDriveReadonly = false) {
-    let grantedScopes = this.ctx.storage.kv.get<string[]>("grantedScopes") ?? [];
-    let preserveDriveDiscovery = grantedScopes.includes(
-        "https://www.googleapis.com/auth/drive.readonly") ||
-      grantedScopes.includes("https://www.googleapis.com/auth/drive");
+    let preserveDriveDiscovery = grantsDriveDiscovery(
+      this.ctx.storage.kv.get<string[]>("grantedScopes") ?? []);
     prepareOAuthFlow(
       this.ctx.storage.kv,
       initiationNonce,
@@ -458,9 +456,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async hasSharedDriveDiscovery(): Promise<boolean> {
-    let scopes = this.ctx.storage.kv.get<string[]>("grantedScopes") ?? [];
-    return scopes.includes("https://www.googleapis.com/auth/drive.readonly") ||
-      scopes.includes("https://www.googleapis.com/auth/drive");
+    return grantsDriveDiscovery(this.ctx.storage.kv.get<string[]>("grantedScopes") ?? []);
   }
 
   async requestSharedDriveDiscovery(): Promise<{url?: string}> {

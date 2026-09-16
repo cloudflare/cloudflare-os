@@ -362,6 +362,7 @@ export class ObserverTracker<T, V> {
       let tracked = this.listTracked();
       let pending = tracked.filter(value => !checked.has(this.#options.encode(value)));
       if (pending.length === 0) {
+        if (this.#observationWithheld()) throw new Error(OBSERVER_WITHHELD_MESSAGE);
         if (recordObservers) this.#kv.put(observerKey, verifier);
         return;
       }
