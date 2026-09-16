@@ -6924,11 +6924,17 @@ class OverseerImpl implements AgentHooks {
               `Hook entrypoint: ${gatekeeper.hook || "(not connected)"}\n`
             : "") +
         `\n` +
-        `The binding comes with the following bundle of TypeScript type definitions:\n` +
+        `The binding comes with the following bundle of TypeScript type definitions. These are ` +
+        `NOT separately-callable top-level tools -- there is no tool named after any method below, ` +
+        `and no \`callTool\`/\`listTools\` tool exists either. Call them from the executeCode tool ` +
+        `(e.g. \`const result = await env.${name}.methodName(args); return result;\`):\n` +
         `\n` +
         `\`\`\`\n` +
         `${types}\n` +
-        `\`\`\`\n`;
+        `\`\`\`\n` +
+        `\n` +
+        `Reminder: the methods above are only reachable via executeCode as env.${name}.methodName(...). ` +
+        `Do not attempt to call them, or callTool/listTools, as a directly-named tool.\n`;
   }
 
   // Add a binding edge to a gadget on behalf of the agent's setGadgetBinding tool. The edge is
