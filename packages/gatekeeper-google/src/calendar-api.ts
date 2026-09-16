@@ -167,6 +167,12 @@ export function validateCalendarTimeWindow(timeMin: Date, timeMax: Date, maxDays
   }
 }
 
+class GoogleCalendarApiError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`Google Calendar API request failed: ${status} ${body}`);
+  }
+}
+
 export class GoogleCalendarApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -186,7 +192,7 @@ export class GoogleCalendarApi {
 
     if (!response.ok) {
       let text = await response.text();
-      throw new Error(`Google Calendar API request failed: ${response.status} ${text}`);
+      throw new GoogleCalendarApiError(response.status, text);
     }
 
     if (response.status === 204) return undefined as T;
@@ -232,6 +238,21 @@ export class GoogleCalendarApi {
       ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
       ...(cal.primary ? { primary: cal.primary } : {}),
     };
+  }
+
+  /**
+   * Returns whether the connected account can write the exact calendar. A calendar that is not on
+   * the account's list (404) is reported as unwritable; any other failure is rethrown so a
+   * transient error is not mistaken for missing access.
+   */
+  async canWriteCalendar(calendarId: string): Promise<boolean> {
+    try {
+      let calendar = await this.getCalendar(calendarId);
+      return calendar.accessRole === "writer" || calendar.accessRole === "owner";
+    } catch (error) {
+      if (error instanceof GoogleCalendarApiError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   /** Lists all events in the window, paginating fully. */

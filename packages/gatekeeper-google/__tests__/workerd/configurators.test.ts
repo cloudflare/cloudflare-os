@@ -92,6 +92,46 @@ describe("Google resource configurators", () => {
     expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing"]);
   });
 
+  it.each([
+    ["owner", true],
+    ["writer", true],
+    ["reader", false],
+  ] as const)("reports %s access accurately for an exact calendar", async (accessRole, expected) => {
+    let getToken = vi.fn(async () => token("access-token"));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      id: "shared@example.com",
+      summary: "Shared calendar",
+      accessRole,
+    })));
+
+    await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
+      .resolves.toBe(expected);
+  });
+
+  it("treats inaccessible exact calendars as unavailable", async () => {
+    let getToken = vi.fn(async () => token("access-token"));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+
+    await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("private@example.com"))
+      .resolves.toBe(false);
+  });
+
+  it("surfaces transient exact-calendar failures", async () => {
+    let getToken = vi.fn(async () => token("access-token"));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 500 })));
+
+    await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
+      .rejects.toThrow("Google Calendar API request failed: 500");
+  });
+
+  it("does not mistake a quota 403 for missing Calendar access", async () => {
+    let getToken = vi.fn(async () => token("access-token"));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limit", { status: 403 })));
+
+    await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
+      .rejects.toThrow("Google Calendar API request failed: 403");
+  });
+
   it("refreshes a rejected Calendar access token", async () => {
     let getToken = vi.fn(async (opts?: AccessTokenRequest) =>
       token(opts?.forceRefresh ? "fresh" : "stale"));
