@@ -7522,11 +7522,10 @@ class OverseerImpl implements AgentHooks {
   // Idempotent: checks existing gatekeepers and gadget bindings before provisioning.
   async ensureHomelabMcpBindings(): Promise<void> {
     if (!this.ownerId) return;
-    this.ensureDefaultGadget();
+    this.ensureDefaultGadget(undefined);
     let defId = this.defaultGadgetId;
     if (defId === undefined) return;
-    let gadgetRecord = this.storage.gadgets.get(defId);
-    if (!gadgetRecord) return;
+    let gadgetRecord = this.getGadgetRecord(defId);
 
     const SERVERS = ["navidrome", "kiwix", "gitea", "observability"];
     let existingGatekeepers = Array.from(this.storage.gatekeepers.list());

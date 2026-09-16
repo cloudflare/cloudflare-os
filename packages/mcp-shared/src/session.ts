@@ -190,6 +190,7 @@ export class McpSessionBase extends RpcTarget {
       throw new Error("callTool() arguments must be an object.");
     }
 
+    const host = this.#host;
     let entry = await host.findTool(name);
     if (!entry) {
       const tools = await host.tools();

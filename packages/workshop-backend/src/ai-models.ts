@@ -624,6 +624,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
                 : {}),
           },
           compat: catalog?.compat ?? {supportsDeveloperRole: false},
+          cost: catalog?.cost ?? ZERO_COST,
           ...window,
         },
         headers: {

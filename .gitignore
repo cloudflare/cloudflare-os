@@ -9,6 +9,7 @@ packages/gatekeeper-*/src/generated/*-configurator-ui.js*
 packages/gatekeeper-*/src/generated/app.txt
 # Bundled blueprints (regenerated at build time from BUNDLED_BLUEPRINTS_DIR).
 packages/workshop-backend/src/generated/bundled-blueprints.ts
+packages/workshop-backend/src/generated/format-blueprints.ts
 packages/workshop-backend/src/generated/browser-export-runtime.txt
 packages/workshop-backend/src/generated/html-sanitizer-runtime.txt
 packages/workshop-backend/src/generated/browser-export-page.js
