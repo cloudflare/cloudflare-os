@@ -2,7 +2,9 @@
 // with source mapping to allow Markdown-level edits to be translated back
 // to Google Docs batchUpdate operations.
 
-import type { GoogleDocsTab, Paragraph } from "./docs-api";
+import type {
+  GoogleDocsTab, Paragraph, StructuralElement, Table, TableCell,
+} from "./docs-api";
 
 // ---------------------------------------------------------------------------
 // Source map types
@@ -34,9 +36,14 @@ export type DocTabSnapshot = {
 }
 
 export type SourceMap = {
-  /** One entry per structural element (paragraph/heading/list item), in document order. */
+  /** One entry per editable paragraph/heading/list item, in document order. */
   blocks: BlockMapping[];
+  /** Rendered structural content that `replaceText()` must not modify or cross. */
+  protectedRanges: MarkdownRange[];
 }
+
+/** A half-open range in the rendered Markdown string. */
+export type MarkdownRange = { mdStart: number; mdEnd: number };
 
 export type BlockMapping = {
   /** Range in the Markdown string [mdStart, mdEnd). */
@@ -67,16 +74,23 @@ export type Segment =
 export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let md = "";
   let blocks: BlockMapping[] = [];
+  let protectedRanges: MarkdownRange[] = [];
   let lastWasListItem = false;
 
   let elements = tab.body.content;
   let bodyEndIndex = elements.length > 0 ? elements[elements.length - 1].endIndex : 0;
 
   for (let elem of elements) {
-    if (!elem.paragraph) {
-      // Skip section breaks, tables, table of contents, etc.
+    if (elem.table) {
+      if (md.length > 0) md += "\n";
+      let mdStart = md.length;
+      md += tableToHtml(elem.table);
+      protectedRanges.push({ mdStart, mdEnd: md.length });
+      md += "\n";
+      lastWasListItem = false;
       continue;
     }
+    if (!elem.paragraph) continue;
 
     let para = elem.paragraph;
     let segments: Segment[] = [];
@@ -145,9 +159,60 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     index: tab.index,
     nestingLevel: tab.nestingLevel,
     markdown: md,
-    sourceMap: { blocks },
+    sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
   };
+}
+
+/** Render a table as raw HTML, which Markdown preserves without inventing a header row. */
+function tableToHtml(table: Table): string {
+  let lines = ["<table>"];
+  for (let row of Array.isArray(table.tableRows) ? table.tableRows : []) {
+    lines.push("  <tr>");
+    for (let cell of Array.isArray(row.tableCells) ? row.tableCells : []) {
+      lines.push(tableCellToHtml(cell));
+    }
+    lines.push("  </tr>");
+  }
+  lines.push("</table>");
+  return lines.join("\n");
+}
+
+function tableCellToHtml(cell: TableCell): string {
+  let style = cell.tableCellStyle;
+  let attributes = htmlSpan("rowspan", style?.rowSpan) + htmlSpan("colspan", style?.columnSpan);
+  let parts: string[] = [];
+  for (let element of Array.isArray(cell.content) ? cell.content : []) {
+    let part = tableCellElementToHtml(element);
+    if (part) parts.push(part);
+  }
+  let content = parts.join("<br>\n");
+  if (!content.includes("\n")) return `    <td${attributes}>${content}</td>`;
+  return `    <td${attributes}>\n${indentHtml(content, 6)}\n    </td>`;
+}
+
+function tableCellElementToHtml(element: StructuralElement): string {
+  if (element.table) return tableToHtml(element.table);
+  if (!element.paragraph) return "";
+  let text = element.paragraph.elements.map(part => {
+    if (part.textRun) return part.textRun.content;
+    return part.horizontalRule ? "---" : "";
+  }).join("").replace(/\n$/, "");
+  return escapeHtml(text);
+}
+
+function htmlSpan(name: string, value: number | undefined): string {
+  return typeof value === "number" && Number.isInteger(value) && value > 1
+    ? ` ${name}="${value}"` : "";
+}
+
+function escapeHtml(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function indentHtml(text: string, spaces: number): string {
+  let prefix = " ".repeat(spaces);
+  return prefix + text.replaceAll("\n", `\n${prefix}`);
 }
 
 /** Determine the Markdown prefix for a paragraph based on its style. */
@@ -677,11 +742,23 @@ export function markdownToDocRequests(
 // Replace operations: map a Markdown edit back to doc operations
 // ---------------------------------------------------------------------------
 
+/** Refuse edits that would modify or bridge structural content without a safe source mapping. */
+export function assertMarkdownRangeEditable(
+  protectedRanges: readonly MarkdownRange[],
+  mdStart: number,
+  mdEnd: number,
+): void {
+  if (protectedRanges.some(range => mdStart < range.mdEnd && mdEnd > range.mdStart)) {
+    throw new Error(
+      "replaceText: table content cannot be edited. Narrow the match to text outside the table.",
+    );
+  }
+}
+
 /**
- * Given a match range in one tab's Markdown snapshot, compute the batchUpdate operations to
- * replace that range with new Markdown content inside tab `tabId`.
+ * Compute the batch-update operations that replace one range in a tab's Markdown rendering.
  *
- * Automatically trims unchanged leading/trailing text to minimize the edit.
+ * Unchanged leading and trailing text is trimmed before document indices are calculated.
  */
 export function computeReplaceOperations(
   sourceMap: SourceMap,
@@ -691,6 +768,7 @@ export function computeReplaceOperations(
   newMarkdown: string,
   tabId: string,
 ): { requests: any[]; trimmedOld: string; trimmedNew: string } {
+  assertMarkdownRangeEditable(sourceMap.protectedRanges, matchStart, matchEnd);
   let oldText = markdown.slice(matchStart, matchEnd);
 
   // Trim unchanged prefix.

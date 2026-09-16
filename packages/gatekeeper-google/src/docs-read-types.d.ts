@@ -45,6 +45,8 @@ export interface GoogleDocReadSession {
 
   /**
    * Return one tab's content as Markdown.
+   * Native tables are emitted as raw HTML within the Markdown so row and cell boundaries remain
+   * explicit.
    *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.

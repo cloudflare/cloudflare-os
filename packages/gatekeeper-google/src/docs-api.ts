@@ -71,8 +71,31 @@ export type StructuralElement = {
   endIndex: number;
   paragraph?: Paragraph;
   sectionBreak?: {};
-  table?: {};
+  table?: Table;
   tableOfContents?: {};
+}
+
+/** A table embedded in a document body or table cell. */
+export type Table = {
+  tableRows: TableRow[];
+}
+
+/** One row in a Google Docs table. */
+export type TableRow = {
+  startIndex: number;
+  endIndex: number;
+  tableCells: TableCell[];
+}
+
+/** One table cell, whose contents use the same recursive structure as the document body. */
+export type TableCell = {
+  startIndex: number;
+  endIndex: number;
+  content: StructuralElement[];
+  tableCellStyle?: {
+    rowSpan?: number;
+    columnSpan?: number;
+  };
 }
 
 /** A paragraph (including headings, list items, etc.). */

@@ -73,6 +73,42 @@ describe("docTabToMarkdown", () => {
   });
 });
 
+describe("Google Docs tables", () => {
+  let snapshot = docTabToMarkdown(buildTab([
+    { runs: ["Before\n"] },
+    { table: [["Owner\n", "Status\n"], ["R&D <ops>\n", "Ready\n"]] },
+    { runs: ["After\n"] },
+  ]));
+
+  it("renders every cell without inventing a header row", () => {
+    expect(snapshot.markdown).toBe(
+      "Before\n\n" +
+      "<table>\n" +
+      "  <tr>\n" +
+      "    <td>Owner</td>\n" +
+      "    <td>Status</td>\n" +
+      "  </tr>\n" +
+      "  <tr>\n" +
+      "    <td>R&amp;D &lt;ops&gt;</td>\n" +
+      "    <td>Ready</td>\n" +
+      "  </tr>\n" +
+      "</table>\n\n" +
+      "After\n",
+    );
+  });
+
+  it("refuses an edit spanning table structure", () => {
+    expect(() => computeReplaceOperations(
+      snapshot.sourceMap,
+      snapshot.markdown,
+      0,
+      snapshot.markdown.trimEnd().length,
+      "Updated",
+      TAB_ID,
+    )).toThrow("replaceText: table content cannot be edited");
+  });
+});
+
 // These are what keeps an edit from landing on the wrong characters. A content segment claims a
 // 1:1 mapping between Markdown and document indices, and computeReplaceOperations trusts it.
 describe("source map invariants", () => {

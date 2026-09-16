@@ -1,6 +1,7 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocActionTab } from "../../src/google";
+import { buildTab } from "../doc-fixture";
 
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
 type DocCoordinate = { tabId?: string };
@@ -16,7 +17,13 @@ type BatchRequest = {
 };
 
 /** One tab of the model document: its own text, and its place in the tab tree. */
-type ModelTab = { id: string; title: string; parentId?: string; text: string };
+type ModelTab = {
+  id: string;
+  title: string;
+  parentId?: string;
+  text: string;
+  table?: { before: string; rows: string[][]; after: string };
+};
 
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
 const MAIN_TAB = "tab-1";
@@ -71,6 +78,10 @@ class DocsModel {
 
   setText(tabId: string, text: string): void {
     this.#tab(tabId).text = text;
+  }
+
+  setTable(tabId: string, before: string, rows: string[][], after: string): void {
+    this.#tab(tabId).table = { before, rows, after };
   }
 
   text(tabId = MAIN_TAB): string {
@@ -221,10 +232,13 @@ class DocsModel {
       (namedRanges[marker.name] ??= { namedRanges: [] })
         .namedRanges.push({ namedRangeId, name: marker.name });
     }
-    return {
-      tabProperties: { tabId: tab.id, title: tab.title },
-      documentTab: {
-        body: {
+    let body = tab.table
+      ? buildTab([
+          { runs: [`${tab.table.before}\n`] },
+          { table: tab.table.rows.map(row => row.map(cell => `${cell}\n`)) },
+          { runs: [`${tab.table.after}\n`] },
+        ]).body
+      : {
           content: [{
             startIndex: 1,
             endIndex: text.length + 1,
@@ -236,10 +250,10 @@ class DocsModel {
               paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
             },
           }],
-        },
-        lists: {},
-        namedRanges,
-      },
+        };
+    return {
+      tabProperties: { tabId: tab.id, title: tab.title },
+      documentTab: { body, lists: {}, namedRanges },
       childTabs: this.tabs.filter(child => child.parentId === tab.id)
         .map(child => this.#documentTab(child)),
     };
@@ -264,6 +278,32 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("Google Doc tables", () => {
+  it("returns table cells with their row structure", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Before", [["Owner", "Status"], ["Alice", "Ready"]], "After");
+    docs.install();
+
+    await expect(hooks().readContent("table-read")).resolves.toContain(
+      "<tr>\n    <td>Alice</td>\n    <td>Ready</td>\n  </tr>",
+    );
+  });
+
+  it("rejects an edit spanning a table before requesting approval", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Before", [["Owner", "Alice"]], "After");
+    docs.install();
+    await hooks().submitReplace("table-edit", "Before", "Long before");
+    let content = await hooks().readContent("table-edit");
+
+    await expect(Promise.resolve(
+      hooks().submitReplace("table-edit", content.trimEnd(), "Updated"),
+    )).rejects.toThrow("replaceText: table content cannot be edited");
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(docs.contentBatches).toBe(0);
+  });
 });
 
 describe("Google Doc write receipts", () => {
@@ -700,18 +740,19 @@ describe("Google Doc tab isolation", () => {
   });
 });
 
+function tabSnapshot(tabId: string, title: string) {
+  return {
+    tabId, title, index: 0, nestingLevel: 0,
+    markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
+    committedWriteIds: [],
+  };
+}
+
 // A stored edit with no tab predates tab support. No current write path produces one, so this is
 // the only place the migration refusal can be reached.
 describe("Google Doc edits stored before tab support", () => {
-  function tabSnapshot(tabId: string, title: string) {
-    return {
-      tabId, title, index: 0, nestingLevel: 0,
-      markdown: "shared\n", sourceMap: { blocks: [] }, bodyEndIndex: 8,
-      committedWriteIds: [],
-    };
-  }
-
   const snapshot = {
+    formatVersion: 2 as const,
     title: "Test document",
     revisionId: "revision-1",
     tabs: [tabSnapshot(MAIN_TAB, "Main")],
