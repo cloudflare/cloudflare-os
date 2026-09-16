@@ -1,8 +1,11 @@
-import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { UserAccount } from "../../src/google";
-import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
+import type { OAuthFlowMode } from "../../src/oauth-flow";
+import type {
+  ActionKind, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
   GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailReplyOptions,
@@ -11,6 +14,75 @@ import type {
 
 export { default } from "../../src/google";
 export { GmailGatekeeperImpl, UserAccount };
+
+
+const connectNotifications = new Map<string, string[]>();
+const HANDOFF: ConnectHandoff = {
+  targetOrigin: "https://workshop.example", ticket: "a".repeat(64),
+};
+
+export class TestConnectCallback extends WorkerEntrypoint<
+  Cloudflare.Env,
+  {id: string}
+> implements GatekeeperConnectCallback {
+  async complete(_user: Fetcher<GatekeeperUser>): Promise<ConnectHandoff> {
+    this.#record("complete");
+    return HANDOFF;
+  }
+
+  async reconnectComplete(stageId: string): Promise<ConnectHandoff> {
+    this.#record(`reconnect:${stageId}`);
+    return HANDOFF;
+  }
+
+  async credentialsExpired(): Promise<void> {
+    this.#record("expired");
+  }
+
+  async credentialsRestored(): Promise<void> {
+    this.#record("restored");
+  }
+
+  #record(event: string): void {
+    let events = connectNotifications.get(this.ctx.props.id) ?? [];
+    connectNotifications.set(this.ctx.props.id, [...events, event]);
+  }
+}
+
+type TestUserAccount = UserAccount & {
+  setTestCallback(
+    id: string,
+    initiationNonce: string,
+    requestedResources: string[],
+    mode: OAuthFlowMode,
+  ): Promise<void>;
+  readTestConnectNotifications(id: string): string[];
+};
+
+type UserAccountContext = {
+  ctx: {
+    exports: {
+      TestConnectCallback(options: {props: {id: string}}): Fetcher<GatekeeperConnectCallback>;
+    };
+  };
+};
+
+const testUserAccountPrototype = UserAccount.prototype as TestUserAccount;
+
+testUserAccountPrototype.setTestCallback = function(
+    id: string,
+    initiationNonce: string,
+    requestedResources: string[],
+    mode: OAuthFlowMode,
+): Promise<void> {
+  const account = this as unknown as UserAccountContext;
+  const callback = account.ctx.exports.TestConnectCallback({props: {id}});
+  return this.setCallback(callback, initiationNonce, requestedResources, mode);
+};
+
+testUserAccountPrototype.readTestConnectNotifications = function(id: string): string[] {
+  return [...(connectNotifications.get(id) ?? [])];
+};
 
 type StorageOperation =
   | {kind: "put"; key: string; value: unknown}
@@ -143,6 +215,7 @@ class TestApprovalQueue extends RpcTarget {
 /** Test-only hook that creates and drives the props-bearing Gmail facet. */
 export class TestHooks extends DurableObject<Cloudflare.Env> {
   #queues = new Map<string, TestApprovalQueue>();
+
 
   #gatekeeper(
       facetName: string, id: string, props: GmailGatekeeperImplProps,

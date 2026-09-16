@@ -117,6 +117,27 @@ describe("stored OAuth flow", () => {
     },
   );
 
+  it("adds Drive discovery without changing resource intent", () => {
+    let kv = new FakeKv();
+    prepareOAuthFlow(
+        kv, "init", [GOOGLE_DOC_RESOURCE.urlPattern], "reconnect", 0, true);
+
+    expect(beginStoredOAuthFlow(kv, "init", "oauth", OAUTH_REDIRECT_URI, 1)).toEqual({
+      oauthNonce: "oauth",
+      scopes: [
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ],
+    });
+    expect(claimStoredOAuthFlow(kv, "oauth", 2)).toEqual({
+      mode: "reconnect",
+      requestedResources: [GOOGLE_DOC_RESOURCE.urlPattern],
+      oauthRedirectUri: OAUTH_REDIRECT_URI,
+    });
+  });
+
   it("clears obsolete pending-flow keys when preparing a new flow", () => {
     let kv = new FakeKv();
     for (let key of ["nonce", "requestedScopes", "requestedResources", "reconnecting", "ephemeral"]) {

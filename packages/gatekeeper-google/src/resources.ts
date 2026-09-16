@@ -85,29 +85,14 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** Files, folders, and read-only native content in one Google Workspace shared drive. */
-export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/folders/:driveId",
-  title: "Google Workspace Shared Drive",
-  description: "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
-  grantable: true,
-};
 
-/**
- * Files, folders, and read-only native content within one Drive folder and its descendants.
- *
- * The `_resource` path is an internal selector rather than a browser URL, because the natural
- * `/drive/folders/:id` is already {@link GOOGLE_SHARED_DRIVE_RESOURCE}'s permanent identity and its
- * pattern leaves the search component wildcard: a query-qualified variant of it would match both
- * resources, making selection order- and filtering-dependent. This path is disjoint from every
- * other pattern even when either resource is disabled.
- */
+/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/_resource/folder/:folderId",
+  urlPattern: "https://drive.google.com/drive/folders/:folderId",
   title: "Google Drive Folder",
   description:
-      "Find files and folders, and read native Google Docs and Sheets, within one Drive folder " +
-      "and its descendants.",
+      "Browse a selected folder or shared drive, search its direct children, and read native " +
+      "Google Docs and Sheets.",
   grantable: true,
 };
 
@@ -192,22 +177,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     ],
   },
   {
-    resource: GOOGLE_SHARED_DRIVE_RESOURCE,
-    // `drive.readonly` (not `drive.metadata.readonly`): the shared-drive picker and the binding's
-    // `getScope` use `drives.list`/`drives.get`, which accept nothing narrower. The same scope already
-    // authorizes native Docs and Sheets content, so do not add redundant API scopes. Google lists
-    // `drive.metadata.readonly` as restricted too, so that is not the distinction: what this scope
-    // adds is account-wide content download, strictly wider than the authority the shared-drive
-    // binding exercises. Narrowing it means dropping both calls: resolving a shared drive's name
-    // through `files.get` on the drive root instead, and giving up drive enumeration in the
-    // configurator.
-    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-  },
-  {
     resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
-    // The same read-only trio the account and exact-file resources take. A folder binding proves
-    // descendant membership from `files.get` metadata and reads native content through the Docs and
-    // Sheets APIs, so it needs nothing from the wider `drive.readonly` the shared drive requires.
     scopes: [
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
@@ -234,7 +204,6 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 
 const DRIVE_RESOURCE_PATTERNS = new Set([
   GOOGLE_DRIVE_RESOURCE.urlPattern,
-  GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
 ]);
@@ -269,6 +238,23 @@ export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly s
   return [...scopes];
 }
 
+function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
+  if (granted.has(required)) return true;
+  const driveRead = granted.has("https://www.googleapis.com/auth/drive.readonly") ||
+    granted.has("https://www.googleapis.com/auth/drive");
+  if (driveRead) {
+    return required === "https://www.googleapis.com/auth/drive.metadata.readonly" ||
+      required === "https://www.googleapis.com/auth/documents.readonly" ||
+      required === "https://www.googleapis.com/auth/spreadsheets.readonly";
+  }
+  return (required === "https://www.googleapis.com/auth/drive.metadata.readonly" &&
+      granted.has("https://www.googleapis.com/auth/drive.metadata")) ||
+    (required === "https://www.googleapis.com/auth/documents.readonly" &&
+      granted.has("https://www.googleapis.com/auth/documents")) ||
+    (required === "https://www.googleapis.com/auth/spreadsheets.readonly" &&
+      granted.has("https://www.googleapis.com/auth/spreadsheets"));
+}
+
 /**
  * The subset of `resourceUrlPatterns` whose every OAuth scope is present in `grantedOAuthScopes`.
  *
@@ -282,7 +268,7 @@ export function resourcesCoveredByScopes(
   let requested = new Set(resourceUrlPatterns);
   return RESOURCE_SCOPES
       .filter(entry => requested.has(entry.resource.urlPattern) &&
-                       entry.scopes.every(scope => granted.has(scope)))
+                       entry.scopes.every(scope => oauthScopeCovers(scope, granted)))
       .map(entry => entry.resource.urlPattern);
 }
 
@@ -340,7 +326,6 @@ export type ResourceTarget =
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
   | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
   | { kind: "driveAccount" }
-  | { kind: "sharedDrive"; driveId: string }
   | { kind: "driveFolder"; folderId: string }
   | { kind: "driveFile"; fileId: string };
 
@@ -353,7 +338,6 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   bigquery: BIGQUERY_RESOURCE,
   driveAccount: GOOGLE_DRIVE_RESOURCE,
   driveFolder: GOOGLE_DRIVE_FOLDER_RESOURCE,
-  sharedDrive: GOOGLE_SHARED_DRIVE_RESOURCE,
   driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
 };
 
@@ -458,16 +442,10 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
       parsed.searchParams.get("availability") === "allVisible" ? "allVisible" : "thisCalendar";
   return { kind: "calendar", calendarId, availabilityMode };
 }
-
 function parseDriveUrl(parsed: URL): ResourceTarget {
   if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
 
-  let sharedDrive = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
-  if (sharedDrive) return { kind: "sharedDrive", driveId: decodeURIComponent(sharedDrive[1]) };
-
-  // Internal selector, not a browser URL: `/drive/folders/:driveId` above is the shared drive's
-  // permanent identity and matches any query, so a folder cannot be told apart by qualifying it.
-  let folder = /^\/_resource\/folder\/([^/]+)\/?$/.exec(parsed.pathname);
+  let folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
   if (folder) return { kind: "driveFolder", folderId: decodeURIComponent(folder[1]) };
 
   let file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(parsed.pathname);

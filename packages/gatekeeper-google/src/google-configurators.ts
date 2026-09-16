@@ -14,7 +14,6 @@ import type { ConfiguratorOption } from "./configurator/configurator-option";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
-import type { SharedDriveConfiguratorRpc } from "./configurator/shared-drive-configurator-types";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -247,25 +246,9 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
   }
 }
 
+
 @validateRpc()
 export class DriveAccountConfiguratorUI extends RpcTarget implements DriveAccountConfiguratorRpc {}
-
-@validateRpc()
-export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
-    super();
-    googleTokenGetters.set(this, getToken);
-  }
-
-  async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
-    let drive = new DriveApi(googleTokenProvider(this));
-    let drives = await withDriveApiEnabled(
-      "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
-      () => drive.listAllDrives({ namePrefix: query }),
-    );
-    return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
-  }
-}
 
 @validateRpc()
 export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfiguratorRpc {
@@ -295,9 +278,14 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
 
 @validateRpc()
 export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
+  #hasSharedDriveDiscovery: () => Promise<boolean>;
+
+  constructor(
+      getToken: () => Promise<GoogleAccessToken>,
+      hasSharedDriveDiscovery: () => Promise<boolean>) {
     super();
     googleTokenGetters.set(this, getToken);
+    this.#hasSharedDriveDiscovery = hasSharedDriveDiscovery;
   }
 
   async listDriveFolders(query: string): Promise<ConfiguratorOption[]> {
@@ -306,15 +294,28 @@ export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderC
       "Drive folder search requires the Google Drive API to be enabled for this OAuth project.",
       () => drive.listFiles({ mimeType: FOLDER_MIME_TYPE, namePrefix: query }),
     );
-    // A shared drive's root carries the drive's own ID. It is the Shared Drive resource, and
-    // offering it here too would make a folder binding a second, weaker name for a whole drive.
-    return files.filter(file =>
-      file.id !== file.driveId && file.capabilities?.canListChildren === true).map(file => ({
+    return files.filter(file => file.capabilities?.canListChildren === true).map(file => ({
       value: file.id,
       title: file.name,
       subtitle: file.driveId
         ? "In a shared drive"
         : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
+    }));
+  }
+
+  async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
+    if (!await this.#hasSharedDriveDiscovery()) {
+      throw new Error("Enable Workspace Shared Drive discovery above, then try again.");
+    }
+    let drive = new DriveApi(googleTokenProvider(this));
+    let drives = await withDriveApiEnabled(
+      "Shared Drive discovery requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listAllDrives({namePrefix: query}),
+    );
+    return drives.map(sharedDrive => ({
+      value: sharedDrive.id,
+      title: sharedDrive.name,
+      subtitle: "Workspace Shared Drive",
     }));
   }
 }

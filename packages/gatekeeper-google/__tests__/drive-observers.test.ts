@@ -1,124 +1,101 @@
 import { describe, expect, it } from "vitest";
-import { DRIVE_OBSERVATION_PREFIX, driveObserverTracker } from "../src/drive-observers";
+import {
+  DRIVE_OBSERVATION_PREFIX, driveObserverTracker, type DriveObservation,
+} from "../src/drive-observers";
 import type { DriveBindingScope } from "../src/drive-session";
 import type { ObserverBatchResult } from "../src/observers";
 import { FakeKv } from "./fake-kv";
 
-function allow(ids: readonly string[]): ObserverBatchResult {
-  return { baselineAllowed: true, allowed: ids.map(() => true) };
+function allow(units: readonly DriveObservation[]): ObserverBatchResult {
+  return { baselineAllowed: true, allowed: units.map(() => true) };
 }
 
-function deny(ids: readonly string[]): ObserverBatchResult {
-  return { baselineAllowed: true, allowed: ids.map(() => false) };
+function deny(units: readonly DriveObservation[]): ObserverBatchResult {
+  return { baselineAllowed: true, allowed: units.map(() => false) };
 }
 
 function tracker(
   scope: DriveBindingScope,
   verdicts: (
-    ids: readonly string[], verifier: string, listableFolderId?: string,
+    units: readonly DriveObservation[], verifier: string,
   ) => ObserverBatchResult | Promise<ObserverBatchResult>,
 ) {
   let kv = new FakeKv();
-  let asked: string[][] = [];
-  let listableFolders: (string | undefined)[] = [];
-  let track = driveObserverTracker<string>(kv, scope,
-    async (verifier, fileIds, listableFolderId) => {
-      asked.push([...fileIds]);
-      listableFolders.push(listableFolderId);
-      return verdicts(fileIds, verifier, listableFolderId);
-    });
-  return { kv, asked, listableFolders, track };
+  let asked: DriveObservation[][] = [];
+  let track = driveObserverTracker<string>(kv, scope, async (verifier, units) => {
+    asked.push([...units]);
+    return verdicts(units, verifier);
+  });
+  return { kv, asked, track };
 }
 
 describe("driveObserverTracker", () => {
+  it("seeds file and folder bindings with distinct disclosure units", async () => {
+    let file = tracker({ kind: "file", fileId: "same" }, allow);
+    let folder = tracker({ kind: "folder", folderId: "same" }, allow);
 
-  it("seeds a file binding with its bound file, so a joiner is verified against it", async () => {
-    let { kv, asked, track } = tracker({ kind: "file", fileId: "file-1" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}file-1`]);
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["file-1"]]);
-  });
-
-  it("seeds a shared-drive binding with its root", async () => {
-    let { asked, track } = tracker({ kind: "sharedDrive", driveId: "drive-1" }, allow);
-
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["drive-1"]]);
-  });
-
-  it("seeds a folder binding with its root, which is durable authority a proof is not", async () => {
-    let { kv, asked, listableFolders, track } =
-      tracker({ kind: "folder", folderId: "folder-1" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}folder-1`]);
-    await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["folder-1"]]);
-    expect(listableFolders).toEqual(["folder-1"]);
+    expect([...file.kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}same`]);
+    expect([...folder.kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}folder:same`]);
+    await file.track.addObserver("obs", "verifier");
+    await folder.track.addObserver("obs", "verifier");
+    expect(file.asked).toEqual([[{kind: "file", fileId: "same"}]]);
+    expect(folder.asked).toEqual([[{kind: "folder", fileId: "same"}]]);
   });
 
   it("seeds an account binding with nothing", async () => {
     let { kv, asked, track } = tracker({ kind: "account" }, allow);
-
     expect([...kv.entries.keys()]).toEqual([]);
     await track.addObserver("obs", "verifier");
     expect(asked).toEqual([[]]);
   });
 
-  it("refuses - and records no observer for - a joiner denied the bound file", async () => {
-    let { kv, track } = tracker({ kind: "file", fileId: "file-1" }, deny);
-
+  it("refuses a joiner denied one tracked unit", async () => {
+    let { track } = tracker({ kind: "folder", folderId: "folder-1" }, deny);
     await expect(track.addObserver("obs", "verifier"))
       .rejects.toThrow("This collaborator cannot access Drive data this workspace has read.");
     expect([...track.observers()]).toEqual([]);
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}file-1`]);
   });
 
-  it("refuses a joiner holding no Drive grant at all", async () => {
+  it("refuses a joiner holding no Drive grant", async () => {
     let { track } = tracker({ kind: "file", fileId: "file-1" },
-      ids => ({ baselineAllowed: false, allowed: ids.map(() => false) }));
-
+      units => ({ baselineAllowed: false, allowed: units.map(() => false) }));
     await expect(track.addObserver("obs", "verifier"))
       .rejects.toThrow(/has not granted Google Drive access/);
   });
 
-  it("rechecks a file tracked during account observer admission", async () => {
+  it("rechecks a unit tracked during account observer admission", async () => {
     let release!: () => void;
     let started!: () => void;
     let opening = new Promise<void>(resolve => { release = resolve; });
     let seen = new Promise<void>(resolve => { started = resolve; });
     let calls = 0;
-    let { kv, asked, track } = tracker({ kind: "account" }, async ids => {
+    let { kv, asked, track } = tracker({ kind: "account" }, async units => {
       if (calls++ === 0) { started(); await opening; }
-      return ids.length === 0 ? allow(ids) : deny(ids);
+      return units.length === 0 ? allow(units) : deny(units);
     });
 
     let admission = track.addObserver("obs", "verifier");
     await seen;
-    kv.put(`${DRIVE_OBSERVATION_PREFIX}file-1`, "pending");
+    kv.put(`${DRIVE_OBSERVATION_PREFIX}folder:child`, "pending");
     release();
 
     await expect(admission).rejects.toThrow(/cannot access Drive data this workspace has read/);
-    expect(asked).toEqual([[], ["file-1"]]);
+    expect(asked).toEqual([[], [{kind: "folder", fileId: "child"}]]);
   });
 
-  it("keeps the old Drive verifier after failed same-ID re-verification", async () => {
-    let { track } = tracker(
-      { kind: "file", fileId: "file-1" },
-      (ids, verifier) => verifier === "old" ? allow(ids) : deny(ids),
-    );
-    await track.addObserver("obs", "old");
-
-    await expect(track.addObserver("obs", "new"))
-      .rejects.toThrow(/cannot access Drive data this workspace has read/);
-
-    expect((await track.prepareObservation(["file-2"])).excludeObservers).toBeUndefined();
-  });
-  it("percent-encodes an ID that would otherwise collide with the key grammar", async () => {
-    let { kv, asked, track } = tracker({ kind: "file", fileId: "a:b/c" }, allow);
-
-    expect([...kv.entries.keys()]).toEqual([`${DRIVE_OBSERVATION_PREFIX}a%3Ab%2Fc`]);
+  it("decodes historical bare keys as file observations", async () => {
+    let { kv, asked, track } = tracker({ kind: "account" }, allow);
+    kv.put(`${DRIVE_OBSERVATION_PREFIX}old%2Ffile`, "observed");
     await track.addObserver("obs", "verifier");
-    expect(asked).toEqual([["a:b/c"]]);
+    expect(asked).toEqual([[{kind: "file", fileId: "old/file"}]]);
+  });
+
+  it("percent-encodes IDs without colliding with the typed key grammar", async () => {
+    let { kv, asked, track } = tracker({ kind: "folder", folderId: "folder:a/b" }, allow);
+    expect([...kv.entries.keys()]).toEqual([
+      `${DRIVE_OBSERVATION_PREFIX}folder:folder%3Aa%2Fb`,
+    ]);
+    await track.addObserver("obs", "verifier");
+    expect(asked).toEqual([[{kind: "folder", fileId: "folder:a/b"}]]);
   });
 });

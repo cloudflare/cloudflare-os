@@ -25,7 +25,7 @@ describe("Google resource configurators", () => {
       .resolves.toBe("person@example.com");
   });
 
-  it("omits folders whose children cannot be listed", async () => {
+  it("includes listable folders and shared-drive roots", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       files: [
         {
@@ -36,16 +36,57 @@ describe("Google resource configurators", () => {
           id: "usable", name: "Usable",
           capabilities: { canListChildren: true },
         },
+        {
+          id: "drive-1", driveId: "drive-1", name: "Team Drive",
+          capabilities: { canListChildren: true },
+        },
       ],
     })));
 
-    await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
-      .listDriveFolders(""))
-      .resolves.toEqual([{
-        value: "usable",
-        title: "Usable",
-        subtitle: "My Drive",
-      }]);
+    await expect(new DriveFolderConfiguratorUI(
+      async () => token("access-token"), async () => true,
+    ).listDriveFolders(""))
+      .resolves.toEqual([
+        { value: "usable", title: "Usable", subtitle: "My Drive" },
+        { value: "drive-1", title: "Team Drive", subtitle: "In a shared drive" },
+      ]);
+  });
+
+  it("refuses shared-drive discovery before optional consent", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const ui = new DriveFolderConfiguratorUI(
+      async () => token("access-token"), async () => false,
+    );
+
+    await expect(ui.listSharedDrives("")).rejects.toThrow(
+      "Enable Workspace Shared Drive discovery above, then try again.",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("lists every shared-drive page after optional consent", async () => {
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      calls.push(url);
+      return url.searchParams.has("pageToken")
+        ? Response.json({ drives: [{ id: "drive-2", name: "Two" }] })
+        : Response.json({
+          drives: [{ id: "drive-1", name: "One" }], nextPageToken: "next",
+        });
+    }));
+    const ui = new DriveFolderConfiguratorUI(
+      async () => token("access-token"), async () => true,
+    );
+
+    await expect(ui.listSharedDrives("team")).resolves.toEqual([
+      { value: "drive-1", title: "One", subtitle: "Workspace Shared Drive" },
+      { value: "drive-2", title: "Two", subtitle: "Workspace Shared Drive" },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].searchParams.get("q")).toBe("name contains 'team'");
+    expect(calls[1].searchParams.get("pageToken")).toBe("next");
   });
 
   it("refreshes a rejected Calendar access token", async () => {

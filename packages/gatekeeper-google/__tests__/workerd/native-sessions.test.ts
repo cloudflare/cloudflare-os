@@ -400,7 +400,7 @@ describe("folder-scoped native sessions", () => {
       onNativeRead?.();
       if (url.hostname === "docs.googleapis.com") {
         return Response.json({
-          documentId: "doc-1",
+          documentId: decodeURIComponent(url.pathname.split("/").at(-1)!),
           title: "Quarterly plan",
           revisionId: "revision-1",
           tabs: [docTab("solo", "Solo", "")],
@@ -488,9 +488,8 @@ describe("folder-scoped native sessions", () => {
     expect(nativeCalls).toEqual([]);
   });
 
-  // The window the postcheck exists for: the move lands while the Docs call is in flight, so only a
-  // second look after the read can catch it — and the content must reach neither the approval queue
-  // nor the caller.
+  // The move lands while the Docs call is in flight. The content reaches neither the approval
+  // queue nor caller; only the owner-relative failed membership check is authorized.
   it("discards content when the move lands during the provider read", async () => {
     const nodes = subtree();
     installFolderProvider(nodes, () => {
@@ -501,9 +500,30 @@ describe("folder-scoped native sessions", () => {
     using doc = await scoped.openGoogleDoc("doc-1");
     const authorizedBefore = queue.observations.length;
 
-    await expect(Promise.resolve(doc.getContent()))
-      .rejects.toThrow(OUTSIDE);
-    expect(queue.observations).toHaveLength(authorizedBefore);
+    await expect(Promise.resolve(doc.getContent())).rejects.toThrow(OUTSIDE);
+    expect(queue.observations.slice(authorizedBefore)).toEqual([
+      expect.objectContaining({ title: "Check Google Drive folder" }),
+    ]);
+  });
+
+  it("keeps child-folder and native capabilities alive after their parents are disposed", async () => {
+    const nodes = subtree();
+    nodes.set("nested", {
+      id: "nested", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true },
+    });
+    nodes.set("nested-doc", {
+      id: "nested-doc", mimeType: DOC_MIME, parents: ["nested"], trashed: false,
+    });
+    installFolderProvider(nodes);
+    const parent = folderSession(nodes).session;
+    const child = await parent.openFolder("nested");
+    parent[Symbol.dispose]();
+    const doc = await child.openGoogleDoc("nested-doc");
+    child[Symbol.dispose]();
+    using ownedDoc = doc;
+
+    await expect(Promise.resolve(ownedDoc.getContent())).resolves.toBe("");
   });
 
   it("refuses to open a native file that is already outside the subtree", async () => {

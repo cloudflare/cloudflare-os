@@ -1,60 +1,59 @@
 import type { DriveBindingScope } from "./drive-session";
 import { ObserverTracker, type ObserverBatchResult, type ObserverKv } from "./observers";
 
-/** Key prefix for the Drive file IDs a binding has disclosed metadata about. */
+/** Key prefix for Drive disclosure units. */
 export const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
 
-/** Refusal when a joining collaborator holds no Google Drive grant at all. */
+/** Refusal when a joining collaborator holds no Google Drive grant. */
 export const DRIVE_BASELINE_DENIED_MESSAGE =
   "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
 
-function scopeRootId(scope: DriveBindingScope): string | undefined {
+/** Data access needed to observe a Drive disclosure. */
+export type DriveObservation =
+  | { kind: "file"; fileId: string }
+  | { kind: "folder"; fileId: string };
+
+function encodeObservation(observation: DriveObservation): string {
+  let id = encodeURIComponent(observation.fileId);
+  return observation.kind === "folder" ? `folder:${id}` : id;
+}
+
+function decodeObservation(value: string): DriveObservation {
+  if (value.startsWith("folder:")) {
+    return {kind: "folder", fileId: decodeURIComponent(value.slice("folder:".length))};
+  }
+  return {kind: "file", fileId: decodeURIComponent(value)};
+}
+
+function scopeRoot(scope: DriveBindingScope): DriveObservation | undefined {
   switch (scope.kind) {
     case "account": return undefined;
-    case "sharedDrive": return scope.driveId;
-    case "folder": return scope.folderId;
-    case "file": return scope.fileId;
+    case "folder": return {kind: "folder", fileId: scope.folderId};
+    case "file": return {kind: "file", fileId: scope.fileId};
   }
 }
 
-/**
- * The observer tracker for one Drive binding, seeded with the set its scope already names.
- *
- * A shared-drive, folder, or single-file binding can always reach its own root, so that ID is
- * recorded up front rather than waiting for a read to discover it. A file binding therefore never
- * grows past it because its session admits no other ID. This lets every scope share one admission
- * path. Without the seed a file binding would need a second, hand-rolled verify kept in step by
- * hand with this one's staging and rollback.
- *
- * `verifyBatch` is passed in rather than a verifier type, so this module stays independent of the
- * worker entrypoint that owns the RPC interface.
- */
+/** Creates the observer tracker for one Drive binding. */
 export function driveObserverTracker<V>(
   kv: ObserverKv,
   scope: DriveBindingScope,
   verifyBatch: (
-    verifier: V, fileIds: readonly string[], listableFolderId?: string,
+    verifier: V,
+    observations: DriveObservation[],
   ) => Promise<ObserverBatchResult>,
-): ObserverTracker<string, V> {
-  let rootId = scopeRootId(scope);
-  let listableFolderId = scope.kind === "folder" ? scope.folderId : undefined;
-  if (rootId !== undefined) {
-    let key = `${DRIVE_OBSERVATION_PREFIX}${encodeURIComponent(rootId)}`;
+): ObserverTracker<DriveObservation, V> {
+  let root = scopeRoot(scope);
+  if (root) {
+    let key = `${DRIVE_OBSERVATION_PREFIX}${encodeObservation(root)}`;
     if (kv.get(key) === undefined) kv.put(key, "observed");
   }
-  return new ObserverTracker<string, V>(kv, {
+  return new ObserverTracker<DriveObservation, V>(kv, {
     setPrefix: DRIVE_OBSERVATION_PREFIX,
-    encode: encodeURIComponent,
-    decode: decodeURIComponent,
-    verifyBatch: (verifier, fileIds) => verifyBatch(verifier, fileIds, listableFolderId),
+    encode: encodeObservation,
+    decode: decodeObservation,
+    verifyBatch,
     baselineDeniedMessage: DRIVE_BASELINE_DENIED_MESSAGE,
-    // The refusal names no ID: a collaborator who cannot reach a file must not learn that this
-    // workspace read one, nor which. The reader knows their own access, not this binding's history.
     deniedMessage: () => "This collaborator cannot access Drive data this workspace has read.",
-    // checkFileAccess issues ceil(N/100) sequential subrequests. The overseer re-runs addObserver
-    // on every open, per observer, at concurrency 6. 2000 files → 20 subrequests per observer, 120
-    // if six run together — well inside the 1000-subrequest budget. Uncapped, a whole-account
-    // binding would grow until admission exceeds that budget and locks every collaborator out.
     maxTrackedSets: 2000,
   });
 }

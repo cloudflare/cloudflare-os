@@ -1,5 +1,6 @@
 // Structured Google Drive API client shared by configurators, sessions, and observer verification.
 
+import type { DriveObservation } from "./drive-observers";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
@@ -7,6 +8,8 @@ const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
+/** Page budget for `listAllDrives`, at 100 shared drives a page. */
+const LIST_DRIVES_MAX_PAGES = 20;
 
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -481,12 +484,13 @@ export class DriveApi {
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
   }
 
-  /** Every shared drive visible to the connected account. */
+  /** Every shared drive visible to the connected account, up to the page budget. */
   async listAllDrives(
     options: Omit<DriveListDrivesOptions, "pageToken"> = {},
   ): Promise<DriveInfo[]> {
     let drives: DriveInfo[] = [];
     let pageToken: string | undefined;
+    let pages = 0;
     do {
       let page = await this.listDrives({
         ...options,
@@ -494,22 +498,25 @@ export class DriveApi {
       });
       drives.push(...page.drives);
       pageToken = page.nextPageToken;
-    } while (pageToken);
+    } while (pageToken && ++pages < LIST_DRIVES_MAX_PAGES);
     return drives;
   }
 
-  /** Fresh access checks, optionally requiring one folder's children to be listable. */
-  async checkFileAccess(
-    fileIds: readonly string[], listableFolderId?: string,
-  ): Promise<boolean[]> {
-    let fields = listableFolderId === undefined
-      ? "id"
-      : "id,capabilities(canListChildren)";
-    return this.#batchGetFiles(fileIds, fields, (part, fileId) => {
-      if (!batchPartAllowed(part)) return false;
-      return fileId !== listableFolderId ||
-        parseDriveScopeNode(part.body, fileId).canListChildren === true;
-    });
+
+  /** Fresh access checks for typed file and folder disclosure units. */
+  async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
+    return this.#batchGetFiles(
+      observations.map(observation => observation.fileId),
+      "id,mimeType,trashed,capabilities(canListChildren)",
+      (part, _fileId, index) => {
+        if (!batchPartAllowed(part)) return false;
+        let observation = observations[index];
+        if (observation.kind === "file") return true;
+        let node = parseDriveScopeNode(part.body, observation.fileId);
+        return node.mimeType === FOLDER_MIME_TYPE && node.trashed === false &&
+          node.canListChildren === true;
+      },
+    );
   }
 
   /**
@@ -529,13 +536,13 @@ export class DriveApi {
   async #batchGetFiles<T>(
     fileIds: readonly string[],
     fields: string,
-    mapPart: (part: BatchAccessPart, fileId: string) => T,
+    mapPart: (part: BatchAccessPart, fileId: string, index: number) => T,
   ): Promise<T[]> {
     let result: T[] = [];
     for (let offset = 0; offset < fileIds.length; offset += MAX_BATCH_FILES) {
       let chunk = fileIds.slice(offset, offset + MAX_BATCH_FILES);
       let parts = await this.#batchGetChunk(chunk, fields);
-      result.push(...parts.map((part, index) => mapPart(part, chunk[index])));
+      result.push(...parts.map((part, index) => mapPart(part, chunk[index], offset + index)));
     }
     return result;
   }

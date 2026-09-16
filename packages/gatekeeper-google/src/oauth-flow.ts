@@ -2,6 +2,7 @@ import { resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from ".
 
 const FLOW_KEY = "oauthFlow";
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const LEGACY_FLOW_KEYS = [
   "nonce", "requestedScopes", "requestedResources", "reconnecting", "ephemeral",
 ] as const;
@@ -14,6 +15,7 @@ export type StoredOAuthFlow = {
   stage: "initiation" | "oauth";
   mode: OAuthFlowMode;
   requestedResources: string[];
+  requestDriveReadonly?: boolean;
   oauthRedirectUri?: string;
 };
 
@@ -44,7 +46,7 @@ function matchesFlow(flow: StoredOAuthFlow | undefined, stage: StoredOAuthFlow["
 
 export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
                                  requestedResources: readonly string[], mode: OAuthFlowMode,
-                                 now: number): void {
+                                 now: number, requestDriveReadonly = false): void {
   validateResourceUrlPatterns(requestedResources);
   for (let key of LEGACY_FLOW_KEYS) kv.delete(key);
   kv.put<StoredOAuthFlow>(FLOW_KEY, {
@@ -53,6 +55,7 @@ export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
     stage: "initiation",
     mode,
     requestedResources: [...requestedResources],
+    ...(requestDriveReadonly ? {requestDriveReadonly: true} : {}),
   });
 }
 
@@ -73,7 +76,9 @@ export function beginStoredOAuthFlow(kv: SynchronousKv, initiationNonce: string,
     ...flow, value: oauthNonce, expiresAt: now + NONCE_LIFETIME_MS, stage: "oauth",
     oauthRedirectUri,
   });
-  return { oauthNonce, scopes: resourceUrlPatternsToOAuthScopes(flow.requestedResources) };
+  let scopes = new Set(resourceUrlPatternsToOAuthScopes(flow.requestedResources));
+  if (flow.requestDriveReadonly) scopes.add(DRIVE_READONLY_SCOPE);
+  return { oauthNonce, scopes: [...scopes] };
 }
 
 export function claimStoredOAuthFlow(kv: SynchronousKv, oauthNonce: string, now: number)

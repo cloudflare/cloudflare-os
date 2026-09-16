@@ -20,14 +20,17 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, type DocTabSnapshot,
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError } from "./drive-api";
-import { driveObserverTracker } from "./drive-observers";
-import { readFolderRoot } from "./drive-folder-scope";
+import { driveObserverTracker, type DriveObservation } from "./drive-observers";
+import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
-  DriveSessionCore, driveModifiedTime, GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE,
-  unguardedNativeRead,
-  type DriveBindingScope, type DriveSessionCoreOptions, type NativeRead,
+  DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, requireDriveBindingScope, unguardedNativeRead,
+  type DriveBindingScope, type NativeRead,
 } from "./drive-session";
-import type { DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveSession } from "./drive-types";
+import type {
+  DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveFolderSession,
+  GoogleDriveReadSession, GoogleDriveSession,
+} from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -58,7 +61,6 @@ import {
   DriveAccountConfiguratorUI,
   DriveFileConfiguratorUI,
   DriveFolderConfiguratorUI,
-  SharedDriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -68,15 +70,13 @@ import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configura
 import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
 import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
 import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
-import SHARED_DRIVE_CONFIGURATOR_HTML from "./generated/shared-drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SHARED_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
@@ -424,9 +424,20 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /** Prepare a reconnect or scope-expansion attempt for this account. */
-  async prepareReconnect(initiationNonce: string, requestedResources: string[]) {
+  async prepareReconnect(
+      initiationNonce: string, requestedResources: string[], requestDriveReadonly = false) {
+    let grantedScopes = this.ctx.storage.kv.get<string[]>("grantedScopes") ?? [];
+    let preserveDriveDiscovery = grantedScopes.includes(
+        "https://www.googleapis.com/auth/drive.readonly") ||
+      grantedScopes.includes("https://www.googleapis.com/auth/drive");
     prepareOAuthFlow(
-      this.ctx.storage.kv, initiationNonce, requestedResources, "reconnect", Date.now());
+      this.ctx.storage.kv,
+      initiationNonce,
+      requestedResources,
+      "reconnect",
+      Date.now(),
+      requestDriveReadonly || preserveDriveDiscovery,
+    );
   }
 
   /**
@@ -444,6 +455,20 @@ export class UserAccount extends DurableObject<Env> {
    */
   async getRequestableResourceUrlPatterns(): Promise<string[]> {
     return recordedResourceUrlPatterns(this.#recordedGrant());
+  }
+
+  async hasSharedDriveDiscovery(): Promise<boolean> {
+    let scopes = this.ctx.storage.kv.get<string[]>("grantedScopes") ?? [];
+    return scopes.includes("https://www.googleapis.com/auth/drive.readonly") ||
+      scopes.includes("https://www.googleapis.com/auth/drive");
+  }
+
+  async requestSharedDriveDiscovery(): Promise<{url?: string}> {
+    if (await this.hasSharedDriveDiscovery()) return {};
+    let requestedResources = await this.getRequestableResourceUrlPatterns();
+    let initiationNonce = generateNonce();
+    await this.prepareReconnect(initiationNonce, requestedResources, true);
+    return {url: `${getBaseUrl(this.env)}/${this.ctx.id.toString()}/${initiationNonce}`};
   }
 
   #recordedGrant(): RecordedResourceGrant {
@@ -774,13 +799,11 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
       case "driveAccount":
-      case "sharedDrive":
       case "driveFolder":
       case "driveFile": {
         let scope: DriveBindingScope;
         switch (target.kind) {
           case "driveAccount": scope = { kind: "account" }; break;
-          case "sharedDrive": scope = { kind: "sharedDrive", driveId: target.driveId }; break;
           case "driveFolder": scope = { kind: "folder", folderId: target.folderId }; break;
           default: scope = { kind: "file", fileId: target.fileId };
         }
@@ -792,11 +815,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   async startResourceConfigurator(
       resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    let getToken = async (opts?: AccessTokenRequest) => {
-      let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-      let obj = this.ctx.exports.UserAccount.get(id);
-      return await obj.getAccessToken(opts);
-    };
+    let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
+    let account = this.ctx.exports.UserAccount.get(id);
+    let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -840,17 +861,21 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
-    if (resourceUrlPattern === GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: SHARED_DRIVE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new SharedDriveConfiguratorUI(getToken)),
-      };
-    }
 
     if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
+      let hasSharedDriveDiscovery = () => account.hasSharedDriveDiscovery();
       return {
         iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
+        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken, hasSharedDriveDiscovery)),
+        ...(!await hasSharedDriveDiscovery() ? {
+          authorization: {
+            title: "Enable Workspace Shared Drive discovery",
+            description: "Google requires permission to read all Drive files your account can " +
+              "access to list Workspace Shared Drives. This is optional; each connection still " +
+              "exposes only its selected folder.",
+            request: new RpcStub(() => account.requestSharedDriveDiscovery()),
+          },
+        } : {}),
       };
     }
 
@@ -960,7 +985,7 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
-  verifyDriveFiles(fileIds: string[], listableFolderId?: string): Promise<ObserverBatchResult>;
+  verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
 }
 
 @validateRpc()
@@ -1026,19 +1051,19 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     }
   }
 
-  async verifyDriveFiles(
-    fileIds: string[], listableFolderId?: string,
+  async verifyDriveObservations(
+    observations: DriveObservation[],
   ): Promise<ObserverBatchResult> {
     let account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
     let granted = await account.getGrantedResourceUrlPatterns();
     let baselineAllowed = hasDriveResourceGrant(granted);
-    if (!baselineAllowed) return { baselineAllowed, allowed: fileIds.map(() => false) };
+    if (!baselineAllowed) return { baselineAllowed, allowed: observations.map(() => false) };
 
     let api = new DriveApi(opts => this.#getToken(opts));
     return {
       baselineAllowed,
-      allowed: await api.checkFileAccess(fileIds, listableFolderId),
+      allowed: await api.checkObservations(observations),
     };
   }
 }
@@ -2823,7 +2848,7 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async describe(): Promise<ResourceDescription> {
-    let { scope } = this.ctx.props;
+    let scope = this.#scope;
     if (scope.kind === "account") {
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
@@ -2834,16 +2859,6 @@ export class GoogleDriveGatekeeperImpl
       };
     }
     let api = new DriveApi(opts => this.#getAccessToken(opts));
-    if (scope.kind === "sharedDrive") {
-      let drive = await api.getDrive(scope.driveId);
-      return {
-        url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.driveId)}`,
-        title: drive.name,
-        snippet: `Find files and folders and read native Google Docs and Sheets in organization-owned shared drive "${drive.name}"`,
-        suggestedBindingName: "GOOGLE_SHARED_DRIVE",
-        tsType: "GoogleDriveSession",
-      };
-    }
     if (scope.kind === "folder") {
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
@@ -2852,9 +2867,9 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `Find files and folders and read native Google Docs and Sheets in Drive folder "${folder.name}" and everything beneath it`,
+        snippet: `List and search direct children, navigate child folders, and read native Google Docs and Sheets in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
-        tsType: "GoogleDriveSession",
+        tsType: "GoogleDriveFolderSession",
       };
     }
     let file = await api.getFile(scope.fileId);
@@ -2882,9 +2897,9 @@ export class GoogleDriveGatekeeperImpl
       new DriveApi(getDriveAccessToken),
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
-      this.ctx.props.scope,
+      this.#scope,
       approvalQueue.dup(),
-      fileIds => observerTracker.prepareObservation(fileIds),
+      observations => observerTracker.prepareObservation(observations),
       () => observerTracker.prepareWithheld(),
     );
   }
@@ -2896,11 +2911,14 @@ export class GoogleDriveGatekeeperImpl
     throw new Error("Google Drive gatekeeper has no writable actions to revert");
   }
 
-  #observerTracker(): ObserverTracker<string, Fetcher<GoogleVerifierApi>> {
+  #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
-      this.ctx.storage.kv, this.ctx.props.scope,
-      (verifier, fileIds, listableFolderId) =>
-        verifier.verifyDriveFiles([...fileIds], listableFolderId));
+      this.ctx.storage.kv, this.#scope,
+      (verifier, observations) => verifier.verifyDriveObservations([...observations]));
+  }
+
+  get #scope(): DriveBindingScope {
+    return requireDriveBindingScope(this.ctx.props.scope);
   }
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
@@ -3004,13 +3022,19 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
 
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
-export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSession {
-  #core: DriveSessionCore;
-  #coreOptions: Omit<DriveSessionCoreOptions, "authorize">;
+export class GoogleDriveSessionImpl extends RpcTarget
+    implements GoogleDriveReadSession, GoogleDriveFolderSession {
+  #core: DriveSessionCore | DriveFolderSessionCore;
   #driveApi: DriveApi;
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
+  #scope: DriveBindingScope;
+  #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #prepareObservation: (
+    observations: DriveObservation[],
+  ) => Promise<ObserverCheck<DriveObservation>>;
+  #prepareWithheld: () => ObserverCheck<DriveObservation>;
 
   constructor(
     driveApi: DriveApi,
@@ -3018,15 +3042,21 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
     sheetsApi: GoogleSheetsApi,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
-    prepareObservation: (fileIds: string[]) => Promise<ObserverCheck<string>>,
-    prepareWithheld: () => ObserverCheck<string>,
+    prepareObservation: (
+      observations: DriveObservation[],
+    ) => Promise<ObserverCheck<DriveObservation>>,
+    prepareWithheld: () => ObserverCheck<DriveObservation>,
+    location?: FolderLocation,
   ) {
     super();
     this.#driveApi = driveApi;
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
+    this.#scope = scope;
+    this.#location = location;
     this.#approvalQueue = approvalQueue;
-    this.#coreOptions = { api: driveApi, scope, prepareObservation, prepareWithheld };
+    this.#prepareObservation = prepareObservation;
+    this.#prepareWithheld = prepareWithheld;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -3046,39 +3076,24 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
     return this.#cursor(core => core.search(query));
   }
 
-  /**
-   * A core with this session's authority, authorizing through `queue`.
-   *
-   * Scope and observer tracking are identical in every case; only the approval queue differs,
-   * which is the whole reason a cursor needs a core of its own.
-   */
-  #coreFor(queue: RpcStub<ApprovalQueue>): DriveSessionCore {
-    return new DriveSessionCore({
-      ...this.#coreOptions,
-      authorize: description => queue.authorizeObservation(description),
-    });
+  getEntry(fileId: string): Promise<DriveEntry> {
+    return this.#core.getEntry(fileId);
   }
 
-  /**
-   * A cursor paging through an approval-queue stub of its own, disposed with the cursor.
-   *
-   * The caller owns a returned cursor separately from this session and may keep paging it after
-   * disposing the session, so a cursor sharing the session's stub would fail mid-pagination.
-   */
-  async #cursor(
-    open: (core: DriveSessionCore) => Promise<Pager<DriveEntry>>,
-  ): Promise<Cursor<DriveEntry>> {
+  async openFolder(folderId: string): Promise<GoogleDriveFolderSession> {
     let queue = this.#approvalQueue.dup();
     try {
-      return new RpcCursor(await open(this.#coreFor(queue)), queue);
+      let core = this.#coreFor(queue);
+      if (!(core instanceof DriveFolderSessionCore)) outsideScope();
+      let location = await core.openFolder(folderId);
+      return new GoogleDriveSessionImpl(
+        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#scope, queue,
+        this.#prepareObservation, this.#prepareWithheld, location,
+      );
     } catch (error) {
       queue[Symbol.dispose]();
       throw error;
     }
-  }
-
-  getEntry(fileId: string): Promise<DriveEntry> {
-    return this.#core.getEntry(fileId);
   }
 
   async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession> {
@@ -3093,13 +3108,37 @@ export class GoogleDriveSessionImpl extends RpcTarget implements GoogleDriveSess
         new GoogleSpreadsheetSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
   }
 
-  /**
-   * Opens one native child on an approval queue and a core of its own.
-   *
-   * The child outlives this session, so it needs its own queue stub — and the guard that revalidates
-   * its every read has to authorize through that same stub, which is why the core is built here
-   * rather than reusing the session's. Ownership passes to the child only once it exists.
-   */
+  #coreFor(queue: RpcStub<ApprovalQueue>): DriveSessionCore | DriveFolderSessionCore {
+    let common = {
+      api: this.#driveApi,
+      prepareObservation: this.#prepareObservation,
+      prepareWithheld: this.#prepareWithheld,
+      authorize: (description: ObservationDescription) => queue.authorizeObservation(description),
+    };
+    if (this.#scope.kind === "folder") {
+      return new DriveFolderSessionCore({
+        ...common,
+        location: this.#location ?? {
+          rootId: this.#scope.folderId,
+          folderIds: [this.#scope.folderId],
+        },
+      });
+    }
+    return new DriveSessionCore({...common, scope: this.#scope});
+  }
+
+  async #cursor(
+    open: (core: DriveSessionCore | DriveFolderSessionCore) => Promise<Pager<DriveEntry>>,
+  ): Promise<Cursor<DriveEntry>> {
+    let queue = this.#approvalQueue.dup();
+    try {
+      return new RpcCursor(await open(this.#coreFor(queue)), queue);
+    } catch (error) {
+      queue[Symbol.dispose]();
+      throw error;
+    }
+  }
+
   async #openNative<T>(
     fileId: string,
     mimeType: string,
