@@ -424,11 +424,21 @@ export type GatekeeperUiFrame = {
   ui: RpcStub<RpcTarget>;
 }
 
-/**
- * Legacy alias for GatekeeperUiFrame: the established return type of startResourceConfigurator,
- * referenced by every gatekeeper implementation. Kept to avoid a repo-wide rename.
- */
-export type ResourceConfiguratorFrame = GatekeeperUiFrame;
+/** An account-authorization action rendered by Workshop outside the iframe. */
+export type ResourceConfiguratorAuthorization = {
+  /** Label for the user-initiated action. */
+  title: string;
+  /** Explanation of the additional account authority. */
+  description: string;
+  /** Prepare authorization; omit url when access is already available. */
+  request: RpcStub<() => Promise<{ url?: string }>>;
+};
+
+/** A resource selector with an optional user-initiated authorization action. */
+export type ResourceConfiguratorFrame = GatekeeperUiFrame & {
+  /** Additional account authorization; never invoked automatically. */
+  authorization?: ResourceConfiguratorAuthorization;
+};
 
 /**
  * The root interface of an Adapter, as provided to the Gadget Workshop.
