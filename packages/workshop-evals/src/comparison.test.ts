@@ -104,7 +104,9 @@ it("compares three-trial task cohorts", () => {
       meanCostUsd: (0.2 + 0.3 + 0.4) / 3,
     },
   }]);
-  expect(renderEvalComparison(comparison)).toContain("+33.3 pp");
+  const markdown = renderEvalComparison(comparison);
+  expect(markdown).toContain("| project-doc | 2 | 3 | +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
+  expect(markdown).toContain(`\`${BASE_SHA.slice(0, 8)}\` vs candidate \`${HEAD_SHA.slice(0, 8)}\` \u00b7 ${MODEL} \u00b7 3 trials per task.`);
 });
 
 it("does not compare costs from different trial populations", () => {

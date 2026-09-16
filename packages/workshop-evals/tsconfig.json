@@ -7,6 +7,9 @@
     "moduleResolution": "bundler",
     "types": ["node", "@cloudflare/workers-types"],
     "noEmit": true,
+    // comparison.ts and trajectory-markdown.ts also run under plain `node` from scripts/evals, which
+    // strips types but does not map .js imports to .ts files, so those modules import real .ts paths.
+    "allowImportingTsExtensions": true,
     "paths": {
       "@gadgets/integration-tests/*": ["../integration-tests/src/*"],
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]

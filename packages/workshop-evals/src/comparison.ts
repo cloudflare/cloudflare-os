@@ -1,57 +1,5 @@
 import { basename } from "node:path";
-import { z } from "zod";
-import type { JsonValue } from "vitest-evals";
-
-const AssertionSchema = z.object({
-  status: z.enum(["passed", "failed"]),
-  duration: z.number().nonnegative(),
-  meta: z.object({
-    harness: z.object({
-      run: z.object({
-        session: z.object({
-          metadata: z.object({
-            taskId: z.string().min(1),
-            taskVersion: z.string().min(1),
-            gitCommit: z.string().min(1),
-          }).loose(),
-        }).loose(),
-        usage: z.object({
-          model: z.string().min(1),
-          metadata: z.object({
-            observedCumulativeChatCostUsd: z.number().nonnegative().optional(),
-          }).loose(),
-        }).loose(),
-        output: z.object({
-          metrics: z.object({
-            modelTurns: z.number().int().nonnegative(),
-            toolCalls: z.number().int().nonnegative(),
-            toolErrors: z.number().int().nonnegative(),
-          }),
-          turns: z.array(z.object({
-            outcome: z.object({ status: z.string() }).loose(),
-          }).loose()),
-        }).loose(),
-        errors: z.array(z.object({
-          name: z.string(),
-          message: z.string(),
-        }).loose()),
-      }).loose(),
-    }).loose(),
-  }).loose(),
-}).loose();
-
-// One entry per eval file. A file that fails before its first trial (a collection error) is still
-// listed, with no assertions and the error in `message`.
-const FileSchema = z.object({
-  name: z.string(),
-  message: z.string().optional(),
-  assertionResults: z.array(AssertionSchema),
-}).loose();
-
-const ResultsSchema = z.object({ testResults: z.array(FileSchema) }).loose();
-
-type Assertion = z.infer<typeof AssertionSchema>;
-type EvalFile = z.infer<typeof FileSchema>;
+import { parseResults, trials, type Assertion } from "./results.ts";
 
 export type EvalStats = {
   trials: number;
@@ -82,27 +30,6 @@ type Cohort = {
   taskVersion: string;
   assertions: Assertion[];
 };
-
-function parseResults(name: string, text: string): EvalFile[] {
-  let raw: JsonValue;
-  try {
-    raw = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`${name} results are not valid JSON`, { cause: error });
-  }
-  const parsed = ResultsSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`${name} results are invalid: ${z.prettifyError(parsed.error)}`);
-  }
-  if (trials(parsed.data.testResults).length === 0) {
-    throw new Error(`${name} results contain no evals`);
-  }
-  return parsed.data.testResults;
-}
-
-function trials(files: EvalFile[]): Assertion[] {
-  return files.flatMap(file => file.assertionResults);
-}
 
 function cohortKey(taskId: string, model: string): string {
   return JSON.stringify([taskId, model]);
@@ -216,10 +143,10 @@ export function compareEvalResults(
     const base = baseline.get(key);
     const next = candidate.get(key);
     if (base === undefined) {
-      return { ...identity, reason: "missing baseline", baseline: null, candidate: stats(cohort) };
+      return { ...identity, reason: "only in candidate", baseline: null, candidate: stats(cohort) };
     }
     if (next === undefined) {
-      return { ...identity, reason: "missing candidate", baseline: stats(base), candidate: null };
+      return { ...identity, reason: "only in baseline", baseline: stats(base), candidate: null };
     }
     const reason = changed ? "eval definition changed"
       : base.taskVersion !== next.taskVersion ? "task version changed"
@@ -237,43 +164,78 @@ function passRate(stats: EvalStats): number {
   return stats.passed / stats.trials;
 }
 
-function side(value: EvalStats | null): string {
-  return value === null
-    ? "—"
-    : `${value.passed}/${value.trials} (${(passRate(value) * 100).toFixed(1)}%)`;
+function signed(value: number, digits: number, unit = ""): string {
+  const sign = value > 0 ? "+" : value < 0 ? "\u2212" : "";
+  return `${sign}${Math.abs(value).toFixed(digits)}${unit}`;
 }
 
-function signed(value: number, suffix: string): string {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}${suffix}`;
+function costDelta(baseline: EvalStats, candidate: EvalStats): string {
+  if (baseline.meanCostUsd === null || candidate.meanCostUsd === null) return "\u2014";
+  const delta = candidate.meanCostUsd - baseline.meanCostUsd;
+  return `${delta > 0 ? "+" : delta < 0 ? "\u2212" : ""}$${Math.abs(delta).toFixed(3)}`;
 }
 
-/** Render a concise GitHub Check summary. */
+/** The one value every row shares, or null when they differ and must be shown per row. */
+function uniform<T>(values: readonly T[]): T | null {
+  const [first, ...rest] = values;
+  return first !== undefined && rest.every(value => value === first) ? first : null;
+}
+
+/**
+ * Render the comparison for a pull request comment: one table of the cohorts that can be
+ * compared, then the cohorts that cannot, grouped by why. Whatever every row shares (the model,
+ * the trial count) is said once in the header rather than repeated down a column.
+ */
 export function renderEvalComparison(comparison: EvalComparison): string {
-  const lines = [
-    "# Workshop eval comparison",
-    "",
-    `Baseline \`${comparison.baselineSha}\` vs candidate \`${comparison.candidateSha}\`.`,
-    "",
-    "| Task | Model | Baseline | Candidate | Pass-rate delta | Duration delta | Tool-error delta | Cost delta |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
-  ];
-  for (const row of comparison.rows) {
-    const cells = [row.taskId, row.model, side(row.baseline), side(row.candidate)];
-    if (row.reason !== null) {
-      cells.push(row.reason, "—", "—", "—");
-    } else {
+  const { rows } = comparison;
+  const model = uniform(rows.map(row => row.model));
+  const trials = uniform(rows.flatMap(row =>
+    [row.baseline?.trials, row.candidate?.trials].filter(count => count !== undefined)));
+  const header = [
+    `Baseline \`${comparison.baselineSha.slice(0, 8)}\` vs candidate \`${comparison.candidateSha.slice(0, 8)}\``,
+    ...(model === null ? [] : [model]),
+    ...(trials === null ? [] : [`${trials} trials per task`]),
+  ].join(" \u00b7 ");
+  const lines = ["# Eval runs comparison", "", `${header}.`, ""];
+
+  const side = (stats: EvalStats) =>
+    trials === null ? `${stats.passed}/${stats.trials}` : String(stats.passed);
+  const compared = rows.flatMap(row => row.reason === null ? [row] : []);
+  if (compared.length === 0) {
+    lines.push("No cohort is comparable.", "");
+  } else {
+    const columns = ["Task", ...(model === null ? ["Model"] : []),
+      trials === null ? "Baseline" : `Baseline /${trials}`,
+      trials === null ? "Candidate" : `Candidate /${trials}`,
+      "\u0394 pass", "\u0394 duration", "\u0394 tool errors", "\u0394 cost"];
+    lines.push(`| ${columns.join(" | ")} |`, `|${" --- |".repeat(columns.length)}`);
+    for (const row of compared) {
       const { baseline, candidate } = row;
-      const costDelta = baseline.meanCostUsd === null || candidate.meanCostUsd === null
-        ? "—"
-        : `${candidate.meanCostUsd >= baseline.meanCostUsd ? "+" : "-"}$${
-          Math.abs(candidate.meanCostUsd - baseline.meanCostUsd).toFixed(4)}`;
-      cells.push(
-        signed((passRate(candidate) - passRate(baseline)) * 100, " pp"),
-        signed(candidate.meanDurationMs - baseline.meanDurationMs, " ms"),
-        signed(candidate.meanToolErrors - baseline.meanToolErrors, ""),
-        costDelta);
+      const cells = [row.taskId, ...(model === null ? [row.model] : []),
+        side(baseline), side(candidate),
+        signed((passRate(candidate) - passRate(baseline)) * 100, 0, " pp"),
+        signed((candidate.meanDurationMs - baseline.meanDurationMs) / 1000, 1, " s"),
+        signed(candidate.meanToolErrors - baseline.meanToolErrors, 1),
+        costDelta(baseline, candidate)];
+      lines.push(`| ${cells.join(" | ")} |`);
     }
-    lines.push(`| ${cells.join(" | ")} |`);
+    lines.push("");
   }
-  return `${lines.join("\n")}\n`;
+
+  // Each side's own pass count still says something even when the two cannot be set against
+  // each other: a one-sided cohort shows the side it has, an invalidated one shows both.
+  const skipped = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.reason === null) continue;
+    const scores = [row.baseline, row.candidate].flatMap(stats =>
+      stats === null ? [] : [`${stats.passed}/${stats.trials}`]).join(" \u2192 ");
+    const name = model === null ? `${row.taskId} (${row.model})` : row.taskId;
+    skipped.set(row.reason, [...(skipped.get(row.reason) ?? []), `${name} ${scores}`]);
+  }
+  if (skipped.size > 0) {
+    lines.push("Not compared:");
+    for (const [reason, tasks] of skipped) lines.push(`- ${reason}: ${tasks.join(", ")}`);
+    lines.push("");
+  }
+  return lines.join("\n");
 }
