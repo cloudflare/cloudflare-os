@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/gatekeeper-modal/AccountChooser.tsx
+  s_dd3e5252e13c2f::t_6d0bcb7581717d 87,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3e2b950484cef47b60e4c41c26a0c2233f933b07",
+  "prompts": {},
+  "sessions": {
+    "s_dd3e5252e13c2f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5ab350c8ffedHHe1Y6U08fA66",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
