@@ -528,7 +528,11 @@ export class McpClient {
   // that cap would lose the tail that made it matchable while the head stayed in the message.
   #quoteServerText(text: unknown): string {
     if (typeof text !== "string") return "no reason given";
-    return safeServerText(redactSecrets(text, [this.#lastCredential])) ?? "no reason given";
+    const secrets = [
+      this.#lastCredential,
+      this.#fetchOptions.headers?.["CF-Access-Client-Secret"],
+    ];
+    return safeServerText(redactSecrets(text, secrets)) ?? "no reason given";
   }
 
   async #notify(method: string, params?: unknown): Promise<void> {

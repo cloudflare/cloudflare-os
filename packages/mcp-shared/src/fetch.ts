@@ -25,12 +25,18 @@ export type FetchOptions = {
   timeoutMs?: number;
   /** Absolute deadline shared by every request in a multi-page or retried operation. */
   deadline?: number;
+  /** Custom headers to send with outbound requests (e.g. Cloudflare Access Service Token). */
+  headers?: Record<string, string>;
 };
 
 /** The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally. */
 export type InsecureEnv = {
   /** When `"true"`, permits plain HTTP and private hosts. Local development only. */
   MCP_ALLOW_INSECURE?: string;
+  /** Cloudflare Access Service Token Client ID for accessing protected endpoints. */
+  CF_ACCESS_CLIENT_ID?: string;
+  /** Cloudflare Access Service Token Client Secret for accessing protected endpoints. */
+  CF_ACCESS_CLIENT_SECRET?: string;
 };
 
 /** Outbound failure known to have happened before the platform `fetch()` call began. */
@@ -42,11 +48,20 @@ export class FetchNotStartedError extends Error {
 }
 
 /**
- * Reads the local-development escape hatch. One definition, since this switch turns off the SSRF
- * checks and copies of it would be copies of that.
+ * Reads the local-development escape hatch and any Cloudflare Access credentials.
  */
 export function fetchOptions(env: InsecureEnv): FetchOptions {
-  return { allowInsecure: (env.MCP_ALLOW_INSECURE ?? "").toLowerCase() === "true" };
+  const headers: Record<string, string> = {};
+  if (env.CF_ACCESS_CLIENT_ID) {
+    headers["CF-Access-Client-Id"] = env.CF_ACCESS_CLIENT_ID;
+  }
+  if (env.CF_ACCESS_CLIENT_SECRET) {
+    headers["CF-Access-Client-Secret"] = env.CF_ACCESS_CLIENT_SECRET;
+  }
+  return {
+    allowInsecure: (env.MCP_ALLOW_INSECURE ?? "").toLowerCase() === "true",
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
 }
 
 /**
@@ -148,6 +163,13 @@ export async function guardedFetch(
 
   let current = url;
   let headers = new Headers(init.headers);
+  if (options.headers) {
+    for (const [key, value] of Object.entries(options.headers)) {
+      if (!headers.has(key)) {
+        headers.set(key, value);
+      }
+    }
+  }
   let method = init.method ?? "GET";
   let body = init.body;
   const origin = new URL(url).origin;
@@ -192,6 +214,8 @@ export async function guardedFetch(
       headers = new Headers(headers);
       headers.delete("Authorization");
       headers.delete("Mcp-Session-Id");
+      headers.delete("CF-Access-Client-Id");
+      headers.delete("CF-Access-Client-Secret");
     }
 
     // 303 means "fetch the result of this with GET", and browsers downgrade 301/302 on POST too.

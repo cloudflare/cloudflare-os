@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { guardedFetch, isAllowedUrl, sdkFetch } from "../src/fetch.js";
+import { guardedFetch, isAllowedUrl, sdkFetch, fetchOptions } from "../src/fetch.js";
 
 type Hop = {
   url: string;
   authorization: string | null;
   sessionId: string | null;
+  cfAccessClientId: string | null;
+  cfAccessClientSecret: string | null;
   method: string;
   body: unknown;
 };
@@ -18,6 +20,8 @@ function stubChain(chain: Record<string, string>, status = 307): Hop[] {
       url: String(input),
       authorization: new Headers(init.headers).get("Authorization"),
       sessionId: new Headers(init.headers).get("Mcp-Session-Id"),
+      cfAccessClientId: new Headers(init.headers).get("CF-Access-Client-Id"),
+      cfAccessClientSecret: new Headers(init.headers).get("CF-Access-Client-Secret"),
       method: init.method ?? "GET",
       body: init.body,
     });
@@ -95,6 +99,18 @@ describe("guardedFetch", () => {
     });
     expect(hops.map(hop => hop.authorization)).toEqual(["Bearer secret", null]);
     expect(hops.map(hop => hop.sessionId)).toEqual(["origin-session-secret", null]);
+  });
+
+  it("injects custom headers and drops CF-Access headers across origins", async () => {
+    const hops = stubChain({ "https://mcp.example.com/mcp": "https://evil.example.net/collect" });
+    await guardedFetch("https://mcp.example.com/mcp", {}, {
+      headers: {
+        "CF-Access-Client-Id": "test-client-id",
+        "CF-Access-Client-Secret": "test-client-secret",
+      },
+    });
+    expect(hops.map(hop => hop.cfAccessClientId)).toEqual(["test-client-id", null]);
+    expect(hops.map(hop => hop.cfAccessClientSecret)).toEqual(["test-client-secret", null]);
   });
 
   it("does not replay the body across a 303", async () => {
@@ -217,5 +233,23 @@ describe("sdkFetch", () => {
     expect(response.statusText).toBe("Created");
     expect(response.headers.get("X-Test")).toBe("kept");
     expect(await response.json()).toEqual({ issuer: "https://auth.example.com" });
+  });
+});
+
+describe("fetchOptions", () => {
+  it("populates CF-Access headers when credentials are provided in env", () => {
+    const opts = fetchOptions({
+      CF_ACCESS_CLIENT_ID: "client-id-123",
+      CF_ACCESS_CLIENT_SECRET: "client-secret-456",
+    });
+    expect(opts.headers).toEqual({
+      "CF-Access-Client-Id": "client-id-123",
+      "CF-Access-Client-Secret": "client-secret-456",
+    });
+  });
+
+  it("omits headers property when no CF-Access credentials exist", () => {
+    const opts = fetchOptions({});
+    expect(opts.headers).toBeUndefined();
   });
 });

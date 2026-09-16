@@ -11,6 +11,8 @@ declare namespace Cloudflare {
     MCP_PORTAL_HIDDEN_SERVER_IDS?: string;
     MCP_CLIENT_NAME?: string;
     MCP_ALLOW_INSECURE?: string;
+    CF_ACCESS_CLIENT_ID?: string;
+    CF_ACCESS_CLIENT_SECRET?: string;
   }
 
   interface GlobalProps {
