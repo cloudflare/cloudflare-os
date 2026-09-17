@@ -37,6 +37,7 @@ const fakes = vi.hoisted(() => {
     acceptChanges: vi.fn(async () => {
       await new Promise(resolve => setTimeout(resolve, phaseDelayMs));
     }),
+    revertChanges: async () => { throw new Error("revertChanges is not used by this test"); },
     close: async () => {},
     [Symbol.asyncDispose]: async () => {},
   };
