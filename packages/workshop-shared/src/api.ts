@@ -523,7 +523,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * Open an existing gadget.
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
-   * collaborator. If the key is invalid or expired, the call throws an exception. This design
+   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget is
+   * latched `ownerInvitesOnly` (see `GadgetMetadata`), a caller who is not already a collaborator
+   * is refused with a "Share links are disabled" exception. This design
    * allows share-key redemption and gadget opening in a single round trip, and further calls
    * can be pipelined on the returned Overseer.
    *
@@ -1402,9 +1404,17 @@ export type GadgetMetadata = {
   /**
    * True when the gadget has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper, but can no longer perform actions or fetch from the public web.
+   * gatekeeper (unless `ownerInvitesOnly` is also set), but can no longer perform actions or fetch
+   * from the public web.
    */
   containsRestrictedData?: boolean;
+
+  /**
+   * True when the gadget has observed data marked `ownerInvitesOnly` (see
+   * `ObservationDescription`). Share links can no longer be created, copied, or redeemed by
+   * anyone new, and only the owner can add collaborators.
+   */
+  ownerInvitesOnly?: boolean;
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,

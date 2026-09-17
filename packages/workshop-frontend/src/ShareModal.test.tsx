@@ -1242,6 +1242,47 @@ describe('ShareModal', () => {
     expect(button(rendered, 'Invite').disabled).toBe(false)
   })
 
+  it('drops share-link controls but keeps revocation once the workspace is owner-invites-only', async () => {
+    const latchedMetadata = {
+      ...METADATA, containsRestrictedData: true, ownerInvitesOnly: true,
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer({
+      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+      shareLinks: [SHARE_LINK],
+    }), fakeAuthenticatedApi(), latchedMetadata)
+
+    expect(rendered.textContent).toContain('doesn’t allow share links')
+    expect(rendered.textContent).not.toContain('This workspace has read sensitive data')
+
+    // No way to mint or copy a link; the existing link stays listed so the owner can revoke it.
+    expect(rendered.textContent).not.toContain('Create a share link')
+    expect(rendered.querySelector('button[aria-label="Copy Team link"]')).toBeNull()
+    expect(button(rendered, 'Revoke Team link').disabled).toBe(false)
+
+    // The owner still invites people directly, and sees what they will be asked to verify.
+    expect(rendered.querySelector('input[aria-label="Search people"]')).not.toBeNull()
+    expect(rendered.textContent).toContain('Pipeline dashboard')
+    await invite(rendered, 'ada')
+    expect(rendered.textContent).toContain('Added Ada')
+  })
+
+  it('hides the invite box from collaborators once the workspace is owner-invites-only', async () => {
+    const latchedMetadata = {
+      ...METADATA,
+      ownerInvitesOnly: true,
+      owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer({
+      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+    }), fakeAuthenticatedApi(), latchedMetadata)
+
+    expect(rendered.textContent).toContain('Only the owner can add people')
+    expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    expect(rendered.textContent).not.toContain('Create a share link')
+    expect(rendered.textContent).not.toContain('Recipient verification')
+    expect(rendered.textContent).toContain('People with access')
+  })
+
   it('surfaces the server’s refusal when sharing is no longer allowed', async () => {
     const restrictedMetadata = {
       ...METADATA, containsRestrictedData: true,

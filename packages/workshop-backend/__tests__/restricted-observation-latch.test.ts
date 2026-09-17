@@ -115,4 +115,51 @@ describe("authorizeObservation's restricted-data latch", () => {
       expect(impl.storage.observers.get("mallory")).toBeDefined();
     });
   });
+
+  it("latches ownerInvitesOnly only for observations that carry the flag", async () => {
+    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-latch");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+
+      // containsRestrictedData alone restricts the workspace but leaves share links working.
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", containsRestrictedData: true,
+      }, { from: "user" });
+      expect(impl.storage.containsRestrictedData.get()).toBe(true);
+      expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
+
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", containsRestrictedData: true,
+        ownerInvitesOnly: true,
+      }, { from: "user" });
+      expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
+
+      // The latch is enforced by the memoized sharing manager.
+      let sharing = await impl.getSharingManager();
+      await expect(sharing.createShareLink({
+        caller: { profileId: OWNER, isOwner: true }, role: "use",
+      })).rejects.toThrow(/Share links are disabled/);
+    });
+  });
+
+  it("does not latch ownerInvitesOnly when the exclusion gate blocks the observation", async () => {
+    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-exclusion-blocked");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+      impl.storage.collaborators.put({
+        profile: { id: "mallory", name: "Mallory" },
+        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "build" }],
+      });
+      impl.storage.observers.put(
+          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
+
+      await expect(impl.authorizeObservation(
+          1, { ...RESTRICTED_EXCLUDING_MALLORY, ownerInvitesOnly: true }, { from: "user" }))
+          .rejects.toThrow(/not permitted to see/);
+
+      expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
+    });
+  });
 });

@@ -152,6 +152,18 @@ Because the role is recomputed from the graph on every `open()`, the live comput
 
 A share-key redemption goes through the same gate. The redeeming open() then verifies the recipient as an observer like any other collaborator; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
+### Owner-invites-only latch
+
+A gatekeeper whose data source requires each recipient to be granted access individually can mark an observation `ownerInvitesOnly` (`ObservationDescription` in `packages/workshop-shared/src/gatekeeper.ts`, typically alongside `containsRestrictedData`). Once any such observation is authorized, the Overseer permanently latches `ownerInvitesOnly` (in `authorizeObservation`, after the exclusion gate, so a refused observation latches nothing), and share links stop admitting people:
+
+- **No new links.** `createShareLink` and `newShareLinkKey` throw "Share links are disabled…".
+- **No new redeemers.** Redeeming a still-active link throws the same error for anyone who is not already a collaborator. An existing collaborator reopening an old link is let through, but no edge is added.
+- **Owner-only direct adds.** `addCollaborator` throws for non-owners; the owner adds each person by username.
+
+People who joined through a link before the latch keep access, and are still re-verified by `ensureObserver` on every open. The owner can still list, rename, and revoke links and remove collaborators. `GadgetMetadata.ownerInvitesOnly` reports the latch, and the Share modal hides link controls (and, for non-owners, the invite box).
+
+The policy lives in the Overseer, which passes it into `SharingManager` as a hook. Each grant checks it after its last await, right before the storage write, so an observation that latches mid-call cannot slip a grant through.
+
 ### Terminating live sessions on revocation or scope growth
 
 Authorization is only checked at `open()`, so a session that is *already* open is not re-checked per message. Without intervention, a collaborator who was just removed or downgraded could keep using their live session until something else disconnected them. To close this gap, `removeCollaborator`/`revokeShareLink` proactively restart the gadget's Overseer DO via `ctx.abort()` whenever the change actually removed or downgraded someone (i.e. the returned `AffectedCollaborator[]` is non-empty; pure no-op removals don't restart). Aborting forcibly disconnects every client; each reconnects and re-runs `open()`, which re-evaluates the now-changed permission graph -- sending removed users to the terminal access-denied page and handing downgraded users their reduced capability (the editor swaps to the `use` view automatically based on `metadata.role`). Since removals are rare (and DOs restart unpredictably anyway, so reconnects are already cheap), the disruption is acceptable.

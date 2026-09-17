@@ -36,7 +36,10 @@ observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 latches the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
 admission: nobody can open the workspace without being verified against the producing gatekeeper,
-and anything that widens what they must be verified against restarts every live session.)
+and anything that widens what they must be verified against restarts every live session. An
+observation that also carries **`ownerInvitesOnly`** latches share links off: nobody new can join
+through a link, and only the owner can add collaborators; see `sharing.md`, "Owner-invites-only
+latch".)
 
 The check works as follows:
 
@@ -101,6 +104,7 @@ The check works as follows:
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
 | `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation`'s latch, `getWebFetchEnv`, `submitAction`) |
+| `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation`'s latch); `sharing.ts` (the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
 | Gatekeeper storage record | `overseer.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
 | `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts` |

@@ -60,6 +60,7 @@ function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<Authen
       />
     )
   }
+  if (state.error?.kind === 'message') return <p>{state.error.message}</p>
   return <p>{state.metadata?.title}</p>
 }
 
@@ -140,5 +141,23 @@ describe('useWorkspaceOpen', () => {
     expect(document.title).toBe('Cloudflare OS')
     expect(firstSubscriptionDispose).toHaveBeenCalledOnce()
     expect(deniedOverseerDispose).toHaveBeenCalledOnce()
+  })
+
+  it('shows the server’s message when share links are disabled for the workspace', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const refusal = 'Share links are disabled for this workspace because it contains sensitive ' +
+      'data. The owner must add each person directly.'
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw new Error(refusal)
+      }),
+    }) as unknown as RpcStub<Overseer>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(overseer)} />))
+
+    expect(container.textContent).toContain(refusal)
   })
 })

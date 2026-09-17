@@ -1214,6 +1214,18 @@ export type ObservationDescription = {
   containsRestrictedData?: boolean;
 
   /**
+   * If true, then once any observation carrying this flag is authorized, the gadget permanently
+   * stops honoring share links: no new links can be created or copied, and nobody new can redeem
+   * an existing one. After that, only the owner can add collaborators, one at a time. People who
+   * already joined keep access (still subject to `addObserver()` verification on every open), and
+   * the owner can still revoke links.
+   *
+   * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
+   * requires each recipient to be granted access individually.
+   */
+  ownerInvitesOnly?: boolean;
+
+  /**
    * If present, then this observation includes data that must not be revealed to the given
    * observer IDs, who were previously added via `Gatekeeper.addObserver()`.
    *

@@ -1160,6 +1160,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // True if any past observation was authorized that had the `containsRestrictedData` flag
       // set in its `ObservationDescription`. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
+
+      // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
+      // its `ObservationDescription`. Share links stop working and only the owner can add
+      // collaborators (enforced by SharingManager).
+      ownerInvitesOnly: singleton(false),
     },
 
     collections: {
@@ -5661,6 +5666,9 @@ class OverseerImpl implements AgentHooks {
     if (description.containsRestrictedData) {
       this.storage.containsRestrictedData.put(true);
     }
+    if (description.ownerInvitesOnly) {
+      this.storage.ownerInvitesOnly.put(true);
+    }
 
     let actionId = this.storage.nextActionId.get();
     this.storage.nextActionId.put(actionId + 1);
@@ -9591,7 +9599,8 @@ class OverseerImpl implements AgentHooks {
   // Resolving the owner's profile ID may require an RPC on first use; thereafter it's cached.
   async getSharingManager(): Promise<SharingManager> {
     if (!this.#sharingManager) {
-      this.#sharingManager = new SharingManager(this.storage, await this.getOwnerProfileId());
+      this.#sharingManager = new SharingManager(
+          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get());
     }
     return this.#sharingManager;
   }
@@ -10681,6 +10690,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -10700,6 +10710,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -10727,17 +10738,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let ownerInvitesOnlySubscriber = {
+      update(value: boolean | undefined) {
+        metadata.ownerInvitesOnly = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
+      this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
+    this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
 
     callback(metadata).catch(unsubscribe);
 

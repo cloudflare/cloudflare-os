@@ -27,9 +27,16 @@ function makeStorage(): SharingStorage {
 
 const OWNER = "owner@example.com";
 
-function makeManager(): { storage: SharingStorage; mgr: SharingManager } {
+function makeManager(ownerInvitesOnly: () => boolean = () => false)
+    : { storage: SharingStorage; mgr: SharingManager } {
   let storage = makeStorage();
-  return { storage, mgr: new SharingManager(storage, OWNER) };
+  return { storage, mgr: new SharingManager(storage, OWNER, ownerInvitesOnly) };
+}
+
+// A manager whose `ownerInvitesOnly` latch the test can flip at any point.
+function makeLatchableManager() {
+  let latch = { on: false };
+  return { latch, ...makeManager(() => latch.on) };
 }
 
 function profile(id: string): AiChatAuthorInfo {
@@ -620,5 +627,116 @@ describe("updateShareLink", () => {
     let { storage, mgr } = makeManager();
     seedLink(storage, "k1", OWNER);
     expect(() => mgr.updateShareLink(collab("a"), "k1", "x")).toThrow(/only edit/);
+  });
+});
+
+describe("ownerInvitesOnly latch", () => {
+  it("refuses to create or copy share links", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    seedLink(storage, "k1", OWNER);
+    latch.on = true;
+
+    await expect(mgr.createShareLink({ caller: owner, role: "use" }))
+        .rejects.toThrow(/Share links are disabled/);
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId: "k1" }))
+        .rejects.toThrow(/Share links are disabled/);
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
+  });
+
+  it("persists nothing when the latch flips while a key is being minted", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    seedLink(storage, "k1", OWNER);
+
+    // Both calls pass their first check synchronously, then park in #mintKey's await.
+    let created = mgr.createShareLink({ caller: owner, role: "use" });
+    let copied = mgr.newShareLinkKey({ caller: owner, linkId: "k1" });
+    latch.on = true;
+
+    await expect(created).rejects.toThrow(/Share links are disabled/);
+    await expect(copied).rejects.toThrow(/Share links are disabled/);
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
+  });
+
+  it("refuses a new user redeeming a link created before the latch", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    latch.on = true;
+
+    let fetched = 0;
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "newbie",
+      fetchProfile: async () => { fetched++; return profile("newbie"); },
+    })).rejects.toThrow(/Share links are disabled/);
+
+    // Refused before the profile RPC.
+    expect(fetched).toBe(0);
+    expect(storage.collaborators.get("newbie")).toBeUndefined();
+  });
+
+  it("persists nothing when the latch flips during the profile fetch", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "newbie",
+      fetchProfile: async () => { latch.on = true; return profile("newbie"); },
+    })).rejects.toThrow(/Share links are disabled/);
+    expect(storage.collaborators.get("newbie")).toBeUndefined();
+  });
+
+  it("lets an existing collaborator reopen a link without adding an edge", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+    latch.on = true;
+
+    await mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+
+    // No new grant: still just the owner's edge, at its original role.
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "user", sharer: OWNER }),
+    ]);
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+  });
+
+  it("still ignores an unknown key", async () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    latch.on = true;
+    await mgr.redeemShareKey({
+      rawKey: "00112233445566778899aabbccddeeff", profileId: "a",
+      fetchProfile: async () => profile("a"),
+    });
+    expect(storage.collaborators.get("a")).toBeUndefined();
+  });
+
+  it("lets only the owner add collaborators", () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    latch.on = true;
+
+    expect(() => mgr.addCollaborator({ caller: collab("a"), profile: profile("b"), role: "use" }))
+        .toThrow(/Only the workspace owner/);
+    expect(storage.collaborators.get("b")).toBeUndefined();
+
+    mgr.addCollaborator({ caller: owner, profile: profile("b"), role: "use" });
+    expect(mgr.getEffectiveRole("b")).toBe("use");
+  });
+
+  it("keeps link management available to the owner", () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    seedLink(storage, "k1", OWNER);
+    seedCollaborator(storage, "a", [keyEdge("k1")]);
+    latch.on = true;
+
+    // Members who joined through the link keep access until the owner acts.
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+    expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual(["k1"]);
+    mgr.updateShareLink(owner, "k1", "renamed");
+    expect(ids(mgr.revokeShareLink(owner, "k1", []))).toEqual(["a"]);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(() => mgr.removeCollaborator(owner, "a", [])).not.toThrow();
   });
 });

@@ -149,7 +149,8 @@ export function useWorkspaceOpen({
             kind: 'message',
             message: 'To open this workspace, you must choose connected accounts for the services it uses.',
           })
-        } else if (message.includes('permitted to observe') ||
+        } else if (message.includes('Share links are disabled') ||
+                   message.includes('permitted to observe') ||
                    message.includes('no longer connected') ||
                    message.includes('connect an account for every service')) {
           showTerminalError({ kind: 'message', message })

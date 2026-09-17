@@ -6,7 +6,8 @@
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
 // and sharing stays available. The observation also latches the workspace into a restricted mode:
 // once latched, the workspace may not perform actions (nor fetch from the web, which has no
-// client-reachable surface to assert here).
+// client-reachable surface to assert here). An observation that also carries `ownerInvitesOnly`
+// latches share links off, leaving the owner as the only one who can add people.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -250,6 +251,74 @@ describe("sensitive observations", () => {
       // An outstanding link grants nobody anything until it is redeemed, and redemption happens
       // inside open() -- where verification runs -- so the observation proceeds.
       await expect(ws.session.readValue(true)).resolves.toBe(42);
+    });
+  });
+
+  it.concurrent("owner-invites-only latch: links stop admitting people, the owner adds them",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "owner-invites-only");
+      const { key, linkId } = await ws.overseer.createShareLink("build", "pre-latch");
+
+      // Dave joins through the link before the latch.
+      const [dave, carol] = nextUsernames("dave", "carol");
+      const daveApi = await signUp(publicApi, dave);
+      const daveAccount = await provisionAccount(daveApi);
+      const daveOpens = async () => {
+        const callback = stubFor(
+            new ObserverConfigRecorder().alwaysChoose(daveAccount.id, MAX_OBSERVER_PROMPTS));
+        try {
+          return await daveApi.openGadget(ws.gadgetId, key, callback);
+        } finally {
+          callback[Symbol.dispose]();
+        }
+      };
+      (await daveOpens())[Symbol.dispose]();
+
+      await expect(ws.session.readValue(true, true)).resolves.toBe(42);
+      await expect(ws.overseer.getMetadata()).resolves.toMatchObject({
+        containsRestrictedData: true,
+        ownerInvitesOnly: true,
+      });
+
+      // No new links, and no new copies of the old one.
+      await expect(ws.overseer.createShareLink("use", "post-latch"))
+          .rejects.toThrow(/Share links are disabled/);
+      await expect(ws.overseer.newShareLinkKey(linkId))
+          .rejects.toThrow(/Share links are disabled/);
+
+      // The pre-latch link no longer admits anyone new...
+      const carolApi = await signUp(publicApi, carol);
+      await expect(carolApi.openGadget(ws.gadgetId, key))
+          .rejects.toThrow(/Share links are disabled/);
+      expect(await ws.overseer.listCollaborators()).toHaveLength(1);
+
+      // ...but Dave, who already joined through it, still opens with it, and cannot add people.
+      using daveOverseer = await daveOpens();
+      await expect(daveOverseer.addCollaborator(carol, "use"))
+          .rejects.toThrow(/Only the workspace owner/);
+
+      // The owner adds Carol directly, and she opens after verifying her own access.
+      await expect(ws.overseer.addCollaborator(carol, "use")).resolves.toMatchObject({
+        profile: expect.objectContaining({ id: expect.any(String) }),
+      });
+      const carolAccount = await provisionAccount(carolApi);
+      const callback = stubFor(
+          new ObserverConfigRecorder().alwaysChoose(carolAccount.id, MAX_OBSERVER_PROMPTS));
+      try {
+        (await carolApi.openGadget(ws.gadgetId, undefined, callback))[Symbol.dispose]();
+      } finally {
+        callback[Symbol.dispose]();
+      }
+
+      // The owner can still see and revoke the old link. Dave loses access, so the revocation
+      // restarts the workspace; wait for it to land before the test tears its stubs down.
+      expect((await ws.overseer.listShareLinks()).map(l => l.linkId)).toEqual([linkId]);
+      await expect(ws.overseer.revokeShareLink(linkId, [])).resolves.toMatchObject([
+        expect.objectContaining({ newRole: null }),
+      ]);
+      await waitFor("the revocation restart to fell the old workspace instance", () =>
+          ws.session.readValue().then(() => null, () => true));
     });
   });
 
