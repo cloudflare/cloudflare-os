@@ -1,4 +1,4 @@
-import { Button, Empty, InputGroup, Loader, Tabs } from "@cloudflare/kumo";
+import { Button, Empty, InputGroup, Loader } from "@cloudflare/kumo";
 import {
   CalendarBlank,
   CaretDown,
@@ -7,7 +7,7 @@ import {
   Plus,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ManagementListOptions,
   ManagementSchedule,
@@ -212,21 +212,27 @@ export default function SchedulerPage({
             />
           </InputGroup>
 
-          <Tabs
-            variant="underline"
-            value={filter}
-            onValueChange={(value) => setFilter(value as Filter)}
-            tabs={FILTERS.map((item) => ({
-              value: item.value,
-              label: item.label,
-              // data-filter is a test hook (SchedulerPage.test.tsx); Kumo's TabsItem has no
-              // passthrough for arbitrary attributes, so it rides in via the render prop instead.
-              render: (props: ComponentProps<"button">) => (
-                <button {...props} data-filter={item.value} />
-              ),
-            }))}
-            className="mt-4"
-          />
+          {/* A status filter narrows the same list rather than switching between tab panels, so
+              this is a nav of filter links (aria-current), not Kumo `Tabs` (role="tablist"). */}
+          <nav className="mt-4 flex gap-5 border-b border-kumo-line" aria-label="Schedule status">
+            {FILTERS.map((item) => (
+              <Button
+                key={item.value}
+                variant="ghost"
+                data-filter={item.value}
+                aria-current={filter === item.value ? "page" : undefined}
+                className={`relative !h-auto !rounded-none !px-0 !pb-2 text-sm ${
+                  filter === item.value ? "!text-kumo-default font-medium" : "!text-kumo-subtle"
+                }`}
+                onClick={() => setFilter(item.value)}
+              >
+                {item.label}
+                {filter === item.value && (
+                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-kumo-brand" />
+                )}
+              </Button>
+            ))}
+          </nav>
         </>
       )}
 

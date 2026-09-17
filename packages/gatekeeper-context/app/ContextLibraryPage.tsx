@@ -1,4 +1,4 @@
-import { Button, ClipboardText, Dialog, DropdownMenu, Input, InputArea, InputGroup, Tabs, useKumoToastManager } from "@cloudflare/kumo";
+import { Button, Dialog, DropdownMenu, Input, InputArea, InputGroup, Tabs, useKumoToastManager } from "@cloudflare/kumo";
 import {
   BookOpen,
   Buildings,
@@ -1662,12 +1662,20 @@ function GitTokenManagementModal({
               <div className="space-y-2">
                 <div>
                   <FieldLabel>Remote URL</FieldLabel>
-                  <ClipboardText
-                    text={newGitToken.remote}
-                    size="sm"
-                    className="mt-1 font-mono"
-                    tooltip={{ text: "Copy", copiedText: "Remote URL copied" }}
-                  />
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      readOnly
+                      value={newGitToken.remote}
+                      className="min-w-0 flex-1 rounded border border-kumo-line bg-kumo-base px-2 py-1 font-mono text-[11px] text-kumo-default"
+                    />
+                    <WorkshopButton
+                      tone="secondary"
+                      className="h-8!"
+                      onClick={() => copyToClipboard(newGitToken.remote, "Remote URL copied", "Failed to copy remote URL")}
+                    >
+                      Copy
+                    </WorkshopButton>
+                  </div>
                 </div>
                 <div>
                   <FieldLabel>Password</FieldLabel>
