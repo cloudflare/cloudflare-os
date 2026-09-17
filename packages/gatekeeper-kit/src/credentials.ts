@@ -288,6 +288,10 @@ export class CredentialCoordinator<Creds> {
    *
    * Fencing is opt-in because an account with no such window (a pasted token, a form submission
    * with no round trip) has nothing to fence, and would then have to invent a generation to pass.
+   * This method does not dispose credentials it replaces. A caller replacing a provider grant must
+   * capture the current value before this synchronous call and dispose it afterward only when the
+   * provider guarantees that doing so cannot invalidate the successor.
+   *
    * @param credentials New credentials.
    * @param options `ifGeneration` refuses the write unless the connection is still the one the
    * attempt started under.

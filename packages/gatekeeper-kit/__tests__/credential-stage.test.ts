@@ -53,6 +53,19 @@ describe("credential stage", () => {
     expect(kv.keys()).toEqual([]);
   });
 
+  it("drops an expired stage only by its exact id, for disposal", () => {
+    const kv = fakeKv();
+    const stageId = stageCredentials(kv, GRANT, 1_000, 100);
+
+    // A cleanup an earlier flow scheduled must not drop the stage that replaced it.
+    expect(discardStagedCredentials<Grant>(kv, "wrong-stage")).toBeNull();
+    expect(kv.keys()).toEqual([STAGED_CREDENTIALS_KEY]);
+    // Past its TTL nothing can commit or read it, but its own flow can still dispose of it.
+    expect(peekStagedCredentials<Grant>(kv, 1_200)).toBeNull();
+    expect(discardStagedCredentials<Grant>(kv, stageId)).toEqual(GRANT);
+    expect(kv.keys()).toEqual([]);
+  });
+
   it("honours a caller-chosen lifetime", () => {
     const kv = fakeKv();
     const stageId = stageCredentials(kv, GRANT, 1_200, 500);
@@ -83,14 +96,31 @@ describe("credential stage", () => {
     expect(kv.keys()).toEqual([]);
   });
 
-  it("discards the stage on request, touching nothing else", () => {
+  it("drops a record no caller could use, whichever reader finds it", () => {
+    const kv = fakeKv();
+    kv.put(STAGED_CREDENTIALS_KEY, null);
+
+    expect(discardStagedCredentials<Grant>(kv)).toBeNull();
+    expect(kv.keys()).toEqual([]);
+
+    kv.put(STAGED_CREDENTIALS_KEY, "garbage");
+    expect(peekStagedCredentials<Grant>(kv, 1_000)).toBeNull();
+    expect(kv.keys()).toEqual([]);
+
+    kv.put(STAGED_CREDENTIALS_KEY, { stageId: "abc", expiresAt: 5_000 });
+    expect(discardStagedCredentials<Grant>(kv)).toBeNull();
+    expect(kv.keys()).toEqual([]);
+  });
+
+  it("drops whatever is staged when no id is named, touching nothing else", () => {
     const kv = fakeKv();
     kv.put("tokens", { access_token: "live" });
-    stageCredentials(kv, GRANT, 1_000);
+    stageCredentials(kv, GRANT, 1_000, 0);
 
-    discardStagedCredentials(kv);
+    expect(peekStagedCredentials<Grant>(kv, 1_000)).toBeNull();
+    expect(discardStagedCredentials<Grant>(kv)).toEqual(GRANT);
     expect(kv.keys()).toEqual(["tokens"]);
-    discardStagedCredentials(kv);
+    expect(discardStagedCredentials<Grant>(kv)).toBeNull();
     expect(kv.keys()).toEqual(["tokens"]);
   });
 });

@@ -22,7 +22,12 @@ import {
 } from "../../../src/actions";
 import type { ActionFence } from "../../../src/action-journal";
 import { KvTtlCache } from "../../../src/cache";
-import { advanceToOAuth, claimOAuth, putInitiation } from "../../../src/connect-handshake";
+import { advanceToOAuth, claimOAuth, NONCE_KEY, putInitiation } from "../../../src/connect-handshake";
+import {
+  commitStagedCredentials,
+  discardStagedCredentials,
+  stageCredentials,
+} from "../../../src/credential-stage";
 import {
   CredentialCoordinator,
   CredentialSource,
@@ -42,6 +47,8 @@ import {
   type Project,
   type PublicGrant,
 } from "./provider";
+
+type ReconnectStage = { grant: Grant; startedUnder: string };
 
 /** One provider per test run, reached by both the account and its resources. */
 export const provider = new FakeProvider();
@@ -66,6 +73,7 @@ export function resetProvider(): void {
   provider.principal = "user-a";
   provider.listCalls = 0;
   provider.revoked.clear();
+  provider.activeAccessTokens.clear();
   provider.projects.clear();
   provider.access.clear();
   observations.length = 0;
@@ -199,6 +207,12 @@ export class ConformanceAccount extends DurableObject {
     discardMint: grant => void provider.revoked.add(grant.refreshToken),
     vendorId: "conformance",
   });
+  #reconnectExchangeBarrier?: {
+    entered: Promise<void>;
+    markEntered(): void;
+    release: Promise<void>;
+    resume(): void;
+  };
 
   /** @returns The nonce a connect link carries. */
   beginConnect(): string {
@@ -215,6 +229,30 @@ export class ConformanceAccount extends DurableObject {
   beginOAuth(initiationNonce: string): string | null {
     return advanceToOAuth(this.ctx.storage.kv, initiationNonce, Date.now(),
       { startedUnder: this.#creds.connectionGeneration() });
+  }
+
+  /** Pauses the next reconnect after its provider exchange. */
+  pauseReconnectExchange(): void {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    this.#reconnectExchangeBarrier = {
+      entered: entered.promise,
+      markEntered: () => entered.resolve(),
+      release: release.promise,
+      resume: () => release.resolve(),
+    };
+  }
+
+  /** Waits until the paused reconnect reaches its exchange boundary. */
+  async waitForReconnectExchange(): Promise<void> {
+    if (this.#reconnectExchangeBarrier === undefined) throw new Error("No reconnect is paused.");
+    await this.#reconnectExchangeBarrier.entered;
+  }
+
+  /** Releases the paused reconnect exchange. */
+  releaseReconnectExchange(): void {
+    if (this.#reconnectExchangeBarrier === undefined) throw new Error("No reconnect is paused.");
+    this.#reconnectExchangeBarrier.resume();
   }
 
   /**
@@ -242,14 +280,70 @@ export class ConformanceAccount extends DurableObject {
     return true;
   }
 
+  /**
+   * Exchanges a reconnect code and stages its complete grant without changing live credentials.
+   * @param oauthNonce Nonce the provider returned.
+   * @param ttlMs Stage lifetime; `0` stages one already past its commit window.
+   * @returns The stage id standing in for `reconnectComplete(stageId)`, or `null` if superseded.
+   */
+  async stageReconnect(oauthNonce: string, ttlMs?: number): Promise<string | null> {
+    const claim = claimOAuth<{ startedUnder: string }>(this.ctx.storage.kv, oauthNonce, Date.now());
+    if (claim === null) return null;
+    const grant = await Promise.resolve(provider.mint());
+    const barrier = this.#reconnectExchangeBarrier;
+    if (barrier !== undefined) {
+      barrier.markEntered();
+      await barrier.release;
+      if (this.#reconnectExchangeBarrier === barrier) this.#reconnectExchangeBarrier = undefined;
+    }
+    if (this.#creds.connectionGeneration() !== claim.startedUnder) {
+      provider.revoked.add(grant.refreshToken);
+      return null;
+    }
+
+    const displaced = discardStagedCredentials<ReconnectStage>(this.ctx.storage.kv);
+    const stageId = stageCredentials(
+      this.ctx.storage.kv,
+      { grant, startedUnder: claim.startedUnder },
+      Date.now(),
+      ttlMs,
+    );
+    if (displaced !== null) provider.revoked.add(displaced.grant.refreshToken);
+    return stageId;
+  }
+
+  /** Makes only the exact completed reconnect stage live. */
+  commitReconnect(stageId: string): void {
+    const staged = commitStagedCredentials<ReconnectStage>(
+      this.ctx.storage.kv,
+      Date.now(),
+      stageId,
+    );
+    if (staged === null) throw new Error("This reconnect stage is no longer available.");
+    const retired = this.#creds.stored();
+    try {
+      this.#creds.connect(staged.grant, { ifGeneration: staged.startedUnder });
+    } catch (error) {
+      if (!isConnectionSuperseded(error)) throw error;
+      provider.revoked.add(staged.grant.refreshToken);
+      throw new Error("This account's connection changed while reconnecting.", { cause: error });
+    }
+    if (retired !== undefined) provider.revoked.add(retired.refreshToken);
+  }
+
   /** @returns Whether credentials are stored, so a test can see which write won. */
   isConnected(): boolean {
     return this.#creds.stored() !== undefined;
   }
 
-  /** Disconnects, as a user revoke does. */
+  /** Disconnects. This account owns no callback or alarm, so nothing else is left to clear. */
   disconnect(): void {
+    const live = this.#creds.stored();
+    const staged = discardStagedCredentials<ReconnectStage>(this.ctx.storage.kv);
+    this.ctx.storage.kv.delete(NONCE_KEY);
     this.#creds.clear();
+    if (staged !== null) provider.revoked.add(staged.grant.refreshToken);
+    if (live !== undefined) provider.revoked.add(live.refreshToken);
   }
 
   /** @returns The credential triple, with refresh material projected out. */

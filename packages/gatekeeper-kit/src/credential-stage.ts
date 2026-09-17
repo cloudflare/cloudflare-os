@@ -6,8 +6,9 @@
  * straight from the gatekeeper, so a flow that wrote its result live would hand those gadgets a
  * phished victim's tokens with nothing in the way. Instead the flow stages them here and reports
  * `reconnectComplete()`; only `GatekeeperUser.commitReconnect()`, called once the Workshop has
- * verified the completing browser, moves them to the live keys. Nothing else reads this key: staged
- * credentials are unusable until committed, and the next stage overwrites them.
+ * verified the completing browser, moves them to the live keys. No read path serves a stage and no
+ * other write activates one: an uncommitted stage is replaced by the next, or dropped outright by
+ * `discardStagedCredentials`.
  *
  * Every stage carries a random `stageId`, which the flow passes to `reconnectComplete()` so the
  * Workshop's ticket names the exact credentials whose completion minted it. Two reconnects can
@@ -21,13 +22,16 @@ import type { KvMutable } from "./kv";
 /** KV key holding the staged credentials. */
 export const STAGED_CREDENTIALS_KEY = "stagedCredentials";
 
+/** The stored record: the consumer's credentials, plus the stage's own id and expiry. */
 type StagedCredentials<T> = { creds: T; stageId: string; expiresAt: number };
 
 /** A stage's credentials together with the id a commit must name to take them. */
 export type StagedCredentialsView<T> = { creds: T; stageId: string };
 
 /**
- * Stages credentials for a later `commitStagedCredentials`, replacing any earlier stage.
+ * Stages credentials for a later `commitStagedCredentials`, replacing any earlier stage. A caller
+ * that can safely dispose the previous live stage must `peekStagedCredentials` immediately before
+ * this call, with no await between them, then dispose it after this call.
  * @param kv Durable Object storage.
  * @param creds Whatever the connector needs to write its live keys on commit.
  * @param now Current Unix time in milliseconds.
@@ -51,15 +55,33 @@ export function stageCredentials<T>(
   return stageId;
 }
 
-// The stage as stored, or `undefined` when there is none or it is unusable (expired, corrupt, or
-// read with a non-finite clock).
-function liveStage<T>(kv: KvMutable, now: number): StagedCredentials<T> | undefined {
+/**
+ * Reads the stored stage, deleting a record no caller could use — null, not an object, or missing
+ * a field — so every public reader can keep its `T | null` contract.
+ * @param kv Durable Object storage.
+ * @returns The stored stage, or `undefined` when there is none.
+ */
+function storedStage<T>(kv: KvMutable): StagedCredentials<T> | undefined {
   const staged = kv.get<StagedCredentials<T>>(STAGED_CREDENTIALS_KEY);
-  if (staged === undefined || typeof staged.stageId !== "string" ||
-      !Number.isFinite(staged.expiresAt) || !Number.isFinite(now) || now >= staged.expiresAt) {
-    return undefined;
-  }
-  return staged;
+  if (staged === undefined) return undefined;
+  if (typeof staged?.stageId === "string" && Number.isFinite(staged.expiresAt)
+      && staged.creds !== undefined) return staged;
+  kv.delete(STAGED_CREDENTIALS_KEY);
+  return undefined;
+}
+
+/**
+ * Reads the stored stage while it is still committable. A non-finite clock reads as expired, so an
+ * unusable time source cannot activate a stage.
+ * @param kv Durable Object storage.
+ * @param now Current Unix time in milliseconds.
+ * @returns The live stage, or `undefined` when none is committable.
+ */
+function liveStage<T>(kv: KvMutable, now: number): StagedCredentials<T> | undefined {
+  const staged = storedStage<T>(kv);
+  return staged !== undefined && Number.isFinite(now) && now < staged.expiresAt
+    ? staged
+    : undefined;
 }
 
 /**
@@ -107,11 +129,21 @@ export function commitStagedCredentials<T>(kv: KvMutable, now: number, stageId: 
 }
 
 /**
- * Drops the stage, if any, leaving the live credentials alone. For a flow that is abandoning its
- * reconnect — an OAuth client told to invalidate the tokens it holds while one is in progress
- * should forget the staged ones, not the live ones.
+ * Drops a stage and returns what it held, for gatekeeper-owned disposal. Given no `stageId` it drops
+ * whatever is staged; given one it drops only that exact stage, so a newer flow's stage survives a
+ * cleanup the flow before it scheduled. A record no caller could use is dropped, reporting `null`.
+ *
+ * Unlike a commit this ignores the stage TTL, which is what lets an abandoned stage be cleaned up
+ * long after its window closed — and why the credentials it returns must never be written live.
+ * Nothing has confirmed who obtained them, and `commitStagedCredentials` is the only path that may
+ * activate a stage. The local deletion must happen before awaiting provider cleanup.
  * @param kv Durable Object storage.
+ * @param stageId The exact stage to drop, for a caller that retained the id `stageCredentials` gave it.
+ * @returns The dropped credentials, or `null` when nothing matched.
  */
-export function discardStagedCredentials(kv: KvMutable): void {
+export function discardStagedCredentials<T>(kv: KvMutable, stageId?: string): T | null {
+  const staged = storedStage<T>(kv);
+  if (staged === undefined || (stageId !== undefined && staged.stageId !== stageId)) return null;
   kv.delete(STAGED_CREDENTIALS_KEY);
+  return staged.creds;
 }

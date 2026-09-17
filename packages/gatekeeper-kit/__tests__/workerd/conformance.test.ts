@@ -47,6 +47,18 @@ async function connect(account: DurableObjectStub<ConformanceAccount>): Promise<
   expect(await account.completeConnect(oauth!)).toBe(true);
 }
 
+/** Runs a reconnect up to its stage, which Workshop would confirm with `commitReconnect`. */
+async function restage(
+  account: DurableObjectStub<ConformanceAccount>,
+  ttlMs?: number,
+): Promise<string> {
+  const initiation = await account.beginConnect();
+  const oauth = await account.beginOAuth(initiation);
+  const stageId = await account.stageReconnect(oauth!, ttlMs);
+  expect(stageId).not.toBeNull();
+  return stageId!;
+}
+
 beforeEach(() => {
   resetProvider();
   provider.projects.set("project-a", { id: "project-a", name: "Alpha", spaceId: "space-1" });
@@ -63,6 +75,124 @@ describe("credentials and connect", () => {
     expect(read.identity).not.toBe("");
     // The account is the only holder: a resource facet must never see this.
     expect(read.creds).not.toHaveProperty("refreshToken");
+  });
+
+  it("keeps a reconnect inert until Workshop commits its exact stage", async () => {
+    const { account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+    const original = await account.getCredentials();
+
+    provider.principal = "user-b";
+    const stageId = await restage(account);
+
+    expect(await account.getCredentials()).toMatchObject({
+      creds: { accessToken: original.creds.accessToken },
+      generation: original.generation,
+    });
+    expect((await resource.searchProjects("Alpha")).map(project => project.id))
+      .toEqual(["project-a"]);
+
+    await expect(async () => { await account.commitReconnect("wrong-stage"); })
+      .rejects.toThrow(/stage is no longer available/);
+    expect(await account.getCredentials()).toMatchObject({
+      creds: { accessToken: original.creds.accessToken },
+      generation: original.generation,
+    });
+
+    await account.commitReconnect(stageId);
+    const committed = await account.getCredentials();
+    expect(committed.creds.accessToken).toMatch(/^user-b-access/);
+    expect(committed.generation).not.toBe(original.generation);
+    expect([...provider.revoked]).toEqual([expect.stringMatching(/^user-a-refresh-/)]);
+  });
+
+  it("disposes a reconnect superseded during exchange", async () => {
+    const { account } = bind();
+    await connect(account);
+
+    provider.principal = "user-b";
+    const initiation = await account.beginConnect();
+    const oauth = await account.beginOAuth(initiation);
+    await account.pauseReconnectExchange();
+    const staging = account.stageReconnect(oauth!);
+    await account.waitForReconnectExchange();
+
+    provider.principal = "user-c";
+    await connect(account);
+    const winner = await account.getCredentials();
+    await account.releaseReconnectExchange();
+
+    expect(await staging).toBeNull();
+    expect(await account.getCredentials()).toEqual(winner);
+    expect([...provider.revoked]).toEqual([expect.stringMatching(/^user-b-refresh-/)]);
+  });
+
+  it("refuses an exact stage after the live connection changes", async () => {
+    const { account } = bind();
+    await connect(account);
+
+    provider.principal = "user-b";
+    const stageId = await restage(account);
+
+    provider.principal = "user-c";
+    await connect(account);
+    const winner = await account.getCredentials();
+
+    await expect(async () => { await account.commitReconnect(stageId); })
+      .rejects.toThrow(/connection changed while reconnecting/);
+    expect(await account.getCredentials()).toEqual(winner);
+    expect([...provider.revoked]).toEqual([expect.stringMatching(/^user-b-refresh-/)]);
+  });
+
+  it("disposes a replaced stage whatever its TTL", async () => {
+    // A peek at the current stage hides one past its TTL, leaving its grant no local handle.
+    const { account } = bind();
+    await connect(account);
+
+    provider.principal = "user-b";
+    const expired = await restage(account, 0);
+    provider.principal = "user-c";
+    await restage(account);
+    provider.principal = "user-d";
+    const current = await restage(account);
+
+    expect([...provider.revoked]).toEqual([
+      expect.stringMatching(/^user-b-refresh-/),
+      expect.stringMatching(/^user-c-refresh-/),
+    ]);
+    await expect(async () => { await account.commitReconnect(expired); })
+      .rejects.toThrow(/stage is no longer available/);
+    await account.commitReconnect(current);
+    expect((await account.getCredentials()).creds.accessToken).toMatch(/^user-d-access-/);
+  });
+
+  it("revokes live and staged grants when the account disconnects", async () => {
+    const { account } = bind();
+    await connect(account);
+    provider.principal = "user-b";
+    const stageId = await restage(account);
+
+    await account.disconnect();
+
+    await expect(async () => { await account.commitReconnect(stageId); })
+      .rejects.toThrow(/stage is no longer available/);
+    expect(await account.isConnected()).toBe(false);
+    expect([...provider.revoked]).toEqual([
+      expect.stringMatching(/^user-b-refresh-/),
+      expect.stringMatching(/^user-a-refresh-/),
+    ]);
+  });
+
+  it("invalidates an unvisited connect link when the account disconnects", async () => {
+    const { account } = bind();
+    await connect(account);
+    const initiation = await account.beginConnect();
+
+    await account.disconnect();
+
+    expect(await account.beginOAuth(initiation)).toBeNull();
+    expect(await account.isConnected()).toBe(false);
   });
 
   it("survives repeated rotation, which a response-shaped record would not", async () => {
@@ -82,6 +212,20 @@ describe("credentials and connect", () => {
     // Each rotation revokes the token it replaced, so this is what proves all three refreshed —
     // comparing only the first and last identity passes on one rotation and two no-ops.
     expect(provider.revoked.size).toBe(3);
+  });
+
+  it("refreshes the live grant under its own principal while a stage waits", async () => {
+    const { account } = bind();
+    await connect(account);
+
+    provider.principal = "user-b";
+    const stageId = await restage(account);
+
+    await account.reportCredentialsRejected((await account.getCredentials()).identity);
+    expect((await account.getCredentials()).creds.accessToken).toMatch(/^user-a-access-/);
+
+    await account.commitReconnect(stageId);
+    expect((await account.getCredentials()).creds.accessToken).toMatch(/^user-b-access-/);
   });
 
   it("reports a grant the provider revoked as expiry, not as a recycled 401", async () => {
@@ -406,13 +550,12 @@ describe("assembly", () => {
     expect(observations).toHaveLength(authorized + 1);
   });
 
-  it("refreshes and retries a read whose stored access token the provider has rotated", async () => {
+  it("refreshes and retries a read whose stored access token is invalid", async () => {
     const { account, resource } = bind();
     await connect(account);
     await bindResource(resource, account);
 
-    // The provider issues a newer token, so the stored one now 401s exactly as a stale one does.
-    provider.mint();
+    provider.activeAccessTokens.delete((await account.getCredentials()).creds.accessToken);
 
     expect((await resource.searchProjects("Alpha")).map(project => project.id))
       .toEqual(["project-a"]);

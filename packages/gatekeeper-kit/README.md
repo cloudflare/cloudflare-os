@@ -24,11 +24,12 @@ proposal.
 The kit owns provider-independent mechanisms inside each imported module. The gatekeeper owns
 provider facts, policy, and the assembly around those modules. Importing a leaf does not transfer
 the duties in the right-hand column.
+Workshop owns connect completion ticket minting and redemption.
 
 | Concern | Kit owns | Gatekeeper owns |
 | --- | --- | --- |
 | Assembly and lifetime | Independent leaf contracts; no Layer 2 assembly is shipped. | Worker, account, and resource-facet RPC surfaces; stub disposal; keeping stateful kit objects stable for one Durable Object activation. |
-| Connect | Nonce generation and comparison, the two-stage handshake, hardened HTML, and browser mutation guards. | Routes, authorization parameters, provider exchange, completion ordering, persistence, rollback, and reconnect or revoke races. |
+| Connect | Nonce generation and comparison, the two-stage handshake, staged reconnect escrow, hardened handoff HTML, and browser mutation guards. | Provider exchange, staged payload shape, exact live commit, provider cleanup policy, routes, and authorization parameters. |
 | Preview OAuth | Signed state, stable-to-preview callback relay, and return-host validation. | Deployment configuration, provider callback parameters, issuer checks, and retaining the exact redirect URI for code exchange. |
 | Credentials | Atomic credential records, refresh coalescing, identity and connection generations, replay, and rejection adjudication. | Grant shape and projection, token exchange, provider error classification, refresh-field merging, revocation, and display-safe errors. |
 | Credential expiry and simple auth retry | Durable deduplication of expiry notifications and one-refresh/one-replay helpers. | Deciding what proves grant expiry, provider refresh and revoke calls, and choosing the coordinator flow versus the standalone retry helper. |
@@ -46,9 +47,9 @@ do not call around a stateful module while relying on its journal, fence, or lif
 
 ## Start here
 
-- For an OAuth-shaped provider, start with the
-  [credentials guide](USAGE.md#credentials). It covers account-side storage, consumer-side RPC,
-  refresh, replay, expiry, and action fences.
+- For an OAuth-shaped provider, start with [Connect flows](USAGE.md#connect-flows), then read the
+  [credentials guide](USAGE.md#credentials). They cover browser handoff sequencing, account-side
+  storage, consumer-side RPC, refresh, replay, expiry, and action fences.
 - For provider writes, use [`./actions`](#module-inventory) and read
   [Actions and files](USAGE.md#actions-and-files).
 - For every gatekeeper's observer methods, select a strategy from `./observers` and read
@@ -70,6 +71,7 @@ import {
 | --- | --- | --- |
 | `./connect-nonce` | Nonce generation, expiry, and constant-time comparison. | A connect flow mints or checks its own nonce. The handshake and credential modules already use it. |
 | `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage. | A connect link or form redirects through an OAuth provider. |
+| `./credential-stage` | Durable reconnect escrow, exact commit, and exact-stage cleanup. | A reconnect must remain inert until Workshop commits the completed stage. |
 | `./connect-pages` | Hardened connect HTML, escaping, and browser mutation guards. | A gatekeeper serves HTML from its own origin. |
 | `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
 | `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
