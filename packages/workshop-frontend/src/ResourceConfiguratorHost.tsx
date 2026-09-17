@@ -1,44 +1,10 @@
-import type { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
-import { ResourceAuthorizationAction } from './ResourceAuthorizationAction'
+import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import SandboxedResourceConfigurator from './SandboxedResourceConfigurator'
 
-/** Releases every capability owned by a resource-configurator frame. */
-export function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null): void {
-  if (!frame) return
-  try {
-    (frame.ui as any)?.[Symbol.dispose]?.()
-  } finally {
-    (frame.authorization?.request as any)?.[Symbol.dispose]?.()
-  }
-}
-
-/** A started configurator frame together with the selection it was started for. */
-export type ConfiguratorFrameState = {
-  key: number
-  frame: ResourceConfiguratorFrame
-  accountId: number
-  resourceUrlPattern: string
-}
-
-/**
- * The frame only while it still belongs to the current selection.
- *
- * Both hosts clear a superseded frame from an effect, so one committed render can pair the new
- * account with the old frame; acting on it would configure or authorize the wrong account.
- */
-export function currentConfiguratorFrame(
-  state: ConfiguratorFrameState | null,
-  accountId: number | null,
-  resourceUrlPattern: string | null,
-): ConfiguratorFrameState | null {
-  if (!state || state.accountId !== accountId) return null
-  return state.resourceUrlPattern === resourceUrlPattern ? state : null
-}
-
-/** Renders the trusted controls and sandboxed resource configurator. */
+/** Renders the resource configurator slot inside the gatekeeper modal. */
 export default function ResourceConfiguratorHost({
-  state,
-  accountId,
+  frame,
+  frameKey,
   loading,
   error,
   disabled,
@@ -48,8 +14,8 @@ export default function ResourceConfiguratorHost({
   initialResourceUrl,
   resourceUrlPattern,
 }: {
-  state: ConfiguratorFrameState | null
-  accountId: number | null
+  frame: ResourceConfiguratorFrame | null
+  frameKey: number | null
   loading: boolean
   error: string | null
   disabled: boolean
@@ -57,35 +23,22 @@ export default function ResourceConfiguratorHost({
   onSelectionReadyChange?: (ready: boolean | null) => void
   topOffset?: number
   initialResourceUrl?: string
-  resourceUrlPattern: string
+  resourceUrlPattern?: string
 }) {
   if (disabled) return <Placeholder>Choose an account before selecting a resource.</Placeholder>
   if (loading) return <Placeholder>Loading configurator...</Placeholder>
   if (error) return <Placeholder>{error}</Placeholder>
+  if (!frame) return null
 
-  const current = currentConfiguratorFrame(state, accountId, resourceUrlPattern)
-  if (!current) return null
-  const { frame, key } = current
-
-  return (
-    <>
-      {frame.authorization && (
-        <ResourceAuthorizationAction
-          key={`authorization:${key}`}
-          authorization={frame.authorization}
-        />
-      )}
-      <SandboxedResourceConfigurator
-        key={`configurator:${key}`}
-        frame={frame}
-        topOffset={topOffset}
-        onCollectResourceUrlChange={onCollectResourceUrlChange}
-        onSelectionReadyChange={onSelectionReadyChange}
-        initialResourceUrl={initialResourceUrl}
-        resourceUrlPattern={resourceUrlPattern}
-      />
-    </>
-  )
+  return <SandboxedResourceConfigurator
+    key={frameKey}
+    frame={frame}
+    topOffset={topOffset}
+    onCollectResourceUrlChange={onCollectResourceUrlChange}
+    onSelectionReadyChange={onSelectionReadyChange}
+    initialResourceUrl={initialResourceUrl}
+    resourceUrlPattern={resourceUrlPattern}
+  />
 }
 
 function Placeholder({ children }: { children: React.ReactNode }) {

@@ -21,24 +21,23 @@ vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
 }))
 
-vi.mock('./ResourceConfiguratorHost', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./ResourceConfiguratorHost')>()
+vi.mock('./ResourceConfiguratorHost', async () => {
   const { useEffect } = await import('react')
 
   const ResourceConfiguratorHost = ({
-    state,
+    frame,
     loading,
     disabled,
     onCollectResourceUrlChange,
     onSelectionReadyChange,
   }: {
-    state: object | null
+    frame: object | null
     loading: boolean
     disabled: boolean
     onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
     onSelectionReadyChange?: (ready: boolean | null) => void
   }) => {
-    const mounted = Boolean(state && !loading && !disabled)
+    const mounted = Boolean(frame && !loading && !disabled)
     useEffect(() => {
       if (!mounted) return
       onCollectResourceUrlChange?.(() => Promise.resolve('https://catalog.example.com/'))
@@ -49,7 +48,7 @@ vi.mock('./ResourceConfiguratorHost', async (importOriginal) => {
     return mounted ? <div data-testid="resource-configurator" /> : null
   }
 
-  return { ...actual, default: ResourceConfiguratorHost }
+  return { default: ResourceConfiguratorHost }
 })
 
 import GatekeeperModal from './GatekeeperModal'
