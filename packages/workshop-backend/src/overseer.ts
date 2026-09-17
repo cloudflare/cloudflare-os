@@ -5436,10 +5436,9 @@ class OverseerImpl implements AgentHooks {
   }
 
   /** Runs one explicit action prefix through the serialized action driver. */
-  applyActionBatch(
-      boundary: GatekeeperActionRecord, vetoes: readonly GatekeeperActionRecord[],
-      resolvedBy: AiChatAuthorInfo): Promise<PassResult> {
-    return this.#actionSync.applyThrough(boundary, vetoes, resolvedBy);
+  applyActionBatch(boundaryId: number, vetoIds: readonly number[],
+                   resolvedBy: AiChatAuthorInfo): Promise<PassResult> {
+    return this.#actionSync.applyThrough(boundaryId, vetoIds, resolvedBy);
   }
 
   rejectPendingAction(record: GatekeeperActionRecord, resolvedBy: AiChatAuthorInfo): Promise<void> {
@@ -5998,8 +5997,8 @@ class OverseerImpl implements AgentHooks {
 
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
 
-    // Auto-approval gate, named because awaitDecision uses it too. Applying is deferred: it calls
-    // back into the gatekeeper facet still awaiting submitAction.
+    // Auto-approval gate, named because awaitDecision uses it too. Applying is deferred; see the
+    // dispatch at the end of this method.
     let willAutoApprove = !!(description.autoApprovable && description.actionKind &&
         this.storage.autoApproveTags.get(`${gatekeeperId}:${description.actionKind.tag}`) !== undefined);
 
@@ -6037,8 +6036,10 @@ class OverseerImpl implements AgentHooks {
       this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
     }
 
+    // waitUntil() does not defer evaluation, so dispatching inline would reach the gatekeeper
+    // while it is still inside submitAction(), for an action it has not finished submitting.
     if (willAutoApprove) {
-      this.ctx.waitUntil(this.applyDecidedActions(gatekeeperId));
+      this.ctx.waitUntil(scheduler.wait(0).then(() => this.applyDecidedActions(gatekeeperId)));
     }
   }
 
@@ -11148,28 +11149,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async applyActionsThrough(id: number, vetoes: number[]): Promise<void> {
-    let boundary = this.impl.storage.actions.get(id);
-    if (!boundary) throw new Error(`No such action: ${id}`);
-    if (boundary.type !== "action") throw new Error(`Not an action: ${id}`);
-
-    let selected: GatekeeperActionRecord[] = [];
-    for (let vetoId of vetoes) {
-      let veto = this.impl.storage.actions.get(vetoId);
-      if (!veto) throw new Error(`No such action: ${vetoId}`);
-      if (veto.type !== "action") throw new Error(`Not an action: ${vetoId}`);
-      if (veto.gatekeeperId !== boundary.gatekeeperId) {
-        throw new Error("Action batch contains a different connection.");
-      }
-      if (veto.action > boundary.action) {
-        throw new Error("Veto is beyond the action batch boundary.");
-      }
-      selected.push(veto);
-    }
-
+    // The batch is validated by the driver, inside its decision queue, where the records are
+    // re-read fresh; a copy of those checks here could only ever act on stale reads.
     let profile = await this.#getClientProfile();
-    let {decided, stoppedAt} = await this.impl.applyActionBatch(boundary, selected, profile);
+    let {decided, stopped} = await this.impl.applyActionBatch(id, vetoes, profile);
     await this.#resumeDecidedActionChats(decided);
-    if (stoppedAt !== undefined) throw createActionError(ACTION_ERROR_CODES.stopped);
+    if (stopped) throw createActionError(ACTION_ERROR_CODES.stopped);
   }
 
   async approveAction(id: number): Promise<void> {
@@ -11194,7 +11179,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Applies this action plus any earlier undecided action an auto-approval rule already
     // authorizes; an undecided action with neither authority stops the pass below it.
-    let {decided, blockedBy, stoppedAt} = await this.impl.applyDecidedActions(
+    let {decided, blocked, stopped} = await this.impl.applyDecidedActions(
         action.gatekeeperId, {action: action.action, resolvedBy: profile});
 
     await this.#resumeDecidedActionChats(decided);
@@ -11214,10 +11199,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Still pending: an earlier undecided action held the frontier below this one, or the
     // gatekeeper stopped at or below it. Either way, surface the reason the user can act on.
-    if (blockedBy !== undefined) {
-      throw createActionError(ACTION_ERROR_CODES.blocked);
-    }
-    if (stoppedAt !== undefined) throw createActionError(ACTION_ERROR_CODES.stopped);
+    if (blocked) throw createActionError(ACTION_ERROR_CODES.blocked);
+    if (stopped) throw createActionError(ACTION_ERROR_CODES.stopped);
     throw new Error("Couldn't apply this action; an earlier action on this connection needs attention.");
   }
 
@@ -11302,7 +11285,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         chatIds.add(record.caller.chatId);
       }
     }
-    for (let chatId of chatIds) {
+    // In parallel: one batch can decide actions across several chats, and each resume awaits its
+    // own user-DO round trip, so a serial loop would sum those latencies into the caller's RPC.
+    await Promise.all([...chatIds].map(async chatId => {
       try {
         await this.#maybeResumeAfterActionDecision(chatId);
       } catch (err) {
@@ -11310,7 +11295,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
           event: "action.resume.failed", chatId, error: err,
         });
       }
-    }
+    }));
   }
 
   // Resume a turn suspended on awaitDecision once all awaited actions from that turn are approved.
@@ -11395,8 +11380,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
-    // Apply the currently-visible pending action(s) with this tag right away.
-    this.impl.ctx.waitUntil(this.impl.applyDecidedActions(gatekeeperId));
+    // Apply the currently-visible pending action(s) with this tag right away, resuming any turn
+    // that was suspended waiting on one.
+    this.impl.ctx.waitUntil(this.impl.applyDecidedActions(gatekeeperId)
+        .then(({decided}) => this.#resumeDecidedActionChats(decided)));
   }
 
   // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions

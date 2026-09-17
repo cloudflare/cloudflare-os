@@ -90,7 +90,7 @@ import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import GatekeeperModal from "./GatekeeperModal";
-import { ActionFailureNote } from "./components/ActionFailureNote";
+import { ActionFailureNote } from "./ActionFailureNote";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
