@@ -339,6 +339,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const peopleInputRef = useRef<HTMLInputElement>(null)
   const wasOpenRef = useRef(false)
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
+  const isOwner = !metadata.owner
+  const containsRestrictedData = metadata.containsRestrictedData === true
+  // The server refuses share links and non-owner invites once this latches; hide those controls.
+  const ownerInvitesOnly = metadata.ownerInvitesOnly === true
+  const canInvite = !ownerInvitesOnly || isOwner
+  const canUseShareLinks = !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
   // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
   // when the caller is a collaborator), and every collaborator -- plus everyone already staged.
@@ -352,7 +358,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const membershipReady = membershipSettled && membershipStatus === 'ready'
   const directorySearching = userSearchEnabled && membershipReady && directoryQuery !== ''
   const directoryCurrent = directory.query === directoryQuery
-  const directoryOpen = directorySearching && directoryCurrent && !directoryDismissed
+  // Gated on canInvite too: a live metadata update can latch the workspace while results are
+  // open, unmounting the search field without blurring it, and the popover's scroll lock on the
+  // dialog body must not outlive the field.
+  const directoryOpen = canInvite && directorySearching && directoryCurrent && !directoryDismissed
   const directorySettled = directory.status !== 'loading' && directoryCurrent
   const showDirectDirectoryOption = directory.status === 'ready' && directory.results.length > 0
   const directoryOptionCount = directory.results.length + (showDirectDirectoryOption ? 1 : 0)
@@ -529,13 +538,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       element.remove()
     }
   }, [])
-
-  const isOwner = !metadata.owner
-  const containsRestrictedData = metadata.containsRestrictedData === true
-  // The server refuses share links and non-owner invites once this latches; hide those controls.
-  const ownerInvitesOnly = metadata.ownerInvitesOnly === true
-  const canInvite = !ownerInvitesOnly || isOwner
-  const canUseShareLinks = !ownerInvitesOnly
 
   const loadData = useCallback(async () => {
     try {
@@ -1017,7 +1019,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               Share “{metadata.title}”
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-              Invite people or share a link.
+              {canUseShareLinks
+                ? 'Invite people or share a link.'
+                : canInvite ? 'Invite people.' : 'Manage access.'}
             </Dialog.Description>
           </div>
           <Dialog.Close

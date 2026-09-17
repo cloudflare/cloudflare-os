@@ -280,8 +280,9 @@ describe('ShareModal', () => {
   })
 
   // The last rendered tree, parameterised on `open` so a test can close and reopen the dialog the
-  // way its parent would: the component stays mounted either way.
-  let renderTree: (open: boolean) => ReactNode
+  // way its parent would (the component stays mounted either way), and on the metadata so a test
+  // can deliver a live update.
+  let renderTree: (open: boolean, metadata?: GadgetMetadata) => ReactNode
 
   async function render(
     overseer: RpcStub<Overseer>,
@@ -293,13 +294,13 @@ describe('ShareModal', () => {
     document.body.append(container)
     root = createRoot(container)
     const serverConfig = { userSearchEnabled } as ServerConfig
-    renderTree = open => (
+    renderTree = (open, currentMetadata = metadata) => (
       <ServerConfigContext.Provider value={serverConfig}>
         <ShareModal
           open={open}
           onClose={() => {}}
           overseer={overseer}
-          metadata={metadata}
+          metadata={currentMetadata}
           currentUser={CURRENT_USER}
           authenticatedApi={authenticatedApi}
         />
@@ -314,6 +315,10 @@ describe('ShareModal', () => {
   async function setOpen(open: boolean) {
     await act(async () => { root!.render(renderTree(open)) })
     await act(async () => { await Promise.resolve() })
+  }
+
+  async function updateMetadata(metadata: GadgetMetadata) {
+    await act(async () => { root!.render(renderTree(true, metadata)) })
   }
 
   it('reveals the workspace link to send after a direct invite', async () => {
@@ -1252,6 +1257,8 @@ describe('ShareModal', () => {
     }), fakeAuthenticatedApi(), latchedMetadata)
 
     expect(rendered.textContent).toContain('doesn’t allow share links')
+    expect(rendered.textContent).toContain('Invite people.')
+    expect(rendered.textContent).not.toContain('share a link.')
     expect(rendered.textContent).not.toContain('This workspace has read sensitive data')
     // The link restriction adds to the restricted-data caveats rather than replacing them.
     expect(rendered.textContent).toContain('verify their own access')
@@ -1280,10 +1287,33 @@ describe('ShareModal', () => {
     }), fakeAuthenticatedApi(), latchedMetadata)
 
     expect(rendered.textContent).toContain('only the owner can add people')
+    expect(rendered.textContent).toContain('Manage access.')
+    expect(rendered.textContent).not.toContain('Invite people')
     expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
     expect(rendered.textContent).not.toContain('Create a share link')
     expect(rendered.textContent).not.toContain('Recipient verification')
     expect(rendered.textContent).toContain('People with access')
+  })
+
+  it('releases the results scroll lock when a live update latches a collaborator out of inviting', async () => {
+    const collaboratorMetadata = {
+      ...METADATA,
+      owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), collaboratorMetadata)
+    const body = () => rendered.querySelector<HTMLElement>('.chat-panel')!
+
+    await typeDirectorySearch(rendered, 'ada')
+    expect(rendered.querySelector('[role="listbox"]')).not.toBeNull()
+    expect(body().classList).toContain('overflow-hidden')
+
+    // Another session latches the workspace while the results are open: the search field goes
+    // away without ever blurring, and the body must scroll again.
+    await updateMetadata({ ...collaboratorMetadata, ownerInvitesOnly: true } as GadgetMetadata)
+    expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    expect(rendered.querySelector('[role="listbox"]')).toBeNull()
+    expect(body().classList).toContain('overflow-y-auto')
+    expect(body().classList).not.toContain('overflow-hidden')
   })
 
   it('surfaces the server’s refusal when sharing is no longer allowed', async () => {
