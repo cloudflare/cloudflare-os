@@ -24,9 +24,9 @@ const CONTENT = {
   },
   'share-links-disabled': {
     title: 'Share links are turned off for this workspace',
-    message: 'Ask the workspace owner to add you directly.',
+    message: 'Ask the workspace owner to add you directly, then try again.',
     Icon: LinkBreak,
-    retryable: false,
+    retryable: true,
   },
   unexpected: {
     title: "We couldn't load this workspace",

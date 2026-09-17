@@ -75,14 +75,16 @@ describe('WorkspaceOpenErrorPage', () => {
       .toEqual(['Go to workspaces'])
   })
 
-  it('tells a new redeemer to ask the owner when share links are disabled', async () => {
+  it('lets a refused redeemer retry once the owner adds them directly', async () => {
     const { container: renderedContainer } = await render('share-links-disabled')
 
     expect(renderedContainer.querySelector('h1')?.textContent)
       .toBe('Share links are turned off for this workspace')
-    expect(renderedContainer.textContent).toContain('Ask the workspace owner to add you directly.')
+    expect(renderedContainer.textContent)
+      .toContain('Ask the workspace owner to add you directly, then try again.')
+    // Retrying reopens without the consumed share key, so it succeeds after a direct add.
     expect([...renderedContainer.querySelectorAll('button')].map(button => button.textContent))
-      .toEqual(['Go to workspaces'])
+      .toEqual(['Go to workspaces', 'Try again'])
   })
 
   it('keeps unexpected failures retryable', async () => {

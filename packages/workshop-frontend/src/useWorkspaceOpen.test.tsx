@@ -157,6 +157,7 @@ describe('useWorkspaceOpen', () => {
     await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(overseer)} />))
 
     expect(container.textContent).toContain('Share links are turned off for this workspace')
-    expect(container.textContent).toContain('Ask the workspace owner to add you directly.')
+    expect(container.textContent)
+      .toContain('Ask the workspace owner to add you directly, then try again.')
   })
 })

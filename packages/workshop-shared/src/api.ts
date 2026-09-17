@@ -1408,8 +1408,8 @@ export type GadgetMetadata = {
   /**
    * True when the gadget has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper (unless `ownerInvitesOnly` is also set), but can no longer perform actions or fetch
-   * from the public web.
+   * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but can no longer
+   * perform actions or fetch from the public web.
    */
   containsRestrictedData?: boolean;
 
