@@ -20,8 +20,8 @@
 // exception is the `ownerInvitesOnly` latch, which the Overseer supplies as a hook: it restricts
 // who may create grants, and must be checked synchronously with each grant's storage write.
 
-import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator }
-    from "@gadgets/workshop-shared/api";
+import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
+    createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 
 /**
@@ -152,12 +152,6 @@ export interface SharingCaller {
   isOwner: boolean;
 }
 
-// Thrown when a share link is created, copied, or redeemed by someone new in a workspace latched
-// `ownerInvitesOnly`. The frontend's open-failure handling matches on this text.
-const SHARE_LINKS_DISABLED_MESSAGE =
-    "Share links are disabled for this workspace because it contains sensitive data. " +
-    "The owner must add each person directly.";
-
 export class SharingManager {
   /**
    * `ownerProfileId` is stable for the lifetime of a gadget, so it's supplied once at
@@ -172,10 +166,13 @@ export class SharingManager {
       private ownerProfileId: string,
       private ownerInvitesOnly: () => boolean) {}
 
-  // Throw if share links are disabled by the `ownerInvitesOnly` latch.
-  #requireShareLinksAllowed(): void {
+  // Throw if share links are disabled by the `ownerInvitesOnly` latch. Redemption refusals surface
+  // from open(), so they carry the `shareLinksDisabled` open-gadget code; link management throws
+  // the same message uncoded.
+  #requireShareLinksAllowed(opts?: { redeeming: boolean }): void {
     if (this.ownerInvitesOnly()) {
-      throw new Error(SHARE_LINKS_DISABLED_MESSAGE);
+      let error = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled);
+      throw opts?.redeeming ? error : new Error(error.message);
     }
   }
 
@@ -262,9 +259,9 @@ export class SharingManager {
     } else {
       // New collaborator -- need full profile from their user DO. Check the latch before the RPC
       // to fail fast, and again after it, right before the write.
-      this.#requireShareLinksAllowed();
+      this.#requireShareLinksAllowed({ redeeming: true });
       let profile = await opts.fetchProfile();
-      this.#requireShareLinksAllowed();
+      this.#requireShareLinksAllowed({ redeeming: true });
       this.storage.collaborators.put({
         profile,
         addedBy: [{

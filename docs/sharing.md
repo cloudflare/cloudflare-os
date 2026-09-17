@@ -157,10 +157,10 @@ A share-key redemption goes through the same gate. The redeeming open() then ver
 A gatekeeper whose data source requires each recipient to be granted access individually can mark an observation `ownerInvitesOnly` (`ObservationDescription` in `packages/workshop-shared/src/gatekeeper.ts`, typically alongside `containsRestrictedData`). Once any such observation is authorized, the Overseer permanently latches `ownerInvitesOnly` (in `authorizeObservation`, after the exclusion gate, so a refused observation latches nothing), and share links stop admitting people:
 
 - **No new links.** `createShareLink` and `newShareLinkKey` throw "Share links are disabled…".
-- **No new redeemers.** Redeeming a still-active link throws the same error for anyone who is not already a collaborator. An existing collaborator reopening an old link is let through, but no edge is added.
+- **No new redeemers.** Redeeming a still-active link throws the same message, coded `OPEN_GADGET_ERROR_CODES.shareLinksDisabled`, for anyone who is not already a collaborator. An existing collaborator reopening an old link is let through, but no edge is added.
 - **Owner-only direct adds.** `addCollaborator` throws for non-owners; the owner adds each person by username.
 
-People who joined through a link before the latch keep access, and are still re-verified by `ensureObserver` on every open. The owner can still list, rename, and revoke links and remove collaborators. `GadgetMetadata.ownerInvitesOnly` reports the latch, and the Share modal hides link controls (and, for non-owners, the invite box).
+People who joined through a link before the latch keep access, and are still re-verified by `ensureObserver` on every open. The latch limits who may create grants, not which existing grants count, so the lazy undo (see Restoring access) still applies: re-adding a removed collaborator restores the grants they made before the latch, and those people are verified at open like anyone else. The owner can still list, rename, and revoke links and remove collaborators. `GadgetMetadata.ownerInvitesOnly` reports the latch, and the Share modal hides link controls (and, for non-owners, the invite box).
 
 The policy lives in the Overseer, which passes it into `SharingManager` as a hook. Each grant checks it after its last await, right before the storage write, so an observation that latches mid-call cannot slip a grant through.
 

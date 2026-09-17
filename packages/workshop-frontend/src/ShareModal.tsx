@@ -1040,8 +1040,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               </div>
               {ownerInvitesOnly ? (
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
-                  This workspace has read data from a connection that doesn’t allow share links.
-                  Only the owner can add people, and each person must verify their own access.
+                  This workspace has read data from a connection that doesn’t allow share links, so
+                  only the owner can add people. People the owner invites are asked to verify their
+                  own access to the connections it uses at their access level — some may be unable to
+                  open it. Anything the workspace has already saved is visible to everyone who can.
                 </p>
               ) : (
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">

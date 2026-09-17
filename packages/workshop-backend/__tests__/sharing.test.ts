@@ -6,7 +6,9 @@ import {
   CollaboratorRecord,
   ShareKeyRecord,
 } from "../src/sharing.js";
-import { AiChatAuthorInfo, PermissionEdge, CollaboratorRole } from "@gadgets/workshop-shared/api";
+import {
+  AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES,
+} from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage.js";
 
 function makeStorage(): SharingStorage {
@@ -641,6 +643,10 @@ describe("ownerInvitesOnly latch", () => {
     await expect(mgr.newShareLinkKey({ caller: owner, linkId: "k1" }))
         .rejects.toThrow(/Share links are disabled/);
     expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
+
+    // Link management isn't an open() failure, so it carries no open-gadget code.
+    let error = await mgr.createShareLink({ caller: owner, role: "use" }).catch(e => e);
+    expect(getOpenGadgetErrorCode(error)).toBeUndefined();
   });
 
   it("persists nothing when the latch flips while a key is being minted", async () => {
@@ -666,7 +672,10 @@ describe("ownerInvitesOnly latch", () => {
     await expect(mgr.redeemShareKey({
       rawKey: key, profileId: "newbie",
       fetchProfile: async () => { fetched++; return profile("newbie"); },
-    })).rejects.toThrow(/Share links are disabled/);
+    })).rejects.toMatchObject({
+      code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+      message: expect.stringMatching(/Share links are disabled/),
+    });
 
     // Refused before the profile RPC.
     expect(fetched).toBe(0);
@@ -680,7 +689,7 @@ describe("ownerInvitesOnly latch", () => {
     await expect(mgr.redeemShareKey({
       rawKey: key, profileId: "newbie",
       fetchProfile: async () => { latch.on = true; return profile("newbie"); },
-    })).rejects.toThrow(/Share links are disabled/);
+    })).rejects.toMatchObject({ code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled });
     expect(storage.collaborators.get("newbie")).toBeUndefined();
   });
 
@@ -738,5 +747,21 @@ describe("ownerInvitesOnly latch", () => {
     expect(ids(mgr.revokeShareLink(owner, "k1", []))).toEqual(["a"]);
     expect(mgr.getEffectiveRole("a")).toBeUndefined();
     expect(() => mgr.removeCollaborator(owner, "a", [])).not.toThrow();
+  });
+
+  it("re-adding a collaborator restores their pre-latch grants (undo)", () => {
+    let { storage, latch, mgr } = makeLatchableManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    // a shared with b before the latch; afterwards a could not have.
+    seedCollaborator(storage, "b", [userEdge("a", "use")]);
+    latch.on = true;
+
+    mgr.removeCollaborator(owner, "a", []);
+    expect(mgr.getEffectiveRole("b")).toBeUndefined();
+
+    // The latch limits who may create grants, not which existing grants count: re-adding a brings
+    // b back through the untouched pre-latch edge. b still passes observer verification at open().
+    mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "build" });
+    expect(mgr.getEffectiveRole("b")).toBe("use");
   });
 });

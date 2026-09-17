@@ -5,7 +5,10 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from '@gadgets/workshop-shared/api'
-import WorkspaceOpenErrorPage, { classifyWorkspaceOpenFailure } from './WorkspaceOpenErrorPage'
+import WorkspaceOpenErrorPage, {
+  classifyWorkspaceOpenFailure,
+  type WorkspaceOpenFailureKind,
+} from './WorkspaceOpenErrorPage'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -32,7 +35,7 @@ describe('WorkspaceOpenErrorPage', () => {
     container = undefined
   })
 
-  async function render(kind: 'access-denied' | 'not-found' | 'unexpected') {
+  async function render(kind: WorkspaceOpenFailureKind) {
     const onRetry = vi.fn<() => void>()
     const onGoToWorkspaces = vi.fn<() => void>()
     container = document.createElement('div')
@@ -72,6 +75,16 @@ describe('WorkspaceOpenErrorPage', () => {
       .toEqual(['Go to workspaces'])
   })
 
+  it('tells a new redeemer to ask the owner when share links are disabled', async () => {
+    const { container: renderedContainer } = await render('share-links-disabled')
+
+    expect(renderedContainer.querySelector('h1')?.textContent)
+      .toBe('Share links are turned off for this workspace')
+    expect(renderedContainer.textContent).toContain('Ask the workspace owner to add you directly.')
+    expect([...renderedContainer.querySelectorAll('button')].map(button => button.textContent))
+      .toEqual(['Go to workspaces'])
+  })
+
   it('keeps unexpected failures retryable', async () => {
     const { container: renderedContainer } = await render('unexpected')
 
@@ -88,6 +101,9 @@ describe('WorkspaceOpenErrorPage', () => {
     expect(classifyWorkspaceOpenFailure(
       createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound),
     )).toBe('not-found')
+    expect(classifyWorkspaceOpenFailure(
+      createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled),
+    )).toBe('share-links-disabled')
     expect(classifyWorkspaceOpenFailure(
       new Error(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied),
     )).toBe('unexpected')

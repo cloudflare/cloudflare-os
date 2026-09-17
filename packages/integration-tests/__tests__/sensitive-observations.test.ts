@@ -16,8 +16,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type {
-  AuthenticatedApi, Overseer, PublicApi,
+import {
+  OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type Overseer, type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -289,8 +289,10 @@ describe("sensitive observations", () => {
 
       // The pre-latch link no longer admits anyone new...
       const carolApi = await signUp(publicApi, carol);
-      await expect(carolApi.openGadget(ws.gadgetId, key))
-          .rejects.toThrow(/Share links are disabled/);
+      await expect(carolApi.openGadget(ws.gadgetId, key)).rejects.toMatchObject({
+        code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+        message: expect.stringMatching(/Share links are disabled/),
+      });
       expect(await ws.overseer.listCollaborators()).toHaveLength(1);
 
       // ...but Dave, who already joined through it, still opens with it, and cannot add people.

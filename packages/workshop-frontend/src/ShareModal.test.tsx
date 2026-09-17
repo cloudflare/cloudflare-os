@@ -1253,6 +1253,9 @@ describe('ShareModal', () => {
 
     expect(rendered.textContent).toContain('doesn’t allow share links')
     expect(rendered.textContent).not.toContain('This workspace has read sensitive data')
+    // The link restriction adds to the restricted-data caveats rather than replacing them.
+    expect(rendered.textContent).toContain('verify their own access')
+    expect(rendered.textContent).toContain('already saved is visible to everyone who can')
 
     // No way to mint or copy a link; the existing link stays listed so the owner can revoke it.
     expect(rendered.textContent).not.toContain('Create a share link')
@@ -1276,7 +1279,7 @@ describe('ShareModal', () => {
       requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
     }), fakeAuthenticatedApi(), latchedMetadata)
 
-    expect(rendered.textContent).toContain('Only the owner can add people')
+    expect(rendered.textContent).toContain('only the owner can add people')
     expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
     expect(rendered.textContent).not.toContain('Create a share link')
     expect(rendered.textContent).not.toContain('Recipient verification')

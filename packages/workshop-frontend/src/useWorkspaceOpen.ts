@@ -138,7 +138,7 @@ export function useWorkspaceOpen({
         if (cancelled) return
         console.error('Failed to load gadget:', caught)
 
-        // TODO: Give share-link and observer failures stable codes so this remaining legacy
+        // TODO: Give invalid-share-key and observer failures stable codes so this remaining legacy
         // message classification can be removed.
         const message = caught instanceof Error ? caught.message : ''
         if (message.includes('Invalid or expired share key')) {
@@ -149,8 +149,7 @@ export function useWorkspaceOpen({
             kind: 'message',
             message: 'To open this workspace, you must choose connected accounts for the services it uses.',
           })
-        } else if (message.includes('Share links are disabled') ||
-                   message.includes('permitted to observe') ||
+        } else if (message.includes('permitted to observe') ||
                    message.includes('no longer connected') ||
                    message.includes('connect an account for every service')) {
           showTerminalError({ kind: 'message', message })

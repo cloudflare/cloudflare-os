@@ -143,13 +143,11 @@ describe('useWorkspaceOpen', () => {
     expect(deniedOverseerDispose).toHaveBeenCalledOnce()
   })
 
-  it('shows the server’s message when share links are disabled for the workspace', async () => {
+  it('shows the share-links-disabled page when a new redeemer is refused', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const refusal = 'Share links are disabled for this workspace because it contains sensitive ' +
-      'data. The owner must add each person directly.'
     const overseer = disposableStub({
       subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
-        throw new Error(refusal)
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled)
       }),
     }) as unknown as RpcStub<Overseer>
 
@@ -158,6 +156,7 @@ describe('useWorkspaceOpen', () => {
     root = createRoot(container)
     await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(overseer)} />))
 
-    expect(container.textContent).toContain(refusal)
+    expect(container.textContent).toContain('Share links are turned off for this workspace')
+    expect(container.textContent).toContain('Ask the workspace owner to add you directly.')
   })
 })
