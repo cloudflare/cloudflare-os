@@ -119,7 +119,6 @@ export interface GoogleDriveReadSession {
    */
   getEntry(fileId: string): Promise<DriveEntry>;
 
-
   /** Open an in-scope native Google Doc as an independently disposable read capability. */
   openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>;
 

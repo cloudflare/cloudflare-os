@@ -387,11 +387,6 @@ describe("metadata lookup", () => {
     });
   });
 
-  it("gets current shared-drive metadata by stable ID", async () => {
-    let calls = stubFetch([jsonResponse({ id: "drive/1", name: "Current name" })]);
-    expect(await api().getDrive("drive/1")).toEqual({ id: "drive/1", name: "Current name" });
-    expect(calls[0].url.pathname).toBe("/drive/v3/drives/drive%2F1");
-  });
   it("cancels an oversized JSON response before reading the remaining stream", async () => {
     let pulls = 0;
     let cancelled = false;
@@ -421,7 +416,7 @@ describe("bulk access verification", () => {
     expect(calls[0].url.href).toBe("https://www.googleapis.com/batch/drive/v3");
     expect(calls[0].method).toBe("POST");
     expect(calls[0].body).toContain(
-      "GET /drive/v3/files/one?fields=id%2CmimeType%2Ctrashed%2Ccapabilities");
+      "GET /drive/v3/files/one?fields=id%2CmimeType%2Cparents%2CdriveId%2Ctrashed%2Ccapabilities");
   });
 
   it("refuses metadata-only access when the bound folder must be listable", async () => {

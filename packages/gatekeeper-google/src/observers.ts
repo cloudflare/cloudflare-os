@@ -131,6 +131,7 @@ export class ObserverTracker<T, V> {
   constructor(kv: ObserverKv, options: ObserverTrackerOptions<T, V>) {
     let reserved = [
       OBSERVER_PREFIX, OBSERVER_ATTEMPT_PREFIX, OBSERVER_NONCE_PREFIX, OBSERVER_WITHHOLD_PREFIX,
+      OBSERVER_WITHHELD_KEY,
     ];
     if (reserved.includes(options.setPrefix)) {
       throw new Error(`setPrefix must not collide with a reserved prefix (${reserved.join(", ")})`);

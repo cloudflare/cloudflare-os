@@ -246,7 +246,6 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
   }
 }
 
-
 @validateRpc()
 export class DriveAccountConfiguratorUI extends RpcTarget implements DriveAccountConfiguratorRpc {}
 

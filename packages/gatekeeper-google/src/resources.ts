@@ -85,7 +85,6 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-
 /** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:folderId",
@@ -250,20 +249,28 @@ export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly s
   return [...scopes];
 }
 
+/**
+ * Scopes that subsume each required scope, so a wider grant still covers a resource.
+ *
+ * Declared as data beside {@link RESOURCE_SCOPES} rather than as branches: a missing implication
+ * reads as an ungranted resource and silently hides a configurator, so the next readonly/readwrite
+ * pair should be a row here and nothing else.
+ */
+const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
+  "https://www.googleapis.com/auth/drive.metadata.readonly": [
+    "https://www.googleapis.com/auth/drive.metadata", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/documents.readonly": [
+    "https://www.googleapis.com/auth/documents", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/spreadsheets.readonly": [
+    "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+};
+
 function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
-  if (granted.has(required)) return true;
-  const driveRead = grantsDriveDiscovery(granted);
-  if (driveRead) {
-    return required === "https://www.googleapis.com/auth/drive.metadata.readonly" ||
-      required === "https://www.googleapis.com/auth/documents.readonly" ||
-      required === "https://www.googleapis.com/auth/spreadsheets.readonly";
-  }
-  return (required === "https://www.googleapis.com/auth/drive.metadata.readonly" &&
-      granted.has("https://www.googleapis.com/auth/drive.metadata")) ||
-    (required === "https://www.googleapis.com/auth/documents.readonly" &&
-      granted.has("https://www.googleapis.com/auth/documents")) ||
-    (required === "https://www.googleapis.com/auth/spreadsheets.readonly" &&
-      granted.has("https://www.googleapis.com/auth/spreadsheets"));
+  return granted.has(required) ||
+    (SCOPE_COVERED_BY[required]?.some(scope => granted.has(scope)) ?? false);
 }
 
 /**
@@ -453,6 +460,7 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
       parsed.searchParams.get("availability") === "allVisible" ? "allVisible" : "thisCalendar";
   return { kind: "calendar", calendarId, availabilityMode };
 }
+
 function parseDriveUrl(parsed: URL): ResourceTarget {
   if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
 

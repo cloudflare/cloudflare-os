@@ -1,10 +1,16 @@
-import { FOLDER_MIME_TYPE, type DriveFile, type DriveScopeNode } from "./drive-api";
+import {
+  isListableFolderFile, isListableFolderNode, type DriveFile, type DriveScopeNode,
+} from "./drive-api";
 
 const MAX_PATH_NODES = 101;
 
-/** Internal root-to-position path; never accepted from an agent. */
+/**
+ * Internal root-to-position path; never accepted from an agent.
+ *
+ * `folderIds[0]` is the bound root, so there is no separate root field to keep in agreement with
+ * the path it heads.
+ */
 export type FolderLocation = {
-  rootId: string;
   folderIds: readonly string[];
 };
 
@@ -20,10 +26,7 @@ export async function readFolderRoot(
 ): Promise<DriveFile> {
   if (folderId === "root") outsideScope();
   let file = await getFile(folderId);
-  if (file.id !== folderId || file.mimeType !== FOLDER_MIME_TYPE ||
-      file.capabilities?.canListChildren !== true || file.trashed !== false) {
-    outsideScope();
-  }
+  if (file.id !== folderId || !isListableFolderFile(file)) outsideScope();
   return file;
 }
 
@@ -33,8 +36,8 @@ export async function readFolderLocation(
   getScopeNodes: (fileIds: readonly string[]) => Promise<(DriveScopeNode | undefined)[]>,
 ): Promise<DriveScopeNode[]> {
   let ids = location.folderIds;
-  if (location.rootId === "root" || ids.length === 0 || ids.length > MAX_PATH_NODES ||
-      ids[0] !== location.rootId || new Set(ids).size !== ids.length) {
+  if (ids.length === 0 || ids.length > MAX_PATH_NODES || ids[0] === "root" ||
+      new Set(ids).size !== ids.length) {
     outsideScope();
   }
 
@@ -45,8 +48,7 @@ export async function readFolderLocation(
 
   for (let index = 0; index < ids.length; index++) {
     let node = nodes[index];
-    if (!node || node.id !== ids[index] || node.mimeType !== FOLDER_MIME_TYPE ||
-        node.trashed !== false || node.canListChildren !== true ||
+    if (!node || node.id !== ids[index] || !isListableFolderNode(node) ||
         node.driveId !== root.driveId) {
       outsideScope();
     }

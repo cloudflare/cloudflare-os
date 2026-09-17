@@ -522,7 +522,7 @@ describe("positioned Drive folder session", () => {
 
   function positioned(
       nodes: DriveFile[],
-      location: FolderLocation = { rootId: "R", folderIds: ["R"] },
+      location: FolderLocation = { folderIds: ["R"] },
       listFiles?: (query: DriveListFilesOptions) => Promise<{
         files: DriveFile[];
         nextPageToken?: string;
@@ -586,6 +586,22 @@ describe("positioned Drive folder session", () => {
     const childSession = positioned([root, nested, directDoc, nestedDoc, foreignDoc], location).session;
     await expect(childSession.openNativeFile("D1", docMime, "Google Doc")).resolves.toBe("D1");
     await expect(childSession.getEntry("X")).rejects.toThrow(/outside this Drive binding/);
+  });
+
+  it("fences an unopenable child only when the refusal is owner-relative", async () => {
+    const objective = positioned([root, directDoc]);
+    await expect(objective.session.openFolder("D0")).rejects.toThrow(/outside this Drive binding/);
+    expect(objective.observations).toEqual([[
+      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "D0" },
+    ]]);
+    expect(objective.events).toEqual(["authorize", "commit"]);
+
+    const unlistable = folder("U", { parents: ["R"], capabilities: { canListChildren: false } });
+    const ownerRelative = positioned([root, unlistable]);
+    await expect(ownerRelative.session.openFolder("U"))
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(ownerRelative.observations).toEqual([]);
+    expect(ownerRelative.events).toEqual(["authorize", "latch"]);
   });
 
   it("invalidates a saved path when one edge changes", async () => {

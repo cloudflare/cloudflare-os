@@ -14,13 +14,13 @@ export const ResourceAuthorizationAction = ({
 }) => {
   const [pending, setPending] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const requestId = useRef(0)
-  const blankPopup = useRef<Window | null>(null)
+  // The blank window awaiting this component's current request. Identity is the generation check:
+  // a late answer belongs to a superseded request exactly when this no longer holds its popup.
+  const inFlight = useRef<Window | null>(null)
 
   useEffect(() => () => {
-    requestId.current++
-    blankPopup.current?.close()
-    blankPopup.current = null
+    inFlight.current?.close()
+    inFlight.current = null
   }, [])
 
   const requestAuthorization = async () => {
@@ -31,19 +31,17 @@ export const ResourceAuthorizationAction = ({
     }
 
     popup.opener = null
-    const currentRequest = ++requestId.current
-    blankPopup.current = popup
+    inFlight.current = popup
     setPending(true)
     setMessage(null)
 
     try {
       const result = await authorization.request()
-      if (currentRequest !== requestId.current) return
+      if (inFlight.current !== popup) return
 
       if (!result.url) {
         popup.close()
-        blankPopup.current = null
-        setMessage('Access is already available. Retry the shared-drive selector below.')
+        setMessage('Access is already available. Retry your selection below.')
         return
       }
 
@@ -53,15 +51,17 @@ export const ResourceAuthorizationAction = ({
       }
 
       popup.location.replace(url.href)
-      blankPopup.current = null
-      setMessage('Complete authorization in the new tab, then return and retry the shared-drive selector below.')
+      setMessage('Complete authorization in the new tab, then return and retry your selection below.')
     } catch {
-      if (currentRequest !== requestId.current) return
+      if (inFlight.current !== popup) return
       popup.close()
-      blankPopup.current = null
       setMessage('Could not start authorization. Please try again.')
     } finally {
-      if (currentRequest === requestId.current) setPending(false)
+      // Only the request that still owns the window settles the control; unmount clears it first.
+      if (inFlight.current === popup) {
+        inFlight.current = null
+        setPending(false)
+      }
     }
   }
 

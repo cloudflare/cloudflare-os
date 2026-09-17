@@ -6,18 +6,10 @@ import SandboxedResourceConfigurator from './SandboxedResourceConfigurator'
 export function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null): void {
   if (!frame) return
   try {
-    disposeRpcStub(frame.ui)
+    (frame.ui as any)?.[Symbol.dispose]?.()
   } finally {
-    disposeRpcStub(frame.authorization?.request)
+    (frame.authorization?.request as any)?.[Symbol.dispose]?.()
   }
-}
-
-function disposeRpcStub(stub: unknown): void {
-  const isObject = typeof stub === 'object' && stub !== null
-  if (!isObject && typeof stub !== 'function') return
-  if (!(Symbol.dispose in stub)) return
-  const dispose = stub[Symbol.dispose]
-  if (typeof dispose === 'function') dispose.call(stub)
 }
 
 /** A started configurator frame together with the selection it was started for. */

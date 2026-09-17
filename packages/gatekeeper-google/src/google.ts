@@ -25,7 +25,7 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, requireDriveBindingScope, unguardedNativeRead,
-  type DriveBindingScope, type NativeRead,
+  type DriveBindingScope, type DriveCore, type NativeRead,
 } from "./drive-session";
 import type {
   DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveFolderSession,
@@ -856,7 +856,6 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         ui: new RpcStub(new DriveAccountConfiguratorUI()),
       };
     }
-
 
     if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
       let hasSharedDriveDiscovery = () => account.hasSharedDriveDiscovery();
@@ -2195,8 +2194,11 @@ export class GoogleSheetsGatekeeperImpl
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {
     let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
+    let queue = approvalQueue.dup();
+    // A spreadsheet binding's scope is the one spreadsheet, so there is nothing to revalidate.
     return new GoogleSpreadsheetSessionImpl(
-      api, this.ctx.props.spreadsheetId, approvalQueue.dup(),
+      api, this.ctx.props.spreadsheetId, queue,
+      unguardedNativeRead(description => queue.authorizeObservation(description)),
     );
   }
 
@@ -2240,14 +2242,13 @@ class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadshee
     api: GoogleSheetsApi,
     spreadsheetId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
-    read?: NativeRead,
+    read: NativeRead,
   ) {
     super();
     this.#api = api;
     this.#spreadsheetId = spreadsheetId;
     this.#approvalQueue = approvalQueue;
-    this.#read = read ?? unguardedNativeRead(
-      description => approvalQueue.authorizeObservation(description));
+    this.#read = read;
   }
 
   [Symbol.dispose](): void {
@@ -2941,15 +2942,14 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
     driveApi: DriveApi,
     documentId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
-    read?: NativeRead,
+    read: NativeRead,
   ) {
     super();
     this.#docsApi = docsApi;
     this.#driveApi = driveApi;
     this.#documentId = documentId;
     this.#approvalQueue = approvalQueue;
-    this.#read = read ?? unguardedNativeRead(
-      description => approvalQueue.authorizeObservation(description));
+    this.#read = read;
   }
 
   [Symbol.dispose](): void {
@@ -2995,23 +2995,24 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 
   async getContent(tabId?: string): Promise<string> {
-    let selection = await this.#read<
-      { tab: GoogleDocTabSnapshot } | { error: unknown }
-    >(async () => {
-      let snapshot = await this.#getSnapshot();
-      try {
-        return { tab: resolveGoogleDocTab(snapshot, tabId, "getContent") };
-      } catch (error) {
-        return { error };
-      }
-    }, result => "error" in result ? {
-      title: "Read Google Doc content",
-      description: "Read the content of one tab of the document.",
-    } : {
-      title: "Read Google Doc content",
-      description: `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`,
-    });
-    if ("error" in selection) throw selection.error;
+    // The selector error says whether a tab exists, so a failed attempt discloses something too
+    // and has to be authorized. It rides back as a value so one guarded read covers both outcomes.
+    let selection = await this.#read(
+      async (): Promise<{ tab: GoogleDocTabSnapshot } | { error: unknown }> => {
+        let snapshot = await this.#getSnapshot();
+        try {
+          return { tab: resolveGoogleDocTab(snapshot, tabId, "getContent") };
+        } catch (error) {
+          return { error };
+        }
+      },
+      result => ({
+        title: "Read Google Doc content",
+        description: "tab" in result
+          ? `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`
+          : "Read the content of one tab of the document.",
+      }));
+    if (!("tab" in selection)) throw selection.error;
     return selection.tab.markdown;
   }
 }
@@ -3020,11 +3021,12 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
 @validateRpc()
 export class GoogleDriveSessionImpl extends RpcTarget
     implements GoogleDriveReadSession, GoogleDriveFolderSession {
-  #core: DriveSessionCore | DriveFolderSessionCore;
+  #core: DriveCore;
   #driveApi: DriveApi;
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
   #scope: DriveBindingScope;
+  /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
   #prepareObservation: (
@@ -3049,7 +3051,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
     this.#scope = scope;
-    this.#location = location;
+    this.#location = scope.kind === "folder"
+      ? location ?? {folderIds: [scope.folderId]}
+      : undefined;
     this.#approvalQueue = approvalQueue;
     this.#prepareObservation = prepareObservation;
     this.#prepareWithheld = prepareWithheld;
@@ -3077,19 +3081,14 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async openFolder(folderId: string): Promise<GoogleDriveFolderSession> {
-    let queue = this.#approvalQueue.dup();
-    try {
-      let core = this.#coreFor(queue);
-      if (!(core instanceof DriveFolderSessionCore)) outsideScope();
-      let location = await core.openFolder(folderId);
+    if (this.#scope.kind !== "folder") outsideScope();
+    return this.#withQueue(async (queue, core) => {
+      let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#scope, queue,
         this.#prepareObservation, this.#prepareWithheld, location,
       );
-    } catch (error) {
-      queue[Symbol.dispose]();
-      throw error;
-    }
+    });
   }
 
   async openGoogleDoc(fileId: string): Promise<GoogleDocReadSession> {
@@ -3104,7 +3103,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
         new GoogleSpreadsheetSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
   }
 
-  #coreFor(queue: RpcStub<ApprovalQueue>): DriveSessionCore | DriveFolderSessionCore {
+  #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {
     let common = {
       api: this.#driveApi,
       prepareObservation: this.#prepareObservation,
@@ -3113,26 +3112,30 @@ export class GoogleDriveSessionImpl extends RpcTarget
     };
     if (this.#scope.kind === "folder") {
       return new DriveFolderSessionCore({
-        ...common,
-        location: this.#location ?? {
-          rootId: this.#scope.folderId,
-          folderIds: [this.#scope.folderId],
-        },
+        ...common, location: this.#location ?? {folderIds: [this.#scope.folderId]},
       });
     }
     return new DriveSessionCore({...common, scope: this.#scope});
   }
 
-  async #cursor(
-    open: (core: DriveSessionCore | DriveFolderSessionCore) => Promise<Pager<DriveEntry>>,
-  ): Promise<Cursor<DriveEntry>> {
+  /**
+   * Runs `use` against a capability-owned approval queue, disposing it if `use` throws.
+   *
+   * A capability handed to the caller outlives this session, so it pages through a queue of its
+   * own; the queue is this session's to release until ownership transfers on success.
+   */
+  async #withQueue<T>(use: (queue: RpcStub<ApprovalQueue>, core: DriveCore) => Promise<T>) {
     let queue = this.#approvalQueue.dup();
     try {
-      return new RpcCursor(await open(this.#coreFor(queue)), queue);
+      return await use(queue, this.#coreFor(queue));
     } catch (error) {
       queue[Symbol.dispose]();
       throw error;
     }
+  }
+
+  async #cursor(open: (core: DriveCore) => Promise<Pager<DriveEntry>>): Promise<Cursor<DriveEntry>> {
+    return this.#withQueue(async (queue, core) => new RpcCursor(await open(core), queue));
   }
 
   async #openNative<T>(
@@ -3141,15 +3144,10 @@ export class GoogleDriveSessionImpl extends RpcTarget
     description: string,
     build: (id: string, queue: RpcStub<ApprovalQueue>, read: NativeRead) => T,
   ): Promise<T> {
-    let queue = this.#approvalQueue.dup();
-    try {
-      let core = this.#coreFor(queue);
+    return this.#withQueue(async (queue, core) => {
       let id = await core.openNativeFile(fileId, mimeType, description);
       return build(id, queue, core.nativeRead(id, mimeType));
-    } catch (error) {
-      queue[Symbol.dispose]();
-      throw error;
-    }
+    });
   }
 }
 

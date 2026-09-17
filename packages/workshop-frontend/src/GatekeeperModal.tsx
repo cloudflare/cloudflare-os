@@ -173,7 +173,6 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
       account.supportedResources.some(resource => resource.urlPattern === connection.resourceUrlPattern))
 }
 
-
 export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern,

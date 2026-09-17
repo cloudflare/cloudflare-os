@@ -52,6 +52,30 @@ export type DriveScopeNode = {
 const DRIVE_SCOPE_NODE_FIELDS =
   "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)";
 
+/**
+ * Whether these facts describe a folder a binding may stand on: a live native folder whose
+ * children this account can list.
+ *
+ * The one definition of that triple. Both record shapes reach it through the adapters below, so a
+ * scope check can never accidentally assert two of the three.
+ */
+function listableFolder(
+  mimeType: string | undefined, trashed: boolean | undefined,
+  canListChildren: boolean | undefined,
+): boolean {
+  return mimeType === FOLDER_MIME_TYPE && trashed === false && canListChildren === true;
+}
+
+/** {@link listableFolder} for the narrow ancestry-proof shape. */
+export function isListableFolderNode(node: DriveScopeNode): boolean {
+  return listableFolder(node.mimeType, node.trashed, node.canListChildren);
+}
+
+/** {@link listableFolder} for a full file resource. */
+export function isListableFolderFile(file: DriveFile): boolean {
+  return listableFolder(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+}
+
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
@@ -458,12 +482,6 @@ export class DriveApi {
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
   }
 
-  /** Current metadata for one shared drive. */
-  async getDrive(driveId: string): Promise<DriveInfo> {
-    let params = new URLSearchParams({ fields: "id,name" });
-    return parseDriveInfo(await this.#getUnknown(`/drives/${encodeURIComponent(driveId)}`, params));
-  }
-
   /** One page of shared drives visible to the connected account. */
   async listDrives(options: DriveListDrivesOptions = {}): Promise<DriveList> {
     let params = new URLSearchParams({
@@ -502,19 +520,16 @@ export class DriveApi {
     return drives;
   }
 
-
   /** Fresh access checks for typed file and folder disclosure units. */
   async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
     return this.#batchGetFiles(
       observations.map(observation => observation.fileId),
-      "id,mimeType,trashed,capabilities(canListChildren)",
+      DRIVE_SCOPE_NODE_FIELDS,
       (part, _fileId, index) => {
         if (!batchPartAllowed(part)) return false;
         let observation = observations[index];
         if (observation.kind === "file") return true;
-        let node = parseDriveScopeNode(part.body, observation.fileId);
-        return node.mimeType === FOLDER_MIME_TYPE && node.trashed === false &&
-          node.canListChildren === true;
+        return isListableFolderNode(parseDriveScopeNode(part.body, observation.fileId));
       },
     );
   }

@@ -1457,7 +1457,6 @@ function BindingField({
   return null
 }
 
-
 function formatSuggestedResource(resourceUrl: string): string {
   try {
     const path = new URL(resourceUrl).pathname.replace(/^\/+|\/+$/g, '')
