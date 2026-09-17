@@ -128,6 +128,16 @@ function resetSession(store: Store): number {
   return store.generation
 }
 
+// One consumer's failure must not abort delivery to the others, nor abort the mount-time replay
+// before its effect returns the cleanup that releases the shared subscription.
+function deliverEntry(listener: (record: ActionLogEntry) => void, record: ActionLogEntry) {
+  try {
+    listener(record)
+  } catch (err) {
+    console.error('Action entry listener failed:', err)
+  }
+}
+
 function trackChange(store: Store, record: ActionLogEntry): void {
   const changed = actionChangeTime(record)
   if (!store.lastChanged || changed > store.lastChanged) store.lastChanged = changed
@@ -154,13 +164,7 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
       // Entries that never touch the pending set (observations, hook events) don't need a
       // re-sorted snapshot or a consumer re-render.
       if (pendingChanged) scheduleNotify(store)
-      for (const listener of store.entryListeners) {
-        try {
-          listener(record)
-        } catch (err) {
-          console.error('Action entry listener failed:', err)
-        }
-      }
+      for (const listener of store.entryListeners) deliverEntry(listener, record)
     }
 
     // Settledness is signalled by the pending page loop draining, not by the subscription.
@@ -185,7 +189,7 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const subscribed = startAfter
     ? overseer.subscribeToActions(subscriber, startAfter)
     : overseer.subscribeToActions(subscriber)
-  subscribed.then(sub => {
+  subscribed.then((sub: RpcStub<{}>) => {
     if (store.generation !== generation) {
       sub[Symbol.dispose]()
       return
@@ -298,9 +302,7 @@ export function useActionEntries(
 
     // Retained until `release()` drops refCount to 0 and deletes the store, so late
     // consumers can replay already-received entries while a shared subscription is still alive.
-    for (const record of store.stagedEntries.values()) {
-      listener(record)
-    }
+    for (const record of store.stagedEntries.values()) deliverEntry(listener, record)
 
     return () => {
       const s = stores.get(overseer)
