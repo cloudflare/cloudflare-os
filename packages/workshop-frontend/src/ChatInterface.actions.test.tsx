@@ -44,7 +44,7 @@ vi.mock('./AuthContext', () => {
   }
 })
 
-import { entry, makeOverseer, makeTestRoot } from './action-test-harness'
+import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
@@ -114,41 +114,89 @@ const actionMessage = {
   actionLog: entry(1),
 } as AiChatMessage
 
-const resolvedMessage =
-  { ...actionMessage, actionLog: entry(1, { state: 'approved' }) } as AiChatMessage
-
 // Renders a first session that caches a pending action card, then settles it so a linked swap
 // can resume. Pass a key to link the stub; unlinked sessions never park a watermark.
 async function cachePendingCard(key?: string) {
   const first = makeOverseer()
   const firstChat = withChatApi(first)
   if (key !== undefined) linkActionLog(first.overseer, key)
-  await renderChat(first.overseer)
+  await renderChat(first.overseer, { selectedChatId: 1 })
   await first.resolveSubscription()
-  await first.resolvePendingQuery({ entries: [entry(1)] })
+  await first.resolvePendingQuery({ entries: [entry(1), entry(2)] })
   firstChat.emitMessage(actionMessage)
+  flushFrames()
 }
 
 describe('ChatInterface action refresh', () => {
-  it('refetches cached mutable cards when an unlinked stub swaps', async () => {
+  it('shows a missed failure on a cached card after a stub swap', async () => {
     await cachePendingCard()
 
+    const failed = entry(1, { failure: 'page was deleted while disconnected' })
     const second = makeOverseer()
-    const secondChat = withChatApi(second, vi.fn(async () => resolvedMessage))
-    await renderChat(second.overseer)
+    const secondChat = withChatApi(second, vi.fn(async () =>
+      ({ ...actionMessage, actionLog: failed }) as AiChatMessage))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [failed, entry(2)] })
     await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('page was deleted while disconnected')
   })
 
-  it('skips the cached-card refetch on a resumed linked stub swap', async () => {
+  it('lets a resumed reconnect replay the gap instead of refetching', async () => {
     await cachePendingCard('ws-chat-resume')
 
+    const failed = entry(1, { failure: 'page was deleted while disconnected' })
     const second = makeOverseer()
-    const secondChat = withChatApi(second, vi.fn(async () => resolvedMessage))
+    const secondChat = withChatApi(second)
     linkActionLog(second.overseer, 'ws-chat-resume')
-    await renderChat(second.overseer)
+    await renderChat(second.overseer, { selectedChatId: 1 })
     await second.resolveSubscription()
-    await second.resolvePendingQuery({ entries: [entry(1)] })
+    await second.resolvePendingQuery({ entries: [failed, entry(2)] })
+    await second.emit(failed)
+    flushFrames()
+
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('page was deleted while disconnected')
+  })
+
+  it('does not let a stale refresh regress a card resolved by the new subscription', async () => {
+    await cachePendingCard()
+
+    let resolveFetch!: (message: AiChatMessage | null) => void
+    const fetched = new Promise<AiChatMessage | null>(resolve => { resolveFetch = resolve })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(() => fetched))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [entry(1), entry(2)] })
+    await second.emit(entry(1, { state: 'approved' }))
+    flushFrames()
+
+    await act(async () => resolveFetch({
+      ...actionMessage,
+      actionLog: entry(1, { failure: 'stale failure' }),
+    } as AiChatMessage))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('Approved')
+    expect(document.body.textContent).not.toContain('stale failure')
+  })
+})
+
+describe('ChatInterface action failure note', () => {
+  it("shows the gatekeeper's reason on a pending action card", async () => {
+    const failed = entry(1, { failure: 'page was deleted upstream' })
+    const server = makeOverseer()
+    const chat = withChatApi(server)
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [failed] })
+    chat.emitMessage({ ...actionMessage, actionLog: failed } as AiChatMessage)
+
+    expect(document.body.textContent).toContain('page was deleted upstream')
   })
 })
 

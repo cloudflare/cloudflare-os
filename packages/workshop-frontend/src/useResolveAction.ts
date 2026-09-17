@@ -1,6 +1,7 @@
 import { useCallback, useRef, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
+import { ACTION_ERROR_MESSAGES, getActionErrorCode } from '@gadgets/workshop-shared/api'
 import type { ActionState, Overseer } from '@gadgets/workshop-shared/api'
 
 type ActionDecision = 'approve' | 'deny'
@@ -22,7 +23,13 @@ export function useResolveAction(
       onResolvedRef.current?.(actionId, decision === 'approve' ? 'approved' : 'rejected')
     } catch (error) {
       console.error(`Failed to ${decision} action:`, error)
-      toasts.add({ title: `Failed to ${decision} action`, variant: 'error' })
+      const code = getActionErrorCode(error)
+      toasts.add({
+        title: code === undefined
+          ? 'Couldn’t confirm the action’s outcome. Check its status.'
+          : ACTION_ERROR_MESSAGES[code],
+        variant: 'error',
+      })
     } finally {
       setProcessing(previous => {
         const next = new Set(previous)
