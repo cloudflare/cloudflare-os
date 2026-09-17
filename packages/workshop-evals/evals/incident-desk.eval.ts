@@ -1,0 +1,288 @@
+import { z } from "zod";
+import { defineTaskEval } from "../src/eval.js";
+import { defineEvalTask } from "../src/task.js";
+import type { EvalVerifier } from "../src/verifier.js";
+
+// An on-call desk where several responders acknowledge the same page at the same instant. Durable
+// Object RPC calls interleave at every `await`, so a check-then-write acknowledge hands one incident
+// to two people. The prompt states the invariant and leaves the synchronisation to the agent.
+
+const OkSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string().min(1) }),
+]);
+type Ok = z.infer<typeof OkSchema>;
+
+const AckSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), owner: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string().min(1), owner: z.string().nullable() }),
+]);
+type Ack = z.infer<typeof AckSchema>;
+
+const IncidentSchema = z.object({
+  id: z.string(),
+  service: z.string(),
+  severity: z.number().int().min(1).max(3),
+  summary: z.string(),
+  status: z.enum(["open", "acknowledged", "resolved"]),
+  owner: z.string().nullable(),
+  openedAt: z.string(),
+  acknowledgedAt: z.string().nullable(),
+  resolvedAt: z.string().nullable(),
+  escalations: z.number().int().nonnegative().optional(),
+});
+type Incident = z.infer<typeof IncidentSchema>;
+
+const BoardSchema = z.object({ incidents: z.array(IncidentSchema) });
+
+const MetricsSchema = z.object({
+  count: z.number().int().nonnegative(),
+  acknowledged: z.number().int().nonnegative(),
+  resolved: z.number().int().nonnegative(),
+  meanTimeToAcknowledgeMs: z.number().nonnegative().nullable(),
+  meanTimeToResolveMs: z.number().nonnegative().nullable(),
+});
+
+interface DeskApi {
+  open(input: { id: string; service: string; severity: number; summary: string }): Promise<Ok>;
+  acknowledge(input: { id: string; responder: string }): Promise<Ack>;
+  resolve(input: { id: string; responder: string }): Promise<Ok>;
+  incident(input: { id: string }): Promise<Incident>;
+  board(): Promise<z.infer<typeof BoardSchema>>;
+  escalate(input: { id: string }): Promise<Ok>;
+  metrics(input: { service?: string }): Promise<z.infer<typeof MetricsSchema>>;
+}
+
+const TITLE = "Incident Desk";
+const RESPONDERS = Array.from({ length: 20 }, (_unused, index) => `oncall-${index + 1}`);
+
+function code(result: Ok | Ack): string {
+  return result.ok ? "ok" : result.error;
+}
+
+async function openIncident(
+    api: DeskApi, id: string, severity: number, service = "api-gateway"): Promise<Ok> {
+  return OkSchema.parse(await api.open({ id, service, severity, summary: `Incident ${id}` }));
+}
+
+/** What turn 1 leaves on the board, by id: the state each must still be in after turn 2. */
+const TURN_ONE_BOARD: Record<string, Incident["status"]> = {
+  "inc-1": "resolved",
+  "race-1": "acknowledged", "race-2": "acknowledged", "race-3": "acknowledged",
+  "race-4": "acknowledged", "race-5": "acknowledged",
+  "race-open": "open",
+};
+
+/** Twenty responders acknowledge at once; exactly one may win and everyone must be told who. */
+async function race(api: DeskApi, id: string) {
+  const attempts = await Promise.all(RESPONDERS.map(async responder =>
+    ({ responder, result: AckSchema.parse(await api.acknowledge({ id, responder })) })));
+  const winners = attempts.flatMap(attempt => attempt.result.ok ? [attempt.responder] : []);
+  const losers = attempts.flatMap(attempt => attempt.result.ok ? [] : [attempt.result]);
+  const incident = IncidentSchema.parse(await api.incident({ id }));
+  const winner = winners[0];
+  const consistent = winners.length === 1 && winner !== undefined &&
+    incident.status === "acknowledged" && incident.owner === winner &&
+    incident.acknowledgedAt !== null &&
+    losers.every(result => result.error === "ALREADY_ACKNOWLEDGED" && result.owner === winner);
+  return { consistent, winners, loserCodes: [...new Set(losers.map(code))], owner: incident.owner };
+}
+
+function mean(values: readonly number[]): number | null {
+  return values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/** Recompute the metrics the board's own timestamps imply. */
+function referenceMetrics(incidents: readonly Incident[]) {
+  const sinceOpened = (at: string | null, incident: Incident) =>
+    at === null ? [] : [Date.parse(at) - Date.parse(incident.openedAt)];
+  const timeToAcknowledge = incidents.flatMap(incident =>
+    sinceOpened(incident.acknowledgedAt, incident));
+  const timeToResolve = incidents.flatMap(incident => sinceOpened(incident.resolvedAt, incident));
+  return {
+    count: incidents.length,
+    acknowledged: timeToAcknowledge.length,
+    resolved: timeToResolve.length,
+    meanTimeToAcknowledgeMs: mean(timeToAcknowledge),
+    meanTimeToResolveMs: mean(timeToResolve),
+  };
+}
+
+function closeEnough(actual: number | null, expected: number | null): boolean {
+  if (actual === null || expected === null) return actual === expected;
+  return Math.abs(actual - expected) <= 1;
+}
+
+async function checkBoardOrder(verifier: EvalVerifier, id: string): Promise<void> {
+  await verifier.check(id, async () => {
+    using api = await verifier.connect<DeskApi>(TITLE);
+    const board = BoardSchema.parse(await api.board()).incidents;
+    const ordered = board.every((incident, index) => {
+      const previous = board[index - 1];
+      return previous === undefined || previous.severity < incident.severity ||
+        (previous.severity === incident.severity &&
+          Date.parse(previous.openedAt) <= Date.parse(incident.openedAt));
+    });
+    return { pass: board.length > 0 && ordered, evidence: { board: board.map(incident =>
+      ({ id: incident.id, severity: incident.severity, openedAt: incident.openedAt })) } };
+  });
+}
+
+const task = defineEvalTask({
+  id: "incident-desk",
+  turns: [{
+    prompt: `Build a Gadget named exactly "${TITLE}" for our on-call rotation. When an incident is
+opened everyone on call gets paged, and whoever acknowledges first owns it. Several people will hit
+acknowledge at the same instant from their phones. Exactly one of them must win, the incident must
+have exactly one owner, and everyone else must be told who got it. Double ownership is the one
+failure we cannot have; make it impossible rather than unlikely. Only the owner can resolve. Keep
+everything in the Gadget's own storage. This is the real board, so if you try it out yourself,
+clean up afterwards: only incidents I open should be on it.
+
+It needs a stable server RPC taking and returning plain data, so I can verify it:
+
+- open({ id: string, service: string, severity: 1 | 2 | 3, summary: string })
+  -> { ok: true } | { ok: false, error: "DUPLICATE_ID" | "INVALID_SEVERITY" }
+- acknowledge({ id: string, responder: string })
+  -> { ok: true, owner: responder }
+   | { ok: false, error: "ALREADY_ACKNOWLEDGED", owner: string }
+   | { ok: false, error: "UNKNOWN_INCIDENT" | "ALREADY_RESOLVED", owner: null }
+- resolve({ id: string, responder: string })
+  -> { ok: true } | { ok: false, error: "UNKNOWN_INCIDENT" | "NOT_ACKNOWLEDGED" | "NOT_OWNER" |
+     "ALREADY_RESOLVED" }
+- incident({ id: string })
+  -> { id, service, severity, summary, status: "open" | "acknowledged" | "resolved",
+       owner: string | null, openedAt: ISO 8601, acknowledgedAt: ISO 8601 | null,
+       resolvedAt: ISO 8601 | null }
+- board() -> { incidents: Incident[] }   every incident, severity 1 first, then oldest first`,
+    verify: async verifier => {
+      await verifier.check("opens-acknowledges-and-resolves-in-order", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        const opened = await openIncident(api, "inc-1", 2);
+        const duplicate = await openIncident(api, "inc-1", 1);
+        const badSeverity = await openIncident(api, "inc-bad", 4);
+        const early = OkSchema.parse(await api.resolve({ id: "inc-1", responder: "alice" }));
+        const acked = AckSchema.parse(await api.acknowledge({ id: "inc-1", responder: "alice" }));
+        const again = AckSchema.parse(await api.acknowledge({ id: "inc-1", responder: "bob" }));
+        const notOwner = OkSchema.parse(await api.resolve({ id: "inc-1", responder: "bob" }));
+        const resolved = OkSchema.parse(await api.resolve({ id: "inc-1", responder: "alice" }));
+        const twice = OkSchema.parse(await api.resolve({ id: "inc-1", responder: "alice" }));
+        const lateAck = AckSchema.parse(await api.acknowledge({ id: "inc-1", responder: "carol" }));
+        const unknown = AckSchema.parse(await api.acknowledge({ id: "inc-x", responder: "carol" }));
+        const incident = IncidentSchema.parse(await api.incident({ id: "inc-1" }));
+        return {
+          pass: opened.ok && code(duplicate) === "DUPLICATE_ID" &&
+            code(badSeverity) === "INVALID_SEVERITY" && code(early) === "NOT_ACKNOWLEDGED" &&
+            acked.ok && acked.owner === "alice" &&
+            !again.ok && again.error === "ALREADY_ACKNOWLEDGED" && again.owner === "alice" &&
+            code(notOwner) === "NOT_OWNER" && resolved.ok && code(twice) === "ALREADY_RESOLVED" &&
+            code(lateAck) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
+            incident.status === "resolved" && incident.owner === "alice" &&
+            incident.acknowledgedAt !== null && incident.resolvedAt !== null &&
+            Date.parse(incident.openedAt) <= Date.parse(incident.acknowledgedAt) &&
+            Date.parse(incident.acknowledgedAt) <= Date.parse(incident.resolvedAt),
+          evidence: { opened, duplicate, badSeverity, early, acked, again, notOwner, resolved,
+            twice, lateAck, unknown, incident },
+        };
+      });
+
+      // Twenty un-awaited acknowledges arrive as twenty interleaved RPC calls; a check-then-write
+      // implementation hands the incident to more than one responder.
+      await verifier.check("simultaneous-acknowledges-yield-exactly-one-owner", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        const outcomes = [];
+        for (const id of ["race-1", "race-2", "race-3", "race-4", "race-5"]) {
+          await openIncident(api, id, 1, "edge-cache");
+          outcomes.push({ id, ...await race(api, id) });
+        }
+        return { pass: outcomes.every(outcome => outcome.consistent), evidence: outcomes };
+      });
+
+      await verifier.check("simultaneous-opens-of-one-id-admit-exactly-one", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        const results = (await Promise.all([1, 2, 3, 1, 2, 3, 1, 2].map((severity, index) =>
+          api.open({ id: "race-open", service: "dns", severity, summary: `attempt ${index}` }))))
+          .map(result => OkSchema.parse(result));
+        const incident = IncidentSchema.parse(await api.incident({ id: "race-open" }));
+        const winners = results.flatMap((result, index) => result.ok ? [index] : []);
+        const winner = winners[0];
+        return {
+          pass: winners.length === 1 && winner !== undefined &&
+            incident.summary === `attempt ${winner}` &&
+            results.every(result => result.ok || result.error === "DUPLICATE_ID"),
+          evidence: { results, incident },
+        };
+      });
+
+      await checkBoardOrder(verifier, "board-lists-by-severity-then-age");
+    },
+  }, {
+    prompt: `Two additions. Escalation: escalate({ id }) raises the incident one severity level
+toward 1 and counts it in a new escalations field on the incident (starting at 0); reject with
+"AT_MAX_SEVERITY" at severity 1, "ALREADY_RESOLVED" once resolved, "UNKNOWN_INCIDENT" otherwise.
+And metrics({ service? }) -> { count, acknowledged, resolved, meanTimeToAcknowledgeMs,
+meanTimeToResolveMs }, for one service or for all, computed from the incidents' own timestamps:
+both means are measured from openedAt, to acknowledgedAt and to resolvedAt respectively, and are
+null when there is nothing to average. Everything already on the board stays.`,
+    verify: async verifier => {
+      await verifier.check("existing-incidents-survive-and-race-still-holds", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        const board = BoardSchema.parse(await api.board()).incidents;
+        const survivors = Object.fromEntries(board.map(incident => [incident.id, incident.status]));
+        const intact = board.length === Object.keys(TURN_ONE_BOARD).length &&
+          Object.entries(TURN_ONE_BOARD).every(([id, status]) => survivors[id] === status) &&
+          board.every(incident => incident.status === "open" || incident.owner !== null);
+        await openIncident(api, "race-6", 2, "billing");
+        const outcome = await race(api, "race-6");
+        return { pass: intact && outcome.consistent, evidence: { survivors, outcome } };
+      });
+
+      await verifier.check("escalation-moves-toward-severity-one-and-stops", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        await openIncident(api, "esc-1", 3, "auth");
+        const first = OkSchema.parse(await api.escalate({ id: "esc-1" }));
+        const afterFirst = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
+        const second = OkSchema.parse(await api.escalate({ id: "esc-1" }));
+        const third = OkSchema.parse(await api.escalate({ id: "esc-1" }));
+        const afterThird = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
+        const resolved = OkSchema.parse(await api.escalate({ id: "inc-1" }));
+        const unknown = OkSchema.parse(await api.escalate({ id: "esc-x" }));
+        const untouched = IncidentSchema.parse(await api.incident({ id: "race-1" }));
+        return {
+          pass: first.ok && afterFirst.severity === 2 && afterFirst.escalations === 1 &&
+            second.ok && code(third) === "AT_MAX_SEVERITY" &&
+            afterThird.severity === 1 && afterThird.escalations === 2 &&
+            code(resolved) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
+            (untouched.escalations ?? 0) === 0,
+          evidence: { first, afterFirst, second, third, afterThird, resolved, unknown },
+        };
+      });
+
+      await verifier.check("metrics-follow-the-boards-own-timestamps", async () => {
+        using api = await verifier.connect<DeskApi>(TITLE);
+        const board = BoardSchema.parse(await api.board()).incidents;
+        const all = MetricsSchema.parse(await api.metrics({}));
+        const edge = MetricsSchema.parse(await api.metrics({ service: "edge-cache" }));
+        const none = MetricsSchema.parse(await api.metrics({ service: "no-such-service" }));
+        const expectedAll = referenceMetrics(board);
+        const expectedEdge = referenceMetrics(
+            board.filter(incident => incident.service === "edge-cache"));
+        const matches = (actual: z.infer<typeof MetricsSchema>, expected: typeof expectedAll) =>
+          actual.count === expected.count && actual.acknowledged === expected.acknowledged &&
+          actual.resolved === expected.resolved &&
+          closeEnough(actual.meanTimeToAcknowledgeMs, expected.meanTimeToAcknowledgeMs) &&
+          closeEnough(actual.meanTimeToResolveMs, expected.meanTimeToResolveMs);
+        return {
+          pass: matches(all, expectedAll) && matches(edge, expectedEdge) &&
+            none.count === 0 && none.meanTimeToAcknowledgeMs === null &&
+            none.meanTimeToResolveMs === null && expectedAll.resolved >= 1,
+          evidence: { all, expectedAll, edge, expectedEdge, none },
+        };
+      });
+
+      await checkBoardOrder(verifier, "board-order-survives-escalation");
+    },
+  }],
+});
+
+defineTaskEval(task);
