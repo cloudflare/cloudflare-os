@@ -238,7 +238,7 @@ describe("push authorization through the Overseer chokepoints", () => {
         laterVeto.appliedAt = new Date();
         impl.storage.actions.put(laterVeto);
 
-        await impl.applyActionBatch(boundary, [veto], USER);
+        await impl.applyActionBatch(boundary.id, [veto.id], USER);
 
         expect(await receiver.receivedBatch()).toStrictEqual({ actionId: 99, vetoes: [52] });
         const cached = await receiver.cachedObject();
@@ -277,8 +277,8 @@ describe("push authorization through the Overseer chokepoints", () => {
         }, { from: "user" });
         const action = actionRecord(impl, GATEKEEPER, 1);
 
-        expect(await impl.applyActionBatch(action, [], USER))
-            .toMatchObject({ decided: [], stoppedAt: 1 });
+        expect(await impl.applyActionBatch(action.id, [], USER))
+            .toMatchObject({ decided: [], stopped: true });
         expect(actionRecord(impl, GATEKEEPER, 1).state).toBe("pending");
         await expectGitPackCode(
             () => receiver.buildRetained(1), GIT_PACK_ERROR_CODES.builderExpired);
@@ -315,6 +315,14 @@ describe("push authorization through the Overseer chokepoints", () => {
       }, { from: "user" });
       const nonPush = actionRecord(impl, GATEKEEPER, foreignId + 1);
 
+      await impl.submitAction(GATEKEEPER, foreignId + 2, {
+        title: "Empty push declaration",
+        description: "Declares a push with no commits.",
+        implementsRevert: true,
+        pushedCommits: [],
+      }, { from: "user" });
+      const noCommits = actionRecord(impl, GATEKEEPER, foreignId + 2);
+
       await impl.submitAction(
           GATEKEEPER, foreignId + 3, pushDescription([ownHistory.base]), { from: "user" });
       const empty = actionRecord(impl, GATEKEEPER, foreignId + 3);
@@ -324,42 +332,38 @@ describe("push authorization through the Overseer chokepoints", () => {
       const zero = actionRecord(impl, GATEKEEPER, 0);
       expect(zero.id).not.toBe(0);
 
-      const builder = new GitPackBuilderImpl(
-          impl.gitCache, impl.storage, GATEKEEPER, [own, nonPush, empty, zero]);
-      try {
-        const ownObjects = await decodePackBytes(
-            await collect(await builder.buildPack(foreignId)), { maxObjectSize: 1 << 20 });
-        const ownOids = await Promise.all(
-            ownObjects.map(object => gitObjectOid(object.type, object.payload)));
-        expect(ownOids).toStrictEqual([ownHistory.head]);
+      using builder = new GitPackBuilderImpl(
+          impl.gitCache, impl.storage, GATEKEEPER, [own, nonPush, noCommits, empty, zero]);
+      const ownObjects = await decodePackBytes(
+          await collect(await builder.buildPack(foreignId)), { maxObjectSize: 1 << 20 });
+      const ownOids = await Promise.all(
+          ownObjects.map(object => gitObjectOid(object.type, object.payload)));
+      expect(ownOids).toStrictEqual([ownHistory.head]);
 
-        const zeroObjects = await decodePackBytes(
-            await collect(await builder.buildPack(0)), { maxObjectSize: 1 << 20 });
-        expect(await Promise.all(
-            zeroObjects.map(object => gitObjectOid(object.type, object.payload))))
-            .toStrictEqual([zeroHistory.head]);
-        expect(await decodePackBytes(
-            await collect(await builder.buildPack(foreignId + 3)), { maxObjectSize: 1 }))
-            .toStrictEqual([]);
+      const zeroObjects = await decodePackBytes(
+          await collect(await builder.buildPack(0)), { maxObjectSize: 1 << 20 });
+      expect(await Promise.all(
+          zeroObjects.map(object => gitObjectOid(object.type, object.payload))))
+          .toStrictEqual([zeroHistory.head]);
+      expect(await decodePackBytes(
+          await collect(await builder.buildPack(foreignId + 3)), { maxObjectSize: 1 }))
+          .toStrictEqual([]);
 
-        for (const selector of [own.id, nonPush.action]) {
-          await expectGitPackCode(
-              () => builder.buildPack(selector), GIT_PACK_ERROR_CODES.actionNotAuthorized);
-        }
-
-        impl.storage.transaction(() => {
-          zero.state = "rejected";
-          impl.gitCache.clearPushMarks(zero.id);
-          impl.storage.actions.put(zero);
-        });
+      for (const selector of [own.id, nonPush.action]) {
         await expectGitPackCode(
-            () => builder.buildPack(0), GIT_PACK_ERROR_CODES.actionUnavailable);
-        expect(getGitPackErrorCode(new Error(
-            "Git pack action is no longer pending or its connection was removed.")))
-            .toBeUndefined();
-      } finally {
-        builder[Symbol.dispose]();
+            () => builder.buildPack(selector), GIT_PACK_ERROR_CODES.actionNotAuthorized);
       }
+      await expectGitPackCode(
+          () => builder.buildPack(noCommits.action),
+          GIT_PACK_ERROR_CODES.actionDeclaresNoPush);
+
+      impl.storage.transaction(() => {
+        zero.state = "rejected";
+        impl.gitCache.clearPushMarks(zero.id);
+        impl.storage.actions.put(zero);
+      });
+      await expectGitPackCode(
+          () => builder.buildPack(0), GIT_PACK_ERROR_CODES.actionUnavailable);
     });
   });
 
@@ -439,10 +443,26 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
 
-  it("rechecks owner and destination lifetime after an awaited pack build", async () => {
-    await inOverseer("batch-pack-disposed-in-flight", async impl => {
+  it.each([
+    {
+      mode: "disposed",
+      expected: GIT_PACK_ERROR_CODES.builderExpired,
+      invalidate: (_impl: any, builder: GitPackBuilderImpl) => builder[Symbol.dispose](),
+      // Dispose leaves the still-queued push intact for the next builder.
+      remainingMarks: (head: string) => [head],
+    },
+    {
+      mode: "removed",
+      expected: GIT_PACK_ERROR_CODES.actionUnavailable,
+      invalidate: (impl: any) => impl.removeGatekeeper(GATEKEEPER),
+      // Removal cleans the queued push's marks along with the gatekeeper.
+      remainingMarks: () => [],
+    },
+  ])("rechecks owner and destination lifetime after an awaited pack build ($mode mid-build)",
+      async ({ mode, expected, invalidate, remainingMarks }) => {
+    await inOverseer(`batch-pack-${mode}-in-flight`, async impl => {
       impl.storage.gatekeepers.put({ id: GATEKEEPER, class: {} });
-      const { head } = await seedPushableHistory(impl, GATEKEEPER, " disposed");
+      const { head } = await seedPushableHistory(impl, GATEKEEPER, ` ${mode}`);
       await impl.submitAction(GATEKEEPER, 81, pushDescription([head]), { from: "user" });
       const record = actionRecord(impl, GATEKEEPER, 81);
       const builder = new GitPackBuilderImpl(
@@ -459,52 +479,10 @@ describe("push authorization through the Overseer chokepoints", () => {
       try {
         const build = builder.buildPack(81);
         await started.promise;
-        builder[Symbol.dispose]();
+        invalidate(impl, builder);
         release.resolve();
-        let caught: unknown;
-        try {
-          await build;
-        } catch (error) {
-          caught = error;
-        }
-        expect(getGitPackErrorCode(caught)).toBe(GIT_PACK_ERROR_CODES.builderExpired);
-        expect(marksOf(impl, record.id)).toContain(head);
-      } finally {
-        release.resolve();
-        impl.gitCache.buildPackForAction = original;
-        builder[Symbol.dispose]();
-      }
-    });
-
-    await inOverseer("batch-pack-removed-in-flight", async impl => {
-      impl.storage.gatekeepers.put({ id: GATEKEEPER, class: {} });
-      const { head } = await seedPushableHistory(impl, GATEKEEPER, " removed");
-      await impl.submitAction(GATEKEEPER, 82, pushDescription([head]), { from: "user" });
-      const record = actionRecord(impl, GATEKEEPER, 82);
-      const builder = new GitPackBuilderImpl(
-          impl.gitCache, impl.storage, GATEKEEPER, [record]);
-      const started = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const original = impl.gitCache.buildPackForAction;
-      impl.gitCache.buildPackForAction = async (gatekeeperId: number, actionId: number) => {
-        started.resolve();
-        await release.promise;
-        return original.call(impl.gitCache, gatekeeperId, actionId);
-      };
-
-      try {
-        const build = builder.buildPack(82);
-        await started.promise;
-        impl.removeGatekeeper(GATEKEEPER);
-        release.resolve();
-        let caught: unknown;
-        try {
-          await build;
-        } catch (error) {
-          caught = error;
-        }
-        expect(getGitPackErrorCode(caught)).toBe(GIT_PACK_ERROR_CODES.actionUnavailable);
-        expect(marksOf(impl, record.id)).toStrictEqual([]);
+        await expectGitPackCode(() => build, expected);
+        expect(marksOf(impl, record.id)).toStrictEqual(remainingMarks(head));
       } finally {
         release.resolve();
         impl.gitCache.buildPackForAction = original;

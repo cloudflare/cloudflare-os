@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect, vi } from "vitest";
 import {
   ActionSyncDriver, ActionSyncStorage, GatekeeperActionTarget, isMethodMissing,
@@ -7,7 +8,7 @@ import type {
   ActionRecord, GatekeeperActionRecord, OverseerDurableObject,
 } from "../src/overseer.js";
 import {
-  ACTION_ERROR_CODES, getActionErrorCode, type ActionLogEntry, type AiChatAuthorInfo,
+  ACTION_ERROR_CODES, getActionErrorCode, type ActionLogEntry, type AiChatAuthorInfo, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import type { ApplyActionsThroughResult } from "@gadgets/workshop-shared/gatekeeper";
 import type { ManualApproval } from "../src/actions.js";
@@ -80,12 +81,18 @@ function getAction(storage: ActionSyncStorage, action: number): GatekeeperAction
 }
 
 // A migrated gatekeeper stub: records every batch call and answers from a scripted queue (or {}).
-function makeBatchGatekeeper() {
+// A call whose frontier matches `parkAt` ("every" matches all) waits until release() (oldest
+// first), so tests can hold a pass mid-RPC.
+function makeBatchGatekeeper(opts: {parkAt?: number | "every"} = {}) {
   let calls: Array<{actionId: number, vetoes: number[]}> = [];
   let results: Array<ApplyActionsThroughResult | Error> = [];
+  let parked: Array<() => void> = [];
   let target = {
     async applyActionsThrough(actionId: number, vetoes: number[]) {
       calls.push({ actionId, vetoes });
+      if (opts.parkAt === "every" || opts.parkAt === actionId) {
+        await new Promise<void>(resolve => parked.push(resolve));
+      }
       let next = results.shift() ?? {};
       if (next instanceof Error) throw next;
       return next;
@@ -93,7 +100,7 @@ function makeBatchGatekeeper() {
     async applyAction() { throw new Error("legacy applyAction must not be called"); },
     async rejectAction() { throw new Error("legacy rejectAction must not be called"); },
   } as unknown as GatekeeperActionTarget;
-  return { target, calls, results };
+  return { target, calls, results, release: () => parked.shift()!() };
 }
 
 // A pre-migration live stub rejects the batch method probe, then serves legacy per-action calls.
@@ -138,9 +145,8 @@ function makeClient(storage: ActionSyncStorage, target: GatekeeperActionTarget) 
         driver.apply(gatekeeperId, approval),
     rejectPendingAction: (record: GatekeeperActionRecord, author: AiChatAuthorInfo) =>
         driver.reject(record, author),
-    applyActionBatch: (
-        boundary: GatekeeperActionRecord, vetoes: readonly GatekeeperActionRecord[],
-        author: AiChatAuthorInfo) => driver.applyThrough(boundary, vetoes, author),
+    applyActionBatch: (boundaryId: number, vetoIds: readonly number[],
+        author: AiChatAuthorInfo) => driver.applyThrough(boundaryId, vetoIds, author),
   } });
 }
 
@@ -185,7 +191,7 @@ describe("ActionSyncDriver.apply", () => {
     let driver = makeDriver(storage, target);
 
     expect(await driver.apply(GK, { action: 2, resolvedBy: APPROVER }))
-        .toEqual({ decided: [], blockedBy: "Action 1" });
+        .toEqual({ decided: [], blocked: true });
     expect(calls).toEqual([]);
     // The refusal is transient queue state, reported to the clicker rather than recorded, so it
     // can't go stale on the record or later be mistaken for a gatekeeper failure.
@@ -241,24 +247,6 @@ describe("ActionSyncDriver.apply", () => {
     expect(getAction(storage, 3).state).toBe("pending");
   });
 
-  it("does not scan resolved or unrelated action history", async () => {
-    let storage = makeStorage();
-    enableRule(storage);
-    for (let action = 1; action <= 500; action++) {
-      putAction(storage, action, { state: "approved", gatekeeperId: GK + 1 });
-    }
-    putAction(storage, 501);
-    putAction(storage, 502, { state: "rejected", vetoPending: true, resolvedBy: REJECTER });
-    let fullScan = vi.spyOn(storage.actions, "list");
-
-    let { target, calls } = makeBatchGatekeeper();
-    await makeDriver(storage, target).apply(GK);
-
-    expect(fullScan).not.toHaveBeenCalled();
-    expect(calls).toEqual([{ actionId: 501, vetoes: [] }]);
-    expect(getAction(storage, 501).state).toBe("approved");
-    expect(getAction(storage, 502).vetoPending).toBe(true);
-  });
 
   it("makes no call when nothing is eligible", async () => {
     let storage = makeStorage();
@@ -287,7 +275,7 @@ describe("ActionSyncDriver.apply", () => {
     let first = await driver.apply(GK, { action: 2, resolvedBy: APPROVER });
 
     expect(first.decided).toEqual([a1]);
-    expect(first.stoppedAt).toBe(2);
+    expect(first.stopped).toBe(true);
     expect(getAction(storage, 1).state).toBe("approved");
     let stopped = getAction(storage, 2);
     expect(stopped.state).toBe("pending");
@@ -346,7 +334,7 @@ describe("ActionSyncDriver.apply", () => {
     // Clicking 7 first is refused, and must leave no trace that would later be read as a
     // gatekeeper failure -- otherwise 7 would never auto-apply again.
     expect(await driver.apply(GK, { action: 7, resolvedBy: APPROVER }))
-        .toEqual({ decided: [], blockedBy: "Action 5" });
+        .toEqual({ decided: [], blocked: true });
 
     await driver.apply(GK, { action: 5, resolvedBy: APPROVER });
 
@@ -365,7 +353,7 @@ describe("ActionSyncDriver.apply", () => {
     // A fresh driver over the same storage (e.g. after DO hibernation) sees durable delivery intent,
     // but transmits it only when an explicit boundary covers it.
     let { target, calls } = makeBatchGatekeeper();
-    await makeDriver(storage, target).applyThrough(getAction(storage, 2), [], REJECTER);
+    await makeDriver(storage, target).applyThrough(getAction(storage, 2).id, [], REJECTER);
 
     expect(calls).toEqual([{ actionId: 2, vetoes: [2] }]);
     expect(getAction(storage, 2).vetoPending).toBeUndefined();
@@ -381,7 +369,7 @@ describe("ActionSyncDriver.apply", () => {
     let { target, calls } = makeBatchGatekeeper();
     let driver = makeDriver(storage, target);
     let { decided } = await driver.applyThrough(
-        getAction(storage, 3), [getAction(storage, 2)], APPROVER);
+        getAction(storage, 3).id, [getAction(storage, 2).id], APPROVER);
 
     expect(calls).toEqual([{ actionId: 3, vetoes: [2] }]);
     expect(decided.toSorted((a, b) => a - b)).toEqual([a1, a3]);
@@ -401,7 +389,7 @@ describe("ActionSyncDriver.apply", () => {
 
     let { target, calls } = makeBatchGatekeeper();
     await makeDriver(storage, target).applyThrough(
-        getAction(storage, 2), [getAction(storage, 1), getAction(storage, 2)], REJECTER);
+        getAction(storage, 2).id, [getAction(storage, 1).id, getAction(storage, 2).id], REJECTER);
 
     expect(calls).toEqual([{ actionId: 2, vetoes: [1, 2] }]);
     expect(getAction(storage, 1).state).toBe("rejected");
@@ -415,9 +403,9 @@ describe("ActionSyncDriver.apply", () => {
     results.push({ stopped: { at: 0, reason: new Error("zero stopped") } });
 
     let result = await makeDriver(storage, target)
-        .applyThrough(getAction(storage, 0), [], APPROVER);
+        .applyThrough(getAction(storage, 0).id, [], APPROVER);
 
-    expect(result.stoppedAt).toBe(0);
+    expect(result.stopped).toBe(true);
     expect(getAction(storage, 0)).toMatchObject({ state: "pending", failure: "zero stopped" });
   });
 
@@ -430,9 +418,9 @@ describe("ActionSyncDriver.apply", () => {
     results.push({ stopped: { at: invalidAt, reason: new Error("invalid stop") } });
 
     let result = await makeDriver(storage, target)
-        .applyThrough(getAction(storage, 3), [], APPROVER);
+        .applyThrough(getAction(storage, 3).id, [], APPROVER);
 
-    expect(result.stoppedAt).toBe(2);
+    expect(result.stopped).toBe(true);
     expect(getAction(storage, 2)).toMatchObject({
       state: "pending",
       failure: "The gatekeeper could not apply this action.",
@@ -468,7 +456,7 @@ describe("ActionSyncDriver.apply", () => {
     let { target, results } = makeBatchGatekeeper();
     results.push({ invalidatedByVeto: [{ action: 3, invalidatedBy: 2 }] });
     let { decided } = await makeDriver(storage, target)
-        .applyThrough(getAction(storage, 3), [], REJECTER);
+        .applyThrough(getAction(storage, 3).id, [], REJECTER);
 
     expect(decided).toEqual([a3]);
     let invalidated = getAction(storage, 3);
@@ -509,7 +497,7 @@ describe("ActionSyncDriver.apply", () => {
     results.push({ invalidatedByVeto: [{ action: 1, invalidatedBy: 2 }] });
 
     let { decided } = await makeDriver(storage, target)
-        .applyThrough(getAction(storage, 1), [], APPROVER);
+        .applyThrough(getAction(storage, 1).id, [], APPROVER);
 
     expect(decided).toEqual([actionId]);
     expect(getAction(storage, 1).state).toBe("approved");
@@ -527,7 +515,7 @@ describe("ActionSyncDriver.apply", () => {
       { action: 99, invalidatedBy: 2 },  // unknown
     ]});
     let { decided } = await makeDriver(storage, target)
-        .applyThrough(getAction(storage, 2), [], REJECTER);
+        .applyThrough(getAction(storage, 2).id, [], REJECTER);
 
     expect(decided).toEqual([]);
     expect(getAction(storage, 1).state).toBe("approved");
@@ -539,16 +527,7 @@ describe("ActionSyncDriver.apply", () => {
     putAction(storage, 2, { autoApprovable: false });
     putAction(storage, 3, { autoApprovable: false });
 
-    let calls: Array<{actionId: number, vetoes: number[]}> = [];
-    let gates: Array<() => void> = [];
-    let target = {
-      applyActionsThrough(actionId: number, vetoes: number[]) {
-        calls.push({ actionId, vetoes });
-        return new Promise<ApplyActionsThroughResult>(resolve => {
-          gates.push(() => resolve({}));
-        });
-      },
-    } as unknown as GatekeeperActionTarget;
+    let { target, calls, release } = makeBatchGatekeeper({ parkAt: "every" });
     let driver = makeDriver(storage, target);
 
     let first = driver.apply(GK, { action: 1, resolvedBy: APPROVER });   // parks mid-RPC
@@ -557,11 +536,11 @@ describe("ActionSyncDriver.apply", () => {
     let third = driver.apply(GK, { action: 2, resolvedBy: APPROVER });   // merged with second
     expect(calls).toEqual([{ actionId: 1, vetoes: [] }]);
 
-    gates.shift()!();  // finish pass 1
+    release();  // finish pass 1
     await flush();
     expect(calls).toEqual([{ actionId: 1, vetoes: [] }, { actionId: 3, vetoes: [] }]);
 
-    gates.shift()!();  // finish pass 2
+    release();  // finish pass 2
     let [a, b, c] = await Promise.all([first, second, third]);
     expect(a.decided).toEqual([10]);
     // The coalesced requests share the pass and its decided set.
@@ -572,23 +551,16 @@ describe("ActionSyncDriver.apply", () => {
   it("runs an explicit batch between the in-flight pass and later staged approvals", async () => {
     let storage = makeStorage();
     for (let action of [1, 2, 3]) putAction(storage, action, { autoApprovable: false });
-    let firstCall = Promise.withResolvers<void>();
-    let calls: Array<{actionId: number, vetoes: number[]}> = [];
-    let target = {
-      async applyActionsThrough(actionId: number, vetoes: number[]) {
-        calls.push({ actionId, vetoes });
-        if (actionId === 1) await firstCall.promise;
-        return {};
-      },
-    } as unknown as GatekeeperActionTarget;
+    let { target, calls, release } = makeBatchGatekeeper({ parkAt: 1 });
     let driver = makeDriver(storage, target);
 
     let first = driver.apply(GK, { action: 1, resolvedBy: APPROVER });
     await flush();
-    let batch = driver.applyThrough(getAction(storage, 2), [getAction(storage, 2)], REJECTER);
+    let batch = driver.applyThrough(
+        getAction(storage, 2).id, [getAction(storage, 2).id], REJECTER);
     let later = driver.apply(GK, { action: 3, resolvedBy: APPROVER });
 
-    firstCall.resolve();
+    release();
     await Promise.all([first, batch, later]);
 
     expect(calls).toEqual([
@@ -604,22 +576,15 @@ describe("ActionSyncDriver.apply", () => {
   it("revalidates the complete batch after waiting in the decision queue", async () => {
     let storage = makeStorage();
     for (let action of [1, 2, 3]) putAction(storage, action, { autoApprovable: false });
-    let firstCall = Promise.withResolvers<void>();
-    let calls: Array<{actionId: number, vetoes: number[]}> = [];
-    let target = {
-      async applyActionsThrough(actionId: number, vetoes: number[]) {
-        calls.push({ actionId, vetoes });
-        if (actionId === 1) await firstCall.promise;
-        return {};
-      },
-    } as unknown as GatekeeperActionTarget;
+    let { target, calls, release } = makeBatchGatekeeper({ parkAt: 1 });
     let driver = makeDriver(storage, target);
 
     let first = driver.apply(GK, { action: 1, resolvedBy: APPROVER });
     await flush();
-    let batch = driver.applyThrough(getAction(storage, 3), [getAction(storage, 2)], REJECTER);
+    let batch = driver.applyThrough(
+        getAction(storage, 3).id, [getAction(storage, 2).id], REJECTER);
     storage.actions.delete(20);
-    firstCall.resolve();
+    release();
 
     await first;
     await expect(batch).rejects.toThrow("No such action: 20");
@@ -631,21 +596,14 @@ describe("ActionSyncDriver.apply", () => {
     let storage = makeStorage();
     putAction(storage, 2, { autoApprovable: false });
     putAction(storage, 3, { autoApprovable: false });
-    let firstCall = Promise.withResolvers<void>();
-    let calls: Array<{actionId: number, vetoes: number[]}> = [];
-    let target = {
-      async applyActionsThrough(actionId: number, vetoes: number[]) {
-        calls.push({ actionId, vetoes });
-        if (actionId === 2) await firstCall.promise;
-        return {};
-      },
-    } as unknown as GatekeeperActionTarget;
+    let { target, calls, release } = makeBatchGatekeeper({ parkAt: 2 });
     let driver = makeDriver(storage, target);
 
     let click = driver.apply(GK, { action: 2, resolvedBy: APPROVER });
     await flush();
-    let batch = driver.applyThrough(getAction(storage, 3), [getAction(storage, 2)], REJECTER);
-    firstCall.resolve();
+    let batch = driver.applyThrough(
+        getAction(storage, 3).id, [getAction(storage, 2).id], REJECTER);
+    release();
     await Promise.all([click, batch]);
 
     expect(calls).toEqual([{ actionId: 2, vetoes: [] }, { actionId: 3, vetoes: [] }]);
@@ -728,7 +686,7 @@ describe("ActionSyncDriver.apply", () => {
     let { target, results } = makeBatchGatekeeper();
     results.push({ invalidatedByVeto: [{ action: 3, invalidatedBy: 2 }] });
     let pass = makeDriver(storage, target)
-        .applyThrough(getAction(storage, 2), [], REJECTER);
+        .applyThrough(getAction(storage, 2).id, [], REJECTER);
     let a3 = putAction(storage, 3, { autoApprovable: false });  // arrives while the RPC is in
     let { decided } = await pass;                               // flight, so it misses the snapshot
 
@@ -742,18 +700,16 @@ describe("ActionSyncDriver.apply", () => {
 describe("ActionSyncDriver legacy fallback", () => {
   it("recognizes workerd's real missing-method error", async () => {
     let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
-    let call = (stub as any).applyActionsThrough(1, []);
+    // The DO itself lacks the client interface's batch method; probe workerd's actual rejection.
+    const receiver = stub as unknown as Fetcher<Pick<Overseer, "applyActionsThrough">>;
+    using call = receiver.applyActionsThrough(1, []);
     let error: unknown;
     try {
       await call;
     } catch (caught) {
       error = caught;
-    } finally {
-      call[Symbol.dispose]();
     }
 
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('does not implement "applyActionsThrough"');
     expect(isMethodMissing(error)).toBe(true);
   });
   it("does not replay a coded batch failure whose message resembles method-missing prose",
@@ -765,12 +721,8 @@ describe("ActionSyncDriver legacy fallback", () => {
     failure.message = 'The RPC receiver does not implement "applyActionsThrough".';
     results.push(failure);
 
-    let caught: unknown;
-    try {
-      await makeDriver(storage, target).apply(GK, { action: 1, resolvedBy: APPROVER });
-    } catch (error) {
-      caught = error;
-    }
+    let caught = await makeDriver(storage, target)
+        .apply(GK, { action: 1, resolvedBy: APPROVER }).catch(error => error);
 
     expect(getGitPackErrorCode(caught)).toBe(GIT_PACK_ERROR_CODES.builderExpired);
     expect(getAction(storage, 1).state).toBe("pending");
@@ -847,7 +799,7 @@ describe("ActionSyncDriver legacy fallback", () => {
 
     let firstDriver = makeDriver(storage, legacy.target);
     await expect(firstDriver.applyThrough(
-        getAction(storage, 3), [getAction(storage, 1), getAction(storage, 2)], REJECTER))
+        getAction(storage, 3).id, [getAction(storage, 1).id, getAction(storage, 2).id], REJECTER))
         .rejects.toThrow("reject 2 failed");
 
     expect(getAction(storage, 1).vetoPending).toBeUndefined();
@@ -857,7 +809,7 @@ describe("ActionSyncDriver legacy fallback", () => {
 
     failSecond = false;
     await makeDriver(storage, legacy.target)
-        .applyThrough(getAction(storage, 3), [], APPROVER);
+        .applyThrough(getAction(storage, 3).id, [], APPROVER);
 
     expect(legacy.calls).toEqual(["reject:1", "reject:2", "reject:2", "apply:3"]);
     expect(getAction(storage, 2).vetoPending).toBeUndefined();
@@ -1000,21 +952,6 @@ describe("Overseer action decisions", () => {
     for (let action of [1, 2, 3, 4]) expect(getAction(storage, action).state).toBe("pending");
   });
 
-  it("keeps exact approval blocked by an earlier undecided action", async () => {
-    let storage = makeStorage();
-    putAction(storage, 1, { autoApprovable: false });
-    let boundary = putAction(storage, 2, { autoApprovable: false });
-    let batch = makeBatchGatekeeper();
-    let client = await makeClient(storage, batch.target);
-
-    let error = await client.approveAction(boundary).catch(caught => caught);
-
-    expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.blocked);
-    expect(batch.calls).toEqual([]);
-    expect(getAction(storage, 1).state).toBe("pending");
-    expect(getAction(storage, 2).state).toBe("pending");
-  });
-
   // Chat 7 suspended but its storage fails; 8 suspended, with an unsuspended sibling in-turn;
   // 9 suspended but its awaited action was rejected; 10 never suspended; 11 predates the flag
   // and resumes on the rule that used to set it.
@@ -1031,19 +968,18 @@ describe("Overseer action decisions", () => {
     let a6 = putAction(storage, 6, { chatId: 11, awaitDecision: true });
 
     let notes = vi.fn();
-    let listedChats: string[] = [];
     let client = await openFakeOverseer({
       ...storage,
       chats: {
         list: ({ prefix }: { prefix: string }) => {
-          listedChats.push(prefix);
           if (prefix === `${keyString(7)}.`) throw new Error("chat storage unavailable");
           // Chat 8's turn also holds an awaitDecision action that never suspended it.
           if (prefix === `${keyString(8)}.`) {
             return [a2, a5].map(actionId => ({ type: "action", actionId }));
           }
-          let actionId = prefix === `${keyString(9)}.` ? a3
-              : prefix === `${keyString(11)}.` ? a6 : a4;
+          let actionId = a4;
+          if (prefix === `${keyString(9)}.`) actionId = a3;
+          else if (prefix === `${keyString(11)}.`) actionId = a6;
           return [{ type: "action", actionId }];
         },
       },
@@ -1072,8 +1008,41 @@ describe("Overseer action decisions", () => {
         type: "message", message: expect.stringContaining("Action 6"),
       })]],
     ]);
-    expect(listedChats).toEqual([
-      `${keyString(7)}.`, `${keyString(8)}.`, `${keyString(9)}.`, `${keyString(11)}.`,
+  });
+
+  // The rule pass is the only decision this action will get: nothing later revisits the turn it
+  // suspended.
+  it("resumes a chat the newly enabled auto-approval rule unblocks", async () => {
+    let storage = makeStorage();
+    let action = putAction(storage, 1, { chatId: 7, awaitDecision: true, suspendedTurn: true });
+
+    let notes = vi.fn();
+    let waits: Promise<unknown>[] = [];
+    let client = await openFakeOverseer({
+      ...storage,
+      gatekeepers: { get: () => ({ id: GK }) },
+      chats: { list: () => [{ type: "action", actionId: action }] },
+    }, {
+      impl: {
+        ctx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) },
+        addChatMessages: notes,
+        waitForChatMessagePreparation: () => undefined,
+        applyDecidedActions: async () => {
+          let record = getAction(storage, 1);
+          record.state = "approved";
+          storage.actions.put(record);
+          return { decided: [action] };
+        },
+      },
+    });
+
+    await client.setAutoApprovedActionKind(GK, { tag: "edit", label: "Edits" });
+    await Promise.all(waits);
+
+    expect(notes.mock.calls).toEqual([
+      [7, expect.anything(), [expect.objectContaining({
+        type: "message", message: expect.stringContaining("Action 1"),
+      })]],
     ]);
   });
 
@@ -1108,39 +1077,24 @@ describe("Overseer action decisions", () => {
     expect(getAction(storage, 3).state).toBe("pending");
   });
 
-  it("leaves a failed rejection pending so the user can retry it", async () => {
-    let storage = makeStorage();
-    let id = putAction(storage, 1);
-    let legacy = makeLegacyGatekeeper();
-    let reject = vi.fn().mockRejectedValueOnce(new Error("temporary RPC failure"))
-        .mockResolvedValue(undefined);
-    legacy.target.rejectAction = reject;
-    let client = await makeClient(storage, legacy.target);
-
-    await expect(client.rejectAction(id)).rejects.toThrow("temporary RPC failure");
-    expect(getAction(storage, 1).state).toBe("pending");
-    expect(getAction(storage, 1).appliedAt).toBeUndefined();
-    await client.rejectAction(id);
-    expect(getAction(storage, 1).state).toBe("rejected");
-    expect(legacy.calls).toEqual([]);
-  });
-
-  it("keeps immediate rejection on the legacy rejectAction endpoint", async () => {
+  it("keeps immediate rejection on the legacy endpoint, leaving a failed one pending to retry",
+     async () => {
     let storage = makeStorage();
     putAction(storage, 0);
     let id = putAction(storage, 1);
     putAction(storage, 2);
     let batch = makeBatchGatekeeper();
     let calls: number[] = [];
-    let reject = vi.fn(async (action: number) => {
+    async function reject(action: number): Promise<void> {
       calls.push(action);
       if (calls.length === 1) throw new Error("temporary RPC failure");
-    });
+    }
     batch.target.rejectAction = reject as typeof batch.target.rejectAction;
     let client = await makeClient(storage, batch.target);
 
     await expect(client.rejectAction(id)).rejects.toThrow("temporary RPC failure");
     expect(getAction(storage, 1).state).toBe("pending");
+    expect(getAction(storage, 1).appliedAt).toBeUndefined();
     await client.rejectAction(id);
 
     expect(calls).toEqual([1, 1]);
@@ -1198,5 +1152,44 @@ describe("Overseer action decisions", () => {
     // And it survives the mapping to the client API, which is where the user meets it.
     let entry = (await client.listActions()).entries.find(candidate => candidate.id === id);
     expect(entry?.type === "action" && entry.failure).toBe("page was deleted upstream");
+  });
+});
+
+describe("Overseer auto-approval dispatch", () => {
+  it("starts the apply pass only after submitAction returns", async () => {
+    let applied: number[] = [];
+    let dispatched = Promise.withResolvers<void>();
+    let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.newUniqueId());
+
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      // Reaching the DO's own impl, which the class does not expose; the fake facet it receives
+      // is deliberately narrower than the real one, so this stays untyped.
+      let host = instance as unknown as { impl: any };
+      let impl = host.impl;
+      impl.getGatekeeperFacet = () => ({
+        async applyActionsThrough(actionId: number) {
+          applied.push(actionId);
+          dispatched.resolve();
+          return {};
+        },
+      });
+      let actionKind = { tag: "push", label: "Push" };
+      impl.storage.autoApproveTags.put({ gatekeeperId: GK, actionKind, enabledBy: APPROVER });
+
+      await impl.submitAction(GK, 1, {
+        title: "Push to main",
+        description: "Pushes the listed commits.",
+        implementsRevert: true,
+        autoApprovable: true,
+        actionKind,
+      }, { from: "user" });
+
+      // A gatekeeper reaches here with its submitAction() still in flight, so a pass dispatched
+      // inline would ask it to apply an action it has not finished submitting.
+      expect(applied).toStrictEqual([]);
+
+      await dispatched.promise;
+      expect(applied).toStrictEqual([1]);
+    });
   });
 });

@@ -4,7 +4,7 @@ import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import { ActionFailureNote } from './components/ActionFailureNote'
+import { ActionFailureNote } from './ActionFailureNote'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'

@@ -139,7 +139,10 @@ describe('ChatInterface action refresh', () => {
   it('lets a resumed reconnect replay the gap instead of refetching', async () => {
     await cachePendingCard('ws-chat-resume')
 
-    const failed = entry(1, { failure: 'page was deleted while disconnected' })
+    const failed = entry(1, {
+      failure: 'page was deleted while disconnected',
+      appliedAt: new Date(1700005000000),
+    })
     const second = makeOverseer()
     const secondChat = withChatApi(second)
     linkActionLog(second.overseer, 'ws-chat-resume')

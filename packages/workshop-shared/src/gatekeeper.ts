@@ -959,7 +959,8 @@ export interface Gatekeeper<Session> extends DurableObject {
    * become terminal no-ops. Processing stops at the first application failure; a pending in-range
    * action the gatekeeper still holds must never be silently skipped — it is either applied or
    * reported via `stopped`. An action whose `submitAction()` call has not yet completed must not
-   * be applied.
+   * be applied: wait for that call, then apply it. Omitting it would be the silent skip above, and
+   * reporting it as `stopped` would record a failure on an action that has not been attempted.
    *
    * Every ID in `vetoes` must be durably recorded before any action is applied, including when
    * processing stops: the caller clears its staged veto on any call that returns, so a veto lost
@@ -1325,6 +1326,9 @@ export type ActionDescription = {
    * If present, applying this action will push the named commits to the remote resource this
    * gatekeeper fronts.
    *
+   * An empty list is not a push: no ancestry is verified, no objects are marked, and
+   * `GitPackBuilder.buildPack()` rejects the action. Omit the field rather than passing `[]`.
+   *
    * At the time the action is submitted, the overseer may validate whether it makes sense to push
    * this commit (and the transitive closure of objects that come with it) to this gatekeeper, and
    * whether the gatekeeper is allowed to receive these commits. A variety of security policies,
@@ -1511,6 +1515,8 @@ export const GIT_PACK_ERROR_CODES = {
   actionNotAuthorized: "GIT_PACK_ACTION_NOT_AUTHORIZED",
   /** The selected action is no longer pending or its gatekeeper connection was removed. */
   actionUnavailable: "GIT_PACK_ACTION_UNAVAILABLE",
+  /** The selected action declares no pushed commits, so it has no pack to build. */
+  actionDeclaresNoPush: "GIT_PACK_ACTION_DECLARES_NO_PUSH",
 } as const;
 
 /** An expected `GitPackBuilder.buildPack()` failure code. */
@@ -1523,6 +1529,8 @@ const gitPackErrors = codedErrorFamily<GitPackErrorCode>({
       "Action is not authorized for Git pack building in this apply-through call.",
   [GIT_PACK_ERROR_CODES.actionUnavailable]:
       "Git pack action is no longer pending or its connection was removed.",
+  [GIT_PACK_ERROR_CODES.actionDeclaresNoPush]:
+      "Action declares no pushed commits, so it has no pack to build.",
 });
 
 /** Creates an expected Git pack failure carrying its stable machine-readable code. */
@@ -1541,16 +1549,19 @@ export interface GitPackBuilder extends RpcTarget {
   /**
    * Builds a pack for one gatekeeper-local action ID authorized in the containing apply-through
    * call. The selected action need not equal that call's frontier. A valid push whose full closure
-   * is already known to the remote returns a valid empty pack. Expected availability and authority
-   * failures carry a code from `GIT_PACK_ERROR_CODES`.
+   * is already known to the remote returns a valid empty pack. Expected failures carry a code
+   * from `GIT_PACK_ERROR_CODES`.
    */
   buildPack(action: number): Promise<ReadableStream<Uint8Array>>;
 }
 
 /** Git capabilities supplied to an action-processing invocation. */
 export type ApplyActionContext = {
-  /** This connection's cache view, including later pending pushes; no legacy buildPack(). */
-  gitCache: RpcStub<GitCache>;
+  /**
+   * This connection's cache view, including later pending pushes. Not action-scoped, so
+   * `buildPack()` is omitted from it: packs come from `gitPackBuilder`.
+   */
+  gitCache: RpcStub<Omit<GitCache, "buildPack">>;
   /** Builds only this invocation's authorized pushes; expires when the invocation completes. */
   gitPackBuilder: RpcStub<GitPackBuilder>;
 };
