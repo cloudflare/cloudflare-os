@@ -1,19 +1,20 @@
 // Shared fixtures for the action-log test suites: the production overseer storage over a mock,
-// a putAction record factory, and a fake overseer client forged over
+// a putAction record factory, an ActionsSubscriber stub, and a fake overseer client forged over
 // OverseerDurableObject.prototype.open.
 
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
+import type { RpcStub } from "capnweb";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
-import type { Overseer } from "@gadgets/workshop-shared/api";
+import type { ActionLogEntry, ActionsSubscriber, Overseer } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject, makeOverseerStorage } from "../src/overseer.js";
+import { createWorkshopLogger } from "../src/observability.js";
 import type { ActionRecord } from "../src/overseer.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 /**
- * The production schema over mock storage, so the action suites (auto-approval drain, pending
- * history query) exercise the shipped actions collection and pendingByGatekeeper index rather
- * than a copy.
+ * The production schema over mock storage, so action-sync and history-query tests exercise the
+ * shipped actions collection and its indexes rather than a copy.
  */
 export function makeActionStorage(mockStorage = makeMockStorage()) {
   return makeOverseerStorage(mockStorage);
@@ -34,6 +35,22 @@ export function makePreIndexActionStorage(mockStorage: DurableObjectStorage) {
 
 /** Base timestamp for fixture records: putAction stamps createdAt = FIXTURE_EPOCH + id. */
 export const FIXTURE_EPOCH = 1700000000000;
+
+/**
+ * Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
+ * assert both content and ordering of the delivered stream.
+ */
+export function makeSubscriber(entry?: (record: ActionLogEntry) => Promise<void>) {
+  let events: Array<number | "ready"> = [];
+  let subscriber = {
+    entry: entry ?? (async (record: ActionLogEntry) => { events.push(record.id); }),
+    ready: async () => { events.push("ready"); },
+    dup: () => subscriber,
+    onRpcBroken: () => {},
+    [Symbol.dispose]: () => {},
+  };
+  return { subscriber: subscriber as unknown as RpcStub<ActionsSubscriber>, events };
+}
 
 /** Puts a record and keeps nextActionId ahead of it, as the real allocator does. */
 export function putAction(
@@ -82,6 +99,7 @@ export async function openFakeOverseer(
     impl: {
       ownerId,
       assertGatekeeperUsable: () => {},
+      logger: createWorkshopLogger("test"),
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
       joinSession: () => () => {},
@@ -89,12 +107,17 @@ export async function openFakeOverseer(
       joinOutputsFanout: () => () => {},
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
+      gitCache: { clearPushMarks: () => {} },
       // What open() consults for a non-owner's role: the permission-graph lookup and observer
       // verification in one. The sharing manager is still reached, but only to redeem a share key,
       // which these tests never pass.
       authorizeCollaborator: async () => role,
       getSharingManager: async () => ({}),
-      ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
+      ctx: {
+        id: { toString: () => "workspace-id" },
+        exports: opts.exports ?? {},
+        waitUntil: () => {},
+      },
       users: {
         idFromString: (id: string) => id,
         get: () => ({
@@ -102,6 +125,7 @@ export async function openFakeOverseer(
           recordSharedGadgetOpen: async () => {},
         }),
       },
+      applyDecidedActions: async () => [] as number[],
       storage: Object.assign(storage, {
         containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },

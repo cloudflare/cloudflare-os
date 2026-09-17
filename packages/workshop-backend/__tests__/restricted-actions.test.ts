@@ -96,8 +96,8 @@ describe("submitAction under the restricted-data latch", () => {
         { gatekeeperId: 1, state: "pending" },
       ]);
 
-      // Not auto-approved even by an explicit drain: every action stays a manual gate.
-      await impl.drainAutoApprovals(2);
+      // Not auto-approved even by an explicit apply pass: every action stays a manual gate.
+      await impl.applyDecidedActions(2);
       expect(actionStates(impl)).toEqual([
         { gatekeeperId: 2, state: "pending" },
         { gatekeeperId: 1, state: "pending" },
@@ -117,8 +117,9 @@ describe("submitAction under the restricted-data latch", () => {
       seedRestrictedObservation(impl, 1, 100);
 
       let record = [...impl.storage.actions.list()].find((rec: any) => rec.type === "action");
-      impl.getGatekeeperFacet = () => ({ async applyAction() {} });
-      await impl.applyPendingAction(record, USER, false);
+      impl.getGatekeeperFacet = () => ({ async applyActionsThrough() { return {}; } });
+      await impl.applyDecidedActions(
+          record.gatekeeperId, { action: record.action, resolvedBy: USER });
       expect(actionStates(impl)).toEqual([{ gatekeeperId: 2, state: "approved" }]);
     });
   });

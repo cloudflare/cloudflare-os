@@ -7,8 +7,8 @@
 //
 // The fixture gatekeeper's session drives this through the real ApprovalQueue funnel:
 // `writeValue()` submits a `set-value` action with the given verdict and resolves once the action
-// is decided, and `applyAction` succeeds, so the drain's submit -> auto-approve -> apply round
-// trip is the real one.
+// is decided, and `applyAction` succeeds, so the apply pass's submit -> auto-approve -> apply
+// round trip is the real one.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -89,8 +89,9 @@ async function listWrites(ws: Workspace): Promise<Array<ActionLogEntry & { type:
       .toSorted((a, b) => a.id - b.id);
 }
 
-// The drain runs via ctx.waitUntil after submit, so "did not auto-approve" needs a settle window.
-// One further RPC round trip plus a beat is far beyond the drain's synchronous storage work.
+// Auto-approval runs in an apply pass via ctx.waitUntil after submit, so "did not auto-approve"
+// needs a settle window. One further RPC round trip plus a beat is far beyond that pass's
+// synchronous storage work.
 async function settle(ws: Workspace): Promise<void> {
   await ws.overseer.listActions();
   await new Promise(resolve => setTimeout(resolve, 300));
@@ -101,7 +102,7 @@ describe("auto-approval policy", () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "auto-happy");
       await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
-      // Resolves once the action is decided -- here, by the drain, with no human involved.
+      // Resolves once the action is decided -- here, by an apply pass, with no human involved.
       await expect(ws.session.writeValue(1, { autoApprovable: true }))
           .resolves.toEqual(expect.any(Number));
 

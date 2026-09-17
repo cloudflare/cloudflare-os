@@ -1,29 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RpcStub } from "capnweb";
-import type { ActionLogEntry, ActionsSubscriber } from "@gadgets/workshop-shared/api";
+import type { ActionLogEntry } from "@gadgets/workshop-shared/api";
 import {
   ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE,
 } from "../src/overseer.js";
 import { makeMockStorage } from "./mock-storage.js";
 import {
-  FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, openFakeOverseer, putAction,
+  FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, makeSubscriber, openFakeOverseer,
+  putAction,
 } from "./fixtures.js";
 
 vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
-
-// Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
-// assert both content and ordering of the delivered stream.
-function makeSubscriber(entry?: (record: ActionLogEntry) => Promise<void>) {
-  let events: Array<number | "ready"> = [];
-  let subscriber = {
-    entry: entry ?? (async (record: ActionLogEntry) => { events.push(record.id); }),
-    ready: async () => { events.push("ready"); },
-    dup: () => subscriber,
-    onRpcBroken: () => {},
-    [Symbol.dispose]: () => {},
-  };
-  return { subscriber: subscriber as unknown as RpcStub<ActionsSubscriber>, events };
-}
 
 describe("subscribeToActions", () => {
   it("delivers no pre-existing records: ready fires immediately", async () => {

@@ -2,7 +2,20 @@
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
 import { DurableObject, WorkerEntrypoint, restore } from "cloudflare:workers";
-import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type { RpcStub } from "cloudflare:workers";
+import { validateRpc } from "capnweb-validate";
+import type {
+  AccountDescription,
+  ApplyActionContext,
+  ApplyActionsThroughResult,
+  Gatekeeper,
+  GitCache,
+  GitPackBuilder,
+} from "@gadgets/workshop-shared/gatekeeper";
+import {
+  createGitPackError,
+  getGitPackErrorCode,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
@@ -50,6 +63,81 @@ export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
+
+type TestGitPackGatekeeperProps = {
+  packAction?: number;
+  readOid?: string;
+  stoppedAt?: number;
+  throwAfterBuild?: boolean;
+};
+
+/** Native-RPC test receiver for invocation-scoped Git pack callbacks. */
+@validateRpc()
+export class TestGitPackGatekeeper
+    extends DurableObject<Cloudflare.Env, TestGitPackGatekeeperProps>
+    implements Pick<Gatekeeper<unknown>, "applyActionsThrough"> {
+  #captured?: Uint8Array;
+  #cached?: Awaited<ReturnType<GitCache["get"]>>;
+  #retained?: RpcStub<GitPackBuilder>;
+  #receivedBatch?: {actionId: number; vetoes: number[]};
+
+  async applyActionsThrough(
+    actionId: number,
+    vetoes: number[],
+    context: ApplyActionContext,
+  ): Promise<ApplyActionsThroughResult> {
+    this.#receivedBatch = { actionId, vetoes: [...vetoes] };
+    const { packAction, readOid, stoppedAt, throwAfterBuild } = this.ctx.props;
+    if (readOid !== undefined) this.#cached = await context.gitCache.get(readOid);
+    if (packAction === undefined) return {};
+
+    this.#retained?.[Symbol.dispose]();
+    this.#retained = context.gitPackBuilder.dup();
+    try {
+      const stream = await this.#retained.buildPack(packAction);
+      this.#captured = new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (error) {
+      const code = getGitPackErrorCode(error);
+      if (code !== undefined) {
+        return { stopped: {
+          at: packAction,
+          reason: error instanceof Error ? error : createGitPackError(code),
+        } };
+      }
+      throw error;
+    }
+
+    if (throwAfterBuild) throw new Error("Test batch response lost.");
+    if (stoppedAt !== undefined) {
+      return { stopped: { at: stoppedAt, reason: new Error("Test action stopped.") } };
+    }
+    return {};
+  }
+
+  async receivedBatch(): Promise<{actionId: number; vetoes: number[]} | undefined> {
+    return this.#receivedBatch;
+  }
+
+  async capturedPack(): Promise<Uint8Array> {
+    if (this.#captured === undefined) throw new Error("No pack was captured.");
+    return this.#captured;
+  }
+
+  async cachedObject() {
+    return this.#cached;
+  }
+
+  async buildRetained(action: number): Promise<Uint8Array> {
+    if (this.#retained === undefined) throw new Error("No Git pack builder was retained.");
+    const stream = await this.#retained.buildPack(action);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  async releaseRetained(): Promise<void> {
+    this.#retained?.[Symbol.dispose]();
+    this.#retained = undefined;
+  }
+}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
