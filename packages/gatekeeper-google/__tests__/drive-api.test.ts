@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DRIVE_FILE_FIELDS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
+  DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
   FOLDER_MIME_TYPE, buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
@@ -159,7 +159,8 @@ describe("listFiles", () => {
   it("requests the field mask that DriveFile describes", async () => {
     let calls = stubFetch([jsonResponse({ files: [] })]);
     await api().listFiles();
-    expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_FIELDS);
+    expect(calls[0].url.searchParams.get("fields"))
+      .toBe(`incompleteSearch,nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`);
   });
 
   it("sends the bearer token", async () => {
@@ -232,6 +233,34 @@ describe("listFiles", () => {
     expect(calls[0].url.searchParams.has("driveId")).toBe(false);
   });
 
+  it("spans every corpus the account can reach without a dangling driveId", async () => {
+    let calls = stubFetch([jsonResponse({ files: [] })]);
+    await api().listFiles({ corpus: { kind: "allDrives" } });
+    let params = calls[0].url.searchParams;
+    expect(params.get("corpora")).toBe("allDrives");
+    expect(params.get("supportsAllDrives")).toBe("true");
+    expect(params.get("includeItemsFromAllDrives")).toBe("true");
+    expect(params.has("driveId")).toBe(false);
+  });
+
+  // A cross-corpus search Drive declares incomplete is not safely presentable as a complete
+  // result, so it fails here rather than reaching a caller that cannot tell.
+  it("refuses a search Drive reports as incomplete", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: true, files: [{ id: "1", name: "a" }] })]);
+    await expect(api().listFiles({ corpus: { kind: "allDrives" } })).rejects
+      .toThrow("Google Drive could not complete this search. Try again.");
+  });
+
+  it("accepts a search Drive reports as complete", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: false, files: [{ id: "1", name: "a" }] })]);
+    expect(await api().listFiles()).toEqual({ files: [{ id: "1", name: "a" }] });
+  });
+
+  it("rejects a non-boolean completeness claim instead of guessing", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: "true", files: [] })]);
+    await expect(api().listFiles()).rejects.toThrow("Invalid Google Drive incompleteSearch");
+  });
+
   it("sends the assembled query as the Drive q parameter", async () => {
     let calls = stubFetch([jsonResponse({ files: [] })]);
     await api().listFiles({
@@ -254,72 +283,6 @@ describe("listFiles", () => {
   it("rejects malformed file metadata instead of trusting Google's response", async () => {
     stubFetch([jsonResponse({ files: [{ id: 42, name: "not-valid" }] })]);
     await expect(api().listFiles()).rejects.toThrow("Invalid Google Drive file response");
-  });
-});
-
-describe("listDrives", () => {
-  it("returns shared-drive picker options and forwards pagination", async () => {
-    let calls = stubFetch([jsonResponse({
-      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-    })]);
-
-    expect(await api().listDrives({ pageToken: "p1" })).toEqual({
-      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-    });
-    expect(calls[0].url.pathname).toBe("/drive/v3/drives");
-    expect(calls[0].url.searchParams.get("pageSize")).toBe("100");
-    expect(calls[0].url.searchParams.get("pageToken")).toBe("p1");
-  });
-
-
-  it("collects every shared-drive page", async () => {
-    let calls = stubFetch([
-      jsonResponse({
-        drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-      }),
-      jsonResponse({ drives: [{ id: "drive-2", name: "Production" }] }),
-    ]);
-
-    await expect(api().listAllDrives({ namePrefix: "Pro" })).resolves.toEqual([
-      { id: "drive-1", name: "Product" },
-      { id: "drive-2", name: "Production" },
-    ]);
-    expect(calls.map(call => call.url.searchParams.get("pageToken"))).toEqual([null, "p2"]);
-    expect(calls.map(call => call.url.searchParams.get("q")))
-      .toEqual(["name contains 'Pro'", "name contains 'Pro'"]);
-  });
-
-  // Without a budget a cyclic nextPageToken pages until the Worker's subrequest limit.
-  it("stops shared-drive pagination at the page budget", async () => {
-    let calls = stubFetch(() => jsonResponse({
-      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "loop",
-    }));
-
-    await expect(api().listAllDrives()).resolves.toHaveLength(20);
-    expect(calls).toHaveLength(20);
-    expect(calls[1].url.searchParams.get("pageToken")).toBe("loop");
-  });
-
-  it("rejects malformed shared-drive metadata", async () => {
-    stubFetch([jsonResponse({ drives: [{ id: "drive-1", name: false }] })]);
-    await expect(api().listDrives()).rejects.toThrow("Invalid Google shared-drive response");
-  });
-
-  it("escapes the name prefix when filtering shared drives", async () => {
-    let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ namePrefix: "Ada's \\drive" });
-    expect(calls[0].url.searchParams.get("q")).toBe("name contains 'Ada\\'s \\\\drive'");
-  });
-
-  it("omits q when the name prefix is whitespace-only", async () => {
-    let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ namePrefix: "   " });
-    expect(calls[0].url.searchParams.has("q")).toBe(false);
-  });
-
-  it("treats a response with no drives array as an empty page", async () => {
-    stubFetch([jsonResponse({})]);
-    expect(await api().listDrives()).toEqual({ drives: [] });
   });
 });
 

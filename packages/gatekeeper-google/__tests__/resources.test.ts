@@ -129,8 +129,8 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
-  // Pins every permanent scope each Drive resource needs. Complete shared-drive discovery adds
-  // `drive.readonly` separately; it is not part of the selected folder's grant.
+  // Pins every permanent scope each Drive resource needs. No broader Drive scope is ever
+  // requested; a wider one only ever arrives from a grant the account already held.
   it.each([
     [GOOGLE_DRIVE_RESOURCE, [
       "https://www.googleapis.com/auth/drive.metadata.readonly",

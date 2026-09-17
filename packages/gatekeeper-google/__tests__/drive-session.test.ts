@@ -576,6 +576,21 @@ describe("positioned Drive folder session", () => {
     ]);
   });
 
+  // A bound shared-drive folder still navigates through its own drive corpus; the picker's
+  // cross-corpus discovery must not leak in here.
+  it("lists a shared-drive folder through that drive's corpus alone", async () => {
+    const sharedRoot = folder("SR", { driveId: "drive-1", parents: undefined });
+    const sharedDoc = child("SD", "SR", { mimeType: docMime, driveId: "drive-1" });
+    const { session, queries } = positioned([sharedRoot, sharedDoc], { folderIds: ["SR"] });
+
+    await expect((await session.list()).next()).resolves.toEqual([
+      expect.objectContaining({ id: "SD", driveId: "drive-1" }),
+    ]);
+    expect(queries).toEqual([expect.objectContaining({
+      directParentId: "SR", corpus: { kind: "drive", driveId: "drive-1" },
+    })]);
+  });
+
   it("navigates one checked child at a time", async () => {
     const { session } = positioned([root, nested, directDoc, nestedDoc, foreignDoc]);
 

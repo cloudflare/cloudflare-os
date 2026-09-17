@@ -216,17 +216,12 @@ export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): b
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
 }
 
-/** Account-wide Drive read. Granted only by the optional expansion shared-drive discovery needs. */
-export const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+/**
+ * Wider Drive grants an account may already hold. Never requested here; they appear only in
+ * {@link SCOPE_COVERED_BY}, where they truthfully subsume the narrow requirements.
+ */
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
-
-/** Whether granted scopes carry the account-wide Drive read that shared-drive discovery requires. */
-export function grantsDriveDiscovery(grantedScopes: Iterable<string>): boolean {
-  for (let scope of grantedScopes) {
-    if (scope === DRIVE_READONLY_SCOPE || scope === DRIVE_READWRITE_SCOPE) return true;
-  }
-  return false;
-}
 
 /** Rejects any pattern that is not a known grantable resource. */
 export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string[]): void {

@@ -25,68 +25,42 @@ describe("Google resource configurators", () => {
       .resolves.toBe("person@example.com");
   });
 
-  it("includes listable folders and shared-drive roots", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      files: [
-        {
-          id: "metadata-only", name: "Metadata only",
-          capabilities: { canListChildren: false },
-        },
-        {
-          id: "usable", name: "Usable",
-          capabilities: { canListChildren: true },
-        },
-        {
-          id: "drive-1", driveId: "drive-1", name: "Team Drive",
-          capabilities: { canListChildren: true },
-        },
-      ],
-    })));
-
-    await expect(new DriveFolderConfiguratorUI(
-      async () => token("access-token"), async () => true,
-    ).listDriveFolders(""))
-      .resolves.toEqual([
-        { value: "usable", title: "Usable", subtitle: "My Drive" },
-        { value: "drive-1", title: "Team Drive", subtitle: "In a shared drive" },
-      ]);
-  });
-
-  it("refuses shared-drive discovery before optional consent", async () => {
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
-    const ui = new DriveFolderConfiguratorUI(
-      async () => token("access-token"), async () => false,
-    );
-
-    await expect(ui.listSharedDrives("")).rejects.toThrow(
-      "Enable Workspace Shared Drive discovery above, then try again.",
-    );
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("lists every shared-drive page after optional consent", async () => {
+  // One provider page across every corpus the account reaches. A continuation token is normal for
+  // an interactive picker, so it must neither be followed nor treated as a failure.
+  it("offers listable folders from every corpus in one all-drives request", async () => {
     const calls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      calls.push(url);
-      return url.searchParams.has("pageToken")
-        ? Response.json({ drives: [{ id: "drive-2", name: "Two" }] })
-        : Response.json({
-          drives: [{ id: "drive-1", name: "One" }], nextPageToken: "next",
-        });
+      calls.push(new URL(input instanceof Request ? input.url : input.toString()));
+      return Response.json({
+        nextPageToken: "next",
+        files: [
+          { id: "mine", name: "Team plans", capabilities: { canListChildren: true } },
+          {
+            id: "shared-with-me", name: "Team budget",
+            owners: [{ displayName: "Ada" }], capabilities: { canListChildren: true },
+          },
+          {
+            id: "in-drive", name: "Team drive folder", driveId: "drive-1",
+            capabilities: { canListChildren: true },
+          },
+          { id: "metadata-only", name: "Team archive", capabilities: { canListChildren: false } },
+        ],
+      });
     }));
-    const ui = new DriveFolderConfiguratorUI(
-      async () => token("access-token"), async () => true,
-    );
 
-    await expect(ui.listSharedDrives("team")).resolves.toEqual([
-      { value: "drive-1", title: "One", subtitle: "Workspace Shared Drive" },
-      { value: "drive-2", title: "Two", subtitle: "Workspace Shared Drive" },
-    ]);
-    expect(calls).toHaveLength(2);
-    expect(calls[0].searchParams.get("q")).toBe("name contains 'team'");
-    expect(calls[1].searchParams.get("pageToken")).toBe("next");
+    await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders("Team"))
+      .resolves.toEqual([
+        { value: "mine", title: "Team plans", subtitle: "My Drive" },
+        { value: "shared-with-me", title: "Team budget", subtitle: "Ada" },
+        { value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive" },
+      ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
+    expect(calls[0].searchParams.get("q")).toBe(
+      "trashed = false and mimeType = 'application/vnd.google-apps.folder' and " +
+      "name contains 'Team'",
+    );
   });
 
   it("refreshes a rejected Calendar access token", async () => {

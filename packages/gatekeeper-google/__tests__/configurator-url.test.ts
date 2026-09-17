@@ -162,7 +162,8 @@ describe("Drive configurator URLs", () => {
     expect(renderedCopy(driveFileConfigurator)).toContain(
       "A selected native Google Doc or Sheet also provides read-only content.",
     );
-    expect(renderedCopy(driveFolderConfigurator)).toContain("Workspace Shared Drives");
+    expect(renderedCopy(driveFolderConfigurator))
+      .toContain("My Drive, Shared with me, and shared drives");
   });
 
 
@@ -203,21 +204,5 @@ describe("Drive configurator URLs", () => {
     let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
     expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
       .toEqual(folderValues);
-  });
-
-  it("clears the selected folder when its source changes", () => {
-    const clearFields = vi.fn();
-    const setValues = vi.fn();
-    const tree = driveFolderConfigurator.render!({
-      values: { source: "folders", folderId: "folder-1" },
-      setValues,
-      clearFields,
-      ui: noUi,
-    } as never) as unknown as {
-      children: Array<{ children: Array<{ props: { onChange(value: string): void } }> }>;
-    };
-    tree.children[0].children[0].props.onChange("sharedDrives");
-    expect(clearFields).toHaveBeenCalledWith("folderId");
-    expect(setValues).toHaveBeenCalledWith({ source: "sharedDrives", folderId: null });
   });
 });

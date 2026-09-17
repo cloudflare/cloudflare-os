@@ -77,7 +77,7 @@ import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
-  grantedResourceUrlPatterns, grantsDriveDiscovery, hasDriveResourceGrant, parseResourceUrl,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
 import {
@@ -424,18 +424,9 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /** Prepare a reconnect or scope-expansion attempt for this account. */
-  async prepareReconnect(
-      initiationNonce: string, requestedResources: string[], requestDriveReadonly = false) {
-    let preserveDriveDiscovery = grantsDriveDiscovery(
-      this.ctx.storage.kv.get<string[]>("grantedScopes") ?? []);
+  async prepareReconnect(initiationNonce: string, requestedResources: string[]) {
     prepareOAuthFlow(
-      this.ctx.storage.kv,
-      initiationNonce,
-      requestedResources,
-      "reconnect",
-      Date.now(),
-      requestDriveReadonly || preserveDriveDiscovery,
-    );
+      this.ctx.storage.kv, initiationNonce, requestedResources, "reconnect", Date.now());
   }
 
   /**
@@ -453,18 +444,6 @@ export class UserAccount extends DurableObject<Env> {
    */
   async getRequestableResourceUrlPatterns(): Promise<string[]> {
     return recordedResourceUrlPatterns(this.#recordedGrant());
-  }
-
-  async hasSharedDriveDiscovery(): Promise<boolean> {
-    return grantsDriveDiscovery(this.ctx.storage.kv.get<string[]>("grantedScopes") ?? []);
-  }
-
-  async requestSharedDriveDiscovery(): Promise<{url?: string}> {
-    if (await this.hasSharedDriveDiscovery()) return {};
-    let requestedResources = await this.getRequestableResourceUrlPatterns();
-    let initiationNonce = generateNonce();
-    await this.prepareReconnect(initiationNonce, requestedResources, true);
-    return {url: `${getBaseUrl(this.env)}/${this.ctx.id.toString()}/${initiationNonce}`};
   }
 
   #recordedGrant(): RecordedResourceGrant {
@@ -858,19 +837,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
 
     if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
-      let hasSharedDriveDiscovery = () => account.hasSharedDriveDiscovery();
       return {
         iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken, hasSharedDriveDiscovery)),
-        ...(!await hasSharedDriveDiscovery() ? {
-          authorization: {
-            title: "Enable Workspace Shared Drive discovery",
-            description: "Google requires permission to read all Drive files your account can " +
-              "access to list Workspace Shared Drives. This is optional; each connection still " +
-              "exposes only its selected folder.",
-            request: new RpcStub(() => account.requestSharedDriveDiscovery()),
-          },
-        } : {}),
+        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
       };
     }
 

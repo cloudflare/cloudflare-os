@@ -23,7 +23,6 @@ export default defineConfig({
   test: {
     include: [
       "__tests__/workerd/configurators.test.ts",
-      "__tests__/workerd/drive-discovery.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
     ],

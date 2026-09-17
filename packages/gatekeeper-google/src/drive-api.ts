@@ -8,8 +8,6 @@ const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
-/** Page budget for `listAllDrives`, at 100 shared drives a page. */
-const LIST_DRIVES_MAX_PAGES = 20;
 
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -29,9 +27,6 @@ export type DriveFile = {
   capabilities?: { canListChildren?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
-
-/** Current metadata for one shared drive. */
-export type DriveInfo = { id: string; name: string };
 
 /**
  * The minimal per-file facts a folder-scope descendant proof rests on.
@@ -84,7 +79,7 @@ export const DRIVE_FILE_ITEM_FIELDS = [
 ].join(",");
 
 /** Drive returns only requested fields, so this mask and {@link DriveFile} travel together. */
-export const DRIVE_FILE_FIELDS = `nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`;
+const DRIVE_FILE_FIELDS = `incompleteSearch,nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`;
 
 /** Structured Drive search clauses. Every populated field is AND-ed. */
 export type DriveFileQuery = {
@@ -106,9 +101,13 @@ export type DriveFileQuery = {
  *
  * One value rather than the provider's independent `corpora`/`driveId` pair: a shared-drive
  * binding's whole boundary is those two travelling together, and `driveId` without
- * `corpora: "drive"` silently falls back to the user corpus.
+ * `corpora: "drive"` silently falls back to the user corpus. `allDrives` spans My Drive, "Shared
+ * with me", and every shared drive this account is a member of.
  */
-export type DriveCorpus = { kind: "user" } | { kind: "drive"; driveId: string };
+export type DriveCorpus =
+  | { kind: "user" }
+  | { kind: "allDrives" }
+  | { kind: "drive"; driveId: string };
 
 export type DriveListFilesOptions = DriveFileQuery & {
   pageSize?: number;
@@ -120,8 +119,6 @@ export type DriveListFilesOptions = DriveFileQuery & {
 };
 
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
-export type DriveListDrivesOptions = { pageSize?: number; pageToken?: string; namePrefix?: string };
-export type DriveList = { drives: DriveInfo[]; nextPageToken?: string };
 
 /** Drive refused because the API is not enabled on this OAuth project. */
 export class DriveApiDisabledError extends Error {}
@@ -326,13 +323,6 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   };
 }
 
-function parseDriveInfo(value: unknown): DriveInfo {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string") {
-    throw new Error("Invalid Google shared-drive response");
-  }
-  return { id: value.id, name: value.name };
-}
-
 /** Escapes a value for interpolation into a Drive `q` string literal. */
 export function escapeDriveQueryLiteral(value: string): string {
   let backslash = "\\";
@@ -467,6 +457,10 @@ export class DriveApi {
     if (corpus.kind === "drive") params.set("driveId", corpus.driveId);
     let body = await this.#getUnknown("/files", params);
     if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+    // A cross-corpus search Drive could not finish is indistinguishable from a complete one.
+    if (optionalBoolean(body.incompleteSearch, "incompleteSearch")) {
+      throw new Error("Google Drive could not complete this search. Try again.");
+    }
     let files: DriveFile[] = [];
     if (body.files !== undefined) {
       if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
@@ -480,44 +474,6 @@ export class DriveApi {
   async getFile(fileId: string): Promise<DriveFile> {
     let params = new URLSearchParams({ fields: DRIVE_FILE_ITEM_FIELDS, supportsAllDrives: "true" });
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
-  }
-
-  /** One page of shared drives visible to the connected account. */
-  async listDrives(options: DriveListDrivesOptions = {}): Promise<DriveList> {
-    let params = new URLSearchParams({
-      pageSize: String(options.pageSize ?? 100), fields: "nextPageToken,drives(id,name)",
-    });
-    if (options.pageToken) params.set("pageToken", options.pageToken);
-    if (options.namePrefix?.trim()) {
-      params.set("q", literalClause("name", "contains", options.namePrefix.trim()));
-    }
-    let body = await this.#getUnknown("/drives", params);
-    if (!isRecord(body)) throw new Error("Invalid Google shared-drive list response");
-    let drives: DriveInfo[] = [];
-    if (body.drives !== undefined) {
-      if (!Array.isArray(body.drives)) throw new Error("Invalid Google shared-drive list response");
-      drives = body.drives.map(parseDriveInfo);
-    }
-    let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
-    return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
-  }
-
-  /** Every shared drive visible to the connected account, up to the page budget. */
-  async listAllDrives(
-    options: Omit<DriveListDrivesOptions, "pageToken"> = {},
-  ): Promise<DriveInfo[]> {
-    let drives: DriveInfo[] = [];
-    let pageToken: string | undefined;
-    let pages = 0;
-    do {
-      let page = await this.listDrives({
-        ...options,
-        ...(pageToken ? { pageToken } : {}),
-      });
-      drives.push(...page.drives);
-      pageToken = page.nextPageToken;
-    } while (pageToken && ++pages < LIST_DRIVES_MAX_PAGES);
-    return drives;
   }
 
   /** Fresh access checks for typed file and folder disclosure units. */

@@ -76,7 +76,6 @@ included). Across all resource types, the gatekeeper can request:
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
-- `drive.readonly` is an optional account-level expansion used only to discover every shared-drive root. It is restricted like `drive.metadata.readonly`, but adds account-wide file content authority. Declining it leaves ordinary folder selection and every existing narrow connection usable.
 - `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
@@ -141,7 +140,7 @@ User — see Step 4.)
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, folder or shared-drive root, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
+10. Use the picker to choose the mailbox scope, document, folder, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
@@ -174,7 +173,7 @@ Drive exposes three permanent resource URL forms:
 - `https://drive.google.com/drive/folders/<folderId>` selects one folder or shared-drive root.
 - `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
 
-The folder picker has separate **Folders** and **Workspace Shared Drives** sources, but both mint the same folder resource. **Folders** covers every ordinary folder the account can list children of, including folders another person shared with it, so Drive's "Shared with me" items appear there rather than under the Shared Drives source. **Workspace Shared Drives** lists organization-owned drives only. Folder search works with the baseline `drive.metadata.readonly` grant. Complete Shared Drive discovery requires the optional account-level `drive.readonly` expansion because Google offers no narrower scope for `drives.list`; enabling discovery does not broaden any folder binding. Metadata-only folders that cannot list children are not offered.
+The folder picker is one search over `corpora=allDrives`, which spans My Drive, "Shared with me", and every shared drive the account is a member of. It runs on the baseline `drive.metadata.readonly` grant and asks for no broader scope. It returns a single provider page of suggestions, so it is an interactive search rather than an exhaustive enumeration: a known folder or shared-drive root that does not surface can still be connected by supplying its `https://drive.google.com/drive/folders/<folderId>` URL, which opens the picker prefilled. Folders whose children the account cannot list are not offered, and a search Google reports as incomplete fails rather than presenting partial results as complete.
 
 The agent-facing `GoogleDriveReadSession` covers account and exact-file bindings. `GoogleDriveFolderSession` is positioned at the selected root and exposes only its current folder's direct children: `list()`, provider-side structured `search()`, `getEntry()`, native Doc/Sheet opens, and `openFolder()` for one live direct child. Listing and search return disposable RPC cursors; child folders and native content sessions are independently disposable capabilities. There is no built-in recursive folder search, traversal pager, raw Drive `q`, file write, shortcut traversal, arbitrary download/export, or Workers AI extraction.
 
@@ -182,7 +181,7 @@ Every folder operation revalidates the selected root and the root-to-current pat
 
 Every native open re-fetches Drive metadata, enforces the immutable account, folder, or exact-file scope, authorizes the metadata observation, and checks the exact MIME type. A folder-derived Doc or Sheet read revalidates direct membership before contacting the native API and again before approval; if the file moves meanwhile, the fetched value is discarded. Direct Google Doc bindings retain their editing API, while Drive-opened Docs and Sheets are read-only.
 
-Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`, `documents.readonly`, and `spreadsheets.readonly`. The broader `drive.readonly` grant covers those requirements when already present, but remains only account-level discovery authority and is never recorded as resource consent. Existing metadata-only connections are prompted to expand before native content reads are considered granted.
+Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`, `documents.readonly`, and `spreadsheets.readonly`. A broader `drive.readonly` or `drive` grant the account already holds covers those requirements, but is never requested here. Existing metadata-only connections are prompted to expand before native content reads are considered granted.
 
 Drive observations are typed as files or listable folders. A folder operation observes its positioned folder path plus each disclosed direct child, and native reads observe the file independently. Before a collaborator opens the workspace, the gatekeeper requires their own explicit Drive resource consent and rechecks remembered units with fresh batched metadata reads; folder units must still be live listable folders. Hidden rejected candidates are not disclosed or remembered.
 
