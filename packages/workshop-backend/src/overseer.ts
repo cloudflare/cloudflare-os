@@ -10705,6 +10705,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
+    // For collaborators, fetch owner info first: storage is read and subscribed below with no
+    // await in between, so an update can't land after the snapshot but before the subscription.
+    let owner = this.isOwner
+        ? undefined : await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
+
     let metadata: GadgetMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
@@ -10714,11 +10719,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
-
-    // For collaborators, include owner info.
-    if (!this.isOwner) {
-      metadata.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
-    }
+    if (owner) metadata.owner = owner;
 
     let titleSubscriber = {
       update(value: string) {
@@ -12219,10 +12220,13 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
+    // Fetch owner info first so the title read and subscription below have no await in between.
+    let owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
+
     let metadata: GadgetMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
-      owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
+      owner,
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
