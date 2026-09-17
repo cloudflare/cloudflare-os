@@ -45,6 +45,15 @@ export type SourceMap = {
 /** A half-open range in the rendered Markdown string. */
 export type MarkdownRange = { mdStart: number; mdEnd: number };
 
+/**
+ * Version of this module's rendering. Bump it whenever the Markdown or source map this module
+ * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
+ * code. It lives here because edits to this file are what invalidate them.
+ */
+export const MARKDOWN_RENDERING_VERSION = 3;
+
+type ListType = "bullet" | "numbered";
+
 export type BlockMapping = {
   /** Range in the Markdown string [mdStart, mdEnd). */
   mdStart: number;
@@ -52,6 +61,12 @@ export type BlockMapping = {
   /** Range in Google Docs index space [docStart, docEnd). */
   docStart: number;
   docEnd: number;
+  /** Paragraph structure needed to preserve inline-only edits. */
+  namedStyleType: string;
+  listType: ListType | null;
+  listNestingLevel: number;
+  /** Provider list identity, used only when the whole list can be preserved in place. */
+  listId?: string;
   /** Fine-grained segments within this block. */
   segments: Segment[];
 }
@@ -63,84 +78,145 @@ export type BlockMapping = {
  * (like "**", "# ", "- ") that don't exist in the doc.
  */
 export type Segment =
-  | { mdStart: number; mdEnd: number; docStart: number; docEnd: number }
+  | { mdStart: number; mdEnd: number; docStart: number; docEnd: number; textStyle: TextStyle }
   | { mdStart: number; mdEnd: number; syntaxOnly: true };
 
-type ParagraphListItem = { numbered: boolean; nestingLevel: number };
+type ParagraphListItem = {
+  listId: string;
+  /** Whether this level numbers its items, derived once from `glyphType`. */
+  listType: ListType;
+  glyphType: string | undefined;
+  glyphSymbol: string | undefined;
+  nestingLevel: number;
+  startNumber: number;
+};
 type VisibleParagraphElement = {
   text: string;
   style: TextStyle;
-  link: string | undefined;
+  link?: string;
 };
-
-const EMPTY_TEXT_STYLE: TextStyle = {};
 
 // ---------------------------------------------------------------------------
 // Google Docs → Markdown
 // ---------------------------------------------------------------------------
 
+/**
+ * Accumulates the rendered Markdown together with the source-map segments of the block being
+ * emitted, so every emit site records its own mapping instead of restating the bookkeeping.
+ */
+class MarkdownWriter {
+  text = "";
+  /** Segments of the block being emitted; replaced at every block boundary. */
+  segments: Segment[] = [];
+
+  get length(): number {
+    return this.text.length;
+  }
+
+  /** Start a block, returning the array its segments are collected into. */
+  beginBlock(): Segment[] {
+    return this.segments = [];
+  }
+
+  /** Emit text that belongs to no segment. */
+  append(text: string): void {
+    this.text += text;
+  }
+
+  /** Emit Markdown syntax that has no counterpart in the document. */
+  syntax(markdown: string): void {
+    let mdStart = this.text.length;
+    this.text += markdown;
+    this.segments.push({ mdStart, mdEnd: this.text.length, syntaxOnly: true });
+  }
+
+  /** Emit text mapping 1:1 onto the document characters starting at `docStart`. */
+  mapped(text: string, docStart: number, textStyle: TextStyle): void {
+    if (!text) return;
+    let mdStart = this.text.length;
+    this.text += text;
+    this.segments.push({
+      mdStart, mdEnd: this.text.length, docStart, docEnd: docStart + text.length, textStyle,
+    });
+  }
+}
+
 /** Convert one document tab to Markdown with a source map into that tab's index space. */
 export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
-  let md = "";
+  let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
   let protectedRanges: MarkdownRange[] = [];
   let lastWasListItem = false;
+  let listNumbers = new Map<string, number[]>();
 
   let elements = tab.body.content;
   let bodyEndIndex = elements.length > 0 ? elements[elements.length - 1].endIndex : 0;
 
   for (let elem of elements) {
-    if (elem.table) {
-      if (md.length > 0) md += "\n";
-      let mdStart = md.length;
-      md += tableToHtml(elem.table, tab.lists);
-      protectedRanges.push({ mdStart, mdEnd: md.length });
-      md += "\n";
+    let structure = elem.table ? tableToHtml(elem.table, tab.lists, listNumbers)
+      : elem.tableOfContents ? "[Table of contents]"
+      : elem.sectionBreak && elem.startIndex > 0 ? "[Section break]"
+      : undefined;
+    if (structure !== undefined) {
+      let mdStart = writer.length;
+      if (writer.length > 0) writer.append("\n");
+      writer.append(`${structure}\n`);
+      protectedRanges.push({ mdStart, mdEnd: writer.length });
       lastWasListItem = false;
       continue;
     }
     if (!elem.paragraph) continue;
 
     let para = elem.paragraph;
-    let segments: Segment[] = [];
-    let mdStart = md.length;
+    let segments = writer.beginBlock();
     let docStart = elem.startIndex;
     let docEnd = elem.endIndex;
 
     let listItem = paragraphListItem(para, tab.lists);
+    let listNumber = nextOrderedListNumber(listItem, listNumbers);
+    let markdownListNumber = !lastWasListItem && listNumber !== listItem?.startNumber
+      ? listNumber : undefined;
     let isListItem = listItem !== undefined;
 
     // Blank line between paragraphs, but not between consecutive list items.
-    if (md.length > 0) {
-      if (isListItem && lastWasListItem) {
-        // No blank line between list items — just the newline from the
-        // previous block is sufficient.
-      } else {
-        md += "\n";
+    // A protected paragraph owns the preceding unmapped boundary.
+    let separatorStart = writer.length;
+    let previousProtected = protectedRanges.at(-1);
+    let protectedStart = previousProtected?.mdEnd === separatorStart
+      ? separatorStart : Math.max(0, separatorStart - 1);
+    if (writer.length > 0 && !(isListItem && lastWasListItem)) {
+      writer.append("\n");
+      if (previousProtected?.mdEnd === separatorStart) {
+        previousProtected.mdEnd = writer.length;
+        protectedStart = writer.length;
       }
     }
+    let mdStart = writer.length;
 
     // Paragraph prefix (heading markers, list markers, etc.).
-    let prefix = getParagraphPrefix(para, listItem);
-    if (prefix) {
-      let prefixStart = md.length;
-      md += prefix;
-      segments.push({ mdStart: prefixStart, mdEnd: md.length, syntaxOnly: true });
-    }
+    let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
+    if (prefix) writer.syntax(prefix);
 
-    // Emit paragraph content.
-    emitParagraphContent(
-      para, segments, protectedRanges, () => md.length, (text) => { md += text; });
+    emitParagraphContent(para, writer);
 
     // Trailing newline. Every Google Docs paragraph ends with \n in the doc
     // character space. In Markdown, we use \n as the line terminator.
     // The paragraph's trailing \n is already included in the last text run's
     // content, and we handled it in emitParagraphContent by not emitting it.
     // Instead, we add our own Markdown newline here.
-    md += "\n";
+    writer.append("\n");
 
-    let mdEnd = md.length;
-    blocks.push({ mdStart, mdEnd, docStart, docEnd, segments });
+    let mdEnd = writer.length;
+    if (para.positionedObjectIds?.length || para.elements.some(element => !element.textRun)) {
+      protectedRanges.push({ mdStart: protectedStart, mdEnd });
+    }
+    blocks.push({
+      mdStart, mdEnd, docStart, docEnd, segments,
+      namedStyleType: para.paragraphStyle.namedStyleType,
+      listType: listItem?.listType ?? null,
+      listNestingLevel: listItem?.nestingLevel ?? 0,
+      ...(listItem ? { listId: listItem.listId } : {}),
+    });
     lastWasListItem = isListItem;
   }
 
@@ -150,10 +226,29 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     ...tab.parentTabId === undefined ? {} : { parentTabId: tab.parentTabId },
     index: tab.index,
     nestingLevel: tab.nestingLevel,
-    markdown: md,
+    markdown: writer.text,
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
   };
+}
+
+function internalDocsDestination(kind: "bookmark" | "heading", id: string, tabId?: string): string {
+  let tab = tabId ? `?tab=${encodeURIComponent(tabId)}` : "";
+  return `${tab}#${kind}=${encodeURIComponent(id)}`;
+}
+
+function docsLinkDestination(link: TextStyle["link"]): string | undefined {
+  if (!link) return undefined;
+  if ("url" in link) return link.url;
+  if ("tabId" in link) return `?tab=${encodeURIComponent(link.tabId)}`;
+  if ("bookmark" in link) {
+    return internalDocsDestination("bookmark", link.bookmark.id, link.bookmark.tabId);
+  }
+  if ("heading" in link) {
+    return internalDocsDestination("heading", link.heading.id, link.heading.tabId);
+  }
+  if ("bookmarkId" in link) return internalDocsDestination("bookmark", link.bookmarkId);
+  return internalDocsDestination("heading", link.headingId);
 }
 
 function visibleParagraphElement(element: ParagraphElement): VisibleParagraphElement | undefined {
@@ -162,47 +257,87 @@ function visibleParagraphElement(element: ParagraphElement): VisibleParagraphEle
     return {
       text: textRun.content,
       style: textRun.textStyle,
-      link: textRun.textStyle.link?.url,
+      link: docsLinkDestination(textRun.textStyle.link),
     };
   }
 
   let person = element.person;
   let personText = person?.personProperties?.name || person?.personProperties?.email;
-  if (personText) {
-    return {
-      text: personText, style: person?.textStyle ?? EMPTY_TEXT_STYLE,
-      link: undefined,
-    };
-  }
+  if (personText) return { text: personText, style: person?.textStyle ?? {} };
 
   let richLink = element.richLink;
   let richLinkText = richLink?.richLinkProperties?.title;
   if (richLinkText) {
     return {
-      text: richLinkText, style: richLink?.textStyle ?? EMPTY_TEXT_STYLE,
+      text: richLinkText,
+      style: richLink?.textStyle ?? {},
       link: richLink?.richLinkProperties?.uri,
     };
   }
 
   let dateElement = element.dateElement;
   let dateText = dateElement?.dateElementProperties?.displayText;
-  if (dateText) {
-    return {
-      text: dateText, style: dateElement?.textStyle ?? EMPTY_TEXT_STYLE,
-      link: undefined,
-    };
+  if (dateText) return { text: dateText, style: dateElement?.textStyle ?? {} };
+
+  let autoText = element.autoText;
+  if (autoText) {
+    let text: string;
+    switch (autoText.type) {
+      case "PAGE_NUMBER": text = "[Page number]"; break;
+      case "PAGE_COUNT": text = "[Page count]"; break;
+      default: text = "[Auto text]";
+    }
+    return { text, style: autoText.textStyle ?? {} };
+  }
+
+  // Elements with no text of their own render as a fixed placeholder.
+  if (element.inlineObjectElement) {
+    return { text: "[Image]", style: element.inlineObjectElement.textStyle ?? {} };
+  }
+  if (element.equation) return { text: "[Equation]", style: {} };
+  if (element.footnoteReference) {
+    let { footnoteNumber, textStyle } = element.footnoteReference;
+    return { text: footnoteNumber ? `[${footnoteNumber}]` : "[Footnote]", style: textStyle ?? {} };
+  }
+  if (element.pageBreak) {
+    return { text: "[Page break]", style: element.pageBreak.textStyle ?? {} };
+  }
+  if (element.columnBreak) {
+    return { text: "[Column break]", style: element.columnBreak.textStyle ?? {} };
   }
 
   return undefined;
 }
 
+/**
+ * The text one paragraph element renders as, or `undefined` when it renders as nothing. The
+ * paragraph's trailing newline is dropped here so both renderings read a paragraph the same way.
+ */
+function paragraphRun(
+  element: ParagraphElement,
+  isLast: boolean,
+): VisibleParagraphElement | undefined {
+  let visible = visibleParagraphElement(element);
+  if (!visible) return undefined;
+  if (element.textRun && isLast) visible.text = visible.text.replace(/\n$/, "");
+  return visible.text ? visible : undefined;
+}
+
+function positionedImageText(paragraph: Paragraph): string {
+  return "[Image] ".repeat(paragraph.positionedObjectIds?.length ?? 0).trimEnd();
+}
+
 /** Render a table as raw HTML, which Markdown preserves without inventing a header row. */
-function tableToHtml(table: Table, lists: GoogleDocsTab["lists"]): string {
+function tableToHtml(
+  table: Table,
+  lists: GoogleDocsTab["lists"],
+  listNumbers: Map<string, number[]>,
+): string {
   let lines = ["<table>"];
-  for (let row of Array.isArray(table.tableRows) ? table.tableRows : []) {
+  for (let row of table.tableRows ?? []) {
     lines.push("  <tr>");
-    for (let cell of Array.isArray(row.tableCells) ? row.tableCells : []) {
-      lines.push(tableCellToHtml(cell, lists));
+    for (let cell of row.tableCells ?? []) {
+      lines.push(tableCellToHtml(cell, lists, listNumbers));
     }
     lines.push("  </tr>");
   }
@@ -210,66 +345,160 @@ function tableToHtml(table: Table, lists: GoogleDocsTab["lists"]): string {
   return lines.join("\n");
 }
 
-function tableCellToHtml(cell: TableCell, lists: GoogleDocsTab["lists"]): string {
+function tableCellToHtml(
+  cell: TableCell,
+  lists: GoogleDocsTab["lists"],
+  listNumbers: Map<string, number[]>,
+): string {
   let style = cell.tableCellStyle;
-  let attributes = htmlSpan("rowspan", style?.rowSpan) + htmlSpan("colspan", style?.columnSpan);
+  let attributes = htmlIntegerAttribute("rowspan", style?.rowSpan) +
+    htmlIntegerAttribute("colspan", style?.columnSpan);
+  let elements = cell.content ?? [];
+  // Classify every element once: the list walk below revisits them as it groups nested items.
+  let items = elements.map(element =>
+    element.paragraph && paragraphListItem(element.paragraph, lists));
   let parts: string[] = [];
-  for (let element of Array.isArray(cell.content) ? cell.content : []) {
-    let part = tableCellElementToHtml(element, lists);
+  for (let index = 0; index < elements.length;) {
+    if (items[index]) {
+      let list = tableListToHtml(elements, items, index, listNumbers);
+      parts.push(list.html);
+      index = list.nextIndex;
+      continue;
+    }
+    let part = tableCellElementToHtml(elements[index], lists, listNumbers);
     if (part !== undefined) parts.push(part);
+    index++;
   }
   let content = parts.join("\n");
   if (!content.includes("\n")) return `    <td${attributes}>${content}</td>`;
   return `    <td${attributes}>\n${indentHtml(content, 6)}\n    </td>`;
 }
 
+/** Render the list starting at `startIndex`, which `items` must classify as a list item. */
+function tableListToHtml(
+  elements: StructuralElement[],
+  items: readonly (ParagraphListItem | undefined)[],
+  startIndex: number,
+  listNumbers: Map<string, number[]>,
+): { html: string; nextIndex: number } {
+  let first = items[startIndex]!;
+  let tag = first.listType === "numbered" ? "ol" : "ul";
+  let html = htmlListOpeningTag(first, nextOrderedListNumber(first, listNumbers));
+  let index = startIndex;
+
+  while (index < elements.length) {
+    let item = items[index];
+    let paragraph = elements[index].paragraph;
+    if (!item || !paragraph || item.listId !== first.listId ||
+        item.nestingLevel !== first.nestingLevel || item.listType !== first.listType) break;
+    if (index > startIndex) nextOrderedListNumber(item, listNumbers);
+
+    let glyph = item.listType === "bullet" && item.glyphSymbol
+      ? `${escapeHtml(item.glyphSymbol)} ` : "";
+    let content = glyph + tableParagraphContentToHtml(paragraph);
+    let headingLevel = paragraphHeadingLevel(paragraph);
+    if (headingLevel) content = `<h${headingLevel}>${content}</h${headingLevel}>`;
+    html += `<li>${content}`;
+    index++;
+    while (index < elements.length) {
+      let nested = items[index];
+      if (!nested || nested.listId !== first.listId ||
+          nested.nestingLevel <= first.nestingLevel) break;
+      let child = tableListToHtml(elements, items, index, listNumbers);
+      html += child.html;
+      index = child.nextIndex;
+    }
+    html += "</li>";
+  }
+
+  return { html: `${html}</${tag}>`, nextIndex: index };
+}
+
 function tableCellElementToHtml(
   element: StructuralElement,
   lists: GoogleDocsTab["lists"],
+  listNumbers: Map<string, number[]>,
 ): string | undefined {
-  if (element.table) return tableToHtml(element.table, lists);
+  if (element.tableOfContents) return "[Table of contents]";
+  if (element.table) return tableToHtml(element.table, lists, listNumbers);
   if (!element.paragraph) return undefined;
   let paragraph = element.paragraph;
   if (paragraph.elements.some(part => part.horizontalRule)) return "<hr>";
-  let isSubtitle = paragraph.paragraphStyle.namedStyleType === "SUBTITLE";
-  let content = paragraph.elements.map((part, index, elements) => {
-    let visible = visibleParagraphElement(part);
-    if (!visible) return "";
-    let text = visible.text;
-    if (part.textRun && index === elements.length - 1) text = text.replace(/\n$/, "");
-    return styledTextToHtml(text, visible.style, isSubtitle, visible.link);
-  }).join("");
-  if (isSubtitle && content) content = `<em>${content}</em>`;
-  let listItem = paragraphListItem(paragraph, lists);
-  if (listItem) {
-    let indent = "&nbsp;&nbsp;".repeat(listItem.nestingLevel);
-    return `<p>${indent}${listItem.numbered ? "1. " : "- "}${content}</p>`;
-  }
+  let content = tableParagraphContentToHtml(paragraph);
   let headingLevel = paragraphHeadingLevel(paragraph);
   let tag = headingLevel ? `h${headingLevel}` : "p";
   return `<${tag}>${content}</${tag}>`;
 }
 
+function tableParagraphContentToHtml(paragraph: Paragraph): string {
+  let inheritedItalic = paragraph.paragraphStyle.namedStyleType === "SUBTITLE";
+  let lastElement = paragraph.elements.at(-1);
+  let content = "";
+  let italic = false;
+  for (let part of paragraph.elements) {
+    let visible = paragraphRun(part, part === lastElement);
+    if (!visible) continue;
+    let nextItalic = inheritedItalic && (visible.style.italic ?? true);
+    if (nextItalic !== italic) content += nextItalic ? "<em>" : "</em>";
+    content += styledTextToHtml(visible.text, visible.style, visible.link, !inheritedItalic);
+    italic = nextItalic;
+  }
+  if (italic) content += "</em>";
+  let images = positionedImageText(paragraph);
+  return images && content ? `${images} ${content}` : images || content;
+}
+
 function styledTextToHtml(
   text: string,
   style: TextStyle,
-  inheritedItalic = false,
-  link = style.link?.url,
+  link: string | undefined,
+  renderItalic: boolean,
 ): string {
-  if (!text) return "";
   let html = escapeHtml(text);
   if (style.strikethrough) html = `<s>${html}</s>`;
-  if (style.italic && !inheritedItalic) html = `<em>${html}</em>`;
+  if (renderItalic && style.italic) html = `<em>${html}</em>`;
   if (style.bold) html = `<strong>${html}</strong>`;
   if (link) html = `<a href="${escapeHtmlAttribute(link)}">${html}</a>`;
   return html;
 }
 
-function htmlSpan(name: string, value: number | undefined): string {
+function htmlListStartAttribute(value: number): string {
+  return Number.isInteger(value) && value !== 1 ? ` start="${value}"` : "";
+}
+
+function htmlOrderedListType(glyphType: string): string | undefined {
+  switch (glyphType) {
+    case "ALPHA": return "a";
+    case "UPPER_ALPHA": return "A";
+    case "ROMAN": return "i";
+    case "UPPER_ROMAN": return "I";
+    default: return undefined;
+  }
+}
+
+function htmlListOpeningTag(item: ParagraphListItem, listNumber: number | undefined): string {
+  if (item.glyphType === undefined) {
+    return `<ul${item.glyphSymbol ? ' style="list-style-type: none"' : ""}>`;
+  }
+
+  let type = htmlOrderedListType(item.glyphType);
+  let typeAttribute = type ? ` type="${type}"` : "";
+  let style = item.glyphType === "ZERO_DECIMAL"
+    ? ' style="list-style-type: decimal-leading-zero"' : "";
+  let startNumber = type && listNumber === 0 ? 1 : listNumber;
+  return `<ol${typeAttribute}${style}${htmlListStartAttribute(startNumber ?? 1)}>`;
+}
+
+function htmlIntegerAttribute(name: string, value: number | undefined): string {
   return typeof value === "number" && Number.isInteger(value) && value > 1
     ? ` ${name}="${value}"` : "";
 }
 
+/**
+ * Escape only what changes how the table markup parses. Deliberately narrower than the kit's
+ * `escapeHtml()`: this output is read by an agent, so quotes and apostrophes in cell prose stay
+ * as typed rather than becoming entities.
+ */
 function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
@@ -278,19 +507,33 @@ function escapeHtmlAttribute(text: string): string {
   return escapeHtml(text).replaceAll('"', "&quot;");
 }
 
+function escapeMarkdownText(text: string): string {
+  return text.replace(/[\\`*_[\]{}()#+\-.!|>~]/g, "\\$&");
+}
+
+function escapeMarkdownLinkDestination(url: string): string {
+  return url.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+}
+
 function indentHtml(text: string, spaces: number): string {
   let prefix = " ".repeat(spaces);
   return prefix + text.replaceAll("\n", `\n${prefix}`);
 }
 
 /** Determine the Markdown prefix for a paragraph based on its style. */
-function getParagraphPrefix(para: Paragraph, listItem: ParagraphListItem | undefined): string {
+function getParagraphPrefix(
+  para: Paragraph,
+  listItem: ParagraphListItem | undefined,
+  listNumber: number | undefined,
+): string {
+  let prefix = "";
   if (listItem) {
     let indent = "  ".repeat(listItem.nestingLevel);
-    return listItem.numbered ? `${indent}1. ` : `${indent}- `;
+    prefix = listItem.listType === "numbered"
+      ? `${indent}${listNumber ?? 1}. ` : `${indent}- `;
   }
   let headingLevel = paragraphHeadingLevel(para);
-  return headingLevel ? `${"#".repeat(headingLevel)} ` : "";
+  return prefix + (headingLevel ? `${"#".repeat(headingLevel)} ` : "");
 }
 
 function paragraphListItem(
@@ -301,7 +544,26 @@ function paragraphListItem(
   if (!bullet) return undefined;
   let nestingLevel = bullet.nestingLevel ?? 0;
   let level = lists[bullet.listId]?.listProperties.nestingLevels[nestingLevel];
-  return { numbered: !!level?.glyphType, nestingLevel };
+  return {
+    listId: bullet.listId,
+    listType: level?.glyphType !== undefined ? "numbered" : "bullet",
+    glyphType: level?.glyphType,
+    glyphSymbol: level?.glyphSymbol,
+    nestingLevel,
+    startNumber: level?.startNumber ?? 1,
+  };
+}
+
+function nextOrderedListNumber(
+  item: ParagraphListItem | undefined,
+  listNumbers: Map<string, number[]>,
+): number | undefined {
+  if (!item || item.listType !== "numbered") return undefined;
+  let levels = listNumbers.get(item.listId);
+  if (!levels) listNumbers.set(item.listId, levels = []);
+  let number = (levels[item.nestingLevel] ?? item.startNumber - 1) + 1;
+  levels[item.nestingLevel] = number;
+  return number;
 }
 
 function paragraphHeadingLevel(paragraph: Paragraph): number | undefined {
@@ -317,145 +579,102 @@ function paragraphHeadingLevel(paragraph: Paragraph): number | undefined {
   }
 }
 
-/**
- * Emit the content of a paragraph's elements, tracking formatting transitions
- * and recording source map segments.
- *
- * We track open/close state for each formatting type (bold, italic, etc.)
- * and emit Markdown markers at transitions.
- */
-function emitParagraphContent(
-  para: Paragraph,
-  segments: Segment[],
-  protectedRanges: MarkdownRange[],
-  getMdPos: () => number,
-  emit: (text: string) => void,
-): void {
-  // Track which formatting is currently "open" in the Markdown output.
-  let currentBold = false;
-  let currentItalic = false;
-  let currentStrikethrough = false;
-  let currentLink: string | undefined = undefined;
+type MarkdownFormat = { open: string; close: string };
 
+const STRIKETHROUGH_FORMAT = { open: "~~", close: "~~" };
+const BOLD_FORMAT = { open: "**", close: "**" };
+const ITALIC_FORMAT = { open: "*", close: "*" };
+
+function markdownFormats(
+  style: TextStyle,
+  link: string | undefined,
+  inheritedItalic: boolean,
+): MarkdownFormat[] {
+  let formats: MarkdownFormat[] = [];
+  if (link) formats.push({ open: "[", close: `](${escapeMarkdownLinkDestination(link)})` });
+  if (style.strikethrough) formats.push(STRIKETHROUGH_FORMAT);
+  if (style.bold) formats.push(BOLD_FORMAT);
+  if (style.italic ?? inheritedItalic) formats.push(ITALIC_FORMAT);
+  return formats;
+}
+
+function markdownFormatTransition(
+  formats: readonly MarkdownFormat[],
+  nextFormats: readonly MarkdownFormat[],
+): string {
+  let shared = 0;
+  while (shared < formats.length && shared < nextFormats.length &&
+      sameMarkdownFormat(formats[shared], nextFormats[shared])) shared++;
+
+  let markdown = "";
+  for (let index = formats.length - 1; index >= shared; index--) markdown += formats[index].close;
+  for (let index = shared; index < nextFormats.length; index++) markdown += nextFormats[index].open;
+  return markdown;
+}
+
+function sameMarkdownFormat(left: MarkdownFormat, right: MarkdownFormat): boolean {
+  return left.open === right.open && left.close === right.close;
+}
+function emitParagraphContent(para: Paragraph, writer: MarkdownWriter): void {
+  let formats: MarkdownFormat[] = [];
   let isSubtitle = para.paragraphStyle.namedStyleType === "SUBTITLE";
+  let lastElement = para.elements.at(-1);
+  let images = positionedImageText(para);
+  if (images) {
+    writer.syntax(images);
+    let hasContent = para.elements.some((element, index) =>
+      !!element.horizontalRule || !!paragraphRun(element, index === para.elements.length - 1));
+    if (hasContent) writer.syntax(" ");
+  }
 
   for (let element of para.elements) {
     if (element.horizontalRule) {
-      let pos = getMdPos();
-      emit("---");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
+      writer.syntax("<hr>");
       continue;
     }
 
-    let visible = visibleParagraphElement(element);
+    let visible = paragraphRun(element, element === lastElement);
     if (!visible) continue;
 
-    let { style } = visible;
-    let text = visible.text;
-    let docStart = element.startIndex;
+    let nextFormats = markdownFormats(visible.style, visible.link, isSubtitle);
+    let transition = markdownFormatTransition(formats, nextFormats);
+    if (transition) writer.syntax(transition);
+    formats = nextFormats;
 
-    let isLastElement = element === para.elements[para.elements.length - 1];
-    if (element.textRun && isLastElement && text.endsWith("\n")) {
-      text = text.slice(0, -1);
-    }
-
-    if (text.length === 0) continue;
-
-    let wantBold = !!style.bold;
-    let wantItalic = !!style.italic || isSubtitle;
-    let wantStrikethrough = !!style.strikethrough;
-    let wantLink = visible.link;
-
-    // Close formatting that is no longer wanted (reverse order of opening).
-    if (currentLink && currentLink !== wantLink) {
-      let pos = getMdPos();
-      emit(`](${currentLink})`);
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentLink = undefined;
-    }
-    if (currentStrikethrough && !wantStrikethrough) {
-      let pos = getMdPos();
-      emit("~~");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentStrikethrough = false;
-    }
-    if (currentBold && !wantBold) {
-      let pos = getMdPos();
-      emit("**");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentBold = false;
-    }
-    if (currentItalic && !wantItalic) {
-      let pos = getMdPos();
-      emit("*");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentItalic = false;
-    }
-
-    // Open formatting that is newly wanted.
-    if (wantItalic && !currentItalic) {
-      let pos = getMdPos();
-      emit("*");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentItalic = true;
-    }
-    if (wantBold && !currentBold) {
-      let pos = getMdPos();
-      emit("**");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentBold = true;
-    }
-    if (wantStrikethrough && !currentStrikethrough) {
-      let pos = getMdPos();
-      emit("~~");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentStrikethrough = true;
-    }
-    if (wantLink && !currentLink) {
-      let pos = getMdPos();
-      emit("[");
-      segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-      currentLink = wantLink;
-    }
-
-    let mdContentStart = getMdPos();
-    emit(text);
-    let mdContentEnd = getMdPos();
+    let text = element.textRun ? visible.text : escapeMarkdownText(visible.text);
     if (element.textRun) {
-      segments.push({
-        mdStart: mdContentStart,
-        mdEnd: mdContentEnd,
-        docStart,
-        docEnd: docStart + text.length,
-      });
+      emitMappedTextRun(writer, text, visible.style, element.startIndex, !!visible.link);
     } else {
-      let range = { mdStart: mdContentStart, mdEnd: mdContentEnd };
-      segments.push({ ...range, syntaxOnly: true });
-      protectedRanges.push(range);
+      writer.syntax(text);
     }
   }
 
-  // Close any remaining open formatting at end of paragraph.
-  if (currentLink) {
-    let pos = getMdPos();
-    emit(`](${currentLink})`);
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
+  let transition = markdownFormatTransition(formats, []);
+  if (transition) writer.syntax(transition);
+}
+
+/**
+ * Emit one text run, escaping the characters that would otherwise close a link label early. The
+ * escape is syntax; the character it protects still maps to its document index.
+ */
+function emitMappedTextRun(
+  writer: MarkdownWriter,
+  text: string,
+  style: TextStyle,
+  docStart: number,
+  escapeLinkLabel: boolean,
+): void {
+  let chunkStart = 0;
+  if (escapeLinkLabel) {
+    for (let index = 0; index < text.length; index++) {
+      if (text[index] !== "\\" && text[index] !== "]") continue;
+      writer.mapped(text.slice(chunkStart, index), docStart + chunkStart, style);
+      writer.syntax("\\");
+      writer.mapped(text[index], docStart + index, style);
+      chunkStart = index + 1;
+    }
   }
-  if (currentStrikethrough) {
-    let pos = getMdPos();
-    emit("~~");
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-  }
-  if (currentBold) {
-    let pos = getMdPos();
-    emit("**");
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-  }
-  if (currentItalic) {
-    let pos = getMdPos();
-    emit("*");
-    segments.push({ mdStart: pos, mdEnd: getMdPos(), syntaxOnly: true });
-  }
+  writer.mapped(text.slice(chunkStart), docStart + chunkStart, style);
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +688,7 @@ type ParsedBlock = {
   /** Paragraph style: heading level (1-6), or null for normal text. */
   headingLevel: number | null;
   /** If this is a list item: "bullet" or "numbered". */
-  listType: "bullet" | "numbered" | null;
+  listType: ListType | null;
   /** Nesting level for list items (0-based). */
   nestingLevel: number;
   /** Inline formatting spans, relative to plainText. */
@@ -519,7 +738,7 @@ function parseMarkdown(markdown: string): ParsedBlock[] {
   }
 
   for (let line of lines) {
-    if (line.trim() === "") {
+    if (line === "") {
       flushBlock();
       if (justFlushed) {
         // First blank line after content is the normal paragraph separator
@@ -554,26 +773,22 @@ function parseLine(line: string): ParsedBlock {
   let nestingLevel = 0;
   let content = line;
 
-  // Check for heading prefix.
+  let bulletMatch = content.match(/^( *)- /);
+  let numberedMatch = content.match(/^( *)(\d+)\. /);
+  if (bulletMatch) {
+    listType = "bullet";
+    nestingLevel = Math.floor(bulletMatch[1].length / 2);
+    content = content.slice(bulletMatch[0].length);
+  } else if (numberedMatch?.[2] === "1") {
+    listType = "numbered";
+    nestingLevel = Math.floor(numberedMatch[1].length / 2);
+    content = content.slice(numberedMatch[0].length);
+  }
+
   let headingMatch = content.match(/^(#{1,6}) /);
   if (headingMatch) {
     headingLevel = headingMatch[1].length;
     content = content.slice(headingMatch[0].length);
-  }
-
-  // Check for list item prefix (with optional indentation).
-  if (headingLevel === null) {
-    let bulletMatch = content.match(/^( *)- /);
-    let numberedMatch = content.match(/^( *)\d+\. /);
-    if (bulletMatch) {
-      listType = "bullet";
-      nestingLevel = Math.floor(bulletMatch[1].length / 2);
-      content = content.slice(bulletMatch[0].length);
-    } else if (numberedMatch) {
-      listType = "numbered";
-      nestingLevel = Math.floor(numberedMatch[1].length / 2);
-      content = content.slice(numberedMatch[0].length);
-    }
   }
 
   // Parse inline formatting.
@@ -582,114 +797,479 @@ function parseLine(line: string): ParsedBlock {
   return { plainText, headingLevel, listType, nestingLevel, spans };
 }
 
+function parseLinkDestination(
+  text: string,
+  start: number,
+): { end: number; url: string } | undefined {
+  let depth = 0;
+  let url = "";
+  for (let index = start; index < text.length; index++) {
+    let character = text[index];
+    let escaped = text[index + 1];
+    if (character === "\\" && (escaped === "\\" || escaped === "(" || escaped === ")")) {
+      url += escaped;
+      index++;
+    } else if (character === "(") {
+      depth++;
+      url += character;
+    } else if (character === ")") {
+      if (depth === 0) return { end: index, url };
+      depth--;
+      url += character;
+    } else {
+      url += character;
+    }
+  }
+  return undefined;
+}
+
 /**
- * Parse inline Markdown formatting from a string, returning the plain text
- * and an array of formatting spans.
- *
- * Handles: **bold**, *italic*, ***bold+italic***, ~~strikethrough~~, [text](url)
+ * Match a `[label](url)` link starting at `index`. Shared so that canonicalization and parsing
+ * always agree on which spans are links.
  */
+function matchMarkdownLink(
+  text: string,
+  index: number,
+): { label: string; url: string; end: number } | undefined {
+  if (text[index] !== "[") return undefined;
+  let closeBracket = index + 1;
+  while (closeBracket < text.length && text[closeBracket] !== "]") {
+    closeBracket += text[closeBracket] === "\\" ? 2 : 1;
+  }
+  if (closeBracket >= text.length || text[closeBracket + 1] !== "(") return undefined;
+  let destination = parseLinkDestination(text, closeBracket + 2);
+  if (!destination) return undefined;
+  return {
+    label: text.slice(index + 1, closeBracket),
+    url: destination.url,
+    end: destination.end,
+  };
+}
+
+/** Canonicalize escapes to the form returned by a subsequent document read. */
+export function canonicalizeMarkdownEscapes(markdown: string): string {
+  let result = "";
+  for (let index = 0; index < markdown.length;) {
+    let link = matchMarkdownLink(markdown, index);
+    if (link) {
+      let end = link.end + 1;
+      result += link.label
+        ? `[${canonicalizeMarkdownLinkLabel(link.label)}]` +
+          `(${escapeMarkdownLinkDestination(link.url)})`
+        : markdown.slice(index, end);
+      index = end;
+      continue;
+    }
+
+    let escaped = markdown[index + 1];
+    if (markdown[index] === "\\" && escaped && isMarkdownPunctuation(escaped)) {
+      result += escaped;
+      index += 2;
+    } else {
+      result += markdown[index++];
+    }
+  }
+  return result;
+}
+
+function canonicalizeMarkdownLinkLabel(label: string): string {
+  return canonicalizeMarkdownEscapes(label).replaceAll("\\", "\\\\").replaceAll("]", "\\]");
+}
+
+function isMarkdownPunctuation(character: string): boolean {
+  let code = character.charCodeAt(0);
+  return code >= 0x21 && code <= 0x2f || code >= 0x3a && code <= 0x40 ||
+    code >= 0x5b && code <= 0x60 || code >= 0x7b && code <= 0x7e;
+}
+
+function startsMarkdownEscape(markdown: string, index: number): boolean {
+  if (index < 0 || markdown[index] !== "\\" ||
+      !markdown[index + 1] || !isMarkdownPunctuation(markdown[index + 1])) return false;
+  let preceding = 0;
+  while (markdown[index - preceding - 1] === "\\") preceding++;
+  return preceding % 2 === 0;
+}
+
+function splitsMarkdownToken(markdown: string, index: number): boolean {
+  return startsMarkdownEscape(markdown, index - 1) ||
+    index > 0 && index < markdown.length && markdown[index - 1] === markdown[index] &&
+      (markdown[index] === "*" || markdown[index] === "~");
+}
+
+/** Shared replacement bounds that never split Markdown syntax tokens. */
+function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
+  prefixLen: number;
+  suffixLen: number;
+} {
+  let prefixLen = 0;
+  while (prefixLen < oldMarkdown.length && prefixLen < newMarkdown.length &&
+      oldMarkdown[prefixLen] === newMarkdown[prefixLen]) prefixLen++;
+  while (prefixLen > 0 &&
+      (splitsMarkdownToken(oldMarkdown, prefixLen) ||
+        splitsMarkdownToken(newMarkdown, prefixLen))) prefixLen--;
+
+  let suffixLen = 0;
+  while (suffixLen < oldMarkdown.length - prefixLen &&
+      suffixLen < newMarkdown.length - prefixLen &&
+      oldMarkdown[oldMarkdown.length - suffixLen - 1] ===
+        newMarkdown[newMarkdown.length - suffixLen - 1]) suffixLen++;
+  while (suffixLen > 0 &&
+      (splitsMarkdownToken(oldMarkdown, oldMarkdown.length - suffixLen) ||
+        splitsMarkdownToken(newMarkdown, newMarkdown.length - suffixLen))) suffixLen--;
+
+  return { prefixLen, suffixLen };
+}
+
+/** Canonicalize changed Markdown while preserving copied document text. */
+export function canonicalizeMarkdownReplacement(
+  oldMarkdown: string,
+  newMarkdown: string,
+): string {
+  let { prefixLen, suffixLen } = markdownReplacementBounds(oldMarkdown, newMarkdown);
+  let changed = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
+  return oldMarkdown.slice(0, prefixLen) +
+    changed.split("\n").map(canonicalizeMarkdownForWrite).join("\n") +
+    oldMarkdown.slice(oldMarkdown.length - suffixLen);
+}
+
+const BOLD_STATE = 1;
+const ITALIC_STATE = 2;
+const STRIKETHROUGH_STATE = 4;
+const INLINE_STYLE_STATES = [BOLD_STATE, ITALIC_STATE, STRIKETHROUGH_STATE] as const;
+
+type InlineToken = { start: number; end: number; marker: "asterisk" | "strikethrough" };
+
+function inlineTokens(text: string): InlineToken[] {
+  let tokens: InlineToken[] = [];
+  for (let index = 0; index < text.length;) {
+    let escaped = text[index + 1];
+    if (text[index] === "\\" && escaped && isMarkdownPunctuation(escaped)) {
+      index += 2;
+      continue;
+    }
+    let link = matchMarkdownLink(text, index);
+    if (link) {
+      index = link.end + 1;
+      continue;
+    }
+    if (text.startsWith("~~", index)) {
+      tokens.push({ start: index, end: index + 2, marker: "strikethrough" });
+      index += 2;
+      continue;
+    }
+    if (text[index] === "*") {
+      let end = index + 1;
+      while (text[end] === "*") end++;
+      tokens.push({ start: index, end, marker: "asterisk" });
+      index = end;
+      continue;
+    }
+    index++;
+  }
+  return tokens;
+}
+
+function inlineTransition(state: number, token: InlineToken): number | undefined {
+  if (token.marker === "strikethrough") return state ^ STRIKETHROUGH_STATE;
+  switch (token.end - token.start) {
+    case 1: return state ^ ITALIC_STATE;
+    case 2: return state ^ BOLD_STATE;
+    case 3: return state ^ BOLD_STATE ^ ITALIC_STATE;
+    case 4: return state & ITALIC_STATE ? state ^ BOLD_STATE : undefined;
+    default: return undefined;
+  }
+}
+
+function completableInlineStates(tokens: InlineToken[]): Uint8Array {
+  let completable = new Uint8Array(tokens.length + 1);
+  completable[tokens.length] = 1;
+  for (let index = tokens.length - 1; index >= 0; index--) {
+    let nextStates = completable[index + 1];
+    let states = nextStates;
+    for (let state = 0; state < 8; state++) {
+      let next = inlineTransition(state, tokens[index]);
+      if (next !== undefined && nextStates & (1 << next)) states |= 1 << state;
+    }
+    completable[index] = states;
+  }
+  return completable;
+}
+
+function inlineSpanStyle(
+  state: number,
+): Pick<FormattingSpan, "bold" | "italic" | "strikethrough"> {
+  switch (state) {
+    case BOLD_STATE: return { bold: true };
+    case ITALIC_STATE: return { italic: true };
+    default: return { strikethrough: true };
+  }
+}
+
 function parseInlineFormatting(text: string): { plainText: string; spans: FormattingSpan[] } {
   let plainText = "";
   let spans: FormattingSpan[] = [];
-  let i = 0;
+  let starts = new Map<number, number>();
+  let state = 0;
+  let tokens = inlineTokens(text);
+  let completable = completableInlineStates(tokens);
+  let tokenIndex = 0;
 
-  // Stack of open formatting contexts.
-  let formatStack: { type: "bold" | "italic" | "bolditalic" | "strikethrough" | "link"; start: number; url?: string }[] = [];
+  for (let index = 0; index < text.length;) {
+    let escaped = text[index + 1];
+    if (text[index] === "\\" && escaped && isMarkdownPunctuation(escaped)) {
+      plainText += escaped;
+      index += 2;
+      continue;
+    }
 
-  while (i < text.length) {
-    // Check for link: [text](url)
-    if (text[i] === "[") {
-      let closeBracket = text.indexOf("]", i + 1);
-      if (closeBracket !== -1 && text[closeBracket + 1] === "(") {
-        let closeParen = text.indexOf(")", closeBracket + 2);
-        if (closeParen !== -1) {
-          let linkText = text.slice(i + 1, closeBracket);
-          let linkUrl = text.slice(closeBracket + 2, closeParen);
-          let start = plainText.length;
-          // Recursively parse inline formatting within the link text.
-          let inner = parseInlineFormatting(linkText);
-          plainText += inner.plainText;
-          let end = plainText.length;
-          // Add the link span covering the entire link text.
-          spans.push({ start, end, link: linkUrl });
-          // Add any inner formatting spans, offset by the link start.
-          for (let s of inner.spans) {
-            spans.push({
-              ...s,
-              start: start + s.start,
-              end: start + s.end,
-            });
-          }
-          i = closeParen + 1;
-          continue;
+    let link = matchMarkdownLink(text, index);
+    if (link) {
+      let end = link.end + 1;
+      if (!link.label) {
+        plainText += text.slice(index, end);
+      } else {
+        let start = plainText.length;
+        let inner = parseInlineFormatting(link.label);
+        plainText += inner.plainText;
+        spans.push({ start, end: plainText.length, link: link.url });
+        for (let span of inner.spans) {
+          spans.push({ ...span, start: start + span.start, end: start + span.end });
         }
       }
-    }
-
-    // Check for bold+italic: ***
-    if (text.slice(i, i + 3) === "***") {
-      let openIdx = formatStack.findIndex(f => f.type === "bolditalic");
-      if (openIdx !== -1) {
-        // Closing.
-        let open = formatStack.splice(openIdx, 1)[0];
-        spans.push({ start: open.start, end: plainText.length, bold: true, italic: true });
-      } else {
-        formatStack.push({ type: "bolditalic", start: plainText.length });
-      }
-      i += 3;
+      index = end;
       continue;
     }
 
-    // Check for bold: **
-    if (text.slice(i, i + 2) === "**") {
-      let openIdx = formatStack.findIndex(f => f.type === "bold");
-      if (openIdx !== -1) {
-        let open = formatStack.splice(openIdx, 1)[0];
-        spans.push({ start: open.start, end: plainText.length, bold: true });
+    let token = tokens[tokenIndex];
+    if (token?.start === index) {
+      let next = inlineTransition(state, token);
+      if (next !== undefined && completable[tokenIndex + 1] & (1 << next)) {
+        for (let style of INLINE_STYLE_STATES) {
+          if (!(state & style) && next & style) starts.set(style, plainText.length);
+          if (state & style && !(next & style)) {
+            spans.push({
+              start: starts.get(style)!,
+              end: plainText.length,
+              ...inlineSpanStyle(style),
+            });
+            starts.delete(style);
+          }
+        }
+        state = next;
       } else {
-        formatStack.push({ type: "bold", start: plainText.length });
+        plainText += text.slice(token.start, token.end);
       }
-      i += 2;
+      index = token.end;
+      tokenIndex++;
       continue;
     }
 
-    // Check for strikethrough: ~~
-    if (text.slice(i, i + 2) === "~~") {
-      let openIdx = formatStack.findIndex(f => f.type === "strikethrough");
-      if (openIdx !== -1) {
-        let open = formatStack.splice(openIdx, 1)[0];
-        spans.push({ start: open.start, end: plainText.length, strikethrough: true });
-      } else {
-        formatStack.push({ type: "strikethrough", start: plainText.length });
-      }
-      i += 2;
-      continue;
-    }
-
-    // Check for italic: *
-    if (text[i] === "*") {
-      let openIdx = formatStack.findIndex(f => f.type === "italic");
-      if (openIdx !== -1) {
-        let open = formatStack.splice(openIdx, 1)[0];
-        spans.push({ start: open.start, end: plainText.length, italic: true });
-      } else {
-        formatStack.push({ type: "italic", start: plainText.length });
-      }
-      i += 1;
-      continue;
-    }
-
-    // Regular character.
-    plainText += text[i];
-    i++;
+    plainText += text[index++];
   }
 
-  // Any unclosed formatting markers are treated as literal text.
-  // We need to re-insert them. For simplicity, we don't handle this case
-  // perfectly — unclosed markers are just lost. This is acceptable because
-  // the agent should be producing well-formed Markdown.
-
   return { plainText, spans };
+}
+
+function canonicalInlineMarkdown(block: ParsedBlock): string {
+  let boundaries = [...new Set([
+    0,
+    block.plainText.length,
+    ...block.spans.flatMap(span => [span.start, span.end]),
+  ])].toSorted((left, right) => left - right);
+  let formats: MarkdownFormat[] = [];
+  let markdown = "";
+
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    let start = boundaries[index];
+    let end = boundaries[index + 1];
+    let style: TextStyle = {};
+    let link: string | undefined;
+    for (let span of block.spans) {
+      if (span.start > start || span.end < end) continue;
+      style.bold ||= span.bold;
+      style.italic ||= span.italic;
+      style.strikethrough ||= span.strikethrough;
+      link ??= span.link;
+    }
+    let nextFormats = markdownFormats(style, link, false);
+    markdown += markdownFormatTransition(formats, nextFormats);
+    let text = block.plainText.slice(start, end);
+    markdown += link ? text.replaceAll("\\", "\\\\").replaceAll("]", "\\]") : text;
+    formats = nextFormats;
+  }
+
+  return markdown + markdownFormatTransition(formats, []);
+}
+
+/** Normalize supported Markdown to the form returned after writing and rereading it. */
+export function canonicalizeMarkdownForWrite(markdown: string): string {
+  let result = "";
+  let lastWasListItem = false;
+  for (let block of parseMarkdown(markdown)) {
+    if (result && !(lastWasListItem && block.listType)) result += "\n";
+    if (block.listType) {
+      result += "  ".repeat(block.nestingLevel) + (block.listType === "numbered" ? "1. " : "- ");
+    }
+    if (block.headingLevel !== null) result += `${"#".repeat(block.headingLevel)} `;
+    result += canonicalInlineMarkdown(block) + "\n";
+    lastWasListItem = block.listType !== null;
+  }
+  return result.slice(0, -1);
+}
+
+type MarkdownWriteOptions = {
+  /** The blocks being rewritten, and the rendering their mappings refer to. */
+  source?: { blocks: BlockMapping[]; markdown: string };
+  /** Whether blocks with no source counterpart must be reset to a plain paragraph first. */
+  resetParagraphs?: boolean;
+  /** Style to apply across the insertion, for an edit that stays inside one text run. */
+  sourceTextStyle?: TextStyle;
+  /** Leave the paragraph before an inserted separator unchanged. */
+  preserveLeadingParagraph?: boolean;
+  /** Keep a fragment's final paragraph break. */
+  preserveTrailingNewline?: boolean;
+};
+
+function linkForWrite(
+  source: MarkdownWriteOptions["source"], destination: string,
+): NonNullable<TextStyle["link"]> {
+  if (source) {
+    for (let block of source.blocks) {
+      for (let segment of block.segments) {
+        if ("syntaxOnly" in segment) continue;
+        let link = segment.textStyle.link;
+        if (link && docsLinkDestination(link) === destination) return link;
+      }
+    }
+  }
+  return { url: destination };
+}
+
+function targetNamedStyle(block: ParsedBlock, source?: BlockMapping): string {
+  if (block.headingLevel !== null) {
+    return block.headingLevel === 1 && source?.namedStyleType === "TITLE"
+      ? "TITLE"
+      : `HEADING_${block.headingLevel}`;
+  }
+  return source?.namedStyleType === "SUBTITLE" && block.listType === null
+    ? "SUBTITLE"
+    : "NORMAL_TEXT";
+}
+
+function sourceBlockText(source: BlockMapping, markdown: string): string {
+  let text = "";
+  for (let segment of source.segments) {
+    if (!("syntaxOnly" in segment)) text += markdown.slice(segment.mdStart, segment.mdEnd);
+  }
+  return text;
+}
+
+function blocksMatch(source: BlockMapping, target: ParsedBlock, markdown: string): boolean {
+  return sourceBlockText(source, markdown) === target.plainText &&
+    source.listType === target.listType && source.listNestingLevel === target.nestingLevel &&
+    source.namedStyleType === targetNamedStyle(target, source);
+}
+
+function canPreserveRebuiltList(
+  sources: readonly (BlockMapping | undefined)[] | undefined,
+  targets: readonly ParsedBlock[],
+): boolean {
+  if (!sources || sources.length !== targets.length) return false;
+  let first = sources[0];
+  if (!first?.listId) return false;
+  return sources.every((source, index) => source !== undefined &&
+    source.listId === first.listId && source.listType === first.listType &&
+    source.listNestingLevel === first.listNestingLevel &&
+    targets[index].listType === source.listType &&
+    targets[index].nestingLevel === source.listNestingLevel);
+}
+
+function listPreservation(
+  sources: readonly (BlockMapping | undefined)[] | undefined,
+  targets: readonly ParsedBlock[],
+  rebuild: boolean,
+): boolean[] {
+  if (rebuild) {
+    let preserve = canPreserveRebuiltList(sources, targets);
+    return targets.map(() => preserve);
+  }
+
+  let preserved = targets.map((target, index) => {
+    let source = sources?.[index];
+    return target.listType !== null && source?.listType === target.listType &&
+      source.listNestingLevel === target.nestingLevel;
+  });
+  for (let start = 0; start < targets.length;) {
+    let listType = targets[start].listType;
+    if (!listType) {
+      start++;
+      continue;
+    }
+    let end = start + 1;
+    while (end < targets.length && targets[end].listType === listType) end++;
+    if (!preserved[start] && preserved.slice(start + 1, end).some(Boolean)) {
+      preserved.fill(false, start, end);
+    }
+    start = end;
+  }
+  return preserved;
+}
+
+function alignSourceBlocks(
+  sources: BlockMapping[],
+  targets: ParsedBlock[],
+  markdown: string,
+): (BlockMapping | undefined)[] {
+  if (sources.length === targets.length) return sources;
+
+  let aligned = targets.map<BlockMapping | undefined>(() => undefined);
+  let prefix = 0;
+  while (prefix < sources.length && prefix < targets.length &&
+      blocksMatch(sources[prefix], targets[prefix], markdown)) {
+    aligned[prefix] = sources[prefix];
+    prefix++;
+  }
+
+  let sourceEnd = sources.length - 1;
+  let targetEnd = targets.length - 1;
+  while (sourceEnd >= prefix && targetEnd >= prefix &&
+      blocksMatch(sources[sourceEnd], targets[targetEnd], markdown)) {
+    aligned[targetEnd--] = sources[sourceEnd--];
+  }
+
+  let sourceListChanged = sources.some((source, index) =>
+    index >= prefix && index <= sourceEnd && source.listType !== null);
+  let targetListChanged = targets.some((target, index) =>
+    index >= prefix && index <= targetEnd && target.listType !== null);
+  if (sourceListChanged && targetListChanged) {
+    throw new Error(
+      "replaceText: cannot preserve list formatting when one edit changes the block count.",
+    );
+  }
+  return aligned;
+}
+
+/**
+ * One `updateParagraphStyle` request. At least one of a style change or an indent reset must be
+ * asked for, since Google rejects a request that names no fields.
+ */
+function updateParagraphStyleRequest(
+  range: { startIndex: number; endIndex: number; tabId: string },
+  namedStyleType: string | undefined,
+  clearIndent: boolean,
+): any {
+  let paragraphStyle: Record<string, unknown> = {};
+  let fields: string[] = [];
+  if (namedStyleType !== undefined) {
+    paragraphStyle.namedStyleType = namedStyleType;
+    fields.push("namedStyleType");
+  }
+  if (clearIndent) {
+    paragraphStyle.indentStart = { magnitude: 0, unit: "PT" };
+    paragraphStyle.indentFirstLine = { magnitude: 0, unit: "PT" };
+    fields.push("indentStart", "indentFirstLine");
+  }
+  return { updateParagraphStyle: { range, paragraphStyle, fields: fields.join(",") } };
 }
 
 /**
@@ -705,98 +1285,147 @@ export function markdownToDocRequests(
   markdown: string,
   insertAt: number,
   tabId: string,
+  options: MarkdownWriteOptions = {},
 ): any[] {
   let blocks = parseMarkdown(markdown);
   if (blocks.length === 0) return [];
 
-  let requests: any[] = [];
+  let sourceBlockCount = options.source?.blocks.length ?? 0;
+  let rebuild = sourceBlockCount > 1;
+  let resetParagraphs = options.resetParagraphs || rebuild ||
+    options.source !== undefined && sourceBlockCount !== blocks.length;
+  let sourceBlocks: (BlockMapping | undefined)[] | undefined = options.source &&
+    alignSourceBlocks(options.source.blocks, blocks, options.source.markdown);
+  let preserveLists = listPreservation(sourceBlocks, blocks, rebuild);
+  if (rebuild && sourceBlocks?.some((source, index) =>
+    source?.listType && source.listType === blocks[index].listType && !preserveLists[index])) {
+    throw new Error(
+      "replaceText: cannot preserve list formatting across multiple paragraphs.",
+    );
+  }
+  // Positions are known from the text lengths alone, so lay every block out in one pass.
+  let offset = insertAt;
+  let positioned = blocks.map((block, index) => {
+    let source = sourceBlocks?.[index];
+    let preserveList = preserveLists[index];
+    let prefix = block.listType && !preserveList ? "\t".repeat(block.nestingLevel) : "";
+    let paragraphStart = offset;
+    offset += prefix.length + block.plainText.length + 1;
+    return {
+      block,
+      source,
+      preserveList,
+      targetStyle: targetNamedStyle(block, source),
+      prefix,
+      paragraphStart,
+      textStart: paragraphStart + prefix.length,
+      paragraphEnd: offset,
+      preserveStyle: options.preserveLeadingParagraph && index === 0,
+    };
+  });
+  let fullText = positioned.map(({ block, prefix }) => prefix + block.plainText).join("\n");
+  if (options.preserveTrailingNewline) fullText += "\n";
 
-  // First pass: compute the full plain text to insert (all blocks joined with \n).
-  // No trailing \n — the document's existing structure provides paragraph
-  // terminators after the insertion point.
-  let fullText = blocks.map(b => b.plainText).join("\n");
-  if (fullText.length === 0) {
-    // `parseMarkdown()` treats whitespace-only input as blank Markdown blocks, but replacements
-    // can legitimately insert whitespace inside existing text, e.g. splitting a word in two.
-    return [{ insertText: { location: { index: insertAt, tabId }, text: markdown } }];
+  let requests: any[] = [];
+  if (fullText.length > 0) {
+    requests.push({ insertText: { location: { index: insertAt, tabId }, text: fullText } });
   }
 
-  // Insert the full text in one go. This is more efficient and avoids
-  // index-shifting complexity from multiple insertions.
-  requests.push({
-    insertText: {
-      location: { index: insertAt, tabId },
-      text: fullText,
-    },
-  });
+  let clearListIndent = options.source?.blocks.some(block => block.listType) ?? false;
 
-  // Second pass: apply paragraph styles and inline formatting.
-  let offset = insertAt;
-  for (let block of blocks) {
-    let blockStart = offset;
-    let blockEnd = offset + block.plainText.length;
+  for (let { block, source, preserveList, preserveStyle, targetStyle, paragraphStart, textStart,
+    paragraphEnd } of positioned) {
+    let range = { startIndex: paragraphStart, endIndex: paragraphEnd, tabId };
+    if (!preserveStyle && source) {
+      let resetList = !preserveList && (rebuild || source.listType !== null);
+      if (resetList) requests.push({ deleteParagraphBullets: { range } });
 
-    // Paragraph style (headings).
-    if (block.headingLevel !== null) {
-      let styleType = `HEADING_${block.headingLevel}`;
-      requests.push({
-        updateParagraphStyle: {
-          range: { startIndex: blockStart, endIndex: blockEnd + 1, tabId },
-          paragraphStyle: { namedStyleType: styleType },
-          fields: "namedStyleType",
-        },
-      });
+      let restyle = rebuild || source.namedStyleType !== targetStyle;
+      if (restyle || resetList) {
+        requests.push(
+          updateParagraphStyleRequest(range, restyle ? targetStyle : undefined, resetList));
+      }
+    } else if (!preserveStyle) {
+      if (resetParagraphs) {
+        requests.push(updateParagraphStyleRequest(range, "NORMAL_TEXT", clearListIndent));
+        requests.push({ deleteParagraphBullets: { range } });
+      }
+      if (targetStyle !== "NORMAL_TEXT") {
+        requests.push(updateParagraphStyleRequest(range, targetStyle, false));
+      }
     }
 
-    // List items.
-    if (block.listType) {
-      let preset = block.listType === "numbered"
-        ? "NUMBERED_DECIMAL_ALPHA_ROMAN"
-        : "BULLET_DISC_CIRCLE_SQUARE";
+    if (block.plainText.length > 0) {
+      let textRange = {
+        startIndex: textStart,
+        endIndex: textStart + block.plainText.length,
+        tabId,
+      };
       requests.push({
-        createParagraphBullets: {
-          range: { startIndex: blockStart, endIndex: blockEnd + 1, tabId },
-          bulletPreset: preset,
+        updateTextStyle: {
+          range: textRange,
+          textStyle: options.sourceTextStyle ?? {},
+          fields: "bold,italic,strikethrough,link",
         },
       });
+      if (targetStyle === "SUBTITLE") {
+        requests.push({
+          updateTextStyle: { range: textRange, textStyle: { italic: false }, fields: "italic" },
+        });
+      }
     }
 
-    // Inline formatting spans.
     for (let span of block.spans) {
-      let spanStart = blockStart + span.start;
-      let spanEnd = blockStart + span.end;
-      if (spanStart >= spanEnd) continue;
+      let startIndex = textStart + span.start;
+      let endIndex = textStart + span.end;
+      if (startIndex >= endIndex) continue;
 
       if (span.bold || span.italic || span.strikethrough) {
-        let textStyle: any = {};
+        let textStyle: Record<string, true> = {};
         let fields: string[] = [];
         if (span.bold) { textStyle.bold = true; fields.push("bold"); }
         if (span.italic) { textStyle.italic = true; fields.push("italic"); }
         if (span.strikethrough) { textStyle.strikethrough = true; fields.push("strikethrough"); }
         requests.push({
           updateTextStyle: {
-            range: { startIndex: spanStart, endIndex: spanEnd, tabId },
-            textStyle,
-            fields: fields.join(","),
+            range: { startIndex, endIndex, tabId }, textStyle, fields: fields.join(","),
           },
         });
       }
-
       if (span.link) {
         requests.push({
           updateTextStyle: {
-            range: { startIndex: spanStart, endIndex: spanEnd, tabId },
-            textStyle: { link: { url: span.link } },
+            range: { startIndex, endIndex, tabId },
+            textStyle: { link: linkForWrite(options.source, span.link) },
             fields: "link",
           },
         });
       }
     }
-
-    // Advance past this block's text + the \n separator.
-    offset += block.plainText.length + 1;
   }
 
+  let bulletGroups: { listType: ListType; startIndex: number; endIndex: number }[] = [];
+  for (let { block, preserveList, paragraphStart, paragraphEnd } of positioned) {
+    if (!block.listType || preserveList) continue;
+    let previous = bulletGroups.at(-1);
+    if (previous?.listType === block.listType && previous.endIndex === paragraphStart) {
+      previous.endIndex = paragraphEnd;
+    } else {
+      bulletGroups.push({
+        listType: block.listType, startIndex: paragraphStart, endIndex: paragraphEnd,
+      });
+    }
+  }
+  for (let { listType, startIndex, endIndex } of bulletGroups.toReversed()) {
+    requests.push({
+      createParagraphBullets: {
+        range: { startIndex, endIndex, tabId },
+        bulletPreset: listType === "numbered"
+          ? "NUMBERED_DECIMAL_ALPHA_ROMAN"
+          : "BULLET_DISC_CIRCLE_SQUARE",
+      },
+    });
+  }
   return requests;
 }
 
@@ -810,17 +1439,169 @@ export function assertMarkdownRangeEditable(
   mdStart: number,
   mdEnd: number,
 ): void {
-  if (protectedRanges.some(range => mdStart < range.mdEnd && mdEnd > range.mdStart)) {
+  if (protectedRanges.some(range => markdownRangeTouches(mdStart, mdEnd, range))) {
     throw new Error(
       "replaceText: structured content cannot be edited. Narrow the match to plain text.",
     );
   }
 }
 
+/** A Markdown rendering together with the ranges in it that edits must leave alone. */
+export type EditableMarkdown = {
+  markdown: string;
+  protectedRanges: MarkdownRange[];
+};
+
+/**
+ * Splice `newMarkdown` over [mdStart, mdEnd), keeping the protected ranges on the text they
+ * guard. Refusing an edit that overlaps one is what makes shifting the rest by a constant sound.
+ */
+export function applyMarkdownEdit(
+  content: EditableMarkdown,
+  mdStart: number,
+  mdEnd: number,
+  newMarkdown: string,
+): EditableMarkdown {
+  let oldMarkdown = content.markdown.slice(mdStart, mdEnd);
+  let { prefixLen, suffixLen } = markdownReplacementBounds(oldMarkdown, newMarkdown);
+  mdStart += prefixLen;
+  mdEnd -= suffixLen;
+  newMarkdown = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
+  assertMarkdownRangeEditable(content.protectedRanges, mdStart, mdEnd);
+  let offset = newMarkdown.length - (mdEnd - mdStart);
+  return {
+    markdown: content.markdown.slice(0, mdStart) + newMarkdown + content.markdown.slice(mdEnd),
+    protectedRanges: offset === 0 ? content.protectedRanges
+      : content.protectedRanges.map(range => range.mdEnd <= mdStart ? range : {
+        mdStart: range.mdStart + offset,
+        mdEnd: range.mdEnd + offset,
+      }),
+  };
+}
+
+/**
+ * Slice rendered Markdown, escaping the parts that came from document text so a re-parse reads
+ * them as the literal characters they are. Syntax the renderer emitted is left alone, so it
+ * re-parses back into the formatting it stands for.
+ */
+function literalMarkdownSlice(
+  sourceMap: SourceMap,
+  markdown: string,
+  start: number,
+  end: number,
+): string {
+  let result = "";
+  let cursor = start;
+  for (let block of sourceMap.blocks) {
+    if (block.mdEnd <= start) continue;
+    if (block.mdStart >= end) break;
+    for (let index = 0; index < block.segments.length; index++) {
+      let segment = block.segments[index];
+      if ("syntaxOnly" in segment || segment.mdEnd <= start || segment.mdStart >= end) continue;
+      let overlapStart = Math.max(start, segment.mdStart);
+      let overlapEnd = Math.min(end, segment.mdEnd);
+      result += markdown.slice(cursor, overlapStart);
+      let content = markdown.slice(overlapStart, overlapEnd);
+      let previous = block.segments[index - 1];
+      let alreadyEscaped = previous && "syntaxOnly" in previous && previous.mdStart >= start &&
+        previous.mdEnd === overlapStart && markdown.slice(previous.mdStart, previous.mdEnd) === "\\";
+      result += alreadyEscaped ? content[0] + escapeMarkdownText(content.slice(1))
+        : escapeMarkdownText(content);
+      cursor = overlapEnd;
+    }
+  }
+  return result + markdown.slice(cursor, end);
+}
+
+/**
+ * A line opening a heading or list item. `m` so it matches any line of a multi-line string, which
+ * is what makes this usable both on caller-supplied Markdown and on one rendered block.
+ */
+const BLOCK_SYNTAX_LINE = /^(?:#{1,6}| *-| *\d+\.) /m;
+
+function markdownRangeTouches(
+  mdStart: number,
+  mdEnd: number,
+  range: MarkdownRange,
+): boolean {
+  return mdStart === mdEnd
+    ? mdStart >= range.mdStart && mdStart < range.mdEnd
+    : mdStart < range.mdEnd && mdEnd > range.mdStart;
+}
+
+type BlockReplacementRange = MarkdownRange & {
+  docStart: number;
+  docEnd: number;
+  blocks: BlockMapping[];
+};
+
+type DocRange = { start: number; end: number; startsAfterParagraph?: true };
+
+function blockReplacementRange(
+  sourceMap: SourceMap,
+  mdStart: number,
+  mdEnd: number,
+  force: boolean,
+): BlockReplacementRange | undefined {
+  let replaceWholeBlocks = force;
+  let blocks: BlockMapping[] = [];
+
+  for (let block of sourceMap.blocks) {
+    if (block.mdStart > mdEnd) break;
+    if (!markdownRangeTouches(mdStart, mdEnd, block)) continue;
+    blocks.push(block);
+    replaceWholeBlocks ||= block.segments.some(segment =>
+      "syntaxOnly" in segment && markdownRangeTouches(mdStart, mdEnd, segment));
+  }
+  replaceWholeBlocks ||= blocks.length > 1;
+  let first = blocks[0];
+  let last = blocks.at(-1);
+  if (!replaceWholeBlocks || !first || !last) return undefined;
+  return {
+    mdStart: first.mdStart,
+    mdEnd: last.mdEnd,
+    docStart: first.docStart,
+    docEnd: Math.max(last.docStart, last.docEnd - 1),
+    blocks,
+  };
+}
+
+function textStylesEqual(left: TextStyle, right: TextStyle): boolean {
+  return left.bold === right.bold && left.italic === right.italic &&
+    left.strikethrough === right.strikethrough &&
+    docsLinkDestination(left.link) === docsLinkDestination(right.link);
+}
+
+function mappedTextStyle(
+  sourceMap: SourceMap,
+  mdStart: number,
+  mdEnd: number,
+): TextStyle | undefined {
+  let preceding: TextStyle | undefined;
+  let matched: TextStyle | undefined;
+  for (let block of sourceMap.blocks) {
+    // Inclusive: a block ending exactly at an insertion point still supplies `preceding`.
+    if (block.mdEnd < mdStart) continue;
+    if (block.mdStart > mdEnd) break;
+    for (let segment of block.segments) {
+      if ("syntaxOnly" in segment) continue;
+      if (mdStart === mdEnd) {
+        if (mdStart >= segment.mdStart && mdStart < segment.mdEnd) return segment.textStyle;
+        if (mdStart === segment.mdEnd) preceding = segment.textStyle;
+      } else if (mdStart < segment.mdEnd && mdEnd > segment.mdStart) {
+        if (matched && !textStylesEqual(matched, segment.textStyle)) return undefined;
+        matched ??= segment.textStyle;
+      }
+    }
+  }
+  return matched ?? preceding;
+}
+
 /**
  * Compute the batch-update operations that replace one range in a tab's Markdown rendering.
  *
- * Unchanged leading and trailing text is trimmed before document indices are calculated.
+ * Unchanged leading and trailing text is trimmed before document indices are calculated;
+ * `trimmedOld` and `trimmedNew` report what was left to change after that trimming.
  */
 export function computeReplaceOperations(
   sourceMap: SourceMap,
@@ -830,36 +1611,54 @@ export function computeReplaceOperations(
   newMarkdown: string,
   tabId: string,
 ): { requests: any[]; trimmedOld: string; trimmedNew: string } {
-  assertMarkdownRangeEditable(sourceMap.protectedRanges, matchStart, matchEnd);
   let oldText = markdown.slice(matchStart, matchEnd);
-
-  // Trim unchanged prefix.
-  let prefixLen = 0;
-  while (prefixLen < oldText.length && prefixLen < newMarkdown.length &&
-         oldText[prefixLen] === newMarkdown[prefixLen]) {
-    prefixLen++;
+  if (oldText === newMarkdown) {
+    return { requests: [], trimmedOld: "", trimmedNew: "" };
   }
-
-  // Trim unchanged suffix.
-  let suffixLen = 0;
-  while (suffixLen < oldText.length - prefixLen &&
-         suffixLen < newMarkdown.length - prefixLen &&
-         oldText[oldText.length - 1 - suffixLen] === newMarkdown[newMarkdown.length - 1 - suffixLen]) {
-    suffixLen++;
-  }
+  let { prefixLen, suffixLen } = markdownReplacementBounds(oldText, newMarkdown);
 
   let trimmedMatchStart = matchStart + prefixLen;
   let trimmedMatchEnd = matchEnd - suffixLen;
   let trimmedNew = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
   let trimmedOld = oldText.slice(prefixLen, oldText.length - suffixLen);
+  assertMarkdownRangeEditable(sourceMap.protectedRanges, trimmedMatchStart, trimmedMatchEnd);
 
-  // If nothing actually changed, return empty.
-  if (trimmedOld.length === 0 && trimmedNew.length === 0) {
-    return { requests: [], trimmedOld: "", trimmedNew: "" };
+  let blockRange = blockReplacementRange(
+    sourceMap,
+    trimmedMatchStart,
+    trimmedMatchEnd,
+    BLOCK_SYNTAX_LINE.test(trimmedNew),
+  );
+  let docRange: DocRange | null;
+  let insertMarkdown = trimmedNew;
+  let writeOptions: MarkdownWriteOptions;
+  if (blockRange) {
+    assertMarkdownRangeEditable(
+      sourceMap.protectedRanges, blockRange.mdStart, blockRange.mdEnd - 1,
+    );
+    insertMarkdown = (
+      literalMarkdownSlice(sourceMap, markdown, blockRange.mdStart, trimmedMatchStart) +
+      insertMarkdown +
+      literalMarkdownSlice(sourceMap, markdown, trimmedMatchEnd, blockRange.mdEnd)
+    ).replace(/\n$/, "");
+    docRange = { start: blockRange.docStart, end: blockRange.docEnd };
+    writeOptions = {
+      source: { blocks: blockRange.blocks, markdown },
+      resetParagraphs: blockRange.blocks.some(block =>
+        BLOCK_SYNTAX_LINE.test(markdown.slice(block.mdStart, block.mdEnd))),
+    };
+  } else {
+    docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
+    if (docRange?.startsAfterParagraph) {
+      insertMarkdown = "\n" + insertMarkdown;
+      writeOptions = { resetParagraphs: true, preserveLeadingParagraph: true };
+    } else {
+      writeOptions = {
+        sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
+      };
+    }
   }
-
-  // Map the trimmed Markdown range to a Google Docs index range.
-  let docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
+  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
 
   if (!docRange) {
     throw new Error(
@@ -868,8 +1667,6 @@ export function computeReplaceOperations(
   }
 
   let requests: any[] = [];
-
-  // Delete the old content (if any).
   if (docRange.start < docRange.end) {
     requests.push({
       deleteContentRange: {
@@ -878,10 +1675,8 @@ export function computeReplaceOperations(
     });
   }
 
-  // Insert the new content (if any).
-  if (trimmedNew.length > 0) {
-    let insertRequests = markdownToDocRequests(trimmedNew, docRange.start, tabId);
-    requests.push(...insertRequests);
+  if (insertMarkdown.length > 0 || blockRange) {
+    requests.push(...markdownToDocRequests(insertMarkdown, docRange.start, tabId, writeOptions));
   }
 
   return { requests, trimmedOld, trimmedNew };
@@ -900,8 +1695,13 @@ function mdRangeToDocRange(
   sourceMap: SourceMap,
   mdStart: number,
   mdEnd: number,
-): { start: number; end: number } | null {
+): DocRange | null {
   if (mdStart === mdEnd) {
+    let precedingBlock = sourceMap.blocks.find(block => block.mdEnd === mdStart);
+    if (precedingBlock) {
+      let index = Math.max(precedingBlock.docStart, precedingBlock.docEnd - 1);
+      return { start: index, end: index, startsAfterParagraph: true };
+    }
     let docIndex = mdPointToDocIndex(sourceMap, mdStart);
     return docIndex === null ? null : { start: docIndex, end: docIndex };
   }
@@ -950,26 +1750,15 @@ function mdPointToDocIndex(sourceMap: SourceMap, mdPoint: number): number | null
     if (mdPoint < block.mdStart) continue;
     if (mdPoint > block.mdEnd) continue;
 
-    for (let seg of block.segments) {
-      if (mdPoint < seg.mdStart || mdPoint > seg.mdEnd) continue;
-
-      if ("syntaxOnly" in seg) {
-        continue;
-      }
-
-      return seg.docStart + (mdPoint - seg.mdStart);
-    }
-
+    let preceding: number | undefined;
     for (let seg of block.segments) {
       if ("syntaxOnly" in seg) continue;
-      if (mdPoint <= seg.mdStart) return seg.docStart;
-      if (mdPoint <= seg.mdEnd) return seg.docEnd;
+      if (mdPoint < seg.mdStart) return preceding ?? seg.docStart;
+      if (mdPoint <= seg.mdEnd) return seg.docStart + (mdPoint - seg.mdStart);
+      preceding = seg.docEnd;
     }
 
-    if (mdPoint === block.mdEnd && block.docEnd > block.docStart) {
-      return block.docEnd - 1;
-    }
-
+    if (preceding !== undefined) return preceding;
     return block.docStart;
   }
 
