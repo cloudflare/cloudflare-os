@@ -594,6 +594,18 @@ describe("positioned Drive folder session", () => {
     ]);
   });
 
+  // An unpaged cursor must not tell the caller whether the saved path is still visible and
+  // connected: that read is a disclosure, and nothing has authorized one yet.
+  it("reads nothing about the saved path until the first page", async () => {
+    const { session, provider, queries, events } = positioned([root, directDoc]);
+    provider.byId.delete("R");
+
+    const pager = await session.list();
+    expect(queries).toEqual([]);
+    expect(events).toEqual([]);
+    await expect(pager.next()).rejects.toThrow(/outside this Drive binding/);
+  });
+
   // A bound shared-drive folder still navigates through its own drive corpus; the picker's
   // cross-corpus discovery must not leak in here.
   it("lists a shared-drive folder through that drive's corpus alone", async () => {

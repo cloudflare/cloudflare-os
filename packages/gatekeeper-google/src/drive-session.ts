@@ -603,21 +603,28 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     };
   }
 
-  async #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Promise<Pager<DriveEntry>> {
-    let initial = await this.#readLocation();
-    let driveId = initial[0].driveId;
-    let corpus = driveId ? {kind: "drive" as const, driveId} : {kind: "user" as const};
+  /**
+   * The bound drive is learned from the first page's own revalidation rather than a read taken
+   * before the cursor is returned, so calling `list()` and never paging authorizes nothing and
+   * discloses nothing about the saved path.
+   */
+  #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Pager<DriveEntry> {
+    let bound: {driveId: string | undefined} | undefined;
     let requireCurrentLocation = async () => {
       let path = await this.#readLocation();
-      if (path[0].driveId !== driveId) throw new Error(FOLDER_MOVED);
+      bound ??= {driveId: path[0].driveId};
+      if (bound.driveId !== path[0].driveId) throw new Error(FOLDER_MOVED);
       return path;
     };
     return new CursorPager<DriveFile, DriveEntry>({
       provider: "Google Drive",
       fetchPage: async pageToken => {
-        await requireCurrentLocation();
+        let {driveId} = (await requireCurrentLocation())[0];
         let page = await this.api.listFiles({
-          ...query, directParentId: this.#currentFolderId(), corpus, pageToken,
+          ...query,
+          directParentId: this.#currentFolderId(),
+          corpus: driveId ? {kind: "drive", driveId} : {kind: "user"},
+          pageToken,
         });
         return {items: page.files, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {})};
       },
