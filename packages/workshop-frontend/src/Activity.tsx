@@ -604,7 +604,8 @@ function AutoApprovalPanel({
                   <Switch
                     size="sm"
                     checked={entry.enabled}
-                    // Enabling would only error while restricted; disabling must stay possible.
+                    // A rule never fires while restricted, so enabling one is pointless; disabling
+                    // must stay possible.
                     disabled={busy || (restricted === true && !entry.enabled)}
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} auto-approval for ${entry.actionKind.label}`}
                     onCheckedChange={enabled => void setEnabled(entry, enabled)}
