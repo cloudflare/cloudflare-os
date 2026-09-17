@@ -37,8 +37,8 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * - Plain paragraphs (separated by blank lines)
    *
    * Unsupported Markdown features (tables, images, code blocks, etc.) are inserted as plain text.
-   * Existing table content is read-only. A match that touches or crosses a rendered `<table>` is
-   * rejected; narrow the match to text outside the table.
+   * Existing structural content and paragraphs containing elements such as smart chips are
+   * read-only. Narrow the match to plain text in another paragraph.
    *
    * A subsequent `getContent(tabId)` call reflects this replacement.
    */
@@ -46,7 +46,8 @@ export interface GoogleDocSession extends GoogleDocReadSession {
 
   /**
    * Append Markdown content to the end of tab `tabId`. The same Markdown features and tab
-   * selection rules as `replaceText()` apply.
+   * selection rules as `replaceText()` apply. The tab must end in a paragraph; add one after a
+   * final table or other structural element before appending.
    */
   appendText(markdown: string, tabId?: string): Promise<void>;
 }

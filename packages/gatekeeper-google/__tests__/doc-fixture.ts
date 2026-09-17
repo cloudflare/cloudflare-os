@@ -7,6 +7,8 @@ type ParagraphPart =
   | { person: { name?: string; email: string }; style?: TextStyle }
   | { richLink: { title: string; uri: string }; style?: TextStyle }
   | { date: string; style?: TextStyle }
+  | { footnote: { id: string; number: string }; style?: TextStyle }
+  | { autoText: "PAGE_NUMBER" | "PAGE_COUNT"; style?: TextStyle }
   | { horizontalRule: true };
 
 type ParagraphSpec = {
@@ -20,7 +22,8 @@ type TableCellSpec = string | {
   tableCellStyle?: { rowSpan?: number; columnSpan?: number };
 };
 type TableSpec = { table: TableCellSpec[][] };
-type BlockSpec = ParagraphSpec | TableSpec;
+type StructuralSpec = { structure: "sectionBreak" | "tableOfContents"; length?: number };
+type BlockSpec = ParagraphSpec | TableSpec | StructuralSpec;
 
 /**
  * Builds a normalized `GoogleDocsTab` with the index bookkeeping the real API applies: a section
@@ -40,6 +43,14 @@ export function buildTab(
       let table = buildTable(index, spec.table);
       content.push(table);
       index = table.endIndex;
+      continue;
+    }
+    if ("structure" in spec) {
+      let endIndex = index + (spec.length ?? 1);
+      content.push(spec.structure === "sectionBreak"
+        ? { startIndex: index, endIndex, sectionBreak: {} }
+        : { startIndex: index, endIndex, tableOfContents: {} });
+      index = endIndex;
       continue;
     }
     let paragraph = buildParagraph(index, spec);
@@ -90,6 +101,22 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
         dateElement: { dateElementProperties: { displayText: run.date }, textStyle: run.style ?? {} },
       };
     }
+    if ("footnote" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        footnoteReference: {
+          footnoteId: run.footnote.id,
+          footnoteNumber: run.footnote.number,
+          textStyle: run.style ?? {},
+        },
+      };
+    }
+    if ("autoText" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        autoText: { type: run.autoText, textStyle: run.style ?? {} },
+      };
+    }
     return { startIndex: runStart, endIndex: index, horizontalRule: {} };
   });
   return {
@@ -104,7 +131,7 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
 }
 
 /** Build a Google Docs table element with the provider's nested index layout. */
-export function buildTable(startIndex: number, rows: TableCellSpec[][]): StructuralElement {
+function buildTable(startIndex: number, rows: TableCellSpec[][]): StructuralElement {
   let index = startIndex + 1;
   let tableRows = rows.map(row => {
     let rowStart = index++;
@@ -134,7 +161,20 @@ export function buildTable(startIndex: number, rows: TableCellSpec[][]): Structu
   };
 }
 
+/** A tab holding one single-cell table, which is all most table rendering tests need. */
+export function cellTab(
+  paragraphs: ParagraphSpec[],
+  lists?: GoogleDocsTab["lists"],
+): GoogleDocsTab {
+  return buildTab([{ table: [[{ paragraphs }]] }], lists);
+}
+
 /** A single-level bullet list definition, for paragraphs carrying a matching `bullet`. */
 export const BULLET_LIST: GoogleDocsTab["lists"] = {
   L1: { listProperties: { nestingLevels: [{ glyphSymbol: "\u25cf" }] } },
+};
+
+/** A list whose custom glyph no Markdown bullet can reproduce, keyed `check`. */
+export const CHECK_LIST: GoogleDocsTab["lists"] = {
+  check: { listProperties: { nestingLevels: [{ glyphSymbol: "\u2610" }] } },
 };

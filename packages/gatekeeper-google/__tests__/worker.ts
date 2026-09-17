@@ -6,9 +6,10 @@ import type {
 import { TestGitCache } from "./test-git-cache";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
-import type { GoogleDocGatekeeperImpl as GoogleDocGatekeeper } from "../src/google";
+import GoogleWorker, { GoogleDocGatekeeperImpl } from "../src/google";
 
-export { default, GoogleDocGatekeeperImpl } from "../src/google";
+export { GoogleDocGatekeeperImpl };
+export default GoogleWorker;
 
 export class UserAccount extends DurableObject<Env> {
   async getAccessToken(): Promise<GoogleAccessToken> {
@@ -17,6 +18,12 @@ export class UserAccount extends DurableObject<Env> {
 }
 
 type GatekeeperProps = { userObjectId: string; documentId: string };
+
+type StorageOperation = { kind: "put"; key: string; value: unknown };
+type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
+  applyTestStorage(operations: StorageOperation[]): void;
+  testStoredValueJsonLength(key: string): number | undefined;
+};
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionId?: number;
@@ -61,7 +68,7 @@ export class TestHooks extends DurableObject<Env> {
 
   #gatekeeper(facetName: string) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
-    return this.ctx.facets.get<GoogleDocGatekeeper>(facetName, () => ({
+    return this.ctx.facets.get<GoogleDocGatekeeperImpl>(facetName, () => ({
       class: this.ctx.exports.GoogleDocGatekeeperImpl({
         props: { userObjectId, documentId: "doc-1" } satisfies GatekeeperProps,
       }),
@@ -124,6 +131,16 @@ export class TestHooks extends DurableObject<Env> {
     return this.#withSession(facetName, session => session.listTabs());
   }
 
+  async applyStorage(facetName: string, operations: StorageOperation[]): Promise<void> {
+    await (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper)
+      .applyTestStorage(operations);
+  }
+
+  async storedValueJsonLength(facetName: string, key: string): Promise<number | undefined> {
+    return (this.#gatekeeper(facetName) as unknown as TestGoogleDocGatekeeper)
+      .testStoredValueJsonLength(key);
+  }
+
   async applyAction(facetName: string, actionId: number): Promise<string | null> {
     try {
       // The overseer always passes an action-scoped git cache with the apply call, and the
@@ -140,3 +157,19 @@ export class TestHooks extends DurableObject<Env> {
     await this.#gatekeeper(facetName).rejectAction(actionId);
   }
 }
+
+type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
+
+(GoogleDocGatekeeperImpl.prototype as TestGoogleDocGatekeeper).applyTestStorage = function(
+  operations: StorageOperation[],
+): void {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  for (let operation of operations) storage.kv.put(operation.key, operation.value);
+};
+
+(GoogleDocGatekeeperImpl.prototype as TestGoogleDocGatekeeper).testStoredValueJsonLength = function(
+  key: string,
+): number | undefined {
+  let value = (this as unknown as TestDurableObjectState).ctx.storage.kv.get(key);
+  return value === undefined ? undefined : JSON.stringify(value).length;
+};

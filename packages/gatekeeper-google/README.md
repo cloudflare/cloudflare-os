@@ -165,6 +165,11 @@ result and state. Normal deployments should omit these settings and continue usi
 Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
 stores baseline and Preview secrets separately, so provision the same signing value in both places.
 
+## Known limitations
+
+Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
+causing tab listing, content reads, and edits to fail.
+
 ## Google Drive read-only bindings
 
 Drive exposes three permanent resource URL forms:
