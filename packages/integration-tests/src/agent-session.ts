@@ -73,6 +73,8 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   connectedAccount(vendorId: string): ConnectedAccount;
   openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
   acceptChanges(): Promise<void>;
+  /** Rewind the chat's proposed changes from the given "changes" message on (see Overseer). */
+  revertChanges(revertFrom: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -607,6 +609,13 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     if (chatId === undefined) throw new Error("The session has no chat changes to accept");
     const result = await this.#workspace.mergeChanges(chatId);
     if (result.outcome !== "merged") throw new Error("The agent changes are stale");
+  }
+
+  async revertChanges(revertFrom: number): Promise<void> {
+    this.#assertOpen();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat changes to revert");
+    await this.#workspace.revertChanges(chatId, revertFrom);
   }
 
   close(): Promise<void> {
