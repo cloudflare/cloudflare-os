@@ -17,6 +17,7 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import { codedErrorFamily } from "./coded-errors.js";
 
 /**
  * A pagination cursor.
@@ -765,6 +766,45 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
 
+/** Result of applying a Gatekeeper's queued actions through a decision frontier. */
+export interface ApplyActionsThroughResult {
+  /**
+   * Something went unexpectedly wrong at the given action number; remaining actions were not
+   * applied. The user may retry after resolving the problem or vetoing.
+   */
+  stopped?: {
+    /** First unvetoed pending action at or below the boundary that could not be applied. */
+    at: number;
+
+    /**
+     * Explanation of why application stopped. Expected native-RPC errors may retain an own stable
+     * `code`, but the message must stand alone as display-safe text because the backend persists
+     * only that bounded presentation string.
+     */
+    reason: Error;
+  };
+
+  /**
+   * Indicates actions which were invalidated as a result of vetoes. Each entry's `action` is an
+   * action number which has been invalidated (these may be action numbers within the range just
+   * applied, as well as future action numbers not yet applied), and its `invalidatedBy` is the
+   * vetoed action number that invalidated it (always an action listed in `vetoes`). The caller
+   * records these actions as rejected, so every entry must reflect durable gatekeeper state.
+   *
+   * These actions will have no effect when applied and will not produce an error.
+   *
+   * A list rather than a keyed map: JavaScript stringifies numeric object keys, so a map would
+   * force every consumer to parse them back, and the list keeps the gatekeeper's own ordering.
+   *
+   * Note that the Gatekeeper is not necessarily obliged to track when a veto may invalidate a
+   * future action. A Gatekeeper implementation may instead choose not to track dependencies, and
+   * instead let the future action fail with an error (producing `stopped`), leaving it up to the
+   * user to figure out the conflict and veto the dependent action manually. It is up to each
+   * Gatekeeper to decide the right trade-off between implementation complexity and UX.
+   */
+  invalidatedByVeto?: Array<{action: number, invalidatedBy: number}>;
+}
+
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
  * specific Gadget.
@@ -904,45 +944,65 @@ export interface Gatekeeper<Session> extends DurableObject {
   gitPull?(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
 
   // ---------------------------------------------------------------------------
-  // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
-  // for approval via the ApprovalQueue.
+  // Callback invoked by the overseer to resolve actions that were previously queued for approval
+  // via the ApprovalQueue.
   //
   // Each action is identified by a sequential integer action ID, assigned by the gatekeeper when
-  // it submits the action for approval. The action ID is passed back to these methods so the
+  // it submits the action for approval. The action ID is passed back to this method so the
   // gatekeeper can look up the action details in its own storage.
 
   /**
-   * Action was approved. This call should apply the action (or schedule it to be applied).
+   * Applies all actions through the given action ID (includes all previous actions that are not
+   * yet applied). Action IDs listed in `vetoes` are actions the user has rejected.
    *
-   * If this throws an exception, the user will be informed that the action failed and given the
-   * opportunity to retry or discard.
+   * Actions are applied in ascending ID order. Vetoed actions and actions invalidated by a veto
+   * become terminal no-ops. Processing stops at the first application failure; a pending in-range
+   * action the gatekeeper still holds must never be silently skipped — it is either applied or
+   * reported via `stopped`. An action whose `submitAction()` call has not yet completed must not
+   * be applied.
    *
-   * Depending on policy conditions, an action may be approved and applied automatically. However,
+   * Every ID in `vetoes` must be durably recorded before any action is applied, including when
+   * processing stops: the caller clears its staged veto on any call that returns, so a veto lost
+   * behind a `stopped` result would let a later frontier apply a rejected action.
+   *
+   * `actionId` is the requested processing boundary, and every ID in `vetoes` is at or below it.
+   * A batch that vetoes every in-range action still uses its ordinary final action ID as the
+   * boundary and must finish its veto processing before returning.
+   *
+   * `context` supplies the connection's Git cache and an invocation-scoped pack builder.
+   * A recognized coded `buildPack()` rejection must be returned as `stopped` at that action
+   * before external side effects; unknown failures propagate. A durably completed push is an
+   * idempotent no-op and does not need another pack.
+   *
+   * Depending on policy conditions, actions may be approved and applied automatically. However,
    * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
    * in which it's OK to skip the check.
    *
-   * To the maximum extent possible, implementations of `applyAction()` should be idempotent, as
-   * a poorly-timed crash may cause the overseer to fail to record that an `applyAction()`
-   * completed, and the user will likely then try to apply the action again in the future.
+   * Calls must be idempotent. Missing IDs and vetoes of unknown or already-applied actions are
+   * ignored. A repeated request must re-report persisted invalidations attributable to its vetoes.
+   */
+  applyActionsThrough?(actionId: number, vetoes: number[],
+                       context: ApplyActionContext): Promise<ApplyActionsThroughResult>;
+
+  /**
+   * Applies one approved action using a Git cache scoped to that action. Implementations should
+   * be idempotent because a crash may prevent the overseer from recording a completed call.
+   * Actions that don't interact with Git may ignore or omit `cache` in their implementation.
    *
-   * `cache` provides access to the workspace's git cache, which is often needed at apply time
-   * (when no `ObservationAuthorizer` is available). In fact, this stub points to a wrapper around
-   * `GitCache` that is scoped specifically for this action, which enables the `buildPack()` method
-   * to function -- it will build a pack specifically for the set of commits that had been listed
-   * in the action's `ActionDescription.pushedCommits`. Actions that don't interact with git can
-   * ignore this parameter (and can even omit the parameter from their `applyAction()`
-   * declaration).
+   * A thrown failure's message is persisted and displayed like `stopped.reason`, so it must stand
+   * alone as display-safe text.
+   *
+   * @deprecated Implement `applyActionsThrough()` instead.
    */
   applyAction(action: number, cache: RpcStub<GitCache>): Promise<void>;
 
   /**
-   * Indicates that an action was rejected by the user. The gatekeeper should clean up any
-   * associated storage.
+   * Rejects one pending action. The returned `restart` flag is ignored; the overseer discards it.
+   * This remains required while callers support immediate per-action rejection.
    *
-   * If the returned `restart` flag is true, rejecting this action requires restarting the Gadget.
-   * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
-   * the session may be in a state that is difficult to roll back without confusing the Gadget.
-   * The Overseer will take care of the restart, possibly after rejecting other actions.
+   * Rejecting an action the gatekeeper already discarded or rejected -- including one its own
+   * cascade invalidated -- must be a no-op success: the requested end state already holds, and a
+   * thrown failure is indistinguishable from a transient one, so the caller retries it forever.
    */
   rejectAction(action: number): Promise<void | {restart?: boolean}>;
 
@@ -963,11 +1023,9 @@ export interface Gatekeeper<Session> extends DurableObject {
    * `canRetry` should be true if the revert failed (for a reason described in `message`), but
    * it could make sense to retry later. In this case the UI will continue to give the user the
    * option to revert.
-   *
-   * `restart` has the same meaning as for `rejectAction()`.
    */
   revertAction(action: number):
-      Promise<void | {message?: string, canRetry?: boolean, restart?: boolean}>;
+      Promise<void | {message?: string, canRetry?: boolean}>;
 }
 
 export interface ObservationAuthorizer extends RpcTarget {
@@ -1073,9 +1131,8 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * be carried out until much later. It's intended that the user might not approve actions until
    * hours or days later, but this shouldn't cause any problems.
    *
-   * `action` is a sequential integer action ID assigned by the gatekeeper. It will be passed back
-   * to the Gatekeeper's applyAction() or rejectAction() when the action is later approved or
-   * rejected.
+   * `action` is a sequential integer action ID assigned by the gatekeeper. It will later be used as
+   * a decision frontier or veto in the Gatekeeper's `applyActionsThrough()` method.
    *
    * `description` describes the action in a way that can direct UI representation and policy
    * enforcement details.
@@ -1279,14 +1336,14 @@ export type ActionDescription = {
    * will cause `submitAction()` to throw an exception.
    *
    * Even when the action is successfully submitted, the Gatekeeper is obliged -- as always -- not
-   * to actually transmit any data until the action is approved and applied with `applyAction()`.
-   * As always, though, the Gatekeeper is expected to simulate the effects of the action
-   * immediately. E.g. if the agent queries the state of the remote repo, the Gatekeeper should
-   * indicate that the push has completed.
+   * to actually transmit any data until the action is approved and applied with `applyAction()` or
+   * `applyActionsThrough()`. As always, though, the Gatekeeper is expected to simulate the effects
+   * of the action immediately. E.g. if the agent queries the state of the remote repo, the
+   * Gatekeeper should indicate that the push has completed.
    *
-   * In order to assist in simulation, the `GitCache` passed to the Gatekeeper will always provide
-   * access to all objects which are pending a push (part of a submitted but not-yet-applied
-   * action). See `GitCache` for more info.
+   * The `GitCache` available to the Gatekeeper provides access to all objects pending a push. At
+   * application time, `GitCache.buildPack()` serves the legacy single-action path and
+   * `GitPackBuilder.buildPack()` serves the batch path.
    */
   pushedCommits?: GitOid[];
 
@@ -1445,6 +1502,58 @@ export type GitOid = string;
  * workspaces but is included here because it is one of the four git object types.)
  */
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
+
+/** Stable error codes for expected failures from `GitPackBuilder.buildPack()`. */
+export const GIT_PACK_ERROR_CODES = {
+  /** The invocation that owned the builder has completed. */
+  builderExpired: "GIT_PACK_BUILDER_EXPIRED",
+  /** The selected action was not an authorized declared push in this invocation. */
+  actionNotAuthorized: "GIT_PACK_ACTION_NOT_AUTHORIZED",
+  /** The selected action is no longer pending or its gatekeeper connection was removed. */
+  actionUnavailable: "GIT_PACK_ACTION_UNAVAILABLE",
+} as const;
+
+/** An expected `GitPackBuilder.buildPack()` failure code. */
+export type GitPackErrorCode =
+    typeof GIT_PACK_ERROR_CODES[keyof typeof GIT_PACK_ERROR_CODES];
+
+const gitPackErrors = codedErrorFamily<GitPackErrorCode>({
+  [GIT_PACK_ERROR_CODES.builderExpired]: "Git pack builder is no longer active.",
+  [GIT_PACK_ERROR_CODES.actionNotAuthorized]:
+      "Action is not authorized for Git pack building in this apply-through call.",
+  [GIT_PACK_ERROR_CODES.actionUnavailable]:
+      "Git pack action is no longer pending or its connection was removed.",
+});
+
+/** Creates an expected Git pack failure carrying its stable machine-readable code. */
+export const createGitPackError: (
+  code: GitPackErrorCode,
+) => Error & { code: GitPackErrorCode } = gitPackErrors.create;
+
+/** Classifies an expected Git pack failure by recognized `code` only. */
+export const getGitPackErrorCode: (error: unknown) => GitPackErrorCode | undefined =
+    gitPackErrors.getCode;
+
+/**
+ * Invocation-scoped native-RPC capability for building packs for authorized declared pushes.
+ */
+export interface GitPackBuilder extends RpcTarget {
+  /**
+   * Builds a pack for one gatekeeper-local action ID authorized in the containing apply-through
+   * call. The selected action need not equal that call's frontier. A valid push whose full closure
+   * is already known to the remote returns a valid empty pack. Expected availability and authority
+   * failures carry a code from `GIT_PACK_ERROR_CODES`.
+   */
+  buildPack(action: number): Promise<ReadableStream<Uint8Array>>;
+}
+
+/** Git capabilities supplied to an action-processing invocation. */
+export type ApplyActionContext = {
+  /** This connection's cache view, including later pending pushes; no legacy buildPack(). */
+  gitCache: RpcStub<GitCache>;
+  /** Builds only this invocation's authorized pushes; expires when the invocation completes. */
+  gitPackBuilder: RpcStub<GitPackBuilder>;
+};
 
 /**
  * Interface to the workspace's git object cache, as exposed to one gatekeeper.
