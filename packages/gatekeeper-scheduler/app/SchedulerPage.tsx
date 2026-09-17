@@ -189,7 +189,7 @@ export default function SchedulerPage({
           variant="primary"
           icon={Plus}
           data-action="create-schedule"
-          className="self-start"
+          className="self-start !bg-kumo-brand enabled:hover:!bg-kumo-brand-hover"
           onClick={() => void runHostAction(() => openPrompt(CREATE_SCHEDULE_PROMPT))}
         >
           Create schedule
@@ -222,7 +222,7 @@ export default function SchedulerPage({
                 data-filter={item.value}
                 aria-current={filter === item.value ? "page" : undefined}
                 className={`relative !h-auto !rounded-none !px-0 !pb-2 text-sm ${
-                  filter === item.value ? "!text-kumo-default font-medium" : "!text-kumo-subtle"
+                  filter === item.value ? "!text-kumo-default font-medium" : "!text-kumo-subtle hover:!text-kumo-default"
                 }`}
                 onClick={() => setFilter(item.value)}
               >
