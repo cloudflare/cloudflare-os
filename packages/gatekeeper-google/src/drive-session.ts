@@ -1,3 +1,4 @@
+import { isObservationRefused } from "@gadgets/gatekeeper-kit/observers";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
 import {
@@ -322,7 +323,10 @@ abstract class DriveCoreBase {
     try {
       await this.authorize({title, description, excludeObservers: check.excludeObservers});
     } catch (error) {
-      check.discard?.();
+      // Only a marked refusal proves the overseer recorded nothing. Any other failure leaves the
+      // outcome unknown, so the fence latches exactly as a commit would.
+      if (isObservationRefused(error)) check.discard?.();
+      else check.commit();
       throw error;
     }
     check.commit();

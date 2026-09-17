@@ -1,3 +1,4 @@
+import { OBSERVATION_REFUSED_CODE } from "@gadgets/gatekeeper-kit/observers";
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { DriveObservation } from "../src/drive-observers";
@@ -12,6 +13,10 @@ import {
 import type { ObserverCheck } from "../src/observers";
 import { driveObserverTracker } from "../src/drive-observers";
 import { FakeKv } from "./fake-kv";
+
+const refusal = () =>
+  Object.assign(new Error("refused"), { code: OBSERVATION_REFUSED_CODE });
+
 const docMime = "application/vnd.google-apps.document";
 const sheetMime = "application/vnd.google-apps.spreadsheet";
 
@@ -197,14 +202,27 @@ describe("Drive session scope", () => {
     expect(events).toEqual(["authorize", "latch"]);
   });
 
-  it("leaves admission open when the empty search is itself refused", async () => {
+  // The overseer can record the observation and lose the response, so an unmarked failure leaves
+  // the outcome unknown and the fence must stand.
+  it("latches admission when an empty search's audit fails ambiguously", async () => {
     let { session, events } = core({
       files: [],
-      authorize: async () => { throw new Error("denied"); },
+      authorize: async () => { throw new Error("connection lost"); },
     });
 
     await expect((await session.search({ namePrefix: "missing" })).next())
-      .rejects.toThrow("denied");
+      .rejects.toThrow("connection lost");
+    expect(events).toEqual(["authorize", "latch"]);
+  });
+
+  it("leaves admission open when the overseer marks the audit refused", async () => {
+    let { session, events } = core({
+      files: [],
+      authorize: async () => { throw refusal(); },
+    });
+
+    await expect((await session.search({ namePrefix: "missing" })).next())
+      .rejects.toThrow("refused");
     expect(events).toEqual(["authorize", "unlatch"]);
   });
 
