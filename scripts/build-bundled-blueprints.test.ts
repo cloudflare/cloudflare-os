@@ -101,10 +101,13 @@ describe("bundled blueprint scripts", () => {
   it("ignores hidden duplicate manifests when importing an update", async () => {
     let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
-    // Two hidden backups: one from a process long gone, one from this process, standing in for an
-    // import still running beside the one under test.
+    // Two hidden backups: one from a process that has exited, one from this process, standing in
+    // for an import still running beside the one under test.
+    let exited = spawnSync(process.execPath, ["-e", ""], {encoding: "utf8"});
+    assert.equal(exited.status, 0, exited.stderr);
+    let dead = `.example.backup-${exited.pid}`;
     let running = `.example.backup-${process.pid}`;
-    for (let name of ["example", ".example.backup-123", running]) {
+    for (let name of ["example", dead, running]) {
       await mkdir(join(directory, name, "files"), {recursive: true});
       await writeFile(join(directory, name, "blueprint.json"),
         `${JSON.stringify(manifest, null, 2)}\n`);
