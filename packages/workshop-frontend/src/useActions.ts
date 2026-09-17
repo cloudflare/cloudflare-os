@@ -189,7 +189,7 @@ function openSubscription(overseer: RpcStub<Overseer>, store: Store) {
   const subscribed = startAfter
     ? overseer.subscribeToActions(subscriber, startAfter)
     : overseer.subscribeToActions(subscriber)
-  subscribed.then((sub: RpcStub<{}>) => {
+  subscribed.then(sub => {
     if (store.generation !== generation) {
       sub[Symbol.dispose]()
       return
