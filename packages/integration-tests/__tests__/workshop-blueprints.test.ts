@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { type Harness, startHarness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
+import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
 
 let harness: Harness | undefined;
 const network = new NetworkInterceptor();
@@ -33,7 +33,8 @@ function username(prefix: string): string {
 
 it.concurrent("publishes, instantiates, and deletes an owned blueprint", async () => {
   using publicApi = connect(requireHarness().url);
-  using authenticated = await signUp(publicApi, username("blueprint"));
+  const owner = username("blueprint");
+  using authenticated = await signUp(publicApi, owner);
   const formats = await waitFor("bundled output formats to install", async () => {
     const offers = await authenticated.listOutputFormats();
     return offers.length > 0 ? offers : null;
@@ -81,7 +82,15 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
   // Deleting schedules a DO abort; dispose now so the session is told the workspace closed before
   // the abort drops the stub, which would otherwise take the shared WebSocket down with it.
   installedWorkspace[Symbol.dispose]();
-  await sourceWorkspace.deleteSelf();
+  // The dispose usually reaches the DO before the abort, but not always (workshop-lifecycle.test.ts
+  // has the mechanism): when the abort lands first it takes this socket down, and the second
+  // delete, a round trip on it, fails with the peer closed -- which it did on a loaded runner. So
+  // nothing below may depend on `authenticated` surviving. A browser would reconnect and log in
+  // again; so does this.
+  using reconnected = connect(requireHarness().url);
+  using relogged = await logIn(reconnected, owner);
+  using sourceAgain = await relogged.openGadget(sourceMetadata.id);
+  await sourceAgain.deleteSelf();
 });
 
 it.concurrent("creates and removes an indexed standard output", async () => {

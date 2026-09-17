@@ -311,25 +311,34 @@ describe("sensitive observations", () => {
 
       // Bob verifies against the one connection and stays connected.
       const bobSession = await bobHolds(ws, bob);
-      let lateId: number;
       try {
         // A second connection Bob has never been verified against. It is in his verification
         // scope the moment it exists -- a "build" session can open a session on it with no
         // observer check -- and his live session was admitted without it, so adding it severs
-        // every session.
+        // every session. This one included, shortly after the call returns (see
+        // reopenAfterRestart), so `late` is asked nothing here: on a loaded runner even one
+        // more round trip on this socket has lost the race with the abort. Its id is read back
+        // on the fresh connection below.
         const accounts = await listConnectedAccounts(ws.aliceApi);
         const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
         const late = await ws.overseer.newGatekeeper(account.id, thingUrl("late"));
         if (!late) throw new Error("Failed to create the second test connection");
-        lateId = await late.getId();
       } finally {
         bobSession.close();
       }
 
-      const reopened = await reopenAfterRestart(ws, lateId);
+      const reopened = await reopenAfterRestart(ws);
       try {
+        // The connection just added, found by the URL it was created with: requirements are what
+        // a "build" recipient must verify, which it is by construction.
+        const needs = await reopened.overseer.listObserverRequirements("build");
+        const lateId = needs.find(need => need.resourceUrl === thingUrl("late"))?.gatekeeperId;
+        if (lateId === undefined) throw new Error("The second connection is not a requirement");
+
         // Nothing is blocked: the owner reads restricted data through the new connection...
-        await expect(reopened.session.readValue(true)).resolves.toBe(42);
+        using lateGatekeeper = await reopened.overseer.getGatekeeperById(lateId);
+        using lateSession = await lateGatekeeper.openSession() as RpcStub<TestSession>;
+        await expect(lateSession.readValue(true)).resolves.toBe(42);
 
         // ...and Bob's forced re-open is where it gets verified. He is asked about exactly it,
         // since his coverage for the connections that predate it survived.
