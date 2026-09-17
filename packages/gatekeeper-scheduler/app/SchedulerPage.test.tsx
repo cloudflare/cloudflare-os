@@ -9,6 +9,15 @@ import SchedulerPage, {
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Kumo's Tabs measures tab widths for its underline indicator and scrolls the active tab into
+// view on selection; jsdom implements neither.
+vi.stubGlobal("ResizeObserver", class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+});
+Element.prototype.scrollIntoView ??= () => {};
+
 const BRIEF_WORKSPACE = "a".repeat(64);
 const ROUNDUP_WORKSPACE = "b".repeat(64);
 const DELETED_WORKSPACE = "c".repeat(64);

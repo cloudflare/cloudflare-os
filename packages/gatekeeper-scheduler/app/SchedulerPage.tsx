@@ -1,3 +1,4 @@
+import { Button, Empty, InputGroup, Loader, Tabs } from "@cloudflare/kumo";
 import {
   CalendarBlank,
   CaretDown,
@@ -6,7 +7,7 @@ import {
   Plus,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import type {
   ManagementListOptions,
   ManagementSchedule,
@@ -184,68 +185,70 @@ export default function SchedulerPage({
             Wake a workspace and run its code on a schedule you choose.
           </p>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          icon={Plus}
           data-action="create-schedule"
-          className="press inline-flex h-9 items-center justify-center gap-2 self-start rounded-lg bg-kumo-brand px-3.5 text-sm font-medium text-white hover:bg-kumo-brand-hover"
+          className="self-start"
           onClick={() => void runHostAction(() => openPrompt(CREATE_SCHEDULE_PROMPT))}
         >
-          <Plus size={16} weight="bold" /> Create schedule
-        </button>
+          Create schedule
+        </Button>
       </header>
 
       {!isEmpty && (
         <>
-          <label className="mt-4 flex h-9 items-center gap-2 rounded-lg border border-kumo-line bg-kumo-control px-3 text-kumo-inactive focus-within:ring-2 focus-within:ring-kumo-ring">
-            <MagnifyingGlass size={15} />
-            <span className="sr-only">Search scheduled tasks</span>
-            <input
-              className="min-w-0 flex-1 bg-transparent text-sm text-kumo-default outline-none placeholder:text-kumo-inactive"
+          <InputGroup className="mt-4">
+            <InputGroup.Addon align="start">
+              <MagnifyingGlass size={15} />
+            </InputGroup.Addon>
+            <InputGroup.Input
+              aria-label="Search scheduled tasks"
               type="search"
               value={query}
               maxLength={200}
               placeholder="Search scheduled tasks…"
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
-          </label>
+          </InputGroup>
 
-          <nav className="mt-4 flex gap-5 border-b border-kumo-line" aria-label="Schedule status">
-            {FILTERS.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                data-filter={item.value}
-                aria-current={filter === item.value ? "page" : undefined}
-                className={`relative pb-2 text-sm ${filter === item.value ? "font-medium text-kumo-default" : "text-kumo-subtle hover:text-kumo-default"}`}
-                onClick={() => setFilter(item.value)}
-              >
-                {item.label}
-                {filter === item.value && (
-                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-kumo-brand" />
-                )}
-              </button>
-            ))}
-          </nav>
+          <Tabs
+            variant="underline"
+            value={filter}
+            onValueChange={(value) => setFilter(value as Filter)}
+            tabs={FILTERS.map((item) => ({
+              value: item.value,
+              label: item.label,
+              // data-filter is a test hook (SchedulerPage.test.tsx); Kumo's TabsItem has no
+              // passthrough for arbitrary attributes, so it rides in via the render prop instead.
+              render: (props: ComponentProps<"button">) => (
+                <button {...props} data-filter={item.value} />
+              ),
+            }))}
+            className="mt-4"
+          />
         </>
       )}
 
       <section aria-live="polite" aria-busy={loading} className={isEmpty ? undefined : "min-h-32"}>
         {loading ? (
-          <p className="py-12 text-center text-sm text-kumo-subtle">Loading scheduled tasks…</p>
-        ) : error ? (
-          <div className="flex flex-col items-center gap-3 py-12 text-center">
-            <p className="text-sm text-kumo-danger">Couldn’t load scheduled tasks.</p>
-            <button
-              className="text-sm font-medium text-kumo-link hover:text-kumo-brand-hover"
-              onClick={() => void load()}
-            >
-              Try again
-            </button>
+          <div className="flex flex-col items-center gap-3 py-12">
+            <Loader size="base" />
+            <p className="text-sm text-kumo-subtle">Loading scheduled tasks…</p>
           </div>
+        ) : error ? (
+          <Empty
+            size="sm"
+            icon={<WarningCircle size={32} />}
+            title="Couldn’t load scheduled tasks."
+            contents={
+              <Button variant="secondary" onClick={() => void load()}>
+                Try again
+              </Button>
+            }
+          />
         ) : isEmpty ? null : schedules.length === 0 ? (
-          <p className="py-12 text-center text-sm text-kumo-subtle">
-            No scheduled tasks match these filters.
-          </p>
+          <Empty size="sm" title="No scheduled tasks match these filters." />
         ) : (
           <div className="divide-y divide-kumo-line">
             {schedules.map((schedule) => {
@@ -277,15 +280,14 @@ export default function SchedulerPage({
         )}
         {!loading && !error && cursor && (
           <div className="flex justify-center py-5">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               data-action="load-more"
-              disabled={loadingMore}
-              className="rounded-lg border border-kumo-line bg-kumo-control px-4 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint disabled:opacity-50"
+              loading={loadingMore}
               onClick={() => void load(cursor)}
             >
-              {loadingMore ? "Loading…" : "Load more"}
-            </button>
+              Load more
+            </Button>
           </div>
         )}
       </section>
@@ -390,19 +392,17 @@ function ScheduleRow({
           </span>
         </button>
         {needsAttention && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            shape="circle"
+            size="sm"
             data-action="toggle-diagnostic"
             aria-expanded={expanded}
             aria-label={`${expanded ? "Hide" : "Show"} why ${schedule.title} needs attention`}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-kumo-inactive hover:bg-kumo-fill hover:text-kumo-default"
+            className="shrink-0 text-kumo-inactive hover:text-kumo-default"
+            icon={<CaretDown size={14} className={`transition-transform ${expanded ? "rotate-180" : ""}`} />}
             onClick={onToggle}
-          >
-            <CaretDown
-              size={14}
-              className={`transition-transform ${expanded ? "rotate-180" : ""}`}
-            />
-          </button>
+          />
         )}
       </div>
       {needsAttention && expanded && timing.diagnostic && (

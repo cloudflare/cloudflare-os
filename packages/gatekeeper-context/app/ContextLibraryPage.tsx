@@ -1,4 +1,4 @@
-import { Button, Dialog, DropdownMenu, Input, InputArea, useKumoToastManager } from "@cloudflare/kumo";
+import { Button, ClipboardText, Dialog, DropdownMenu, Input, InputArea, InputGroup, Tabs, useKumoToastManager } from "@cloudflare/kumo";
 import {
   BookOpen,
   Buildings,
@@ -761,14 +761,15 @@ function CreateCollectionView({
   return (
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-6 sm:px-10">
       <header className="ctx-rise px-3 pb-3 pt-10">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={CaretLeft}
           onClick={onCancel}
-          className="press mb-3 -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
+          className="mb-3 -ml-1 text-kumo-subtle hover:text-kumo-default"
         >
-          <CaretLeft size={14} />
           Context &amp; Skills
-        </button>
+        </Button>
         <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
           New collection
         </h1>
@@ -1023,32 +1024,31 @@ export default function ContextLibraryPage() {
           </p>
         </div>
         {enabled.length > 0 && (
-          <button
-            type="button"
+          <WorkshopButton
+            tone="primary"
+            icon={Plus}
             onClick={() => setCreating(true)}
-            className="press inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover"
+            className="!bg-kumo-brand text-white enabled:hover:!bg-kumo-brand-hover"
           >
-            <Plus size={14} weight="bold" />
             New collection
-          </button>
+          </WorkshopButton>
         )}
       </header>
 
       {enabled.length > 0 && (
         <div className="mb-4 px-3">
-          <div className="relative">
-            <MagnifyingGlass
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive"
-            />
-            <input
+          <InputGroup>
+            <InputGroup.Addon align="start">
+              <MagnifyingGlass size={16} />
+            </InputGroup.Addon>
+            <InputGroup.Input
+              aria-label="Search collections"
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search collections…"
-              className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
-          </div>
+          </InputGroup>
         </div>
       )}
 
@@ -1071,14 +1071,14 @@ export default function ContextLibraryPage() {
               </p>
             </div>
             {!search && (
-              <button
-                type="button"
+              <WorkshopButton
+                tone="primary"
+                icon={Plus}
                 onClick={() => setCreating(true)}
-                className="press mt-1 inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover"
+                className="mt-1 !bg-kumo-brand text-white enabled:hover:!bg-kumo-brand-hover"
               >
-                <Plus size={14} weight="bold" />
                 New collection
-              </button>
+              </WorkshopButton>
             )}
           </div>
         ) : (
@@ -1662,20 +1662,12 @@ function GitTokenManagementModal({
               <div className="space-y-2">
                 <div>
                   <FieldLabel>Remote URL</FieldLabel>
-                  <div className="mt-1 flex gap-2">
-                    <input
-                      readOnly
-                      value={newGitToken.remote}
-                      className="min-w-0 flex-1 rounded border border-kumo-line bg-kumo-base px-2 py-1 font-mono text-[11px] text-kumo-default"
-                    />
-                    <WorkshopButton
-                      tone="secondary"
-                      className="h-8!"
-                      onClick={() => copyToClipboard(newGitToken.remote, "Remote URL copied", "Failed to copy remote URL")}
-                    >
-                      Copy
-                    </WorkshopButton>
-                  </div>
+                  <ClipboardText
+                    text={newGitToken.remote}
+                    size="sm"
+                    className="mt-1 font-mono"
+                    tooltip={{ text: "Copy", copiedText: "Remote URL copied" }}
+                  />
                 </div>
                 <div>
                   <FieldLabel>Password</FieldLabel>
@@ -2537,13 +2529,15 @@ function CollectionEditor({
     return (
       <div className="h-full bg-kumo-base px-5 py-4 sm:px-8">
         <div className="mx-auto max-w-[520px]">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={CaretLeft}
             onClick={onBack}
-            className="press -ml-1 mb-4 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
+            className="-ml-1 mb-4 text-kumo-subtle hover:text-kumo-default"
           >
-            <CaretLeft size={14} />
             Context &amp; Skills
-          </button>
+          </Button>
           <div className="rounded-xl border border-kumo-line bg-kumo-base px-5 py-10 text-center shadow-[0_1px_2px_rgba(20,17,16,0.03)]">
             <BookOpen size={32} className="mx-auto mb-3 text-kumo-subtle" />
             <p className="m-0 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
@@ -2643,13 +2637,15 @@ function CollectionEditor({
         className={`${selectedPath ? "hidden sm:flex" : "flex"} min-h-0 w-full flex-col overflow-x-hidden border-r border-kumo-line bg-kumo-base sm:w-[320px] sm:shrink-0`}
       >
         <div className="flex h-14 shrink-0 items-center px-5">
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={CaretLeft}
             onClick={onBack}
-            className="press -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
+            className="-ml-1 text-kumo-subtle hover:text-kumo-default"
           >
-            <CaretLeft size={14} />
             Context &amp; Skills
-          </button>
+          </Button>
         </div>
           {metadata && (
             <div className="px-3 py-2.5">
@@ -2778,13 +2774,15 @@ function CollectionEditor({
           {selectedPath ? (
             <>
               {/* Mobile-only: return to the file index (desktop shows both panes already). */}
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={CaretLeft}
                 onClick={() => setSelectedPath(null)}
-                className="flex sm:hidden flex-shrink-0 items-center gap-1 border-b border-kumo-line px-4 py-2.5 text-[13px] text-kumo-subtle transition-colors hover:text-kumo-default"
+                className="flex-shrink-0 justify-start rounded-none border-b border-kumo-line px-4 py-2.5 text-kumo-subtle hover:text-kumo-default sm:hidden"
               >
-                <CaretLeft size={14} />
                 Files
-              </button>
+              </Button>
               <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 <DocumentEditor
                   key={selectedPath}
@@ -3204,40 +3202,39 @@ function DocumentEditor({
           </label>
         )}
         {showModeToggle && (
-          <div className="inline-flex h-8 shrink-0 items-center rounded-lg border border-kumo-line bg-kumo-fill p-0.5">
-            {[
-              { m: "read" as const, Icon: Eye, label: "View" },
-              { m: "edit" as const, Icon: readOnly ? Code : PencilSimple, label: readOnly ? "Source" : "Edit" },
-            ].map(({ m, Icon, label }) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                title={label}
-                aria-label={label}
-                aria-pressed={mode === m}
-                className={`press inline-flex h-full items-center justify-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition-colors ${
-                  mode === m
-                    ? "bg-kumo-base text-kumo-default shadow-sm ring-1 ring-kumo-line"
-                    : "text-kumo-subtle hover:text-kumo-default"
-                }`}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            variant="segmented"
+            size="sm"
+            className="shrink-0"
+            value={mode}
+            onValueChange={(value) => setMode(value as "read" | "edit")}
+            tabs={[
+              { value: "read", label: (<span className="inline-flex items-center gap-1"><Eye size={14} /> View</span>) },
+              {
+                value: "edit",
+                label: (
+                  <span className="inline-flex items-center gap-1">
+                    {readOnly ? <Code size={14} /> : <PencilSimple size={14} />}
+                    {readOnly ? "Source" : "Edit"}
+                  </span>
+                ),
+              },
+            ]}
+          />
         )}
         {!readOnly && (
           <>
           {/* Separate the destructive action from Save so it can't be fat-fingered. */}
           <span className="mx-0.5 h-5 w-px shrink-0 bg-kumo-line" aria-hidden="true" />
-          <button
+          <Button
+            variant="ghost"
+            shape="square"
+            size="sm"
             onClick={onRequestDelete}
             title="Delete document"
-            className="press flex h-8 w-8 items-center justify-center rounded-md text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-danger"
-          >
-            <Trash size={16} />
-          </button>
+            className="!h-8 !w-8 text-kumo-subtle hover:!text-kumo-danger"
+            icon={<Trash size={16} />}
+          />
           </>
         )}
       </div>
