@@ -111,7 +111,8 @@ export function assertModelAccess(access: LocalModelAccess, model: EvalModel): v
     if (model.provider !== "cloudflare") {
       throw new Error(
         `Direct Workers AI credentials only run cloudflare models, not ${model.provider} ` +
-        `(${model.model}); configure an AI Gateway to run it.`,
+        `(${model.model}). Configure an AI Gateway that serves it, or set WORKSHOP_EVAL_MODELS ` +
+        "to a Workers AI model; those results are not comparable to published baselines.",
       );
     }
     return;

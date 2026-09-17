@@ -6,9 +6,11 @@ import {
 /** A picker model resolved to the provider that serves it: SUGGESTED_MODELS is the eval catalog. */
 export type EvalModel = { provider: AiModelProvider; model: SuggestedModelId };
 
-// Measured unless WORKSHOP_EVAL_MODELS says otherwise. A Workers AI picker model, so it runs under
-// direct credentials as well as through a gateway.
-const DEFAULT_MODEL: SuggestedModelId<"cloudflare"> = "@cf/zai-org/glm-5.3-flash";
+/**
+ * The model published baselines are measured on. Served only through an AI Gateway with an OpenAI
+ * key; WORKSHOP_EVAL_MODELS selects another model, at the cost of comparability (see global-setup).
+ */
+export const DEFAULT_MODEL: SuggestedModelId = "gpt-5.6-luna";
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export type EvalIdentity = { gitCommit: string; taskVersion: string };

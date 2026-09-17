@@ -37,7 +37,7 @@ concurrency:
 
 env:
   NODE_VERSION: "24.19.0"
-  EVAL_TRIALS: "3"
+  EVAL_TRIALS: "10"
 
 jobs:
   trust:
