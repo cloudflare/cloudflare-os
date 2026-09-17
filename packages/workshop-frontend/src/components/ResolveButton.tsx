@@ -5,11 +5,17 @@ export function ResolveButton({
   variant = 'quiet',
   disabled,
   onClick,
+  describedBy,
 }: {
   tone: 'approve' | 'deny'
   variant?: 'quiet' | 'filled'
   disabled: boolean
   onClick: MouseEventHandler<HTMLButtonElement>
+  /**
+   * Ids of the review text this decision rests on (the restricted-mode notice and the request),
+   * so screen readers announce it on focus even though it follows the button in DOM order.
+   */
+  describedBy?: string
 }) {
   const toneClassName = variant === 'filled'
     ? 'h-7 bg-kumo-brand px-3 text-white enabled:hover:opacity-90'
@@ -22,6 +28,7 @@ export function ResolveButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-describedby={describedBy}
       className={`flex cursor-pointer items-center rounded-md text-[12px] font-medium tracking-[-0.15px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClassName}`}
     >
       {tone === 'approve' ? 'Approve' : 'Deny'}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
@@ -36,6 +36,9 @@ export default function ActivityNotifications({
   const [processing, setProcessing] = useState<Set<number>>(new Set())
   const resolveAction = useResolveAction(overseer, setProcessing)
   const { status, pending } = useActions(overseer)
+  // While restricted each request's approve/deny buttons name the shared notice and their own
+  // request text as their description: both follow the controls in DOM order.
+  const noticeId = useId()
 
   const openFullView = (view: ActivityView) => {
     setOpen(false)
@@ -83,9 +86,17 @@ export default function ActivityNotifications({
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">
-            {restricted && <RestrictedApprovalNotice className="mx-3.5 mb-1 mt-0.5 px-2.5 py-2" />}
+            {restricted && (
+              <RestrictedApprovalNotice id={noticeId} className="mx-3.5 mb-1 mt-0.5 px-2.5 py-2" />
+            )}
             {pending.slice(0, PREVIEW_LIMIT).map((action, index) => {
               const isProcessing = processing.has(action.id)
+              const requestId = `${noticeId}-request-${action.id}`
+              const incompleteId = `${noticeId}-incomplete-${action.id}`
+              const incomplete = isDescriptionIncomplete(action)
+              const describedBy = restricted
+                ? [noticeId, requestId, ...(incomplete ? [incompleteId] : [])].join(' ')
+                : undefined
               return (
                 <div
                   key={action.id}
@@ -105,7 +116,7 @@ export default function ActivityNotifications({
                         <span className="px-1">·</span>
                         {formatRelativeTime(action.createdAt)}
                       </span>
-                      <span className={`mt-1.5 block whitespace-pre-wrap text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle ${restricted ? '' : 'line-clamp-2'}`}>
+                      <span id={requestId} className={`mt-1.5 block whitespace-pre-wrap text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle ${restricted ? '' : 'line-clamp-2'}`}>
                         {action.description.description}
                       </span>
                       {entryFields(action).length > 0 && (
@@ -120,16 +131,18 @@ export default function ActivityNotifications({
                         tone="deny"
                         disabled={isProcessing}
                         onClick={() => void resolveAction(action.id, 'deny')}
+                        describedBy={describedBy}
                       />
                       <ResolveButton
                         tone="approve"
                         disabled={isProcessing}
                         onClick={() => void resolveAction(action.id, 'approve')}
+                        describedBy={describedBy}
                       />
                     </div>
                   </div>
-                  {isDescriptionIncomplete(action) && (
-                    <IncompleteDescriptionNotice className="mt-2 px-2.5 py-2" />
+                  {incomplete && (
+                    <IncompleteDescriptionNotice id={incompleteId} className="mt-2 px-2.5 py-2" />
                   )}
                 </div>
               )

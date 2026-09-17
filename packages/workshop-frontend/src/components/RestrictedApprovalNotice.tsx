@@ -13,9 +13,10 @@ export const RESTRICTED_APPROVAL_COPY =
  * chat card, notifications popover) while the workspace is restricted. The surfaces render the
  * description untruncated alongside it, since the notice asks the approver to read all of it.
  */
-export function RestrictedApprovalNotice({ className = '' }: { className?: string }) {
+export function RestrictedApprovalNotice({ id, className = '' }: { id?: string, className?: string }) {
   return (
     <div
+      id={id}
       role="note"
       className={`flex items-start gap-2.5 rounded-2xl bg-kumo-warning-tint px-3 py-2.5 ${className}`}
     >

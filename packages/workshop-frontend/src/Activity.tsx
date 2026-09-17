@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -643,6 +643,21 @@ function ReviewRequest({
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const fields = entryFields(record)
+  // The notices and the request follow the controls in DOM order, so while restricted the
+  // approve/deny buttons name them as their description and a screen reader hears the review
+  // text on focus.
+  const reviewId = useId()
+  const noticeId = `${reviewId}-notice`
+  const requestId = `${reviewId}-request`
+  const incompleteId = `${reviewId}-incomplete`
+  const incomplete = isDescriptionIncomplete(record)
+  const describedBy = restricted
+    ? [
+      noticeId,
+      ...(record.description.description ? [requestId] : []),
+      ...(incomplete ? [incompleteId] : []),
+    ].join(' ')
+    : undefined
   return (
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
@@ -680,15 +695,15 @@ function ReviewRequest({
           {onAlwaysApprove && (
             <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
           )}
-          <ResolveButton tone="deny" onClick={onReject} disabled={processing} />
-          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} />
+          <ResolveButton tone="deny" onClick={onReject} disabled={processing} describedBy={describedBy} />
+          <ResolveButton tone="approve" onClick={onApprove} disabled={processing} describedBy={describedBy} />
         </div>
       </div>
 
-      {restricted && <RestrictedApprovalNotice className="mt-2 max-w-2xl" />}
+      {restricted && <RestrictedApprovalNotice id={noticeId} className="mt-2 max-w-2xl" />}
 
       {record.description.description && (
-        <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${restricted || expanded ? '' : 'line-clamp-2'}`}>
+        <p id={requestId} className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${restricted || expanded ? '' : 'line-clamp-2'}`}>
           {record.description.description}
         </p>
       )}
@@ -701,9 +716,7 @@ function ReviewRequest({
         </p>
       ))}
 
-      {isDescriptionIncomplete(record) && (
-        <IncompleteDescriptionNotice className="mt-2 max-w-2xl" />
-      )}
+      {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2 max-w-2xl" />}
     </article>
   )
 }

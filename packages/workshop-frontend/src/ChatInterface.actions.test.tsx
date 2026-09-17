@@ -181,6 +181,19 @@ async function renderPendingCard(log: ActionLogEntry, props: { restricted?: bool
 
 const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
 
+// The text a screen reader announces as the Approve button's description.
+function approveDescribedBy(): string | null {
+  const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
+  if (!approve) throw new Error('No Approve button rendered')
+  const ids = approve.getAttribute('aria-describedby')
+  if (ids === null) return null
+  return ids.split(' ').map(id => {
+    const el = document.getElementById(id)
+    if (!el) throw new Error(`aria-describedby names a missing element: ${id}`)
+    return el.textContent ?? ''
+  }).join('\n')
+}
+
 describe('restricted approval', () => {
   it('shows the notice and the full request on a pending card while restricted', async () => {
     await renderPendingCard(pendingLog(), { restricted: true })
@@ -188,6 +201,19 @@ describe('restricted approval', () => {
     expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
     expect(document.body.textContent).toContain('Regards, the workspace.')
     expect(clampedDescription()).toBeNull()
+    // The controls precede the review text in DOM order, so the buttons name it explicitly.
+    const described = approveDescribedBy()
+    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(described).toContain('Regards, the workspace.')
+    expect(described).toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
+  it('names only the restricted notice and request for a complete description', async () => {
+    await renderPendingCard(pendingLog({ descriptionIsComplete: true }), { restricted: true })
+
+    const described = approveDescribedBy()
+    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(described).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 
   it('shows the notice and the full request on a blocking card while restricted', async () => {
@@ -195,6 +221,9 @@ describe('restricted approval', () => {
 
     expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
     expect(clampedDescription()).toBeNull()
+    const described = approveDescribedBy()
+    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(described).toContain('Regards, the workspace.')
   })
 
   it('keeps the scrolling description and no notice when not restricted', async () => {
@@ -202,6 +231,7 @@ describe('restricted approval', () => {
 
     expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
     expect(clampedDescription()).not.toBeNull()
+    expect(approveDescribedBy()).toBeNull()
   })
 })
 

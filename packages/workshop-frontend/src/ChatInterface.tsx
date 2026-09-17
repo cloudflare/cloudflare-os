@@ -4961,6 +4961,18 @@ function ChatInterface({
           }
         : undefined;
 
+    // While restricted the notices and the request follow the controls in DOM order, so the
+    // approve/deny buttons name them as their description. Ids derive from the action id: this is
+    // a render closure, not a component, so useId is unavailable, and one card renders per action.
+    const restrictedReview = restricted && isPending;
+    const noticeId = `action-${msg.actionId}-restricted-notice`;
+    const requestId = `action-${msg.actionId}-request`;
+    const incompleteId = `action-${msg.actionId}-incomplete-notice`;
+    const incomplete = isPending && isDescriptionIncomplete(log);
+    const describedBy = restrictedReview
+      ? [noticeId, requestId, ...(incomplete ? [incompleteId] : [])].join(" ")
+      : undefined;
+
     const actionControls = isPending ? (
       <>
         {autoApproveTarget &&
@@ -4978,12 +4990,14 @@ function ChatInterface({
           tone="deny"
           onClick={() => void resolveAction(msg.actionId, "deny")}
           disabled={isProc}
+          describedBy={describedBy}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(msg.actionId, "approve")}
           disabled={isProc}
+          describedBy={describedBy}
         />
       </>
     ) : null;
@@ -5030,8 +5044,8 @@ function ChatInterface({
                   </span>
                   {resourceMeta}
                 </div>
-                {restricted && <RestrictedApprovalNotice className="mt-2" />}
-                <div className={`chat-panel mt-1 pr-1 text-[13px] leading-[18px] text-kumo-subtle ${restricted ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
+                {restricted && <RestrictedApprovalNotice id={noticeId} className="mt-2" />}
+                <div id={requestId} className={`chat-panel mt-1 pr-1 text-[13px] leading-[18px] text-kumo-subtle ${restricted ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
                 {entryFields(log).length > 0 && (
@@ -5039,9 +5053,7 @@ function ChatInterface({
                     <ActionFields fields={entryFields(log)} />
                   </div>
                 )}
-                {isDescriptionIncomplete(log) && (
-                  <IncompleteDescriptionNotice className="mt-2" />
-                )}
+                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -5099,8 +5111,8 @@ function ChatInterface({
         )}
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
-            {restricted && isPending && <RestrictedApprovalNotice />}
-            <div className={`chat-panel pr-1 ${restricted && isPending ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
+            {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
+            <div id={requestId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
             {entryFields(log).length > 0 && (
@@ -5108,7 +5120,7 @@ function ChatInterface({
                 <ActionFields fields={entryFields(log)} />
               </div>
             )}
-            {isPending && isDescriptionIncomplete(log) && <IncompleteDescriptionNotice />}
+            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
             {resourceMeta}
           </div>
         )}
