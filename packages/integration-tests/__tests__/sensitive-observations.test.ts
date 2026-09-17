@@ -15,9 +15,10 @@
 // the overseer).
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { RpcStub } from "capnweb";
+import type { RpcPromise, RpcStub } from "capnweb";
 import {
-  OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type Overseer, type PublicApi,
+  OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type GatekeeperClient, type Overseer,
+  type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -388,10 +389,15 @@ describe("sensitive observations", () => {
         // scope the moment it exists -- a "build" session can open a session on it with no
         // observer check -- and his live session was admitted without it, so adding it severs
         // every session.
+        //
+        // Pipeline getId() onto the creation rather than awaiting the stub first: the restart
+        // lands ~100ms after newGatekeeper() returns and kills this connection, so a separate
+        // round trip for the id can lose that race on a loaded runner. (The test vendor always
+        // yields a connection, so the null case is not handled.)
         const accounts = await listConnectedAccounts(ws.aliceApi);
         const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
-        const late = await ws.overseer.newGatekeeper(account.id, thingUrl("late"));
-        if (!late) throw new Error("Failed to create the second test connection");
+        const late = ws.overseer.newGatekeeper(account.id, thingUrl("late")) as
+            RpcPromise<GatekeeperClient<any>>;
         lateId = await late.getId();
       } finally {
         bobSession.close();
