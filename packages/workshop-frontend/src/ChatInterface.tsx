@@ -2450,7 +2450,8 @@ interface ChatInterfaceProps {
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
   renderExtraTab?: () => React.ReactNode;
-  onHasAnyCodeChange?: (hasAnyCode: boolean) => void;
+  // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
+  onAnyChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
   // The workpieces the selected chat proposes changes to (empty when none is selected or it
   // proposes nothing); see AiChatMetadata.proposedChangeWorkpieces.
   onSelectedChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
@@ -2642,7 +2643,7 @@ function ChatInterface({
   sidebarWidth = 280,
   onSidebarResize,
   renderExtraTab,
-  onHasAnyCodeChange,
+  onAnyChatProposedChangesChange,
   onSelectedChatProposedChangesChange,
   constrainChatWidth,
   onOpenGadget,
@@ -2960,15 +2961,21 @@ function ChatInterface({
     }
   }, [chatList.length, chatListReady, hasChatZero]);
 
-  // Notify parent when any chat has proposed changes (code written but not merged).
-  const onHasAnyCodeChangeRef = useRef(onHasAnyCodeChange);
-  onHasAnyCodeChangeRef.current = onHasAnyCodeChange;
-  const anyHasProposedChanges = chatList.some(chatHasProposedChanges);
+  // Notify parent which workpieces any chat proposes changes to (code written but not merged).
+  // Keyed on the set's content, since chat metadata is redelivered wholesale on every lastActive
+  // bump.
+  const onAnyChatProposedChangesChangeRef = useRef(onAnyChatProposedChangesChange);
+  onAnyChatProposedChangesChangeRef.current = onAnyChatProposedChangesChange;
+  const anyProposedWorkpieces = [
+    ...new Set(chatList.flatMap((meta) => meta.proposedChangeWorkpieces ?? [])),
+  ].toSorted((a, b) => a - b);
+  const anyProposedWorkpiecesKey = anyProposedWorkpieces.join(",");
   useEffect(() => {
     if (chatListReady) {
-      onHasAnyCodeChangeRef.current?.(anyHasProposedChanges);
+      onAnyChatProposedChangesChangeRef.current?.(anyProposedWorkpieces);
     }
-  }, [anyHasProposedChanges, chatListReady]);
+    // oxlint-disable-next-line exhaustive-deps -- anyProposedWorkpieces is covered by its key.
+  }, [anyProposedWorkpiecesKey, chatListReady]);
 
   // In sidebar mode, auto-select the most recent chat when none is selected.
   useEffect(() => {

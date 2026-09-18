@@ -638,7 +638,9 @@ export default function GadgetEditor() {
   const [hasChatZero, setHasChatZero] = useState(false)
   const [_hasBindings, setHasBindings] = useState(false)
   const [isAgentActive, setIsAgentActive] = useState(false)
-  const [hasAnyProposedChanges, setHasAnyProposedChanges] = useState(false)
+  // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
+  const [anyChatProposedWorkpieces, setAnyChatProposedWorkpieces] =
+    useState<readonly WorkpieceId[]>([])
   // The workpieces the selected chat proposes changes to (see
   // AiChatMetadata.proposedChangeWorkpieces): drives per-gadget draft previews below.
   const [selectedChatProposedWorkpieces, setSelectedChatProposedWorkpieces] =
@@ -647,23 +649,12 @@ export default function GadgetEditor() {
   const chatListReady = chatCount !== null
   const singleInitialChat = chatCount === 1 && hasChatZero
   const [userNavigatedToList, setUserNavigatedToList] = useState(false)
-  // Note: raw `hasCode` (not `effectiveHasCode` below) is deliberate here, to avoid a dependency
-  // cycle: the effective value depends on the selected workpiece, whose pending-gadget visibility
-  // depends on `effectiveSelectedChatId`, which depends on this pin. When no gadget is selected
-  // yet, `hasCode` is null and the pin stays on -- the right behavior for new workspaces.
-  const pinInitialChatSelection =
-    singleInitialChat && hasCode !== true && !userNavigatedToList
 
-  // Before any code has been merged, a single-thread gadget conceptually only
-  // has one useful conversation, so keep chat 0 selected even if the URL has
-  // not caught up yet. As soon as merged code exists, dropping back to the chat
-  // list should become possible.
-  const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
-
-  // ── workpiece selection ──────────────────────────────────────────────────────
   // Gadgets are the workspace's apps: the ones that can be the open app, be previewed, hold
   // bindings, and be persisted as the workspace's view. Worktrees are chat-private repositories
-  // with only code to show; they ride alongside as pending gadgets do.
+  // with only code to show; they ride alongside as pending gadgets do, and never affect the
+  // workspace's layout mode: a second chat shares nothing with the first until an accepted gadget
+  // exists.
   const allGadgets = useMemo(() => {
     return [...workpieces.values()]
       .filter((w): w is GadgetSummary => w.type === 'gadget')
@@ -674,6 +665,22 @@ export default function GadgetEditor() {
       .filter((w): w is WorktreeSummary => w.type === 'worktree')
       .toSorted((a, b) => a.id - b.id)
   }, [workpieces])
+  const isWorktreeId = (workpieceId: WorkpieceId) => workpieces.get(workpieceId)?.type === 'worktree'
+
+  // Whether an accepted gadget exists, known synchronously from the workpiece summaries (every
+  // permanent gadget has a head commit; a draft has none). Not the code view's `hasCode`, which
+  // reflects whichever workpiece is selected -- a worktree included -- and on the first accept
+  // arrives only after the new head's tree loads.
+  const hasCommittedCode = allGadgets.some(g => g.commitId !== undefined)
+
+  // Before any gadget has been accepted, a single-thread workspace conceptually only has one
+  // useful conversation, so keep chat 0 selected even if the URL has not caught up yet. As soon as
+  // an accepted gadget exists, dropping back to the chat list should become possible.
+  const pinInitialChatSelection =
+    singleInitialChat && !hasCommittedCode && !userNavigatedToList
+  const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+
+  // ── workpiece selection ──────────────────────────────────────────────────────
 
   // The format a workpiece was built as, for surfaces that only know an id (the chat's "created
   // app" cards, the tool-call rows). Read from the live workpiece list, so it stays correct as the
@@ -821,31 +828,25 @@ export default function GadgetEditor() {
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
   const pendingActionCount = pendingActions.length
 
-  // Whether the *selected* workpiece has code. When none is selected, the code interface is
-  // unmounted and raw `hasCode` can't update, but a workpiece-less workspace has no code to show.
-  const effectiveHasCode = selectedWorkpieceSummary !== undefined
+  // Whether the *selected* gadget has code. When none is selected, the code interface is either
+  // unmounted or showing a worktree, whose code doesn't bear on the layout mode.
+  const effectiveHasCode = selectedGadgetSummary !== undefined
     ? hasCode
     : workpiecesReady ? false : null
 
   const codeStateReady = effectiveHasCode !== null
   const hasCodeRelatedState = effectiveHasCode === true
-    || hasAnyProposedChanges
-    || streamingActiveFile != null
+    || anyChatProposedWorkpieces.some(w => !isWorktreeId(w))
+    || (streamingActiveFile != null && !isWorktreeId(streamingActiveFile.workpieceId))
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
-  // Whether any gadget has committed code, known synchronously from the workpiece summaries (a
-  // head commit only exists once a chat's changes have been accepted). `hasCode` can't serve
-  // here: it reflects the *fetched* head tree, so on the first accept the proposed changes clear
-  // before the new head's tree arrives, and simple mode must not flash on during that window --
-  // the URL-alignment effect below would strip the chat from the URL, dropping the user back to
-  // the chat list once the tree loads and the mode flips back. (Kept out of layoutModeReady /
-  // hasCodeRelatedState so initial-load sequencing is unchanged.) A worktree is a repository of
-  // committed code from birth.
-  const hasCommittedCode = allGadgets.some(g => g.commitId !== undefined) || allWorktrees.length > 0
-
   // Wait for all initial subscriptions before choosing the new-workspace chat-only layout.
+  // `hasCommittedCode` matters here too: on the first accept the proposed changes clear before the
+  // new head's tree arrives, and simple mode must not flash on during that window -- the
+  // URL-alignment effect below would strip the chat from the URL. (Kept out of layoutModeReady /
+  // hasCodeRelatedState so initial-load sequencing is unchanged.)
   const simpleMode = layoutModeReady && !hasCodeRelatedState && !hasCommittedCode
-    && singleInitialChat && visibleWorkpieces.length <= 1
+    && singleInitialChat && visibleGadgets.length <= 1
   // The rail lists every workpiece in the workspace (picking another chat's draft or worktree
   // navigates to that chat), but the pane can only show one visible for the selected chat, so
   // it opens for an app only when there is one: with no chat selected in a workspace of drafts
@@ -1076,7 +1077,7 @@ export default function GadgetEditor() {
     setHasCode(null)
     setChatCount(null)
     setHasChatZero(false)
-    setHasAnyProposedChanges(false)
+    setAnyChatProposedWorkpieces([])
     setSelectedChatProposedWorkpieces([])
     setWorkspaceView(getStoredWorkspaceView(id))
     openedWorkpieceParamRef.current = null
@@ -1231,7 +1232,9 @@ export default function GadgetEditor() {
 
   // ── follow the agent across gadgets ─────────────────────────────────────────────
   // When the agent starts editing a gadget other than the selected one, switch the picker to it,
-  // unless the user picked a workpiece themselves during this turn.
+  // unless the user picked a workpiece themselves during this turn. A worktree is followed only
+  // while the pane already shows a workpiece: selecting via `?w=` opens the pane, and a worktree
+  // is never opened automatically.
   const userPickedWorkpieceThisTurnRef = useRef(false)
   useEffect(() => {
     userPickedWorkpieceThisTurnRef.current = false
@@ -1241,14 +1244,17 @@ export default function GadgetEditor() {
     const target = streamingActiveFile
     if (target == null || target.workpieceId === selectedWorkpieceId) return
     if (userPickedWorkpieceThisTurnRef.current) return
-    if (!visibleWorkpieces.some(g => g.id === target.workpieceId)) return
+    const targetSummary = visibleWorkpieces.find(g => g.id === target.workpieceId)
+    if (!targetSummary) return
+    if (targetSummary.type === 'worktree' && (!showFullEditor || showingActivity)) return
     navigate({
       to: '/workspace/$id',
       params: { id: id! },
       search: (prev: Record<string, unknown>) => ({ ...prev, w: target.workpieceId }),
       replace: true,
     })
-  }, [streamingActiveFile, selectedWorkpieceId, visibleWorkpieces, navigate, id])
+  }, [streamingActiveFile, selectedWorkpieceId, visibleWorkpieces, showFullEditor, showingActivity,
+      navigate, id])
 
   // ── workpiece picker handlers ───────────────────────────────────────────────────
   const handleSelectWorkpiece = useCallback((workpieceId: WorkpieceId) => {
@@ -1756,7 +1762,7 @@ export default function GadgetEditor() {
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
-                  onHasAnyCodeChange={setHasAnyProposedChanges}
+                  onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
                   outputOfWorkpiece={outputOfWorkpiece}
