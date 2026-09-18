@@ -93,7 +93,7 @@ Nothing cascades. A dependent who loses their only path to the owner (e.g. Carol
 
 ### Restoring access (undo)
 
-Because the graph is never destructively pruned, revocation is reversible. If you accidentally remove someone who had in turn shared with five other people, you can **undo** simply by re-adding them: their record and their five outgoing grants were never deleted, so re-adding an edge from the owner restores their reachability and, transitively, all five downstream collaborators. (Share-link revocation is likewise non-destructive via the `revoked` flag, though there is no UI to un-revoke a link yet -- see Future work.)
+Because the graph is never destructively pruned, revocation is reversible. If you accidentally remove someone who had in turn shared with five other people, you can **undo** simply by re-adding them: their record and their five outgoing grants were never deleted, so re-adding an edge from the owner restores their reachability and, transitively, all five downstream collaborators. (Share-link revocation is likewise non-destructive via the `revoked` flag, though there is no UI to un-revoke a link yet -- see Future work.) The undo applies only while `ownerInvitesOnly` is unset: once it is set, only direct grants from the owner count, so re-adding someone restores nobody else (see "`ownerInvitesOnly`").
 
 This does mean removed collaborators and revoked links accumulate in storage. Listing RPCs (`listCollaborators`, `listShareLinks`) return only currently-active entries, so removed users disappear from the UI; a future GC could reclaim long-dead records.
 
@@ -105,6 +105,8 @@ Inputs (all optional; used to model a hypothetical change):
 - `removedUser` -- a profile ID to treat as removed (excluded from the graph).
 - `removedEdge` -- a single user edge (`{target, sharer}`) to treat as removed. Used to preview a non-owner removing only their own edge.
 - `revokedLinkId` -- a share link ID to treat as revoked.
+
+Once `ownerInvitesOnly` is set, the computation follows only `user` edges whose sharer is the owner (see "`ownerInvitesOnly`").
 
 The algorithm:
 
@@ -152,9 +154,27 @@ Because the role is recomputed from the graph on every `open()`, the live comput
 
 A share-key redemption goes through the same gate. The redeeming open() then verifies the recipient as an observer like any other collaborator; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
+### `ownerInvitesOnly`
+
+A gatekeeper whose data source requires each recipient to be granted access individually can mark an observation `ownerInvitesOnly` (`ObservationDescription` in `packages/workshop-shared/src/gatekeeper.ts`, typically alongside `containsRestrictedData`). Once any such observation is authorized, the Overseer permanently sets the `ownerInvitesOnly` storage flag (in `authorizeObservation`, after the exclusion gate, so a refused observation sets nothing). From then on, **only direct grants from the owner count**: `computeEffectiveRoles` skips every share-link edge (even for a link the owner created) and every `user` edge from anyone but the owner. Because every access decision derives from that computation, `open()`, `listCollaborators`, and the removal previews agree without further checks.
+
+- **Link joiners and transitively added people lose access.** Anyone who reached the workspace through a link or through another collaborator is denied at their next `open()` and disappears from `listCollaborators`. A collaborator whose owner edge grants less than they had reached transitively is downgraded to it. People the owner kept during a removal (`keepUsers`) hold owner edges, so they count as direct.
+- **The workspace restarts if anyone lost access.** `authorizeObservation` snapshots effective roles before setting the flag, diffs them afterwards, and if anyone was removed or downgraded schedules the same restart as a revocation (see below), then tears down their observer records and cached listings best-effort without making the observation wait.
+- **The owner can re-add them directly.** Adding someone by username creates an owner edge, and they open after passing verification like anyone else.
+- **Re-adding an intermediary restores nobody else.** If Alice added Bob, Bob added Carol, and Alice removed Bob, re-adding Bob after the flag is set brings back only Bob; Carol needs her own grant from Alice. The lazy undo (see Restoring access) applies only while the flag is unset.
+- **No new links.** `createShareLink` and `newShareLinkKey` throw "Share links are disabled…".
+- **No redemption for people without owner grants.** Redeeming a still-active link throws the same message, coded `OPEN_GADGET_ERROR_CODES.shareLinksDisabled`, for anyone the owner has not added directly, including people who joined through a link before the flag was set. The error page lets them retry once the owner adds them. A direct collaborator reopening an old link is let through, but no edge is added.
+- **Owner-only direct adds.** `addCollaborator` throws for non-owners, whose grants would count for nothing.
+
+The owner can still list, rename, and revoke links (which no longer grant anything) and remove collaborators. `GadgetMetadata.ownerInvitesOnly` reports the flag, and the Share modal hides link controls (and, for non-owners, the invite box).
+
+The policy lives in the Overseer, which passes it into `SharingManager` as a hook. Each grant checks it after its last await, right before the storage write, so an observation that sets the flag mid-call cannot slip a grant through.
+
+**Residual:** the observation that sets the flag is delivered to the gatekeeper's caller before the restart lands (~100ms later), so a session held by someone who is about to lose access stays live for that window.
+
 ### Terminating live sessions on revocation or scope growth
 
-Authorization is only checked at `open()`, so a session that is *already* open is not re-checked per message. Without intervention, a collaborator who was just removed or downgraded could keep using their live session until something else disconnected them. To close this gap, `removeCollaborator`/`revokeShareLink` proactively restart the gadget's Overseer DO via `ctx.abort()` whenever the change actually removed or downgraded someone (i.e. the returned `AffectedCollaborator[]` is non-empty; pure no-op removals don't restart). Aborting forcibly disconnects every client; each reconnects and re-runs `open()`, which re-evaluates the now-changed permission graph -- sending removed users to the terminal access-denied page and handing downgraded users their reduced capability (the editor swaps to the `use` view automatically based on `metadata.role`). Since removals are rare (and DOs restart unpredictably anyway, so reconnects are already cheap), the disruption is acceptable.
+Authorization is only checked at `open()`, so a session that is *already* open is not re-checked per message. Without intervention, a collaborator who was just removed or downgraded could keep using their live session until something else disconnected them. To close this gap, `removeCollaborator`/`revokeShareLink` (and `authorizeObservation`, when setting `ownerInvitesOnly` revokes access) proactively restart the gadget's Overseer DO via `ctx.abort()` whenever the change actually removed or downgraded someone (i.e. the returned `AffectedCollaborator[]` is non-empty; pure no-op removals don't restart). Aborting forcibly disconnects every client; each reconnects and re-runs `open()`, which re-evaluates the now-changed permission graph -- sending removed users to the terminal access-denied page and handing downgraded users their reduced capability (the editor swaps to the `use` view automatically based on `metadata.role`). Since removals are rare (and DOs restart unpredictably anyway, so reconnects are already cheap), the disruption is acceptable.
 
 Two precautions surround the abort (`OverseerImpl.scheduleAccessRestart`): the severed edge is flushed with `ctx.storage.sync()` first (because `ctx.abort()` does not respect the output gate, a restart could otherwise come back with the change lost), and the abort is delayed ~100ms so the triggering RPC's response reaches the caller -- typically the owner, who is also connected -- before their own connection drops. The disconnect reaches the browser through the existing `notifyClosed` plumbing: when the Overseer DO aborts, the per-session `notifyClosed` stub is disposed without being called, which `AuthenticatedApiImpl` treats as a lost connection and reacts to by killing the browser WebSocket, forcing a reconnect. The client discards its retained share key on the first successful open, so this forced reconnect after a removal is keyless and lands the removed collaborator on the access-denied page rather than silently re-redeeming the still-active link (which would undo the removal and break the assumption stated above). The residual is unchanged: the *link* itself survives a collaborator removal under the lazy model, so a recipient who kept the URL can still re-redeem it manually until the owner revokes it -- the discard removes only the client's automatic re-grant.
 

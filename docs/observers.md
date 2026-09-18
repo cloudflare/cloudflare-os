@@ -34,9 +34,13 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-latches the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
+puts the workspace into a restricted mode — no actions, no web fetches. Its coverage rests on
 admission: nobody can open the workspace without being verified against the producing gatekeeper,
-and anything that widens what they must be verified against restarts every live session.)
+and anything that widens what they must be verified against restarts every live session. An
+observation that also carries **`ownerInvitesOnly`** sets that flag on the workspace: from then on
+only direct grants from the owner count, so share links admit nobody, people who joined through a
+link or another collaborator lose access, and only the owner can add collaborators; see
+`sharing.md`, "`ownerInvitesOnly`".)
 
 The check works as follows:
 
@@ -100,7 +104,8 @@ The check works as follows:
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
-| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation`'s latch, `getWebFetchEnv`, `submitAction`) |
+| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
+| `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
 | Gatekeeper storage record | `overseer.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
 | `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts` |
@@ -667,8 +672,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    observation: `ensureObserver` re-verifies each collaborator against every in-scope gatekeeper
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
-   session (see "Restarting when verification scope widens"). The flag also latches the workspace
-   into a restricted mode that blocks actions and web fetches.
+   session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
+   puts the workspace into a restricted mode that blocks actions and web fetches.
    Verification is held to each collaborator's own role scope, because `ensureObserver` can
    never verify beyond it: a `use` collaborator can't be covered for a gatekeeper outside their
    scope (one no gadget binds and no enabled hook feeds — see `#useScopeGatekeeperIds`).
@@ -708,8 +713,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    (unbound, with no enabled hook keeping it reachable) is the different case Step 5's scope test
    handles: the gatekeeper still knows the id, but the observer can no longer reach what it
    produces, so they are de-registered from it instead of blocking.
-8. **Removing a connection that read restricted data** — removal is not guarded by the
-   restricted-data latch. The record is what observer verification runs against, so removing a
+8. **Removing a connection that read restricted data** — removal is not guarded by
+   `containsRestrictedData`. The record is what observer verification runs against, so removing a
    producer drops the check for data that outlives it in chat history and storage. The intended
    remedy is that a future connection-removal UI asks the owner to certify that no sensitive data
    from that connection has been retained in the workspace, for any connection.

@@ -301,8 +301,11 @@ export class TestVerifier
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
 export interface TestSession {
-  /** `restricted` marks the observation `containsRestrictedData`. */
-  readValue(restricted?: boolean): Promise<number>;
+  /**
+   * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
+   * `ownerInvitesOnly`.
+   */
+  readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
 }
@@ -319,11 +322,12 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     this.approvalQueue = approvalQueue.dup();
   }
 
-  async readValue(restricted?: boolean): Promise<number> {
+  async readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number> {
     await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
       ...(restricted ? { containsRestrictedData: true } : {}),
+      ...(ownerInvitesOnly ? { ownerInvitesOnly: true } : {}),
     });
     return 42;
   }

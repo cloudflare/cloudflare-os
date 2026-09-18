@@ -1154,6 +1154,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // True if any past observation was authorized that had the `containsRestrictedData` flag
       // set in its `ObservationDescription`. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
+
+      // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
+      // its `ObservationDescription`. Share links stop working and only the owner can add
+      // collaborators (enforced by SharingManager).
+      ownerInvitesOnly: singleton(false),
     },
 
     collections: {
@@ -5625,8 +5630,20 @@ class OverseerImpl implements AgentHooks {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
 
+    // Setting ownerInvitesOnly narrows access to direct owner grants (see
+    // SharingManager.computeEffectiveRoles), so the first observation to set it snapshots who had
+    // access beforehand. The manager may need an RPC on first use; from the flag read below through
+    // the diff after the writes, nothing awaits.
+    let sharing = description.ownerInvitesOnly && !this.storage.ownerInvitesOnly.get()
+        ? await this.getSharingManager() : undefined;
+    let baseline = sharing && !this.storage.ownerInvitesOnly.get()
+        ? sharing.computeEffectiveRoles() : undefined;
+
     if (description.containsRestrictedData) {
       this.storage.containsRestrictedData.put(true);
+    }
+    if (description.ownerInvitesOnly) {
+      this.storage.ownerInvitesOnly.put(true);
     }
 
     let actionId = this.storage.nextActionId.get();
@@ -5648,6 +5665,26 @@ class OverseerImpl implements AgentHooks {
 
     this.storage.actions.put(record);
     this.#associateAction(caller, actionId);
+
+    if (sharing && baseline) {
+      let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
+      if (affected.length > 0) {
+        // Anyone who joined through a link or through another collaborator just lost access (or
+        // was downgraded), so sever live sessions as removeCollaborator does, after the writes
+        // above. The cleanup is best-effort and not awaited: the observation shouldn't wait on
+        // gatekeeper and User-DO round trips, and whatever the restart cuts off self-heals (see
+        // removeCollaborator).
+        this.scheduleAccessRestart(
+            "Gadget restarted to revoke access for people the owner did not add directly.");
+        this.tearDownLostObservers(affected)
+            .then(() => this.refreshAffectedCollaboratorListings(affected))
+            .catch(err => {
+              this.logger.warn("failed to clean up after ownerInvitesOnly revoked access", {
+                event: "sharing.owner.invites.only.cleanup.failed", error: err,
+              });
+            });
+      }
+    }
   }
 
   async getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array> {
@@ -9567,7 +9604,8 @@ class OverseerImpl implements AgentHooks {
   // Resolving the owner's profile ID may require an RPC on first use; thereafter it's cached.
   async getSharingManager(): Promise<SharingManager> {
     if (!this.#sharingManager) {
-      this.#sharingManager = new SharingManager(this.storage, await this.getOwnerProfileId());
+      this.#sharingManager = new SharingManager(
+          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get());
     }
     return this.#sharingManager;
   }
@@ -10657,6 +10695,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -10671,19 +10710,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
+    // For collaborators, fetch owner info first: storage is read and subscribed below with no
+    // await in between, so an update can't land after the snapshot but before the subscription.
+    let owner = this.isOwner
+        ? undefined : await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
+
     let metadata: GadgetMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
-
-    // For collaborators, include owner info.
-    if (!this.isOwner) {
-      metadata.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
-    }
+    if (owner) metadata.owner = owner;
 
     let titleSubscriber = {
       update(value: string) {
@@ -10703,17 +10744,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let ownerInvitesOnlySubscriber = {
+      update(value: boolean | undefined) {
+        metadata.ownerInvitesOnly = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
+      this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
+    this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -12172,10 +12221,13 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<RpcStub<{}>> {
     callback = callback.dup();  // keep stub after return
 
+    // Fetch owner info first so the title read and subscription below have no await in between.
+    let owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
+
     let metadata: GadgetMetadata = {
       id: this.impl.ctx.id.toString(),
       title: this.impl.storage.title.get(),
-      owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
+      owner,
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -12883,7 +12935,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // `hookId` is set only on the queue startHook returns with each firing: that queue is held by
   // the gatekeeper across awaits (even other DOs), so like the firing's callback it revalidates
   // the hook per call -- otherwise a firing raced by a disable/delete could keep authorizing
-  // observations against a scope the shrink already excluded someone from (or latch
+  // observations against a scope the shrink already excluded someone from (or set
   // containsRestrictedData). Session queues (openSession) pass no hookId: they are bounded by the
   // facet's in-DO lifetime, which the session chokepoints already gate.
   constructor(private impl: OverseerImpl, private gatekeeperId: number,

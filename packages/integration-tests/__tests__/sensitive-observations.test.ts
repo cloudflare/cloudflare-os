@@ -4,9 +4,11 @@
 // gatekeeper's `addObserver` at their most recent open and cannot open without passing it, and
 // anything that widens what they must pass restarts the workspace so every live session re-opens
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
-// and sharing stays available. The observation also latches the workspace into a restricted mode:
-// once latched, the workspace may not perform actions (nor fetch from the web, which has no
-// client-reachable surface to assert here).
+// and sharing stays available. The observation also sets `containsRestrictedData`, putting the
+// workspace into a restricted mode: once it is set, the workspace may not perform actions (nor
+// fetch from the web, which has no client-reachable surface to assert here). An observation that
+// also carries `ownerInvitesOnly` sets that flag too: from then on only direct grants from the
+// owner count, so share links stop admitting anyone and people who joined through one lose access.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -14,9 +16,10 @@
 // the overseer).
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { RpcStub } from "capnweb";
-import type {
-  AuthenticatedApi, Overseer, PublicApi,
+import type { RpcPromise, RpcStub } from "capnweb";
+import {
+  OPEN_GADGET_ERROR_CODES, type AuthenticatedApi, type GatekeeperClient, type Overseer,
+  type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -217,11 +220,11 @@ async function bobHolds(ws: Workspace, bob: Bob): Promise<HeldSession> {
 }
 
 describe("sensitive observations", () => {
-  it.concurrent("latch restricted mode: actions are blocked and metadata reports it", async () => {
+  it.concurrent("containsRestrictedData: actions are blocked and metadata reports it", async () => {
     await withSession(async publicApi => {
-      const ws = await newWorkspace(publicApi, "latch");
+      const ws = await newWorkspace(publicApi, "restricted-mode");
 
-      // Before the latch, actions submit fine -- held for the owner's approval rather than
+      // Before the flag is set, actions submit fine -- held for the owner's approval rather than
       // refused, and applied once approved -- and metadata is clean.
       const write = ws.session.writeValue(7);
       const [held] = await waitFor("the write to be held for approval", async () => {
@@ -253,18 +256,90 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("sharing stays available after the latch", async () => {
+  it.concurrent("ownerInvitesOnly: link joiners lose access, the owner adds people directly",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "owner-invites-only");
+      const { key, linkId } = await ws.overseer.createShareLink("build", "before ownerInvitesOnly");
+      const [dave, carol] = nextUsernames("dave", "carol");
+      const opens = async (api: RpcStub<AuthenticatedApi>, account: ConnectedAccount) => {
+        const callback = stubFor(
+            new ObserverConfigRecorder().alwaysChoose(account.id, MAX_OBSERVER_PROMPTS));
+        try {
+          return await api.openGadget(ws.gadgetId, key, callback);
+        } finally {
+          callback[Symbol.dispose]();
+        }
+      };
+
+      // Dave joins through the link before ownerInvitesOnly is set.
+      const daveSignedUp = await signUp(publicApi, dave);
+      const daveAccount = await provisionAccount(daveSignedUp);
+      (await opens(daveSignedUp, daveAccount))[Symbol.dispose]();
+      expect(await ws.overseer.listCollaborators()).toHaveLength(1);
+
+      // The read sets ownerInvitesOnly. Only direct grants from the owner count from then on, and
+      // Dave's only grant is the link, so he loses access and the workspace restarts.
+      await expect(ws.session.readValue(true, true)).resolves.toBe(42);
+      const reopened = await reopenAfterRestart(ws);
+      try {
+        const overseer = reopened.overseer;
+        await expect(overseer.getMetadata()).resolves.toMatchObject({
+          containsRestrictedData: true,
+          ownerInvitesOnly: true,
+        });
+        expect(await overseer.listCollaborators()).toEqual([]);
+
+        // No new links, and no new copies of the old one.
+        await expect(overseer.createShareLink("use", "after ownerInvitesOnly"))
+            .rejects.toThrow(/Share links are disabled/);
+        await expect(overseer.newShareLinkKey(linkId))
+            .rejects.toThrow(/Share links are disabled/);
+
+        // The old link admits neither Dave, who joined through it, nor Carol, who is new.
+        const daveApi = await logIn(reopened.publicApi, dave);
+        await expect(opens(daveApi, daveAccount)).rejects.toMatchObject({
+          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+          message: expect.stringMatching(/Share links are disabled/),
+        });
+        const carolApi = await signUp(reopened.publicApi, carol);
+        const carolAccount = await provisionAccount(carolApi);
+        await expect(opens(carolApi, carolAccount)).rejects.toMatchObject({
+          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+        });
+        expect(await overseer.listCollaborators()).toEqual([]);
+
+        // The owner adds Dave directly. He opens after verifying his own access -- still through
+        // the old link, which lets a direct collaborator through -- but cannot add people himself.
+        await expect(overseer.addCollaborator(dave, "build")).resolves.toMatchObject({
+          role: "build",
+        });
+        using daveOverseer = await opens(daveApi, daveAccount);
+        await expect(daveOverseer.addCollaborator(carol, "use"))
+            .rejects.toThrow(/Only the workspace owner/);
+
+        // The owner can still see and revoke the old link. It grants nothing now, so revoking it
+        // affects nobody.
+        expect((await overseer.listShareLinks()).map(l => l.linkId)).toEqual([linkId]);
+        await expect(overseer.revokeShareLink(linkId, [])).resolves.toEqual([]);
+      } finally {
+        reopened.publicApi[Symbol.dispose]();
+      }
+    });
+  });
+
+  it.concurrent("sharing stays available after containsRestrictedData is set", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "share-after");
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Sharing stays available after the latch, across every sharing RPC.
+      // Sharing stays available after containsRestrictedData is set, across every sharing RPC.
       const [carol] = nextUsernames("carol");
       await signUp(publicApi, carol);
       await expect(ws.overseer.addCollaborator(carol, "build")).resolves.toMatchObject({
         profile: expect.objectContaining({ id: expect.any(String) }),
       });
-      const { linkId } = await ws.overseer.createShareLink("use", "post-latch");
+      const { linkId } = await ws.overseer.createShareLink("use", "after containsRestrictedData");
       await expect(ws.overseer.newShareLinkKey(linkId)).resolves.toMatchObject({
         key: expect.any(String),
       });
@@ -317,10 +392,15 @@ describe("sensitive observations", () => {
         // scope the moment it exists -- a "build" session can open a session on it with no
         // observer check -- and his live session was admitted without it, so adding it severs
         // every session.
+        //
+        // Pipeline getId() onto the creation rather than awaiting the stub first: the restart
+        // lands ~100ms after newGatekeeper() returns and kills this connection, so a separate
+        // round trip for the id can lose that race on a loaded runner. (The test vendor always
+        // yields a connection, so the null case is not handled.)
         const accounts = await listConnectedAccounts(ws.aliceApi);
         const account = accounts.find(a => a.vendorId === TEST_VENDOR_ID)!;
-        const late = await ws.overseer.newGatekeeper(account.id, thingUrl("late"));
-        if (!late) throw new Error("Failed to create the second test connection");
+        const late = ws.overseer.newGatekeeper(account.id, thingUrl("late")) as
+            RpcPromise<GatekeeperClient<any>>;
         lateId = await late.getId();
       } finally {
         bobSession.close();
@@ -344,14 +424,14 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("a collaborator can open a workspace that latched before they were added",
+  it.concurrent("a collaborator can open a workspace that set containsRestrictedData before they were added",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "open-after");
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Bob's open runs observer verification, which the fixture admits by default, so the latch
-      // does not shut him out.
+      // Bob's open runs observer verification, which the fixture admits by default, so
+      // containsRestrictedData does not shut him out.
       const bob = await addBob(publicApi, ws);
       using bobOverseer = await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount);
       await expect(bobOverseer.getMetadata()).resolves.toMatchObject({

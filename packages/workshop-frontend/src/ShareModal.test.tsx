@@ -241,6 +241,9 @@ describe('ShareModal', () => {
     container = undefined
   })
 
+  // The last render's element, with its metadata swappable, so a test can deliver a live update.
+  let renderWithMetadata: ((metadata: GadgetMetadata) => ReactElement) | undefined
+
   async function render(
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
@@ -251,23 +254,26 @@ describe('ShareModal', () => {
     document.body.append(container)
     root = createRoot(container)
     const serverConfig = { userSearchEnabled } as ServerConfig
-    await act(async () => {
-      root!.render(
-        <ServerConfigContext.Provider value={serverConfig}>
-          <ShareModal
-            open
-            onClose={() => {}}
-            overseer={overseer}
-            metadata={metadata}
-            currentUser={CURRENT_USER}
-            authenticatedApi={authenticatedApi}
-          />
-        </ServerConfigContext.Provider>
-      )
-    })
+    renderWithMetadata = currentMetadata => (
+      <ServerConfigContext.Provider value={serverConfig}>
+        <ShareModal
+          open
+          onClose={() => {}}
+          overseer={overseer}
+          metadata={currentMetadata}
+          currentUser={CURRENT_USER}
+          authenticatedApi={authenticatedApi}
+        />
+      </ServerConfigContext.Provider>
+    )
+    await act(async () => { root!.render(renderWithMetadata!(metadata)) })
     // Let the load effects settle.
     await act(async () => { await Promise.resolve() })
     return document.body
+  }
+
+  async function updateMetadata(metadata: GadgetMetadata) {
+    await act(async () => { root!.render(renderWithMetadata!(metadata)) })
   }
 
   it('reveals the workspace link to send after a direct invite', async () => {
@@ -819,7 +825,7 @@ describe('ShareModal', () => {
     }), fakeAuthenticatedApi(), restrictedMetadata)
 
     // The inline warning replaces the old full-panel "can't be shared" wall: the server allows
-    // sharing after the restricted latch (refusing only unverifiable producers), so the modal
+    // sharing after containsRestrictedData is set (refusing only unverifiable producers), so the modal
     // must warn rather than block.
     expect(rendered.textContent).toContain('This workspace has read sensitive data')
     expect(rendered.textContent).not.toContain('This workspace can’t be shared')
@@ -845,6 +851,75 @@ describe('ShareModal', () => {
     if (!option) throw new Error('Expected a directory search result.')
     await click(option)
     expect(button(rendered, 'Invite').disabled).toBe(false)
+  })
+
+  it('drops share-link controls but keeps revocation once the workspace is owner-invites-only', async () => {
+    const ownerInvitesOnlyMetadata = {
+      ...METADATA, containsRestrictedData: true, ownerInvitesOnly: true,
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer({
+      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+      shareLinks: [SHARE_LINK],
+    }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
+
+    expect(rendered.textContent).toContain('doesn’t allow share links')
+    expect(rendered.textContent).toContain('Invite people.')
+    expect(rendered.textContent).not.toContain('share a link.')
+    expect(rendered.textContent).not.toContain('This workspace has read sensitive data')
+    // The link restriction adds to the restricted-data caveats rather than replacing them.
+    expect(rendered.textContent).toContain('verify their own access')
+    expect(rendered.textContent).toContain('already saved is visible to everyone who can')
+
+    // No way to mint or copy a link; the existing link stays listed so the owner can revoke it.
+    expect(rendered.textContent).not.toContain('Create a share link')
+    expect(rendered.querySelector('button[aria-label="Copy Team link"]')).toBeNull()
+    expect(button(rendered, 'Revoke Team link').disabled).toBe(false)
+
+    // The owner still invites people directly, and sees what they will be asked to verify.
+    expect(rendered.querySelector('input[aria-label="Search people"]')).not.toBeNull()
+    expect(rendered.textContent).toContain('Pipeline dashboard')
+    await invite(rendered, 'ada')
+    expect(rendered.textContent).toContain('Added Ada')
+  })
+
+  it('hides the invite box from collaborators once the workspace is owner-invites-only', async () => {
+    const ownerInvitesOnlyMetadata = {
+      ...METADATA,
+      ownerInvitesOnly: true,
+      owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer({
+      requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
+    }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
+
+    expect(rendered.textContent).toContain('only the owner can add people')
+    expect(rendered.textContent).toContain('Manage access.')
+    expect(rendered.textContent).not.toContain('Invite people')
+    expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    expect(rendered.textContent).not.toContain('Create a share link')
+    expect(rendered.textContent).not.toContain('Recipient verification')
+    expect(rendered.textContent).toContain('People with access')
+  })
+
+  it('releases the results scroll lock when a live ownerInvitesOnly update stops a collaborator inviting', async () => {
+    const collaboratorMetadata = {
+      ...METADATA,
+      owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+    } as GadgetMetadata
+    const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), collaboratorMetadata)
+    const body = () => rendered.querySelector<HTMLElement>('.chat-panel')!
+
+    await typeDirectorySearch(rendered, 'ada')
+    expect(rendered.querySelector('[role="listbox"]')).not.toBeNull()
+    expect(body().classList).toContain('overflow-hidden')
+
+    // Another session sets ownerInvitesOnly while the results are open: the search field goes
+    // away without ever blurring, and the body must scroll again.
+    await updateMetadata({ ...collaboratorMetadata, ownerInvitesOnly: true } as GadgetMetadata)
+    expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    expect(rendered.querySelector('[role="listbox"]')).toBeNull()
+    expect(body().classList).toContain('overflow-y-auto')
+    expect(body().classList).not.toContain('overflow-hidden')
   })
 
   it('surfaces the server’s refusal when sharing is no longer allowed', async () => {

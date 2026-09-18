@@ -9,6 +9,11 @@ describe("open gadget errors", () => {
   it.each([
     [OPEN_GADGET_ERROR_CODES.workspaceNotFound, "Workspace not found."],
     [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied, "You don't have access to this workspace."],
+    [
+      OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+      "Share links are disabled for this workspace because it contains sensitive data. " +
+          "The owner must add each person directly.",
+    ],
   ] as const)(
     "creates an enumerable %s code with a readable message",
     (code, message) => {
