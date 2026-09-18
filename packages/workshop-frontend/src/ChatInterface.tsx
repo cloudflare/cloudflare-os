@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
+import { actionStatusLabel } from './features/actions/actionStatus'
 import {
   Dialog,
   DropdownMenu,
@@ -4907,7 +4908,6 @@ function ChatInterface({
     }
 
     const isPending = state === "pending";
-    const isApproved = state === "approved";
     const isRejected = state === "rejected";
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
@@ -4917,11 +4917,7 @@ function ChatInterface({
     // decision. Resolved actions are history, and collapse so a long thread stays scannable.
     const showDescription = isPending || open;
     const metadata = log.resourceTitle;
-    const stateLabel = isApproved
-      ? "Approved"
-      : isRejected
-        ? "Denied"
-        : null;
+    const stateLabel = isPending ? null : actionStatusLabel(log);
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
