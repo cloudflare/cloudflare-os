@@ -745,6 +745,20 @@ describe("positioned Drive folder session", () => {
       .rejects.toThrow(/outside this Drive binding/);
   });
 
+  // Converting first would let a metadata failure answer whether the id is a direct child without
+  // the file ever being recorded for a later observer to be checked against.
+  it("records a direct child before its metadata can fail to convert", async () => {
+    const malformed = child("M", "R", { mimeType: undefined });
+    const { session, observations, events } = positioned([root, malformed]);
+
+    await expect(session.getEntry("M")).rejects
+      .toThrow("Google Drive omitted required file mimeType");
+    expect(observations).toEqual([[
+      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "M" },
+    ]]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
   it("fences an invisible probe but not a visible non-child", async () => {
     const visible = positioned([root, nested, nestedDoc]);
     await expect(visible.session.getEntry("D1")).rejects.toThrow(/outside this Drive binding/);

@@ -579,11 +579,10 @@ export class DriveFolderSessionCore extends DriveCoreBase {
 
   async getEntry(fileId: string): Promise<DriveEntry> {
     let file = await this.#requireDirectFile(fileId);
-    let entry = driveFileToEntry(file);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "file", fileId: file.id}],
       "Read Google Drive metadata", `Read metadata for Drive file ${file.id}.`);
-    return entry;
+    return driveFileToEntry(file);
   }
 
   /** Validate and authorize one direct native child before its content session is created. */
