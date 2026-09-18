@@ -328,7 +328,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
   const isOwner = !metadata.owner
   const containsRestrictedData = metadata.containsRestrictedData === true
-  // The server refuses share links and non-owner invites once this latches; hide those controls.
+  // The server refuses share links and non-owner invites once this is set; hide those controls.
   const ownerInvitesOnly = metadata.ownerInvitesOnly === true
   const canInvite = !ownerInvitesOnly || isOwner
   const canUseShareLinks = !ownerInvitesOnly
@@ -349,7 +349,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const directorySearching = userSearchEnabled && membershipReady &&
     selectedDirectoryUser === null && directoryQuery !== ''
   const directoryCurrent = directory.query === directoryQuery
-  // Gated on canInvite too: a live metadata update can latch the workspace while results are
+  // Gated on canInvite too: a live metadata update can set ownerInvitesOnly while results are
   // open, unmounting the search field without blurring it, and the popover's scroll lock on the
   // dialog body must not outlive the field.
   const directoryOpen = canInvite && directorySearching && directoryCurrent && !directoryDismissed

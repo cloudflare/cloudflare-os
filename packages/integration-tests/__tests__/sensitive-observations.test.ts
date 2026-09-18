@@ -4,10 +4,11 @@
 // gatekeeper's `addObserver` at their most recent open and cannot open without passing it, and
 // anything that widens what they must pass restarts the workspace so every live session re-opens
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
-// and sharing stays available. The observation also latches the workspace into a restricted mode:
-// once latched, the workspace may not perform actions (nor fetch from the web, which has no
-// client-reachable surface to assert here). An observation that also carries `ownerInvitesOnly`
-// latches share links off, leaving the owner as the only one who can add people.
+// and sharing stays available. The observation also sets `containsRestrictedData`, putting the
+// workspace into a restricted mode: once it is set, the workspace may not perform actions (nor
+// fetch from the web, which has no client-reachable surface to assert here). An observation that
+// also carries `ownerInvitesOnly` sets that flag too, turning share links off and leaving the
+// owner as the only one who can add people.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -219,11 +220,11 @@ async function bobHolds(ws: Workspace, bob: Bob): Promise<HeldSession> {
 }
 
 describe("sensitive observations", () => {
-  it.concurrent("latch restricted mode: actions are blocked and metadata reports it", async () => {
+  it.concurrent("containsRestrictedData: actions are blocked and metadata reports it", async () => {
     await withSession(async publicApi => {
-      const ws = await newWorkspace(publicApi, "latch");
+      const ws = await newWorkspace(publicApi, "restricted-mode");
 
-      // Before the latch, actions submit fine -- held for the owner's approval rather than
+      // Before the flag is set, actions submit fine -- held for the owner's approval rather than
       // refused, and applied once approved -- and metadata is clean.
       const write = ws.session.writeValue(7);
       const [held] = await waitFor("the write to be held for approval", async () => {
@@ -255,13 +256,13 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("owner-invites-only latch: links stop admitting people, the owner adds them",
+  it.concurrent("ownerInvitesOnly: links stop admitting people, the owner adds them",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "owner-invites-only");
-      const { key, linkId } = await ws.overseer.createShareLink("build", "pre-latch");
+      const { key, linkId } = await ws.overseer.createShareLink("build", "before ownerInvitesOnly");
 
-      // Dave joins through the link before the latch.
+      // Dave joins through the link before ownerInvitesOnly is set.
       const [dave, carol] = nextUsernames("dave", "carol");
       const daveApi = await signUp(publicApi, dave);
       const daveAccount = await provisionAccount(daveApi);
@@ -283,12 +284,12 @@ describe("sensitive observations", () => {
       });
 
       // No new links, and no new copies of the old one.
-      await expect(ws.overseer.createShareLink("use", "post-latch"))
+      await expect(ws.overseer.createShareLink("use", "after ownerInvitesOnly"))
           .rejects.toThrow(/Share links are disabled/);
       await expect(ws.overseer.newShareLinkKey(linkId))
           .rejects.toThrow(/Share links are disabled/);
 
-      // The pre-latch link no longer admits anyone new...
+      // The old link no longer admits anyone new...
       const carolApi = await signUp(publicApi, carol);
       await expect(carolApi.openGadget(ws.gadgetId, key)).rejects.toMatchObject({
         code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
@@ -325,18 +326,18 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("sharing stays available after the latch", async () => {
+  it.concurrent("sharing stays available after containsRestrictedData is set", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "share-after");
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Sharing stays available after the latch, across every sharing RPC.
+      // Sharing stays available after containsRestrictedData is set, across every sharing RPC.
       const [carol] = nextUsernames("carol");
       await signUp(publicApi, carol);
       await expect(ws.overseer.addCollaborator(carol, "build")).resolves.toMatchObject({
         profile: expect.objectContaining({ id: expect.any(String) }),
       });
-      const { linkId } = await ws.overseer.createShareLink("use", "post-latch");
+      const { linkId } = await ws.overseer.createShareLink("use", "after containsRestrictedData");
       await expect(ws.overseer.newShareLinkKey(linkId)).resolves.toMatchObject({
         key: expect.any(String),
       });
@@ -421,14 +422,14 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("a collaborator can open a workspace that latched before they were added",
+  it.concurrent("a collaborator can open a workspace that set containsRestrictedData before they were added",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "open-after");
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
-      // Bob's open runs observer verification, which the fixture admits by default, so the latch
-      // does not shut him out.
+      // Bob's open runs observer verification, which the fixture admits by default, so
+      // containsRestrictedData does not shut him out.
       const bob = await addBob(publicApi, ws);
       using bobOverseer = await bobOpens(ws.gadgetId, bob.bobApi, bob.bobAccount);
       await expect(bobOverseer.getMetadata()).resolves.toMatchObject({

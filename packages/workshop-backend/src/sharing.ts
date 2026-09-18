@@ -17,7 +17,7 @@
 //
 // NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here; the
 // Overseer enforces it. This module only answers questions about the sharing graph. The one
-// exception is the `ownerInvitesOnly` latch, which the Overseer supplies as a hook: it restricts
+// exception is the `ownerInvitesOnly` flag, which the Overseer supplies as a hook: it restricts
 // who may create grants, and must be checked synchronously with each grant's storage write.
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
@@ -157,16 +157,17 @@ export class SharingManager {
    * `ownerProfileId` is stable for the lifetime of a gadget, so it's supplied once at
    * construction rather than per call.
    *
-   * `ownerInvitesOnly` reports the Overseer's latch (see `ObservationDescription.ownerInvitesOnly`).
-   * It is called after the last await of each grant, right before the storage write, so an
-   * observation that latches mid-call cannot slip a grant through.
+   * `ownerInvitesOnly` reports the Overseer's `ownerInvitesOnly` flag (see
+   * `ObservationDescription.ownerInvitesOnly`). It is called after the last await of each grant,
+   * right before the storage write, so an observation that sets the flag mid-call cannot slip a
+   * grant through.
    */
   constructor(
       private storage: SharingStorage,
       private ownerProfileId: string,
       private ownerInvitesOnly: () => boolean) {}
 
-  // Throw if share links are disabled by the `ownerInvitesOnly` latch. Redemption refusals surface
+  // Throw if share links are disabled by `ownerInvitesOnly`. Redemption refusals surface
   // from open(), so they carry the `shareLinksDisabled` open-gadget code; link management throws
   // the same message uncoded.
   #requireShareLinksAllowed(opts?: { redeeming: boolean }): void {
@@ -216,7 +217,7 @@ export class SharingManager {
    *
    * A key whose link is revoked behaves like an unknown key (it cannot be redeemed).
    *
-   * If the workspace is latched `ownerInvitesOnly`, a valid key adds nothing: an existing
+   * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: an existing
    * collaborator is left as they are (so reopening an old link doesn't fail), and anyone else is
    * refused with an exception.
    *
@@ -244,7 +245,7 @@ export class SharingManager {
     let existing = this.storage.collaborators.get(opts.profileId);
     if (existing) {
       // User is already a collaborator. Only add an edge if they don't already have one for this
-      // link (redeeming a second key of the same link is a no-op). Under the latch, add nothing.
+      // link (redeeming a second key of the same link is a no-op). Under ownerInvitesOnly, add nothing.
       let alreadyHasEdge = existing.addedBy.some(
           e => e.type === "shareKey" && e.keyId === linkId);
       if (!alreadyHasEdge && !this.ownerInvitesOnly()) {
@@ -257,7 +258,7 @@ export class SharingManager {
         this.storage.collaborators.put(existing);
       }
     } else {
-      // New collaborator -- need full profile from their user DO. Check the latch before the RPC
+      // New collaborator -- need full profile from their user DO. Check ownerInvitesOnly before the RPC
       // to fail fast, and again after it, right before the write.
       this.#requireShareLinksAllowed({ redeeming: true });
       let profile = await opts.fetchProfile();
@@ -300,7 +301,7 @@ export class SharingManager {
   /**
    * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
    * responsible for resolving `profile` (via RPC) and for any policy checks. The caller may not
-   * grant a role higher than their own effective role. Under the `ownerInvitesOnly` latch, only the
+   * grant a role higher than their own effective role. Once `ownerInvitesOnly` is set, only the
    * owner may call this.
    */
   addCollaborator(opts: {
