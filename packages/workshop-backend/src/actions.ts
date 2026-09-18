@@ -64,12 +64,25 @@ export type PassResult = {
    */
   blocked?: true;
 
-  /** Set when application stopped; the reason is recorded on the stopped action itself. */
+  /**
+   * Set when application stopped; the reason is recorded on the stopped action itself. Also set
+   * when the request was already queued when that stop was recorded, so its authority predates
+   * the failure and cannot retry it.
+   */
   stopped?: true;
 };
 
+// A queued manual approval, stamped with the connection's stop count when it was admitted. A
+// stop recorded after that revokes this request's authority over the action that failed.
+type QueuedManualApproval = ManualApproval & {stopGeneration: number};
+
+// One run of the loop's scheduling state, discarded when the connection's queues drain.
+// `stopGeneration` counts the structured stops this run has recorded (from 1); `stoppedActions`
+// maps the gatekeeper-local action each was recorded on to that count.
+type RunState = {stopGeneration: number, stoppedActions?: Map<number, number>};
+
 type StagedPass = PromiseWithResolvers<PassResult> & {
-  manualApprovals: ManualApproval[];
+  manualApprovals: QueuedManualApproval[];
 };
 
 /**
@@ -109,7 +122,7 @@ export class ActionSyncDriver {
   #staged = new Map<number, StagedPass>();
 
   // Per-gatekeeper single-flight guard. Key present => a run loop is active for that gatekeeper.
-  #running = new Set<number>();
+  #running = new Map<number, RunState>();
 
   // Gatekeepers observed to lack applyActionsThrough. In-memory only: a fresh isolate re-probes,
   // which is what lets a migrated deploy shed the fallback without bookkeeping.
@@ -134,12 +147,14 @@ export class ActionSyncDriver {
       slot = { manualApprovals: [], ...Promise.withResolvers<PassResult>() };
       this.#staged.set(gatekeeperId, slot);
     }
-    if (manualApproval) slot.manualApprovals.push(manualApproval);
-
-    if (!this.#running.has(gatekeeperId)) {
-      this.#running.add(gatekeeperId);
-      void this.#run(gatekeeperId);
+    // Stamped by value at admission: the run this lands in may record further stops before the
+    // request is planned, and those are exactly the ones its author cannot have seen. 0 when no
+    // run is active, which is also where a fresh one starts.
+    if (manualApproval) {
+      let stopGeneration = this.#running.get(gatekeeperId)?.stopGeneration ?? 0;
+      slot.manualApprovals.push({...manualApproval, stopGeneration});
     }
+    this.#start(gatekeeperId);
     return slot.promise;
   }
   /**
@@ -153,7 +168,8 @@ export class ActionSyncDriver {
     let boundary = this.storage.actions.get(boundaryId);
     if (!boundary) throw new Error(`No such action: ${boundaryId}`);
     if (boundary.type !== "action") throw new Error(`Not an action: ${boundaryId}`);
-    return this.#enqueueDecision(boundary.gatekeeperId, async () => {
+    let queuedGeneration = this.#running.get(boundary.gatekeeperId)?.stopGeneration ?? 0;
+    return this.#enqueueDecision<PassResult>(boundary.gatekeeperId, async () => {
       let freshBoundary = this.storage.actions.get(boundaryId);
       if (!freshBoundary) throw new Error(`No such action: ${boundaryId}`);
       if (freshBoundary.type !== "action") throw new Error(`Not an action: ${boundaryId}`);
@@ -173,6 +189,22 @@ export class ActionSyncDriver {
         }
         return fresh;
       });
+
+      // A stop recorded since this batch was selected revokes its authority over the action that
+      // failed: the selection was made against state the failure has changed. Vetoing that action
+      // is the way through it, so a batch already selecting it proceeds untouched.
+      let run = this.#running.get(freshBoundary.gatekeeperId)!;  // owned by the running loop
+      if (run.stopGeneration > queuedGeneration) {
+        let vetoed = new Set(selected.map(record => record.id));
+        for (let record of this.storage.actions.pendingByGatekeeper
+            .get(freshBoundary.gatekeeperId)) {
+          if (record.type !== "action" || record.action > freshBoundary.action) continue;
+          if ((run.stoppedActions?.get(record.action) ?? 0) > queuedGeneration &&
+              !vetoed.has(record.id)) {
+            return {decided: [], stopped: true};
+          }
+        }
+      }
 
       // One transaction: an unstaged veto is indistinguishable from an undecided action, and the
       // pass below authorizes every pending action under the boundary -- so half a staged batch
@@ -214,6 +246,12 @@ export class ActionSyncDriver {
     });
   }
 
+  #start(gatekeeperId: number): void {
+    if (this.#running.has(gatekeeperId)) return;
+    this.#running.set(gatekeeperId, {stopGeneration: 0});
+    void this.#run(gatekeeperId);
+  }
+
   #enqueueDecision<T>(gatekeeperId: number, operation: () => Promise<T>): Promise<T> {
     let {promise, resolve, reject} = Promise.withResolvers<T>();
     let queue = this.#decisions.get(gatekeeperId);
@@ -225,10 +263,7 @@ export class ActionSyncDriver {
         reject(error);
       }
     });
-    if (!this.#running.has(gatekeeperId)) {
-      this.#running.add(gatekeeperId);
-      void this.#run(gatekeeperId);
-    }
+    this.#start(gatekeeperId);
     return promise;
   }
 
@@ -263,7 +298,7 @@ export class ActionSyncDriver {
   }
 
   async #applyOnce(
-      gatekeeperId: number, manualApprovals: ManualApproval[],
+      gatekeeperId: number, manualApprovals: QueuedManualApproval[],
       batch?: {frontier: number; resolvedBy: AiChatAuthorInfo}): Promise<PassResult> {
     // Snapshot both indexes before reconciling (see actionsAscending). The pending index was
     // backfilled by the action-index migration; vetoPending only exists on records written after
@@ -278,6 +313,7 @@ export class ActionSyncDriver {
     let frontier = batch?.frontier ?? Math.max(-1, ...manualApprovals.map(({action}) => action));
     let attribution = new Map<number, {resolvedBy: AiChatAuthorInfo, autoApproved: boolean}>();
     let blocked: true | undefined;
+    let stopped: true | undefined;
     if (batch) {
       for (let record of pending) {
         if (record.action > frontier) break;
@@ -286,11 +322,15 @@ export class ActionSyncDriver {
     } else {
       // Two authorities extend the old frontier and nothing else: the user's click on that exact
       // action, or an auto-approval rule they enabled for its kind.
-      let clicked = new Map(manualApprovals.map(manual => [manual.action, manual.resolvedBy]));
+      let clicked = new Map(manualApprovals.map(manual => [manual.action, manual]));
+      let stops = this.#running.get(gatekeeperId)?.stoppedActions;
       for (let record of pending) {
-        let resolvedBy = clicked.get(record.action);
-        if (resolvedBy) {
-          attribution.set(record.action, {resolvedBy, autoApproved: false});
+        // 0 while this run has not stopped on this action. A click stamped before a newer stop
+        // was made against state that stop invalidated, so it authorizes nothing.
+        let stopGeneration = stops?.get(record.action) ?? 0;
+        let manual = clicked.get(record.action);
+        if (manual && manual.stopGeneration >= stopGeneration) {
+          attribution.set(record.action, {resolvedBy: manual.resolvedBy, autoApproved: false});
           continue;
         }
         // A prior stop requires a click: unattended replay could repeat a side effect that landed.
@@ -303,7 +343,15 @@ export class ActionSyncDriver {
         if (!rule) {
           if (record.action <= frontier) {
             frontier = record.action - 1;
-            blocked = true;
+            // A stop no queued request could have seen reports the failure itself; otherwise
+            // this is an ordinary undecided gate the clicker is told to go and resolve.
+            if (stopGeneration > 0 && !manualApprovals.some(
+                request => request.action >= record.action &&
+                    request.stopGeneration >= stopGeneration)) {
+              stopped = true;
+            } else {
+              blocked = true;
+            }
           }
           break;
         }
@@ -313,7 +361,7 @@ export class ActionSyncDriver {
     }
 
     let sendVetoes = stagedVetoes.filter(veto => veto.action <= frontier);
-    if (attribution.size === 0 && sendVetoes.length === 0) return {decided: [], blocked};
+    if (attribution.size === 0 && sendVetoes.length === 0) return {decided: [], blocked, stopped};
 
     let decided: number[] = [];
 
@@ -403,12 +451,17 @@ export class ActionSyncDriver {
             "The gatekeeper could not apply this action.";
         fresh.appliedAt = new Date();
         this.storage.actions.put(fresh);
+        // Barrier for every request already queued behind it. Run state only: after a restart
+        // the persisted `failure` above is what holds the automatic path back. Always inside
+        // #run, which owns this entry for the duration.
+        let run = this.#running.get(gatekeeperId)!;
+        (run.stoppedActions ??= new Map()).set(stoppedAt, ++run.stopGeneration);
         logger.warn("apply stopped", {
           event: "action.sync.stopped", gatekeeperId, actionId: fresh.id,
         });
       }
     }
-    return stoppedAt === undefined ? {decided, blocked} : {decided, blocked, stopped: true};
+    return {decided, blocked, stopped: stoppedAt === undefined ? stopped : true};
   }
 
   // Re-read before each mutation; earlier checkpoints and cascade refreshes may replace snapshots.

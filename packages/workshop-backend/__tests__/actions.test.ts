@@ -42,14 +42,15 @@ function enableRule(storage: ActionSyncStorage, actionTag = "edit", gatekeeperId
 }
 
 // Workspace record ids are deliberately offset from gatekeeper-local action ids (`id = action*10`)
-// so a test that confuses the two ID spaces fails loudly.
+// so a test that confuses the two ID spaces fails loudly. `id` overrides that, for tests that need
+// the same local action id on two connections.
 function putAction(
     storage: ActionSyncStorage, action: number,
     opts: { gatekeeperId?: number; actionTag?: string; autoApprovable?: boolean;
             state?: ActionRecord["state"]; chatId?: number; awaitDecision?: boolean;
             suspendedTurn?: boolean; vetoPending?: true; resolvedBy?: AiChatAuthorInfo;
-            failure?: string; createdAt?: Date } = {}): number {
-  let id = action * 10;
+            failure?: string; createdAt?: Date; id?: number } = {}): number {
+  let id = opts.id ?? action * 10;
   storage.actions.put({
     id,
     gatekeeperId: opts.gatekeeperId ?? GK,
@@ -75,8 +76,13 @@ function putAction(
 }
 
 function getAction(storage: ActionSyncStorage, action: number): GatekeeperActionRecord {
-  let record = storage.actions.get(action * 10);
-  if (!record || record.type !== "action") throw new Error(`No action ${action}`);
+  return getRecord(storage, action * 10);
+}
+
+// By workspace record id, for the tests that seed explicit ids.
+function getRecord(storage: ActionSyncStorage, id: number): GatekeeperActionRecord {
+  let record = storage.actions.get(id);
+  if (record?.type !== "action") throw new Error(`No action record ${id}`);
   return record;
 }
 
@@ -125,8 +131,10 @@ function makeLegacyGatekeeper(opts: {failApply?: number[]} = {}) {
   return { target, calls, probeCount: () => probes };
 }
 
-function makeDriver(storage: ActionSyncStorage, target: GatekeeperActionTarget) {
-  return new ActionSyncDriver(storage, () => target, {
+function makeDriver(
+    storage: ActionSyncStorage,
+    target: GatekeeperActionTarget | ((gatekeeperId: number) => GatekeeperActionTarget)) {
+  return new ActionSyncDriver(storage, typeof target === "function" ? target : () => target, {
     createGitCache: vi.fn(),
     createGitPackBuilder: vi.fn(),
     applyLegacyAction: async (gatekeeper, record) => {
@@ -305,20 +313,35 @@ describe("ActionSyncDriver.apply", () => {
     expect(getAction(storage, 1).failure).toBe("x".repeat(500));
   });
 
-  it("never re-applies a failed action on a rule alone", async () => {
+  it("never re-applies a failed action on a rule alone, neither deciding it nor dropping the rule",
+     async () => {
     let storage = makeStorage();
     enableRule(storage);
-    putAction(storage, 1, { failure: "the upstream page was deleted" });
+    let a1 = putAction(storage, 1);
     putAction(storage, 2);
 
-    let { target, calls } = makeBatchGatekeeper();
+    let { target, calls, results } = makeBatchGatekeeper();
+    results.push({ stopped: { at: 1, reason: new Error("the upstream page was deleted") } });
     await makeDriver(storage, target).apply(GK);
 
-    // The gatekeeper said why it stopped, not whether the action landed, so re-sending it
-    // unattended could repeat a side effect. It becomes a gate until a human retries it.
-    expect(calls).toEqual([]);
-    expect(getAction(storage, 1).state).toBe("pending");
+    expect(calls).toEqual([{ actionId: 2, vetoes: [] }]);
     expect(getAction(storage, 2).state).toBe("pending");
+    // The gatekeeper said why it stopped, not whether the action landed, so re-sending it
+    // unattended could repeat a side effect. It becomes a gate until a human retries it -- which
+    // means the rule that authorized the attempt has to survive the attempt.
+    expect(storage.autoApproveTags.get(`${GK}:edit`)?.enabledBy).toEqual(ENABLER);
+
+    // Nor is the attempt a decision: the user sees a pending action with a reason and no resolver.
+    let entry = (await (await openFakeOverseer(storage)).listActions({ filter: "pending" }))
+        .entries.find(candidate => candidate.id === a1);
+    expect(entry).toMatchObject({
+      state: "pending", failure: "the upstream page was deleted" });
+    expect(entry?.type === "action" && entry.resolvedBy).toBeUndefined();
+    expect(entry?.type === "action" && entry.autoApproved).toBeUndefined();
+
+    // A fresh driver (a restarted DO) runs the rule pass again and must not retry it.
+    await makeDriver(storage, target).apply(GK);
+    expect(calls).toEqual([{ actionId: 2, vetoes: [] }]);
   });
 
   it("still rides a rule-authorized action along once the gate that refused a click is resolved",
@@ -609,6 +632,83 @@ describe("ActionSyncDriver.apply", () => {
     expect(calls).toEqual([{ actionId: 2, vetoes: [] }, { actionId: 3, vetoes: [] }]);
     expect(getAction(storage, 2)).toMatchObject({ state: "approved", resolvedBy: APPROVER });
     expect(getAction(storage, 3)).toMatchObject({ state: "approved", resolvedBy: REJECTER });
+  });
+
+  it("refuses a queued batch that was selected before an in-range action failed", async () => {
+    let storage = makeStorage();
+    for (let action of [1, 2, 3]) putAction(storage, action, { autoApprovable: false });
+    let { target, calls, results, release } = makeBatchGatekeeper({ parkAt: 2 });
+    results.push({ stopped: { at: 2, reason: new Error("the document was locked") } });
+    let driver = makeDriver(storage, target);
+
+    let first = driver.applyThrough(getAction(storage, 2).id, [], APPROVER);
+    await flush();
+    let second = driver.applyThrough(
+        getAction(storage, 3).id, [getAction(storage, 3).id], REJECTER);
+    release();
+
+    expect((await first).stopped).toBe(true);
+    // Selected before action 2 failed, so it is not authority to retry it -- and its own veto is
+    // not staged, since the batch it belongs to never ran.
+    expect(await second).toEqual({ decided: [], stopped: true });
+    expect(calls).toEqual([{ actionId: 2, vetoes: [] }]);
+    expect(getAction(storage, 1).state).toBe("approved");
+    expect(getAction(storage, 2)).toMatchObject({
+      state: "pending", failure: "the document was locked" });
+    expect(getAction(storage, 3).state).toBe("pending");
+    expect(getAction(storage, 3).vetoPending).toBeUndefined();
+  });
+
+  it("runs a queued batch that vetoes the action a stop just failed on", async () => {
+    let storage = makeStorage();
+    for (let action of [1, 2, 3]) putAction(storage, action, { autoApprovable: false });
+    let { target, calls, results, release } = makeBatchGatekeeper({ parkAt: 2 });
+    results.push({ stopped: { at: 2, reason: new Error("the document was locked") } });
+    let driver = makeDriver(storage, target);
+
+    let first = driver.applyThrough(getAction(storage, 2).id, [], APPROVER);
+    await flush();
+    let second = driver.applyThrough(
+        getAction(storage, 3).id, [getAction(storage, 2).id], REJECTER);
+    release();
+    await Promise.all([first, second]);
+
+    // Rejecting what failed removes the barrier, so the rest of the batch is not cancelled along
+    // with it. The reason stays on the record as the history of why it was rejected.
+    expect(calls).toEqual([{ actionId: 2, vetoes: [] }, { actionId: 3, vetoes: [2] }]);
+    expect(getAction(storage, 1).state).toBe("approved");
+    expect(getAction(storage, 2)).toMatchObject({
+      state: "rejected", resolvedBy: REJECTER, failure: "the document was locked" });
+    expect(getAction(storage, 2).vetoPending).toBeUndefined();
+    expect(getAction(storage, 3).state).toBe("approved");
+  });
+
+  it("keeps a stop from freezing a queued retry on another connection", async () => {
+    let storage = makeStorage();
+    let other = GK + 1;
+    let a1 = putAction(storage, 1, { autoApprovable: false });
+    putAction(storage, 0, { gatekeeperId: other, autoApprovable: false, id: 20 });
+    let b1 = putAction(storage, 1, { gatekeeperId: other, autoApprovable: false, id: 30,
+                                     failure: "an earlier attempt failed" });
+    let a = makeBatchGatekeeper();
+    a.results.push({ stopped: { at: 1, reason: new Error("A refused action one") } });
+    let b = makeBatchGatekeeper({ parkAt: 0 });
+    let driver = makeDriver(storage, id => id === GK ? a.target : b.target);
+
+    let held = driver.apply(other, { action: 0, resolvedBy: APPROVER });
+    await flush();
+    // Queued on B, then A stops on the same gatekeeper-local action number. Stops are per
+    // connection: A's failure is no reason to hold B's queue.
+    let retry = driver.apply(other, { action: 1, resolvedBy: APPROVER });
+    expect((await driver.apply(GK, { action: 1, resolvedBy: APPROVER })).stopped).toBe(true);
+    b.release();
+    await Promise.all([held, retry]);
+
+    expect(b.calls).toEqual([{ actionId: 0, vetoes: [] }, { actionId: 1, vetoes: [] }]);
+    expect(getRecord(storage, b1).state).toBe("approved");
+    expect(getRecord(storage, b1).failure).toBeUndefined();
+    expect(getRecord(storage, a1)).toMatchObject({
+      state: "pending", failure: "A refused action one" });
   });
 
   it("refuses a rejection after an in-flight approval has applied the same action", async () => {
@@ -1127,20 +1227,79 @@ describe("Overseer action decisions", () => {
     expect(getAction(storage, 2).state).toBe("pending");
   });
 
+  it("refuses a queued approval that was requested before the action failed", async () => {
+    let storage = makeStorage();
+    let id = putAction(storage, 1, { autoApprovable: false });
+    putAction(storage, 2, { autoApprovable: false });
+    let held = Promise.withResolvers<void>();
+    let applies = 0;
+    let legacy = makeLegacyGatekeeper();
+    legacy.target.applyAction = (async () => {
+      applies++;
+      await held.promise;
+      throw new Error("the connection dropped before the response arrived");
+    }) as typeof legacy.target.applyAction;
+    let client = await makeClient(storage, legacy.target);
+
+    let first = client.approveAction(id).catch(caught => caught);
+    await flush();
+    // Queued while the first attempt is still in flight, so it carries no authority to retry a
+    // failure that did not exist when it was made: the outcome of the lost call is unknown, and
+    // repeating it unasked could repeat a side effect that landed.
+    let second = client.approveAction(id).catch(caught => caught);
+    held.resolve();
+
+    expect(getActionErrorCode(await first)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(getActionErrorCode(await second)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(applies).toBe(1);
+    expect(getAction(storage, 1)).toMatchObject({
+      state: "pending", failure: "the connection dropped before the response arrived",
+    });
+    expect(getAction(storage, 2).state).toBe("pending");
+
+    // A request made after the stop was recorded is fresh authority, and does retry it.
+    legacy.target.applyAction = (async () => { applies++; }) as typeof legacy.target.applyAction;
+    await client.approveAction(id);
+
+    expect(applies).toBe(2);
+    expect(getAction(storage, 1)).toMatchObject({
+      state: "approved", resolvedBy: { id: "profile-id" }, autoApproved: false,
+    });
+    expect(getAction(storage, 1).failure).toBeUndefined();
+    expect(getAction(storage, 2).state).toBe("pending");
+  });
+
   it("reports a stop at an earlier rule-authorized action on the clicked one", async () => {
     let storage = makeStorage();
     enableRule(storage);
     putAction(storage, 1);
     let clicked = putAction(storage, 2, { autoApprovable: false });
-    let client = await makeClient(storage, makeLegacyGatekeeper({ failApply: [1] }).target);
+    let later = putAction(storage, 3, { autoApprovable: false });
+    let held = Promise.withResolvers<void>();
+    let legacy = makeLegacyGatekeeper();
+    legacy.target.applyAction = (async (action: number) => {
+      legacy.calls.push(`apply:${action}`);
+      await held.promise;
+      throw new Error("apply 1 failed");
+    }) as typeof legacy.target.applyAction;
+    let client = await makeClient(storage, legacy.target);
 
-    let error = await client.approveAction(clicked).catch(caught => caught);
+    let first = client.approveAction(clicked).catch(caught => caught);
+    await flush();
+    // Queued above the action that is about to fail. Once it has, this click reports that stop
+    // rather than "approve the earlier action first": that gate was already rule-authorized.
+    let second = client.approveAction(later).catch(caught => caught);
+    held.resolve();
 
-    expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(getActionErrorCode(await first)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(getActionErrorCode(await second)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(legacy.calls).toEqual(["apply:1"]);
     expect(getAction(storage, 1)).toMatchObject({ state: "pending", failure: "apply 1 failed" });
-    expect(getAction(storage, 2).state).toBe("pending");
-    // The reason lives on the action that stopped, so the clicked one carries none of its own.
-    expect(getAction(storage, 2).failure).toBeUndefined();
+    // The reason lives on the action that stopped, so neither later action carries one of its own.
+    for (let action of [2, 3]) {
+      expect(getAction(storage, action).state).toBe("pending");
+      expect(getAction(storage, action).failure).toBeUndefined();
+    }
   });
 
   it("keeps the failure on an action rejected after a failed apply", async () => {
