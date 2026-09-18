@@ -683,12 +683,18 @@ describe("ActionSyncDriver.apply", () => {
     let vetoId = putAction(storage, 2,
         { state: "rejected", vetoPending: true, resolvedBy: REJECTER });
 
-    let { target, results } = makeBatchGatekeeper();
+    let { target, results, release } = makeBatchGatekeeper({ parkAt: 2 });
     results.push({ invalidatedByVeto: [{ action: 3, invalidatedBy: 2 }] });
     let pass = makeDriver(storage, target)
         .applyThrough(getAction(storage, 2).id, [], REJECTER);
-    let a3 = putAction(storage, 3, { autoApprovable: false });  // arrives while the RPC is in
-    let { decided } = await pass;                               // flight, so it misses the snapshot
+    await flush();
+
+    // Action 3 is published while the call is parked: the contract lets the gatekeeper report it
+    // invalidated because its submission completed before the result returned -- but it arrived
+    // too late for the pre-call snapshot.
+    let a3 = putAction(storage, 3, { autoApprovable: false });
+    release();
+    let { decided } = await pass;
 
     expect(decided).toContain(a3);
     let invalidated = getAction(storage, 3);
