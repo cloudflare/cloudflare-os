@@ -1646,6 +1646,12 @@ class OverseerImpl implements AgentHooks {
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
+  // Highest local action ID each gatekeeper has submitted. In-memory, like the action driver's
+  // legacy probe: this only reports whether the contract's sequential-ID promise holds in
+  // practice, which the frontier model will depend on once a gatekeeper implements
+  // applyActionsThrough.
+  #highestSubmittedAction = new Map<number, number>();
+
   // Set of chatIds that currently have a running agent turn. Feeds the alarm (see
   // #agentKeepAliveTime) and lets `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
@@ -6030,6 +6036,15 @@ class OverseerImpl implements AgentHooks {
       }
       this.storage.actions.put(record);
     });
+
+    let highest = this.#highestSubmittedAction.get(gatekeeperId);
+    if (highest !== undefined && action <= highest) {
+      this.logger.warn("gatekeeper submitted an out-of-order action id", {
+        event: "action.submit.out-of-order", gatekeeperId,
+      });
+    }
+    this.#highestSubmittedAction.set(gatekeeperId, Math.max(action, highest ?? action));
+
     this.#associateAction(caller, actionId);
 
     if (caller.from === "agent" && suspendsTurn) {
