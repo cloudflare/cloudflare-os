@@ -326,6 +326,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [addUsername, setAddUsername] = useState('')
   const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
   const [staged, setStaged] = useState<StagedRecipient[]>([])
+  // Focus stays in the field when a chip is added or removed, so the change is announced here.
+  const [composerNotice, setComposerNotice] = useState('')
   const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
   // The result popover is dismissed when focus leaves the combobox or on Escape; typing or
   // refocusing brings it back. The query and its search survive a dismissal.
@@ -585,6 +587,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       loadData()
       if (!wasOpenRef.current) {
         setAddUsername('')
+        setComposerNotice('')
         setNewShareLink(null)
         // A fresh open starts the composer over, except for people whose invite is still in flight
         // or has failed: their chip is the only record of the outcome.
@@ -726,14 +729,19 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Queue a person in the composer and clear the field for the next name. Focus stays in the
   // input so a run of names can be entered without reaching for the mouse.
   const stageRecipient = (recipient: StagedRecipient) => {
+    const label = recipientLabel(recipient)
+    setComposerNotice(staged.some(entry => entry.id === recipient.id)
+      ? `${label} is already listed.`
+      : `Added ${label}.`)
     setStaged(current => withRecipient(current, recipient))
     setAddUsername('')
     peopleInputRef.current?.focus({ preventScroll: true })
     setDirectoryDismissed(true)
   }
 
-  const removeStaged = (id: string) => {
-    setStaged(current => current.filter(recipient => recipient.id !== id))
+  const removeStaged = (recipient: StagedRecipient) => {
+    setComposerNotice(`Removed ${recipientLabel(recipient)}.`)
+    setStaged(current => current.filter(entry => entry.id !== recipient.id))
     peopleInputRef.current?.focus({ preventScroll: true })
   }
 
@@ -747,7 +755,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
     if (event.key === 'Backspace' && addUsername === '' && staged.length > 0 && !adding) {
       event.preventDefault()
-      setStaged(current => current.slice(0, -1))
+      removeStaged(staged[staged.length - 1])
       return
     }
     if (!directorySearching) return
@@ -1062,7 +1070,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                   <button
                     type="button"
                     aria-label={`Remove ${recipientLabel(recipient)}`}
-                    onClick={() => removeStaged(recipient.id)}
+                    onClick={() => removeStaged(recipient)}
                     disabled={adding}
                     className="grid h-4 w-4 shrink-0 cursor-pointer place-items-center rounded-full opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed"
                   >
@@ -1198,6 +1206,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               directoryPortalContainer,
             )}
           </div>
+          <p role="status" aria-live="polite" className="sr-only">{composerNotice}</p>
           {staged.some(recipient => recipient.error) && (
             <p role="alert" className="mt-1.5 px-1 text-[12px] leading-4 text-kumo-danger">
               {staged.filter(recipient => recipient.error).map(recipient => (

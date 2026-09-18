@@ -992,6 +992,25 @@ describe('ShareModal', () => {
     expect(addCollaborator).not.toHaveBeenCalled()
   })
 
+  it('announces staged and removed people for screen readers', async () => {
+    const rendered = await render(fakeOverseer(), fakeAuthenticatedApi({ searchUsers: async () => [] }))
+    const input = peopleInput(rendered)
+    const notice = () => rendered.querySelector('[role="status"][aria-live]')?.textContent
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(input, 'Enter')
+    expect(notice()).toBe('Added ada@example.com.')
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(input, 'Enter')
+    expect(notice()).toBe('ada@example.com is already listed.')
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
+
+    await click(button(rendered, 'Remove ada@example.com'))
+    expect(notice()).toBe('Removed ada@example.com.')
+    expect(stagedNames(rendered)).toEqual([])
+  })
+
   it('keeps an unknown account on its chip while the others are added', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
       async (userId, role) => userId === 'nobody@example.com'
