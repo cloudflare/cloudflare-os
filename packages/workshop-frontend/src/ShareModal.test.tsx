@@ -247,6 +247,11 @@ function profileFor(userId: string, role: CollaboratorRole, name: string): Colla
   return { profile: { type: 'user', id: userId, name }, role, addedBy: [] }
 }
 
+// jsdom has no ResizeObserver; the stub records each observer so a test can fire its callback
+// and check it was disconnected.
+type RecordedResizeObserver = { targets: Element[]; callback: () => void; disconnect: ReturnType<typeof vi.fn<() => void>> }
+const resizeObservers: RecordedResizeObserver[] = []
+
 describe('ShareModal', () => {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
@@ -254,9 +259,20 @@ describe('ShareModal', () => {
   beforeEach(() => {
     copyToClipboard.mockClear()
     toastAdd.mockClear()
+    resizeObservers.length = 0
+    vi.stubGlobal('ResizeObserver', class {
+      readonly #record: RecordedResizeObserver
+      constructor(callback: () => void) {
+        this.#record = { targets: [], callback, disconnect: vi.fn<() => void>() }
+        resizeObservers.push(this.#record)
+      }
+      observe(target: Element) { this.#record.targets.push(target) }
+      disconnect() { this.#record.disconnect() }
+    })
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     act(() => root?.unmount())
     container?.remove()
     root = undefined
@@ -717,6 +733,31 @@ describe('ShareModal', () => {
     expect(listbox()).not.toBeNull()
     expect(input.getAttribute('aria-activedescendant'))
       .toBe(`${input.getAttribute('aria-controls')}-option-0`)
+  })
+
+  it('follows the composer when chips change its height while results are open', async () => {
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers: async () => [{ id: 'grace@example.com', name: 'Grace' }] }),
+    )
+    const input = peopleInput(rendered)
+    const composer = rendered.querySelector<HTMLElement>('[data-testid="people-composer"]')!
+
+    await typeDirectorySearch(rendered, 'grace')
+    const listbox = rendered.querySelector<HTMLElement>('[role="listbox"]')!
+    const observer = resizeObservers.find(candidate => candidate.targets.includes(composer))
+    expect(observer).toBeDefined()
+
+    // A chip wrapping on to a new line pushes the composer's bottom edge down; the list follows.
+    composer.getBoundingClientRect = () =>
+      ({ top: 80, bottom: 120, left: 0, right: 300, width: 300, height: 40 }) as DOMRect
+    await act(async () => observer!.callback())
+    expect(listbox.style.top).toBe('128px')
+    expect(listbox.style.width).toBe('300px')
+
+    await pressKey(input, 'Escape')
+    expect(rendered.querySelector('[role="listbox"]')).toBeNull()
+    expect(observer!.disconnect).toHaveBeenCalled()
   })
 
   it('ignores stale searches and selects the highlighted result with Enter', async () => {

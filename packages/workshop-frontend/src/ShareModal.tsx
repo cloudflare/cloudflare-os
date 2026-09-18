@@ -463,14 +463,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
 
   // Keep the listbox inside the dialog's accessibility tree, but outside its scrolling body so
-  // opening results cannot make the dialog itself scroll.
+  // opening results cannot make the dialog itself scroll. The anchor grows and shrinks as chips
+  // wrap (or a batch settles mid-search), so it is observed as well as the viewport.
   useLayoutEffect(() => {
     if (!directoryOpen) return
+    const anchor = directoryAnchorRef.current
+    if (!anchor) return
     const position = () => {
-      const anchor = directoryAnchorRef.current
       const listbox = directoryListboxRef.current
       const dialog = listbox?.parentElement
-      if (!anchor || !listbox || !dialog) return
+      if (!listbox || !dialog) return
       const anchorRect = anchor.getBoundingClientRect()
       const dialogRect = dialog.getBoundingClientRect()
       listbox.style.left = `${anchorRect.left - dialogRect.left}px`
@@ -482,11 +484,14 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       ))}px`
     }
     position()
+    const observer = new ResizeObserver(position)
+    observer.observe(anchor)
     const viewport = window.visualViewport
     window.addEventListener('resize', position)
     viewport?.addEventListener('resize', position)
     viewport?.addEventListener('scroll', position)
     return () => {
+      observer.disconnect()
       window.removeEventListener('resize', position)
       viewport?.removeEventListener('resize', position)
       viewport?.removeEventListener('scroll', position)
@@ -1029,6 +1034,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           <div className={`sticky top-0 z-10 bg-kumo-base pb-3 transition-shadow duration-200 ${scrolled ? 'themed-bottom-shadow border-b border-kumo-line/60' : ''}`}>
           <div
             ref={directoryAnchorRef}
+            data-testid="people-composer"
             className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
             data-keeper-ignore="true"
             data-1p-ignore="true"
