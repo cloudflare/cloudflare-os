@@ -5663,6 +5663,15 @@ class OverseerImpl implements AgentHooks {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
 
+    // Setting ownerInvitesOnly narrows access to direct owner grants (see
+    // SharingManager.computeEffectiveRoles), so the first observation to set it snapshots who had
+    // access beforehand. The manager may need an RPC on first use; from the flag read below through
+    // the diff after the writes, nothing awaits.
+    let sharing = description.ownerInvitesOnly && !this.storage.ownerInvitesOnly.get()
+        ? await this.getSharingManager() : undefined;
+    let baseline = sharing && !this.storage.ownerInvitesOnly.get()
+        ? sharing.computeEffectiveRoles() : undefined;
+
     if (description.containsRestrictedData) {
       this.storage.containsRestrictedData.put(true);
     }
@@ -5689,6 +5698,26 @@ class OverseerImpl implements AgentHooks {
 
     this.storage.actions.put(record);
     this.#associateAction(caller, actionId);
+
+    if (sharing && baseline) {
+      let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
+      if (affected.length > 0) {
+        // Anyone who joined through a link or through another collaborator just lost access (or
+        // was downgraded), so sever live sessions as removeCollaborator does, after the writes
+        // above. The cleanup is best-effort and not awaited: the observation shouldn't wait on
+        // gatekeeper and User-DO round trips, and whatever the restart cuts off self-heals (see
+        // removeCollaborator).
+        this.scheduleAccessRestart(
+            "Gadget restarted to revoke access for people the owner did not add directly.");
+        this.tearDownLostObservers(affected)
+            .then(() => this.refreshAffectedCollaboratorListings(affected))
+            .catch(err => {
+              this.logger.warn("failed to clean up after ownerInvitesOnly revoked access", {
+                event: "sharing.owner.invites.only.cleanup.failed", error: err,
+              });
+            });
+      }
+    }
   }
 
   async getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array> {

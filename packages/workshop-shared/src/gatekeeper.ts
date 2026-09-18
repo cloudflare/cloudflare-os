@@ -1214,11 +1214,12 @@ export type ObservationDescription = {
   containsRestrictedData?: boolean;
 
   /**
-   * If true, then once any observation carrying this flag is authorized, the gadget permanently
-   * stops honoring share links: no new links can be created or copied, and nobody new can redeem
-   * an existing one. After that, only the owner can add collaborators, one at a time. People who
-   * already joined keep access (still subject to `addObserver()` verification on every open), and
-   * the owner can still revoke links.
+   * If true, then once any observation carrying this flag is authorized, only collaborators the
+   * owner added directly keep access: share links stop granting anything (none can be created,
+   * copied, or redeemed), and people who joined through a link or through another collaborator
+   * lose access, restarting the gadget if any are present. After that, only the owner can add
+   * collaborators, one at a time. Those who remain are still subject to `addObserver()`
+   * verification on every open.
    *
    * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
    * requires each recipient to be granted access individually.

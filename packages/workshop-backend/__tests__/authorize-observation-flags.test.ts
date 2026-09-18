@@ -163,4 +163,75 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
     });
   });
+
+  it("revokes access for people the owner did not add directly when ownerInvitesOnly is set",
+      async () => {
+    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-revokes-indirect");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+      impl.storage.shareKeys.put({ id: "k1", created: new Date(), createdBy: OWNER, role: "build" });
+      impl.storage.collaborators.put({
+        profile: { id: "bob", name: "Bob" },
+        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "build" }],
+      });
+      impl.storage.collaborators.put({
+        profile: { id: "dave", name: "Dave" },
+        addedBy: [{ type: "shareKey", keyId: "k1", created: new Date(), role: "build" }],
+      });
+      impl.storage.observers.put(
+          { profileId: "bob", observerId: "obs-b", accountChoices: { 1: 10 } });
+      impl.storage.observers.put(
+          { profileId: "dave", observerId: "obs-d", accountChoices: { 1: 11 } });
+
+      // Record the restart rather than aborting the DO under the test, and keep the best-effort
+      // cleanup off the network.
+      let restarts: string[] = [];
+      impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
+      impl.getGatekeeperFacet = () => ({ removeObserver: async () => {} });
+      impl.refreshAffectedCollaboratorListings = async () => {};
+
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+      }, { from: "user" });
+
+      // Dave joined through a link, so he loses access: the workspace restarts and his observer
+      // record is torn down. Bob, whom the owner added directly, keeps both.
+      expect(restarts).toHaveLength(1);
+      let sharing = await impl.getSharingManager();
+      expect(sharing.getEffectiveRole("dave")).toBeUndefined();
+      expect(sharing.getEffectiveRole("bob")).toBe("build");
+      expect(impl.storage.observers.get("dave")).toBeUndefined();
+      expect(impl.storage.observers.get("bob")).toBeDefined();
+
+      // Setting the flag again changes nothing, so it restarts nothing.
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+      }, { from: "user" });
+      expect(restarts).toHaveLength(1);
+    });
+  });
+
+  it("does not restart when only direct collaborators are present", async () => {
+    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-direct-only");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+      impl.storage.collaborators.put({
+        profile: { id: "bob", name: "Bob" },
+        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "use" }],
+      });
+
+      let restarts: string[] = [];
+      impl.scheduleAccessRestart = async (reason: string) => { restarts.push(reason); };
+
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", ownerInvitesOnly: true,
+      }, { from: "user" });
+
+      expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
+      expect(restarts).toEqual([]);
+      expect((await impl.getSharingManager()).getEffectiveRole("bob")).toBe("use");
+    });
+  });
 });
