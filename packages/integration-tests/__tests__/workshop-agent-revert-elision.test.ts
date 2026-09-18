@@ -27,12 +27,14 @@ let harness: Harness;
 const model = scriptedChatCompletions([
   { toolCall: { id: "create", name: "createGadget",
                 arguments: { title: "Notes", bindingName: "NOTES" } } },
-  // One step writes the file and reads it back: the read sees the write.
+  // One step writes the file, then reads and searches it: both see the write.
   { toolCalls: [
     { id: "write", name: "writeFile",
       arguments: { workpiece: "NOTES", filename: "notes.txt", content: "secret = 42\n" } },
     { id: "read", name: "readFile",
       arguments: { workpiece: "NOTES", filename: "notes.txt" } },
+    { id: "grep", name: "grep",
+      arguments: { workpiece: "NOTES", pattern: "secret" } },
   ] },
   { text: "Done." },
   // After the rewind, the write no longer counts as having read the file: an edit without a
@@ -64,12 +66,13 @@ it("forgets a step's reads and writes when the user reverts it", async () => {
     userModel: { profile: SCRIPTED_MODEL_PROFILE, config: SCRIPTED_MODEL_CONFIG },
   });
 
-  const result = await session.runTurn("Write the secret, then read it back.");
+  const result = await session.runTurn("Write the secret, then read and find it.");
   expect(result.outcome).toEqual({ status: "completed" });
   expect(toolResultText(model.requests[2], "read")).toBe("secret = 42\n");
+  expect(toolResultText(model.requests[2], "grep")).toBe("notes.txt:1:secret = 42");
 
   // The step's edit lands in a "changes" message written after the tool-call message; reverting
-  // the step starts there. The read result must not outlive the content it saw.
+  // the step starts there. Neither result may outlive the content it saw.
   const stepChanges = result.history.find(msg =>
     msg.type === "changes" && msg.author.type === "agent" && msg.change !== undefined);
   if (stepChanges === undefined) throw new Error("No agent changes message in history");
@@ -77,8 +80,10 @@ it("forgets a step's reads and writes when the user reverts it", async () => {
 
   const second = await session.runTurn("Anything else?");
   expect(second.outcome).toEqual({ status: "completed" });
-  expect(toolResultText(model.requests[3], "read")).toMatch(/elided from the chat history/);
-  expect(toolResultText(model.requests[3], "read")).not.toContain("secret = 42");
+  for (const id of ["read", "grep"]) {
+    expect(toolResultText(model.requests[3], id)).toMatch(/elided from the chat history/);
+    expect(toolResultText(model.requests[3], id)).not.toContain("secret = 42");
+  }
   expect(toolResultText(model.requests[4], "edit"))
       .toContain("You must read a file before you can edit it.");
   expect(model.remainingSteps()).toBe(0);
