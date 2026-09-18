@@ -45,6 +45,16 @@ const GATEWAY_ROUTES: Readonly<Partial<Record<AiModelProvider, string>>> = {
 
 export type LocalEvalTarget = AsyncDisposable & { session: WorkshopAgentSession };
 
+// Runtimes started and not yet confirmed stopped, whether still running, abandoned by a test
+// timeout, or refusing to shut down. Such a workerd may still run model-authored code whose requests
+// route through this process's fetch, so the egress filter must outlive it (see defineTaskEval).
+let unconfirmedRuntimes = 0;
+
+/** How many eval runtimes this process has started and not confirmed stopped. */
+export function runtimesStillRunning(): number {
+  return unconfirmedRuntimes;
+}
+
 function value(environment: NodeJS.ProcessEnv, key: string): string | undefined {
   const candidate = environment[key]?.trim();
   return candidate === "" ? undefined : candidate;
@@ -172,17 +182,27 @@ function allowsModelEgress(
     url.pathname === `/client/v4/accounts/${account}/ai/v1/chat/completions`;
 }
 
-/** Start an isolated local workerd Workshop and one fresh agent session. */
-export async function openLocalEvalTarget(
-    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number): Promise<LocalEvalTarget> {
-  const interceptor = new NetworkInterceptor({
+/**
+ * The egress filter for a process running evals: every request the Workshop makes is denied except
+ * inference (and cost-log reads) for the configured access and one of `models`. Trials in one file
+ * run concurrently and globalThis.fetch is shared, so the filter is installed once per file rather
+ * than per target.
+ */
+export function evalNetworkInterceptor(
+    access: LocalModelAccess, models: readonly EvalModel[]): NetworkInterceptor {
+  return new NetworkInterceptor({
     handlers: [
       () => new Response("External network access is disabled during this eval.", { status: 403 }),
     ],
-    allow: (url, method) => allowsModelEgress(access, model, url, method),
+    allow: (url, method) => models.some(model => allowsModelEgress(access, model, url, method)),
     allowLoopback: false,
   });
+}
 
+/** Start an isolated local workerd Workshop and one fresh agent session. */
+export async function openLocalEvalTarget(
+    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number): Promise<LocalEvalTarget> {
+  unconfirmedRuntimes++;
   const harness = await startHarness({
     gatekeepers: [],
     enableGadgetExecution: true,
@@ -190,7 +210,6 @@ export async function openLocalEvalTarget(
       ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
       : {}),
   });
-  interceptor.install();
 
   const options: AgentSessionOptions = {
     modelId: model.model,
@@ -221,7 +240,7 @@ export async function openLocalEvalTarget(
         }
         try {
           await harness.server.close();
-          interceptor.uninstall();
+          unconfirmedRuntimes--;
         } catch (error) {
           failures.push(error instanceof Error ? error : new Error(String(error)));
         }
@@ -234,7 +253,7 @@ export async function openLocalEvalTarget(
     const setupError = error instanceof Error ? error : new Error(String(error));
     try {
       await harness.server.close();
-      interceptor.uninstall();
+      unconfirmedRuntimes--;
     } catch (failure) {
       const closeError = failure instanceof Error ? failure : new Error(String(failure));
       const aggregate = new AggregateError(

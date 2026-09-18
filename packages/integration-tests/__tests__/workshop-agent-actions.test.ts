@@ -98,7 +98,11 @@ it("holds a scripted agent write until the user approves it", async () => {
     .rejects.toThrow("Actions are not pending");
   expect((await actionState(label)).applyCount).toBe(0);
 
-  const resumed = await session.approveActionsAndWait([first.id, second.id]);
+  // The approval reserves the session before its first await, so a turn started in the same
+  // tick is refused rather than racing ahead of it.
+  const resuming = session.approveActionsAndWait([first.id, second.id]);
+  expect(() => session.runTurn("Do not run.")).toThrow("An agent activation is already running");
+  const resumed = await resuming;
   expect(resumed.outcome).toEqual({ status: "completed" });
   expect(await actionState(label)).toEqual({ pending: [], value: 8, applyCount: 2 });
   const approved = (await session.listActions({ filter: "action" })).entries;

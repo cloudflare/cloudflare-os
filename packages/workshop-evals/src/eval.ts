@@ -1,9 +1,11 @@
 import { createJudge, describeEval } from "vitest-evals";
-import { expect } from "vitest";
+import { afterAll, beforeAll } from "vitest";
 import { evalMatrix, resolveEvalCommit, resolveEvalModel } from "./config.js";
 import { createWorkshopHarness } from "./harness.js";
 import { taskVersion, type EvalRunInput, type EvalRunOutput, type EvalTask } from "./task.js";
-import { assertModelAccess, resolveModelAccess } from "./target.js";
+import {
+  assertModelAccess, evalNetworkInterceptor, resolveModelAccess, runtimesStillRunning,
+} from "./target.js";
 
 const gitCommit = resolveEvalCommit();
 const modelAccess = resolveModelAccess();
@@ -29,24 +31,35 @@ const FunctionalJudge = createJudge<EvalRunInput, EvalRunOutput>(
   },
 );
 
-/** Register one task as model-by-trial Vitest cases. */
+/**
+ * Register one task as model-by-trial Vitest cases. Trials run concurrently: each boots its own
+ * Workshop, so a file finishes in the time of its slowest trial rather than the sum.
+ */
 export function defineTaskEval(task: EvalTask): void {
   const matrix = evalMatrix();
+  const models = matrix.models.map(resolveEvalModel);
   // Fail at collection, before any inference, if the access cannot serve a model in the matrix.
-  matrix.models.map(resolveEvalModel).forEach(model => assertModelAccess(modelAccess, model));
-  const cases = matrix.models.flatMap(model =>
-    Array.from({ length: matrix.trials }, (_unused, trial) => ({
-      name: `${model} | trial ${trial + 1}`,
-      model,
-      trial: trial + 1,
-    })));
+  models.forEach(model => assertModelAccess(modelAccess, model));
   const identity = { gitCommit, taskVersion: taskVersion(task) };
   const harness = createWorkshopHarness(task, modelAccess, identity);
+  const network = evalNetworkInterceptor(modelAccess, models);
 
   describeEval(task.id, { harness }, it => {
-    it.for(cases)("$name", async ({ model, trial }, { run }) => {
-      const result = await run({ model, trial });
-      await expect(result).toSatisfyJudge(FunctionalJudge, { threshold: 1 });
+    beforeAll(() => network.install());
+    // Fail closed: a runtime that would not stop may still run model-authored code through this
+    // process's fetch, so unrestricted network access is not restored while one may be alive.
+    afterAll(() => {
+      if (runtimesStillRunning() === 0) network.uninstall();
     });
+    for (const { model } of models) {
+      for (let trial = 1; trial <= matrix.trials; trial++) {
+        // Concurrent tests must use the context's expect: the judge matcher records its score on
+        // the current task, which the global expect cannot identify while trials overlap.
+        it.concurrent(`${model} | trial ${trial}`, async ({ run, expect }) => {
+          const result = await run({ model, trial });
+          await expect(result).toSatisfyJudge(FunctionalJudge, { threshold: 1 });
+        });
+      }
+    }
   });
 }
