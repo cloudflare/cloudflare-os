@@ -34,7 +34,13 @@ export type DriveShortcut = {
   targetMimeType?: string;
 };
 
-/** Read-only metadata for one entry within the immutable binding scope. */
+/**
+ * Read-only metadata for one entry within the immutable binding scope.
+ *
+ * `list()` and `search()` never return trashed items, including the bound file of an exact-file
+ * binding. `getEntry()` can, and this type does not say whether an entry is trashed — there is no
+ * `trashed` field.
+ */
 export type DriveEntry = {
   /** Stable Drive file ID. */
   id: string;
@@ -104,7 +110,11 @@ export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
 
-  /** List entries in an account binding, or return the one exact-file entry. */
+  /**
+   * List entries in an account binding, or the one exact-file entry unless it is trashed.
+   *
+   * `directParentId` throws unless it names a folder whose children this account can list.
+   */
   list(options?: DriveListOptions): Promise<Cursor<DriveEntry>>;
 
   /**
