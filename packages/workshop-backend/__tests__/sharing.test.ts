@@ -653,7 +653,7 @@ describe("ownerInvitesOnly", () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
     seedLink(storage, "k1", OWNER);
 
-    // Both calls pass their first check synchronously, then park in #mintKey's await.
+    // Both calls park in #mintKey's await, and check the flag only once it resolves.
     let created = mgr.createShareLink({ caller: owner, role: "use" });
     let copied = mgr.newShareLinkKey({ caller: owner, linkId: "k1" });
     flags.ownerInvitesOnly = true;
@@ -693,7 +693,7 @@ describe("ownerInvitesOnly", () => {
     expect(storage.collaborators.get("newbie")).toBeUndefined();
   });
 
-  it("lets an existing collaborator reopen a link without adding an edge", async () => {
+  it("lets a direct collaborator reopen a link without adding an edge", async () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
     let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
@@ -709,6 +709,21 @@ describe("ownerInvitesOnly", () => {
       expect.objectContaining({ type: "user", sharer: OWNER }),
     ]);
     expect(mgr.getEffectiveRole("a")).toBe("use");
+  });
+
+  it("refuses an existing collaborator the owner did not add directly", async () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    let { key, linkId } = await mgr.createShareLink({ caller: owner, role: "build" });
+    seedCollaborator(storage, "a", [keyEdge(linkId)]);
+    flags.ownerInvitesOnly = true;
+
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "a",
+      fetchProfile: async () => profile("a"),
+    })).rejects.toMatchObject({ code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled });
+    expect(storage.collaborators.get("a")!.addedBy).toEqual([
+      expect.objectContaining({ type: "shareKey", keyId: linkId }),
+    ]);
   });
 
   it("still ignores an unknown key", async () => {
@@ -737,31 +752,81 @@ describe("ownerInvitesOnly", () => {
   it("keeps link management available to the owner", () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
     seedLink(storage, "k1", OWNER);
-    seedCollaborator(storage, "a", [keyEdge("k1")]);
+    seedCollaborator(storage, "a", [keyEdge("k1"), userEdge(OWNER, "use")]);
     flags.ownerInvitesOnly = true;
 
-    // Members who joined through the link keep access until the owner acts.
-    expect(mgr.getEffectiveRole("a")).toBe("build");
     expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual(["k1"]);
     mgr.updateShareLink(owner, "k1", "renamed");
-    expect(ids(mgr.revokeShareLink(owner, "k1", []))).toEqual(["a"]);
-    expect(mgr.getEffectiveRole("a")).toBeUndefined();
-    expect(() => mgr.removeCollaborator(owner, "a", [])).not.toThrow();
+    // The link already grants nothing, so revoking it changes nobody's access.
+    expect(mgr.revokeShareLink(owner, "k1", [])).toEqual([]);
+    expect(mgr.getEffectiveRole("a")).toBe("use");
+    expect(ids(mgr.removeCollaborator(owner, "a", []))).toEqual(["a"]);
   });
 
-  it("re-adding a collaborator restores their grants from before ownerInvitesOnly (undo)", () => {
+  it("counts only direct owner grants", () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    seedLink(storage, "k1", OWNER);
+    seedCollaborator(storage, "direct", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "linked", [keyEdge("k1")]);
+    seedCollaborator(storage, "transitive", [userEdge("direct", "build")]);
+    let baseline = mgr.computeEffectiveRoles();
+    expect(ids(mgr.listCollaborators())).toEqual(["direct", "linked", "transitive"]);
+
+    flags.ownerInvitesOnly = true;
+
+    expect(mgr.getEffectiveRole("direct")).toBe("build");
+    expect(mgr.getEffectiveRole("linked")).toBeUndefined();
+    expect(mgr.getEffectiveRole("transitive")).toBeUndefined();
+    expect(ids(mgr.listCollaborators())).toEqual(["direct"]);
+    expect(mgr.computeAffectedByOwnerInvitesOnly(baseline)).toEqual([
+      expect.objectContaining({ profile: profile("linked"), oldRole: "build", newRole: null }),
+      expect.objectContaining({ profile: profile("transitive"), oldRole: "build", newRole: null }),
+    ]);
+  });
+
+  it("counts a user the owner kept during a removal as direct", () => {
     let { storage, flags, mgr } = makeManagerWithFlag();
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    // a shared with b before ownerInvitesOnly was set; afterwards a could not have.
     seedCollaborator(storage, "b", [userEdge("a", "use")]);
+
+    // Removing a while keeping b re-roots b on an edge from the owner.
+    mgr.removeCollaborator(owner, "a", ["b"]);
     flags.ownerInvitesOnly = true;
+
+    expect(mgr.getEffectiveRole("b")).toBe("use");
+  });
+
+  it("downgrades a collaborator to their owner edge's role", () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "b", [userEdge(OWNER, "use"), userEdge("a", "build")]);
+    let baseline = mgr.computeEffectiveRoles();
+    expect(baseline.get("b")).toBe("build");
+
+    flags.ownerInvitesOnly = true;
+
+    expect(mgr.getEffectiveRole("b")).toBe("use");
+    expect(mgr.computeAffectedByOwnerInvitesOnly(baseline)).toEqual([
+      expect.objectContaining({ profile: profile("b"), oldRole: "build", newRole: "use" }),
+    ]);
+  });
+
+  it("re-adding an intermediary restores nobody else", () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    seedCollaborator(storage, "b", [userEdge("a", "use")]);
 
     mgr.removeCollaborator(owner, "a", []);
     expect(mgr.getEffectiveRole("b")).toBeUndefined();
+    flags.ownerInvitesOnly = true;
 
-    // ownerInvitesOnly limits who may create grants, not which existing grants count: re-adding a
-    // brings b back through the untouched edge from before the flag was set. b still passes observer verification at open().
+    // Without the flag, re-adding a would bring b back through a's untouched edge. Once it is set,
+    // only the owner's direct grants count, so b stays out until the owner adds them directly.
     mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "build" });
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+    expect(mgr.getEffectiveRole("b")).toBeUndefined();
+
+    mgr.addCollaborator({ caller: owner, profile: profile("b"), role: "use" });
     expect(mgr.getEffectiveRole("b")).toBe("use");
   });
 });

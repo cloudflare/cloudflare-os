@@ -7,8 +7,8 @@
 // and sharing stays available. The observation also sets `containsRestrictedData`, putting the
 // workspace into a restricted mode: once it is set, the workspace may not perform actions (nor
 // fetch from the web, which has no client-reachable surface to assert here). An observation that
-// also carries `ownerInvitesOnly` sets that flag too, turning share links off and leaving the
-// owner as the only one who can add people.
+// also carries `ownerInvitesOnly` sets that flag too: from then on only direct grants from the
+// owner count, so share links stop admitting anyone and people who joined through one lose access.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -256,73 +256,75 @@ describe("sensitive observations", () => {
     });
   });
 
-  it.concurrent("ownerInvitesOnly: links stop admitting people, the owner adds them",
+  it.concurrent("ownerInvitesOnly: link joiners lose access, the owner adds people directly",
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "owner-invites-only");
       const { key, linkId } = await ws.overseer.createShareLink("build", "before ownerInvitesOnly");
-
-      // Dave joins through the link before ownerInvitesOnly is set.
       const [dave, carol] = nextUsernames("dave", "carol");
-      const daveApi = await signUp(publicApi, dave);
-      const daveAccount = await provisionAccount(daveApi);
-      const daveOpens = async () => {
+      const opens = async (api: RpcStub<AuthenticatedApi>, account: ConnectedAccount) => {
         const callback = stubFor(
-            new ObserverConfigRecorder().alwaysChoose(daveAccount.id, MAX_OBSERVER_PROMPTS));
+            new ObserverConfigRecorder().alwaysChoose(account.id, MAX_OBSERVER_PROMPTS));
         try {
-          return await daveApi.openGadget(ws.gadgetId, key, callback);
+          return await api.openGadget(ws.gadgetId, key, callback);
         } finally {
           callback[Symbol.dispose]();
         }
       };
-      (await daveOpens())[Symbol.dispose]();
 
-      await expect(ws.session.readValue(true, true)).resolves.toBe(42);
-      await expect(ws.overseer.getMetadata()).resolves.toMatchObject({
-        containsRestrictedData: true,
-        ownerInvitesOnly: true,
-      });
-
-      // No new links, and no new copies of the old one.
-      await expect(ws.overseer.createShareLink("use", "after ownerInvitesOnly"))
-          .rejects.toThrow(/Share links are disabled/);
-      await expect(ws.overseer.newShareLinkKey(linkId))
-          .rejects.toThrow(/Share links are disabled/);
-
-      // The old link no longer admits anyone new...
-      const carolApi = await signUp(publicApi, carol);
-      await expect(carolApi.openGadget(ws.gadgetId, key)).rejects.toMatchObject({
-        code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
-        message: expect.stringMatching(/Share links are disabled/),
-      });
+      // Dave joins through the link before ownerInvitesOnly is set.
+      const daveSignedUp = await signUp(publicApi, dave);
+      const daveAccount = await provisionAccount(daveSignedUp);
+      (await opens(daveSignedUp, daveAccount))[Symbol.dispose]();
       expect(await ws.overseer.listCollaborators()).toHaveLength(1);
 
-      // ...but Dave, who already joined through it, still opens with it, and cannot add people.
-      using daveOverseer = await daveOpens();
-      await expect(daveOverseer.addCollaborator(carol, "use"))
-          .rejects.toThrow(/Only the workspace owner/);
-
-      // The owner adds Carol directly, and she opens after verifying her own access.
-      await expect(ws.overseer.addCollaborator(carol, "use")).resolves.toMatchObject({
-        profile: expect.objectContaining({ id: expect.any(String) }),
-      });
-      const carolAccount = await provisionAccount(carolApi);
-      const callback = stubFor(
-          new ObserverConfigRecorder().alwaysChoose(carolAccount.id, MAX_OBSERVER_PROMPTS));
+      // The read sets ownerInvitesOnly. Only direct grants from the owner count from then on, and
+      // Dave's only grant is the link, so he loses access and the workspace restarts.
+      await expect(ws.session.readValue(true, true)).resolves.toBe(42);
+      const reopened = await reopenAfterRestart(ws);
       try {
-        (await carolApi.openGadget(ws.gadgetId, undefined, callback))[Symbol.dispose]();
-      } finally {
-        callback[Symbol.dispose]();
-      }
+        const overseer = reopened.overseer;
+        await expect(overseer.getMetadata()).resolves.toMatchObject({
+          containsRestrictedData: true,
+          ownerInvitesOnly: true,
+        });
+        expect(await overseer.listCollaborators()).toEqual([]);
 
-      // The owner can still see and revoke the old link. Dave loses access, so the revocation
-      // restarts the workspace; wait for it to land before the test tears its stubs down.
-      expect((await ws.overseer.listShareLinks()).map(l => l.linkId)).toEqual([linkId]);
-      await expect(ws.overseer.revokeShareLink(linkId, [])).resolves.toMatchObject([
-        expect.objectContaining({ newRole: null }),
-      ]);
-      await waitFor("the revocation restart to fell the old workspace instance", () =>
-          ws.session.readValue().then(() => null, () => true));
+        // No new links, and no new copies of the old one.
+        await expect(overseer.createShareLink("use", "after ownerInvitesOnly"))
+            .rejects.toThrow(/Share links are disabled/);
+        await expect(overseer.newShareLinkKey(linkId))
+            .rejects.toThrow(/Share links are disabled/);
+
+        // The old link admits neither Dave, who joined through it, nor Carol, who is new.
+        const daveApi = await logIn(reopened.publicApi, dave);
+        await expect(opens(daveApi, daveAccount)).rejects.toMatchObject({
+          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+          message: expect.stringMatching(/Share links are disabled/),
+        });
+        const carolApi = await signUp(reopened.publicApi, carol);
+        const carolAccount = await provisionAccount(carolApi);
+        await expect(opens(carolApi, carolAccount)).rejects.toMatchObject({
+          code: OPEN_GADGET_ERROR_CODES.shareLinksDisabled,
+        });
+        expect(await overseer.listCollaborators()).toEqual([]);
+
+        // The owner adds Dave directly. He opens after verifying his own access -- still through
+        // the old link, which lets a direct collaborator through -- but cannot add people himself.
+        await expect(overseer.addCollaborator(dave, "build")).resolves.toMatchObject({
+          role: "build",
+        });
+        using daveOverseer = await opens(daveApi, daveAccount);
+        await expect(daveOverseer.addCollaborator(carol, "use"))
+            .rejects.toThrow(/Only the workspace owner/);
+
+        // The owner can still see and revoke the old link. It grants nothing now, so revoking it
+        // affects nobody.
+        expect((await overseer.listShareLinks()).map(l => l.linkId)).toEqual([linkId]);
+        await expect(overseer.revokeShareLink(linkId, [])).resolves.toEqual([]);
+      } finally {
+        reopened.publicApi[Symbol.dispose]();
+      }
     });
   });
 
