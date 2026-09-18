@@ -2446,12 +2446,11 @@ export type AiChatMetadata = {
    * (including changes not yet materialized into a durable `changes` message): gadgets and
    * worktrees whose code the chat modified (pinned in the current epoch -- for a worktree, an
    * explicit commit() counts as a modification), gadgets it provisionally created, and gadgets
-   * it added a binding to. A worktree's creation alone is not listed: it stays private to the
-   * chat whether or not it is accepted, so a checkout made only to be read proposes nothing
-   * (the creation is still revertable, see AiChatMessageBody.createdWorktrees). Absent (or
-   * empty) when the chat proposes nothing -- the pending-changes accept/discard affordances and
-   * per-workpiece draft previews key off this list. Derived server-side and delivered on
-   * metadata updates; never submitted by clients.
+   * it added a binding to. A worktree's creation alone is not listed: the worktree is private to
+   * the chat either way, so a checkout made only to be read proposes nothing (see
+   * AiChatMessageBody.createdWorktrees). Absent (or empty) when the chat proposes nothing --
+   * the pending-changes accept/discard affordances and per-workpiece draft previews key off this
+   * list. Derived server-side and delivered on metadata updates; never submitted by clients.
    * (This replaces the earlier `hasProposedChanges` boolean; values of that retired field may
    * linger in stored metadata but are never delivered as truth.)
    */
@@ -2919,17 +2918,17 @@ export type AiChatMessageBody = {
   /**
    * Worktrees created as part of this batch of changes (by the agent's `createWorktree` tool).
    * Deliberately separate from `createdGadgets` so a client can never mistake a worktree for a
-   * gadget creation. Like gadget creations, they are provisional -- a merge through this message
-   * makes the record permanent (it stays private to this chat), and a revert covering it deletes
-   * it. A creation pins nothing: like a gadget, a worktree joins `pins` when it is first
-   * modified (see ChatGadgetPin). Batches written before that was so carry the worktree's
-   * birth pin `{gadgetId: worktreeId, baseCommit}` alongside the creation, which readers honor
-   * as an ordinary pin. `bindingName` is the name in the creating chat's env, recorded so replay
-   * can pick it back up. The worktree itself reaches the client as a WorktreeSummary on the
-   * workpiece subscription, and its content rides `change` and `pins` like a gadget's. Unlike a
-   * gadget creation, a worktree creation by itself is not a proposed change (see
-   * AiChatMetadata.proposedChangeWorkpieces): nothing needs accepting until the worktree is
-   * first modified, though reverting this message still deletes it.
+   * gadget creation. Unlike a gadget creation, a worktree creation is not a proposed change (see
+   * AiChatMetadata.proposedChangeWorkpieces), so it is not provisional either: recording this
+   * message makes each worktree permanent (though private to this chat for life), nothing needs
+   * accepting until the worktree is first modified, and a revert covering this message rolls
+   * back the worktree's content and head but never deletes it. A creation pins nothing: like a
+   * gadget, a worktree joins `pins` when it is first modified (see ChatGadgetPin). Batches
+   * written before that was so carry the worktree's birth pin `{gadgetId: worktreeId,
+   * baseCommit}` alongside the creation, which readers honor as an ordinary pin. `bindingName`
+   * is the name in the creating chat's env, recorded so replay can pick it back up. The worktree
+   * itself reaches the client as a WorktreeSummary on the workpiece subscription, and its
+   * content rides `change` and `pins` like a gadget's.
    */
   createdWorktrees?: {worktreeId: WorkpieceId, title: string, bindingName: string}[];
 

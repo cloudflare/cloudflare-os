@@ -648,9 +648,10 @@ type PhosphorIcon = typeof MagnifyingGlass;
 
 type ActionChatMessage = Extract<AiChatMessage, { type: "action" }>;
 type ChangeChatMessage = Extract<AiChatMessage, { type: "changes" }>;
-// A workpiece created by a turn's pending changes (see `createdGadgets` / `createdWorktrees` on
-// the "changes" message body). Reverting the turn deletes it, so discard affordances name it.
-type CreatedWorkpieceName = { type: "gadget" | "worktree"; title: string };
+// A workpiece created by a turn's pending changes (see `createdGadgets` on the "changes" message
+// body). Reverting the turn deletes it, so discard affordances name it. Worktrees don't count:
+// no revert deletes a worktree (see `createdWorktrees`).
+type CreatedWorkpieceName = { type: "gadget"; title: string };
 
 type PendingTurnChanges = {
   revertFrom: number;
@@ -658,12 +659,17 @@ type PendingTurnChanges = {
   createdWorkpieces: CreatedWorkpieceName[];
 };
 
-// The creations one "changes" message records, gadgets first, as discard labels list them.
+// The creations one "changes" message records that reverting it would delete.
 function createdWorkpiecesOf(m: ChangeChatMessage): CreatedWorkpieceName[] {
-  return [
-    ...(m.createdGadgets ?? []).map(({ title }) => ({ type: "gadget" as const, title })),
-    ...(m.createdWorktrees ?? []).map(({ title }) => ({ type: "worktree" as const, title })),
-  ];
+  return (m.createdGadgets ?? []).map(({ title }) => ({ type: "gadget" as const, title }));
+}
+
+// Whether the message records nothing but worktree creations. Reverting such a message changes
+// nothing, since no revert deletes a worktree, so it gets no discard affordance.
+function recordsOnlyWorktreeCreations(m: ChangeChatMessage): boolean {
+  return !!m.createdWorktrees?.length && m.change === undefined && !m.pins?.length &&
+    !m.createdGadgets?.length && !m.addedBindings?.length && !m.worktreeCommits?.length &&
+    m.mainlineMerge === undefined && !m.conversionBoundary;
 }
 type ObservationChatMessage = ActionChatMessage & {
   actionLog: NonNullable<ActionChatMessage["actionLog"]> & { type: "observation" };
@@ -1870,17 +1876,12 @@ function appendWorkParts(target: WorkMessageParts, source: WorkMessageParts) {
   }
 }
 
-// Suffix appended to discard labels when the discarded changes include workpiece creations,
-// since reverting also deletes the created gadgets and worktrees: " (deletes gadget “A” and
-// worktrees “B”, “C”)".
+// Suffix appended to discard labels when the discarded changes include gadget creations, since
+// reverting also deletes the created gadgets: " (deletes gadgets “A”, “B”)".
 function describeCreatedWorkpieceDeletion(created: CreatedWorkpieceName[] | undefined): string {
   if (!created || created.length === 0) return "";
-  const parts = (["gadget", "worktree"] as const).flatMap((type) => {
-    const titles = created.filter((c) => c.type === type).map((c) => `“${c.title}”`);
-    if (titles.length === 0) return [];
-    return [`${titles.length === 1 ? type : `${type}s`} ${titles.join(", ")}`];
-  });
-  return ` (deletes ${parts.join(" and ")})`;
+  const titles = created.map((c) => `“${c.title}”`);
+  return ` (deletes ${titles.length === 1 ? "gadget" : "gadgets"} ${titles.join(", ")})`;
 }
 
 // Label for the per-turn discard-changes button.
@@ -4613,7 +4614,8 @@ function ChatInterface({
         m.type === "changes" &&
         m.author.type !== "user" &&
         m.sequence >= chatEpoch &&
-        (messageStates.changeStatus.get(m.sequence) ?? "pending") === "pending"
+        (messageStates.changeStatus.get(m.sequence) ?? "pending") === "pending" &&
+        !recordsOnlyWorktreeCreations(m)
       ) {
         const created = createdWorkpiecesOf(m);
         pendingTurnChanges = pendingTurnChanges === null
@@ -4630,7 +4632,8 @@ function ChatInterface({
     return out;
   }, [currentMessages, messageStates, chatEpoch]);
 
-  // Accepted creations remain in the transcript; reverted ones disappear.
+  // Accepted creations remain in the transcript; reverted gadget creations disappear, while
+  // worktrees survive every revert, so their cards stay.
   const createdWorkpiecesByTurnItemSeq = useMemo(() => {
     const out = new Map<number, CreatedWorkpieceCardInfo[]>();
     let lastAgentMessageSeq: number | null = null;
@@ -4688,10 +4691,10 @@ function ChatInterface({
       }
 
       const status = messageStates.changeStatus.get(m.sequence) ?? "pending";
-      if (status === "reverted" || !(m.createdGadgets || m.createdWorktrees)) continue;
+      if (!(m.createdGadgets || m.createdWorktrees)) continue;
       creations = [
         ...creations,
-        ...(m.createdGadgets ?? []).map(({ gadgetId, title }): CreatedWorkpieceCardInfo => ({
+        ...(status === "reverted" ? [] : m.createdGadgets ?? []).map(({ gadgetId, title }): CreatedWorkpieceCardInfo => ({
           type: "gadget",
           workpieceId: gadgetId,
           title,

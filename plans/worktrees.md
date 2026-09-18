@@ -546,11 +546,12 @@ agent-facing `Worktree` binding API).
     mid-epoch would double-apply them). After an explicit `commit()`, `headCommit`
     runs ahead of `pinBase` until the next reset. Internal bookkeeping only, never
     surfaced.
-  - **Lifecycle mirrors pending gadgets**: the record is born with
-    `pending: {chatId, sequence}`, stamped by the same machinery, reaped by
-    `reconcilePendingGadgets` on crash, and deleted if the creating change is
-    reverted. Accept's promotion sweep clears `pending` (the creation is durable)
-    but performs **no head-commit work** for worktrees — their head lifecycle is
+  - **Lifecycle mirrors pending gadgets only up to the barrier**: the record is born
+    with `pending: {chatId}` and reaped by `reconcilePendingGadgets` if a crash
+    loses the step. The "changes" message recording the creation clears `pending`
+    rather than stamping it (superseded in plans/worktrees-ui.md: a creation proposes
+    nothing, so no revert deletes a worktree — it only rolls back content and head).
+    Accept performs **no head-commit work** for worktrees — their head lifecycle is
     their own — and `chatId` keeps them chat-private forever.
   - Deleted when their chat is deleted (extend chat deletion cleanup).
   - **Consumer audit**: every reader of the `gadgets` collection must be checked to
@@ -1222,7 +1223,7 @@ to keep dependents compiling. PR boundaries to be decided later.
    create-from-local-commit (no gatekeeper), edit-through-OT on a worktree, lazy
    blob fault, oversize/binary read errors, symlink/gitlink touch errors
    (message names the link target / submodule commit; writes rejected too),
-   revert-deletes-worktree, chat-deletion
+   revert-keeps-worktree, chat-deletion
    cleanup, other-chat invisibility, and the client-subscription leak test (no
    worktree `CodeChange` entries, pins, or commit content in delivered traffic —
    bare worktree ids in tool calls are expected; gapless revisions across

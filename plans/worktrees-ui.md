@@ -178,10 +178,12 @@ Backend:
   worktree record merely *pending* in the chat (created, never written to or committed) does
   **not** propose anything, unlike a pending gadget: a worktree stays private to its chat
   whether or not it is accepted, so an agent that checks a repository out only to read it
-  would otherwise raise a banner over a chat with nothing to accept. The creation is still
-  revertable through its `changes` message (reverting deletes the worktree), and the next
-  accept that covers it sweeps its `pending`. Accept/Discard/per-turn revert are the same
-  buttons and RPCs.
+  would otherwise raise a banner over a chat with nothing to accept. For the same reason the
+  creation is not revertable: the `changes` message recording it clears the record's `pending`
+  at once (only an unrecorded crash orphan is reaped), and a revert covering that message —
+  Discard or per-turn — rolls back the worktree's content and head but never deletes it.
+  Discard labels name only gadget creations, and a turn whose only change is a worktree
+  creation offers no discard. Accept/Discard/per-turn revert are the same buttons and RPCs.
 - **The whole tree is delivered up front, as a tree; only file content is lazy.**
   `listTree(commitId)` returns the commit's tree as **nested nodes** — each directory's
   entries in git order, names not paths — so the tree browser needs one call per base

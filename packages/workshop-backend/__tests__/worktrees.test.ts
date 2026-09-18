@@ -26,7 +26,8 @@ declare module "cloudflare:workers" {
 // its accepted commit -- WorktreeRecord.pinBase -- by its first write or commit(), never by its
 // creation), lazy worktree content in the chat's change stream (edits seed their base texts on
 // demand; untouched files are never materialized), the accept's advance of the accepted
-// commit, revert/deletion cleanup, chat-privacy, the delivery of worktree content, summaries
+// commit, what reverts roll back (never the worktree itself), crash-orphan and chat-deletion
+// cleanup, chat-privacy, the delivery of worktree content, summaries
 // and proposed-change status to clients, and the reading of logs written when worktrees were
 // pinned from birth. Each test gets a fresh DO, whose storage stays at version 0
 // (never initialized), so records seeded by tests carry their type explicitly and migration
@@ -130,8 +131,9 @@ async function createThroughBarrier(impl: any, chatId: number, commitRef: string
   await barrier(impl, chatId, {
     createdWorktrees: [{ worktreeId: created.id, title: created.title, bindingName }],
   });
-  return { id: created.id, baseCommit: created.baseCommit,
-           stamp: impl.storage.gadgets.get(created.id)!.pending!.sequence! };
+  let recording = chatMessages(impl, chatId).findLast(msg => msg.type === "changes" &&
+      msg.createdWorktrees?.some(w => w.worktreeId === created.id))!;
+  return { id: created.id, baseCommit: created.baseCommit, stamp: recording.sequence };
 }
 
 // The chat's live code base, in the absent-means-empty reading both sides use.
@@ -256,14 +258,16 @@ describe("createWorktree", () => {
 });
 
 describe("worktrees in the chat change stream", () => {
-  it("records the creation at the barrier and stamps the pending record, pinning nothing",
+  it("records the creation at the barrier, making the record permanent and pinning nothing",
       () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    let { id, stamp } = await createThroughBarrier(impl, 1, c1);
+    let { id } = await createThroughBarrier(impl, 1, c1);
 
+    // Recording the creation promotes the record at once: a worktree creation proposes
+    // nothing, so there is no later accept or revert for a stamp to decide on.
+    expect(impl.storage.gadgets.get(id)!.pending).toBeUndefined();
     let changes = chatMessages(impl, 1).find(msg => msg.type === "changes")!;
-    expect(changes.sequence).toBe(stamp);
     expect(changes.createdWorktrees).toEqual(
         [{ worktreeId: id, title: "Repo", bindingName: "REPO" }]);
     expect(changes.createdGadgets).toBeUndefined();
@@ -299,14 +303,13 @@ describe("worktrees in the chat change stream", () => {
     expect(codeBaseOf(impl, 1).pins).toHaveLength(1);
   }));
 
-  it("pins a pending worktree too: its content is its base tree, never built up from nothing",
+  it("pins a freshly created worktree too: its content is its base tree, never built up from nothing",
       () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id } = await createThroughBarrier(impl, 1, c1);
-    expect(impl.storage.gadgets.get(id)!.pending).toBeDefined();
 
-    // A client write to the still-pending worktree must declare the pin, unlike a pending
+    // A client write to a never-accepted worktree must declare the pin, unlike a pending
     // gadget's; without it the epoch's accept would have no pin to auto-commit under.
     await expect(submit(impl, 1, "cli-nopin", { [id]: [["new.txt", { set: "fresh\n" }]] }))
         .rejects.toThrow(/first modification .* must declare a pin/);
@@ -471,17 +474,70 @@ describe("worktrees in the chat change stream", () => {
 });
 
 describe("worktree lifecycle", () => {
-  it("a revert covering the creation deletes the worktree and drops its pin",
+  it("a revert covering the creation keeps the worktree, rolling back its content and head",
       () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id, stamp } = await createThroughBarrier(impl, 1, c1);
     await barrier(impl, 1, { changes: [{ change: { [id]: [["new.txt", { set: "fresh\n" }]] } }]});
+    let c2 = await commitFiles(impl, { "a.txt": "one\n", "new.txt": "fresh\n" }, [c1]);
+    await barrier(impl, 1, { worktreeCommits: [{ worktreeId: id, commit: c2, previousHead: c1 }]});
     expect(codeBaseOf(impl, 1).pins).toHaveLength(1);
 
     await impl.revertChanges(1, stamp, USER);
-    expect(impl.storage.gadgets.get(id)).toBeUndefined();
+    let record = impl.storage.gadgets.get(id)!;
+    expect(record).toBeDefined();
+    expect(record.pending).toBeUndefined();
+    expect(record.headCommit).toBe(c1);
+    expect(record.pinBase).toBe(c1);
     expect(codeBaseOf(impl, 1).pins).toEqual([]);
+    expect(await workpieceContent(impl, 1, id)).toEqual({});
+
+    // The revert's tail reconciliation doesn't reap it later either (every turn start runs one).
+    await impl.reconcilePendingGadgets(1);
+    expect(impl.storage.gadgets.get(id)).toBeDefined();
+  }));
+
+  it("Discard of a never-accepted worktree's edits keeps the worktree", () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { id } = await createThroughBarrier(impl, 1, c1);
+    let proposed = () =>
+        impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).proposedChangeWorkpieces;
+
+    // An agent edit and a user edit (still a live row), then the banner's Discard -- the UI's
+    // revertChanges(chatId, 0), which covers the creation's message too.
+    await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "one!\n") }]});
+    await submit(impl, 1, "cli-user", { [id]: [["b.txt", { set: "bee\n" }]] });
+    expect(proposed()).toEqual([id]);
+
+    await impl.revertChanges(1, 0, USER);
+    let record = impl.storage.gadgets.get(id)!;
+    expect(record).toBeDefined();
+    expect(record.pinBase).toBe(c1);
+    expect(codeBaseOf(impl, 1).pins).toEqual([]);
+    expect(await workpieceContent(impl, 1, id)).toEqual({});
+    expect(proposed()).toBeUndefined();
+
+    // Still editable afterwards: the agent's binding resolves, and a new write pins afresh.
+    await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "two\n") }]});
+    expect(await workpieceContent(impl, 1, id)).toEqual({ "a.txt": "two\n" });
+    expect(proposed()).toEqual([id]);
+  }));
+
+  it("promotes a worktree record stamped by an earlier version, even if its creation is reverted",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { id, stamp } = await createThroughBarrier(impl, 1, c1);
+    // As the earlier version recorded a creation: a sequence stamp instead of promotion.
+    impl.storage.gadgets.put({ ...impl.storage.gadgets.get(id)!, pending: { chatId: 1, sequence: stamp } });
+    await barrier(impl, 1, { changes: [{ change: { [id]: [["new.txt", { set: "fresh\n" }]] } }]});
+
+    await impl.revertChanges(1, stamp, USER);
+    let record = impl.storage.gadgets.get(id)!;
+    expect(record).toBeDefined();
+    expect(record.pending).toBeUndefined();
   }));
 
   it("a revert covering the first modification unpins; the worktree reads as its accepted commit",
@@ -512,7 +568,7 @@ describe("worktree lifecycle", () => {
     expect(impl.storage.gadgets.get(created.id)).toBeUndefined();
   }));
 
-  it("an accept promotes a covered creation without committing anything for it",
+  it("an accept covering the creation commits nothing for it",
       () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
@@ -523,8 +579,8 @@ describe("worktree lifecycle", () => {
 
     expect(await impl.mergeChanges(1, USER_META, "client-user")).toEqual({ outcome: "merged" });
     let record = impl.storage.gadgets.get(id)!;
-    expect(record.pending).toBeUndefined();      // promoted: the creation is durable
-    expect(record.chatId).toBe(1);               // ...but still chat-private for life
+    expect(record.pending).toBeUndefined();
+    expect(record.chatId).toBe(1);               // still chat-private for life
     expect(record.headCommit).toBe(c1);          // no head-commit work for worktrees
     let merge = chatMessages(impl, 1).find(msg => msg.type === "merge")!;
     expect(merge.commits).toEqual([]);           // nothing committed, nothing gated
@@ -628,18 +684,15 @@ describe("client delivery of worktree content", () => {
         impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).proposedChangeWorkpieces;
 
     // Creation alone proposes nothing: a checkout made only to be read must not raise the
-    // pending-changes banner. The creation stays pending (and revertable) meanwhile.
+    // pending-changes banner.
     let { id, baseCommit } = await createThroughBarrier(impl, 1, c1);
     expect(proposed()).toBeUndefined();
-    expect(impl.storage.gadgets.get(id)!.pending?.chatId).toBe(1);
 
-    // An edit pins, which proposes; the accept's epoch reset unpins and, covering the creation,
-    // promotes it.
+    // An edit pins, which proposes; the accept's epoch reset unpins.
     await barrier(impl, 1, { changes: [{ change: { [id]: [["a.txt", { set: "edited\n" }]] } }]});
     expect(proposed()).toEqual([id]);
     await impl.mergeChanges(1, USER_META, "client-user");
     expect(proposed()).toBeUndefined();
-    expect(impl.storage.gadgets.get(id)!.pending).toBeUndefined();
 
     // A commit() alone pins too: the head advancement is a revertable proposed change.
     let pinBase = impl.storage.gadgets.get(id)!.pinBase;
@@ -742,16 +795,30 @@ describe("worktrees in the workpiece subscription", () => {
     expect(sub.removed).toEqual([]);
   }));
 
-  it("delivers removed() when a revert deletes the worktree", () => withImpl(async impl => {
+  it("keeps publishing a worktree whose creation a revert covers", () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id, stamp } = await createThroughBarrier(impl, 1, c1);
+    await barrier(impl, 1, { changes: [{ change: { [id]: [["new.txt", { set: "fresh\n" }]] } }]});
     let sub = workpiecesSubscriber();
     impl.subscribeToWorkpieces(sub.stub, true);
     expect(sub.worktrees().map(e => e.id)).toEqual([id]);  // the initial listing
 
     await impl.revertChanges(1, stamp, USER);
-    expect(sub.removed).toEqual([id]);
+    expect(sub.removed).toEqual([]);
+  }));
+
+  it("delivers removed() when reconciliation reaps a crash-orphaned worktree",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let created = await impl.createWorktree("Doomed", 1, c1);
+    let sub = workpiecesSubscriber();
+    impl.subscribeToWorkpieces(sub.stub, true);
+    expect(sub.worktrees().map(e => e.id)).toEqual([created.id]);
+
+    await impl.reconcilePendingGadgets(1);
+    expect(sub.removed).toEqual([created.id]);
   }));
 
   it("withholds worktrees, accepted or not, from a use-role subscription",
@@ -764,9 +831,8 @@ describe("worktrees in the workpiece subscription", () => {
     impl.subscribeToWorkpieces(sub.stub, false);
     expect(sub.entries.map(e => e.id)).toEqual([permanent.id]);
 
-    // Acceptance makes the record permanent but not shared: a worktree is its chat's for life.
+    // Permanence isn't sharing, and neither is acceptance: a worktree is its chat's for life.
     await impl.mergeChanges(1, USER_META, "client-user");
-    expect(impl.storage.gadgets.get(id)!.pending).toBeUndefined();
     await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "one!\n") }]});
     await impl.mergeChanges(1, USER_META, "client-user");
     expect(sub.worktrees()).toEqual([]);

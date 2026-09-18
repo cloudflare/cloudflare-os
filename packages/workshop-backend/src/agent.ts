@@ -415,11 +415,11 @@ export interface AgentHooks {
    * change as a chat change row -- one row per tool call, in call order, with the same
    * pin/codeBase bookkeeping the appends always had -- materialize the rows into the step's
    * single "changes" message carrying the step's gadget creations, binding additions, and
-   * worktree head advancements (stamping pending registry records and advancing worktree
-   * heads), and retire the rows. The step's effects are thus durable iff its transcript record
-   * is; a crash mid-step loses both, and the resumed model re-runs the step against unmodified
-   * content. Returns whether a "changes" message was written (change-ID numbering counts
-   * messages).
+   * worktree head advancements (stamping pending gadget and binding records, making created
+   * worktrees permanent, and advancing worktree heads), and retire the rows. The step's effects
+   * are thus durable iff its transcript record is; a crash mid-step loses both, and the resumed
+   * model re-runs the step against unmodified content. Returns whether a "changes" message was
+   * written (change-ID numbering counts messages).
    *
    * Rows and messages broadcast from inside the transaction, as every append always has: the
    * transaction protects server-side storage, not what subscribers saw before a rollback (a
@@ -1239,8 +1239,8 @@ async function runAgentPass(
   let pendingCreatedGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[] = [];
 
   // Worktrees created this step (see the createWorktree tool), awaiting the same barrier: its
-  // "changes" message records each creation (`createdWorktrees`) and sequence-stamps the
-  // pending record.
+  // "changes" message records each creation (`createdWorktrees`) and makes the pending record
+  // permanent (see WorktreeRecord.pending in overseer.ts).
   let pendingCreatedWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[] =
       [];
 
@@ -3196,9 +3196,9 @@ async function runAgentPass(
 
           // Like createGadget: the registry record (chat-private) is created immediately -- this
           // is also where the commit reference resolves and, for gatekeeper-known commits, the
-          // initial pull happens -- but the creation is *recorded* (and the record
-          // sequence-stamped) by the step's "changes" message at the barrier. A step that dies
-          // first leaves an unstamped orphan for reconciliation. The new worktree is unpinned:
+          // initial pull happens -- but the creation is *recorded* (and the record made
+          // permanent) by the step's "changes" message at the barrier. A step that dies first
+          // leaves an unstamped orphan for reconciliation. The new worktree is unpinned:
           // reads resolve lazily against its base commit (its accepted commit) until the first
           // write or commit() pins it.
           let created = await hooks.createWorktree(title, chatId, commitId);

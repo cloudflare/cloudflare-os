@@ -433,10 +433,14 @@ export type WorktreeRecord = {
   bindingName?: undefined;
 
   /**
-   * The provisional-to-chat lifecycle, mirroring GadgetRecord.pending stamp-for-stamp: stamped
-   * by the "changes" message that records the creation (via `createdWorktrees`), reaped by
-   * reconcilePendingGadgets when unstamped or reverted, promoted (cleared) by the accept that
-   * covers the creation -- with no head-commit work; a worktree's head lifecycle is its own.
+   * Set only between creation and the "changes" message that records it (via
+   * `createdWorktrees`), which clears it in the same write: an unstamped record whose chat has
+   * no active turn is a crash orphan, reaped by reconcilePendingGadgets like an unstamped
+   * gadget. Unlike GadgetRecord.pending, it is never stamped for a later accept or revert to
+   * decide on, because creating a worktree proposes nothing (see proposedChangeWorkpieceIds):
+   * once recorded, the worktree lives as long as its chat, and a revert covering the creation
+   * rolls back its content and head but never deletes it. `sequence` appears only on records
+   * written before this was so; reconcilePendingGadgets promotes those.
    */
   pending?: {chatId: number, sequence?: number};
 };
@@ -2405,7 +2409,7 @@ class OverseerImpl implements AgentHooks {
   // fault. Any locally-present commit works with no gatekeeper at all (a gadget's history,
   // another worktree's commit). Like createGadget, the caller (the agent's createWorktree tool)
   // is responsible for getting the creation recorded in the chat log -- `createdWorktrees` on
-  // the step's "changes" message -- which sequence-stamps the pending record. The worktree is
+  // the step's "changes" message -- which makes the pending record permanent. The worktree is
   // not pinned in the chat by its creation: it reads as its accepted commit (`pinBase`) until
   // the first modification pins it (see commitAgentStep).
   async createWorktree(title: string, chatId: number, commitRef: string)
@@ -2477,6 +2481,8 @@ class OverseerImpl implements AgentHooks {
   //   - A *stamped* record is reaped when the log marks its creation reverted: reverts record
   //     their message before the awaited record deletions (see #revertChanges), so this is both
   //     the tail of every revert and the recovery from one that crashed partway.
+  //   - A *stamped worktree* was written before recording a worktree creation promoted it (see
+  //     WorktreeRecord.pending). It is promoted here instead, reverted or not.
   // Called at agent turn start (before history replay) and turn end, plus from merge and revert
   // (which assert the chat has no active turn) -- never mid-step, when an unstamped record
   // awaiting its barrier legitimately exists.
@@ -2485,7 +2491,16 @@ class OverseerImpl implements AgentHooks {
   async reconcilePendingGadgets(chatId: number): Promise<void> {
     let pending = this.listPendingGadgets(chatId);
     let unstamped = pending.filter(gadget => gadget.pending!.sequence === undefined);
-    let stamped = pending.filter(gadget => gadget.pending!.sequence !== undefined);
+    let stamped: WorkpieceRecord[] = [];
+    for (let record of pending) {
+      if (record.pending!.sequence === undefined) continue;
+      if (record.type === "worktree") {
+        delete record.pending;
+        this.storage.gadgets.put(record);
+      } else {
+        stamped.push(record);
+      }
+    }
 
     // A marking message only affects messages recorded before it, so statuses for the stamped
     // creations need only the log tail from the earliest one on.
@@ -3282,8 +3297,8 @@ class OverseerImpl implements AgentHooks {
   // A worktree's *creation* alone proposes nothing, unlike a gadget's: accepting adds a pending
   // gadget to the workspace, whereas a worktree stays private to its chat either way, so an
   // agent that checks a repository out only to read it would otherwise raise the pending-changes
-  // banner over a chat with nothing to accept. The pending record still makes the creation
-  // revertable (deleting the worktree) and is swept by the next accept that covers it.
+  // banner over a chat with nothing to accept. For the same reason no revert deletes a worktree
+  // (see WorktreeRecord.pending).
   proposedChangeWorkpieceIds(chatId: number, meta: AiChatMetadata): WorkpieceId[] {
     let ids = new Set<WorkpieceId>();
     for (let pin of meta.codeBase?.pins ?? []) {
@@ -4443,9 +4458,9 @@ class OverseerImpl implements AgentHooks {
     for (let record of Array.from(this.storage.gadgets.list())) {
       if (record.type === "worktree") {
         // Worktrees never gate an accept and get no head-commit work here: their content stays
-        // in the chat's change stream (their head lifecycle is their own), and the promotion
-        // sweep below still clears a covered creation's `pending`. The epoch reset preserves
-        // their content by advancing their accepted commits -- see the plan below.
+        // in the chat's change stream (their head lifecycle is their own), and recording their
+        // creation already made them permanent (see WorktreeRecord.pending). The epoch reset
+        // preserves their content by advancing their accepted commits -- see the plan below.
         continue;
       }
       if (record.pending &&
@@ -4873,8 +4888,9 @@ class OverseerImpl implements AgentHooks {
     // entries are ordered within a message and messages by sequence, so the first one seen per
     // worktree is the state before any reverted commit, however many the range covers. The
     // commit objects themselves remain (content-addressed, now dangling, like auto-commits), so
-    // e.g. a queued push naming a rolled-back commit id stays valid. Worktrees whose creation
-    // the revert covers are deleted below regardless.
+    // e.g. a queued push naming a rolled-back commit id stays valid. This applies equally to a
+    // worktree whose creation the revert covers: the worktree itself survives (see
+    // WorktreeRecord.pending).
     let rolledBackWorktrees = new Set<WorkpieceId>();
     for (let msg of messages) {
       if (msg.type !== "changes" || !stillProposed(msg)) continue;
@@ -6408,11 +6424,12 @@ class OverseerImpl implements AgentHooks {
   // proposed change.
   #hasPendingStructure(chatId: number, compactedTo: number): boolean {
     for (let gadget of this.storage.gadgets.list()) {
+      // Worktrees have no binding edges, and their creation proposes nothing.
+      if (gadget.type !== "gadget") continue;
       let stamped = (pending: {chatId: number, sequence?: number} | undefined) =>
           pending?.chatId === chatId && pending.sequence !== undefined &&
           pending.sequence < compactedTo;
-      if (stamped(gadget.pending)) return true;  // gadget or worktree creation alike
-      if (gadget.type !== "gadget") continue;    // worktrees have no binding edges
+      if (stamped(gadget.pending)) return true;
       for (let edge of Object.values(gadget.bindings)) {
         if (stamped(edge.pending)) return true;
       }
@@ -8418,10 +8435,14 @@ class OverseerImpl implements AgentHooks {
             this.storage.gadgets.put(gadget);
           }
         }
+        // A recorded worktree creation is permanent at once rather than stamped: creating a
+        // worktree proposes nothing (see proposedChangeWorkpieceIds), so neither an accept nor a
+        // revert has anything to decide about it -- a revert rolls back its content and head,
+        // never the worktree itself (see WorktreeRecord.pending).
         for (let {worktreeId} of msg.createdWorktrees ?? []) {
           let worktree = this.storage.gadgets.get(worktreeId);
           if (worktree?.pending?.chatId === chatId && worktree.pending.sequence === undefined) {
-            worktree.pending.sequence = sequence;
+            delete worktree.pending;
             this.storage.gadgets.put(worktree);
           }
         }
