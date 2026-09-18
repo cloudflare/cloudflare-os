@@ -358,8 +358,16 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // A membership-load failure also falls back to the authoritative direct-invite path.
   const canStage = directoryQuery !== '' && (!userSearchEnabled ||
     (membershipSettled && (!membershipReady || directorySettled)))
-  const canInvite = staged.length > 0 || canStage
-  const inviteCount = staged.length + (canStage ? 1 : 0)
+  // What the composer holds besides the chips: the highlighted result, else the typed text once
+  // it can be staged.
+  const highlightedUser = directoryOpen ? directory.results[activeDirectoryIndex] : undefined
+  const typedRecipient: StagedRecipient | null = highlightedUser
+    ? { id: highlightedUser.id, name: highlightedUser.name }
+    : canStage ? { id: directoryQuery, name: directoryQuery } : null
+  // Exactly what Invite would send, so the label never counts a typed id that is already a chip.
+  const pendingRecipients = typedRecipient ? withRecipient(staged, typedRecipient) : staged
+  const inviteCount = pendingRecipients.length
+  const canInvite = inviteCount > 0
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -714,24 +722,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     peopleInputRef.current?.focus({ preventScroll: true })
   }
 
-  // What the composer holds besides the chips: the highlighted result, else the typed text once
-  // it can be staged.
-  const typedRecipient = (): StagedRecipient | null => {
-    const highlighted = directoryOpen ? directory.results[activeDirectoryIndex] : undefined
-    if (highlighted) return { id: highlighted.id, name: highlighted.name }
-    return canStage ? { id: directoryQuery, name: directoryQuery } : null
-  }
-
   const handleDirectoryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (isImeComposing(event)) return
     if (event.key === 'Enter') {
       event.preventDefault()
-      const recipient = typedRecipient()
-      if (recipient) stageRecipient(recipient)
+      if (typedRecipient) stageRecipient(typedRecipient)
       else if (directoryQuery === '' && staged.length > 0) void handleInvite()
       return
     }
-    if (event.key === 'Backspace' && addUsername === '' && staged.length > 0) {
+    if (event.key === 'Backspace' && addUsername === '' && staged.length > 0 && !adding) {
       event.preventDefault()
       setStaged(current => current.slice(0, -1))
       return
@@ -760,6 +759,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // independently atomic and idempotent on the server, so they are all issued up front (pipelined
   // over the one connection) and the membership list is refetched once. Failures are not toasted:
   // the person's chip stays in the composer carrying the reason, so it can be fixed and resent.
+  // The composer stays live meanwhile: more people can be staged (they wait for the next batch)
+  // but none removed, since a call already issued cannot be cancelled.
   const handleInvite = async (extra: StagedRecipient | null = null) => {
     const recipients = extra ? withRecipient(staged, extra) : staged
     if (recipients.length === 0 || addingRef.current) return
@@ -786,7 +787,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           added.push(outcome.value.profile)
         }
       })
-      setStaged(failed)
+      // Touch only the chips this batch sent: drop the added, keep the failed with their reason,
+      // and leave anything staged since the batch started where it is.
+      const batch = new Set(recipients.map(recipient => recipient.id))
+      const failure = new Map(failed.map(recipient => [recipient.id, recipient]))
+      setStaged(current => current.flatMap(recipient => {
+        if (!batch.has(recipient.id)) return [recipient]
+        const outcome = failure.get(recipient.id)
+        return outcome ? [outcome] : []
+      }))
       if (added.length > 0) {
         const names = added.map(profile => profile.name)
         setInvitedNames(names)
@@ -1086,7 +1095,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 // Keep the visible result highlighted until the click handler chooses it.
                 if (directoryOpen) event.preventDefault()
               }}
-              onClick={() => void handleInvite(typedRecipient())}
+              onClick={() => void handleInvite(typedRecipient)}
               disabled={!canInvite || adding}
             >
               {adding ? 'Inviting…' : inviteCount > 1 ? `Invite ${inviteCount} people` : 'Invite'}

@@ -742,6 +742,69 @@ describe('ShareModal', () => {
     expect(addCollaborator).toHaveBeenCalledWith('grace@example.com', 'use', undefined)
   })
 
+  it('keeps a chip staged during a pending batch and blocks removal until it settles', async () => {
+    const pending = deferred<CollaboratorInfo | null>()
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
+      (userId, role) => userId === 'ada@example.com'
+        ? pending.promise
+        : Promise.resolve(profileFor(userId, role, 'Grace Hopper')))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+    const input = peopleInput(rendered)
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(input, 'Enter')
+    await pressKey(input, 'Enter')
+    expect(addCollaborator).toHaveBeenCalledTimes(1)
+    expect(button(rendered, 'Inviting…').disabled).toBe(true)
+
+    // A name staged while the batch is in flight waits for the next one; the in-flight chip
+    // cannot be taken back.
+    await typeDirectorySearch(rendered, 'grace@example.com')
+    await pressKey(input, 'Enter')
+    expect(stagedNames(rendered)).toEqual(['ada@example.com', 'grace@example.com'])
+    await pressKey(input, 'Backspace')
+    expect(stagedNames(rendered)).toEqual(['ada@example.com', 'grace@example.com'])
+    expect(button(rendered, 'Remove ada@example.com').disabled).toBe(true)
+
+    await act(async () => {
+      pending.resolve(profileFor('ada@example.com', 'use', 'Ada Lovelace'))
+      await Promise.resolve()
+    })
+    expect(stagedNames(rendered)).toEqual(['grace@example.com'])
+    expect(toastAdd).toHaveBeenCalledWith({
+      title: 'Added Ada Lovelace as a collaborator.',
+      variant: 'success',
+    })
+    expect(addCollaborator).toHaveBeenCalledTimes(1)
+    expect(button(rendered, 'Invite').disabled).toBe(false)
+
+    await pressKey(input, 'Enter')
+    expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'use', undefined)
+    expect(stagedNames(rendered)).toEqual([])
+  })
+
+  it('counts a re-typed staged id once', async () => {
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
+      async (userId, role) => profileFor(userId, role, 'Ada Lovelace'))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(peopleInput(rendered), 'Enter')
+    await typeDirectorySearch(rendered, 'ada@example.com')
+
+    expect(rendered.textContent).not.toContain('Invite 2 people')
+    await click(button(rendered, 'Invite'))
+
+    expect(addCollaborator).toHaveBeenCalledTimes(1)
+    expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', 'use', undefined)
+  })
+
   it('removes a chip with its button or Backspace on an empty field', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>()
     const rendered = await render(
