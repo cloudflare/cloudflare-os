@@ -25,7 +25,7 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, requireDriveBindingScope, unguardedNativeRead,
-  type DriveBindingScope, type DriveCore, type NativeRead,
+  type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
   DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveFolderSession,
@@ -2935,10 +2935,28 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
     }));
   }
 
-  // Each call chains onto the previous request, so concurrent reads share one fetch instead of
-  // racing to overwrite each other with whichever response lands last.
-  #getSnapshot(): Promise<GoogleDocSnapshot> {
-    return this.#snapshot = this.#nextSnapshot(this.#snapshot);
+  /**
+   * Reads one snapshot under the binding's scope guard.
+   *
+   * Each call chains onto the previous request, so concurrent reads share one fetch instead of
+   * racing to overwrite each other with whichever response lands last. A read the guard refuses
+   * drops its snapshot: the scope check straddles the fetch, so a revision it rejected must not
+   * be served to the next caller from the cache.
+   */
+  async #readSnapshot<T>(
+    use: (snapshot: GoogleDocSnapshot) => T,
+    observe: (value: T) => NativeObservation,
+  ): Promise<T> {
+    let pending: Promise<GoogleDocSnapshot> | undefined;
+    try {
+      return await this.#read(async () => {
+        pending = this.#snapshot = this.#nextSnapshot(this.#snapshot);
+        return use(await pending);
+      }, observe);
+    } catch (error) {
+      if (pending && this.#snapshot === pending) this.#snapshot = undefined;
+      throw error;
+    }
   }
 
   /** Reuse one revision for the TTL, then confirm it is still current before reusing it again. */
@@ -2955,8 +2973,8 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 
   async listTabs(): Promise<GoogleDocTab[]> {
-    return this.#read(
-      async () => (await this.#getSnapshot()).tabs.map(googleDocTabMetadata),
+    return this.#readSnapshot(
+      snapshot => snapshot.tabs.map(googleDocTabMetadata),
       () => ({
         title: "List Google Doc tabs",
         description: "Read the document's tab names and hierarchy.",
@@ -2966,9 +2984,8 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   async getContent(tabId?: string): Promise<string> {
     // The selector error says whether a tab exists, so a failed attempt discloses something too
     // and has to be authorized. It rides back as a value so one guarded read covers both outcomes.
-    let selection = await this.#read(
-      async (): Promise<{ tab: GoogleDocTabSnapshot } | { error: unknown }> => {
-        let snapshot = await this.#getSnapshot();
+    let selection = await this.#readSnapshot(
+      (snapshot): { tab: GoogleDocTabSnapshot } | { error: unknown } => {
         try {
           return { tab: resolveGoogleDocTab(snapshot, tabId, "getContent") };
         } catch (error) {

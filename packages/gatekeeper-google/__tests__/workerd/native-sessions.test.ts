@@ -504,6 +504,29 @@ describe("folder-scoped native sessions", () => {
     expect(queue.observations.slice(authorizedBefore)).toEqual([]);
   });
 
+  // That refused read captured a revision while the document sat outside the subtree. Serving it
+  // from the snapshot once the document returns would disclose content the guard rejected, so the
+  // retry has to go back to the provider.
+  it("drops the snapshot a refused mid-flight read left behind", async () => {
+    const nodes = subtree();
+    let pendingMoveOut = true;
+    const nativeCalls = installFolderProvider(nodes, () => {
+      if (!pendingMoveOut) return;
+      pendingMoveOut = false;
+      nodes.set("doc-1",
+        { id: "doc-1", mimeType: DOC_MIME, parents: ["elsewhere"], trashed: false });
+    });
+    using session = folderSession(nodes).session;
+    using doc = await session.openGoogleDoc("doc-1");
+
+    await expect(Promise.resolve(doc.getContent())).rejects.toThrow(OUTSIDE);
+    nodes.set("doc-1", { id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false });
+    nativeCalls.length = 0;
+
+    await expect(Promise.resolve(doc.getContent())).resolves.toBe("");
+    expect(nativeCalls).toEqual(["docs.googleapis.com"]);
+  });
+
   it("keeps child-folder and native capabilities alive after their parents are disposed", async () => {
     const nodes = subtree();
     nodes.set("nested", {
