@@ -745,6 +745,20 @@ describe("error handling", () => {
     expect(error.message).toBe("Google Drive API request failed: 403 (insufficientPermissions)");
   });
 
+  // A folder inside a shared drive can be shared directly with a non-member, who then holds a
+  // listable folder in a drive corpus they cannot query. The bare reason code says none of that.
+  it("explains a shared-drive membership refusal, keeping the reason for callers", async () => {
+    stubFetch([new Response(JSON.stringify({
+      error: { errors: [{ reason: "teamDriveMembershipRequired" }] },
+    }), { status: 403 })]);
+    let error = await api().listFiles({ corpus: { kind: "drive", driveId: "drive-1" } })
+      .catch(e => e);
+    expect(error).toMatchObject({ status: 403, reason: "teamDriveMembershipRequired" });
+    expect(error.message).toBe(
+      "Google Drive API request failed: 403 (the connected account is not a member of the " +
+      "shared drive this item belongs to)");
+  });
+
   it("preserves an ordinary 404 without a provider reason", async () => {
     stubFetch([new Response("{}", { status: 404 })]);
     let error = await api().listFiles().catch(e => e);

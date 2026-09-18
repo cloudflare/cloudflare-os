@@ -169,7 +169,7 @@ stores baseline and Preview secrets separately, so provision the same signing va
 
 Drive exposes three permanent resource URL forms:
 
-- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: listings include shared-drive items, and any ID the account token resolves is in scope. Listings use `corpora=user`, so a shared drive the account has never touched may be readable by ID without appearing in a listing. Bind a folder or file when this authority is too broad.
+- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: any ID the account token resolves is in scope. Listings use `corpora=user`, which Google defines as My Drive items the account created or opened plus items shared directly with it, so a shared drive's contents may be readable by ID without appearing in a listing. Bind a folder or file when this authority is too broad.
 - `https://drive.google.com/drive/folders/<folderId>` selects one folder or shared-drive root.
 - `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
 
@@ -179,9 +179,7 @@ A folder URL carrying `?resourcekey=` is not supported: the key is dropped, and 
 
 The agent-facing `GoogleDriveReadSession` covers account and exact-file bindings. `GoogleDriveFolderSession` is positioned at the selected root and exposes only its current folder's direct children: `list()`, provider-side structured `search()`, `getEntry()`, native Doc/Sheet opens, and `openFolder()` for one live direct child. Listing and search return disposable RPC cursors; child folders and native content sessions are independently disposable capabilities. There is no built-in recursive folder search, traversal pager, raw Drive `q`, file write, shortcut traversal, arbitrary download/export, or Workers AI extraction.
 
-Every folder operation revalidates the selected root and the root-to-current path. A shared-drive root uses `corpora=drive`; other folders use `corpora=user`. Both listing and full-text search include a direct-parent predicate, so indexed content, descriptions, and OCR can match only immediate children. `openFolder()` appends one validated direct-child edge to a new capability without changing the parent capability.
-
-Every native open re-fetches Drive metadata, enforces the immutable account, folder, or exact-file scope, authorizes the metadata observation, and checks the exact MIME type. A folder-derived Doc or Sheet read revalidates direct membership before contacting the native API and again before approval; if the file moves meanwhile, the fetched value is discarded. Direct Google Doc bindings retain their editing API, while Drive-opened Docs and Sheets are read-only.
+Every folder operation revalidates the selected root and the root-to-current path. A root carrying a `driveId` uses `corpora=drive`; other folders use `corpora=user`. That drive corpus requires membership of the shared drive, so a folder shared directly with a non-member connects and then fails every listing with `teamDriveMembershipRequired` — such a folder needs drive membership, not just folder access. Both listing and full-text search include a direct-parent predicate, so indexed content, descriptions, and OCR can match only immediate children. `openFolder()` appends one validated direct-child edge to a new capability without changing the parent capability.
 
 Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`, `documents.readonly`, and `spreadsheets.readonly`. A broader `drive.readonly` or `drive` grant the account already holds covers those requirements, but is never requested here. Existing metadata-only connections are prompted to expand before native content reads are considered granted.
 

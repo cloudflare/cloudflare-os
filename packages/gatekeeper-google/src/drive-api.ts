@@ -129,7 +129,8 @@ export class DriveApiRequestError extends Error {
     readonly status: number,
     readonly reason?: string,
   ) {
-    super(`Google Drive API request failed: ${status}${reason ? ` (${reason})` : ""}`);
+    super(`Google Drive API request failed: ${status}${
+      reason ? ` (${REASON_EXPLANATIONS[reason] ?? reason})` : ""}`);
   }
 
   /**
@@ -153,6 +154,13 @@ const ACCOUNT_WIDE_403_REASONS = new Set([
   // The domain administrator has disabled Drive for this app, for every file it might ask about.
   "domainPolicy",
 ]);
+
+/** Reasons whose bare code leaves a caller nothing to act on. */
+const REASON_EXPLANATIONS: Record<string, string> = {
+  teamDriveMembershipRequired:
+    "the connected account is not a member of the shared drive this item belongs to",
+};
+
 function googleErrorReason(value: unknown): string | undefined {
   if (!isRecord(value) || !isRecord(value.error) || !Array.isArray(value.error.errors)) {
     return undefined;
