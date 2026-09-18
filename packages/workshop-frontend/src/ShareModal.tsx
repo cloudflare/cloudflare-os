@@ -1090,7 +1090,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 data-lpignore="true"
                 data-bwignore="true"
                 data-form-type="other"
-                className="h-9 min-w-[8rem] flex-1 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
+                className="h-9 min-w-0 grow basis-32 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
             <RoleMenu
