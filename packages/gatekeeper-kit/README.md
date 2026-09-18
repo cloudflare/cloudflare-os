@@ -86,6 +86,9 @@ import {
 | `./endpoint` | User-supplied provider endpoint normalization. | A user enters a self-hosted provider URL. |
 | `./http-errors` | HTTP access-error classification and ACL probes. | A verifier distinguishes no access from provider failure. |
 | `./response-body` | Strict byte-capped response decoding. | A gatekeeper reads any provider response body. |
+| `./git-transport` | Git smart-HTTP framing: protocol-v2 fetch (pkt-line, filter specs, sideband demux into `GitCache.consumePack()`) and send-pack ref updates. | A gatekeeper implements `Gatekeeper.gitPull()` or a `push` action against a git host; it supplies only the URL, auth, and timeouts as a fetch callback. |
+| `./git-objects` | Commit-id validation, raw commit-object parsing, and per-page commit advertising (`CommitAdvertisingCursor`). | A session returns commit ids (advertise them) or simulates reads of commits queued for push from their local bytes. |
+| `./git-diff` | Tree-to-tree diff over an injected `TreeDiffSource`, producing the unified-patch hunk shape agents see. | A pull/merge request's source branch has queued pushes and the provider cannot compute the diff yet. |
 
 ## Internal modules
 

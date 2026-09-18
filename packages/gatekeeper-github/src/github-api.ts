@@ -1362,7 +1362,7 @@ export class GitHubApi {
   /**
    * POST a git smart-HTTP protocol v2 `upload-pack` request (the git fetch endpoint, on
    * github.com rather than api.github.com) and return the raw `Response`, whose body the caller
-   * streams -- see git-transport.ts. Auth is Basic with the `x-access-token` username GitHub
+   * streams -- see `@gadgets/gatekeeper-kit/git-transport`. Auth is Basic with the `x-access-token` username GitHub
    * specifies for token-authenticated git operations. Throws `GitHubApiError` on a non-OK
    * status (401 marks it an auth error, like every other method here), so callers get the same
    * credential-expiry handling as REST calls.
@@ -1398,7 +1398,7 @@ export class GitHubApi {
   /**
    * POST a git smart-HTTP `receive-pack` request (the git push endpoint; classic protocol -- there
    * is no v2 for receive-pack) and return the raw `Response`, whose report-status body the caller
-   * parses -- see git-transport.ts. The request body streams (the pack may be large), so it is
+   * parses -- see `@gadgets/gatekeeper-kit/git-transport`. The request body streams (the pack may be large), so it is
    * sent chunked. Auth and error handling mirror `fetchGitUploadPack`.
    */
   async fetchGitReceivePack(
