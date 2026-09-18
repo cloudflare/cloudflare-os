@@ -12,7 +12,8 @@ import {
 import type { DriveObservation } from "./drive-observers";
 import type { ObserverCheck } from "./observers";
 import type {
-  DriveEntry, DriveListOptions, DriveOrder, DriveScope, DriveSearchQuery,
+  DriveEntry, DriveFolderListOptions, DriveFolderSearchQuery, DriveListOptions, DriveOrder,
+  DriveScope, DriveSearchQuery,
 } from "./drive-types";
 
 const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
@@ -516,6 +517,17 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 }
 
+/**
+ * The positioned folder is the only parent a folder binding searches, so a caller-supplied one is
+ * refused rather than dropped: the provider call overrides it, but it would still reach the
+ * observation description and report a folder that was never read.
+ */
+function rejectDirectParent(query: DriveFolderListOptions | DriveFolderSearchQuery): void {
+  if ((query as DriveSearchQuery).directParentId !== undefined) {
+    throw new Error("A Drive folder binding is already scoped; directParentId is not accepted.");
+  }
+}
+
 /** Direct-child Drive access positioned at one provider-validated folder path. */
 export class DriveFolderSessionCore extends DriveCoreBase {
   #location: FolderLocation;
@@ -536,11 +548,13 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     };
   }
 
-  async list(options: DriveListOptions = {}): Promise<Pager<DriveEntry>> {
+  async list(options: DriveFolderListOptions = {}): Promise<Pager<DriveEntry>> {
+    rejectDirectParent(options);
     return this.#cursor({orderBy: orderBy(options.order)});
   }
 
-  async search(query: DriveSearchQuery): Promise<Pager<DriveEntry>> {
+  async search(query: DriveFolderSearchQuery): Promise<Pager<DriveEntry>> {
+    rejectDirectParent(query);
     let normalized = normalizeSearch(query);
     return this.#cursor({
       ...normalized,

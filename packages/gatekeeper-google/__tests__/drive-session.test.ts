@@ -10,6 +10,7 @@ import {
   DriveApiRequestError, FOLDER_MIME_TYPE,
   type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "../src/drive-api";
+import type { DriveListOptions, DriveSearchQuery } from "../src/drive-types";
 import type { ObserverCheck } from "../src/observers";
 import { driveObserverTracker } from "../src/drive-observers";
 import { FakeKv } from "./fake-kv";
@@ -627,6 +628,26 @@ describe("positioned Drive folder session", () => {
       expect.objectContaining({ directParentId: "R" }),
       expect.objectContaining({ directParentId: "R", fullTextContains: "invoice" }),
     ]);
+  });
+
+  // One class serves both Drive session interfaces, so the RPC boundary validates the account
+  // shapes and a folder capability can still be handed `directParentId`.
+  it("refuses a caller-supplied parent on a folder listing", async () => {
+    const { session, queries, events } = positioned([root, directDoc]);
+    const options: DriveListOptions = { directParentId: "decoy" };
+
+    await expect(session.list(options)).rejects.toThrow(/directParentId is not accepted/);
+    expect(queries).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  it("refuses a caller-supplied parent on a folder search", async () => {
+    const { session, queries, events } = positioned([root, directDoc]);
+    const query: DriveSearchQuery = { namePrefix: "plan", directParentId: "decoy" };
+
+    await expect(session.search(query)).rejects.toThrow(/directParentId is not accepted/);
+    expect(queries).toEqual([]);
+    expect(events).toEqual([]);
   });
 
   // An unpaged cursor must not tell the caller whether the saved path is still visible and
