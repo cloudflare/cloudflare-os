@@ -212,8 +212,6 @@ export default function SchedulerPage({
             />
           </InputGroup>
 
-          {/* A status filter narrows the same list rather than switching between tab panels, so
-              this is a nav of filter links (aria-current), not Kumo `Tabs` (role="tablist"). */}
           <nav className="mt-4 flex gap-5 border-b border-kumo-line" aria-label="Schedule status">
             {FILTERS.map((item) => (
               <Button

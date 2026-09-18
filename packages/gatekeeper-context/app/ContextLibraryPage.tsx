@@ -905,13 +905,6 @@ function CreateCollectionView({
             >
               Cancel
             </WorkshopButton>
-            {/* Orange brand "create" button (page CTA, not a modal primary). Kumo's Button paints
-                an unconditional --color-kumo-brand gradient overlay for variant="primary" (an
-                absolute inset-0 span driven by inline CSS custom properties -- see
-                @cloudflare/kumo's button component), so no `!bg-*` className override can turn a
-                disabled primary button grey; the overlay always sits on top of it. Switch to the
-                secondary variant while disabled instead -- it has no emphasis overlay and already
-                ships its own legible muted look (same as Cancel next to it). */}
             <WorkshopButton
               tone={title.trim() ? "primary" : "secondary"}
               onClick={handleCreate}
@@ -3193,9 +3186,6 @@ function DocumentEditor({
         {/* Contextual actions sit left of the toggle so the always-present toggle/delete cluster
             stays right-anchored — toggling View/Edit never shifts the toggle. */}
         {!readOnly && dirty && (
-          // This block only renders while dirty, so the button is never actually disabled --
-          // no grey/disabled branch is needed here (see the Create collection button below for
-          // why a disabled primary button can't be turned grey via className anyway).
           <WorkshopButton
             tone="primary"
             className="!h-8 !bg-kumo-contrast !text-kumo-inverse hover:!bg-kumo-strong"
