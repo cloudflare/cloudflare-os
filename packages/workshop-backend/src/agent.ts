@@ -1664,6 +1664,19 @@ async function runAgentPass(
     await applyReplayedPin(upcoming);
   };
 
+  // Whether a tool call in the assistant message at `index` produced or saw content the user
+  // later reverted. The message's own status covers a revert that reaches back over the whole
+  // step; but the step's edits land in a "changes" message written right *after* the tool-call
+  // message in the same barrier (see commitAgentStep), and a revert of just the step starts
+  // there, leaving the tool-call message unmarked. So that next message is checked too: it is
+  // where a write in this step landed, and a read that followed the write saw it.
+  let sawRevertedContent = (index: number): boolean => {
+    if (chatMessageStatus.get(chatMessages[index].sequence) === "reverted") return true;
+    let next = chatMessages[index + 1];
+    return next?.type === "changes" && next.author.type === "agent" &&
+        chatMessageStatus.get(next.sequence) === "reverted";
+  };
+
   // We compute sequential change ID numbers for the purpose of telling the LLM about reverts.
   let nextChangeId = checkpoint?.nextChangeId ?? 0;
 
@@ -1704,7 +1717,7 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  for (let msg of chatMessages) {
+  for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
     switch (msg.type) {
@@ -1860,7 +1873,7 @@ async function runAgentPass(
                 // Note that if we get here, we know the tool succeeded originally, so for many
                 // branches below we can just return success unconditionally.
                 case "readFile": {
-                  if (chatMessageStatus.get(msg.sequence) === "reverted") {
+                  if (sawRevertedContent(msgIndex)) {
                     // It would be a total waste of tokens to actually include this file
                     // content in the chat history since it contains changes that were later
                     // reverted -- not to mention a waste of resources to compute the content
@@ -1951,7 +1964,7 @@ async function runAgentPass(
                   // A write leaves the agent knowing the file's exact content -- unless the user
                   // reverted it: the file is then back to content the model never saw (its
                   // reads in the range are elided too), so the write un-marks rather than marks.
-                  if (chatMessageStatus.get(msg.sequence) === "reverted") {
+                  if (sawRevertedContent(msgIndex)) {
                     unmarkFileRead(workpieceId, toolCall.input.filename);
                   } else {
                     markFileRead(workpieceId, toolCall.input.filename);
@@ -1974,7 +1987,7 @@ async function runAgentPass(
                   // resulting content (the gate guaranteed the before-content, and the edit is
                   // its own), so it counts as session knowledge for further edits -- unless
                   // reverted.
-                  if (chatMessageStatus.get(msg.sequence) === "reverted") {
+                  if (sawRevertedContent(msgIndex)) {
                     unmarkFileRead(workpieceId, toolCall.input.filename);
                   } else {
                     markFileRead(workpieceId, toolCall.input.filename);
