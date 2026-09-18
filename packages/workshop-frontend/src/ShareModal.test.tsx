@@ -583,6 +583,38 @@ describe('ShareModal', () => {
     expect(addCollaborator).not.toHaveBeenCalled()
   })
 
+  it('keeps Invite disabled while a typed name is still searching, even with chips staged', async () => {
+    const pending = deferred<UserDirectoryRecord[]>()
+    const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(
+      async (userId, role) => profileFor(userId, role, userId))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({
+        searchUsers: async query => query === 'grace' ? pending.promise : [],
+      }),
+    )
+    const input = peopleInput(rendered)
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(input, 'Enter')
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
+
+    // A click must not send the chips and silently leave the typed name behind.
+    await typeDirectorySearch(rendered, 'grace')
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+    await click(button(rendered, 'Invite'))
+    expect(addCollaborator).not.toHaveBeenCalled()
+
+    await act(async () => {
+      pending.resolve([])
+      await Promise.resolve()
+    })
+    const invite = button(rendered, 'Invite 2 people')
+    expect(invite.disabled).toBe(false)
+    await click(invite)
+    expect(addCollaborator.mock.calls.map(([userId]) => userId)).toEqual(['ada@example.com', 'grace'])
+  })
+
   it('still invites the typed canonical id when unrelated users match it', async () => {
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>(async (userId, role) => ({
       profile: { type: 'user' as const, id: userId, name: 'Alex' },

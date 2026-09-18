@@ -372,7 +372,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Exactly what Invite would send, so the label never counts a typed id that is already a chip.
   const pendingRecipients = typedRecipient ? withRecipient(staged, typedRecipient) : staged
   const inviteCount = pendingRecipients.length
-  const canInvite = inviteCount > 0
+  // Nothing is sent while the field holds text that cannot be staged yet (its search is still
+  // pending), so the button waits too: Enter already does, and a click would silently drop the name.
+  const canInvite = inviteCount > 0 && (directoryQuery === '' || typedRecipient !== null)
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
