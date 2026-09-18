@@ -775,6 +775,17 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null>;
 
+  /**
+   * Deliver a user selected with the Workshop user picker to the gatekeeper app
+   * that opened the user picker. `vendorId` is always the same as the `id`
+   * passed to `getGatekeeperApp()`; `selectedUserId` is a
+   * `UserDirectoryRecord.id` from `searchUsers()`; `target` is the app's opaque
+   * string from its `selectUsers(target)` call.
+   */
+  selectGatekeeperUser(
+      vendorId: string, selectedUserId: string, target: string,
+  ): Promise<boolean>;
+
   // --- Deployment admin ---
 
   /**
