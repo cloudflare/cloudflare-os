@@ -4,7 +4,7 @@ import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
-import { DriveApi, DriveApiDisabledError } from "./drive-api";
+import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
@@ -13,7 +13,7 @@ import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-c
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
-import type { SharedDriveConfiguratorRpc } from "./configurator/shared-drive-configurator-types";
+import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -91,6 +91,17 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
   if (!lowerQuery) return true;
   let corpus = parts.filter(Boolean).join(" ").toLowerCase();
   return lowerQuery.split(/\s+/).every(term => corpus.includes(term));
+}
+
+/**
+ * Enough of a Drive ID to tell same-named results apart and to match against a Drive URL.
+ *
+ * Duplicate folder and file names are ordinary, and the picker's other columns can be identical
+ * too, so without this the user cannot see which capability they are granting. A tail rather than
+ * the whole ID because `meta` does not shrink, and a full one would crowd out the subtitle.
+ */
+function idTail(id: string): string {
+  return id.length > 8 ? `…${id.slice(-8)}` : id;
 }
 
 async function listDriveFiles(
@@ -250,23 +261,6 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
 export class DriveAccountConfiguratorUI extends RpcTarget implements DriveAccountConfiguratorRpc {}
 
 @validateRpc()
-export class SharedDriveConfiguratorUI extends RpcTarget implements SharedDriveConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
-    super();
-    googleTokenGetters.set(this, getToken);
-  }
-
-  async listSharedDrives(query: string): Promise<ConfiguratorOption[]> {
-    let drive = new DriveApi(googleTokenProvider(this));
-    let drives = await withDriveApiEnabled(
-      "Shared-drive search requires the Google Drive API to be enabled for this OAuth project.",
-      () => drive.listAllDrives({ namePrefix: query }),
-    );
-    return drives.map(item => ({ value: item.id, title: item.name, subtitle: item.id }));
-  }
-}
-
-@validateRpc()
 export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfiguratorRpc {
   constructor(getToken: () => Promise<GoogleAccessToken>) {
     super();
@@ -278,7 +272,7 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
     let { files } = await withDriveApiEnabled(
       "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
       () => drive.listFiles({
-        namePrefix: query, excludeMimeTypes: ["application/vnd.google-apps.folder"],
+        namePrefix: query, excludeMimeTypes: [FOLDER_MIME_TYPE],
       }),
     );
     return files.map(file => ({
@@ -288,6 +282,37 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
         file.mimeType,
         file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
       ].filter(Boolean).join(" · ") || undefined,
+      meta: idTail(file.id),
+    }));
+  }
+}
+
+@validateRpc()
+export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  /**
+   * One page of folders this account can list children of, across My Drive, "Shared with me", and
+   * every shared drive it belongs to. An interactive search, not an exhaustive enumeration.
+   */
+  async listDriveFolders(query: string): Promise<ConfiguratorOption[]> {
+    let drive = new DriveApi(googleTokenProvider(this));
+    let { files } = await withDriveApiEnabled(
+      "Drive folder search requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listFiles({
+        mimeType: FOLDER_MIME_TYPE, namePrefix: query, corpus: { kind: "allDrives" },
+      }),
+    );
+    return files.filter(file => file.capabilities?.canListChildren === true).map(file => ({
+      value: file.id,
+      title: file.name,
+      subtitle: file.driveId
+        ? "In a shared drive"
+        : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
+      meta: idTail(file.id),
     }));
   }
 }

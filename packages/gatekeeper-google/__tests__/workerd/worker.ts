@@ -2,7 +2,7 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { UserAccount } from "../../src/google";
-import type {ActionKind} from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
   GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailReplyOptions,
@@ -143,6 +143,7 @@ class TestApprovalQueue extends RpcTarget {
 /** Test-only hook that creates and drives the props-bearing Gmail facet. */
 export class TestHooks extends DurableObject<Cloudflare.Env> {
   #queues = new Map<string, TestApprovalQueue>();
+
 
   #gatekeeper(
       facetName: string, id: string, props: GmailGatekeeperImplProps,

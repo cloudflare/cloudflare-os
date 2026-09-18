@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DRIVE_FILE_FIELDS, DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  buildDriveQuery, escapeDriveQueryLiteral,
+  DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
+  FOLDER_MIME_TYPE, buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -39,6 +39,10 @@ const jsonResponse = (body: unknown, status = 200) =>
 
 const api = (token = "tok") => new DriveApi(async () => token);
 
+/**
+ * A batch response shaped like a real one: every part's body is followed by a blank line before the
+ * next boundary. Omitting that line made the parser's old last-chunk body extraction look correct.
+ */
 function batchResponse(results: { status: number; body?: string; contentId?: string }[]): Response {
   let boundary = "drive_test_boundary";
   let body = results.map((result, index) => [
@@ -50,6 +54,7 @@ function batchResponse(results: { status: number; body?: string; contentId?: str
     "Content-Type: application/json",
     "",
     result.body ?? "{}",
+    "",
   ].join("\r\n")).join("\r\n") + `\r\n--${boundary}--\r\n`;
   return new Response(body, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
 }
@@ -154,7 +159,8 @@ describe("listFiles", () => {
   it("requests the field mask that DriveFile describes", async () => {
     let calls = stubFetch([jsonResponse({ files: [] })]);
     await api().listFiles();
-    expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_FIELDS);
+    expect(calls[0].url.searchParams.get("fields"))
+      .toBe(`incompleteSearch,nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`);
   });
 
   it("sends the bearer token", async () => {
@@ -201,6 +207,12 @@ describe("listFiles", () => {
     expect(await api().listFiles()).toEqual({ files: [] });
   });
 
+  it("describes malformed response sizes as UTF-16 code units", async () => {
+    stubFetch([new Response("é")]);
+    await expect(api().listFiles()).rejects
+      .toThrow("Google Drive response was not valid JSON (1 UTF-16 code units)");
+  });
+
   it("omits nextPageToken on the last page rather than reporting it undefined", async () => {
     stubFetch([jsonResponse({ files: [] })]);
     expect("nextPageToken" in await api().listFiles()).toBe(false);
@@ -219,6 +231,34 @@ describe("listFiles", () => {
     await api().listFiles();
     expect(calls[0].url.searchParams.get("corpora")).toBe("user");
     expect(calls[0].url.searchParams.has("driveId")).toBe(false);
+  });
+
+  it("spans every corpus the account can reach without a dangling driveId", async () => {
+    let calls = stubFetch([jsonResponse({ files: [] })]);
+    await api().listFiles({ corpus: { kind: "allDrives" } });
+    let params = calls[0].url.searchParams;
+    expect(params.get("corpora")).toBe("allDrives");
+    expect(params.get("supportsAllDrives")).toBe("true");
+    expect(params.get("includeItemsFromAllDrives")).toBe("true");
+    expect(params.has("driveId")).toBe(false);
+  });
+
+  // A cross-corpus search Drive declares incomplete is not safely presentable as a complete
+  // result, so it fails here rather than reaching a caller that cannot tell.
+  it("refuses a search Drive reports as incomplete", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: true, files: [{ id: "1", name: "a" }] })]);
+    await expect(api().listFiles({ corpus: { kind: "allDrives" } })).rejects
+      .toThrow("Google Drive could not complete this search. Try again.");
+  });
+
+  it("accepts a search Drive reports as complete", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: false, files: [{ id: "1", name: "a" }] })]);
+    expect(await api().listFiles()).toEqual({ files: [{ id: "1", name: "a" }] });
+  });
+
+  it("rejects a non-boolean completeness claim instead of guessing", async () => {
+    stubFetch([jsonResponse({ incompleteSearch: "true", files: [] })]);
+    await expect(api().listFiles()).rejects.toThrow("Invalid Google Drive incompleteSearch");
   });
 
   it("sends the assembled query as the Drive q parameter", async () => {
@@ -246,65 +286,12 @@ describe("listFiles", () => {
   });
 });
 
-describe("listDrives", () => {
-  it("returns shared-drive picker options and forwards pagination", async () => {
-    let calls = stubFetch([jsonResponse({
-      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-    })]);
-
-    expect(await api().listDrives({ pageToken: "p1" })).toEqual({
-      drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-    });
-    expect(calls[0].url.pathname).toBe("/drive/v3/drives");
-    expect(calls[0].url.searchParams.get("pageSize")).toBe("100");
-    expect(calls[0].url.searchParams.get("pageToken")).toBe("p1");
-  });
-
-
-  it("collects every shared-drive page", async () => {
-    let calls = stubFetch([
-      jsonResponse({
-        drives: [{ id: "drive-1", name: "Product" }], nextPageToken: "p2",
-      }),
-      jsonResponse({ drives: [{ id: "drive-2", name: "Production" }] }),
-    ]);
-
-    await expect(api().listAllDrives({ namePrefix: "Pro" })).resolves.toEqual([
-      { id: "drive-1", name: "Product" },
-      { id: "drive-2", name: "Production" },
-    ]);
-    expect(calls.map(call => call.url.searchParams.get("pageToken"))).toEqual([null, "p2"]);
-    expect(calls.map(call => call.url.searchParams.get("q")))
-      .toEqual(["name contains 'Pro'", "name contains 'Pro'"]);
-  });
-  it("rejects malformed shared-drive metadata", async () => {
-    stubFetch([jsonResponse({ drives: [{ id: "drive-1", name: false }] })]);
-    await expect(api().listDrives()).rejects.toThrow("Invalid Google shared-drive response");
-  });
-
-  it("escapes the name prefix when filtering shared drives", async () => {
-    let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ namePrefix: "Ada's \\drive" });
-    expect(calls[0].url.searchParams.get("q")).toBe("name contains 'Ada\\'s \\\\drive'");
-  });
-
-  it("omits q when the name prefix is whitespace-only", async () => {
-    let calls = stubFetch([jsonResponse({ drives: [] })]);
-    await api().listDrives({ namePrefix: "   " });
-    expect(calls[0].url.searchParams.has("q")).toBe(false);
-  });
-
-  it("treats a response with no drives array as an empty page", async () => {
-    stubFetch([jsonResponse({})]);
-    expect(await api().listDrives()).toEqual({ drives: [] });
-  });
-});
-
 describe("metadata lookup", () => {
   it("gets one file with shared-drive support and the public metadata fields", async () => {
     let file = {
       id: "file/1", name: "Plan", mimeType: "application/pdf",
       modifiedTime: "2026-01-02T03:04:05Z", trashed: false,
+      capabilities: { canListChildren: true },
     };
     let calls = stubFetch([jsonResponse(file)]);
     expect(await api().getFile("file/1")).toEqual(file);
@@ -312,6 +299,7 @@ describe("metadata lookup", () => {
     expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
     expect(DRIVE_FILE_ITEM_FIELDS.split(",")).toContain("trashed");
+    expect(DRIVE_FILE_ITEM_FIELDS).toContain("capabilities(canListChildren)");
     expect(DRIVE_FILE_ITEM_FIELDS).not.toMatch(/createdTime|photoLink|iconLink|thumbnailLink/);
   });
 
@@ -362,11 +350,6 @@ describe("metadata lookup", () => {
     });
   });
 
-  it("gets current shared-drive metadata by stable ID", async () => {
-    let calls = stubFetch([jsonResponse({ id: "drive/1", name: "Current name" })]);
-    expect(await api().getDrive("drive/1")).toEqual({ id: "drive/1", name: "Current name" });
-    expect(calls[0].url.pathname).toBe("/drive/v3/drives/drive%2F1");
-  });
   it("cancels an oversized JSON response before reading the remaining stream", async () => {
     let pulls = 0;
     let cancelled = false;
@@ -391,11 +374,24 @@ describe("bulk access verification", () => {
     let calls = stubFetch([batchResponse([
       { status: 200 }, { status: 403 }, { status: 404 },
     ])]);
-    await expect(api().checkFileAccess(["one", "two", "three"]))
+    await expect(api().checkObservations(["one", "two", "three"].map(fileId => ({ kind: "file" as const, fileId }))))
       .resolves.toEqual([true, false, false]);
     expect(calls[0].url.href).toBe("https://www.googleapis.com/batch/drive/v3");
     expect(calls[0].method).toBe("POST");
-    expect(calls[0].body).toContain("GET /drive/v3/files/one?fields=id&supportsAllDrives=true");
+    expect(calls[0].body).toContain(
+      "GET /drive/v3/files/one?fields=id%2CmimeType%2Cparents%2CdriveId%2Ctrashed%2Ccapabilities");
+  });
+
+  it("refuses metadata-only access when the bound folder must be listable", async () => {
+    stubFetch([batchResponse([{
+      status: 200,
+      body: JSON.stringify({
+        id: "folder", capabilities: { canListChildren: false },
+      }),
+    }])]);
+
+    await expect(api().checkObservations([{kind: "folder", fileId: "folder"}]))
+      .resolves.toEqual([false]);
   });
 
   it("concatenates batch outcomes in request order across the 100-file chunk boundary", async () => {
@@ -406,9 +402,7 @@ describe("bulk access verification", () => {
       ]),
       batchResponse([{ status: 403 }]),
     ]);
-    await expect(api().checkFileAccess(
-      Array.from({ length: 101 }, (_, index) => `file-${index}`),
-    )).resolves.toEqual([
+    await expect(api().checkObservations(Array.from({ length: 101 }, (_, index) => `file-${index}`).map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([
       ...Array.from({ length: 99 }, () => true),
       false,
       false,
@@ -420,13 +414,13 @@ describe("bulk access verification", () => {
 
   it("checks no Google endpoint for an empty file set", async () => {
     let calls = stubFetch([]);
-    await expect(api().checkFileAccess([])).resolves.toEqual([]);
+    await expect(api().checkObservations([].map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([]);
     expect(calls).toEqual([]);
   });
 
   it("distinguishes an API-disabled inner response", async () => {
     stubFetch([batchResponse([{ status: 403, body: API_DISABLED_BODY }])]);
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toBeInstanceOf(DriveApiDisabledError);
   });
 
@@ -435,7 +429,7 @@ describe("bulk access verification", () => {
     async reason => {
       let body = JSON.stringify({ error: { errors: [{ reason }] } });
       stubFetch([batchResponse([{ status: 403, body }])]);
-      await expect(api().checkFileAccess(["one"]))
+      await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
         .rejects.toThrow("Google Drive batch subrequest failed: 403");
     },
   );
@@ -443,7 +437,7 @@ describe("bulk access verification", () => {
   it("does not infer API disablement from unstructured error text", async () => {
     let body = JSON.stringify({ error: { message: "accessNotConfigured" } });
     stubFetch([batchResponse([{ status: 403, body }])]);
-    await expect(api().checkFileAccess(["one"])).resolves.toEqual([false]);
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([false]);
   });
 
   it("cancels an oversized batch response before reading the remaining stream", async () => {
@@ -461,7 +455,7 @@ describe("bulk access verification", () => {
       headers: { "Content-Type": "multipart/mixed; boundary=response_boundary" },
     })]);
 
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive batch response was too large");
     expect(cancelled).toBe(true);
     expect(pulls).toBeLessThan(4);
@@ -469,32 +463,32 @@ describe("bulk access verification", () => {
 
   it("fails a transient inner response instead of reporting an access denial", async () => {
     stubFetch([batchResponse([{ status: 429 }])]);
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive batch subrequest failed: 429");
   });
 
   it("rejects a batch response whose Content-Type carries no boundary", async () => {
     stubFetch([new Response("x", { headers: { "Content-Type": "multipart/mixed" } })]);
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Invalid Google Drive batch response boundary");
   });
 
   it("rejects a truncated batch with fewer parts than files", async () => {
     stubFetch([batchResponse([{ status: 200 }])]);
-    await expect(api().checkFileAccess(["one", "two"]))
+    await expect(api().checkObservations(["one", "two"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive batch response did not contain one result per file");
   });
 
   it("surfaces an outer non-ok batch POST", async () => {
     let calls = stubFetch(() => new Response("{}", { status: 500 }));
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive API request failed: 500");
     expect(calls).toHaveLength(3);
   });
 
   it("wraps the batch POST in a multipart envelope matching its Content-Type boundary", async () => {
     let calls = stubFetch([batchResponse([{ status: 200 }])]);
-    await api().checkFileAccess(["one"]);
+    await api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId })));
     let contentType = calls[0].headers.get("Content-Type") ?? "";
     let boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType)?.slice(1).find(Boolean);
     expect(boundary).toBeTruthy();
@@ -507,7 +501,7 @@ describe("bulk access verification", () => {
       new Response("slow down", { status: 429, headers: { "Retry-After": "0" } }),
       batchResponse([{ status: 200 }]),
     ]);
-    await expect(api().checkFileAccess(["one"])).resolves.toEqual([true]);
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([true]);
     expect(calls).toHaveLength(2);
   });
 
@@ -523,7 +517,7 @@ describe("bulk access verification", () => {
       batchResponse([{ status: 401 }]),
       batchResponse([{ status: 200 }]),
     ]);
-    await expect(drive.checkFileAccess(["one"])).resolves.toEqual([true]);
+    await expect(drive.checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId })))).resolves.toEqual([true]);
     expect(calls).toHaveLength(2);
     expect(calls.map(call => call.headers.get("Authorization")))
       .toEqual(["Bearer stale", "Bearer fresh"]);
@@ -544,7 +538,7 @@ describe("bulk access verification", () => {
       batchResponse([{ status: 401 }]),
       batchResponse([{ status: 401 }]),
     ]);
-    await expect(drive.checkFileAccess(["one"]))
+    await expect(drive.checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive batch subrequest failed: 401");
     expect(calls).toHaveLength(2);
   });
@@ -555,14 +549,183 @@ describe("bulk access verification", () => {
       { status: 200, contentId: "response-item-0" },
       { status: 404, contentId: "response-item-2" },
     ])]);
-    await expect(api().checkFileAccess(["one", "two", "three"]))
+    await expect(api().checkObservations(["one", "two", "three"].map(fileId => ({ kind: "file" as const, fileId }))))
       .resolves.toEqual([true, false, false]);
   });
 
   it("rejects a batch part whose Content-ID does not name a requested file", async () => {
     stubFetch([batchResponse([{ status: 200, contentId: "response-item-7" }])]);
-    await expect(api().checkFileAccess(["one"]))
+    await expect(api().checkObservations(["one"].map(fileId => ({ kind: "file" as const, fileId }))))
       .rejects.toThrow("Google Drive batch response part had an unrecognised Content-ID");
+  });
+  it("distinguishes listable folder units from ordinary file units", async () => {
+    stubFetch([batchResponse([
+      {
+        status: 200,
+        body: JSON.stringify({
+          id: "folder", mimeType: FOLDER_MIME_TYPE, trashed: false,
+          capabilities: { canListChildren: true },
+        }),
+      },
+      {
+        status: 200,
+        body: JSON.stringify({ id: "file", mimeType: "application/pdf", trashed: false }),
+      },
+      {
+        status: 200,
+        body: JSON.stringify({
+          id: "closed", mimeType: FOLDER_MIME_TYPE, trashed: false,
+          capabilities: { canListChildren: false },
+        }),
+      },
+    ])]);
+
+    await expect(api().checkObservations([
+      {kind: "folder", fileId: "folder"},
+      {kind: "file", fileId: "file"},
+      {kind: "folder", fileId: "closed"},
+    ])).resolves.toEqual([true, true, false]);
+  });
+
+});
+
+describe("folder scope nodes", () => {
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ id, mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false, ...extra });
+
+  it("parses ancestry facts and asks only for the fields a proof decides from", async () => {
+    let calls = stubFetch([batchResponse([
+      { status: 200, body: node("one", {
+        driveId: "drive-1", capabilities: { canListChildren: true },
+      }) },
+    ])]);
+
+    await expect(api().getScopeNodes(["one"])).resolves.toEqual([{
+      id: "one", mimeType: FOLDER_MIME_TYPE, parents: ["p"], trashed: false,
+      driveId: "drive-1", canListChildren: true,
+    }]);
+    expect(calls[0].body).toContain(`fields=${encodeURIComponent(
+      "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)")}`);
+    expect(calls[0].body).not.toContain("name");
+  });
+
+  it("places nodes by Content-ID rather than positional order", async () => {
+    stubFetch([batchResponse([
+      { status: 200, body: node("two"), contentId: "response-item-1" },
+      { status: 200, body: node("one"), contentId: "response-item-0" },
+    ])]);
+
+    await expect(api().getScopeNodes(["one", "two"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one" }), expect.objectContaining({ id: "two" })]);
+  });
+
+  it("keeps positions across the 100-file chunk boundary", async () => {
+    stubFetch([
+      batchResponse([
+        ...Array.from({ length: 99 }, (_, index) => ({ status: 200, body: node(`file-${index}`) })),
+        { status: 404 },
+      ]),
+      batchResponse([{ status: 200, body: node("file-100") }]),
+    ]);
+
+    let nodes = await api().getScopeNodes(
+      Array.from({ length: 101 }, (_, index) => `file-${index}`));
+    expect(nodes).toHaveLength(101);
+    expect(nodes[98]).toEqual(expect.objectContaining({ id: "file-98" }));
+    expect(nodes[99]).toBeUndefined();
+    expect(nodes[100]).toEqual(expect.objectContaining({ id: "file-100" }));
+  });
+
+  it.each([403, 404])("reports only an inaccessible file (%i) as a hole", async status => {
+    stubFetch([batchResponse([{ status }])]);
+    await expect(api().getScopeNodes(["one"])).resolves.toEqual([undefined]);
+  });
+
+  // A quota, outage, or account-wide block answered as "not a descendant" would silently shrink a
+  // listing, which is the one failure shape a scope check must never produce.
+  it.each([
+    ["quota", 403, JSON.stringify({ error: { errors: [{ reason: "userRateLimitExceeded" }] } })],
+    // Google's domainPolicy denies the app every file, so no single file's membership follows.
+    ["an account-wide policy block", 403,
+      JSON.stringify({ error: { errors: [{ reason: "domainPolicy" }] } })],
+    ["rate limiting", 429, "{}"],
+    ["a server error", 503, "{}"],
+  ])("throws on %s rather than reporting a hole", async (_label, status, body) => {
+    stubFetch([batchResponse([{ status, body }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toThrow(/batch subrequest failed/);
+  });
+
+  it("throws when the API is not enabled for the project", async () => {
+    stubFetch([batchResponse([{ status: 403, body: API_DISABLED_BODY }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toBeInstanceOf(DriveApiDisabledError);
+  });
+
+  // The echo is what ties a node's facts to the file whose membership they decide.
+  it("throws when a part's body answers for another file", async () => {
+    stubFetch([batchResponse([{ status: 200, body: node("other") }])]);
+    await expect(api().getScopeNodes(["one"]))
+      .rejects.toThrow("Google Drive batch response did not echo the requested file ID");
+  });
+
+  // The live failure: a body terminated by a blank line before the boundary made the old parser
+  // read the empty trailing chunk as the body, so every *successful* subrequest threw. Spelled out
+  // byte by byte rather than through `batchResponse`, so a fixture that drifts cannot hide it.
+  it("reads a body that a conforming emitter terminates with a blank line", async () => {
+    let boundary = "conforming_boundary";
+    let text = [
+      `--${boundary}`,
+      "Content-Type: application/http",
+      "Content-ID: <response-item-0>",
+      "",
+      "HTTP/1.1 200 OK",
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      node("one"),
+      "",
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+    stubFetch([new Response(text, {
+      headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` },
+    })]);
+
+    await expect(api().getScopeNodes(["one"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one", parents: ["p"] })]);
+  });
+
+  it.each([
+    ["a non-string parent", JSON.stringify({ id: "one", parents: [7] })],
+    ["a non-boolean trashed", JSON.stringify({ id: "one", trashed: "no" })],
+  ])("throws on %s", async (_label, body) => {
+    stubFetch([batchResponse([{ status: 200, body }])]);
+    await expect(api().getScopeNodes(["one"])).rejects.toThrow();
+  });
+
+  it.each([["malformed", "not json"], ["empty", ""], ["non-ASCII", "é"]])(
+    "reports %s JSON with its UTF-16 size", async (_label, body) => {
+      stubFetch([batchResponse([{ status: 200, body }])]);
+      await expect(api().getScopeNodes(["one"])).rejects.toThrow(
+        `Google Drive batch response part was not valid JSON (${body.length} UTF-16 code units)`);
+    });
+
+  it("replays once after an inner 401, then gives up", async () => {
+    let tokens = ["stale", "fresh"];
+    let drive = new DriveApi(async () => tokens.shift() ?? "fresh");
+    let calls = stubFetch([
+      batchResponse([{ status: 401 }]),
+      batchResponse([{ status: 200, body: node("one") }]),
+    ]);
+
+    await expect(drive.getScopeNodes(["one"]))
+      .resolves.toEqual([expect.objectContaining({ id: "one" })]);
+    expect(calls.map(call => call.headers.get("Authorization")))
+      .toEqual(["Bearer stale", "Bearer fresh"]);
+  });
+
+  it("issues no request for an empty list", async () => {
+    let calls = stubFetch([]);
+    await expect(api().getScopeNodes([])).resolves.toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 
@@ -580,6 +743,20 @@ describe("error handling", () => {
     expect(error).toBeInstanceOf(DriveApiRequestError);
     expect(error).toMatchObject({ status: 403, reason: "insufficientPermissions" });
     expect(error.message).toBe("Google Drive API request failed: 403 (insufficientPermissions)");
+  });
+
+  // A folder inside a shared drive can be shared directly with a non-member, who then holds a
+  // listable folder in a drive corpus they cannot query. The bare reason code says none of that.
+  it("explains a shared-drive membership refusal, keeping the reason for callers", async () => {
+    stubFetch([new Response(JSON.stringify({
+      error: { errors: [{ reason: "teamDriveMembershipRequired" }] },
+    }), { status: 403 })]);
+    let error = await api().listFiles({ corpus: { kind: "drive", driveId: "drive-1" } })
+      .catch(e => e);
+    expect(error).toMatchObject({ status: 403, reason: "teamDriveMembershipRequired" });
+    expect(error.message).toBe(
+      "Google Drive API request failed: 403 (the connected account is not a member of the " +
+      "shared drive this item belongs to)");
   });
 
   it("preserves an ordinary 404 without a provider reason", async () => {

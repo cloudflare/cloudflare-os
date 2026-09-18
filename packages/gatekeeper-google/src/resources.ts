@@ -85,11 +85,13 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** Files, folders, and read-only native content in one Google Workspace shared drive. */
-export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/folders/:driveId",
-  title: "Google Workspace Shared Drive",
-  description: "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
+/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
+export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/drive/folders/:folderId",
+  title: "Google Drive Folder",
+  description:
+      "Browse a selected folder or shared drive, search its direct children, and read native " +
+      "Google Docs and Sheets.",
   grantable: true,
 };
 
@@ -174,15 +176,12 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     ],
   },
   {
-    resource: GOOGLE_SHARED_DRIVE_RESOURCE,
-    // `drive.readonly` (not `drive.metadata.readonly`): the shared-drive picker and the binding's
-    // `getScope` use `drives.list`/`drives.get`, which accept nothing narrower. The same scope already
-    // authorizes native Docs and Sheets content, so do not add redundant API scopes. It is a
-    // restricted scope granting account-wide content access, strictly wider than the authority the
-    // shared-drive binding exercises. Narrowing it means dropping both calls: resolving a shared
-    // drive's name through `files.get` on the drive root instead, and giving up drive enumeration in
-    // the configurator.
-    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+    ],
   },
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
@@ -204,7 +203,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 
 const DRIVE_RESOURCE_PATTERNS = new Set([
   GOOGLE_DRIVE_RESOURCE.urlPattern,
-  GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
+  GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
 ]);
 
@@ -216,6 +215,13 @@ const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => reso
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
 }
+
+/**
+ * Wider Drive grants an account may already hold. Never requested here; they appear only in
+ * {@link SCOPE_COVERED_BY}, where they truthfully subsume the narrow requirements.
+ */
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 /** Rejects any pattern that is not a known grantable resource. */
 export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string[]): void {
@@ -239,6 +245,30 @@ export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly s
 }
 
 /**
+ * Scopes that subsume each required scope, so a wider grant still covers a resource.
+ *
+ * Declared as data beside {@link RESOURCE_SCOPES} rather than as branches: a missing implication
+ * reads as an ungranted resource and silently hides a configurator, so the next readonly/readwrite
+ * pair should be a row here and nothing else.
+ */
+const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
+  "https://www.googleapis.com/auth/drive.metadata.readonly": [
+    "https://www.googleapis.com/auth/drive.metadata", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/documents.readonly": [
+    "https://www.googleapis.com/auth/documents", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/spreadsheets.readonly": [
+    "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+};
+
+function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
+  return granted.has(required) ||
+    (SCOPE_COVERED_BY[required]?.some(scope => granted.has(scope)) ?? false);
+}
+
+/**
  * The subset of `resourceUrlPatterns` whose every OAuth scope is present in `grantedOAuthScopes`.
  *
  * Fails closed, so a scope the user declined at the consent screen, or dropped on a later
@@ -251,7 +281,7 @@ export function resourcesCoveredByScopes(
   let requested = new Set(resourceUrlPatterns);
   return RESOURCE_SCOPES
       .filter(entry => requested.has(entry.resource.urlPattern) &&
-                       entry.scopes.every(scope => granted.has(scope)))
+                       entry.scopes.every(scope => oauthScopeCovers(scope, granted)))
       .map(entry => entry.resource.urlPattern);
 }
 
@@ -309,7 +339,7 @@ export type ResourceTarget =
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
   | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
   | { kind: "driveAccount" }
-  | { kind: "sharedDrive"; driveId: string }
+  | { kind: "driveFolder"; folderId: string }
   | { kind: "driveFile"; fileId: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
@@ -320,7 +350,7 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   calendar: GOOGLE_CALENDAR_RESOURCE,
   bigquery: BIGQUERY_RESOURCE,
   driveAccount: GOOGLE_DRIVE_RESOURCE,
-  sharedDrive: GOOGLE_SHARED_DRIVE_RESOURCE,
+  driveFolder: GOOGLE_DRIVE_FOLDER_RESOURCE,
   driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
 };
 
@@ -429,8 +459,8 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
 function parseDriveUrl(parsed: URL): ResourceTarget {
   if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
 
-  let sharedDrive = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
-  if (sharedDrive) return { kind: "sharedDrive", driveId: decodeURIComponent(sharedDrive[1]) };
+  let folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (folder) return { kind: "driveFolder", folderId: decodeURIComponent(folder[1]) };
 
   let file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(parsed.pathname);
   if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]) };
