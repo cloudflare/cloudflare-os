@@ -7,7 +7,7 @@
  * whose authorization outlives the call that made it, an action whose provider outcome is unknown.
  */
 
-import { env } from "cloudflare:test";
+import { abortAllDurableObjects, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { RpcStub } from "cloudflare:workers";
 import type { ConformanceAccount, ConformanceResource } from "./conformance/gatekeeper";
@@ -23,12 +23,31 @@ import {
 
 let seq = 0;
 
-/** A fresh account and resource pair, so no test inherits another's durable state. */
-function bind() {
+/** Names a fresh account and resource pair, so no test inherits another's durable state. */
+function names() {
   seq += 1;
-  const account = env.CONFORMANCE_ACCOUNT.getByName(`account-${seq}`);
-  const resource = env.CONFORMANCE_RESOURCE.getByName(`resource-${seq}`);
-  return { account, resource };
+  return { account: `account-${seq}`, resource: `resource-${seq}` };
+}
+
+/** Acquires stubs for a pair; called again after a restart, since the old ones stay poisoned. */
+function bind(pair = names()) {
+  return {
+    pair,
+    account: env.CONFORMANCE_ACCOUNT.getByName(pair.account),
+    resource: env.CONFORMANCE_RESOURCE.getByName(pair.resource),
+  };
+}
+
+/** Drops a reply after the kit's own durable success, the way a lost response does. */
+async function loseReply(operation: Promise<unknown>): Promise<void> {
+  await operation;
+  throw new Error("simulated response loss");
+}
+
+/** @returns The provider projects currently carrying a name. */
+function projectsNamed(name: string): string[] {
+  return [...provider.projects.values()].filter(project => project.name === name)
+    .map(project => project.id);
 }
 
 /** Binds the way the overseer hands a session its queue: borrowed for the call, not given away. */
@@ -387,17 +406,85 @@ describe("actions", () => {
     await connect(account);
     await bindResource(resource, account);
 
-    const create = await resource.submit("createProject",
-      { ref: "~new", name: "Gamma", spaceId: "space-1" });
+    await resource.submit("createProject", { ref: "~new", name: "Gamma", spaceId: "space-1" });
     const rename = await resource.submit("renameProject",
       { target: "~new", name: "Gamma Renamed" });
 
-    await resource.apply(create);
-    await resource.apply(rename);
+    // One batch through the dependent, the way the overseer sends a whole approved prefix.
+    expect(await resource.applyActionsThrough(rename, [])).toEqual({});
 
     // The provisional reference resolved to whatever the provider minted.
     expect([...provider.projects.values()].map(project => project.name))
       .toContain("Gamma Renamed");
+  });
+
+  it("refuses to reject an action whose successful reply was lost before a restart", async () => {
+    const { pair, account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+    const create = await resource.submit("createProject",
+      { ref: "~lost", name: "Lost Reply", spaceId: "space-1" });
+
+    // The kit finished durably; only the response was dropped, so the caller never recorded it.
+    await expect(loseReply(resource.apply(create))).rejects.toThrow("simulated response loss");
+    expect(projectsNamed("Lost Reply")).toHaveLength(1);
+
+    await abortAllDurableObjects();
+    const revived = bind(pair);
+    await bindResource(revived.resource, revived.account);
+
+    await expect(async () => { await revived.resource.reject(create); })
+      .rejects.toThrow(`Action ${create} is no longer pending.`);
+    expect(projectsNamed("Lost Reply")).toHaveLength(1);
+  });
+
+  it("reports that refusal through the batch without poisoning what was authorized", async () => {
+    const { pair, account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+    const create = await resource.submit("createProject",
+      { ref: "~raced", name: "Raced Reply", spaceId: "space-1" });
+    await expect(loseReply(resource.apply(create))).rejects.toThrow("simulated response loss");
+
+    await abortAllDurableObjects();
+    const revived = bind(pair);
+    await bindResource(revived.resource, revived.account);
+    const second = await revived.resource.submit("createProject",
+      { ref: "~next", name: "Next", spaceId: "space-1" });
+
+    // Repeated, because a refusal that degraded into an acknowledgement on the second pass is
+    // exactly what would record an executed action as rejected. The authorized suffix still
+    // applies both times: the caller replays its staged veto, so a refusal that stopped the
+    // batch would strand "Next" for good.
+    for (const attempt of [1, 2]) {
+      expect(await revived.resource.applyActionsThrough(second, [create]), `attempt ${attempt}`)
+        .toEqual({ alreadyApplied: [create] });
+      expect(projectsNamed("Raced Reply"), `attempt ${attempt}`).toHaveLength(1);
+      expect(projectsNamed("Next"), `attempt ${attempt}`).toHaveLength(1);
+    }
+  });
+
+  it("reports a vetoed creator's dependent as stopped rather than a completed prefix", async () => {
+    const { pair, account, resource } = bind();
+    await connect(account);
+    await bindResource(resource, account);
+    const create = await resource.submit("createProject",
+      { ref: "~doomed", name: "Doomed", spaceId: "space-1" });
+    const rename = await resource.submit("renameProject",
+      { target: "~doomed", name: "Doomed Renamed" });
+
+    const stopped = await resource.applyActionsThrough(rename, [create]);
+
+    expect(stopped.stopped?.at).toBe(rename);
+    expect(stopped.stopped?.reason.message).toContain(String(create));
+    expect(projectsNamed("Doomed")).toHaveLength(0);
+
+    // The durable failure outlives the restart: a covering batch must not drift into success.
+    await abortAllDurableObjects();
+    const revived = bind(pair);
+    await bindResource(revived.resource, revived.account);
+    expect((await revived.resource.applyActionsThrough(rename, [])).stopped?.at).toBe(rename);
+    expect(await revived.resource.record(rename)).toMatchObject({ state: "failed" });
   });
 
   it("puts every staged action through the approval queue with its rendered description", async () => {

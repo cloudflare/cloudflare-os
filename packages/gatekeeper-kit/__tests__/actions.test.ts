@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalQueue, GitCache } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  createGitPackError,
+  getGitPackErrorCode,
+  GIT_PACK_ERROR_CODES,
+} from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ApplyActionContext,
+  ApprovalQueue,
+  GitCache,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type { RpcStub } from "cloudflare:workers";
 import {
   ActionApplyError,
@@ -25,6 +34,30 @@ function makeKv() {
   return kv satisfies ActionJournalKv;
 }
 
+/** A store whose deletes fail until `allowDeletes`, leaving the rows an interrupted write would. */
+function failingDeletes() {
+  const kv = makeKv();
+  let failDelete = true;
+  return {
+    kv,
+    failing: {
+      ...kv,
+      delete: (key: string) => {
+        if (failDelete) throw new Error(`storage unavailable: ${key}`);
+        kv.delete(key);
+      },
+    } satisfies ActionJournalKv,
+    allowDeletes: () => { failDelete = false; },
+  };
+}
+
+/** An action the overseer has acknowledged, which is the state it decides and batches act on. */
+function queued<A>(journal: ActionJournal<A>, action: NoInfer<A>): number {
+  const id = journal.allocate(action);
+  journal.markSubmitted(id);
+  return id;
+}
+
 type Sql = { sql: string; rows?: number };
 
 const presentation = { title: "Run SQL", description: "…", implementsRevert: false };
@@ -36,6 +69,11 @@ function submitSpy() {
 
 function fakeQueue(submitAction = submitSpy()): ActionSubmitter {
   return { submitAction };
+}
+
+/** The refusal a reject of an already-applied id must give, naming the id it concerns. */
+async function expectAlreadyApplied(operation: Promise<unknown>, action: number): Promise<void> {
+  await expect(operation).rejects.toThrow(`Action ${action} is no longer pending.`);
 }
 
 describe("ActionJournal", () => {
@@ -985,7 +1023,7 @@ describe("defineActions", () => {
     expect(outcomes).toEqual(["applied"]);
 
     // The retained record is what a revert hook reads back, so a stray reject must not delete it.
-    await expect(actions.reject(id)).rejects.toThrow(`Action ${id} is no longer pending.`);
+    await expectAlreadyApplied(actions.reject(id), id);
     expect(host.ran).toEqual([]);
     expect(journal.get(id)).toBeDefined();
   });
@@ -1111,7 +1149,7 @@ describe("defineActions", () => {
     inFlight.resolve();
     await applied;
 
-    await expect(rejected).rejects.toThrow(`Action ${id} is no longer pending.`);
+    await expectAlreadyApplied(rejected, id);
     // The reject handler never ran, so nothing contradicts the applied effect.
     expect(host.ran).toEqual(["once"]);
   });
@@ -1131,6 +1169,37 @@ describe("defineActions", () => {
     expect(outcomes).toEqual(["rejected"]);
   });
 
+  it("refuses a rejection over storage a new binding rebuilt, where no record survives", async () => {
+    // The durable proof is the retired-id memory in KV, not anything the first binding held: a
+    // later activation reading the same storage must refuse the discard just as firmly.
+    const kv = makeKv();
+    const first = bind({ journal: new ActionJournal(kv, { namespace: "pending" }) });
+    const id = first.journal.allocate({ kind: "execute", payload: { sql: "one" } });
+    first.journal.markSubmitted(id);
+    await first.actions.apply(id);
+    expect(first.journal.get(id)).toBeUndefined();
+
+    const revived = bind({ journal: new ActionJournal(kv, { namespace: "pending" }) });
+    await expectAlreadyApplied(revived.actions.reject(id), id);
+    // And the apply stays a one-effect no-op.
+    await expect(revived.actions.apply(id)).resolves.toBeUndefined();
+    expect(revived.host.ran).toEqual([]);
+  });
+
+  it("classifies an orphaned claim as an unknown outcome rather than an applied action", async () => {
+    // The provider may or may not have run, so the honest answer is the unknown-outcome record --
+    // calling it applied would refuse the rejection that is the user's only way to clear it.
+    const kv = makeKv();
+    const dead = bind({ journal: new ActionJournal(kv, { namespace: "pending" }), claimBeforeApply: true });
+    const id = dead.journal.allocate({ kind: "execute", payload: { sql: "one" } });
+    dead.journal.markSubmitted(id);
+    dead.journal.markClaimed(id);
+
+    const revived = bind({ journal: new ActionJournal(kv, { namespace: "pending" }) });
+    await expect(revived.actions.reject(id)).rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(revived.journal.get(id)).toMatchObject({ state: "failed", outcome: "unknown" });
+  });
+
   it("settles a replayed resolution from a later activation after the applied record is gone", async () => {
     // The overseer offers retry-or-discard when the reply to a successful apply is lost. Durable
     // memory answers both: the retry resolves with no second provider call, and the discard is
@@ -1143,7 +1212,7 @@ describe("defineActions", () => {
 
     const revived = bind({ journal: dead.journal });
     await expect(revived.actions.apply(id)).resolves.toBeUndefined();
-    await expect(revived.actions.reject(id)).rejects.toThrow(`Action ${id} is no longer pending.`);
+    await expectAlreadyApplied(revived.actions.reject(id), id);
     expect(revived.host.ran).toEqual([]);
     expect(revived.outcomes).toEqual([]);
   });
@@ -1285,26 +1354,19 @@ describe("defineActions", () => {
     expect(outcomes).toEqual([]);
 
     // And the executed action can never be reported rejected, whatever the record still says.
-    await expect(actions.reject(id)).rejects.toThrow(/no longer pending/);
+    await expectAlreadyApplied(actions.reject(id), id);
   });
 
   it("heals an interrupted retire on the next apply, leaving no record behind", async () => {
-    const kv = makeKv();
-    let failDelete = true;
-    const journal = new ActionJournal<TaggedAction<Actions>>({
-      ...kv,
-      delete: key => {
-        if (failDelete) throw new Error(`storage unavailable: ${key}`);
-        kv.delete(key);
-      },
-    }, { namespace: "pending" });
+    const { kv, failing, allowDeletes } = failingDeletes();
+    const journal = new ActionJournal<TaggedAction<Actions>>(failing, { namespace: "pending" });
     const { actions, host } = bind({ journal });
     const id = journal.allocate({ kind: "execute", payload: { sql: "one" } });
     journal.markSubmitted(id);
 
     await expect(actions.apply(id)).rejects.toThrow("storage unavailable");
 
-    failDelete = false;
+    allowDeletes();
     await expect(actions.apply(id)).resolves.toBeUndefined();
     expect(host.ran).toEqual(["one"]);
     expect(kv.get(`pending:action:${id}`)).toBeUndefined();
@@ -1523,17 +1585,6 @@ describe("defineActions", () => {
     expect(host.ran).toEqual(["one"]);
   });
 
-  it("hands the handler the action-scoped git cache the overseer passed", async () => {
-    const seen: ActionContext[] = [];
-    const gitCache = {} as RpcStub<GitCache>;
-    const { actions } = bind({ apply: async (_payload, _host, ctx) => void seen.push(ctx) });
-    const id = await actions.submit(fakeQueue(), "execute", { sql: "one" });
-
-    await actions.apply(id, { gitCache });
-    expect(seen[0]?.gitCache).toBe(gitCache);
-    expect(seen[0]?.fence).toBeUndefined();
-  });
-
   it("refuses to stage a connection-fenced kind with no fence", async () => {
     // The silent omission this policy exists to catch: unfenced, an action approved under one
     // provider account applies cleanly under the next one.
@@ -1666,13 +1717,6 @@ describe("dependent actions", () => {
       },
     }, { fence: "none", isResolvedReference: overrides.isResolvedReference ?? (() => false) });
     return { host, journal, actions: set.bind(journal, host) };
-  }
-
-  /** Allocate and mark submitted, which is the state the overseer decides on. */
-  function queued(journal: ActionJournal<TaggedAction<Actions>>, action: TaggedAction<Actions>) {
-    const id = journal.allocate(action);
-    journal.markSubmitted(id);
-    return id;
   }
 
   it("refuses to apply an action whose provisional reference is unresolved", async () => {
@@ -1860,5 +1904,533 @@ describe("dependent actions", () => {
     const ok: Refs["provides"] = payload => [payload.ref];
     expect(ok?.({ ref: "issue-12" })).toEqual(["issue-12"]);
     expect([provides, dependsOn].every(fn => typeof fn === "function")).toBe(true);
+  });
+});
+
+describe("applyActionsThrough", () => {
+  type Actions = { execute: Sql; create: { ref: string }; edit: { target: string } };
+  type Host = { ran: string[] };
+
+  function bind(overrides: {
+    apply?: (payload: Sql, host: Host, ctx: ActionContext) => Promise<void>;
+    reject?: (payload: Sql, host: Host, ctx: ActionContext) => Promise<void>;
+    journal?: ActionJournal<TaggedAction<Actions>>;
+    kv?: ActionJournalKv;
+    maxPending?: number;
+    retainApplied?: boolean;
+  } = {}) {
+    const host: Host = { ran: [] };
+    const resolvedRefs = new Set<string>();
+    const journal = overrides.journal ?? new ActionJournal<TaggedAction<Actions>>(
+      overrides.kv ?? makeKv(), { namespace: "pending", maxPending: overrides.maxPending });
+    const set = defineActions<Host, Actions>({
+      execute: {
+        delivery: "continue-with-simulation",
+        describe: () => presentation,
+        apply: overrides.apply ?? (async (payload, target) => void target.ran.push(payload.sql)),
+        reject: overrides.reject
+          ?? (async (payload, target) => void target.ran.push(`rejected ${payload.sql}`)),
+      },
+      create: {
+        delivery: "continue-with-simulation",
+        describe: () => presentation,
+        provides: payload => [payload.ref],
+        apply: async (payload, target) => {
+          target.ran.push(`created ${payload.ref}`);
+          resolvedRefs.add(payload.ref);
+        },
+      },
+      edit: {
+        delivery: "continue-with-simulation",
+        describe: () => presentation,
+        dependsOn: payload => [payload.target],
+        apply: async (payload, target) => void target.ran.push(`edited ${payload.target}`),
+      },
+    }, {
+      fence: "none",
+      retainApplied: overrides.retainApplied,
+      isResolvedReference: (_host, ref) => resolvedRefs.has(ref),
+    });
+    return { host, journal, actions: set.bind(journal, host) };
+  }
+
+  const sql = (text: string) =>
+    ({ kind: "execute", payload: { sql: text } }) as TaggedAction<Actions>;
+
+  // Every step between a batch call and its first handler dispatch is a microtask, so draining
+  // them is a complete wait: anything still undone afterwards is genuinely blocked.
+  const drain = async () => {
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  };
+
+  it("applies the prefix numerically, skipping gaps and leaving the suffix alone", async () => {
+    const { actions, journal, host } = bind({ maxPending: 12 });
+    const ids = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+      "eleven"].map(text => queued(journal, sql(text)));
+    // A gap mid-prefix, and a boundary with no record of its own: neither is a hole to stop at.
+    journal.remove(ids[2]!);
+    journal.remove(ids[9]!);
+
+    expect(await actions.applyActionsThrough(ids[9]!, [])).toEqual({});
+
+    // Ids 2 and 10 cross lexical order, so a scan that trusted key order would run "ten" second.
+    expect(host.ran).toEqual(["one", "two", "four", "five", "six", "seven", "eight", "nine"]);
+    expect(journal.get(ids[10]!)).toBeDefined();
+  });
+
+  it("validates the whole request before any rejection or effect", async () => {
+    const { actions, journal, host } = bind();
+    const first = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+
+    for (const veto of [0, -1, 1.5, Number.NaN, last + 1]) {
+      await expect(actions.applyActionsThrough(last, [first, veto])).rejects.toThrow();
+    }
+    await expect(actions.applyActionsThrough(0, [])).rejects.toThrow(/actionId/);
+
+    expect(host.ran).toEqual([]);
+    expect(journal.get(first)).toBeDefined();
+  });
+
+  it("treats a duplicate or unknown in-range veto as the no-op it already is", async () => {
+    const { actions, journal, host } = bind();
+    const vetoed = queued(journal, sql("one"));
+    const gone = queued(journal, sql("two"));
+    const last = queued(journal, sql("three"));
+    journal.remove(gone);
+
+    expect(await actions.applyActionsThrough(last, [vetoed, vetoed, gone])).toEqual({});
+
+    expect(host.ran).toEqual(["rejected one", "three"]);
+  });
+
+  it("durably rejects a later veto before stopping at an earlier failure", async () => {
+    const kv = makeKv();
+    let unreachable = true;
+    const { actions, journal, host } = bind({
+      kv,
+      apply: async (payload, target) => {
+        if (unreachable && payload.sql === "boom") throw new Error("provider unreachable");
+        target.ran.push(payload.sql);
+      },
+    });
+    const boom = queued(journal, sql("boom"));
+    const vetoed = queued(journal, sql("vetoed"));
+    const last = queued(journal, sql("last"));
+
+    const result = await actions.applyActionsThrough(last, [vetoed]);
+
+    expect(result).toEqual({ stopped: { at: boom, reason: new Error("provider unreachable") } });
+    expect(host.ran).toEqual(["rejected vetoed"]);
+    expect(journal.get(boom)?.state).toBe("pending");
+
+    // Rebuilt over the same storage: the veto outlived the stop, so the retry cannot run it.
+    unreachable = false;
+    const revived = bind({ kv });
+    expect(await revived.actions.applyActionsThrough(last, [])).toEqual({});
+    expect(revived.host.ran).toEqual(["boom", "last"]);
+  });
+
+  it("returns successfully once an all-veto batch has run every rejection", async () => {
+    const { actions, journal, host } = bind();
+    const first = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+
+    expect(await actions.applyActionsThrough(last, [last, first])).toEqual({});
+
+    expect(host.ran).toEqual(["rejected one", "rejected two"]);
+    expect(journal.listForResolution()).toEqual([]);
+  });
+
+  it("stops at a record whose failure is already terminal, with no provider call", async () => {
+    const { actions, journal, host } = bind();
+    const failed = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+    journal.markFailed(failed, "the provider refused");
+
+    expect(await actions.applyActionsThrough(last, []))
+      .toEqual({ stopped: { at: failed, reason: new Error("the provider refused") } });
+    expect(host.ran).toEqual([]);
+
+    // Only an explicit rejection clears it; then the suffix becomes reachable.
+    expect(await actions.applyActionsThrough(last, [failed])).toEqual({});
+    expect(host.ran).toEqual(["two"]);
+  });
+
+  it("stops at an orphaned claim, recording the unknown outcome the provider left", async () => {
+    const kv = makeKv();
+    const dead = bind({ kv, maxPending: 4 });
+    const claimed = queued(dead.journal, sql("one"));
+    const last = queued(dead.journal, sql("two"));
+    dead.journal.markClaimed(claimed);
+
+    const revived = bind({ kv });
+    const result = await revived.actions.applyActionsThrough(last, []);
+
+    expect(result.stopped?.at).toBe(claimed);
+    expect(result.stopped?.reason).toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(revived.journal.get(claimed)).toMatchObject({ state: "failed", outcome: "unknown" });
+    expect(revived.host.ran).toEqual([]);
+  });
+
+  it("passes over a retained applied action without running it again", async () => {
+    const { actions, journal, host } = bind({ retainApplied: true });
+    const applied = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+    await actions.apply(applied);
+
+    expect(await actions.applyActionsThrough(last, [])).toEqual({});
+
+    expect(host.ran).toEqual(["one", "two"]);
+    expect(journal.get(applied)?.state).toBe("applied");
+  });
+
+  it("heals an applied action's leftover row, which a hidden one would resurface from", async () => {
+    // `retire` tombstones before deleting, so a failed delete leaves a source row the projection
+    // scans hide. Merely hiding it is not enough: the tombstone memory is bounded, and once this
+    // id ages out of it the row reads as applicable again and the provider runs twice.
+    const { kv, failing, allowDeletes } = failingDeletes();
+    const journal = new ActionJournal<TaggedAction<Actions>>(failing, { namespace: "pending", maxPending: 1 });
+    const { actions, host } = bind({ journal });
+
+    const first = queued(journal, sql("one"));
+    expect((await actions.applyActionsThrough(first, [])).stopped?.at).toBe(first);
+    expect(host.ran).toEqual(["one"]);
+    expect(kv.get(`pending:action:${first}`)).toBeDefined();
+
+    allowDeletes();
+    const second = queued(journal, sql("two"));
+    expect(await actions.applyActionsThrough(second, [])).toEqual({});
+    expect(host.ran).toEqual(["one", "two"]);
+    expect(kv.get(`pending:action:${first}`)).toBeUndefined();
+
+    // One more retirement ages the first id out of the bounded memory. A row the batch had only
+    // filtered out would become applicable again right here.
+    const third = queued(journal, sql("three"));
+    expect(await actions.applyActionsThrough(third, [])).toEqual({});
+    expect(journal.wasApplied(first)).toBe(false);
+    expect(host.ran).toEqual(["one", "two", "three"]);
+  });
+
+  it("stops at the dependent a veto stranded rather than calling it invalidated", async () => {
+    const { actions, journal, host } = bind();
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } } as TaggedAction<Actions>);
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } } as TaggedAction<Actions>);
+    const last = queued(journal, sql("last"));
+
+    const stopped = await actions.applyActionsThrough(last, [create]);
+
+    expect(stopped.stopped?.at).toBe(edit);
+    expect(stopped.invalidatedByVeto).toBeUndefined();
+    expect(host.ran).toEqual([]);
+    // Repeating reports the same stop; the kit never drifts into calling the prefix complete.
+    expect((await actions.applyActionsThrough(last, [])).stopped?.at).toBe(edit);
+
+    // Only the user's explicit rejection runs the cleanup the stranded record still owes.
+    expect(await actions.applyActionsThrough(last, [edit])).toEqual({});
+    expect(host.ran).toEqual(["last"]);
+  });
+
+  it("stops at a stranded dependent a later batch is the first to cover", async () => {
+    // The veto's own batch ended below the dependent, so a covering batch is where the stranding
+    // surfaces. Returning success there is what the caller would record as Approved.
+    const { actions, journal, host } = bind();
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } } as TaggedAction<Actions>);
+    expect(await actions.applyActionsThrough(create, [create])).toEqual({});
+
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } } as TaggedAction<Actions>);
+    expect((await actions.applyActionsThrough(edit, [])).stopped?.at).toBe(edit);
+    expect(host.ran).toEqual([]);
+  });
+
+  it("reports a veto of an applied action and applies the rest of the prefix anyway", async () => {
+    for (const retainApplied of [true, false]) {
+      const { actions, journal, host } = bind({ retainApplied });
+      const applied = queued(journal, sql("one"));
+      const last = queued(journal, sql("two"));
+      await actions.apply(applied);
+
+      // Throwing here would abort the whole call, and the caller replays its staged vetoes, so
+      // every later batch would throw on this same veto and never reach "two".
+      expect(await actions.applyActionsThrough(last, [applied]))
+        .toEqual({ alreadyApplied: [applied] });
+      expect(host.ran).toEqual(["one", "two"]);
+
+      // Repeating gives the same refusal rather than drifting to an acknowledgement.
+      expect(await actions.applyActionsThrough(last, [applied]))
+        .toEqual({ alreadyApplied: [applied] });
+      expect(host.ran).toEqual(["one", "two"]);
+    }
+  });
+
+  it("reports an applied veto alongside the stop a later action in the same batch caused", async () => {
+    const { actions, journal } = bind({
+      apply: async payload => { if (payload.sql === "boom") throw new Error("nope"); },
+    });
+    const applied = queued(journal, sql("one"));
+    const stops = queued(journal, sql("boom"));
+    await actions.apply(applied);
+
+    const result = await actions.applyActionsThrough(stops, [applied]);
+    expect(result.alreadyApplied).toEqual([applied]);
+    expect(result.stopped?.at).toBe(stops);
+  });
+
+  it("throws rather than acknowledging a veto its cleanup or its claim refused", async () => {
+    const cleanupFailed = bind({
+      reject: async () => { throw new Error("cleanup failed"); },
+    });
+    const vetoed = queued(cleanupFailed.journal, sql("one"));
+    const last = queued(cleanupFailed.journal, sql("two"));
+
+    await expect(cleanupFailed.actions.applyActionsThrough(last, [vetoed]))
+      .rejects.toThrow("cleanup failed");
+    expect(cleanupFailed.journal.get(vetoed)).toBeDefined();
+    expect(cleanupFailed.host.ran).toEqual([]);
+
+    const kv = makeKv();
+    const dead = bind({ kv, maxPending: 4 });
+    const claimed = queued(dead.journal, sql("claimed"));
+    const later = queued(dead.journal, sql("later"));
+    dead.journal.markClaimed(claimed);
+
+    const revived = bind({ kv });
+    await expect(revived.actions.applyActionsThrough(later, [claimed]))
+      .rejects.toBeInstanceOf(ActionOutcomeUnknownError);
+    expect(revived.host.ran).toEqual([]);
+  });
+
+  type Gate = { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> };
+
+  /** An approval queue whose reply for a chosen action id can be held open mid-call. */
+  function gatedQueue(failAfterRelease = false) {
+    const gates = new Map<number, Gate>();
+    const queue = fakeQueue(vi.fn<ApprovalQueue["submitAction"]>(async action => {
+      const gate = gates.get(action);
+      if (!gate) return;
+      gate.entered.resolve();
+      await gate.release.promise;
+      if (failAfterRelease) throw new Error("reply lost");
+    }));
+    return {
+      queue,
+      hold: (action: number) => {
+        const gate: Gate =
+          { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+        gates.set(action, gate);
+        return gate;
+      },
+    };
+  }
+
+  it("waits out an in-range submission before dispatching its handler", async () => {
+    const { actions, host } = bind();
+    const { queue, hold } = gatedQueue();
+    const gate = hold(1);
+
+    const submitted = actions.submit(queue, "execute", { sql: "one" });
+    await gate.entered.promise;
+    const batch = actions.applyActionsThrough(1, []);
+    await drain();
+    expect(host.ran).toEqual([]);
+
+    gate.release.resolve();
+    expect(await submitted).toBe(1);
+    expect(await batch).toEqual({});
+    expect(host.ran).toEqual(["one"]);
+  });
+
+  it("keeps a record its own callback proved received when that reply is then lost", async () => {
+    // The rollback exists for a submission the overseer never got. This one it demonstrably has:
+    // the batch names the id. Rolling back here would delete a record the caller is acting on.
+    const { actions, journal, host } = bind();
+    const { queue, hold } = gatedQueue(true);
+    const gate = hold(1);
+
+    const submitted = actions.submit(queue, "execute", { sql: "one" });
+    await gate.entered.promise;
+    const batch = actions.applyActionsThrough(1, []);
+    await drain();
+
+    gate.release.resolve();
+    expect(await submitted).toBe(1);
+    expect(await batch).toEqual({});
+    expect(host.ran).toEqual(["one"]);
+    expect(journal.get(1)).toBeUndefined();
+  });
+
+  it("never applies a record a dead submission stranded, which the overseer may not hold", async () => {
+    // An activation that dies between `allocate` and its `submitAction` reply leaves the record
+    // durably staged, and nothing resubmits it: the counter has already moved on. Whether the
+    // overseer received it is unknowable here, so resolving it would risk applying an action
+    // nobody approved and no card will ever show.
+    const kv = makeKv();
+    const dead = bind({ kv });
+    const stranded = dead.journal.allocate(sql("stranded"));
+    expect(dead.journal.get(stranded)).toMatchObject({ state: "staged" });
+
+    const revived = bind({ kv });
+    const published = queued(revived.journal, sql("published"));
+    expect(published).toBeGreaterThan(stranded);
+
+    expect(await revived.actions.applyActionsThrough(published, [])).toEqual({});
+    expect(revived.host.ran).toEqual(["published"]);
+    // Left alone rather than failed: only the capacity pruner may discard it.
+    expect(revived.journal.get(stranded)).toMatchObject({ state: "staged" });
+  });
+
+  it("never waits on a submission above its own frontier", async () => {
+    const { actions, journal, host } = bind();
+    const covered = queued(journal, sql("covered"));
+    const { queue, hold } = gatedQueue();
+    const gate = hold(covered + 1);
+
+    const submitted = actions.submit(queue, "execute", { sql: "later" });
+    await gate.entered.promise;
+    // Completes while that submission is still held open; blocking on it would hang here.
+    expect(await actions.applyActionsThrough(covered, [])).toEqual({});
+    expect(host.ran).toEqual(["covered"]);
+
+    gate.release.resolve();
+    expect(await submitted).toBe(covered + 1);
+  });
+
+  it("admits no other resolution between its vetoes and its suffix", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { actions, journal, host } = bind({
+      maxPending: 4,
+      apply: async (payload, target) => {
+        if (payload.sql === "parked") {
+          entered.resolve();
+          await release.promise;
+        }
+        target.ran.push(payload.sql);
+      },
+    });
+    // The parked action sits below the veto, so the veto phase must finish before it dispatches.
+    queued(journal, sql("parked"));
+    const vetoed = queued(journal, sql("vetoed"));
+    const last = queued(journal, sql("last"));
+    const outside = queued(journal, sql("outside"));
+
+    const batch = actions.applyActionsThrough(last, [vetoed]);
+    await entered.promise;
+    const behind = [actions.reject(outside),
+      actions.runExclusive(() => void host.ran.push("hook"))];
+    await drain();
+    expect(host.ran).toEqual(["rejected vetoed"]);
+
+    release.resolve();
+    expect(await batch).toEqual({});
+    await Promise.all(behind);
+
+    expect(host.ran).toEqual([
+      "rejected vetoed", "parked", "last", "rejected outside", "hook",
+    ]);
+  });
+
+  /**
+   * The overseer's canonical git pair. Faked rather than stubbed: these cross native RPC in
+   * production, and this suite has no RPC boundary to cross.
+   */
+  function gitContext(buildPack: (action: number) => Promise<ReadableStream<Uint8Array>>) {
+    const requested: number[] = [];
+    const git = {
+      gitCache: {} as ApplyActionContext["gitCache"],
+      gitPackBuilder: {
+        buildPack: async (action: number) => {
+          requested.push(action);
+          return buildPack(action);
+        },
+      } as unknown as ApplyActionContext["gitPackBuilder"],
+    };
+    return { git, requested };
+  }
+
+  /** A handler that must have its pack in hand before it records an external effect. */
+  const pushing = async (payload: Sql, host: Host, ctx: ActionContext) => {
+    if (!ctx.buildPack) throw new Error("no pack source");
+    await ctx.buildPack();
+    host.ran.push(payload.sql);
+  };
+
+  it("builds each action's own pack, and none for a row the journal already settled", async () => {
+    const { failing, allowDeletes } = failingDeletes();
+    const journal = new ActionJournal<TaggedAction<Actions>>(failing, { namespace: "pending", maxPending: 4 });
+    const { actions, host } = bind({ journal, apply: pushing });
+    const { git, requested } = gitContext(async () => new ReadableStream<Uint8Array>());
+    // Applied, then left as a leftover source row by the delete its retire could not finish.
+    const settled = queued(journal, sql("done"));
+    expect((await actions.applyActionsThrough(settled, [], { git })).stopped?.at).toBe(settled);
+
+    allowDeletes();
+    requested.length = 0;
+    host.ran.length = 0;
+    const first = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+
+    expect(await actions.applyActionsThrough(last, [], { git })).toEqual({});
+
+    // Each current id, never the frontier, and none at all for the row it healed instead.
+    expect(requested).toEqual([first, last]);
+    expect(host.ran).toEqual(["one", "two"]);
+  });
+
+  it("stops at a coded pack refusal, before the push it would have authorized", async () => {
+    const { actions, journal, host } = bind({ apply: pushing });
+    const refused = queued(journal, sql("one"));
+    const last = queued(journal, sql("two"));
+    const { git } = gitContext(async () => {
+      throw createGitPackError(GIT_PACK_ERROR_CODES.actionNotAuthorized);
+    });
+
+    const result = await actions.applyActionsThrough(last, [], { git });
+
+    expect(result.stopped?.at).toBe(refused);
+    expect(getGitPackErrorCode(result.stopped?.reason))
+      .toBe(GIT_PACK_ERROR_CODES.actionNotAuthorized);
+    expect(host.ran).toEqual([]);
+    expect(journal.get(refused)?.state).toBe("pending");
+  });
+
+  it("lets an unrecognized pack failure escape the batch rather than blaming the action", async () => {
+    const { actions, journal } = bind({ apply: pushing });
+    const first = queued(journal, sql("one"));
+    const { git } = gitContext(async () => { throw new Error("the cache went away"); });
+
+    await expect(actions.applyActionsThrough(first, [], { git }))
+      .rejects.toThrow("the cache went away");
+    expect(journal.get(first)?.state).toBe("pending");
+  });
+
+  it("treats an ordinary provider failure as this action's stop, coded or not", async () => {
+    // Same shape as a pack refusal, different source: only the scoped callback's own rejection
+    // may escape, so a handler raising one must still be reported against its action.
+    const { actions, journal } = bind({
+      apply: async () => { throw createGitPackError(GIT_PACK_ERROR_CODES.builderExpired); },
+    });
+    const first = queued(journal, sql("one"));
+    const { git } = gitContext(async () => new ReadableStream<Uint8Array>());
+
+    expect((await actions.applyActionsThrough(first, [], { git })).stopped?.at).toBe(first);
+  });
+
+  it("adapts the legacy action-scoped cache as that action's pack source", async () => {
+    const built: string[] = [];
+    const { actions, journal, host } = bind({ apply: pushing });
+    const id = queued(journal, sql("one"));
+    // The legacy stub is already scoped to the action, so its own no-argument `buildPack` is it.
+    const gitCache = {
+      buildPack: async () => {
+        built.push("legacy");
+        return new ReadableStream<Uint8Array>();
+      },
+    } as unknown as RpcStub<GitCache>;
+
+    await actions.apply(id, { gitCache });
+
+    expect(built).toEqual(["legacy"]);
+    expect(host.ran).toEqual(["one"]);
   });
 });

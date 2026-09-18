@@ -444,6 +444,23 @@ bounds. Enforce the binding's retention policy inside `runExclusive()`: walk sto
 with `journal.listRetained({ limit, cursor })`, pass each `nextCursor` back until it is absent, and
 call `journal.retire(id)` for each expired record.
 
+`applyActionsThrough(actionId, vetoes, context)` is the entry point a facet implementing
+`Gatekeeper.applyActionsThrough` forwards to, passing `{ generation, git: context }`. It rejects
+every veto durably before applying anything, then applies the held prefix in ascending order,
+returning `{stopped: {at, reason}}` at the first failure and `{}` when the prefix completes. A veto
+of an action the journal knows it applied is reported in `alreadyApplied` instead of honoured —
+acknowledging it would record an executed action as rejected — and the rest of the batch still
+runs, because the caller replays its staged vetoes and a throw would refuse them all forever. A
+veto that strands a dependent leaves that dependent failed rather than reporting it invalidated,
+so a covering batch stops there until the user rejects it too. `apply` and `reject` remain real
+single-action operations for the per-action callbacks; `reject` of an applied id still throws,
+since a single rejection has no field to report the refusal in.
+
+A handler that pushes git objects takes its pack from `ActionContext.buildPack()` and must await it
+before the push. Both entry points supply it — the legacy action-scoped cache through its own
+`buildPack()`, the batch through the invocation's builder selected by the current action id — and a
+recognized coded refusal stops the batch at that action rather than escaping it.
+
 An apply failure has three outcomes, and the handler picks by what it throws. An ordinary error is
 retryable: the record returns to pending and the overseer may apply it again, so use it only when a
 second attempt is safe. `ActionApplyError` is terminal and asserts the provider effect is **known

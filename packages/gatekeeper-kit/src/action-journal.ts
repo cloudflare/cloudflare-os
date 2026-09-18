@@ -89,6 +89,15 @@ const PROJECTED: readonly JournalState[] = ["pending", "claimed"];
 
 const UNDECIDED: readonly JournalState[] = ["pending"];
 
+// Resolution acts on every state a *published* record can hold in the pending prefix. "staged" is
+// excluded: a record stranded there by an interrupted submission was never published, so applying
+// it would run an effect the overseer never approved and will never learn about. An in-flight
+// submission the caller's boundary covers is promoted to "pending" before this scan runs.
+// "applied" is excluded because no supported transition writes it to the pending prefix: `retain`
+// writes the applied copy to the retained key, so an interrupted one leaves the source row in
+// whatever state it already held.
+const RESOLVABLE: readonly JournalState[] = ["pending", "claimed", "failed"];
+
 // The version distinguishes kit records from legacy rows that may have the same shape, so it skips
 // 1: a port whose own pre-kit rows carry `v: 1` would have them read as kit records, bypassing
 // `upgradeRecord`. Unmarked rows must go through it.
@@ -413,20 +422,35 @@ export class ActionJournal<A> {
   }
 
   /**
+   * Lists every published pending-tier record a resolution may still have to act on, ordered by
+   * ID. Unlike the projection scans this keeps a source row shadowed by a retained record or by
+   * retired-id memory: a resolver that never saw one could not finish the interrupted retirement,
+   * and the row would resurface as applicable once that bounded memory ages out. A record still
+   * staged is never listed -- it may never have reached the overseer, and resolving one it does
+   * not hold would apply an unapproved action.
+   * @returns Every coercible published pending-tier record, ordered by ID.
+   */
+  listForResolution(): JournalEntry<A>[] {
+    return this.#scan(RESOLVABLE, true);
+  }
+
+  /**
    * Scans the pending tier for selected states.
    * @param states States to include.
+   * @param includeAppliedCopies Keeps source rows an interrupted retain or retire left behind.
    * @returns Matching actions ordered by ID.
    */
-  #scan(states: readonly JournalState[]): JournalEntry<A>[] {
+  #scan(states: readonly JournalState[], includeAppliedCopies = false): JournalEntry<A>[] {
     const found: JournalEntry<A>[] = [];
-    const applied = this.#appliedSet();
+    const applied = includeAppliedCopies ? undefined : this.#appliedSet();
     for (const [key, raw] of this.#kv.list<unknown>({ prefix: this.#prefix })) {
       const record = this.#coerce(raw);
       if (record === undefined || !states.includes(record.state)) continue;
       const id = this.#idFrom(key);
+      if (id === undefined) continue;
       // A record left behind by an interrupted `retain` or `retire` is applied, not pending:
       // projecting it would simulate an effect the provider has already made real.
-      if (id === undefined || applied.has(id) || this.isRetained(id)) continue;
+      if (applied !== undefined && (applied.has(id) || this.isRetained(id))) continue;
       found.push({ id, action: record.action });
     }
     return found.toSorted((a, b) => a.id - b.id);

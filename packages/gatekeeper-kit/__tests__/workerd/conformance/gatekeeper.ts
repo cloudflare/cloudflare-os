@@ -10,6 +10,8 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
   ActionDescription,
+  ApplyActionContext,
+  ApplyActionsThroughResult,
   GitCache,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -643,6 +645,33 @@ export class ConformanceResource extends DurableObject {
     } finally {
       this.#reconnectMidApply = false;
     }
+  }
+
+  /**
+   * Rejects a staged action, the way `Gatekeeper.rejectAction` does.
+   * @param id Action id.
+   */
+  async reject(id: number): Promise<void> {
+    await actions.bind(this.#journal, this.#host).reject(id);
+  }
+
+  /**
+   * Applies every held action through a frontier after vetoing, the way
+   * `Gatekeeper.applyActionsThrough` does. A production facet forwards its canonical third
+   * argument the same way.
+   * @param actionId Inclusive processing boundary.
+   * @param vetoes Action ids the user rejected.
+   * @param context The invocation's git capabilities, when the overseer supplied them.
+   * @returns Where processing stopped, or an empty result.
+   */
+  async applyActionsThrough(
+    actionId: number,
+    vetoes: number[],
+    context?: ApplyActionContext,
+  ): Promise<ApplyActionsThroughResult> {
+    const { generation } = await this.#creds.read();
+    return actions.bind(this.#journal, this.#host)
+      .applyActionsThrough(actionId, vetoes, { generation, git: context });
   }
 
   /**

@@ -5,10 +5,14 @@ import type { RpcStub } from "cloudflare:workers";
 import type {
   ActionDescription,
   ActionKind,
+  ApplyActionContext,
+  ApplyActionsThroughResult,
   ApprovalQueue,
   GitCache,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { getGitPackErrorCode } from "@gadgets/workshop-shared/gatekeeper";
 import { ActionJournal, type ActionFence } from "./action-journal";
+import { requirePositiveInt } from "./positive-int";
 import { SerialTaskQueue } from "./serial-queue";
 
 export {
@@ -30,8 +34,11 @@ type ActionLogFields =
 
 const logger = createLogger<ActionLogFields>({ component: "gatekeeper.actions" });
 
-// Serialize submissions per journal so pruning cannot remove an in-flight staged record.
-const submissions = new WeakMap<object, SerialTaskQueue>();
+// Serialize submissions per journal so pruning cannot remove an in-flight staged record. The
+// active entry lets a covering batch wait for exactly the submission it must not race.
+type Submissions = { queue: SerialTaskQueue; active?: { id: number; finished: Promise<void> } };
+
+const submissions = new WeakMap<object, Submissions>();
 
 /**
  * Stages and submits an action for approval.
@@ -51,10 +58,14 @@ export function stageAction<A>(
 ): Promise<number> {
   // Snapshotted before the lane yields, as `submit` does before `describe`.
   const staged = fence && { generation: fence.generation };
-  let lane = submissions.get(journal);
-  if (!lane) submissions.set(journal, lane = new SerialTaskQueue());
-  return lane.run(async () => {
+  const submission = submissions.get(journal) ?? { queue: new SerialTaskQueue() };
+  submissions.set(journal, submission);
+  return submission.queue.run(async () => {
     const id = journal.allocate(action, staged);
+    // Published only once the id exists, and before the queue call: a batch covering it waits
+    // here rather than dispatching a handler while a lost reply can still roll the record back.
+    const settled = Promise.withResolvers<void>();
+    submission.active = { id, finished: settled.promise };
     try {
       await queue.submitAction(id, description);
     } catch (error) {
@@ -64,6 +75,10 @@ export function stageAction<A>(
         journal.rollbackSubmission(id);
         throw error;
       }
+    } finally {
+      // Resolving only queues the waiter, so `markSubmitted` below still runs first.
+      submission.active = undefined;
+      settled.resolve();
     }
     journal.markSubmitted(id);
     return id;
@@ -120,10 +135,17 @@ export type ActionPresentation = [Unclassified] extends [never]
 export type ActionContext = {
   readonly id: number;
   /**
-   * Action-scoped git cache the overseer handed `applyAction`; absent outside apply, and for
-   * gatekeepers that pass none.
+   * The connection's git cache view, absent outside apply and for gatekeepers that pass none.
+   * Packs come from `buildPack`, never from this stub.
    */
-  readonly gitCache?: RpcStub<GitCache>;
+  readonly gitCache?: ApplyActionContext["gitCache"];
+  /**
+   * Builds this action's declared push, whichever entry point is applying it. Await it before any
+   * external push: a recognized coded refusal stops a batch at this action rather than after its
+   * effect, and swallowing or wrapping an unrecognized one hides a failure the batch must escape
+   * with. Absent for gatekeepers that pass no git context.
+   */
+  readonly buildPack?: () => Promise<ReadableStream<Uint8Array>>;
   /**
    * The connection fence captured at submit, when the submitter passed one. Apply already refuses
    * a record whose fence does not match the generation handed to `apply()`; a handler wanting
@@ -252,6 +274,24 @@ export type ActionApplyContext = {
   generation?: string;
 };
 
+/** Invocation-scoped context the overseer hands `Gatekeeper.applyActionsThrough`. */
+export type ActionBatchContext = {
+  /**
+   * The current value of whatever authority the fences carry, compared by opaque equality, as
+   * `ActionApplyContext.generation` is.
+   */
+  generation?: string;
+  /**
+   * The canonical pair of git capabilities, borrowed for this call. Optional because a non-Git
+   * gatekeeper is handed none; when present it is the whole pair, never a half of one. Neither it
+   * nor its stubs are journalled: they are borrowed until the awaited operation finishes.
+   */
+  git?: ApplyActionContext;
+};
+
+// What `applyRecord` needs, normalized from whichever entry point called it.
+type ResolveContext = Pick<ActionContext, "gitCache" | "buildPack"> & { generation?: string };
+
 /** The action set bound to one resource's journal and host. */
 export type BoundActionSet<M extends Record<string, unknown>> = {
   /**
@@ -285,10 +325,31 @@ export type BoundActionSet<M extends Record<string, unknown>> = {
    */
   apply(id: number, context?: ActionApplyContext): Promise<void>;
   /**
-   * Rejects an action, including one whose definition was removed after submission.
+   * Rejects an action, including one whose definition was removed after submission. An unknown ID
+   * is a no-op success; one this set knows it applied throws, since reporting success would
+   * record an executed action as rejected.
    * @param id Action ID to reject.
    */
   reject(id: number): Promise<void>;
+  /**
+   * Applies every action through `actionId` that this set still holds, in ascending ID order,
+   * after durably rejecting each ID in `vetoes`. Vetoes are processed first and completely: a
+   * successful return acknowledges all of them, so a veto lost behind a stop would let a later
+   * frontier apply a rejected action. A veto of an action this set knows it applied is reported
+   * in `alreadyApplied` rather than honoured, while a rejection this set cannot complete throws.
+   * Individual applications follow `apply`'s rules, and the first failure returns `stopped`
+   * without touching the suffix -- including an action a veto stranded, which stays failed until
+   * it too is rejected.
+   * @param actionId Inclusive processing boundary; records above it are untouched.
+   * @param vetoes Action IDs the user rejected, each at or below the boundary.
+   * @param context Invocation-scoped authority and git capabilities.
+   * @returns Where processing stopped, or an empty result when the whole prefix completed.
+   */
+  applyActionsThrough(
+    actionId: number,
+    vetoes: readonly number[],
+    context?: ActionBatchContext,
+  ): Promise<ApplyActionsThroughResult>;
   /** @returns Action kinds eligible for automatic approval. */
   autoApprovableKinds(): ActionKind[];
   /** The retention flag in force, which the facet base's revert-hook assert reads. */
@@ -531,7 +592,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
       };
 
-      const applyRecord = async (id: number, context?: ActionApplyContext): Promise<void> => {
+      const applyRecord = async (id: number, context: ResolveContext): Promise<void> => {
         const record = journal.get(id);
         // Idempotent for a retry of an applied id ("applied" exists only in the retained tier;
         // retired ids are remembered durably): erroring here reports an action that succeeded as
@@ -609,9 +670,10 @@ export function defineActions<Host, M extends Record<string, unknown>>(
               journal.markClaimed(id);
               claimedHere.add(id);
             }
+            const { generation: _, ...git } = context;
             result = await definition.apply(action.payload, host, {
               id,
-              ...(context?.gitCache ? { gitCache: context.gitCache } : {}),
+              ...git,
               ...(record.fence ? { fence: record.fence } : {}),
             });
           } catch (error) {
@@ -646,14 +708,16 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         }
       };
 
+      // A stray reject must not take the retained record a revert hook reads back ("applied"
+      // exists only in that tier), nor report success for an applied id it cannot undo: unlike
+      // apply, no idempotent reading exists. Bounded: once the retired-id memory forgets an id,
+      // it reads as unknown and its veto is the ordinary no-op.
+      const wasApplied = (id: number, record = journal.get(id)): boolean =>
+        record?.state === "applied" || journal.wasApplied(id);
+
       const rejectRecord = async (id: number): Promise<void> => {
         const record = journal.get(id);
-        // A stray reject must not take the retained record a revert hook reads back ("applied"
-        // exists only in that tier), nor report success for an applied id it cannot undo: unlike
-        // apply, no idempotent reading exists.
-        if (record?.state === "applied" || journal.wasApplied(id)) {
-          throw new Error(`Action ${id} is no longer pending.`);
-        }
+        if (wasApplied(id, record)) throw new Error(`Action ${id} is no longer pending.`);
 
         if (record === undefined) return;
         // The same proof of receipt apply takes.
@@ -683,6 +747,71 @@ export function defineActions<Host, M extends Record<string, unknown>>(
         // A failure stranded its dependents when it was recorded.
         if (!failed) strandDependents(id, action);
         await resolved("rejected");
+      };
+
+      // Waits out any in-range submission, so no handler runs while a lost reply could still roll
+      // its record back. One active entry suffices -- that lane is serial -- but it can advance to
+      // another in-range id while this awaits, hence the loop.
+      const awaitSubmissionsThrough = async (boundary: number): Promise<void> => {
+        for (;;) {
+          const active = submissions.get(journal)?.active;
+          if (active === undefined || active.id > boundary) return;
+          // A callback covering the id proves the overseer received it -- it is submitAction's
+          // callee -- so promote the staged record before waiting: only the reply can be lost.
+          journal.markSubmitted(active.id);
+          await active.finished;
+        }
+      };
+
+      const resolveThrough = async (
+        boundary: number,
+        vetoes: readonly number[],
+        context: ActionBatchContext,
+      ): Promise<ApplyActionsThroughResult> => {
+        await awaitSubmissionsThrough(boundary);
+        // Every veto first and in full, reporting an applied one rather than throwing; see
+        // `BoundActionSet.applyActionsThrough`.
+        const applied: number[] = [];
+        for (const veto of vetoes) {
+          if (wasApplied(veto)) applied.push(veto);
+          else await rejectRecord(veto);
+        }
+        const refused = applied.length === 0 ? {} : { alreadyApplied: applied };
+
+        const { generation, git } = context;
+        for (const { id } of journal.listForResolution()) {
+          if (id > boundary) break;
+          // An unrecognized rejection from this action's own pack callback belongs to the caller's
+          // git layer and escapes the batch, rather than being recorded as this action's failure.
+          let escaping: { error: unknown } | undefined;
+          try {
+            await applyRecord(id, {
+              generation,
+              ...(git ? {
+                gitCache: git.gitCache,
+                // This action's id, never the frontier: the builder authorizes each push on its own.
+                buildPack: async () => {
+                  try {
+                    return await git.gitPackBuilder.buildPack(id);
+                  } catch (error) {
+                    if (getGitPackErrorCode(error) === undefined) escaping = { error };
+                    throw error;
+                  }
+                },
+              } : {}),
+            });
+          } catch (error) {
+            if (escaping !== undefined && Object.is(escaping.error, error)) throw error;
+            return {
+              ...refused,
+              stopped: {
+                at: id,
+                reason: error instanceof Error ? error : new Error(String(error)),
+              },
+            };
+          }
+        }
+        return refused;
       };
 
       const set: BoundActionSet<M> = {
@@ -726,9 +855,30 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           }, staged);
         },
 
-        apply: (id, context) => resolutionQueue.run(() => applyRecord(id, context)),
+        apply: (id, context) => {
+          // The legacy cache is already action-scoped, so its own `buildPack` is this action's
+          // pack source; the batch's builder selects by id instead.
+          const cache = context?.gitCache;
+          return resolutionQueue.run(() => applyRecord(id, {
+            generation: context?.generation,
+            ...(cache ? { gitCache: cache, buildPack: () => cache.buildPack() } : {}),
+          }));
+        },
 
         reject: id => resolutionQueue.run(() => rejectRecord(id)),
+
+        applyActionsThrough: async (actionId, vetoes, context) => {
+          // Validated whole and snapshotted before the first await: the array and the context's
+          // capabilities are the caller's, borrowed for this call only.
+          const boundary = requirePositiveInt("actionId", actionId);
+          const denied = [...new Set(vetoes.map(veto => requirePositiveInt("veto", veto)))]
+            .toSorted((a, b) => a - b);
+          if (denied.some(veto => veto > boundary)) {
+            throw new Error("Veto is beyond the action batch boundary.");
+          }
+          const borrowed: ActionBatchContext = { ...context };
+          return resolutionQueue.run(() => resolveThrough(boundary, denied, borrowed));
+        },
 
         autoApprovableKinds: () => [...autoApprovableByTag.values()],
 
