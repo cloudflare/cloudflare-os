@@ -265,8 +265,9 @@ Every export doc-commented to the kernel bar.
     the client joins them. Trees fault in eagerly; blobs are never touched; no sizes, no
     oids. Response size is proportional to entry count with each name carried once.
   - `readFilesAtCommit(commitId: string, paths: string[]): Promise<[path: string,
-    FileAtCommit][]>`, `FileAtCommit = { text: string } | { absent: true } | { unreadable:
-    string }`. `absent` covers a missing path and a directory path; `unreadable` carries
+    FileAtCommit][]>`, `FileAtCommit = { kind: "text"; text: string } | { kind: "absent" } |
+    { kind: "unreadable"; message: string }`. `absent` covers a missing path and a directory
+    path; `unreadable` carries
     the descriptive message for symlink / submodule / binary / oversized content. One
     batched blob pull for all missing blobs. Pull/provenance failures throw the whole call
     (transient or actionable, not per-file facts). Caps: `MAX_READ_FILES_PER_CALL` paths,

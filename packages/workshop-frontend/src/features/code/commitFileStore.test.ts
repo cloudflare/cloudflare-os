@@ -25,11 +25,11 @@ class FakeReader implements CommitFileReader {
     if (this.failReads) throw new Error('pull failed')
     const files = this.files.get(commitId) ?? new Map<string, FileAtCommit>()
     return paths.slice(0, this.budget)
-      .map((path): [string, FileAtCommit] => [path, files.get(path) ?? { absent: true }])
+      .map((path): [string, FileAtCommit] => [path, files.get(path) ?? { kind: 'absent' }])
   }
 }
 
-const text = (t: string): FileAtCommit => ({ text: t })
+const text = (t: string): FileAtCommit => ({ kind: 'text', text: t })
 
 describe('CommitFileStore', () => {
   it('memoizes a tree by commit and exposes it synchronously once loaded', async () => {
@@ -70,13 +70,13 @@ describe('CommitFileStore', () => {
     ])
     expect(reader.readCalls).toEqual([{ commitId: 'c1', paths: ['a', 'b', 'c'] }])
     expect([...ab]).toEqual([['a', text('A')], ['b', text('B')]])
-    expect([...bc]).toEqual([['b', text('B')], ['c', { absent: true }]])
+    expect([...bc]).toEqual([['b', text('B')], ['c', { kind: 'absent' }]])
     expect(store.peekFile('c1', 'a')).toEqual(text('A'))
-    expect(store.peekFile('c1', 'c')).toEqual({ absent: true })
+    expect(store.peekFile('c1', 'c')).toEqual({ kind: 'absent' })
 
     // Everything cached: no further RPC, even for the explicit absent answer.
     expect([...await store.readFiles(reader, 'c1', ['a', 'c'])])
-      .toEqual([['a', text('A')], ['c', { absent: true }]])
+      .toEqual([['a', text('A')], ['c', { kind: 'absent' }]])
     expect(reader.readCalls).toHaveLength(1)
   })
 

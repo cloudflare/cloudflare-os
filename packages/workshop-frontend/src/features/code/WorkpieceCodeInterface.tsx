@@ -111,15 +111,6 @@ function acceptedCommitOf(summary: WorkpieceSummary): string | undefined {
   return summary.type === 'worktree' ? summary.pinBase : summary.commitId
 }
 
-// A file's text as the view resolves it: present, absent (deleted or never existed), or an
-// unreadable base entry (symlink, binary, oversized) shown as a read-only placeholder.
-type ResolvedText = { text: string } | { absent: true } | { unreadable: string }
-
-function resolvedFromCommit(file: FileAtCommit | undefined): ResolvedText | undefined {
-  if (file === undefined) return undefined
-  return 'text' in file ? { text: file.text } : file
-}
-
 function areArraysEqual(left: readonly string[], right: readonly string[]) {
   if (left.length !== right.length) return false
   for (let i = 0; i < left.length; i++) {
@@ -330,10 +321,10 @@ export default function WorkpieceCodeInterface({
         const files = await commitFileStore.readFiles(readerRef.current, commitId, paths)
         const texts = new Map<string, string | null>()
         for (const [path, file] of files) {
-          if ('unreadable' in file) {
-            throw new Error(`base of an edited file is unreadable: ${path}: ${file.unreadable}`)
+          if (file.kind === 'unreadable') {
+            throw new Error(`base of an edited file is unreadable: ${path}: ${file.message}`)
           }
-          texts.set(path, 'text' in file ? file.text : null)
+          texts.set(path, file.kind === 'text' ? file.text : null)
         }
         return texts
       },
@@ -522,7 +513,7 @@ export default function WorkpieceCodeInterface({
         }
         return undefined
       }
-      return 'text' in known ? { text: known.text } : {}
+      return known.kind === 'text' ? { text: known.text } : {}
     }
 
     // Restore one file's open editors to what the display shows without the streaming overlay:
@@ -1076,7 +1067,7 @@ export default function WorkpieceCodeInterface({
     if (base === undefined) return null
     const files = await commitFileStore.readFiles(readerRef.current, base, [path])
     const file = files.get(path)
-    return file !== undefined && 'text' in file ? file.text : null
+    return file?.kind === 'text' ? file.text : null
   }, [])
 
   // The active file's editing session (see EditSession in CodeEditor). Identity is stable
@@ -1113,7 +1104,7 @@ export default function WorkpieceCodeInterface({
         }
         const base = contentBaseRef.current
         const known = base !== undefined ? commitFileStore.peekFile(base, path) : undefined
-        return known !== undefined && 'text' in known ? known.text : undefined
+        return known?.kind === 'text' ? known.text : undefined
       },
       applyLocal: (change: FileChange, docText: string) => {
         try {
@@ -1131,7 +1122,7 @@ export default function WorkpieceCodeInterface({
             // gadget on its first edit if need be.
             const base = contentBaseRef.current
             const known = base !== undefined ? commitFileStore.peekFile(base, path) : undefined
-            const baseText = known !== undefined && 'text' in known ? known.text : undefined
+            const baseText = known?.kind === 'text' ? known.text : undefined
             client.ensureFileEditable(gadgetId, base, path, baseText)
             fileChange = baseText !== undefined ? change : { set: docText }
           }
@@ -1327,22 +1318,21 @@ export default function WorkpieceCodeInterface({
 
   // The open file's text as displayed -- what the agent reads: the overlay's (preview, chat
   // content, or removed), else the content base's. Undefined while the base read is in flight.
-  let activeResolved: ResolvedText | undefined = { absent: true }
+  let activeResolved: FileAtCommit | undefined = { kind: 'absent' }
   if (activeFile !== null) {
     const overlaid = overlayText(activeFile)
     if (overlaid !== undefined) {
-      activeResolved = overlaid !== null ? { text: overlaid } : { absent: true }
+      activeResolved = overlaid !== null ? { kind: 'text', text: overlaid } : { kind: 'absent' }
     } else if (contentBase !== undefined) {
-      activeResolved = resolvedFromCommit(activeBaseFiles.get(activeFile))
+      activeResolved = activeBaseFiles.get(activeFile)
     }
   }
-  const activeFileText = activeResolved !== undefined && 'text' in activeResolved
-    ? activeResolved.text : null
+  const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
   // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
   // of content, read-only; a readable file beyond the change size cap is viewable but not
   // editable, since no change could carry its new text.
-  const activeFileUnreadable = activeResolved !== undefined && 'unreadable' in activeResolved
-    ? activeResolved.unreadable : null
+  const activeFileUnreadable = activeResolved?.kind === 'unreadable'
+    ? activeResolved.message : null
   const activeFileOversized = activeFileText !== null && activeFileText.length > MAX_FILE_TEXT_LENGTH
   // The diff's original side: the review base's text (null = absent there: an added file). The
   // diff waits for that read too, so a file never opens as "added" for the round trip before
@@ -1353,11 +1343,11 @@ export default function WorkpieceCodeInterface({
   const activeReview = activeFile !== null ? reviewFiles.get(activeFile) : undefined
   const activeReviewLoading = isDiffMode && activeFile !== null && reviewBase !== undefined &&
     activeReview === undefined
-  const activeFileOriginal = activeReview === undefined || 'absent' in activeReview
+  const activeFileOriginal = activeReview === undefined || activeReview.kind === 'absent'
     ? null
-    : 'text' in activeReview
+    : activeReview.kind === 'text'
       ? activeReview.text
-      : `(${activeReview.unreadable}; its previous content cannot be shown)`
+      : `(${activeReview.message}; its previous content cannot be shown)`
   // Either of the open file's two reads failing is shown in its pane, with a retry.
   const activeFileError = (activeResolved === undefined ? activeBaseError : null) ??
     (activeReviewLoading ? reviewError : null)

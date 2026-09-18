@@ -1065,17 +1065,18 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
                  "no/such/dir/file.txt", "README.md/child", "README.md", "src/util.js"];
     let result = await t.cache.readFilesAtCommit(COMMIT_1, paths);
     expect(result).toStrictEqual([
-      ["src/util.js", { text: "export const answer = 42;\n" }],
-      ["nope.txt", { absent: true }],
-      ["src", { absent: true }],
-      ["link.md", { unreadable: "link.md is a symlink to README.md" }],
-      ["vendored", { unreadable:
+      ["src/util.js", { kind: "text", text: "export const answer = 42;\n" }],
+      ["nope.txt", { kind: "absent" }],
+      ["src", { kind: "absent" }],
+      ["link.md", { kind: "unreadable", message: "link.md is a symlink to README.md" }],
+      ["vendored", { kind: "unreadable", message:
           `vendored is a submodule (gitlink) pointing at commit ${GITLINK_TARGET}` }],
-      ["docs/naïve.md", { text: "naïve UTF-8 name\n" }],
-      ["no/such/dir/file.txt", { absent: true }],
-      ["README.md/child", { absent: true }],
-      ["README.md", { text: "# Fixture\n" }],
-      ["src/util.js", { text: "export const answer = 42;\n" }],  // a duplicate answers twice
+      ["docs/naïve.md", { kind: "text", text: "naïve UTF-8 name\n" }],
+      ["no/such/dir/file.txt", { kind: "absent" }],
+      ["README.md/child", { kind: "absent" }],
+      ["README.md", { kind: "text", text: "# Fixture\n" }],
+      // A duplicate answers twice.
+      ["src/util.js", { kind: "text", text: "export const answer = 42;\n" }],
     ]);
     // One blob pull for the four blobs (util.js, the symlink target, naïve.md, README.md).
     expect(t.pulls).toHaveLength(1);
@@ -1130,12 +1131,12 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let result = await t.cache.readFilesAtCommit(
         commit, ["huge-measured.txt", "text.txt", "huge-omitted.txt", "binary.png"]);
     expect(result).toStrictEqual([
-      ["huge-measured.txt", { unreadable:
+      ["huge-measured.txt", { kind: "unreadable", message:
           `huge-measured.txt is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)` }],
-      ["text.txt", { text: "hello\n" }],
-      ["huge-omitted.txt", { unreadable:
+      ["text.txt", { kind: "text", text: "hello\n" }],
+      ["huge-omitted.txt", { kind: "unreadable", message:
           `huge-omitted.txt is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)` }],
-      ["binary.png", { unreadable: "binary.png is not a text file" }],
+      ["binary.png", { kind: "unreadable", message: "binary.png is not a text file" }],
     ]);
     // The measured blob failed fast before any pull; the omitted one dropped out of the one
     // batch that did go out, and the rest were local after it -- no retry round trip.
@@ -1162,8 +1163,8 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let result = await t.cache.readFilesAtCommit(commit, names);
     expect(READ_FILES_RESPONSE_BUDGET).toBe(8 * MAX_GIT_OBJECT_SIZE);
     expect(result.map(([path]) => path)).toStrictEqual(names.slice(0, 9));
-    expect(result.every(([, file]) => "text" in file && file.text.length === MAX_GIT_OBJECT_SIZE))
-        .toBe(true);
+    expect(result.every(([, file]) =>
+        file.kind === "text" && file.text.length === MAX_GIT_OBJECT_SIZE)).toBe(true);
     expect(t.pulls).toHaveLength(0);
   });
 

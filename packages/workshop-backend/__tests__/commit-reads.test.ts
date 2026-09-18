@@ -42,8 +42,8 @@ describe("commit reads over the Overseer interface", () => {
       ["src", "dir"], ["vendored", "submodule"],
     ]);
     expect(await client.readFilesAtCommit(COMMIT_1, ["README.md", "nope.txt"])).toStrictEqual([
-      ["README.md", { text: "# Fixture\n" }],
-      ["nope.txt", { absent: true }],
+      ["README.md", { kind: "text", text: "# Fixture\n" }],
+      ["nope.txt", { kind: "absent" }],
     ]);
   });
 

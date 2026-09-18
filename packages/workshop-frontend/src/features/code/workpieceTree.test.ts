@@ -154,12 +154,12 @@ describe('fileChangeStatus', () => {
   })
 
   it('compares against the review base', () => {
-    expect(fileChangeStatus('x', { absent: true }, true)).toBe('added')
-    expect(fileChangeStatus(null, { absent: true }, true)).toBe('unchanged')
-    expect(fileChangeStatus(null, { text: 'x' }, true)).toBe('deleted')
-    expect(fileChangeStatus('y', { text: 'x' }, true)).toBe('modified')
-    expect(fileChangeStatus('x', { text: 'x' }, true)).toBe('unchanged')
-    expect(fileChangeStatus('x', { unreadable: 'binary' }, true)).toBe('modified')
+    expect(fileChangeStatus('x', { kind: 'absent' }, true)).toBe('added')
+    expect(fileChangeStatus(null, { kind: 'absent' }, true)).toBe('unchanged')
+    expect(fileChangeStatus(null, { kind: 'text', text: 'x' }, true)).toBe('deleted')
+    expect(fileChangeStatus('y', { kind: 'text', text: 'x' }, true)).toBe('modified')
+    expect(fileChangeStatus('x', { kind: 'text', text: 'x' }, true)).toBe('unchanged')
+    expect(fileChangeStatus('x', { kind: 'unreadable', message: 'binary' }, true)).toBe('modified')
   })
 })
 
@@ -171,8 +171,9 @@ describe('deriveChanges', () => {
 
   it('lists every status but unchanged, in path order', () => {
     const originals = new Map([
-      ['kept.ts', { text: 'same' }], ['edited.ts', { text: 'old' }], ['new.ts', { absent: true }],
-      ['gone.ts', { text: 'was' }], ['never.ts', { absent: true }],
+      ['kept.ts', { kind: 'text', text: 'same' }], ['edited.ts', { kind: 'text', text: 'old' }],
+      ['new.ts', { kind: 'absent' }], ['gone.ts', { kind: 'text', text: 'was' }],
+      ['never.ts', { kind: 'absent' }],
     ] as const)
     const { statuses, changes } = deriveChanges([...display.keys()], displayed, originals, true)
     expect(changes).toEqual([

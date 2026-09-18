@@ -736,25 +736,25 @@ export class WorkspaceGitCache {
       if (bytes > READ_FILES_RESPONSE_BUDGET) break;
       let entry = entries.get(path);
       if (entry === undefined || entry.kind === "dir") {
-        out.push([path, { absent: true }]);
+        out.push([path, { kind: "absent" }]);
       } else if (entry.kind === "submodule") {
-        out.push([path, { unreadable: submoduleMessage(path, entry.oid) }]);
+        out.push([path, { kind: "unreadable", message: submoduleMessage(path, entry.oid) }]);
       } else if (tooLarge.has(entry.oid)) {
-        out.push([path, { unreadable: tooLargeMessage(path) }]);
+        out.push([path, { kind: "unreadable", message: tooLargeMessage(path) }]);
       } else {
         try {
           // Local by now (ensureBlobs), so this is a decode, not a fault.
           let payload = await this.#readBlob(entry.oid, entry.referencedBy, path);
           if (entry.kind === "symlink") {
-            out.push([path, { unreadable: symlinkMessage(path, payload) }]);
+            out.push([path, { kind: "unreadable", message: symlinkMessage(path, payload) }]);
           } else {
             let text = decodeBlobText(payload, path);
             bytes += payload.byteLength;
-            out.push([path, { text }]);
+            out.push([path, { kind: "text", text }]);
           }
         } catch (err) {
           if (!(err instanceof UnreadableContentError)) throw err;
-          out.push([path, { unreadable: err.message }]);
+          out.push([path, { kind: "unreadable", message: err.message }]);
         }
       }
     }

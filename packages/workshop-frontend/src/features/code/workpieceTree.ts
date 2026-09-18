@@ -190,9 +190,9 @@ export function fileChangeStatus(
     if (hasReviewBase) return undefined
     return displayed !== null ? 'added' : 'unchanged'
   }
-  if ('absent' in original) return displayed !== null ? 'added' : 'unchanged'
+  if (original.kind === 'absent') return displayed !== null ? 'added' : 'unchanged'
   if (displayed === null) return 'deleted'
-  if ('unreadable' in original || original.text !== displayed) return 'modified'
+  if (original.kind === 'unreadable' || original.text !== displayed) return 'modified'
   return 'unchanged'
 }
 

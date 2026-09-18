@@ -1627,13 +1627,16 @@ export type TreeNode =
   | { name: string; kind: "dir"; children: TreeNode[] };
 
 /**
- * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` is the
- * file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
+ * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
+ * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
  * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
  * a submodule, binary content, or a blob over the git store's per-object size cap -- and carries
  * a descriptive, path-flavored message suitable for display in place of the file.
  */
-export type FileAtCommit = { text: string } | { absent: true } | { unreadable: string };
+export type FileAtCommit =
+  | { kind: "text"; text: string }
+  | { kind: "absent" }
+  | { kind: "unreadable"; message: string };
 
 /**
  * Maximum number of paths one Overseer.readFilesAtCommit() call may name. Callers with more
