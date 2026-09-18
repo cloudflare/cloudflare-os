@@ -791,6 +791,12 @@ export interface ApplyActionsThroughResult {
    * vetoed action number that invalidated it (always an action listed in `vetoes`). The caller
    * records these actions as rejected, so every entry must reflect durable gatekeeper state.
    *
+   * Every reported action must also have completed its `submitAction()` call before this result
+   * is returned; the caller can only record a rejection against a record it already has. An ID
+   * above the requested boundary is fine -- that is a future application, not an unpublished
+   * record -- but an action whose submission is still in flight is waited out before it is
+   * reported.
+   *
    * These actions will have no effect when applied and will not produce an error.
    *
    * A list rather than a keyed map: JavaScript stringifies numeric object keys, so a map would
@@ -961,6 +967,9 @@ export interface Gatekeeper<Session> extends DurableObject {
    * reported via `stopped`. An action whose `submitAction()` call has not yet completed must not
    * be applied: wait for that call, then apply it. Omitting it would be the silent skip above, and
    * reporting it as `stopped` would record a failure on an action that has not been attempted.
+   * That wait is for an action already published to the caller: `submitAction()` publishes
+   * retained actions in ascending ID order, so a frontier covers every retained action below it.
+   * It is not licence to fold a still-unpublished lower ID into an open pass.
    *
    * Every ID in `vetoes` must be durably recorded before any action is applied, including when
    * processing stops: the caller clears its staged veto on any call that returns, so a veto lost
@@ -1134,6 +1143,12 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    *
    * `action` is a sequential integer action ID assigned by the gatekeeper. It will later be used as
    * a decision frontier or veto in the Gatekeeper's `applyActionsThrough()` method.
+   *
+   * A gatekeeper implementing `applyActionsThrough()` must publish the actions it retains in
+   * ascending ID order: a higher ID must not become visible to the overseer while a lower
+   * retained action is still unpublished. Concurrent or pipelined submissions are fine where they
+   * preserve that order. IDs the gatekeeper never retains may be skipped; the sequence need not
+   * be contiguous.
    *
    * `description` describes the action in a way that can direct UI representation and policy
    * enforcement details.
