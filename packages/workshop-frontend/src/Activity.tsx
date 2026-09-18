@@ -4,6 +4,8 @@ import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
 import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { ActionFailureNote } from './ActionFailureNote'
+import { actionStatusLabel } from './features/actions/actionStatus'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
@@ -94,13 +96,22 @@ function activityStatus(
       ? { label: 'Enabled', dotClass: 'bg-kumo-success', textClass: 'text-kumo-subtle' }
       : { label: 'Disabled', dotClass: 'bg-kumo-inactive', textClass: 'text-kumo-subtle' }
   }
+  const label = actionStatusLabel(record)
   if (record.state === 'pending') {
-    return { label: 'Pending', dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
+    return { label, dotClass: 'bg-kumo-brand', textClass: 'text-kumo-strong' }
   }
   if (record.state === 'rejected') {
-    return { label: 'Denied', dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
+    return { label, dotClass: 'bg-kumo-danger', textClass: 'text-kumo-danger' }
   }
-  return { label: 'Approved', dotClass: 'bg-kumo-success', textClass: 'text-kumo-subtle' }
+  return { label, dotClass: 'bg-kumo-success', textClass: 'text-kumo-subtle' }
+}
+
+// A cascade-invalidated action inherits the resolver of the rejection that took it down, so it must
+// not read as a direct decision on this action.
+function resolverLabel(record: ActionLogEntry, name: string): string {
+  if (record.type !== 'action') return `By ${name}`
+  if (record.cascadedFrom !== undefined) return `Invalidated by ${name}'s earlier rejection`
+  return record.autoApproved === true ? `Auto-approved (${name}'s rule)` : `By ${name}`
 }
 
 function TypeIcon({ record, className }: { record: ActionLogEntry; className?: string }) {
@@ -656,6 +667,9 @@ function ReviewRequest({
           {record.description.description}
         </p>
       )}
+      {record.type === 'action' && record.failure && (
+        <ActionFailureNote failure={record.failure} />
+      )}
     </article>
   )
 }
@@ -675,7 +689,6 @@ function HistoryRow({
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
   const resolvedBy = record.type === 'action' ? record.resolvedBy : undefined
-  const autoApproved = record.type === 'action' && record.autoApproved === true
   const at = actionChangeTime(record)
   const status = activityStatus(record)
 
@@ -716,12 +729,15 @@ function HistoryRow({
               {record.description.description}
             </p>
           )}
+          {record.type === 'action' && record.failure && (
+            <ActionFailureNote failure={record.failure} />
+          )}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11.5px] text-kumo-inactive">
             <span>{formatFullDate(at)}</span>
             <span className="text-kumo-subtle">{record.resourceTitle}</span>
             {resolvedBy && (
               <ResolverBadge profileId={resolvedBy.id}>
-                {autoApproved ? `Auto-approved (${resolvedBy.name}'s rule)` : `By ${resolvedBy.name}`}
+                {resolverLabel(record, resolvedBy.name)}
               </ResolverBadge>
             )}
             {resourceUrl && (

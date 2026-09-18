@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deserialize, serialize } from "capnweb";
 import {
   createOpenGadgetError,
   getOpenGadgetErrorCode,
@@ -6,27 +7,22 @@ import {
 } from "@gadgets/workshop-shared/api";
 
 describe("open gadget errors", () => {
-  it.each([
-    [OPEN_GADGET_ERROR_CODES.workspaceNotFound, "Workspace not found."],
-    [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied, "You don't have access to this workspace."],
-  ] as const)(
-    "creates an enumerable %s code with a readable message",
-    (code, message) => {
-      let error = createOpenGadgetError(code);
+  it("classifies a serialized code independently of its message", () => {
+    const error = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+    error.message = "Workspace access changed.";
 
-      expect(error.message).toBe(message);
-      expect(error.code).toBe(code);
-      expect(Object.keys(error)).toContain("code");
-      expect(getOpenGadgetErrorCode(error)).toBe(code);
-    },
-  );
+    const received = deserialize(serialize(error)) as Error;
 
-  it.each(Object.values(OPEN_GADGET_ERROR_CODES))(
-    "does not infer %s from an error message",
-    (code) => {
-      expect(getOpenGadgetErrorCode(new Error(code))).toBeUndefined();
-    },
-  );
+    expect(getOpenGadgetErrorCode(received)).toBe(
+      OPEN_GADGET_ERROR_CODES.workspaceAccessDenied,
+    );
+  });
+
+  it("does not infer a known code from its default message", () => {
+    expect(
+      getOpenGadgetErrorCode(new Error("You don't have access to this workspace.")),
+    ).toBeUndefined();
+  });
 
   it("does not classify unexpected errors", () => {
     expect(getOpenGadgetErrorCode(new Error("storage unavailable"))).toBeUndefined();

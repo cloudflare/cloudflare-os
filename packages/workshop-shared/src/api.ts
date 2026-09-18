@@ -27,6 +27,7 @@ import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
+import { codedErrorFamily } from "./coded-errors.js";
 
 export const SERVICE_SALT = new Uint8Array([
   0xd9, 0x4e, 0x54, 0x1d, 0x29, 0xc1, 0x03, 0x74, 0x73, 0x7e, 0xb3, 0xe3, 0x34, 0x6d, 0x8f, 0x21
@@ -327,21 +328,6 @@ export interface ObserverConfigCallback extends RpcTarget {
   configure(needs: ObserverBindingNeed[]): Promise<ObserverAccountChoice[]>;
 }
 
-/** Builds the create/read helpers for a family of expected errors carrying stable
- * machine-readable codes. The per-code messages double as the classification fallback for errors
- * from older deployments that lost the code in transit, so changing one is a compatibility break. */
-function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
-  const codes = new Set<unknown>(Object.keys(messages));
-  return {
-    create: (code: Code): Error & { code: Code } =>
-        Object.assign(new Error(messages[code]), { code }),
-    getCode: (error: unknown): Code | undefined => {
-      const candidate = typeof error === "object" && error !== null && "code" in error
-          ? error.code : undefined;
-      return codes.has(candidate) ? candidate as Code : undefined;
-    },
-  };
-}
 
 /** Stable error codes attached to expected failures from `AuthenticatedApi.openGadget()`. */
 export const OPEN_GADGET_ERROR_CODES = {
@@ -387,6 +373,34 @@ export const createAuthError = authErrors.create;
 
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
+
+/** Stable codes for expected action outcome failures. */
+export const ACTION_ERROR_CODES = {
+  /** An earlier undecided action on the same connection held the frontier below this one. */
+  blocked: "ACTION_BLOCKED",
+  /** The gatekeeper could not apply an action and recorded why on its card. */
+  stopped: "ACTION_STOPPED",
+} as const;
+
+/** An expected action outcome failure code. */
+export type ActionErrorCode =
+    typeof ACTION_ERROR_CODES[keyof typeof ACTION_ERROR_CODES];
+
+/** Fixed client-facing messages for expected action outcome failures. */
+export const ACTION_ERROR_MESSAGES: Record<ActionErrorCode, string> = {
+  [ACTION_ERROR_CODES.blocked]:
+    "An earlier action needs a decision before this one can be applied.",
+  [ACTION_ERROR_CODES.stopped]:
+    "Action could not be completed. Check this connection's action cards for the reason.",
+};
+
+const actionErrors = codedErrorFamily(ACTION_ERROR_MESSAGES);
+
+/** Creates an expected action outcome failure with a machine-readable code. */
+export const createActionError = actionErrors.create;
+
+/** Reads the machine-readable code from an expected action outcome failure. */
+export const getActionErrorCode = actionErrors.getCode;
 
 /**
  * One user as listed in the deployment-wide user directory (see
@@ -1656,7 +1670,7 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
  * Specifies the state of an action in the action log:
  * * pending: Action has not been applied yet. It is waiting for approval.
  * * approved: Action was approved and applied.
- * * rejected: Action was rejected by the user.
+ * * rejected: Action was rejected by the user or invalidated by another rejected action.
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
@@ -1693,6 +1707,19 @@ export type ActionLogEntry = {
    * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
    */
   autoApproved?: boolean;
+
+  /**
+   * Workspace action ID whose rejection invalidated this action. Only set when `state` is
+   * "rejected" and the action was rejected as part of a dependency cascade.
+   */
+  cascadedFrom?: number;
+
+  /**
+   * Display-safe reason the most recent application attempt stopped at this action. Set while the
+   * action is pending, and retained on an action the user rejected after such an attempt, whose
+   * outcome the gatekeeper never confirmed. Cleared when the action applies.
+   */
+  failure?: string;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -1991,8 +2018,26 @@ export interface Overseer extends RpcTarget {
       : Promise<ActionHistoryPage>;
 
   /**
-   * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval.
+   * Process one Gatekeeper connection through the action record identified by `id`, rejecting the
+   * selected action records in `vetoes`. Every selected record must belong to the same connection
+   * and be no later than the boundary in that Gatekeeper's local action order. Selections that
+   * are already decided are ignored, so a concurrent decision can't fail the whole request.
+   *
+   * A request still waiting in the connection's queue when an in-range action fails is refused
+   * with ACTION_STOPPED rather than treated as a retry of that failure: it was selected before
+   * the failure existed. Selecting the failed action as a veto is the way through, and so is
+   * requesting again once its reason is on the card. A refusal decides nothing, stages no veto,
+   * and leaves every record as it was.
+   */
+  applyActionsThrough(id: number, vetoes: number[]): Promise<void>;
+
+  /**
+   * Approve an action that is currently in the "pending" state. This performs the action, and any
+   * earlier pending action from the same Gatekeeper connection that an auto-approval rule already
+   * authorizes; it never carries authority over an earlier action still awaiting manual review.
+   *
+   * An approval still waiting in the queue when an action fails is likewise not a retry of that
+   * failure: it is refused with ACTION_STOPPED, and retrying takes a fresh approval.
    */
   approveAction(id: number): Promise<void>;
 

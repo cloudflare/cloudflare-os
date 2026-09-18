@@ -30,13 +30,13 @@ const textModules: Plugin = {
 /**
  * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
  * production -- e.g. Uint8Array.toHex/fromHex and crypto.subtle used by the sharing module. Most
- * tests import modules directly; the main Worker and a test-only SQLite DO binding support the
- * Overseer cost-persistence integration test without loading the full deployment configuration.
+ * tests import modules directly; the main Worker and test-only SQLite DO bindings support focused
+ * Overseer integration tests without loading the full deployment configuration.
  */
 export default defineConfig({
   plugins: [
     textModules,
-    capnwebValidate(),
+    capnwebValidate({ tsconfig: 'tsconfig.vitest.json' }),
     cloudflareTest({
       // The production Worker plus test-only entrypoints (see __tests__/test-worker.ts).
       main: './__tests__/test-worker.ts',
@@ -54,6 +54,10 @@ export default defineConfig({
           // Never addressed by name: a binding is what puts the class in `ctx.exports`, from
           // which the overseer instantiates it (with props) as one of its own facets.
           TEST_AGENT_SPAWNER: { className: 'AgentSpawnerGatekeeper', useSQLite: true },
+          TEST_GIT_PACK_GATEKEEPER: {
+            className: 'TestGitPackGatekeeper',
+            useSQLite: true,
+          },
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
         },
       },

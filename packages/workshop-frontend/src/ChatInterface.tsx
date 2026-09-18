@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
+import { actionStatusLabel } from './features/actions/actionStatus'
 import {
   Dialog,
   DropdownMenu,
@@ -90,6 +91,7 @@ import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import GatekeeperModal from "./GatekeeperModal";
+import { ActionFailureNote } from "./ActionFailureNote";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
@@ -4264,9 +4266,13 @@ function ChatInterface({
       }
 
       const nextMessages = [...cached.messages];
+      const log = cached.msg.actionLog;
       nextMessages[location.sequence] = {
         ...cached.msg,
-        actionLog: { ...cached.msg.actionLog, state, appliedAt: new Date() },
+        // Approval clears the recorded failure, as the server does; a rejection retains it.
+        actionLog: log.type === "action" && state === "approved"
+            ? { ...log, state, appliedAt: new Date(), failure: undefined }
+            : { ...log, state, appliedAt: new Date() },
       };
       cacheRef.current.messages.set(location.chatId, nextMessages);
       changed = true;
@@ -4326,7 +4332,7 @@ function ChatInterface({
   >(null);
 
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
+  // server applies the now-eligible pending action(s) in an apply pass, and the state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
@@ -4902,7 +4908,6 @@ function ChatInterface({
     }
 
     const isPending = state === "pending";
-    const isApproved = state === "approved";
     const isRejected = state === "rejected";
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
@@ -4912,11 +4917,7 @@ function ChatInterface({
     // decision. Resolved actions are history, and collapse so a long thread stays scannable.
     const showDescription = isPending || open;
     const metadata = log.resourceTitle;
-    const stateLabel = isApproved
-      ? "Approved"
-      : isRejected
-        ? "Denied"
-        : null;
+    const stateLabel = isPending ? null : actionStatusLabel(log);
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
@@ -5008,6 +5009,7 @@ function ChatInterface({
                 <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
+                {log.failure && <ActionFailureNote failure={log.failure} />}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -5068,6 +5070,7 @@ function ChatInterface({
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
+            {log.failure && <ActionFailureNote failure={log.failure} />}
             {resourceMeta}
           </div>
         )}
