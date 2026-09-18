@@ -48,6 +48,7 @@ function core(overrides: {
   let getScopeNodes = vi.fn(overrides.getScopeNodes ??
     (async (ids: readonly string[]) => ids.map(() => undefined)));
   let prepared: string[][] = [];
+  let units: DriveObservation[][] = [];
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
@@ -55,6 +56,7 @@ function core(overrides: {
     scope: overrides.scope ?? { kind: "account" },
     prepareObservation: overrides.prepareObservation ?? (async observations => {
       prepared.push(observations.map(observation => observation.fileId));
+      units.push([...observations]);
       return {
         excludeObservers: ["excluded"],
         pendingSets: observations,
@@ -73,7 +75,7 @@ function core(overrides: {
       await overrides.authorize?.(description);
     },
   });
-  return { session, listFiles, getFile, getScopeNodes, prepared, authorizations, events };
+  return { session, listFiles, getFile, getScopeNodes, prepared, units, authorizations, events };
 }
 
 const folder = (id: string, overrides: Partial<DriveFile> = {}): DriveFile =>
@@ -235,6 +237,39 @@ describe("Drive session scope", () => {
     });
 
     await expect((await session.search({ namePrefix: "missing" })).next()).resolves.toEqual([]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  // A file unit proves only metadata access, so it cannot stand for "this account can list the
+  // folder": a metadata-only observer would pass it vacuously.
+  it("records a listable parent folder as a folder observation", async () => {
+    let { session, units, events } = core({ getFile: async id => folder(id) });
+
+    await session.list({ directParentId: "F" });
+    expect(units).toEqual([[{ kind: "folder", fileId: "F" }]]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it("fences a live parent folder this account cannot list", async () => {
+    let { session, units, events } = core({
+      getFile: async id => folder(id, { capabilities: { canListChildren: false } }),
+    });
+
+    await expect(session.list({ directParentId: "F" }))
+      .rejects.toThrow("directParentId must identify a folder whose children can be listed");
+    expect(units).toEqual([]);
+    expect(events).toEqual(["authorize", "latch"]);
+  });
+
+  it.each([
+    ["a non-folder", (id: string) => file({ id })],
+    ["a trashed folder", (id: string) => folder(id, { trashed: true })],
+  ])("refuses %s parent as an objective disclosure", async (_label, getFile) => {
+    let { session, units, events } = core({ getFile: async id => getFile(id) });
+
+    await expect(session.list({ directParentId: "F" }))
+      .rejects.toThrow("directParentId must identify a folder whose children can be listed");
+    expect(units).toEqual([[{ kind: "file", fileId: "F" }]]);
     expect(events).toEqual(["authorize", "commit"]);
   });
 

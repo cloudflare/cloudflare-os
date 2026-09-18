@@ -481,11 +481,21 @@ export class DriveSessionCore extends DriveCoreBase {
     if (this.#scope.kind === "file") outsideScope();
     let parent = await this.#fetchFile(parentId);
     if (parent.id !== parentId) outsideScope();
-    await this.authorizeFiles([parent.id], "Check Google Drive folder",
-      "Check that the requested parent folder belongs to this Drive binding.");
-    if (parent.mimeType !== FOLDER_MIME_TYPE || parent.capabilities?.canListChildren !== true) {
+    let title = "Check Google Drive folder";
+    let description = "Check that the requested parent folder belongs to this Drive binding.";
+    if (!isListableFolderFile(parent)) {
+      // On a live folder only `canListChildren` is owner-relative and needs the fence; a
+      // non-folder or a trashed one is an objective refusal a listing would disclose anyway.
+      if (parent.mimeType === FOLDER_MIME_TYPE && parent.trashed === false) {
+        await this.authorizeWithheld(title, description);
+      } else {
+        await this.authorizeFiles([parent.id], title, description);
+      }
       throw new Error("directParentId must identify a folder whose children can be listed");
     }
+    // A folder unit, not a file: the disclosure is that this account can list the folder, which a
+    // metadata-only observer must fail rather than pass vacuously.
+    await this.authorizeUnits([{kind: "folder", fileId: parent.id}], title, description);
   }
 
   /**
