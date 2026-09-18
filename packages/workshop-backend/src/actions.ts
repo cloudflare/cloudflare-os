@@ -1,7 +1,7 @@
 // Serializes gatekeeper decisions. Explicit batches durably stage vetoes; immediate rejections
 // become terminal only after acknowledgement, and only authorized actions are applied.
 
-import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
+import type { Collection, NonUniqueIndex, Singleton, TypedStorage } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type {
   ActionDescription,
@@ -16,7 +16,7 @@ import type { ActionRecord, AutoApproveTagRecord, GatekeeperActionRecord } from 
 
 const logger = createWorkshopLogger("workshop.action.sync");
 
-export interface ActionSyncStorage {
+export interface ActionSyncStorage extends TypedStorage {
   actions: Collection<ActionRecord, number> & {
     pendingByGatekeeper: NonUniqueIndex<ActionRecord, number>;
     vetoPendingByGatekeeper: NonUniqueIndex<ActionRecord, number>;
@@ -194,14 +194,19 @@ export class ActionSyncDriver {
         return fresh;
       });
 
-      for (let record of selected) {
-        if (record.state !== "pending") continue;
-        record.state = "rejected";
-        record.vetoPending = true;
-        record.resolvedBy = resolvedBy;
-        record.appliedAt = new Date();
-        this.storage.actions.put(record);
-      }
+      // One transaction: an unstaged veto is indistinguishable from an undecided action, and the
+      // pass below authorizes every pending action under the boundary -- so half a staged batch
+      // would apply what the user vetoed.
+      this.storage.transaction(() => {
+        for (let record of selected) {
+          if (record.state !== "pending") continue;
+          record.state = "rejected";
+          record.vetoPending = true;
+          record.resolvedBy = resolvedBy;
+          record.appliedAt = new Date();
+          this.storage.actions.put(record);
+        }
+      });
 
       return await this.#applyOnce(freshBoundary.gatekeeperId, [], {
         frontier: freshBoundary.action,

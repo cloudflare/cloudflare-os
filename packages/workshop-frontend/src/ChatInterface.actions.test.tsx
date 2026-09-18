@@ -127,6 +127,18 @@ async function cachePendingCard(key?: string) {
   flushFrames()
 }
 
+// Renders one resolved action card in a live chat, which is where its status label is derived.
+async function renderResolvedCard(over: Record<string, unknown>) {
+  const resolved = entry(1, over)
+  const server = makeOverseer()
+  const chat = withChatApi(server)
+  await renderChat(server.overseer, { selectedChatId: 1 })
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries: [resolved] })
+  chat.emitMessage({ ...actionMessage, actionLog: resolved } as AiChatMessage)
+  flushFrames()
+}
+
 describe('ChatInterface action refresh', () => {
   it('shows a missed failure on a cached card after a stub swap', async () => {
     await cachePendingCard()
@@ -339,4 +351,20 @@ describe('action fields', () => {
       expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
     })
   }
+})
+
+describe('ChatInterface action status', () => {
+  it('presents a cascade invalidation as invalidated rather than denied', async () => {
+    await renderResolvedCard({ state: 'rejected', cascadedFrom: 2 })
+
+    expect(document.body.textContent).toContain('Invalidated')
+    expect(document.body.textContent).not.toContain('Denied')
+  })
+
+  it('presents a direct rejection as denied', async () => {
+    await renderResolvedCard({ state: 'rejected' })
+
+    expect(document.body.textContent).toContain('Denied')
+    expect(document.body.textContent).not.toContain('Invalidated')
+  })
 })
