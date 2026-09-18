@@ -2956,7 +2956,10 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
         .finally(() => { this.#inFlight = undefined; }));
       return use(snapshot);
     }, observe);
-    this.#approved = snapshot;
+    // A slow guard must not republish its older revision over a newer one already approved.
+    if (snapshot && snapshot.fetchedAt >= (this.#approved?.fetchedAt ?? 0)) {
+      this.#approved = snapshot;
+    }
     return value;
   }
 
