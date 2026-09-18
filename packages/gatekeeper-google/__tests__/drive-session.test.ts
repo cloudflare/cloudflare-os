@@ -274,6 +274,21 @@ describe("Drive session scope", () => {
     expect(events).toEqual(["authorize", "commit"]);
   });
 
+  // Dropping a blank parent as if it were absent turns a folder listing into an account-wide one,
+  // which is the opposite of the narrowing the caller asked for.
+  it.each([
+    ["list", (session: DriveSessionCore) => session.list({ directParentId: "   " })],
+    ["search", (session: DriveSessionCore) =>
+      session.search({ namePrefix: "plan", directParentId: "   " })],
+  ])("refuses a blank parent on %s", async (_label, read) => {
+    let { session, listFiles, getFile, events } = core();
+
+    await expect(read(session)).rejects.toThrow("directParentId must not be blank");
+    expect(getFile).not.toHaveBeenCalled();
+    expect(listFiles).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
   it("ends a search cleanly after an earlier page disclosed results", async () => {
     let { session, listFiles } = core({
       listFiles: async options => options.pageToken === "page-2"

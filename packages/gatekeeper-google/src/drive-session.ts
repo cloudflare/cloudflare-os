@@ -185,10 +185,25 @@ function timestamp(value: string | undefined, field: string): string | undefined
   return value;
 }
 
+/**
+ * A supplied parent is a narrowing the caller asked for, so a blank one is refused.
+ *
+ * Dropping it as if it were absent widens the read to the whole binding, which is the opposite of
+ * what was asked; a blank name or text filter only matches more within the same scope.
+ */
+function narrowingParentId(directParentId?: string): string | undefined {
+  if (directParentId === undefined) return undefined;
+  let trimmed = directParentId.trim();
+  if (!trimmed) {
+    throw new Error("directParentId must not be blank; omit it to read the whole binding.");
+  }
+  return trimmed;
+}
+
 function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
   let namePrefix = query.namePrefix?.trim();
   let fullTextContains = query.fullTextContains?.trim();
-  let directParentId = query.directParentId?.trim();
+  let directParentId = narrowingParentId(query.directParentId);
   let mimeTypes = query.mimeTypes?.map(value => value.trim()).filter(Boolean);
   let modifiedAfter = query.modifiedAfter
     ? timestamp(query.modifiedAfter, "modifiedAfter")
@@ -399,7 +414,7 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   async list(options: DriveListOptions = {}): Promise<Pager<DriveEntry>> {
-    let directParentId = options.directParentId?.trim();
+    let directParentId = narrowingParentId(options.directParentId);
     if (directParentId) await this.#assertParent(directParentId);
     if (this.#scope.kind === "file") return this.#exactFileCursor();
     return this.#cursor({
