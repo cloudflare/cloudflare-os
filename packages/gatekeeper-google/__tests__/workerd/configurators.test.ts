@@ -51,9 +51,12 @@ describe("Google resource configurators", () => {
     await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
       .listDriveFolders("Team"))
       .resolves.toEqual([
-        { value: "mine", title: "Team plans", subtitle: "My Drive" },
-        { value: "shared-with-me", title: "Team budget", subtitle: "Ada" },
-        { value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive" },
+        { value: "mine", title: "Team plans", subtitle: "My Drive", meta: "mine" },
+        { value: "shared-with-me", title: "Team budget", subtitle: "Ada", meta: "…-with-me" },
+        {
+          value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive",
+          meta: "in-drive",
+        },
       ]);
     expect(calls).toHaveLength(1);
     expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
@@ -61,6 +64,32 @@ describe("Google resource configurators", () => {
       "trashed = false and mimeType = 'application/vnd.google-apps.folder' and " +
       "name contains 'Team'",
     );
+  });
+
+  // Duplicate folder names across shared drives are ordinary, and every other column matches, so
+  // without a differentiator the user cannot see which capability they are about to grant.
+  it("tells same-named folders apart", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      files: [
+        {
+          id: "1AbCdEfGhIjKlMnOpQrStUv_platform", name: "Engineering", driveId: "drive-1",
+          capabilities: { canListChildren: true },
+        },
+        {
+          id: "1AbCdEfGhIjKlMnOpQrStUv_marketing", name: "Engineering", driveId: "drive-2",
+          capabilities: { canListChildren: true },
+        },
+      ],
+    })));
+
+    const options = await new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders("Engineering");
+
+    expect(options.map(option => [option.title, option.subtitle])).toEqual([
+      ["Engineering", "In a shared drive"],
+      ["Engineering", "In a shared drive"],
+    ]);
+    expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing"]);
   });
 
   it("refreshes a rejected Calendar access token", async () => {

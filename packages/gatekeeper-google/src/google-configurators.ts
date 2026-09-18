@@ -93,6 +93,17 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
   return lowerQuery.split(/\s+/).every(term => corpus.includes(term));
 }
 
+/**
+ * Enough of a Drive ID to tell same-named results apart and to match against a Drive URL.
+ *
+ * Duplicate folder and file names are ordinary, and the picker's other columns can be identical
+ * too, so without this the user cannot see which capability they are granting. A tail rather than
+ * the whole ID because `meta` does not shrink, and a full one would crowd out the subtitle.
+ */
+function idTail(id: string): string {
+  return id.length > 8 ? `…${id.slice(-8)}` : id;
+}
+
 async function listDriveFiles(
   target: object,
   query: string,
@@ -271,6 +282,7 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
         file.mimeType,
         file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
       ].filter(Boolean).join(" · ") || undefined,
+      meta: idTail(file.id),
     }));
   }
 }
@@ -300,6 +312,7 @@ export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderC
       subtitle: file.driveId
         ? "In a shared drive"
         : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
+      meta: idTail(file.id),
     }));
   }
 }
