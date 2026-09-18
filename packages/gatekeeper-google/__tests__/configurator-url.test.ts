@@ -146,6 +146,47 @@ describe("Calendar configurator URLs", () => {
       availabilityMode: "allVisible",
     });
   });
+
+  it("leaves a suggested calendar unselected when the recipient cannot write it", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => false),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/creator%40example.com/?availability=thisCalendar",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({ availabilityMode: "thisCalendar" });
+    expect(calendarConfigurator.isReady!({ values })).toBe(false);
+    expect(ui.canWriteCalendar).toHaveBeenCalledExactlyOnceWith("creator@example.com");
+  });
+
+  it("keeps a suggested calendar when the recipient can write it", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => true),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/shared%40example.com/?availability=allVisible",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({
+      calendarId: "shared@example.com",
+      availabilityMode: "allVisible",
+    });
+    expect(calendarConfigurator.isReady!({ values })).toBe(true);
+    expect(ui.canWriteCalendar).toHaveBeenCalledExactlyOnceWith("shared@example.com");
+  });
 });
 
 describe("Drive configurator URLs", () => {
