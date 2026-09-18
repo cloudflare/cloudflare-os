@@ -527,6 +527,31 @@ describe("folder-scoped native sessions", () => {
     expect(nativeCalls).toEqual(["docs.googleapis.com"]);
   });
 
+  // Reads issued together share one fetch, so no refusal among them may leave that revision
+  // reusable by a later read.
+  it("leaves nothing reusable when a shared fetch is refused", async () => {
+    const nodes = subtree();
+    let pendingMoveOut = true;
+    const nativeCalls = installFolderProvider(nodes, () => {
+      if (!pendingMoveOut) return;
+      pendingMoveOut = false;
+      nodes.set("doc-1",
+        { id: "doc-1", mimeType: DOC_MIME, parents: ["elsewhere"], trashed: false });
+    });
+    using session = folderSession(nodes).session;
+    using doc = await session.openGoogleDoc("doc-1");
+
+    const settled = await Promise.allSettled(
+      [Promise.resolve(doc.listTabs()), Promise.resolve(doc.getContent())]);
+    expect(settled.map(result => result.status)).toEqual(["rejected", "rejected"]);
+
+    nodes.set("doc-1", { id: "doc-1", mimeType: DOC_MIME, parents: [ROOT], trashed: false });
+    nativeCalls.length = 0;
+
+    await expect(Promise.resolve(doc.getContent())).resolves.toBe("");
+    expect(nativeCalls).toEqual(["docs.googleapis.com"]);
+  });
+
   it("keeps child-folder and native capabilities alive after their parents are disposed", async () => {
     const nodes = subtree();
     nodes.set("nested", {

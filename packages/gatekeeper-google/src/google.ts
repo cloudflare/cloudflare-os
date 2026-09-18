@@ -2902,8 +2902,10 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   #driveApi: DriveApi;
   #documentId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
-  /** The most recent snapshot request. Chaining onto it serializes concurrent reads. */
-  #snapshot?: Promise<GoogleDocSnapshot>;
+  /** A fetch still in flight, so reads issued together observe one revision. */
+  #inFlight?: Promise<GoogleDocSnapshot>;
+  /** The last revision a completed scope check approved, the only one a later read may reuse. */
+  #approved?: GoogleDocSnapshot;
   #read: NativeRead;
 
   constructor(
@@ -2938,30 +2940,29 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   /**
    * Reads one snapshot under the binding's scope guard.
    *
-   * Each call chains onto the previous request, so concurrent reads share one fetch instead of
-   * racing to overwrite each other with whichever response lands last. A read the guard refuses
-   * drops its snapshot: the scope check straddles the fetch, so a revision it rejected must not
-   * be served to the next caller from the cache.
+   * Only a revision a whole guard cycle approved becomes reusable. The scope check straddles the
+   * fetch, so a revision fetched while the document was outside must never reach a later read --
+   * and rolling it back after the refusal is too late, since a read that chained onto it meanwhile
+   * already holds it. Reads issued together still share one fetch: each brackets that fetch with
+   * its own checks, exactly as a lone read does.
    */
   async #readSnapshot<T>(
     use: (snapshot: GoogleDocSnapshot) => T,
     observe: (value: T) => NativeObservation,
   ): Promise<T> {
-    let pending: Promise<GoogleDocSnapshot> | undefined;
-    try {
-      return await this.#read(async () => {
-        pending = this.#snapshot = this.#nextSnapshot(this.#snapshot);
-        return use(await pending);
-      }, observe);
-    } catch (error) {
-      if (pending && this.#snapshot === pending) this.#snapshot = undefined;
-      throw error;
-    }
+    let snapshot: GoogleDocSnapshot | undefined;
+    let value = await this.#read(async () => {
+      snapshot = await (this.#inFlight ??= this.#nextSnapshot()
+        .finally(() => { this.#inFlight = undefined; }));
+      return use(snapshot);
+    }, observe);
+    this.#approved = snapshot;
+    return value;
   }
 
   /** Reuse one revision for the TTL, then confirm it is still current before reusing it again. */
-  async #nextSnapshot(pending?: Promise<GoogleDocSnapshot>): Promise<GoogleDocSnapshot> {
-    let cached = await pending?.catch(() => undefined);
+  async #nextSnapshot(): Promise<GoogleDocSnapshot> {
+    let cached = this.#approved;
     if (cached) {
       if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
       if (await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)) {
