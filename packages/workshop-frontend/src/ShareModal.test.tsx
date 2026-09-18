@@ -263,6 +263,10 @@ describe('ShareModal', () => {
     container = undefined
   })
 
+  // The last rendered tree, parameterised on `open` so a test can close and reopen the dialog the
+  // way its parent would: the component stays mounted either way.
+  let renderTree: (open: boolean) => ReactNode
+
   async function render(
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
@@ -273,23 +277,27 @@ describe('ShareModal', () => {
     document.body.append(container)
     root = createRoot(container)
     const serverConfig = { userSearchEnabled } as ServerConfig
-    await act(async () => {
-      root!.render(
-        <ServerConfigContext.Provider value={serverConfig}>
-          <ShareModal
-            open
-            onClose={() => {}}
-            overseer={overseer}
-            metadata={metadata}
-            currentUser={CURRENT_USER}
-            authenticatedApi={authenticatedApi}
-          />
-        </ServerConfigContext.Provider>
-      )
-    })
+    renderTree = open => (
+      <ServerConfigContext.Provider value={serverConfig}>
+        <ShareModal
+          open={open}
+          onClose={() => {}}
+          overseer={overseer}
+          metadata={metadata}
+          currentUser={CURRENT_USER}
+          authenticatedApi={authenticatedApi}
+        />
+      </ServerConfigContext.Provider>
+    )
+    await act(async () => { root!.render(renderTree(true)) })
     // Let the load effects settle.
     await act(async () => { await Promise.resolve() })
     return document.body
+  }
+
+  async function setOpen(open: boolean) {
+    await act(async () => { root!.render(renderTree(open)) })
+    await act(async () => { await Promise.resolve() })
   }
 
   it('reveals the workspace link to send after a direct invite', async () => {
@@ -809,6 +817,64 @@ describe('ShareModal', () => {
     await pressKey(input, 'Enter')
     expect(addCollaborator).toHaveBeenLastCalledWith('grace@example.com', 'use', undefined)
     expect(stagedNames(rendered)).toEqual([])
+  })
+
+  it('keeps an in-flight invite and its failure across close and reopen', async () => {
+    const pending = deferred<CollaboratorInfo | null>()
+    const rendered = await render(
+      fakeOverseer({ addCollaborator: () => pending.promise }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(peopleInput(rendered), 'Enter')
+    await pressKey(peopleInput(rendered), 'Enter')
+
+    await setOpen(false)
+    await setOpen(true)
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
+    expect(button(rendered, 'Remove ada@example.com').disabled).toBe(true)
+
+    const refusal = 'Sharing is disabled for this workspace.'
+    await act(async () => {
+      pending.reject(new Error(refusal))
+      await Promise.resolve()
+    })
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
+    expect(rendered.querySelector('[role="alert"]')?.textContent)
+      .toContain(`ada@example.com: ${refusal}`)
+    expect(toastAdd).not.toHaveBeenCalledWith(expect.objectContaining({ variant: 'error' }))
+  })
+
+  it('shows a failure that landed while the dialog was closed and drops unsent chips', async () => {
+    const pending = deferred<CollaboratorInfo | null>()
+    const rendered = await render(
+      fakeOverseer({ addCollaborator: () => pending.promise }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada@example.com')
+    await pressKey(peopleInput(rendered), 'Enter')
+    await pressKey(peopleInput(rendered), 'Enter')
+
+    const refusal = 'Sharing is disabled for this workspace.'
+    await setOpen(false)
+    await act(async () => {
+      pending.reject(new Error(refusal))
+      await Promise.resolve()
+    })
+    await setOpen(true)
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
+    expect(rendered.querySelector('[role="alert"]')?.textContent)
+      .toContain(`ada@example.com: ${refusal}`)
+
+    // A chip that was never sent does not survive a fresh open; the failed one does.
+    await typeDirectorySearch(rendered, 'grace@example.com')
+    await pressKey(peopleInput(rendered), 'Enter')
+    expect(stagedNames(rendered)).toEqual(['ada@example.com', 'grace@example.com'])
+    await setOpen(false)
+    await setOpen(true)
+    expect(stagedNames(rendered)).toEqual(['ada@example.com'])
   })
 
   it('counts a re-typed staged id once', async () => {

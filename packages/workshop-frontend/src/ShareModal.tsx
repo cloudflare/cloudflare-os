@@ -579,7 +579,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       if (!wasOpenRef.current) {
         setAddUsername('')
         setNewShareLink(null)
-        setStaged([])
+        // A fresh open starts the composer over, except for people whose invite is still in flight
+        // or has failed: their chip is the only record of the outcome.
+        const inFlight = addingRef.current
+        setStaged(current => inFlight ? current : current.filter(recipient => recipient.error))
         setNewShareLinkId(null)
         setNewShareLinkCopied(false)
         setInvitedNames([])
