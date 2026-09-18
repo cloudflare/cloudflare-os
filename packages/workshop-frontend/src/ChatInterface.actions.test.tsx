@@ -4,12 +4,16 @@
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AiChatMessage, AiChatSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type {
+  ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
+} from '@gadgets/workshop-shared/api'
 
 vi.stubGlobal('ResizeObserver', class {
   observe() {}
   disconnect() {}
 })
+// jsdom lays nothing out; the message list scrolls itself to the bottom on every render.
+Element.prototype.scrollTo = () => {}
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -42,6 +46,7 @@ vi.mock('./AuthContext', () => {
 
 import { entry, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
+import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
 
 const testRoot = makeTestRoot()
@@ -54,11 +59,13 @@ afterEach(() => {
 function withChatApi(
   server: ReturnType<typeof makeOverseer>,
   getChatMessage = vi.fn<(chatId: number, sequence: number) => Promise<AiChatMessage | null>>(),
+  chats: AiChatMetadata[] = [],
 ) {
   let subscriber: AiChatSubscriber | undefined
   Object.assign(server.overseer as object, {
     getChatMessage,
-    listChats: async () => [],
+    getChatHistory: async () => ({ messages: [] }),
+    listChats: async () => chats,
     listModels: async () => [],
     onRpcBroken: () => {},
     subscribeToChat: (next: AiChatSubscriber) => {
@@ -74,12 +81,16 @@ function withChatApi(
   }
 }
 
-function renderChat(overseer: RpcStub<Overseer>) {
+function renderChat(
+  overseer: RpcStub<Overseer>,
+  props: { restricted?: boolean, selectedChatId?: number } = {},
+) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
-      selectedChatId={null}
+      restricted={props.restricted}
+      selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
@@ -137,5 +148,79 @@ describe('ChatInterface action refresh', () => {
     await second.resolveSubscription()
     await second.resolvePendingQuery({ entries: [entry(1)] })
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
+  })
+})
+
+// A pending action whose description runs to several paragraphs: what the approver has to read
+// in full when the workspace is restricted.
+const longDescription = [
+  'Send the following email to alice@example.com:',
+  'Hi Alice, attached are the quarterly numbers you asked for.',
+  'Regards, the workspace.',
+].join('\n\n')
+
+function pendingLog(over: Partial<Record<string, unknown>> = {}) {
+  return entry(1, {
+    description: { title: 'Send email', description: longDescription, implementsRevert: false, ...over },
+  })
+}
+
+// Renders chat 1 selected, so its messages -- and the action card for `log` -- are actually on
+// screen.
+async function renderPendingCard(log: ActionLogEntry, props: { restricted?: boolean } = {}) {
+  const server = makeOverseer()
+  const chat = withChatApi(server, undefined, [
+    { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+  ])
+  await renderChat(server.overseer, { ...props, selectedChatId: 1 })
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries: [log] })
+  chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+}
+
+const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
+
+// The text a screen reader announces as the Approve button's description.
+function approveDescribedBy(): string | null {
+  const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
+  if (!approve) throw new Error('No Approve button rendered')
+  const ids = approve.getAttribute('aria-describedby')
+  if (ids === null) return null
+  return ids.split(' ').map(id => {
+    const el = document.getElementById(id)
+    if (!el) throw new Error(`aria-describedby names a missing element: ${id}`)
+    return el.textContent ?? ''
+  }).join('\n')
+}
+
+describe('restricted approval', () => {
+  it('shows the notice and the full request on a pending card while restricted', async () => {
+    await renderPendingCard(pendingLog(), { restricted: true })
+
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(document.body.textContent).toContain('Regards, the workspace.')
+    expect(clampedDescription()).toBeNull()
+    // The controls precede the review text in DOM order, so the buttons name it explicitly.
+    const described = approveDescribedBy()
+    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(described).toContain('Regards, the workspace.')
+  })
+
+  it('shows the notice and the full request on a blocking card while restricted', async () => {
+    await renderPendingCard(pendingLog({ awaitDecision: true }), { restricted: true })
+
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(clampedDescription()).toBeNull()
+    const described = approveDescribedBy()
+    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(described).toContain('Regards, the workspace.')
+  })
+
+  it('keeps the scrolling description and no notice when not restricted', async () => {
+    await renderPendingCard(pendingLog())
+
+    expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
+    expect(clampedDescription()).not.toBeNull()
+    expect(approveDescribedBy()).toBeNull()
   })
 })

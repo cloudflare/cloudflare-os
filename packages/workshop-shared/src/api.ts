@@ -1402,7 +1402,8 @@ export type GadgetMetadata = {
   /**
    * True when the gadget has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
-   * gatekeeper, but can no longer perform actions or fetch from the public web.
+   * gatekeeper, but can no longer fetch from the public web, and every action requires manual
+   * approval.
    */
   containsRestrictedData?: boolean;
 
@@ -1964,6 +1965,9 @@ export interface Overseer extends RpcTarget {
    *
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
+   *
+   * Once the workspace has read restricted data (`GadgetMetadata.containsRestrictedData`), rules
+   * are stored but never fire: every action pends for manual approval.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
 
