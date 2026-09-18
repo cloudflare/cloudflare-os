@@ -177,8 +177,8 @@ rules.
 A Gadget bound to an MCP server can only be opened by its owner: `addObserver` refuses
 unconditionally. Being able to authenticate to a server is not evidence of being allowed to see what
 the *owner* read from it, and the Gadget runs on the owner's credentials throughout. Writes still
-work — the alternative, marking every observation `containsRestrictedData`, would latch a
-restricted mode that blocks every action for the rest of the session. See
+work — the alternative, marking every observation `containsRestrictedData`, would set that
+flag, whose restricted mode blocks every action for the rest of the session. See
 [`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
 
 To share the work rather than the binding, publish the Gadget as a blueprint and let each person

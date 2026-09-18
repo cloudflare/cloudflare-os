@@ -1,7 +1,8 @@
-// authorizeObservation's restricted-data latch is one-way and is set only once the observation is
-// actually delivered. The exclusion gate is decided first, across an awaited cross-worker fan-out,
-// so an observation the exclusion blocks must leave no trace -- no latch, no record -- and one it
-// admits latches and records in the same synchronous block after the teardown completes.
+// authorizeObservation sets `containsRestrictedData` (and `ownerInvitesOnly`) one-way, and only once
+// the observation is actually delivered. The exclusion gate is decided first, across an awaited
+// cross-worker fan-out, so an observation the exclusion blocks must leave no trace -- no flag, no
+// record -- and one it admits sets the flags and records in the same synchronous block after the
+// teardown completes.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding); the gatekeeper facet is
 // the only fake.
@@ -50,9 +51,9 @@ const RESTRICTED_EXCLUDING_MALLORY = {
   excludeObservers: ["obs-m"],
 };
 
-describe("authorizeObservation's restricted-data latch", () => {
-  it("latches and records only after the exclusion teardown admits the observation", async () => {
-    let stub = env.TEST_OVERSEER.getByName("restricted-latch-teardown-window");
+describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly flags", () => {
+  it("sets containsRestrictedData and records only after the exclusion teardown admits the observation", async () => {
+    let stub = env.TEST_OVERSEER.getByName("restricted-flag-teardown-window");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);
       seedGatekeeper(impl, 1);
@@ -72,14 +73,14 @@ describe("authorizeObservation's restricted-data latch", () => {
           1, RESTRICTED_EXCLUDING_MALLORY, { from: "user" });
       await tick();
 
-      // Nothing is delivered while the teardown is in flight, so nothing has latched: a teardown
+      // Nothing is delivered while the teardown is in flight, so no flag is set: a teardown
       // that ends in refusal must leave no trace.
       expect(impl.storage.containsRestrictedData.get()).toBe(false);
 
       held.resolve();
       await expect(observation).resolves.toBeUndefined();
 
-      // Delivery: the latch and the record landed together.
+      // Delivery: the flag and the record landed together.
       expect(impl.storage.containsRestrictedData.get()).toBe(true);
 
       // The teardown still ran (mallory is no longer set up to observe).
@@ -91,7 +92,7 @@ describe("authorizeObservation's restricted-data latch", () => {
   });
 
   it("leaves no trace when the exclusion gate blocks the observation", async () => {
-    let stub = env.TEST_OVERSEER.getByName("restricted-latch-exclusion-blocked");
+    let stub = env.TEST_OVERSEER.getByName("restricted-flag-exclusion-blocked");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);
       seedGatekeeper(impl, 1);
@@ -108,7 +109,7 @@ describe("authorizeObservation's restricted-data latch", () => {
           1, RESTRICTED_EXCLUDING_MALLORY, { from: "user" }))
           .rejects.toThrow(/not permitted to see/);
 
-      // The blocked observation delivered no data, so the workspace is not restricted: no latch,
+      // The blocked observation delivered no data, so the workspace is not restricted: no flag,
       // no action record -- and mallory, still authorized, was not torn down.
       expect(impl.storage.containsRestrictedData.get()).toBe(false);
       expect([...impl.storage.actions.list()]).toHaveLength(0);
@@ -116,8 +117,8 @@ describe("authorizeObservation's restricted-data latch", () => {
     });
   });
 
-  it("latches ownerInvitesOnly only for observations that carry the flag", async () => {
-    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-latch");
+  it("sets ownerInvitesOnly only for observations that carry the flag", async () => {
+    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-flag");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);
       seedGatekeeper(impl, 1);
@@ -135,7 +136,7 @@ describe("authorizeObservation's restricted-data latch", () => {
       }, { from: "user" });
       expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
 
-      // The latch is enforced by the memoized sharing manager.
+      // The flag is enforced by the memoized sharing manager.
       let sharing = await impl.getSharingManager();
       await expect(sharing.createShareLink({
         caller: { profileId: OWNER, isOwner: true }, role: "use",
@@ -143,7 +144,7 @@ describe("authorizeObservation's restricted-data latch", () => {
     });
   });
 
-  it("does not latch ownerInvitesOnly when the exclusion gate blocks the observation", async () => {
+  it("does not set ownerInvitesOnly when the exclusion gate blocks the observation", async () => {
     let stub = env.TEST_OVERSEER.getByName("owner-invites-only-exclusion-blocked");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);

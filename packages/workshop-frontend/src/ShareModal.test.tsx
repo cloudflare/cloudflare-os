@@ -1219,7 +1219,7 @@ describe('ShareModal', () => {
     }), fakeAuthenticatedApi(), restrictedMetadata)
 
     // The inline warning replaces the old full-panel "can't be shared" wall: the server allows
-    // sharing after the restricted latch (refusing only unverifiable producers), so the modal
+    // sharing after containsRestrictedData is set (refusing only unverifiable producers), so the modal
     // must warn rather than block.
     expect(rendered.textContent).toContain('This workspace has read sensitive data')
     expect(rendered.textContent).not.toContain('This workspace can’t be shared')
@@ -1248,13 +1248,13 @@ describe('ShareModal', () => {
   })
 
   it('drops share-link controls but keeps revocation once the workspace is owner-invites-only', async () => {
-    const latchedMetadata = {
+    const ownerInvitesOnlyMetadata = {
       ...METADATA, containsRestrictedData: true, ownerInvitesOnly: true,
     } as GadgetMetadata
     const rendered = await render(fakeOverseer({
       requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
       shareLinks: [SHARE_LINK],
-    }), fakeAuthenticatedApi(), latchedMetadata)
+    }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
 
     expect(rendered.textContent).toContain('doesn’t allow share links')
     expect(rendered.textContent).toContain('Invite people.')
@@ -1277,14 +1277,14 @@ describe('ShareModal', () => {
   })
 
   it('hides the invite box from collaborators once the workspace is owner-invites-only', async () => {
-    const latchedMetadata = {
+    const ownerInvitesOnlyMetadata = {
       ...METADATA,
       ownerInvitesOnly: true,
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
     } as GadgetMetadata
     const rendered = await render(fakeOverseer({
       requirements: { use: [CRM_REQUIREMENT], build: [CRM_REQUIREMENT] },
-    }), fakeAuthenticatedApi(), latchedMetadata)
+    }), fakeAuthenticatedApi(), ownerInvitesOnlyMetadata)
 
     expect(rendered.textContent).toContain('only the owner can add people')
     expect(rendered.textContent).toContain('Manage access.')
@@ -1295,7 +1295,7 @@ describe('ShareModal', () => {
     expect(rendered.textContent).toContain('People with access')
   })
 
-  it('releases the results scroll lock when a live update latches a collaborator out of inviting', async () => {
+  it('releases the results scroll lock when a live ownerInvitesOnly update stops a collaborator inviting', async () => {
     const collaboratorMetadata = {
       ...METADATA,
       owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
@@ -1307,7 +1307,7 @@ describe('ShareModal', () => {
     expect(rendered.querySelector('[role="listbox"]')).not.toBeNull()
     expect(body().classList).toContain('overflow-hidden')
 
-    // Another session latches the workspace while the results are open: the search field goes
+    // Another session sets ownerInvitesOnly while the results are open: the search field goes
     // away without ever blurring, and the body must scroll again.
     await updateMetadata({ ...collaboratorMetadata, ownerInvitesOnly: true } as GadgetMetadata)
     expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()

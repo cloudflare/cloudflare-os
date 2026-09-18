@@ -527,8 +527,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * Open an existing gadget.
    *
    * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
-   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget is
-   * latched `ownerInvitesOnly` (see `GadgetMetadata`), a caller who is not already a collaborator
+   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget has
+   * `ownerInvitesOnly` set (see `GadgetMetadata`), a caller who is not already a collaborator
    * is refused with a `shareLinksDisabled` coded exception. This design
    * allows share-key redemption and gadget opening in a single round trip, and further calls
    * can be pipelined on the returned Overseer.
