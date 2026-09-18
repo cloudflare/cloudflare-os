@@ -2022,12 +2022,22 @@ export interface Overseer extends RpcTarget {
    * selected action records in `vetoes`. Every selected record must belong to the same connection
    * and be no later than the boundary in that Gatekeeper's local action order. Selections that
    * are already decided are ignored, so a concurrent decision can't fail the whole request.
+   *
+   * A request still waiting in the connection's queue when an in-range action fails is refused
+   * with ACTION_STOPPED rather than treated as a retry of that failure: it was selected before
+   * the failure existed. Selecting the failed action as a veto is the way through, and so is
+   * requesting again once its reason is on the card. A refusal decides nothing, stages no veto,
+   * and leaves every record as it was.
    */
   applyActionsThrough(id: number, vetoes: number[]): Promise<void>;
 
   /**
-   * Approve an action that is currently in the "pending" state. This performs the action and may
-   * also perform earlier pending actions from the same Gatekeeper connection.
+   * Approve an action that is currently in the "pending" state. This performs the action, and any
+   * earlier pending action from the same Gatekeeper connection that an auto-approval rule already
+   * authorizes; it never carries authority over an earlier action still awaiting manual review.
+   *
+   * An approval still waiting in the queue when an action fails is likewise not a retry of that
+   * failure: it is refused with ACTION_STOPPED, and retrying takes a fresh approval.
    */
   approveAction(id: number): Promise<void>;
 
