@@ -363,7 +363,7 @@ describe('ShareModal', () => {
       option.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     // Picking a result stages it as a chip and clears the field for the next name.
-    expect(stagedNames(rendered)).toEqual(['Ada Lovelace'])
+    expect(stagedNames(rendered)).toEqual(['Ada Lovelace (ada@cloudflare.com)'])
     expect(peopleInput(rendered).value).toBe('')
     await click(button(rendered, 'Invite'))
 
@@ -521,6 +521,31 @@ describe('ShareModal', () => {
     expect(rendered.textContent).toContain('Added Grace Hopper')
   })
 
+  it('tells apart two staged accounts with one display name', async () => {
+    const rendered = await render(fakeOverseer(), fakeAuthenticatedApi({
+      searchUsers: async (_query, excludeIds) => [
+        { id: 'alex.smith@example.com', name: 'Alex Smith' },
+        { id: 'alex.smith2@example.com', name: 'Alex Smith' },
+      ].filter(user => !excludeIds.includes(user.id)),
+    }))
+
+    await typeDirectorySearch(rendered, 'alex')
+    await click(rendered.querySelector<HTMLButtonElement>('[role="option"]')!)
+    await typeDirectorySearch(rendered, 'alex')
+    await click(rendered.querySelector<HTMLButtonElement>('[role="option"]')!)
+
+    // The chips carry the id as well as the name, so the two are not interchangeable.
+    expect(stagedNames(rendered)).toEqual([
+      'Alex Smith (alex.smith@example.com)',
+      'Alex Smith (alex.smith2@example.com)',
+    ])
+    expect(rendered.textContent).toContain('alex.smith@example.com')
+    expect(rendered.textContent).toContain('alex.smith2@example.com')
+
+    await click(button(rendered, 'Remove Alex Smith (alex.smith2@example.com)'))
+    expect(stagedNames(rendered)).toEqual(['Alex Smith (alex.smith@example.com)'])
+  })
+
   it('does not submit a raw query while search is pending', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
     const addCollaborator = vi.fn<NonNullable<OverseerOverrides['addCollaborator']>>()
@@ -545,7 +570,7 @@ describe('ShareModal', () => {
     await act(async () => input.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
     ))
-    expect(stagedNames(rendered)).toEqual(['Alex Smith'])
+    expect(stagedNames(rendered)).toEqual(['Alex Smith (alex.smith@example.com)'])
     expect(input.value).toBe('')
     expect(addCollaborator).not.toHaveBeenCalled()
   })
@@ -684,7 +709,7 @@ describe('ShareModal', () => {
 
     const input = peopleInput(rendered)
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(stagedNames(rendered)).toEqual(['Grace Hopper'])
+    expect(stagedNames(rendered)).toEqual(['Grace Hopper (grace@example.com)'])
     expect(input.value).toBe('')
   })
 
@@ -707,7 +732,7 @@ describe('ShareModal', () => {
     // A staged person is not suggested again.
     expect(searchUsers).toHaveBeenLastCalledWith('grace@example.com', ['dan@cloudflare.com', 'ada@example.com'])
     await pressKey(peopleInput(rendered), 'Enter')
-    expect(stagedNames(rendered)).toEqual(['Ada Lovelace', 'grace@example.com'])
+    expect(stagedNames(rendered)).toEqual(['Ada Lovelace (ada@example.com)', 'grace@example.com'])
 
     await click(button(rendered, 'Invite 2 people'))
 
@@ -1073,9 +1098,12 @@ describe('ShareModal', () => {
 
     await invite(rendered, 'ada')
 
-    // The attempt reaches the server and its refusal is shown verbatim on the person's chip.
-    expect(stagedNames(rendered)).toEqual(['Ada'])
-    expect(rendered.querySelector('[role="alert"]')?.textContent).toContain(`Ada: ${refusal}`)
+    // The attempt reaches the server and its refusal is shown verbatim on the person's chip. The
+    // alert is the only readable copy of it, so it wraps rather than clipping to one line.
+    expect(stagedNames(rendered)).toEqual(['Ada (ada@example.com)'])
+    const alertLine = rendered.querySelector('[role="alert"] span')
+    expect(alertLine?.textContent).toContain(`Ada (ada@example.com): ${refusal}`)
+    expect(alertLine?.className).not.toContain('truncate')
     expect(toastAdd).not.toHaveBeenCalled()
   })
 

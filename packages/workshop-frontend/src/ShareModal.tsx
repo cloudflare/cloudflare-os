@@ -42,6 +42,11 @@ function withRecipient(list: StagedRecipient[], recipient: StagedRecipient): Sta
   return list.some(entry => entry.id === recipient.id) ? list : [...list, recipient]
 }
 
+// "Name (id)" when they differ, so two accounts with one display name stay tellable apart.
+function recipientLabel({ id, name }: StagedRecipient): string {
+  return name === id ? name : `${name} (${id})`
+}
+
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
   | { kind: 'revoke'; linkId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -1032,7 +1037,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               {staged.map(recipient => (
                 <span
                   key={recipient.id}
-                  title={recipient.error}
+                  title={recipient.error ?? (recipient.name !== recipient.id ? recipient.id : undefined)}
                   className={`inline-flex max-w-full items-center gap-1 rounded-full border py-[3px] pl-2.5 pr-1 text-[11px] leading-4 font-medium tracking-[-0.1px] ${
                     recipient.error
                       ? 'border-kumo-danger bg-kumo-danger-tint/40 text-kumo-danger'
@@ -1040,9 +1045,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                   }`}
                 >
                   <span className="truncate">{recipient.name}</span>
+                  {recipient.name !== recipient.id && (
+                    <span className="truncate font-mono text-[10px] text-kumo-subtle">{recipient.id}</span>
+                  )}
                   <button
                     type="button"
-                    aria-label={`Remove ${recipient.name}`}
+                    aria-label={`Remove ${recipientLabel(recipient)}`}
                     onClick={() => removeStaged(recipient.id)}
                     disabled={adding}
                     className="grid h-4 w-4 shrink-0 cursor-pointer place-items-center rounded-full opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed"
@@ -1182,8 +1190,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           {staged.some(recipient => recipient.error) && (
             <p role="alert" className="mt-1.5 px-1 text-[12px] leading-4 text-kumo-danger">
               {staged.filter(recipient => recipient.error).map(recipient => (
-                <span key={recipient.id} className="block truncate">
-                  {recipient.name}: {recipient.error}
+                <span key={recipient.id} className="block break-words">
+                  {recipientLabel(recipient)}: {recipient.error}
                 </span>
               ))}
             </p>
