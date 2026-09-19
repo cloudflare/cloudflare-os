@@ -21,7 +21,7 @@ declare module "cloudflare:workers" {
 }
 
 // Exercises the worktree workpiece lifecycle against the real OverseerImpl in workerd: the
-// version-4 record-type migration, createWorktree (local commits, prefix resolution, pull
+// version-4 record-type migration, createWorktree (local commits, full-id resolution, pull
 // routing), the barrier's creation record, pinning on first modification (a worktree pins at
 // its accepted commit -- WorktreeRecord.pinBase -- by its first write or commit(), never by its
 // creation), lazy worktree content in the chat's change stream (edits seed their base texts on
@@ -124,10 +124,10 @@ async function barrier(impl: any, chatId: number, step: {
 
 // Creates a worktree and commits its creation through the barrier, returning the worktree id,
 // its base commit, and the sequence of the "changes" message that recorded the creation.
-async function createThroughBarrier(impl: any, chatId: number, commitRef: string,
+async function createThroughBarrier(impl: any, chatId: number, commitId: string,
                                     bindingName = "REPO")
     : Promise<{ id: number, baseCommit: string, stamp: number }> {
-  let created = await impl.createWorktree("Repo", chatId, commitRef);
+  let created = await impl.createWorktree("Repo", chatId, commitId);
   await barrier(impl, chatId, {
     createdWorktrees: [{ worktreeId: created.id, title: created.title, bindingName }],
   });
@@ -211,12 +211,11 @@ describe("the version 3 -> 4 workpiece-type migration", () => {
 });
 
 describe("createWorktree", () => {
-  it("creates a chat-private pending record from a local commit, with prefix resolution",
-      () => withImpl(async impl => {
+  it("creates a chat-private pending record from a local commit", () => withImpl(async impl => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
 
-    let created = await impl.createWorktree("My Repo", 1, c1.slice(0, 12));
+    let created = await impl.createWorktree("My Repo", 1, c1);
     expect(created.baseCommit).toBe(c1);
     let record = impl.storage.gadgets.get(created.id)!;
     expect(record).toMatchObject({
@@ -233,11 +232,18 @@ describe("createWorktree", () => {
     expect(impl.storage.gadgets.get(again.id)!.baseCommit).toBe(c1);
   }));
 
-  it("rejects unknown refs, and surfaces provenance loss from the initial pull",
+  it("rejects unknown and abbreviated ids, and surfaces provenance loss from the initial pull",
       () => withImpl(async impl => {
     addChat(impl, 1);
     await expect(impl.createWorktree("W", 1, "feed".repeat(10)))
         .rejects.toThrow(/not known to this workspace/);
+    // Only full, exact ids: knowing a commit's id is the capability to read it, and a prefix is
+    // guessable -- so not even a local commit resolves from one.
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    for (let id of [c1.slice(0, 12), c1.toUpperCase(), "main"]) {
+      await expect(impl.createWorktree("W", 1, id)).rejects.toThrow(/not a full git commit id/);
+    }
+    expect([...impl.storage.gadgets.list()]).toEqual([]);
 
     // A commit known only from metadata triggers the initial pull, routed to its recorded
     // source -- here a gatekeeper whose record no longer exists, the actionable error case.

@@ -3,8 +3,9 @@
 //
 // Minted per loopback session by the overseer's binding-loopback dispatch (startGatekeeperSession,
 // target type "git"). It grants nothing its callers couldn't already reach: reading a commit
-// requires knowing its id, and writing only adds content-addressed objects to the workspace's git
-// store, never moving anything that names a commit.
+// requires knowing its full id (never a guessable abbreviation; see
+// WorkspaceGitCache.resolveCommitId), and writing only adds content-addressed objects to the
+// workspace's git store, never moving anything that names a commit.
 //
 // Its worktrees are the same WorktreeSessionImpl the agent's worktree bindings use, over an
 // InMemoryWorktree in place of the agent turn's state: uncommitted content lives in the session
@@ -129,12 +130,11 @@ export class GitImpl extends RpcTarget implements Git {
   }
 
   async readCommit(commitId: string): Promise<CommitMetadata> {
-    let oid = this.host.gitCache.resolveCommitRef(commitId);
+    let oid = this.host.gitCache.resolveCommitId(commitId);
     // Pulls only the commit object itself, if absent -- unlike newWorktree, which wants the tree.
     await this.host.gitCache.ensureObject(oid, { type: "commit" });
     let commit = await this.host.gitStore.readCommitObject(oid);
     return {
-      id: oid,
       parents: commit.parent,
       message: commit.message,
       author: toSignature(commit.author),

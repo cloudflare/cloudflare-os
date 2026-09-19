@@ -133,8 +133,8 @@ function makeTurn(impl: any, chatId: number) {
 
 // Creates a worktree through the barrier and returns a session over it. The worktree is
 // unpinned: the session resolves against its accepted commit until the first write or commit.
-async function createWorktreeSession(impl: any, chatId: number, commitRef: string) {
-  let created = await impl.createWorktree("Repo", chatId, commitRef);
+async function createWorktreeSession(impl: any, chatId: number, commitId: string) {
+  let created = await impl.createWorktree("Repo", chatId, commitId);
   await impl.commitAgentStep(chatId, AGENT, [{ type: "message", message: "create" }], {
     changes: [],
     createdGadgets: [],
@@ -663,6 +663,8 @@ describe("commit and diff", () => {
     // Against an explicit commit id (here the same base, spelled out).
     expect(await session.diff(c1)).toBe(diff);
     await expect(session.diff("feed".repeat(10))).rejects.toThrow(/not known/);
+    // Only full ids: knowing one is the capability to read the commit, and a prefix is guessable.
+    await expect(session.diff(c1.slice(0, 8))).rejects.toThrow(/not a full git commit id/);
   }));
 
   it("diff() reports EOF-newline changes with git's no-newline markers", () => withImpl(async impl => {

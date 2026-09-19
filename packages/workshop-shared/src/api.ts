@@ -3376,9 +3376,11 @@ export type AiToolCall = {
     bindingName: string;
 
     /**
-     * The git commit to root the worktree at: a full 40-hex oid or an unambiguous prefix,
-     * resolved against the workspace's local git store and its gatekeeper-provided metadata
-     * (never a remote lookup -- remote refs resolve through gatekeeper APIs first).
+     * The git commit to root the worktree at: a full 40-hex oid, resolved against the
+     * workspace's local git store and its gatekeeper-provided metadata (never a remote lookup --
+     * remote refs resolve through gatekeeper APIs first). Abbreviated ids are refused, since
+     * knowing a commit's id is the capability to read it; logs written before that may carry an
+     * unambiguous prefix.
      */
     commitId: string;
   };
@@ -3392,7 +3394,7 @@ export type AiToolCall = {
    *
    * `baseCommit` is the full oid `input.commitId` resolved to -- the commit the worktree is
    * rooted at, and its accepted commit until the chat's first accept of changes to it. Recorded
-   * because the input may be a prefix and the model is told the resolved oid. The creation pins
+   * because the input of an older log may be a prefix and the model is told the resolved oid. The creation pins
    * nothing: the worktree reads as its accepted commit until its first modification pins it
    * (see ChatGadgetPin), so replay serves untouched files from the pin when there is one and
    * from the accepted commit otherwise, never from this field.

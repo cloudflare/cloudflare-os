@@ -258,7 +258,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
   async diff(commitId?: string): Promise<string> {
     let base = this.#pinBase();
     let target = commitId !== undefined
-        ? this.host.gitCache.resolveCommitRef(commitId) : this.#head();
+        ? this.host.gitCache.resolveCommitId(commitId) : this.#head();
     let overlay = this.turn.getOverlayFiles(this.worktreeId);
     let removed = this.turn.getRemovedPaths(this.worktreeId);
 

@@ -1264,45 +1264,24 @@ describe("worktree read/write helpers", () => {
   });
 });
 
-describe("resolveCommitRef", () => {
-  it("resolves full oids and unambiguous prefixes of local commits", async () => {
+describe("resolveCommitId", () => {
+  it("resolves only full, exact commit ids", async () => {
     let t = makeCache();
     let tree = await storeLocal(t.storage, { type: "tree", payload: treePayload([]) });
     let commit = await storeLocal(t.storage,
         { type: "commit", payload: commitPayload(tree, [], "local") });
+    let remote = "aaaa1111".padEnd(40, "0");
+    t.storage.gitObjectMetadata.put(
+        { oid: remote, type: "blob", onRemote: [G1], pullableFrom: [], pendingPush: [] });
 
-    expect(t.cache.resolveCommitRef(commit)).toBe(commit);
-    expect(t.cache.resolveCommitRef(commit.slice(0, 8))).toBe(commit);
-    expect(t.cache.resolveCommitRef(commit.slice(0, 8).toUpperCase())).toBe(commit);
-    // The tree shares no 8-hex prefix with the commit (vanishingly unlikely), and a prefix
-    // matching only non-commits resolves to nothing.
-    expect(() => t.cache.resolveCommitRef(tree.slice(0, 8)))
-        .toThrow(/not known to this workspace/);
-    // A locally-present non-commit named in full is rejected by its decoded type.
-    expect(() => t.cache.resolveCommitRef(tree)).toThrow(`${tree} is a tree, not a commit.`);
-  });
-
-  it("rejects malformed, unknown, and ambiguous refs", async () => {
-    let t = makeCache();
-    // Fabricated metadata rows steer prefix matching without any stored objects.
-    let put = (oid: GitOid, type: "commit" | "blob") => t.storage.gitObjectMetadata.put(
-        { oid, type, onRemote: [G1], pullableFrom: [], pendingPush: [] });
-    put("aaaa1111".padEnd(40, "0"), "commit");
-    put("aaaa2222".padEnd(40, "0"), "commit");
-    put("bbbb1111".padEnd(40, "0"), "blob");
-
-    expect(() => t.cache.resolveCommitRef("xyz")).toThrow(/not a git commit id/);
-    expect(() => t.cache.resolveCommitRef("abc")).toThrow(/not a git commit id/);  // too short
-    expect(() => t.cache.resolveCommitRef("cccc")).toThrow(/not known to this workspace/);
-    expect(() => t.cache.resolveCommitRef("aaaa"))
-        .toThrow(/ambiguous between: aaaa1111.*aaaa2222/);
-    expect(t.cache.resolveCommitRef("aaaa1")).toBe("aaaa1111".padEnd(40, "0"));
-    // An asserted non-commit is filtered from prefix candidates (commit-bias makes the tag
-    // trustworthy for refusal-free filtering)...
-    expect(() => t.cache.resolveCommitRef("bbbb")).toThrow(/not known to this workspace/);
-    // ...but a full oid resolves regardless of its assertion-grade tag (the reader rule: the
-    // caller's pull lets the decoded bytes decide).
-    expect(t.cache.resolveCommitRef("bbbb1111".padEnd(40, "0")))
-        .toBe("bbbb1111".padEnd(40, "0"));
+    expect(t.cache.resolveCommitId(commit)).toBe(commit);
+    // The reader rule: an id known only from metadata resolves regardless of its recorded type
+    // (the caller's pull lets the decoded bytes decide).
+    expect(t.cache.resolveCommitId(remote)).toBe(remote);
+    for (let id of [commit.slice(0, 8), commit.slice(0, 39), commit.toUpperCase(), "main"]) {
+      expect(() => t.cache.resolveCommitId(id)).toThrow(/not a full git commit id/);
+    }
+    expect(() => t.cache.resolveCommitId("feed".repeat(10))).toThrow(/not known/);
+    expect(() => t.cache.resolveCommitId(tree)).toThrow(`${tree} is a tree, not a commit.`);
   });
 });
