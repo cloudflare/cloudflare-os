@@ -1,5 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
+import { MAX_TOTAL_TEXT_LENGTH, deckToPptx, measureText } from "@gadgets/bundled-blueprints/libraries/pptx/server";
 import type {
   Block,
   BlockInput,
@@ -32,10 +33,10 @@ import type {
  *   props: {...},         // type-specific (text, tone, etc.)
  * }
  *
- * All shape/render logic lives in client.js; the server is a dumb document
- * store with realtime broadcast. Mutations are coarse: any change re-sends
- * the whole deck, which keeps clients trivially in sync and makes undo
- * (future) easy.
+ * Interactive rendering lives in client.ts and PowerPoint rendering in the shared PPTX library;
+ * the server is a document store with realtime broadcast plus the export adapter. Mutations are
+ * coarse: any change re-sends the whole deck, which keeps clients trivially in sync and makes undo
+ * easy.
  *
  * The connected browsers are held by the sync library's SubscriberRegistry.
  * A deck has no presence — everyone sees the same slide data and cursors are
@@ -323,9 +324,9 @@ const GET_STARTED_SLIDE: Slide = {
       props: { text: "Use either approach, or switch between them at any time.",
         fontSize: 18, weight: 600, color: "#000000", family: "sans",
         align: "center", lineHeight: 1.4 } },
-    { id: "50db219e", type: "svg", x: 0, y: 663, w: 1200, h: 12,
-      props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none"><defs><linearGradient id="g"><stop stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/><stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#g)"/></svg>`,
-        fit: "stretch", background: "" } },
+    { id: "50db219e", type: "shape", x: 0, y: 663, w: 1200, h: 12,
+      props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
+        opacity: 1 } },
   ],
 };
 
@@ -344,9 +345,9 @@ const KEY_TAKEAWAYS_SLIDE: Slide = {
     { id: "2b48e66e", type: "svg", x: 36, y: 178, w: 1128, h: 430,
       props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1128 430" role="img" aria-label="Example bar chart showing connected internal data"><rect width="1128" height="430" fill="#fff"/><text x="0" y="25" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="600" fill="#000">Quarterly adoption</text><text x="0" y="49" font-family="Inter,Arial,sans-serif" font-size="12" fill="#747474">Illustrative data • refreshed from your system of record</text><g transform="translate(0 75)"><line x1="0" y1="280" x2="730" y2="280" stroke="#D9D9D9"/><line x1="0" y1="210" x2="730" y2="210" stroke="#EEEEEE"/><line x1="0" y1="140" x2="730" y2="140" stroke="#EEEEEE"/><line x1="0" y1="70" x2="730" y2="70" stroke="#EEEEEE"/><rect x="58" y="173" width="92" height="107" rx="2" fill="#FF6633"/><rect x="222" y="119" width="92" height="161" rx="2" fill="#F6821F"/><rect x="386" y="75" width="92" height="205" rx="2" fill="#FBAD41"/><rect x="550" y="26" width="92" height="254" rx="2" fill="#F6821F"/><g font-family="Inter,Arial,sans-serif" font-size="13" fill="#747474" text-anchor="middle"><text x="104" y="307">Q1</text><text x="268" y="307">Q2</text><text x="432" y="307">Q3</text><text x="596" y="307">Q4</text></g><g font-family="Inter,Arial,sans-serif" font-size="14" font-weight="600" fill="#000" text-anchor="middle"><text x="104" y="162">38</text><text x="268" y="108">57</text><text x="432" y="64">73</text><text x="596" y="15">91</text></g></g><g transform="translate(795 92)"><rect width="333" height="245" rx="2" fill="#FFF8F2" stroke="#F3D8C5"/><text x="24" y="38" font-family="Inter,Arial,sans-serif" font-size="11" font-weight="600" letter-spacing="1" fill="#FF6633">LIVE DATA, READY TO PRESENT</text><text x="24" y="78" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="600" fill="#000">Ask the agent to add chart</text><text x="24" y="104" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="600" fill="#000">from internal data source.</text><text x="24" y="145" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">Or connect an approved internal</text><text x="24" y="167" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">system of record so an agent can</text><text x="24" y="189" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">pull, shape, and refresh the data.</text><circle cx="27" cy="218" r="4" fill="#26A641"/><text x="41" y="223" font-family="Inter,Arial,sans-serif" font-size="12" font-weight="600" fill="#000">Connected source</text></g></svg>`,
         fit: "contain", background: "" } },
-    { id: "39af0189", type: "svg", x: 0, y: 663, w: 1200, h: 12,
-      props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none"><defs><linearGradient id="g"><stop stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/><stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#g)"/></svg>`,
-        fit: "stretch", background: "" } },
+    { id: "39af0189", type: "shape", x: 0, y: 663, w: 1200, h: 12,
+      props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
+        opacity: 1 } },
   ],
 };
 
@@ -379,9 +380,9 @@ const INITIAL_DECK: Deck = {
             lineHeight: 1.2, highlight: "" } },
         { id: "7221dd20", type: "logo", x: 1013, y: 40,
           props: { variant: "dark", scale: 0.62, text: "Workspace", accentDot: true } },
-        { id: "7a5a9052", type: "svg", x: 0, y: 663, w: 1200, h: 12,
-          props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none"><defs><linearGradient id="g"><stop stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/><stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#g)"/></svg>`,
-            fit: "stretch", background: "" } },
+        { id: "7a5a9052", type: "shape", x: 0, y: 663, w: 1200, h: 12,
+          props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
+            opacity: 1 } },
         { id: "ac789ac0", type: "text", x: 36, y: 184, w: 55,
           props: { text: "01", fontSize: 16, color: "#FF6633", weight: 600,
             family: "sans", align: "left", lineHeight: 1.2 } },
@@ -551,6 +552,7 @@ function defaultDeck(): Deck {
 const SLIDES_EXPORT_FORMATS = [
   { id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html" },
   { id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf" },
+  { id: "pptx", label: "PowerPoint", mode: "server", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", fileExtension: ".pptx" },
 ];
 
 export class ExportHandler extends WorkerEntrypoint {
@@ -558,7 +560,96 @@ export class ExportHandler extends WorkerEntrypoint {
     return SLIDES_EXPORT_FORMATS;
   }
 
-  async export(_gadget: GadgetStub, id: string): Promise<never> {
+  async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
+    if (id === "pptx") {
+      const deck = await gadget.getDeck();
+      return deckToPptx(normalizeDeckForPptx(deck));
+    }
     throw new Error("Unsupported slides export format: " + id);
   }
+}
+
+/**
+ * Rewrites this blueprint's `logo` blocks -- its brand mark, which the generic PowerPoint renderer
+ * does not know -- into a text block for the wordmark and an ellipse for the accent dot. Pure: the
+ * input is not modified, and work before the renderer is bounded by the renderer's text limit.
+ */
+export function normalizeDeckForPptx<T>(deck: T): T {
+  if (deck === null || typeof deck !== "object" || Array.isArray(deck)) return deck;
+  const deckSource = deck as Record<string, unknown>;
+  if (!Array.isArray(deckSource.slides)) return deck;
+
+  const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
+  let changed = false;
+  const slides = deckSource.slides.map((slide) => {
+    if (slide === null || typeof slide !== "object" || Array.isArray(slide)) return slide;
+    const slideSource = slide as Record<string, unknown>;
+    if (!Array.isArray(slideSource.blocks) || !slideSource.blocks.some(isLogoBlock)) return slide;
+    changed = true;
+    return {
+      ...slideSource,
+      blocks: slideSource.blocks.flatMap((block) => isLogoBlock(block) ? logoBlocks(block, budget) : block),
+    };
+  });
+  return (changed ? { ...deckSource, slides } : deck) as T;
+}
+
+function isLogoBlock(block: unknown): block is Record<string, unknown> & {type: "logo"} {
+  return block !== null && typeof block === "object" && !Array.isArray(block) &&
+    (block as Record<string, unknown>).type === "logo";
+}
+
+// The logo component's styling, from client.ts: a 24px bold wordmark tracked -0.02em at
+// line-height 1, then a 3px flex gap and a 6px dot whose bottom sits 1px above the baseline.
+const LOGO_FONT_PX = 24;
+const LOGO_TRACKING_EM = -0.02;
+const LOGO_GAP_PX = 3;
+const LOGO_DOT_PX = 6;
+
+function logoScale(value: unknown): number {
+  const scale = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
+  return scale && Number.isFinite(scale) ? Math.max(0.01, Math.min(20, scale)) : 1;
+}
+
+function logoBlocks(block: Record<string, unknown>, budget: {remaining: number}): Array<Record<string, unknown>> {
+  const rawProps = block.props;
+  const props = rawProps !== null && typeof rawProps === "object" && !Array.isArray(rawProps)
+    ? rawProps as Record<string, unknown>
+    : {};
+  const scale = logoScale(props.scale);
+  const x = Number(block.x);
+  const y = Number(block.y);
+  const fontSize = LOGO_FONT_PX * scale;
+  const tracking = LOGO_TRACKING_EM * fontSize;
+  const raw = props.text == null ? "Workspace" : typeof props.text === "object" ? "" : String(props.text);
+  budget.remaining -= raw.length;
+  if (budget.remaining < 0) return [{ type: "text", x, y, props: { text: raw } }];
+
+  const text = raw.replace(/[\t\n\r ]+/g, " ").trim();
+  const { width, ascent, lineHeight } = measureText(text, fontSize, 700, tracking);
+  const halfLeading = (lineHeight - fontSize) / 2;
+  const baseline = y + ascent - halfLeading;
+  const blocks: Array<Record<string, unknown>> = [{
+    type: "text",
+    x,
+    y: y - halfLeading,
+    w: Math.max(fontSize / 2, width * 1.02) + 8 * scale,
+    h: lineHeight,
+    props: {
+      text, fontSize, weight: 700, letterSpacing: `${LOGO_TRACKING_EM}em`,
+      lineHeight: lineHeight / fontSize, align: "left",
+      color: props.variant === "dark" ? "#000000" : "#FFFFFF",
+    },
+  }];
+  if (props.accentDot !== false) {
+    blocks.push({
+      type: "shape",
+      x: x + (text ? width + tracking : 0) + LOGO_GAP_PX * scale,
+      y: baseline - (LOGO_DOT_PX + 1) * scale,
+      w: LOGO_DOT_PX * scale,
+      h: LOGO_DOT_PX * scale,
+      props: { kind: "ellipse", fill: "#F6821F" },
+    });
+  }
+  return blocks;
 }
