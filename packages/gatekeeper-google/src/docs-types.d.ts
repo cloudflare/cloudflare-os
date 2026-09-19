@@ -37,6 +37,8 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * - Plain paragraphs (separated by blank lines)
    *
    * Unsupported Markdown features (tables, images, code blocks, etc.) are inserted as plain text.
+   * Existing structural content and paragraphs containing elements such as smart chips are
+   * read-only. Narrow the match to plain text in another paragraph.
    *
    * A subsequent `getContent(tabId)` call reflects this replacement.
    */

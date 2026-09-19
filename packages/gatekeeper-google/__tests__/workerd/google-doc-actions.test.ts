@@ -1,6 +1,8 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocActionTab } from "../../src/google";
+import type { GoogleDocsTab } from "../../src/docs-api";
+import { buildTab } from "../doc-fixture";
 
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
 type DocCoordinate = { tabId?: string };
@@ -10,13 +12,53 @@ type BatchRequest = {
   deleteNamedRange?: { namedRangeId: string };
   insertText?: { location: DocCoordinate & { index: number }; text: string };
   deleteContentRange?: { range: DocCoordinate & { startIndex: number; endIndex: number } };
-  updateParagraphStyle?: { range: DocCoordinate };
-  createParagraphBullets?: { range: DocCoordinate };
-  updateTextStyle?: { range: DocCoordinate };
+  updateParagraphStyle?: {
+    range: DocCoordinate & { startIndex: number; endIndex: number };
+    paragraphStyle: { namedStyleType?: string };
+  };
+  createParagraphBullets?: {
+    range: DocCoordinate & { startIndex: number; endIndex: number };
+    bulletPreset: string;
+  };
+  deleteParagraphBullets?: {
+    range: DocCoordinate & { startIndex: number; endIndex: number };
+  };
+  updateTextStyle?: {
+    range: DocCoordinate & { startIndex: number; endIndex: number };
+    textStyle?: { link?: { url: string } };
+    fields?: string;
+  };
 };
 
+type ModelListItem = { id: string; preset: string };
+
 /** One tab of the model document: its own text, and its place in the tab tree. */
-type ModelTab = { id: string; title: string; parentId?: string; text: string };
+type ModelTab = {
+  id: string;
+  title: string;
+  parentId?: string;
+  text: string;
+  table?: { before: string; rows: string[][]; after: string };
+  body?: GoogleDocsTab["body"];
+  links: { start: number; end: number; url: string }[];
+  paragraphStyles?: string[];
+  paragraphLists?: (ModelListItem | null)[];
+};
+
+function withoutDeletedParagraphs<T>(
+  text: string,
+  values: T[],
+  start: number,
+  end: number,
+): T[] {
+  let kept: T[] = [];
+  let paragraph = 0;
+  for (let index = text.indexOf("\n"); index !== -1; index = text.indexOf("\n", index + 1)) {
+    if (index < start || index >= end) kept.push(values[paragraph]);
+    paragraph++;
+  }
+  return kept;
+}
 
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
 const MAIN_TAB = "tab-1";
@@ -45,9 +87,10 @@ class DocsModel {
   /** Tab each write marker was anchored in, retained after cleanup deletes the marker. */
   readonly markerTabIds: string[] = [];
   /** Every tab in preorder; the first is the one a single-tab document has. */
-  readonly tabs: ModelTab[] = [{ id: MAIN_TAB, title: "Main", text: "" }];
+  readonly tabs: ModelTab[] = [{ id: MAIN_TAB, title: "Main", text: "", links: [] }];
   #revision = 1;
   #nextMarkerId = 1;
+  #nextListId = 1;
   readonly #held = new Map<BatchKind, { reach: () => void; released: Promise<void> }>();
 
   install(): void {
@@ -61,7 +104,7 @@ class DocsModel {
   }
 
   addTab(id: string, title: string, parentId: string, text = ""): void {
-    this.tabs.push({ id, title, parentId, text });
+    this.tabs.push({ id, title, parentId, text, links: [] });
   }
 
   removeTab(id: string): void {
@@ -73,8 +116,48 @@ class DocsModel {
     this.#tab(tabId).text = text;
   }
 
+  setLinkedText(tabId: string, text: string, url: string): void {
+    let tab = this.#tab(tabId);
+    tab.text = text;
+    tab.links = [{ start: 0, end: text.length, url }];
+  }
+
+  setParagraphs(
+    tabId: string, paragraphs: { text: string; namedStyleType: string }[],
+  ): void {
+    let tab = this.#tab(tabId);
+    tab.text = paragraphs.map(paragraph => paragraph.text).join("\n");
+    tab.paragraphStyles = paragraphs.map(paragraph => paragraph.namedStyleType);
+  }
+
+  setNumberedList(tabId: string, items: string[]): void {
+    let tab = this.#tab(tabId);
+    let list = { id: `list-${this.#nextListId++}`, preset: "NUMBERED_DECIMAL_ALPHA_ROMAN" };
+    tab.text = items.join("\n");
+    tab.paragraphLists = items.map(() => list);
+  }
+
+  setTable(tabId: string, before: string, rows: string[][], after: string): void {
+    this.#tab(tabId).table = { before, rows, after };
+  }
+  setBody(tabId: string, body: GoogleDocsTab["body"]): void {
+    this.#tab(tabId).body = body;
+  }
+
   text(tabId = MAIN_TAB): string {
     return this.#tab(tabId).text;
+  }
+
+  renderedText(tabId = MAIN_TAB): string {
+    let tab = this.#tab(tabId);
+    let counts = new Map<string, number>();
+    return tab.text.split("\n").map((text, index) => {
+      let list = tab.paragraphLists?.[index];
+      if (!list) return text;
+      let number = (counts.get(list.id) ?? 0) + 1;
+      counts.set(list.id, number);
+      return `${number}. ${text}`;
+    }).join("\n");
   }
 
   clearMarkers(): void {
@@ -156,7 +239,8 @@ class DocsModel {
       // the ID would edit whichever tab that happens to be.
       let coordinate = request.createNamedRange?.range ?? request.insertText?.location ??
         request.deleteContentRange?.range ?? request.updateParagraphStyle?.range ??
-        request.createParagraphBullets?.range ?? request.updateTextStyle?.range;
+        request.createParagraphBullets?.range ?? request.deleteParagraphBullets?.range ??
+        request.updateTextStyle?.range;
       if (!coordinate?.tabId) {
         throw new Error(`Google Docs request is missing tabId: ${JSON.stringify(request)}`);
       }
@@ -172,11 +256,31 @@ class DocsModel {
 
       hasContent = true;
       if (request.insertText) {
-        let offset = request.insertText.location.index - 1;
-        tab.text = tab.text.slice(0, offset) + request.insertText.text + tab.text.slice(offset);
+        this.#insertText(
+          tab, request.insertText.location.index, request.insertText.text,
+        );
       } else if (request.deleteContentRange) {
         let { startIndex, endIndex } = request.deleteContentRange.range;
-        tab.text = tab.text.slice(0, startIndex - 1) + tab.text.slice(endIndex - 1);
+        this.#deleteText(tab, startIndex, endIndex);
+      } else if (request.updateParagraphStyle?.paragraphStyle.namedStyleType) {
+        this.#setParagraphStyle(
+          tab, request.updateParagraphStyle.range,
+          request.updateParagraphStyle.paragraphStyle.namedStyleType,
+        );
+      } else if (request.deleteParagraphBullets) {
+        this.#setBullets(tab, request.deleteParagraphBullets.range);
+      } else if (request.createParagraphBullets) {
+        this.#setBullets(
+          tab, request.createParagraphBullets.range, request.createParagraphBullets.bulletPreset,
+        );
+      } else if (request.updateTextStyle && (
+        request.updateTextStyle.textStyle?.link || request.updateTextStyle.fields?.includes("link")
+      )) {
+        let { startIndex, endIndex } = request.updateTextStyle.range;
+        this.#setLink(
+          tab, startIndex - 1, endIndex - 1,
+          request.updateTextStyle.textStyle?.link?.url,
+        );
       }
       replies.push({});
     }
@@ -192,6 +296,174 @@ class DocsModel {
       replies,
       writeControl: { requiredRevisionId: `revision-${this.#revision}` },
     });
+  }
+
+  #insertText(tab: ModelTab, index: number, text: string): void {
+    if (tab.table) {
+      this.#replaceTableText(tab, index, index, text);
+      return;
+    }
+    let offset = index - 1;
+    let paragraph = tab.text.slice(0, offset).split("\n").length - 1;
+    let insertedParagraphs = text.split("\n").length - 1;
+    if (tab.paragraphStyles) {
+      let style = tab.paragraphStyles[paragraph];
+      tab.paragraphStyles.splice(paragraph, 0, ...Array(insertedParagraphs).fill(style));
+    }
+    if (tab.paragraphLists) {
+      let list = tab.paragraphLists[paragraph] ?? null;
+      tab.paragraphLists.splice(paragraph, 0, ...Array(insertedParagraphs).fill(list));
+    }
+    for (const link of tab.links) {
+      if (link.start >= offset) {
+        link.start += text.length;
+        link.end += text.length;
+      } else if (link.end > offset) {
+        link.end += text.length;
+      }
+    }
+    tab.text = tab.text.slice(0, offset) + text + tab.text.slice(offset);
+  }
+
+  #deleteText(tab: ModelTab, startIndex: number, endIndex: number): void {
+    if (tab.table) {
+      this.#replaceTableText(tab, startIndex, endIndex, "");
+      return;
+    }
+    let start = startIndex - 1;
+    let end = endIndex - 1;
+    let removed = end - start;
+    let fullText = `${tab.text}\n`;
+    if (tab.paragraphStyles) {
+      tab.paragraphStyles = withoutDeletedParagraphs(fullText, tab.paragraphStyles, start, end);
+    }
+    if (tab.paragraphLists) {
+      tab.paragraphLists = withoutDeletedParagraphs(fullText, tab.paragraphLists, start, end);
+    }
+    let links: ModelTab["links"] = [];
+    for (const link of tab.links) {
+      if (link.end <= start) links.push(link);
+      else if (link.start >= end) {
+        links.push({ ...link, start: link.start - removed, end: link.end - removed });
+      } else {
+        if (link.start < start) links.push({ ...link, end: start });
+        if (link.end > end) {
+          links.push({ ...link, start, end: link.end - removed });
+        }
+      }
+    }
+    tab.links = this.#normalizeLinks(links);
+    tab.text = tab.text.slice(0, start) + tab.text.slice(end);
+  }
+
+  #setBullets(
+    tab: ModelTab,
+    range: { startIndex: number; endIndex: number },
+    preset?: string,
+  ): void {
+    let lists = tab.paragraphLists;
+    if (!lists) return;
+    let start = range.startIndex - 1;
+    let end = range.endIndex - 1;
+    let offset = 0;
+    let indexes = tab.text.split("\n").flatMap((text, index) => {
+      let paragraphEnd = offset + text.length + 1;
+      let overlaps = offset < end && paragraphEnd > start;
+      offset = paragraphEnd;
+      return overlaps ? [index] : [];
+    });
+    if (!preset) {
+      for (let index of indexes) lists[index] = null;
+      return;
+    }
+    let first = indexes[0];
+    if (first === undefined) return;
+    let preceding = lists[first - 1];
+    let id = preceding?.preset === preset ? preceding.id : `list-${this.#nextListId++}`;
+    for (let index of indexes) lists[index] = { id, preset };
+  }
+
+  #setLink(tab: ModelTab, start: number, end: number, url?: string): void {
+    let links: ModelTab["links"] = [];
+    for (const link of tab.links) {
+      if (link.end <= start || link.start >= end) links.push(link);
+      else {
+        if (link.start < start) links.push({ ...link, end: start });
+        if (link.end > end) links.push({ ...link, start: end });
+      }
+    }
+    if (url) links.push({ start, end, url });
+    tab.links = this.#normalizeLinks(links);
+  }
+
+  #normalizeLinks(links: ModelTab["links"]): ModelTab["links"] {
+    links.sort((a, b) => a.start - b.start || a.end - b.end);
+    let normalized: ModelTab["links"] = [];
+    for (const link of links) {
+      if (link.start === link.end) continue;
+      let previous = normalized.at(-1);
+      if (previous?.url === link.url && previous.end >= link.start) {
+        previous.end = Math.max(previous.end, link.end);
+      } else {
+        normalized.push({ ...link });
+      }
+    }
+    return normalized;
+  }
+
+  #setParagraphStyle(
+    tab: ModelTab,
+    range: { startIndex: number; endIndex: number },
+    namedStyleType: string,
+  ): void {
+    let styles = tab.paragraphStyles ??=
+      tab.text.split("\n").map(() => "NORMAL_TEXT");
+    let startIndex = 1;
+    for (let [index, paragraph] of tab.text.split("\n").entries()) {
+      let endIndex = startIndex + paragraph.length + 1;
+      if (range.startIndex < endIndex && range.endIndex > startIndex) {
+        styles[index] = namedStyleType;
+      }
+      startIndex = endIndex;
+    }
+  }
+
+  #replaceTableText(
+    tab: ModelTab, startIndex: number, endIndex: number, replacement: string,
+  ): void {
+    let table = tab.table;
+    if (!table) throw new Error("Expected a table-backed tab");
+    let start = this.#tableTextPoint(table, startIndex);
+    let end = this.#tableTextPoint(table, endIndex);
+    if (!start || !end || start.field !== end.field) {
+      throw new Error("Fixture cannot edit table structure");
+    }
+    let text = table[start.field];
+    table[start.field] = text.slice(0, start.offset) + replacement + text.slice(end.offset);
+  }
+
+  #tableTextPoint(table: NonNullable<ModelTab["table"]>, index: number): {
+    field: "before" | "after";
+    offset: number;
+  } | undefined {
+    let content = this.#tableBody(table).content;
+    let paragraphs = [
+      { field: "before" as const, element: content[1] },
+      { field: "after" as const, element: content.at(-1)! },
+    ];
+    for (const { field, element } of paragraphs) {
+      if (index >= element.startIndex && index <= element.endIndex - 1) {
+        return { field, offset: index - element.startIndex };
+      }
+    }
+  }
+
+  #tableBody(table: NonNullable<ModelTab["table"]>): GoogleDocsTab["body"] {
+    return buildTab([
+      { runs: [`${table.before}\n`] },
+      { table: table.rows.map(row => row.map(cell => `${cell}\n`)) },
+      { runs: [`${table.after}\n`] },
+    ]).body;
   }
 
   /** Blocks a held write until the test releases it. One hold, so a retry is never held twice. */
@@ -221,25 +493,42 @@ class DocsModel {
       (namedRanges[marker.name] ??= { namedRanges: [] })
         .namedRanges.push({ namedRangeId, name: marker.name });
     }
+    let body = tab.body;
+    if (!body && tab.table) body = this.#tableBody(tab.table);
+    let lists: GoogleDocsTab["lists"] = {};
+    let paragraphLists = tab.paragraphLists;
+    let paragraphStyles = tab.paragraphStyles;
+    // One paragraph per line, carrying whichever of the per-paragraph attributes this tab has.
+    let paragraphBody = () => buildTab(tab.text.split("\n").map((paragraphText, index) => ({
+      runs: [`${paragraphText}\n`],
+      namedStyleType: paragraphStyles?.[index],
+      ...paragraphLists?.[index] ? { bullet: { listId: paragraphLists[index]!.id } } : {},
+    })), lists).body;
+
+    if (!body && paragraphLists) {
+      for (let item of paragraphLists) {
+        if (item) {
+          lists[item.id] ??= { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } };
+        }
+      }
+      body = paragraphBody();
+    }
+    if (!body && tab.links.length > 0) {
+      let textCursor = 0;
+      let runs: ({ text: string; style: { link: { url: string } } } | string)[] = [];
+      for (const link of tab.links) {
+        if (link.start > textCursor) runs.push(text.slice(textCursor, link.start));
+        runs.push({ text: text.slice(link.start, link.end), style: { link: { url: link.url } } });
+        textCursor = link.end;
+      }
+      if (textCursor < text.length) runs.push(text.slice(textCursor));
+      body = buildTab([{ runs, namedStyleType: paragraphStyles?.[0] }]).body;
+    }
+    if (!body && paragraphStyles) body = paragraphBody();
+    body ??= buildTab([{ runs: [text] }]).body;
     return {
       tabProperties: { tabId: tab.id, title: tab.title },
-      documentTab: {
-        body: {
-          content: [{
-            startIndex: 1,
-            endIndex: text.length + 1,
-            paragraph: {
-              elements: [{
-                startIndex: 1, endIndex: text.length + 1,
-                textRun: { content: text, textStyle: {} },
-              }],
-              paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
-            },
-          }],
-        },
-        lists: {},
-        namedRanges,
-      },
+      documentTab: { body, lists, namedRanges },
       childTabs: this.tabs.filter(child => child.parentId === tab.id)
         .map(child => this.#documentTab(child)),
     };
@@ -266,6 +555,131 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Google Doc tables", () => {
+  it("returns table cells with their row structure", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Before", [["Owner", "Status"], ["Alice", "Ready"]], "After");
+    docs.install();
+
+    await expect(hooks().readContent("table-read")).resolves.toContain(
+      "<tr>\n    <td><p>Alice</p></td>\n    <td><p>Ready</p></td>\n  </tr>",
+    );
+  });
+
+  it("applies and rereads text after a table", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Before", [["Owner", "Status"]], "After");
+    docs.install();
+    let actionId = await hooks().submitReplace("table-after", "After", "Later");
+
+    expect(await hooks().applyAction("table-after", actionId)).toBeNull();
+    expect(await hooks().readContent("table-after")).toContain("\n\nLater\n");
+  });
+
+  it("uses unchanged table context to disambiguate an edit", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Repeat", [["Owner"]], "Repeat");
+    docs.install();
+    let content = await hooks().readContent("table-context");
+    let oldMarkdown = content.trimEnd();
+    let newMarkdown = oldMarkdown.replace(/Repeat$/, "Updated");
+    let actionId = await hooks().submitReplace("table-context", oldMarkdown, newMarkdown);
+
+    expect(await hooks().readContent("table-context")).toBe(
+      content.replace(/Repeat\n$/, "Updated\n"),
+    );
+    expect(await hooks().applyAction("table-context", actionId)).toBeNull();
+    expect(await hooks().readContent("table-context")).toBe(
+      content.replace(/Repeat\n$/, "Updated\n"),
+    );
+  });
+
+  it("rejects an edit spanning a table before requesting approval", async () => {
+    let docs = new DocsModel();
+    docs.setTable(MAIN_TAB, "Before", [["Owner", "Alice"]], "After");
+    docs.install();
+    await hooks().submitReplace("table-edit", "Before", "Long before");
+    let content = await hooks().readContent("table-edit");
+
+    await expect(Promise.resolve(
+      hooks().submitReplace("table-edit", content.trimEnd(), "Updated"),
+    )).rejects.toThrow("replaceText: structured content cannot be edited");
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(docs.contentBatches).toBe(0);
+  });
+});
+
+describe("Google Doc structured elements", () => {
+  it("rejects a rich-link URL edit before requesting approval", async () => {
+    let docs = new DocsModel();
+    docs.setBody(MAIN_TAB, buildTab([{ runs: [
+      "See ",
+      { richLink: { title: "Launch plan", uri: "https://docs.google.com/document/d/plan" } },
+      " today\n",
+    ] }]).body);
+    docs.install();
+
+    await expect(Promise.resolve(hooks().submitReplace(
+      "chip-url", "https://docs.google.com/document/d/plan", "https://example.com/new",
+    ))).rejects.toThrow("replaceText: structured content cannot be edited");
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("rejects insertion at a protected paragraph boundary", async () => {
+    let docs = new DocsModel();
+    let tab = buildTab([{ runs: ["Caption\n"] }]);
+    tab.body.content[1].paragraph!.positionedObjectIds = ["image-1"];
+    docs.setBody(MAIN_TAB, tab.body);
+    docs.install();
+
+    await expect(Promise.resolve(hooks().submitReplace(
+      "image-boundary", "[Image] Caption", "X[Image] Caption",
+    ))).rejects.toThrow("structured content cannot be edited");
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("applies a heading immediately before structured content", async () => {
+    let docs = new DocsModel();
+    docs.setBody(MAIN_TAB, buildTab([
+      { runs: ["Before\n"] },
+      { runs: [{ date: "Sep 16, 2026" }, "\n"] },
+    ]).body);
+    docs.install();
+    let actionId = await hooks().submitReplace("heading-before-chip", "Before", "# Before");
+
+    expect(await hooks().applyAction("heading-before-chip", actionId)).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+  });
+});
+
+describe("Google Doc list edits", () => {
+  it("prepends an item to the existing numbered list", async () => {
+    let docs = new DocsModel();
+    docs.setNumberedList(MAIN_TAB, ["Existing"]);
+    docs.install();
+    let actionId = await hooks().submitReplace(
+      "prepend-list", "1. Existing", "1. New\n1. Existing",
+    );
+
+    await hooks().applyAction("prepend-list", actionId);
+
+    expect(docs.renderedText()).toBe("1. New\n2. Existing");
+  });
+
+  it("rewrites multiple items in one numbered list", async () => {
+    let docs = new DocsModel();
+    docs.setNumberedList(MAIN_TAB, ["First", "Second"]);
+    docs.install();
+    let actionId = await hooks().submitReplace(
+      "rewrite-list", "1. First\n1. Second", "1. Changed first\n1. Changed second",
+    );
+
+    expect(await hooks().applyAction("rewrite-list", actionId)).toBeNull();
+    expect(docs.renderedText()).toBe("1. Changed first\n2. Changed second");
+  });
+});
+
 describe("Google Doc write receipts", () => {
   it("applies content once and immediately deletes its exact marker", async () => {
     let docs = new DocsModel();
@@ -279,6 +693,233 @@ describe("Google Doc write receipts", () => {
     expect(docs.deletedMarkerIds).toEqual(["marker-1"]);
     expect(docs.markers.size).toBe(0);
     expect(await hooks().applyAction("normal", actionId)).toMatch(/Unknown pending/);
+  });
+
+  it("replays a queued edit after applying an escaped parenthesized link", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let link = "[link](https://en.wikipedia.org/wiki/Function_\\(mathematics\\))";
+    let firstId = await hooks().submitReplace("escaped-link-replay", "target", link);
+    let secondId = await hooks().submitReplace(
+      "escaped-link-replay", link, `${link} after`,
+    );
+
+    expect(await hooks().applyAction("escaped-link-replay", firstId)).toBeNull();
+    expect(await hooks().applyAction("escaped-link-replay", secondId)).toBeNull();
+    expect(await hooks().readContent("escaped-link-replay")).toContain(`${link} after`);
+  });
+
+  it("replays a queued edit using its rendered Markdown", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let firstId = await hooks().submitReplace("escaped-replay", "target", String.raw`\* literal`);
+    let rendered = await hooks().readContent("escaped-replay");
+    let secondId = await hooks().submitReplace("escaped-replay", rendered.trimEnd(), "updated");
+
+    expect(rendered).toBe("* literal\n");
+    expect(await hooks().applyAction("escaped-replay", firstId)).toBeNull();
+    expect(await hooks().applyAction("escaped-replay", secondId)).toBeNull();
+    expect(await hooks().readContent("escaped-replay")).toBe("updated\n");
+  });
+
+  it("queues a dependent edit with canonical replacement formatting", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let facet = "formatted-link-replacement";
+    await hooks().submitReplace(facet, "target", "**[x](https://e.com)**");
+    let rendered = await hooks().readContent(facet);
+    await hooks().submitReplace(facet, rendered.trimEnd(), "updated");
+
+    expect(rendered).toBe("[**x**](https://e.com)\n");
+    expect(await hooks().readContent(facet)).toBe("updated\n");
+  });
+
+  it("matches literal backslashes exactly", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, String.raw`Path \*.txt`);
+    docs.install();
+    let actionId = await hooks().submitReplace("literal-backslash", String.raw`\*.txt`, "files");
+
+    expect(await hooks().applyAction("literal-backslash", actionId)).toBeNull();
+    expect(await hooks().readContent("literal-backslash")).toBe("Path files\n");
+  });
+
+  it("commits whitespace when replacing a heading", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "Title", namedStyleType: "HEADING_1" }]);
+    docs.install();
+    let actionId = await hooks().submitReplace("heading-whitespace", "# Title", "   ");
+
+    expect(await hooks().readContent("heading-whitespace")).toBe("   \n");
+    await hooks().applyAction("heading-whitespace", actionId);
+
+    expect(docs.text()).toBe("   ");
+    expect(await hooks().readContent("heading-whitespace")).toBe("   \n");
+  });
+
+  it("resets subtitle style when expanding into plain paragraphs", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "Subtitle", namedStyleType: "SUBTITLE" }]);
+    docs.install();
+    let actionId = await hooks().submitReplace(
+      "subtitle-expansion", "*Subtitle*", "first\n\nsecond",
+    );
+
+    expect(await hooks().readContent("subtitle-expansion")).toBe("first\n\nsecond\n");
+    await hooks().applyAction("subtitle-expansion", actionId);
+
+    expect(await hooks().readContent("subtitle-expansion")).toBe("first\n\nsecond\n");
+  });
+
+  it("commits the same escaped replacement it simulates", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "x*");
+    docs.install();
+    let actionId = await hooks().submitReplace("escaped-suffix", "x*", String.raw`y\*`);
+
+    expect(await hooks().readContent("escaped-suffix")).toBe("y*\n");
+    await hooks().applyAction("escaped-suffix", actionId);
+
+    expect(docs.text()).toBe("y*");
+    expect(await hooks().readContent("escaped-suffix")).toBe("y*\n");
+  });
+
+  it("preserves paragraph styles through a same-count rewrite", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [
+      { text: "Old", namedStyleType: "HEADING_1" },
+      { text: "Body", namedStyleType: "NORMAL_TEXT" },
+    ]);
+    docs.install();
+    let actionId = await hooks().submitReplace(
+      "styled-rewrite", "# Old\n\nBody", "# New\n\nChanged",
+    );
+
+    expect(await hooks().applyAction("styled-rewrite", actionId)).toBeNull();
+    expect(await hooks().readContent("styled-rewrite")).toBe("# New\n\nChanged\n");
+  });
+
+  it("preserves a closing bracket in a linked label through a heading rewrite", async () => {
+    let docs = new DocsModel();
+    docs.setLinkedText(MAIN_TAB, "a]b", "https://e.com");
+    docs.install();
+    let link = "[a\\]b](https://e.com)";
+    let actionId = await hooks().submitReplace("linked-heading", link, `# ${link}`);
+
+    expect(await hooks().readContent("linked-heading")).toBe(`# ${link}\n`);
+    await hooks().applyAction("linked-heading", actionId);
+
+    expect(await hooks().readContent("linked-heading")).toBe(`# ${link}\n`);
+  });
+
+  it("replays an insertion inside an escaped link label", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let link = "[a\\]b](https://example.com)";
+    let editedLink = "[a\\]c](https://example.com)";
+    let firstId = await hooks().submitReplace("linked-label-replay", "target", link);
+    let secondId = await hooks().submitReplace("linked-label-replay", link, editedLink);
+
+    expect(await hooks().applyAction("linked-label-replay", firstId)).toBeNull();
+    expect(await hooks().applyAction("linked-label-replay", secondId)).toBeNull();
+    expect(await hooks().readContent("linked-label-replay")).toBe(`${editedLink}\n`);
+  });
+
+  it("replays an append containing an escaped link label", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let link = "[a\\]b](https://example.com)";
+    let editedLink = "[a\\]c](https://example.com)";
+    let firstId = await hooks().submitAppend("linked-label-append", link);
+    let secondId = await hooks().submitReplace("linked-label-append", link, editedLink);
+
+    expect(await hooks().applyAction("linked-label-append", firstId)).toBeNull();
+    expect(await hooks().applyAction("linked-label-append", secondId)).toBeNull();
+    expect(await hooks().readContent("linked-label-append")).toBe(`base\n${editedLink}\n`);
+  });
+
+  it("simulates an append with canonical formatting nesting", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    await hooks().submitAppend("formatted-link-append", "**[x](https://e.com)**");
+    await hooks().submitReplace(
+      "formatted-link-append", "[**x**](https://e.com)", "[**y**](https://e.com)",
+    );
+
+    expect(await hooks().readContent("formatted-link-append")).toBe(
+      "base\n\n[**y**](https://e.com)\n",
+    );
+  });
+  it.each([
+    ["bold", String.raw`\*\*literal\*\*`, "**literal**"],
+    ["heading", String.raw`\# title`, "# title"],
+    ["numbered", String.raw`1\. item`, "1. item"],
+  ])("appends escaped Markdown as literal text", async (name, markdown, expected) => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "base", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let facet = `escaped-append-${name}`;
+    let actionId = await hooks().submitAppend(facet, markdown);
+
+    expect(await hooks().readContent(facet)).toBe(`base\n\n${expected}\n`);
+    await hooks().applyAction(facet, actionId);
+
+    expect(docs.text()).toBe(`base\n${expected}`);
+    expect(await hooks().readContent(facet)).toBe(`base\n\n${expected}\n`);
+  });
+
+  it.each([
+    ["spaces", "   ", "base\n\n   \n"],
+    ["tab", "\t", "base\n\n\t\n"],
+    ["multiple lines", "  \n\t", "base\n\n  \n\n\t\n"],
+  ])("preserves a whitespace-only append with %s", async (name, markdown, rendered) => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "base", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let facet = `whitespace-append-${name}`;
+    let actionId = await hooks().submitAppend(facet, markdown);
+
+    expect(await hooks().readContent(facet)).toBe(rendered);
+    await hooks().applyAction(facet, actionId);
+
+    expect(docs.text()).toBe(`base\n${markdown}`);
+    expect(await hooks().readContent(facet)).toBe(rendered);
+  });
+
+  it("simulates an append ending in an empty paragraph exactly", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "base", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let actionId = await hooks().submitAppend("appended-empty-paragraph", "added\n\n");
+    let preview = await hooks().readContent("appended-empty-paragraph");
+
+    expect(preview).toBe("base\n\nadded\n\n\n");
+    await hooks().applyAction("appended-empty-paragraph", actionId);
+    expect(await hooks().readContent("appended-empty-paragraph")).toBe(preview);
+  });
+
+  it("replays a dependent edit after appending to a trailing empty paragraph", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [
+      { text: "base", namedStyleType: "NORMAL_TEXT" },
+      { text: "", namedStyleType: "NORMAL_TEXT" },
+    ]);
+    docs.install();
+    let firstId = await hooks().submitAppend("trailing-empty-append", "added");
+    let content = await hooks().readContent("trailing-empty-append");
+    let secondId = await hooks().submitReplace(
+      "trailing-empty-append", content.trimEnd(), "changed",
+    );
+
+    expect(await hooks().applyAction("trailing-empty-append", firstId)).toBeNull();
+    expect(await hooks().applyAction("trailing-empty-append", secondId)).toBeNull();
+    expect(await hooks().readContent("trailing-empty-append")).toBe("changed\n");
   });
 
   it("reconciles a committed write after its response is lost", async () => {
@@ -667,7 +1308,6 @@ describe("Google Doc tab isolation", () => {
     let docs = nestedDocs();
     await hooks().submitReplace("tabs-invalidate", "shared", "changed", "metrics");
     let mainId = await hooks().submitAppend("tabs-invalidate", "beta", MAIN_TAB);
-
     // A collaborator rewrites Metrics, so the replace no longer matches. The append targets a
     // different tab whose text never moved, so it must survive and stop waiting behind it.
     docs.externalEdit("metrics", "rewritten");
@@ -700,18 +1340,19 @@ describe("Google Doc tab isolation", () => {
   });
 });
 
+function tabSnapshot(tabId: string, title: string) {
+  return {
+    tabId, title, index: 0, nestingLevel: 0,
+    markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
+    committedWriteIds: [],
+  };
+}
+
 // A stored edit with no tab predates tab support. No current write path produces one, so this is
 // the only place the migration refusal can be reached.
 describe("Google Doc edits stored before tab support", () => {
-  function tabSnapshot(tabId: string, title: string) {
-    return {
-      tabId, title, index: 0, nestingLevel: 0,
-      markdown: "shared\n", sourceMap: { blocks: [] }, bodyEndIndex: 8,
-      committedWriteIds: [],
-    };
-  }
-
   const snapshot = {
+    formatVersion: 3 as const,
     title: "Test document",
     revisionId: "revision-1",
     tabs: [tabSnapshot(MAIN_TAB, "Main")],

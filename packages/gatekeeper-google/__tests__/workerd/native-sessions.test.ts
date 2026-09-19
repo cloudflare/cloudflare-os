@@ -8,6 +8,7 @@ import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import { buildTab } from "../doc-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -80,6 +81,19 @@ function docTab(tabId: string, title: string, text: string, childTabs: unknown[]
       namedRanges: {},
     },
     childTabs,
+  };
+}
+
+function tableDocTab() {
+  let tab = buildTab([
+    { runs: ["Before\n"] },
+    { table: [["Owner\n", "Status\n"], ["Alice\n", "Ready\n"]] },
+    { runs: ["After\n"] },
+  ]);
+  return {
+    tabProperties: { tabId: "solo", title: "Solo" },
+    documentTab: { body: tab.body, lists: {}, namedRanges: {} },
+    childTabs: [],
   };
 }
 
@@ -167,6 +181,16 @@ describe("Drive nested native sessions", () => {
       lastModified: new Date("2026-08-20T12:00:00Z"),
     });
     expect(await doc.getContent()).toBe("");
+  });
+
+  it("returns table cells from a Drive-opened Doc", async () => {
+    providerTabs = [tableDocTab()];
+    using session = newSession().session;
+    using doc = await session.openGoogleDoc("doc-1");
+
+    await expect(doc.getContent()).resolves.toContain(
+      "<tr>\n    <td><p>Alice</p></td>\n    <td><p>Ready</p></td>\n  </tr>",
+    );
   });
 
   it("returns the existing Sheet target with bounded range validation", async () => {
