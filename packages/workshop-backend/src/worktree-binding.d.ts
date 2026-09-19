@@ -163,8 +163,17 @@ export interface Worktree {
    * Returns the diff in a format similar to `git diff`. An empty string means no differences.
    * Paths that cannot be rendered as text (binary/over-limit files, symlinks, submodules)
    * contribute a note instead of a diff.
+   *
+   * This format is intended to be viewed by a human or agent. Do not try to parse it; if you
+   * intend to operate on the result programmatically, use `structuredDiff()` instead.
    */
   diff(commitId?: string): Promise<string>;
+
+  /**
+   * Like diff but returns a structured format useful for analyzing in code. The paths `diff()`
+   * would render as a note are reported in `errors`.
+   */
+  structuredDiff(commitId?: string): Promise<StructuredDiffResult>;
 
   // TODO(someday):
   // - merge?
@@ -218,4 +227,75 @@ export type GrepMatch = {
 
   /** Contents of the line that matched. */
   text: string;
+};
+
+/** Result of `structuredDiff()`. */
+export type StructuredDiffResult = {
+  /** Every file that differs, ordered by path. */
+  files: DiffFile[];
+
+  /**
+   * Paths that differ but could not be diffed as text: symlinks, submodules, and binary or
+   * over-limit content (on either side).
+   */
+  errors: DiffFileError[];
+};
+
+/** One path reported by `structuredDiff()` as impossible to diff. */
+export type DiffFileError = {
+  /** Full path from the worktree root. */
+  file: string;
+
+  /** Human-readable description of why (the text of `diff()`'s `(cannot diff ...)` note). */
+  error: string;
+};
+
+/** One changed file returned by `structuredDiff()`. */
+export type DiffFile = {
+  /** Full path from the worktree root. */
+  path: string;
+
+  /**
+   * "added" if the file is absent from the commit diffed against, "removed" if it is absent from
+   * the worktree, otherwise "modified". Renames are not detected: they appear as a removal plus
+   * an addition.
+   */
+  status: "added" | "modified" | "removed";
+
+  /**
+   * The changed regions, in file order, each with up to 3 lines of surrounding context. Empty
+   * when an empty file was added or removed.
+   */
+  hunks: DiffHunk[];
+};
+
+/** One hunk inside a changed file. */
+export type DiffHunk = {
+  /** The hunk's `@@ -oldStart,oldCount +newStart,newCount @@` line, as `diff()` renders it. */
+  header: string;
+
+  /** The hunk's lines, in order. */
+  lines: DiffLine[];
+};
+
+/** One line inside a diff hunk. */
+export type DiffLine = {
+  /**
+   * "added" lines exist only in the worktree, "removed" lines only in the commit diffed against,
+   * and "context" lines in both.
+   */
+  kind: "context" | "added" | "removed";
+
+  /**
+   * The line's content, without its newline. As in `git diff`, a final line missing its newline
+   * is followed by a "context" line with the text `\ No newline at end of file`, which has no
+   * line numbers.
+   */
+  text: string;
+
+  /** Line number (1 based) in the commit diffed against; present on "removed" and "context". */
+  oldLineNumber?: number;
+
+  /** Line number (1 based) in the worktree; present on "added" and "context". */
+  newLineNumber?: number;
 };
