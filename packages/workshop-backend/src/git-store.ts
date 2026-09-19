@@ -44,6 +44,7 @@ import {
   writeCommit,
   writeTree,
   log,
+  type CommitObject,
   type PromiseFsClient,
   type TreeEntry,
 } from "isomorphic-git";
@@ -287,8 +288,16 @@ export class GitStore {
 
   /** The tree oid of a commit. */
   async commitTree(oid: string): Promise<string> {
+    return (await this.readCommitObject(oid)).tree;
+  }
+
+  /**
+   * Reads a commit object's parsed headers and message. Unlike `readCommitLog()`, carries the
+   * committer and timezone offsets, and never touches any other object.
+   */
+  async readCommitObject(oid: string): Promise<CommitObject> {
     let { commit } = await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
-    return commit.tree;
+    return commit;
   }
 
   /**

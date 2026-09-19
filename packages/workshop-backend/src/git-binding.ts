@@ -13,9 +13,10 @@
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { Git, Worktree } from "./worktree-binding";
+import type { CommitMetadata, CommitSignature, Git, Worktree } from "./worktree-binding";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type FileChange } from "@gadgets/workshop-shared/code-change";
+import type { CommitObject } from "isomorphic-git";
 
 import type { WorkspaceGitCache } from "./git-cache";
 import type { GitStore } from "./git-store";
@@ -126,4 +127,28 @@ export class GitImpl extends RpcTarget implements Git {
     return new WorktreeSessionImpl(
         worktree, IN_MEMORY_WORKTREE_ID, worktree, await this.author());
   }
+
+  async readCommit(commitId: string): Promise<CommitMetadata> {
+    let oid = this.host.gitCache.resolveCommitRef(commitId);
+    // Pulls only the commit object itself, if absent -- unlike newWorktree, which wants the tree.
+    await this.host.gitCache.ensureObject(oid, { type: "commit" });
+    let commit = await this.host.gitStore.readCommitObject(oid);
+    return {
+      id: oid,
+      parents: commit.parent,
+      message: commit.message,
+      author: toSignature(commit.author),
+      committer: toSignature(commit.committer),
+    };
+  }
+}
+
+function toSignature(person: CommitObject["author"]): CommitSignature {
+  return {
+    name: person.name,
+    email: person.email,
+    timestamp: new Date(person.timestamp * 1000),
+    // isomorphic-git follows Date.getTimezoneOffset(): minutes *behind* UTC. (`|| 0` avoids -0.)
+    utcOffsetMinutes: -person.timezoneOffset || 0,
+  };
 }
