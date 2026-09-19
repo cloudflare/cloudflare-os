@@ -1227,6 +1227,29 @@ describe("Overseer action decisions", () => {
     expect(getAction(storage, 2).state).toBe("pending");
   });
 
+  it("reports the stop, not the gate, when both hold on one pass", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    putAction(storage, 1);                             // rule-authorized, below the gate
+    putAction(storage, 2, { autoApprovable: false });  // undecided gate
+    let clicked = putAction(storage, 3, { autoApprovable: false });
+    let batch = makeBatchGatekeeper();
+    batch.results.push({ stopped: { at: 1, reason: new Error("provider refused") } });
+    let client = await makeClient(storage, batch.target);
+
+    let error = await client.approveAction(clicked).catch(caught => caught);
+
+    // The gate lowers the frontier, but the prefix under it still goes out -- so the pass is both
+    // blocked and stopped. Naming the gate would send the user to approve action 2 and meet the
+    // same failure again, never pointing at the card that explains it.
+    expect(batch.calls).toEqual([{ actionId: 1, vetoes: [] }]);
+    expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.stopped);
+    expect(getAction(storage, 1)).toMatchObject({
+      state: "pending", failure: "provider refused" });
+    expect(getAction(storage, 2).state).toBe("pending");
+    expect(getAction(storage, 3).state).toBe("pending");
+  });
+
   it("refuses a queued approval that was requested before the action failed", async () => {
     let storage = makeStorage();
     let id = putAction(storage, 1, { autoApprovable: false });
