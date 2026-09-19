@@ -11234,9 +11234,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     // Still pending: an earlier undecided action held the frontier below this one, or the
-    // gatekeeper stopped at or below it. Either way, surface the reason the user can act on.
-    if (blocked) throw createActionError(ACTION_ERROR_CODES.blocked);
+    // gatekeeper stopped at or below it. Both at once means the gate lowered the frontier onto a
+    // prefix that then failed, and the stop wins: it sits deeper, and it is the one with a reason
+    // recorded on a card the user can read.
     if (stopped) throw createActionError(ACTION_ERROR_CODES.stopped);
+    if (blocked) throw createActionError(ACTION_ERROR_CODES.blocked);
     throw new Error("Couldn't apply this action; an earlier action on this connection needs attention.");
   }
 
