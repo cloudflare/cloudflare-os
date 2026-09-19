@@ -4,7 +4,9 @@ import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GitImpl } from "../src/git-binding";
-import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
+import type { GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { COMMIT_1, COMMIT_2, FIXTURE_OBJECTS, PACKED_OIDS, TREE_1, b64Bytes }
+  from "./git-cache-fixtures";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -163,6 +165,91 @@ describe("env.GIT worktrees", () => {
   }));
 });
 
+describe("env.GIT readCommit", () => {
+  it("reads a commit's metadata", () => withImpl(async impl => {
+    // A hand-written merge commit with distinct author and committer time zones, stored alone:
+    // neither its tree nor its parents are local, and readCommit needs none of them.
+    let payload = new TextEncoder().encode(
+        `tree ${TREE_1}\n` +
+        `parent ${COMMIT_1}\n` +
+        `parent ${COMMIT_2}\n` +
+        `author Alice Example <alice@example.com> 1700000000 -0500\n` +
+        `committer Bob Example <bob@example.com> 1700000300 +0130\n` +
+        `\n` +
+        `Merge things\n\nWith a body.\n`);
+    let oid: string = await impl.gitCache.putFromGatekeeper(999, "commit", payload);
+    using git = new RpcStub(await openGit(impl));
+
+    expect(await git.readCommit(oid.slice(0, 7).toUpperCase())).toEqual({
+      id: oid,
+      parents: [COMMIT_1, COMMIT_2],
+      message: "Merge things\n\nWith a body.\n",
+      author: {
+        name: "Alice Example", email: "alice@example.com",
+        timestamp: new Date(1700000000_000), utcOffsetMinutes: -300,
+      },
+      committer: {
+        name: "Bob Example", email: "bob@example.com",
+        timestamp: new Date(1700000300_000), utcOffsetMinutes: 90,
+      },
+    });
+  }));
+
+  it("reads commits made through a worktree", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let git = await openGit(impl);
+    let worktree = await git.newWorktree(c1);
+    await worktree.writeFile("a.txt", "two\n");
+    let c2 = await worktree.commit("second");
+
+    let root = await git.readCommit(c1);
+    expect(root.parents).toEqual([]);
+    expect(root.message).toBe("test commit\n");
+    expect(root.author.utcOffsetMinutes).toBe(0);
+    expect(Object.is(root.author.utcOffsetMinutes, 0)).toBe(true);
+
+    let child = await git.readCommit(c2);
+    expect(child.parents).toEqual([c1]);
+    expect(child.message).toBe("second\n");
+    expect(child.author).toMatchObject({ name: "My Workspace", email: OWNER });
+    expect(child.committer).toEqual(child.author);
+    // The tree is deliberately not exposed.
+    expect(Object.keys(child).toSorted())
+        .toEqual(["author", "committer", "id", "message", "parents"]);
+  }));
+
+  it("pulls only the commit object for a commit known from a gatekeeper",
+      () => withImpl(async impl => {
+    impl.gitCache.advertiseCommit(999, COMMIT_2);
+    let pulls: { oids: string[], hints: GitPullHints }[] = [];
+    impl.gitCache.puller = {
+      pull: async (gatekeeperId: number, oids: string[], hints: GitPullHints) => {
+        pulls.push({ oids, hints });
+        for (let object of FIXTURE_OBJECTS.filter(candidate => oids.includes(candidate.oid))) {
+          await impl.gitCache.putFromGatekeeper(gatekeeperId, object.type, b64Bytes(object.payload));
+        }
+      },
+    };
+    let git = await openGit(impl);
+
+    let info = await git.readCommit(COMMIT_2);
+    expect(info.parents).toEqual([COMMIT_1]);
+    expect(info.message).toBe("second commit\n");
+    expect(pulls).toEqual([{ oids: [COMMIT_2], hints: expect.objectContaining(
+        { type: "commit", filterTreeDepth: 0 }) }]);
+    expect(storedOids(impl)).toEqual([COMMIT_2]);
+  }));
+
+  it("rejects commits the workspace doesn't know, and non-commits", () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let tree: string = await impl.gitStore.commitTree(c1);
+    let git = await openGit(impl);
+    await expect(git.readCommit("feed".repeat(10))).rejects.toThrow(/not known/);
+    await expect(git.readCommit("main")).rejects.toThrow(/not a git commit id/);
+    await expect(git.readCommit(tree)).rejects.toThrow(/is a tree, not a commit/);
+  }));
+});
+
 describe("env.GIT presence", () => {
   it("is in every gadget's env, beneath a legacy binding of the same name",
       () => withImpl(async impl => {
@@ -203,6 +290,8 @@ describe("env.GIT presence", () => {
     expect(description).toContain("Binding: env.GIT");
     expect(description).toContain("export interface Git");
     expect(description).toContain("newWorktree(commitId: string): Promise<Worktree>");
+    expect(description).toContain("readCommit(commitId: string): Promise<CommitMetadata>");
+    expect(description).toContain("export type CommitMetadata");
     expect(description).toContain("export interface Worktree");
     expect(description).not.toContain("BEGIN AGENT API");
   }));

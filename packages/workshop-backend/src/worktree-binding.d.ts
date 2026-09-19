@@ -35,7 +35,58 @@ export interface Git {
    * handle -- store it and pass it back to `newWorktree()` later to pick up where you left off.
    */
   newWorktree(commitId: string): Promise<Worktree>;
+
+  /**
+   * Read the metadata of the given commit: its message, author, parents, etc. The commit must be
+   * known to the workspace, as for `newWorktree()`, and abbreviated IDs are likewise accepted.
+   *
+   * The result does not describe the commit's files; to read those, create a worktree rooted at
+   * the commit with `newWorktree()`.
+   */
+  readCommit(commitId: string): Promise<CommitMetadata>;
 }
+
+/** Result of `Git.readCommit()`. */
+export type CommitMetadata = {
+  /** The commit's full ID (40 hex digits), even if an abbreviated ID was passed. */
+  id: string;
+
+  /**
+   * IDs of the commit's parent commits, in order: empty for a root commit, more than one for a
+   * merge commit.
+   */
+  parents: string[];
+
+  /** The commit message, as stored (usually with a trailing newline). */
+  message: string;
+
+  /** Who wrote the change, and when. */
+  author: CommitSignature;
+
+  /** Who created the commit, and when. Often the same as `author`. */
+  committer: CommitSignature;
+};
+
+/**
+ * An identity and timestamp recorded in a commit (git's term; unrelated to cryptographic
+ * signing).
+ */
+export type CommitSignature = {
+  /** Human-readable name, e.g. "Jane Doe". */
+  name: string;
+
+  /** Email address. */
+  email: string;
+
+  /** When the author or committer acted. Git records this with one-second precision. */
+  timestamp: Date;
+
+  /**
+   * The offset from UTC of the time zone the timestamp was recorded in, in minutes: e.g. -300 for
+   * UTC-05:00. Note that the sign is the opposite of JavaScript's `Date.getTimezoneOffset()`.
+   */
+  utcOffsetMinutes: number;
+};
 
 /**
  * A worktree represents a file tree based on a git commit, with an API to read and edit its files
