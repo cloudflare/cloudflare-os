@@ -129,6 +129,13 @@ describe("env.GIT worktrees", () => {
     expect(await impl.readFileAtCommit(commit, "a.txt")).toBe("two\n");
     expect(await worktree.structuredGrep(/two/)).toEqual(
         { matches: [{ file: "a.txt", line: 1, text: "two" }], errors: [] });
+    expect(await worktree.structuredDiff(c1)).toEqual({
+      files: [{ path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
+        { kind: "removed", text: "one", oldLineNumber: 1 },
+        { kind: "added", text: "two", newLineNumber: 1 },
+      ] }] }],
+      errors: [],
+    });
   }));
 
   it("attributes the agent's commits to its turn's initiator", () => withImpl(async impl => {

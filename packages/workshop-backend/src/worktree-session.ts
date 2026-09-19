@@ -17,11 +17,15 @@
 // and unreadable *content* (oversized/binary) is distinguished from path-shape errors by
 // UnreadableContentError -- writeFile falls back to a whole-file `set` on it, while grep
 // reports it as a structured error entry (a "(skipped: ...)" note in the freeform format) and
-// diff renders it as a skip note.
+// diff likewise (a "(cannot diff ...)" note).
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { StructuredGrepResult, Worktree, WorktreeFileEntry } from "./worktree-binding";
+import { structuredPatch } from "diff";
+import type {
+  DiffFile, DiffHunk, DiffLine, StructuredDiffResult, StructuredGrepResult, Worktree,
+  WorktreeFileEntry,
+} from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
 import { diffFiles, type FileChange } from "@gadgets/workshop-shared/code-change";
 
@@ -256,6 +260,38 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
   }
 
   async diff(commitId?: string): Promise<string> {
+    let parts: string[] = [];
+    for (let file of await this.#changedFiles(commitId)) {
+      if (file.note !== undefined) {
+        parts.push(`(cannot diff ${file.path}: ${file.note})`);
+        continue;
+      }
+      let diff = formatUnifiedDiff(file.path, file.oldText ?? "", file.newText ?? "",
+                                   file.oldText !== undefined, file.newText !== undefined);
+      if (diff !== undefined) parts.push(diff);
+    }
+    return parts.join("\n");
+  }
+
+  async structuredDiff(commitId?: string): Promise<StructuredDiffResult> {
+    let result: StructuredDiffResult = { files: [], errors: [] };
+    for (let file of await this.#changedFiles(commitId)) {
+      if (file.note !== undefined) {
+        result.errors.push({ file: file.path, error: file.note });
+        continue;
+      }
+      let status: DiffFile["status"] = file.oldText === undefined ? "added"
+          : file.newText === undefined ? "removed" : "modified";
+      result.files.push({ path: file.path, status,
+                          hunks: structuredHunks(file.oldText ?? "", file.newText ?? "") });
+    }
+    return result;
+  }
+
+  // The paths that differ between the worktree and `commitId` (default HEAD), in path order:
+  // each with its text on both sides (undefined where absent), or a note explaining why it
+  // cannot be diffed as text.
+  async #changedFiles(commitId?: string): Promise<ChangedFile[]> {
     let base = this.#pinBase();
     let target = commitId !== undefined
         ? this.host.gitCache.resolveCommitId(commitId) : this.#head();
@@ -291,7 +327,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       }
     };
 
-    let parts: string[] = [];
+    let files: ChangedFile[] = [];
     for (let path of [...paths].toSorted()) {
       let oldSide = await readSide(target, path);
       let newSide: { text?: string, note?: string };
@@ -303,14 +339,42 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
         newSide = await readSide(base, path);
       }
       if (oldSide.note !== undefined || newSide.note !== undefined) {
-        parts.push(`(cannot diff ${path}: ${oldSide.note ?? newSide.note})`);
-        continue;
+        files.push({ path, note: oldSide.note ?? newSide.note });
+      } else if (oldSide.text !== newSide.text) {
+        files.push({ path, oldText: oldSide.text, newText: newSide.text });
       }
-      if (oldSide.text === newSide.text) continue;
-      let diff = formatUnifiedDiff(path, oldSide.text ?? "", newSide.text ?? "",
-                                   oldSide.text !== undefined, newSide.text !== undefined);
-      if (diff !== undefined) parts.push(diff);
     }
-    return parts.join("\n");
+    return files;
   }
+}
+
+/** One path found to differ by WorktreeSessionImpl's diff operations. */
+type ChangedFile = { path: string, oldText?: string, newText?: string, note?: string };
+
+/**
+ * One file's before/after as structured hunks: the same jsdiff hunks (and options)
+ * formatUnifiedDiff renders, numbered line by line, with headers spelled exactly as the rendered
+ * diff spells them -- including git's convention that a zero-count side names the line it
+ * attaches after, where jsdiff's structured starts point one past it.
+ */
+function structuredHunks(oldText: string, newText: string): DiffHunk[] {
+  let patch = structuredPatch("", "", oldText, newText, undefined, undefined, { context: 3 });
+  return patch.hunks.map(hunk => {
+    let oldStart = hunk.oldLines === 0 ? hunk.oldStart - 1 : hunk.oldStart;
+    let newStart = hunk.newLines === 0 ? hunk.newStart - 1 : hunk.newStart;
+    let oldLine = oldStart;
+    let newLine = newStart;
+    let lines = hunk.lines.map((raw): DiffLine => {
+      let text = raw.slice(1);
+      switch (raw[0]) {
+        case "+": return { kind: "added", text, newLineNumber: newLine++ };
+        case "-": return { kind: "removed", text, oldLineNumber: oldLine++ };
+        // The `\ No newline at end of file` marker: kept whole, and numbered on neither side.
+        case "\\": return { kind: "context", text: raw };
+        default:
+          return { kind: "context", text, oldLineNumber: oldLine++, newLineNumber: newLine++ };
+      }
+    });
+    return { header: `@@ -${oldStart},${hunk.oldLines} +${newStart},${hunk.newLines} @@`, lines };
+  });
 }

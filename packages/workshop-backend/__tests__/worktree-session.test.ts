@@ -739,6 +739,105 @@ describe("commit and diff", () => {
     expect(pulls).toEqual(
         [{ oids: [ghostOid], hints: expect.objectContaining({ referencedBy: ghostTree }) }]);
   });
+
+  it("structuredDiff() returns numbered hunks per changed file", () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, {
+      "a.txt": "one\ntwo\n",
+      "b.txt": "bee\n",
+      "long.txt": "1\n2\n3\n4\n5\n6\n7\n8\n",
+      "same.txt": "unchanged\n",
+    });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+
+    await session.writeFile("a.txt", "one!\ntwo\n");
+    await session.deleteFile("b.txt");
+    await session.writeFile("c.txt", "sea\n");
+    await session.writeFile("empty.txt", "");
+    await session.writeFile("long.txt", "1\n2\n3\n4\n4.5\n5\n6\n7\n8\n");
+
+    let result = await session.structuredDiff();
+    expect(result).toEqual({
+      files: [
+        { path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [
+          { kind: "removed", text: "one", oldLineNumber: 1 },
+          { kind: "added", text: "one!", newLineNumber: 1 },
+          { kind: "context", text: "two", oldLineNumber: 2, newLineNumber: 2 },
+        ] }] },
+        { path: "b.txt", status: "removed", hunks: [{ header: "@@ -1,1 +0,0 @@", lines: [
+          { kind: "removed", text: "bee", oldLineNumber: 1 },
+        ] }] },
+        { path: "c.txt", status: "added", hunks: [{ header: "@@ -0,0 +1,1 @@", lines: [
+          { kind: "added", text: "sea", newLineNumber: 1 },
+        ] }] },
+        // An empty file has no lines to diff, but its addition still shows.
+        { path: "empty.txt", status: "added", hunks: [] },
+        // Context is limited to 3 lines, so the hunk starts mid-file.
+        { path: "long.txt", status: "modified", hunks: [{ header: "@@ -2,6 +2,7 @@", lines: [
+          { kind: "context", text: "2", oldLineNumber: 2, newLineNumber: 2 },
+          { kind: "context", text: "3", oldLineNumber: 3, newLineNumber: 3 },
+          { kind: "context", text: "4", oldLineNumber: 4, newLineNumber: 4 },
+          { kind: "added", text: "4.5", newLineNumber: 5 },
+          { kind: "context", text: "5", oldLineNumber: 5, newLineNumber: 6 },
+          { kind: "context", text: "6", oldLineNumber: 6, newLineNumber: 7 },
+          { kind: "context", text: "7", oldLineNumber: 7, newLineNumber: 8 },
+        ] }] },
+      ],
+      errors: [],
+    });
+
+    // Headers are spelled exactly as the rendered diff spells them.
+    let diffLines = (await session.diff()).split("\n");
+    for (let file of result.files) {
+      for (let hunk of file.hunks) expect(diffLines).toContain(hunk.header);
+    }
+
+    // Against an explicit commit id, with the same id rules as diff().
+    expect(await session.structuredDiff(c1)).toEqual(result);
+    await expect(session.structuredDiff(c1.slice(0, 8))).rejects.toThrow(/not a full git commit id/);
+
+    // After committing, HEAD matches the worktree.
+    await session.commit("changes");
+    expect(await session.structuredDiff()).toEqual({ files: [], errors: [] });
+  }));
+
+  it("structuredDiff() reports EOF-newline markers as unnumbered context",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one" });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+    await session.writeFile("a.txt", "one\n");
+
+    expect(await session.structuredDiff()).toEqual({
+      files: [{ path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
+        { kind: "removed", text: "one", oldLineNumber: 1 },
+        { kind: "context", text: "\\ No newline at end of file" },
+        { kind: "added", text: "one", newLineNumber: 1 },
+      ] }] }],
+      errors: [],
+    });
+  }));
+
+  it("structuredDiff() reports special entries as errors", () => withImpl(async impl => {
+    addChat(impl, 1);
+    await loadFixtureRepo(impl);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+
+    let result = await session.structuredDiff(COMMIT_1);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      { file: "link.md", error: "link.md is a symlink to README.md" },
+      { file: "vendored", error: "vendored is a submodule (gitlink) pointing at commit " +
+                                 "1111111111111111111111111111111111111111" },
+    ]));
+    expect(result.files).toContainEqual({ path: "a.txt", status: "added", hunks: [
+      { header: "@@ -0,0 +1,1 @@", lines: [{ kind: "added", text: "one", newLineNumber: 1 }] },
+    ] });
+    expect(result.files.find(file => file.path === "README.md")?.status).toBe("removed");
+    // Every path lands in exactly one of the two lists.
+    let errorPaths = result.errors.map(error => error.file);
+    expect(result.files.some(file => errorPaths.includes(file.path))).toBe(false);
+  }));
 });
 
 describe("worktree binding description", () => {
