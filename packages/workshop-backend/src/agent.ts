@@ -129,6 +129,8 @@ export interface AgentStepChange {
  * head advancements. runAgent implements this interface over its turn state and passes it to
  * executeCodeMode, which registers it for exactly the duration of the execution (see
  * OverseerImpl.executeCodeMode) -- so a stored worktree stub cannot operate outside its turn.
+ * (The env.GIT binding's in-memory worktrees implement it too, with no turn behind them; see
+ * InMemoryWorktree in git-binding.ts.)
  */
 export interface WorktreeTurnAccess {
   /**
@@ -365,6 +367,12 @@ export type AgentGadgetInfo = {
   output?: BlueprintOutput;
 };
 
+/**
+ * The name of the `Git` binding (see git-binding.ts) present in every env -- each gadget's and the
+ * agent's executeCode env -- beneath any binding of the same name, which shadows it.
+ */
+export const GIT_BINDING_NAME = "GIT";
+
 // Resolves a `describeBinding` tool argument (a name in the chat's env) to its human-readable
 // description. Shared by the live tool and the replay path so the two can't drift. (Replay of
 // logs from before named chat bindings may pass a number -- a capsule index in the old numeric
@@ -373,8 +381,9 @@ export type AgentGadgetInfo = {
 async function resolveBindingDescription(
     name: string | number,
     chatBindings: Map<string, ChatBindingEntry>,
-    hooks: Pick<AgentHooks, "describeBinding">): Promise<string> {
+    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding">): Promise<string> {
   let entry = chatBindings.get(`${name}`);
+  if (!entry && name === GIT_BINDING_NAME) return hooks.describeGitBinding(`env.${name}`);
   if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
   switch (entry.type) {
     case "workpiece":
@@ -612,6 +621,9 @@ export interface AgentHooks {
    */
   describeBinding(envName: string, id: WorkpieceId): Promise<string>;
 
+  /** Describe the env.GIT binding (see GIT_BINDING_NAME), for the describeBinding tool. */
+  describeGitBinding(envName: string): string;
+
   /**
    * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
    * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
@@ -803,6 +815,8 @@ Make Gadget UIs responsive and usable on both desktop and phones by default.
 
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
+Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
+
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
 ## Server -> Client callbacks and subscriptions
@@ -978,6 +992,8 @@ Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Work
 You were started programmatically by the Gadget to perform a task, described below.
 
 Typically (but not always), you will need to use the \`executeCode\` tool to complete the task, invoking the available bindings (members of the env object) and other APIs available to you.
+
+Your \`env\` always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace (read a commit's files, edit them, and write new commits). Use \`describeBinding\` to learn its API if you need it.
 `.trim();
 
 // The tools offered to a spawned agent (see runAgentPass). Anything that modifies a gadget or
@@ -2656,7 +2672,7 @@ async function runAgentPass(
     let systemPromptBindings: string;
     if (namedSeeds.length == 0) {
       systemPromptBindings =
-          "Aside from any resources described below, the `env` object is empty.";
+          "Aside from `env.GIT` and any resources described below, the `env` object is empty.";
     } else {
       let lines = namedSeeds.map(seed =>
           `* env.${seed.name} — ` +
@@ -3261,6 +3277,10 @@ async function runAgentPass(
             throw new Error(`There is no gadget named "${gadget}" in your env.`);
           }
           let sourceEntry = chatBindings.get(source);
+          if (!sourceEntry && source === GIT_BINDING_NAME) {
+            throw new Error(`env.${source} is already present in every gadget's env; there is ` +
+                `no need to bind it.`);
+          }
           if (!sourceEntry) {
             throw new Error(`There is no binding named "${source}" in your env.`);
           }

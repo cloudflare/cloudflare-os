@@ -896,6 +896,37 @@ export class WorkspaceGitCache {
   }
 
   /**
+   * Resolves a commit reference (see resolveCommitRef) to a commit a worktree can be rooted at.
+   * When the commit is absent locally but a gatekeeper is recorded as a source, performs the
+   * *initial pull* -- one fetch for the commit, its full tree structure, and every blob under
+   * EAGER_BLOB_LIMIT -- so ordinary reads never fault. Any locally-present commit works with no
+   * gatekeeper at all (a gadget's history, another worktree's commit).
+   */
+  async fetchCommit(ref: string): Promise<GitOid> {
+    let commit = this.resolveCommitRef(ref);
+    if (!this.hasLocalObject(commit)) {
+      // Known only from gatekeeper metadata: pull eagerly. (A locally-present commit skips this;
+      // any of its tree/blob objects missing locally fault in lazily on first read.)
+      await this.ensureGitObjects([commit], {
+        type: "commit",
+        commitHistory: { kind: "depth", depth: 1 },
+        filterBlobSize: EAGER_BLOB_LIMIT,
+      });
+    }
+    let local = this.readLocalObject(commit);
+    if (local === undefined) {
+      // ensureGitObjects throws on failure; defensive backstop.
+      throw new Error(`Commit ${commit} could not be fetched.`);
+    }
+    if (local.type !== "commit") {
+      // The reader rule let an assertion-grade metadata row through resolveCommitRef; the pulled
+      // bytes have now decided.
+      throw new Error(`${commit} is a ${local.type}, not a commit.`);
+    }
+    return commit;
+  }
+
+  /**
    * Reads a blob as UTF-8 text under the file-content rules every worktree read applies --
    * UnreadableContentError, path-flavored, for oversized or binary content -- fault-pulling the
    * blob on a miss (`referencedBy` shapes the pull hints; `path` names the file in errors).
