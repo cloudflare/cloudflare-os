@@ -1020,12 +1020,35 @@ export default function GadgetEditor() {
     setHasChatZero(chatZeroExists)
   }, [])
 
+  // The tab auto-switch exists only to show a user building their first gadget what the agent is
+  // doing: while the app tab shows the "No gadget UI yet" placeholder, the turn's edits are shown
+  // in the code tab, and the end of the turn returns to the app. It never navigates away from a
+  // gadget that has a UI, and any tab choice by the user ends it for the turn.
   const turnOutputRef = useRef<{
     chatId: number
     wroteFile: boolean
-    wroteGadgetCode: boolean
+    showedCode: boolean
     userSelectedTab: boolean
   } | null>(null)
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+  const appShowsNoUiRef = useRef(false)
+
+  // Called both when the agent writes and when the placeholder appears, since a freshly created
+  // gadget's first UI load can finish after the agent has started writing.
+  const showCodeIfNoUi = useCallback(() => {
+    const output = turnOutputRef.current
+    if (!output?.wroteFile || output.userSelectedTab) return
+    if (output.chatId !== selectedChatIdRef.current) return
+    if (activeTabRef.current !== 'app' || !appShowsNoUiRef.current) return
+    output.showedCode = true
+    setActiveTab('code')
+  }, [])
+
+  const handleNoUiChange = useCallback((showsNoUi: boolean) => {
+    appShowsNoUiRef.current = showsNoUi
+    if (showsNoUi) showCodeIfNoUi()
+  }, [showCodeIfNoUi])
 
   const handleAgentActiveChange = useCallback((chatId: number, isActive: boolean) => {
     if (chatId !== selectedChatIdRef.current) return
@@ -1034,7 +1057,7 @@ export default function GadgetEditor() {
       turnOutputRef.current = {
         chatId,
         wroteFile: false,
-        wroteGadgetCode: false,
+        showedCode: false,
         userSelectedTab: false,
       }
       return
@@ -1043,8 +1066,7 @@ export default function GadgetEditor() {
     let output = turnOutputRef.current
     turnOutputRef.current = null
     if (!output || output.chatId !== chatId || output.userSelectedTab) return
-    if (output.wroteGadgetCode) setActiveTab('app')
-    else if (output.wroteFile) setActiveTab('code')
+    if (output.showedCode) setActiveTab('app')
   }, [])
 
   const handleStreamingActiveFileChange = useCallback(
@@ -1052,17 +1074,14 @@ export default function GadgetEditor() {
     if (file && chatId === selectedChatIdRef.current) {
       let output = turnOutputRef.current
       if (!output || output.chatId !== chatId) {
-        output = {chatId, wroteFile: false, wroteGadgetCode: false, userSelectedTab: false}
+        output = {chatId, wroteFile: false, showedCode: false, userSelectedTab: false}
         turnOutputRef.current = output
       }
       output.wroteFile = true
-      if (file.filename === 'client.js' || file.filename === 'server.js') {
-        output.wroteGadgetCode = true
-      }
-      if (!output.userSelectedTab) setActiveTab('code')
+      showCodeIfNoUi()
     }
     setStreamingActiveFileState({chatId, file})
-  }, [])
+  }, [showCodeIfNoUi])
 
   const handleTabSelect = useCallback((tab: RightTab) => {
     let output = turnOutputRef.current
@@ -1934,6 +1953,7 @@ export default function GadgetEditor() {
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
+                  onNoUiChange={handleNoUiChange}
                 />
               ) : !previewMode && (
                 <NoGadgetPlaceholder height="100%" />
