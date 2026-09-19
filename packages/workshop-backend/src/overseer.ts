@@ -13,9 +13,7 @@ import { createTypedStorage, collection, singleton, keyString } from "@gadgets/t
 import type { ListOptions } from "@gadgets/typed-storage";
 import { GitStore, commitIdentityForAuthor, filesEqual, gitObjectsCollection, threeWayMerge }
   from "./git-store";
-import {
-  EAGER_BLOB_LIMIT, GitCacheImpl, WorkspaceGitCache, gitObjectMetadataCollection,
-} from "./git-cache";
+import { GitCacheImpl, WorkspaceGitCache, gitObjectMetadataCollection } from "./git-cache";
 import { migrateCodeLogToGit } from "./git-migration";
 import * as Y from "yjs";
 import {
@@ -30,8 +28,9 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess } from "./agent";
+import { AgentGadgetInfo, AgentHooks, AiChatAgentContext, CHAT_CHANGE_MESSAGE_BUDGET, ChatBindingEntry, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type CompactionCheckpoint, type StoredAssistantMessage, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
+import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
@@ -2410,42 +2409,19 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Create a new worktree workpiece rooted at the given commit reference, provisional to (and
-  // permanently private to) the given chat. Resolves the reference against local knowledge only
-  // (see WorkspaceGitCache.resolveCommitRef); when the resolved commit is absent locally but a
-  // gatekeeper is recorded as a source, performs the *initial pull* -- one fetch for the commit,
-  // its full tree structure, and every blob under EAGER_BLOB_LIMIT -- so ordinary reads never
-  // fault. Any locally-present commit works with no gatekeeper at all (a gadget's history,
-  // another worktree's commit). Like createGadget, the caller (the agent's createWorktree tool)
-  // is responsible for getting the creation recorded in the chat log -- `createdWorktrees` on
-  // the step's "changes" message -- which makes the pending record permanent. The worktree is
-  // not pinned in the chat by its creation: it reads as its accepted commit (`pinBase`) until
-  // the first modification pins it (see commitAgentStep).
+  // permanently private to) the given chat. The reference is resolved -- and the commit pulled,
+  // if only a gatekeeper has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
+  // caller (the agent's createWorktree tool) is responsible for getting the creation recorded in
+  // the chat log -- `createdWorktrees` on the step's "changes" message -- which makes the pending
+  // record permanent. The worktree is not pinned in the chat by its creation: it reads as its
+  // accepted commit (`pinBase`) until the first modification pins it (see commitAgentStep).
   async createWorktree(title: string, chatId: number, commitRef: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}> {
     title = title.trim();
     if (!title) {
       throw new Error("A worktree requires a non-empty title.");
     }
-    let baseCommit = this.gitCache.resolveCommitRef(commitRef);
-    if (!this.gitCache.hasLocalObject(baseCommit)) {
-      // Known only from gatekeeper metadata: pull eagerly. (A locally-present commit skips this;
-      // any of its tree/blob objects missing locally fault in lazily on first read.)
-      await this.gitCache.ensureGitObjects([baseCommit], {
-        type: "commit",
-        commitHistory: {kind: "depth", depth: 1},
-        filterBlobSize: EAGER_BLOB_LIMIT,
-      });
-    }
-    let local = this.gitCache.readLocalObject(baseCommit);
-    if (local === undefined) {
-      // ensureGitObjects throws on failure; defensive backstop.
-      throw new Error(`Commit ${baseCommit} could not be fetched.`);
-    }
-    if (local.type !== "commit") {
-      // The reader rule let an assertion-grade metadata row through resolveCommitRef; the pulled
-      // bytes have now decided.
-      throw new Error(`${baseCommit} is a ${local.type}, not a commit.`);
-    }
+    let baseCommit = await this.gitCache.fetchCommit(commitRef);
 
     // The awaits above could have outlived the chat; a pending record for a deleted chat would
     // never be reaped.
@@ -2618,8 +2594,8 @@ class OverseerImpl implements AgentHooks {
   bindWorkpiece(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
                 chatId?: number): void {
     validateBindingName(name);
-    if (name === "GADGET") {
-      throw new Error("The binding name `GADGET` is reserved.");
+    if (name === "GADGET" || name === GIT_BINDING_NAME) {
+      throw new Error(`The binding name \`${name}\` is reserved.`);
     }
     let gadget = this.getGadgetRecord(gadgetId);
     let existing = gadget.bindings[name];
@@ -2686,8 +2662,8 @@ class OverseerImpl implements AgentHooks {
     }
     if (oldName === newName) return;
     validateBindingName(newName);
-    if (newName === "GADGET") {
-      throw new Error("The binding name `GADGET` is reserved.");
+    if (newName === "GADGET" || newName === GIT_BINDING_NAME) {
+      throw new Error(`The binding name \`${newName}\` is reserved.`);
     }
     if (gadget.bindings[newName]) {
       throw new Error(`There is already a binding named "${newName}".`);
@@ -3501,6 +3477,9 @@ class OverseerImpl implements AgentHooks {
     let env: Record<string, any> = {}
     let gadget = this.getGadgetRecord(gadgetId);
     env.GADGET = this.makeBindingLoopback({type: "gadget", id: gadgetId}, caller);
+    // Before the named bindings, so an edge named GIT from before the name was reserved still
+    // shadows it (see bindWorkpiece).
+    env[GIT_BINDING_NAME] = this.makeBindingLoopback({type: "git"}, caller);
     for (let [name, edge] of this.visibleBindings(gadget, forChatId)) {
       env[name] = this.makeBindingLoopback({type: "gatekeeper", id: edge.target}, caller);
     }
@@ -3521,6 +3500,10 @@ class OverseerImpl implements AgentHooks {
     // validation existed (or hostile stored data) that would collide with -- or, like
     // "__proto__", mutate -- Object.prototype members fail the shared validator and are skipped.
     let env: Record<string, any> = {};
+
+    // Before the chat's bindings, so a chat binding named GIT shadows it -- matching
+    // describeBinding (see resolveBindingDescription in agent.ts).
+    env[GIT_BINDING_NAME] = this.makeBindingLoopback({type: "git"}, caller);
 
     for (let [name, entry] of Object.entries(bindings)) {
       try {
@@ -5606,10 +5589,23 @@ class OverseerImpl implements AgentHooks {
             new WorktreeSessionImpl(this, target.id, turn.access, turn.initiator));
       }
 
+      case "git":
+        return Promise.resolve(new GitImpl(this, () => this.#gitAuthorFor(caller)));
+
       default:
         target satisfies never;
         throw new TypeError("Unknown binding target type.");
     }
+  }
+
+  // Who commits made through `caller`'s env.GIT are attributed to: for the agent, its turn's
+  // initiator, exactly as its commits through a createWorktree binding are; for everything else
+  // -- gadget code, with no user behind it -- the identity a spawned agent's turn carries, with
+  // the owner standing in for a spawner's creator.
+  async #gitAuthorFor(caller: GatekeeperCaller): Promise<AiChatAuthorInfo> {
+    let turn = caller.from === "agent" ? this.#activeWorktreeTurns.get(caller.chatId) : undefined;
+    if (turn !== undefined) return turn.initiator;
+    return {type: "gadget", id: await this.getOwnerProfileId(), name: this.storage.title.get()};
   }
 
   // The worktree turn state registered by a running executeCode, keyed by chat (one turn per
@@ -6967,7 +6963,7 @@ class OverseerImpl implements AgentHooks {
           `rooted at git commit ${gadget.baseCommit}, private to this chat. Read and edit its ` +
           `files with the regular file tools (readFile, writeFile, editFile), passing ` +
           `${JSON.stringify(envName)} as the \`workpiece\` parameter. In executeCode, ` +
-          `env.${envName} additionally provides the following API:\n` +
+          `env.${envName} implements the \`Worktree\` interface as defined below:\n` +
           `\n` +
           `\`\`\`\n` +
           `${worktreeAgentApiText()}` +
@@ -6986,6 +6982,19 @@ class OverseerImpl implements AgentHooks {
       throw new Error(`The resource behind ${envName} no longer exists.`);
     }
     return this.describeGatekeeper(envName, gatekeeper);
+  }
+
+  // Describe the env.GIT binding, for the agent's describeBinding tool.
+  describeGitBinding(envName: string): string {
+    return `Binding: ${envName}\n` +
+        `\n` +
+        `This binding provides access to the workspace's git objects. It is present in your ` +
+        `executeCode env and in every Gadget's env, so Gadget code can use it without adding a ` +
+        `binding. It implements the \`Git\` interface as defined below:\n` +
+        `\n` +
+        `\`\`\`\n` +
+        `${worktreeAgentApiText()}` +
+        `\`\`\`\n`;
   }
 
   async describeGatekeeper(name: string, gatekeeper: GatekeeperRecord): Promise<string> {
@@ -10381,6 +10390,9 @@ type BindingLoopbackTarget = {
   // a stub retained past it -- say, stored in a gadget the agent called -- fails closed instead
   // of coming back to life against a later execution's turn.
   executionId: string;
+} | {
+  // The `env.GIT` binding (see git-binding.ts).
+  type: "git";
 };
 
 /**

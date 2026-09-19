@@ -9,6 +9,9 @@
 // side -- base-tree walks, blob reads, commit writes -- goes through the host's WorkspaceGitCache
 // and GitStore, the same plumbing the file tools' lazy reads use.
 //
+// The env.GIT binding (git-binding.ts) serves this same class for its in-memory worktrees,
+// substituting a single object holding the worktree's state for both the turn and the host.
+//
 // Content rules match the file tools': regular files of either mode are operable (an edited
 // executable keeps its bit), symlink/gitlink/directory paths throw their descriptive errors,
 // and unreadable *content* (oversized/binary) is distinguished from path-shape errors by

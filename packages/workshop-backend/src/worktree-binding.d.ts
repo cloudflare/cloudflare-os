@@ -8,6 +8,9 @@
 // but takes a commit ID. The commit ID can be obtained from various gatekeeper APIs, e.g. the
 // GitHub gatekeeper. Commits created on a worktree can then be pushed back to the gatekeeper.
 //
+// Any code -- gadgets and agents alike -- can also create in-memory worktrees programmatically
+// through the `Git` binding, present as `env.GIT` in every environment (see git-binding.ts).
+//
 // The agent's `describeBinding` tool serves the agent-facing section of this file as text
 // (worktree-binding.txt is a symlink to this file, shipped as a Text module -- the
 // agent-spawner-binding.txt pattern), so everything below the marker is written for the agent
@@ -17,11 +20,33 @@
 // ---- BEGIN AGENT API ----
 
 /**
- * A worktree binding represents a file tree based on a git commit. You can read and edit files
- * in a worktree using the same tools used to operate on gadget code, targeting the worktree
- * binding instead of a gadget binding. You should prefer those tools when they work. Only use this
- * API when you want to operate on the files more programmatically, or to perform operations other
- * than basic reads and edits.
+ * The `env.GIT` binding, available in every gadget's `env` and in the agent's `executeCode` env.
+ * Provides programmatic access to the workspace's git objects.
+ */
+export interface Git {
+  /**
+   * Create a worktree rooted at the given commit, which must be known to the workspace: e.g. a
+   * commit ID obtained from a gatekeeper API, or one produced by an earlier `Worktree.commit()`.
+   * Abbreviated IDs (at least 4 hex digits) are accepted.
+   *
+   * The worktree exists only in memory: nothing is stored when it is created, and uncommitted
+   * changes are lost once the returned stub is disposed or its connection breaks. Commits made
+   * through it, however, are saved in the workspace's git store, so a commit ID is a durable
+   * handle -- store it and pass it back to `newWorktree()` later to pick up where you left off.
+   */
+  newWorktree(commitId: string): Promise<Worktree>;
+}
+
+/**
+ * A worktree represents a file tree based on a git commit, with an API to read and edit its files
+ * and commit the results.
+ *
+ * A worktree binding in your env created with the `createWorktree` tool can also be read and
+ * edited using the same tools used to operate on gadget code, targeting the worktree binding
+ * instead of a gadget binding. You should prefer those tools when they work. Only use this API when
+ * you want to operate on the files more programmatically, or to perform operations other than
+ * basic reads and edits. (Worktrees returned by `Git.newWorktree()` are accessible only through
+ * this API.)
  */
 export interface Worktree {
   // ---------------------------------------------------------------------------
