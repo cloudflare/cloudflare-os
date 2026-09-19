@@ -523,16 +523,15 @@ export interface AgentHooks {
       : {id: WorkpieceId, title: string};
 
   /**
-   * Create a new worktree workpiece rooted at the given commit reference (a full oid or an
-   * unambiguous prefix, resolved against the workspace's local git knowledge -- never a remote
-   * lookup), provisional to and permanently private to the given chat. Performs the initial pull
-   * when the commit is known only from a gatekeeper. Like createGadget, the creation becomes
-   * durable via the step's "changes" message (`createdWorktrees`); a step that dies before its
-   * barrier leaves an unstamped record that reconciliation reaps. The new worktree is unpinned:
-   * it reads as its base commit until the first modification pins it. Returns the resolved base
-   * commit alongside the id (the input may be a prefix).
+   * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
+   * the workspace's local git knowledge -- never a remote lookup), provisional to and permanently
+   * private to the given chat. Performs the initial pull when the commit is known only from a
+   * gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
+   * (`createdWorktrees`); a step that dies before its barrier leaves an unstamped record that
+   * reconciliation reaps. The new worktree is unpinned: it reads as its base commit until the
+   * first modification pins it. Returns the base commit alongside the id.
    */
-  createWorktree(title: string, chatId: number, commitRef: string)
+  createWorktree(title: string, chatId: number, commitId: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
@@ -1019,7 +1018,7 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
 Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
-\`commitId\` is a git commit id (a full 40-hex SHA-1, or an unambiguous prefix) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
+\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
@@ -3393,8 +3392,8 @@ async function runAgentPass(
         }),
         commitId: Type.String({
           description:
-              "The git commit to root the worktree at: a full 40-hex SHA-1, or an unambiguous " +
-              "prefix of at least 4 hex digits.",
+              "The git commit to root the worktree at: its full 40-hex SHA-1, exactly as " +
+              "returned by the API that provided it. Abbreviated ids are not accepted.",
         }),
       }),
       execute: async (toolCallId, {title, bindingName, commitId}) => {
@@ -3406,7 +3405,7 @@ async function runAgentPass(
           }
 
           // Like createGadget: the registry record (chat-private) is created immediately -- this
-          // is also where the commit reference resolves and, for gatekeeper-known commits, the
+          // is also where the commit id resolves and, for gatekeeper-known commits, the
           // initial pull happens -- but the creation is *recorded* (and the record made
           // permanent) by the step's "changes" message at the barrier. A step that dies first
           // leaves an unstamped orphan for reconciliation. The new worktree is unpinned:

@@ -63,8 +63,7 @@ describe("env.GIT worktrees", () => {
       }
     }
     let git = await openGit(impl);
-    // An abbreviated id resolves like createWorktree's.
-    let worktree = await git.newWorktree(COMMIT_1.slice(0, 8));
+    let worktree = await git.newWorktree(COMMIT_1);
 
     expect(await worktree.listFiles()).toContainEqual({ path: "run.sh", kind: "executable" });
     expect(await worktree.readFile("README.md")).toContain("# Fixture");
@@ -161,7 +160,20 @@ describe("env.GIT worktrees", () => {
   it("rejects commits the workspace doesn't know", () => withImpl(async impl => {
     let git = await openGit(impl);
     await expect(git.newWorktree("feed".repeat(10))).rejects.toThrow(/not known/);
-    await expect(git.newWorktree("main")).rejects.toThrow(/not a git commit id/);
+    await expect(git.newWorktree("main")).rejects.toThrow(/not a full git commit id/);
+  }));
+
+  it("requires full, exact commit ids", () => withImpl(async impl => {
+    // Knowing a commit's id is the capability to read it, so a guessable prefix must not work --
+    // not even for a commit the workspace has.
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let git = await openGit(impl);
+    let worktree = await git.newWorktree(c1);
+    for (let id of [c1.slice(0, 8), c1.slice(0, 39), c1.toUpperCase()]) {
+      await expect(git.newWorktree(id)).rejects.toThrow(/not a full git commit id/);
+      await expect(git.readCommit(id)).rejects.toThrow(/not a full git commit id/);
+      await expect(worktree.diff(id)).rejects.toThrow(/not a full git commit id/);
+    }
   }));
 });
 
@@ -180,8 +192,7 @@ describe("env.GIT readCommit", () => {
     let oid: string = await impl.gitCache.putFromGatekeeper(999, "commit", payload);
     using git = new RpcStub(await openGit(impl));
 
-    expect(await git.readCommit(oid.slice(0, 7).toUpperCase())).toEqual({
-      id: oid,
+    expect(await git.readCommit(oid)).toEqual({
       parents: [COMMIT_1, COMMIT_2],
       message: "Merge things\n\nWith a body.\n",
       author: {
@@ -213,9 +224,9 @@ describe("env.GIT readCommit", () => {
     expect(child.message).toBe("second\n");
     expect(child.author).toMatchObject({ name: "My Workspace", email: OWNER });
     expect(child.committer).toEqual(child.author);
-    // The tree is deliberately not exposed.
+    // Neither the tree nor the (already known) commit id is included.
     expect(Object.keys(child).toSorted())
-        .toEqual(["author", "committer", "id", "message", "parents"]);
+        .toEqual(["author", "committer", "message", "parents"]);
   }));
 
   it("pulls only the commit object for a commit known from a gatekeeper",
@@ -245,7 +256,7 @@ describe("env.GIT readCommit", () => {
     let tree: string = await impl.gitStore.commitTree(c1);
     let git = await openGit(impl);
     await expect(git.readCommit("feed".repeat(10))).rejects.toThrow(/not known/);
-    await expect(git.readCommit("main")).rejects.toThrow(/not a git commit id/);
+    await expect(git.readCommit("main")).rejects.toThrow(/not a full git commit id/);
     await expect(git.readCommit(tree)).rejects.toThrow(/is a tree, not a commit/);
   }));
 });

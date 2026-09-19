@@ -837,73 +837,51 @@ export class WorkspaceGitCache {
   }
 
   /**
-   * Resolves a commit reference -- a full 40-hex oid or an unambiguous prefix of at least 4 hex
-   * digits -- against *local knowledge only*: the object store plus the metadata rows written by
-   * gatekeepers' puts and advertisements. Never a remote lookup (remote truncated-id resolution
-   * is a gatekeeper API, e.g. GitHub's getCommit, which returns and advertises the full oid).
-   * Returns the full oid without pulling anything; the caller decides whether to fetch.
+   * Resolves a commit id -- exactly 40 lowercase hex digits, as git itself emits them -- against
+   * *local knowledge only*: the object store plus the metadata rows written by gatekeepers' puts
+   * and advertisements. Never a remote lookup. Returns the oid without pulling anything; the
+   * caller decides whether to fetch.
    *
-   * Errors are agent-readable: malformed refs, an ambiguous prefix (listing the candidates), an
-   * unknown ref ("look it up via the connection first"), and a locally-present non-commit.
-   * Prefix candidates are filtered by locally-decoded types (measured) or the metadata type tag
-   * (assertion-grade -- sound to filter on, because any commit id a gatekeeper handed the agent
-   * was advertised, which forces its tag to "commit" under the reconciliation policy's commit
-   * bias). A *full* oid is the reader-rule exception: an assertion-grade non-commit tag must not
-   * refuse the operation without pulling, so a full oid known only from metadata resolves
-   * regardless of its recorded type and the caller's pull lets the decoded bytes decide.
+   * Abbreviated ids are deliberately not accepted: knowing a commit's id is the capability to
+   * read the commit, and a short prefix is guessable. (Remote truncated-id resolution, where a
+   * human supplied one, is a gatekeeper API, e.g. GitHub's getCommit, which returns and
+   * advertises the full oid.)
+   *
+   * Errors are agent-readable: a malformed id, an unknown commit ("look it up via the connection
+   * first"), and a locally-present non-commit. An id known only from metadata resolves regardless
+   * of its recorded type (the reader rule: an assertion-grade non-commit tag must not refuse the
+   * operation without pulling, so the caller's pull lets the decoded bytes decide).
    */
-  resolveCommitRef(ref: string): GitOid {
-    let normalized = ref.toLowerCase();
-    if (!/^[0-9a-f]{4,40}$/.test(normalized)) {
+  resolveCommitId(id: string): GitOid {
+    if (!/^[0-9a-f]{40}$/.test(id)) {
       throw new Error(
-          `"${ref}" is not a git commit id: expected a 40-hex SHA-1, or a prefix of at least ` +
-          `4 hex digits.`);
+          `${JSON.stringify(id)} is not a full git commit id: expected 40 lowercase hex digits.`);
     }
-    let unknown = () => new Error(
-        `Commit ${ref} is not known to this workspace. Look it up through the connection that ` +
-        `provides the repository first (e.g. its commit or branch APIs), which makes it ` +
-        `available here.`);
-
-    if (normalized.length === 40) {
-      let local = this.readLocalObject(normalized);
-      if (local !== undefined) {
-        if (local.type !== "commit") {
-          throw new Error(`${normalized} is a ${local.type}, not a commit.`);
-        }
-        return normalized;
+    let local = this.readLocalObject(id);
+    if (local !== undefined) {
+      if (local.type !== "commit") {
+        throw new Error(`${id} is a ${local.type}, not a commit.`);
       }
-      if (this.storage.gitObjectMetadata.get(normalized) === undefined) throw unknown();
-      return normalized;
+      return id;
     }
-
-    // Prefix: gather candidates from both sources; a locally-decoded type (measured) wins over
-    // the metadata tag for the same oid.
-    let candidates = new Map<GitOid, boolean>();
-    for (let record of this.storage.gitObjects.list({ prefix: normalized })) {
-      candidates.set(record.oid, decodeLooseObject(record.data).type === "commit");
-    }
-    for (let meta of this.storage.gitObjectMetadata.list({ prefix: normalized })) {
-      if (!candidates.has(meta.oid)) candidates.set(meta.oid, meta.type === "commit");
-    }
-    let commits = [...candidates.entries()].filter(([, isCommit]) => isCommit).map(([oid]) => oid);
-    if (commits.length === 1) return commits[0];
-    if (commits.length > 1) {
+    if (this.storage.gitObjectMetadata.get(id) === undefined) {
       throw new Error(
-          `Commit id prefix ${ref} is ambiguous between: ${commits.toSorted().join(", ")}. ` +
-          `Use a longer prefix.`);
+          `Commit ${id} is not known to this workspace. Look it up through the connection that ` +
+          `provides the repository first (e.g. its commit or branch APIs), which makes it ` +
+          `available here.`);
     }
-    throw unknown();
+    return id;
   }
 
   /**
-   * Resolves a commit reference (see resolveCommitRef) to a commit a worktree can be rooted at.
+   * Resolves a commit id (see resolveCommitId) to a commit a worktree can be rooted at.
    * When the commit is absent locally but a gatekeeper is recorded as a source, performs the
    * *initial pull* -- one fetch for the commit, its full tree structure, and every blob under
    * EAGER_BLOB_LIMIT -- so ordinary reads never fault. Any locally-present commit works with no
    * gatekeeper at all (a gadget's history, another worktree's commit).
    */
-  async fetchCommit(ref: string): Promise<GitOid> {
-    let commit = this.resolveCommitRef(ref);
+  async fetchCommit(commitId: string): Promise<GitOid> {
+    let commit = this.resolveCommitId(commitId);
     if (!this.hasLocalObject(commit)) {
       // Known only from gatekeeper metadata: pull eagerly. (A locally-present commit skips this;
       // any of its tree/blob objects missing locally fault in lazily on first read.)
@@ -919,7 +897,7 @@ export class WorkspaceGitCache {
       throw new Error(`Commit ${commit} could not be fetched.`);
     }
     if (local.type !== "commit") {
-      // The reader rule let an assertion-grade metadata row through resolveCommitRef; the pulled
+      // The reader rule let an assertion-grade metadata row through resolveCommitId; the pulled
       // bytes have now decided.
       throw new Error(`${commit} is a ${local.type}, not a commit.`);
     }

@@ -27,7 +27,7 @@ export interface Git {
   /**
    * Create a worktree rooted at the given commit, which must be known to the workspace: e.g. a
    * commit ID obtained from a gatekeeper API, or one produced by an earlier `Worktree.commit()`.
-   * Abbreviated IDs (at least 4 hex digits) are accepted.
+   * The ID must be given in full (40 lowercase hex digits); abbreviated IDs are not accepted.
    *
    * The worktree exists only in memory: nothing is stored when it is created, and uncommitted
    * changes are lost once the returned stub is disposed or its connection breaks. Commits made
@@ -37,8 +37,8 @@ export interface Git {
   newWorktree(commitId: string): Promise<Worktree>;
 
   /**
-   * Read the metadata of the given commit: its message, author, parents, etc. The commit must be
-   * known to the workspace, as for `newWorktree()`, and abbreviated IDs are likewise accepted.
+   * Read the metadata of the given commit: its message, author, parents, etc. As with
+   * `newWorktree()`, the commit must be known to the workspace and its ID given in full.
    *
    * The result does not describe the commit's files; to read those, create a worktree rooted at
    * the commit with `newWorktree()`.
@@ -48,9 +48,6 @@ export interface Git {
 
 /** Result of `Git.readCommit()`. */
 export type CommitMetadata = {
-  /** The commit's full ID (40 hex digits), even if an abbreviated ID was passed. */
-  id: string;
-
   /**
    * IDs of the commit's parent commits, in order: empty for a root commit, more than one for a
    * merge commit.
@@ -160,8 +157,8 @@ export interface Worktree {
   /**
    * Diff the worktree content against the given commit (defaults to the current head commit --
    * the last commit() made here, initially the commit the worktree was created from). `commitId`
-   * may be any commit known to the workspace, e.g. the worktree's base commit to see everything
-   * changed since it was created.
+   * may be any commit known to the workspace, given in full (abbreviated IDs are not accepted),
+   * e.g. the worktree's base commit to see everything changed since it was created.
    *
    * Returns the diff in a format similar to `git diff`. An empty string means no differences.
    * Paths that cannot be rendered as text (binary/over-limit files, symlinks, submodules)

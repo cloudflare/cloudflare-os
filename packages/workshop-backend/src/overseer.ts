@@ -2408,20 +2408,20 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
-  // Create a new worktree workpiece rooted at the given commit reference, provisional to (and
-  // permanently private to) the given chat. The reference is resolved -- and the commit pulled,
-  // if only a gatekeeper has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
+  // Create a new worktree workpiece rooted at the given commit id, provisional to (and permanently
+  // private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
+  // has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
   // caller (the agent's createWorktree tool) is responsible for getting the creation recorded in
   // the chat log -- `createdWorktrees` on the step's "changes" message -- which makes the pending
   // record permanent. The worktree is not pinned in the chat by its creation: it reads as its
   // accepted commit (`pinBase`) until the first modification pins it (see commitAgentStep).
-  async createWorktree(title: string, chatId: number, commitRef: string)
+  async createWorktree(title: string, chatId: number, commitId: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}> {
     title = title.trim();
     if (!title) {
       throw new Error("A worktree requires a non-empty title.");
     }
-    let baseCommit = await this.gitCache.fetchCommit(commitRef);
+    let baseCommit = await this.gitCache.fetchCommit(commitId);
 
     // The awaits above could have outlived the chat; a pending record for a deleted chat would
     // never be reaped.
