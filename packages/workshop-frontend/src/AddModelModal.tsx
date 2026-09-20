@@ -3,6 +3,8 @@ import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToas
 import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
+import { headerRowsToRecord, validateHeaderRows, type HeaderRow } from './features/ai-models/extraHeaders'
 
 interface AddModelModalProps {
   visible: boolean
@@ -32,6 +34,15 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   cloudflare: 'Cloudflare API token',
   ollama: '(optional)',
 }
+
+// Providers whose client can send no API key at all, so a proxy that extra headers authenticate
+// can supply its own (AI Gateway only injects a stored key into requests that carry none). Google's
+// SDK always sends a key, and the Workers AI endpoint can't be redirected to a proxy.
+const TOKEN_OPTIONAL_WITH_HEADERS: ReadonlySet<AiModelProvider> = new Set(['anthropic', 'openai'])
+
+const isTokenRequired = (provider: AiModelProvider, headerRows: readonly HeaderRow[]) =>
+  provider !== 'ollama' &&
+  !(TOKEN_OPTIONAL_WITH_HEADERS.has(provider) && headerRowsToRecord(headerRows) !== undefined)
 
 // Example used in the custom-model placeholders for providers that have no suggested models
 // (currently Ollama, which serves whatever the user has pulled locally).
@@ -102,9 +113,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [apiToken, setApiToken] = useState('')
   const [accountId, setAccountId] = useState('')
   const [apiUrl, setApiUrl] = useState('')
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [headerErrors, setHeaderErrors] = useState<Record<number, string>>({})
 
   // Advanced settings collapsible state
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -124,7 +137,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setApiToken('')
       setAccountId('')
       setApiUrl('')
+      setHeaderRows([])
       setErrors({})
+      setHeaderErrors({})
       setAdvancedOpen(false)
     }
   }, [visible])
@@ -132,6 +147,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const handleModelSelect = (value: string) => {
     setSelectValue(value)
     setErrors({})
+    setHeaderErrors({})
     const sel = decodeSelection(value)
     setSelection(sel)
 
@@ -145,6 +161,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setApiToken('')
     setAccountId('')
     setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
+    setHeaderRows([])
   }
 
   const validate = (): boolean => {
@@ -163,7 +180,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     const isCloudflare = selection?.provider === 'cloudflare'
     const showCredentials = !gatewayMode
 
-    if (showCredentials && selection && !isOllama && !apiToken.trim()) {
+    if (showCredentials && selection && isTokenRequired(selection.provider, headerRows) && !apiToken.trim()) {
       newErrors.apiToken = 'Please enter your API token'
     }
 
@@ -175,8 +192,13 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       newErrors.apiUrl = 'Please enter the Ollama API URL'
     }
 
+    const newHeaderErrors = showCredentials ? validateHeaderRows(headerRows) : {}
+    // The header rows live in the collapsible, so reveal the errors if it was closed.
+    if (Object.keys(newHeaderErrors).length > 0) setAdvancedOpen(true)
+
     setErrors(newErrors)
-    return Object.keys(newErrors).length === 0
+    setHeaderErrors(newHeaderErrors)
+    return Object.keys(newErrors).length === 0 && Object.keys(newHeaderErrors).length === 0
   }
 
   const handleSubmit = async () => {
@@ -194,12 +216,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         name: finalDisplayName,
       }
 
+      const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
       const config: AiModelConfig = {
         provider: selection!.provider,
         model: finalModelId,
         apiToken: gatewayMode ? '' : apiToken.trim(),
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
+        ...(extraHeaders && { extraHeaders }),
       }
 
       await authenticatedApi.addModel(profile, config)
@@ -219,6 +243,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const isOllama = selection?.provider === 'ollama'
   const isCloudflare = selection?.provider === 'cloudflare'
   const showCredentials = !gatewayMode
+  const tokenRequired = selection !== null && isTokenRequired(selection.provider, headerRows)
 
   // Group options by provider for rendering with visual separators.
   const groupedOptions: { provider: string; items: typeof options }[] = []
@@ -311,12 +336,14 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
           {showCredentials && selection && (
             <SensitiveInput
               label="API Token"
-              placeholder={API_TOKEN_PLACEHOLDERS[selection.provider]}
+              placeholder={tokenRequired ? API_TOKEN_PLACEHOLDERS[selection.provider] : '(optional)'}
               description={
                 isOllama
                   ? 'Optional for local Ollama access'
                   : isCloudflare
                   ? 'An API token with Workers AI Read + Edit permissions (in the dashboard: Workers AI > Use REST API > Create a Workers AI API Token)'
+                  : TOKEN_OPTIONAL_WITH_HEADERS.has(selection.provider)
+                  ? `Your ${PROVIDER_LABELS[selection.provider]} API token for billing. Leave blank if the extra headers under Advanced Settings authenticate you to a proxy that supplies its own key.`
                   : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
               }
               value={apiToken}
@@ -339,21 +366,35 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             />
           )}
 
-          {/* Advanced Settings for non-Ollama, non-Cloudflare providers */}
-          {showCredentials && selection && !isOllama && !isCloudflare && (
+          {showCredentials && selection && (
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}
             >
               <Collapsible.DefaultTrigger>Advanced Settings</Collapsible.DefaultTrigger>
               <Collapsible.DefaultPanel>
-                <Input
-                  label="API URL"
-                  placeholder="https://..."
-                  description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
-                  value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
-                />
+                <div className="space-y-4">
+                  {/* Ollama shows its API URL above; Workers AI's endpoint is derived from the account ID. */}
+                  {!isOllama && !isCloudflare && (
+                    <Input
+                      label="API URL"
+                      placeholder="https://..."
+                      description="Override the default API endpoint (useful for proxies like Cloudflare AI Gateway)"
+                      value={apiUrl}
+                      onChange={(e) => setApiUrl(e.target.value)}
+                    />
+                  )}
+                  <ExtraHeadersEditor
+                    rows={headerRows}
+                    errors={headerErrors}
+                    onRowsChange={(rows) => {
+                      setHeaderRows(rows)
+                      setHeaderErrors({})
+                      // Adding a header can make the token optional.
+                      setErrors(prev => ({ ...prev, apiToken: '' }))
+                    }}
+                  />
+                </div>
               </Collapsible.DefaultPanel>
             </Collapsible.Root>
           )}

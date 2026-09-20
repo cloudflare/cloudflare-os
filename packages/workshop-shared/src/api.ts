@@ -1250,7 +1250,11 @@ export type AiModelConfig = {
   /** Name of the specific model, as specified to the provider's API. */
   model: string;
 
-  /** Secret API token for the respective provider, for billing purposes. */
+  /**
+   * Secret API token for the respective provider, for billing purposes. For providers "anthropic",
+   * "openai", and "ollama", an empty token means no key is sent at all, e.g. because a proxy
+   * authenticated through `extraHeaders` supplies its own.
+   */
   apiToken: string;
 
   /**
@@ -1265,6 +1269,15 @@ export type AiModelConfig = {
    * alternative provider that provides a compatible API.
    */
   apiUrl?: string;
+
+  /**
+   * Additional HTTP headers to send with every request to the provider, keyed by header name.
+   * These override the provider's default headers of the same name (including authentication
+   * headers), which is useful for proxies that require their own credentials. Like `apiToken`
+   * and `apiUrl`, these are ignored when the Workshop routes requests through its own AI
+   * Gateway configuration rather than contacting the provider directly.
+   */
+  extraHeaders?: Record<string, string>;
 };
 
 /**

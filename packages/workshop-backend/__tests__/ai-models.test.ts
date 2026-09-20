@@ -491,6 +491,67 @@ describe("getModel direct routing (no gateway)", () => {
     expect(request.headers.get("authorization")).toBe("Bearer ollama-token");
   }, 15000);
 
+  it("sends the config's extra headers, overriding provider defaults", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai",
+      model: "gpt-5",
+      apiToken: "direct-api-token",
+      apiUrl: "https://proxy.example.com/v1",
+      extraHeaders: { "X-Proxy-Key": "proxy-secret", Authorization: "Bearer proxy-token" },
+    }, INITIATOR);
+
+    const request = await captureRequest(handle);
+    expect(request.url).toBe("https://proxy.example.com/v1/responses");
+    expect(request.headers.get("x-proxy-key")).toBe("proxy-secret");
+    expect(request.headers.get("authorization")).toBe("Bearer proxy-token");
+  }, 15000);
+
+  it.each([
+    { provider: "anthropic", model: "claude-sonnet-4-5", keyHeader: "x-api-key" },
+    { provider: "openai", model: "gpt-5", keyHeader: "authorization" },
+  ] as const)("sends no $provider API key when the token is blank", async (
+      { provider, model, keyHeader }) => {
+    // A proxy like AI Gateway with stored keys only injects its own provider key into requests
+    // that carry none, authenticating the caller through extra headers instead. (A header pi
+    // doesn't recognize as auth, so this also covers pi's own "No API key" check.)
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider,
+      model,
+      apiToken: "",
+      apiUrl: "https://proxy.example.com",
+      extraHeaders: { "X-Proxy-Auth": "proxy-token" },
+    }, INITIATOR);
+
+    const request = await captureRequest(handle);
+    expect(request.headers.get(keyHeader)).toBeNull();
+    expect(request.headers.get("x-proxy-auth")).toBe("proxy-token");
+  }, 15000);
+
+  it("sends extra headers for an Ollama config without an API key", async () => {
+    // The null default that suppresses the SDK's placeholder bearer token must not also
+    // suppress an Authorization header the user configured explicitly.
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "ollama",
+      model: "qwen3:8b",
+      apiToken: "",
+      apiUrl: "http://my-ollama:11434",
+      extraHeaders: { Authorization: "Basic dXNlcjpwYXNz" },
+    }, INITIATOR);
+
+    const request = await captureRequest(handle);
+    expect(request.headers.get("authorization")).toBe("Basic dXNlcjpwYXNz");
+  }, 15000);
+
+  it("ignores extra headers when routing through AI Gateway", async () => {
+    const handle = getModel(env(), {
+      ...ANTHROPIC_CONFIG,
+      extraHeaders: { "X-Proxy-Key": "proxy-secret" },
+    }, INITIATOR);
+
+    const request = await captureRequest(handle);
+    expect(request.headers.get("x-proxy-key")).toBeNull();
+  }, 15000);
+
   it("strips a legacy /api (or /v1) suffix from an Ollama base URL", () => {
     // Configs saved before the pi migration store the native-API base (".../api").
     for (const apiUrl of ["http://my-ollama:11434/api", "http://my-ollama:11434/v1/"]) {
