@@ -1,14 +1,22 @@
-import { Button, Input, SensitiveInput } from '@cloudflare/kumo'
+import { Button, Input } from '@cloudflare/kumo'
 import { Plus, Trash } from '@phosphor-icons/react'
-import { newHeaderRow, type HeaderRow } from './extraHeaders'
+import { canKeepStoredValue, newHeaderRow, type HeaderRow } from './extraHeaders'
+import { StoredSecretInput } from './StoredSecretInput'
 
-export const ExtraHeadersEditor = ({ rows, errors, onRowsChange }: {
+export const ExtraHeadersEditor = ({ rows, errors, onRowsChange, storedValuesUsable }: {
   rows: readonly HeaderRow[]
+  /** Whether stored values may still be kept, which the server allows only for the same endpoint. */
+  storedValuesUsable: boolean
   errors: Readonly<Record<number, string>>
   onRowsChange: (rows: HeaderRow[]) => void
 }) => {
   const updateRow = (id: number, patch: Partial<Omit<HeaderRow, 'id'>>) =>
-    onRowsChange(rows.map(row => row.id === id ? { ...row, ...patch } : row))
+    onRowsChange(rows.map(row => {
+      if (row.id !== id) return row
+      const updated = { ...row, ...patch }
+      // The stored value belongs to the stored name, so a renamed header needs a new value.
+      return updated.value === null && !canKeepStoredValue(updated) ? { ...updated, value: '' } : updated
+    }))
 
   return (
     <fieldset className="grid gap-2">
@@ -28,9 +36,10 @@ export const ExtraHeadersEditor = ({ rows, errors, onRowsChange }: {
             />
           </div>
           <div className="min-w-0 flex-1">
-            <SensitiveInput
+            <StoredSecretInput
               aria-label="Header value"
               placeholder="Value"
+              stored={storedValuesUsable && canKeepStoredValue(row)}
               value={row.value}
               onValueChange={(value) => updateRow(row.id, { value })}
             />
