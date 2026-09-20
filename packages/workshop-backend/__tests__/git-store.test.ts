@@ -490,4 +490,10 @@ describe("commitIdentityForAuthor", () => {
     expect(commitIdentityForAuthor({ type: "user", id: "bob", name: "Bob Builder" }))
         .toEqual({ name: "Bob Builder", email: "bob@localhost" });
   });
+
+  it("prefers the author's commit email over the profile ID", () => {
+    expect(commitIdentityForAuthor(
+        { type: "user", id: "bob", name: "Bob Builder", commitEmail: "bob@builder.example" }))
+        .toEqual({ name: "Bob Builder", email: "bob@builder.example" });
+  });
 });

@@ -123,7 +123,7 @@ function makeTurn(impl: any, chatId: number) {
     pins,
     bufferedChanges: changes,
     bufferedCommits: commits,
-    session: (id: number) => new WorktreeSessionImpl(impl, id, access, USER),
+    session: (id: number) => new WorktreeSessionImpl(impl, id, access, async () => USER),
     barrier: async () => impl.commitAgentStep(
         chatId, AGENT, [{ type: "message", message: "step" }],
         { changes: changes.splice(0), createdGadgets: [], createdWorktrees: [],
@@ -187,7 +187,7 @@ function makeLocalHarness(
       appendChange: () => { throw new Error("read-only test"); },
       appendCommit: () => { throw new Error("read-only test"); },
     };
-    return new WorktreeSessionImpl(host, 5, access, USER);
+    return new WorktreeSessionImpl(host, 5, access, async () => USER);
   };
   return { cache, gitStore, session };
 }

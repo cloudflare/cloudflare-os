@@ -252,6 +252,17 @@ export function validateBindingName(name: string): void {
 }
 
 /**
+ * Throws unless `email` is acceptable as `AiChatAuthorInfo.commitEmail`: `local@domain`, at most
+ * 254 characters, with no whitespace, control characters, or angle brackets. This is not full
+ * address validation; it exists so the value cannot break out of a git `Name <email>` header.
+ */
+export function validateCommitEmail(email: string): void {
+  if (email.length > 254 || !/^[^\p{Cc}\s<>@]+@[^\p{Cc}\s<>@]+$/u.test(email)) {
+    throw new Error(`Invalid commit email: expected an address like name@example.com.`);
+  }
+}
+
+/**
  * Why a previously-configured observer binding failed verification on this open attempt. Attached to
  * the ObserverBindingNeed the overseer re-prompts with, so the client can explain what went wrong
  * instead of dead-ending the open.
@@ -410,6 +421,12 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /** Set the user's own display name, seen in chats, etc. */
   setOwnDisplayName(name: string): Promise<void>;
+
+  /**
+   * Set the email address used on git commits the user authors, or clear it with null to fall
+   * back to one derived from their user ID. Rejects an address `validateCommitEmail` refuses.
+   */
+  setOwnCommitEmail(email: string | null): Promise<void>;
 
   /**
    * Find other users of this deployment by a case-insensitive substring of
@@ -2837,6 +2854,13 @@ export type AiChatAuthorInfo = {
 
   /** Display name for author, e.g. "Kenton Varda" or "GPT" */
   name: string;
+
+  /**
+   * The user's preferred email address for git commits they author, set via
+   * `AuthenticatedApi.setOwnCommitEmail()`. When absent, commits derive an address from `id`.
+   * Self-asserted and unverified: it is attribution only and must never be read as identity.
+   */
+  commitEmail?: string;
 
   // Note: the avatar is intentionally not included here to keep this type lightweight (it's
   // embedded in every chat message). Fetch user avatars separately via

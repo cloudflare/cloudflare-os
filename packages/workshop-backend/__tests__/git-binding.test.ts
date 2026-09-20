@@ -22,11 +22,18 @@ const OWNER = "owner@example.com";
 const ALICE: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
 
 let doCounter = 0;
-async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
+async function withImpl(
+    fn: (impl: any) => Promise<void>,
+    ownerProfile: AiChatAuthorInfo = { type: "user", id: OWNER, name: "Owner" }): Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(`git-binding-${++doCounter}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
-    impl.ownerProfileId = OWNER;
+    impl.ownerId = "owner-user-do";
+    impl.users = {
+      idFromString: (id: string) => id,
+      idFromName: (name: string) => name,
+      get: () => ({ whoami: async () => ownerProfile }),
+    };
     impl.storage.title.put("My Workspace");
     await fn(impl);
   });
@@ -137,6 +144,24 @@ describe("env.GIT worktrees", () => {
       errors: [],
     });
   }));
+
+  it("gives gadget commits the owner's commit email, looked up only at commit",
+      () => withImpl(async impl => {
+    let lookups = 0;
+    let owner = impl.users.get();
+    impl.users.get = () => ({ whoami: () => { ++lookups; return owner.whoami(); } });
+
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let worktree = await (await openGit(impl)).newWorktree(c1);
+    await worktree.writeFile("a.txt", "two\n");
+    expect(await worktree.readFile("a.txt")).toBe("two\n");
+    expect(lookups).toBe(0);
+
+    let commit = await worktree.commit("gadget commit");
+    expect(lookups).toBe(1);
+    expect((await impl.gitStore.readCommitLog(commit, { depth: 1 }))[0].author)
+        .toEqual({ name: "My Workspace", email: "owner@commits.example" });
+  }, { type: "user", id: OWNER, name: "Owner", commitEmail: "owner@commits.example" }));
 
   it("attributes the agent's commits to its turn's initiator", () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });

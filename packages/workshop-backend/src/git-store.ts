@@ -659,13 +659,14 @@ function mergeText(base: string, ours: string, theirs: string, labels: MergeLabe
 
 /**
  * Derives a git commit identity from a chat author: the display name becomes the commit name,
- * and the profile ID the email. Profile IDs are typically email addresses; in username/password
- * mode they may be bare usernames, which become `<username>@localhost`. (A placeholder
- * convention until users can customize their commit identity.)
+ * and the email is the author's preferred `commitEmail` if set, else the profile ID. Profile IDs
+ * are typically email addresses; in username/password mode they may be bare usernames, which
+ * become `<username>@localhost`.
  */
 export function commitIdentityForAuthor(author: AiChatAuthorInfo): CommitIdentity {
   return {
     name: author.name,
-    email: author.id.includes("@") ? author.id : `${author.id}@localhost`,
+    email: author.commitEmail ??
+        (author.id.includes("@") ? author.id : `${author.id}@localhost`),
   };
 }
