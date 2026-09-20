@@ -2992,9 +2992,11 @@ async function runAgentPass(
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let re = new RegExp(pattern);
           let scan: GrepScan;
-          let worktreeBase = worktreePinBases.get(workpieceId);
-          if (worktreeBase !== undefined && pinnedGadgets.has(workpieceId)) {
-            scan = await hooks.grepWorktree(worktreeTurnAccess, workpieceId, worktreeBase, path);
+          // A worktree, pinned or not, scans its overlay over its base: the pin's base while
+          // pinned, else the accepted commit (the same view the Worktree binding's grep() sees).
+          let base = worktreeBase(workpieceId);
+          if (base !== undefined) {
+            scan = await hooks.grepWorktree(worktreeTurnAccess, workpieceId, base, path);
           } else {
             // The same source readFile reads: committed code at the observed head for an
             // unpinned gadget, else the session content.
