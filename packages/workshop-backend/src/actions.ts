@@ -177,7 +177,8 @@ export class ActionSyncDriver {
         throw new Error("Action batch contains a different connection.");
       }
 
-      let selected = vetoIds.map(id => {
+      // A selection is a set: staging one record twice is work with nothing to say.
+      let selected = [...new Set(vetoIds)].map(id => {
         let fresh = this.storage.actions.get(id);
         if (!fresh) throw new Error(`No such action: ${id}`);
         if (fresh.type !== "action") throw new Error(`Not an action: ${id}`);
