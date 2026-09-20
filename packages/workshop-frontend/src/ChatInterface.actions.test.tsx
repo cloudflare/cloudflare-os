@@ -199,6 +199,31 @@ describe('ChatInterface action refresh', () => {
     expect(document.body.textContent).toContain('Approved')
     expect(document.body.textContent).not.toContain('stale failure')
   })
+
+  it('does not let a stale refresh drop a failure recorded while it was in flight', async () => {
+    await cachePendingCard()
+
+    let resolveFetch!: (message: AiChatMessage | null) => void
+    const fetched = new Promise<AiChatMessage | null>(resolve => { resolveFetch = resolve })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(() => fetched))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [entry(1), entry(2)] })
+    // An apply stops while the refresh is in flight: the card stays pending, so resolution
+    // monotonicity says nothing -- only the stop's own stamp distinguishes the two reads.
+    await second.emit(entry(1, {
+      failure: 'page was deleted upstream',
+      appliedAt: new Date(1700005000000),
+    }))
+    flushFrames()
+
+    await act(async () => resolveFetch(actionMessage))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('page was deleted upstream')
+  })
 })
 
 describe('ChatInterface action failure note', () => {

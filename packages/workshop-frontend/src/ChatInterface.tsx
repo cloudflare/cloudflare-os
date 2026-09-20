@@ -83,6 +83,7 @@ import {
   WorkpieceId,
   BlueprintOutput,
   MessageFormatRef,
+  actionChangeTime,
 } from "@gadgets/workshop-shared/api";
 import { composeCodeChange, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow } from "./features/code/otClient";
@@ -3838,11 +3839,13 @@ function ChatInterface({
       try {
         const fetched = await overseer.getChatMessage(location.chatId, location.sequence);
         if (cancelled || fetched?.type !== "action" || !fetched.actionLog) return;
-        // Resolution is monotonic: never regress a card another channel already resolved.
-        const current = getCachedActionMessage(location)?.msg;
-        if (fetched.actionLog.state === "pending" &&
-            current?.actionLog && current.actionLog.state !== "pending") return;
-        if (applyActionLogUpdateToCachedMessages(fetched.actionLog)) scheduleUpdate();
+        // Never regress a card a faster channel already advanced: it may have resolved it, or
+        // stamped a newer change this read predates (recording a stop stamps appliedAt).
+        const log = fetched.actionLog;
+        const current = getCachedActionMessage(location)?.msg.actionLog;
+        if (current && ((log.state === "pending" && current.state !== "pending") ||
+            actionChangeTime(log) < actionChangeTime(current))) return;
+        if (applyActionLogUpdateToCachedMessages(log)) scheduleUpdate();
       } catch (err) {
         console.error("Failed to refresh action card:", err);
       }
