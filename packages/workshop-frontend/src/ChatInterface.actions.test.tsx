@@ -226,6 +226,35 @@ describe('ChatInterface action failure note', () => {
   })
 })
 
+// A pending card a rule would actually apply: gatekeeper-bound, tagged, auto-approvable.
+const ruleEligible = {
+  gatekeeperId: 1,
+  description: {
+    title: 'Action 1',
+    description: '',
+    implementsRevert: false,
+    actionKind: { tag: 'edit', label: 'Edits' },
+    autoApprovable: true,
+  },
+}
+
+describe('ChatInterface always-approve offer', () => {
+  it('offers it on a card a rule would apply', async () => {
+    await renderCard(ruleEligible)
+
+    expect(document.body.textContent).toContain('Always approve')
+  })
+
+  it('withholds it once the card carries a failure', async () => {
+    await renderCard({ ...ruleEligible, failure: 'page was deleted upstream' })
+
+    // A stop disqualifies the action from the rule path, so enabling one here would promise an
+    // application that never happens and leave an awaiting agent turn suspended.
+    expect(document.body.textContent).toContain('page was deleted upstream')
+    expect(document.body.textContent).not.toContain('Always approve')
+  })
+})
+
 describe('ChatInterface action status', () => {
   it('presents a cascade invalidation as invalidated rather than denied', async () => {
     await renderCard({ state: 'rejected', cascadedFrom: 2 })

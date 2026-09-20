@@ -4926,11 +4926,12 @@ function ChatInterface({
       : "text-kumo-inactive";
     // Auto-approval target: offer "Always approve this type" only when enabling a rule would
     // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.)
+    // auto-approvable, whose last attempt did not stop. (A non-auto-approvable action stays a
+    // manual gate even with a rule; a stopped one needs an explicit retry; an auto-approvable
+    // action with an existing rule wouldn't still be pending.)
     const autoApproveTarget =
       log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
+      log.description.autoApprovable === true && log.failure === undefined
         ? {
             actionId: msg.actionId,
             gatekeeperId: log.gatekeeperId,

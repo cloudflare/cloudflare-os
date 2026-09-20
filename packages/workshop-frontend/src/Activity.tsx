@@ -238,7 +238,7 @@ export default function Activity({
               const autoApproveTarget =
                 record.type === 'action' && record.gatekeeperId !== undefined &&
                 record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
+                record.description.autoApprovable === true && record.failure === undefined
                   ? {
                       actionId: record.id,
                       gatekeeperId: record.gatekeeperId,
