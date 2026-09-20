@@ -1319,7 +1319,15 @@ export class GitPackBuilderImpl extends RpcTarget implements GitPackBuilder, Dis
 
   async buildPack(action: number): Promise<ReadableStream<Uint8Array>> {
     const record = this.#requireAction(action);
-    const stream = await this.cache.buildPackForAction(this.gatekeeperId, record.id);
+    // An invalidation during the build can surface as the pull's own failure, so recheck on both
+    // exits: the coded lifetime error is the cause, and the one the contract promises.
+    let stream: ReadableStream<Uint8Array>;
+    try {
+      stream = await this.cache.buildPackForAction(this.gatekeeperId, record.id);
+    } catch (error) {
+      this.#requireAction(action);
+      throw error;
+    }
     try {
       this.#requireAction(action);
     } catch (error) {

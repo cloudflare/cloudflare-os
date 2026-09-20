@@ -491,6 +491,52 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
 
+  it.each([
+    {
+      mode: "invalidated",
+      invalidate: true,
+      assert: (build: Promise<unknown>) =>
+          expectGitPackCode(() => build, GIT_PACK_ERROR_CODES.actionUnavailable),
+    },
+    {
+      mode: "still live",
+      invalidate: false,
+      assert: (build: Promise<unknown>) => expect(build).rejects.toThrow("pull failed"),
+    },
+  ])("attributes a failed pack build to the action's lifetime ($mode)",
+      async ({ mode, invalidate, assert }) => {
+    await inOverseer(`batch-pack-build-failed-${mode.replace(" ", "-")}`, async impl => {
+      impl.storage.gatekeepers.put({ id: GATEKEEPER, class: {} });
+      const { head } = await seedPushableHistory(impl, GATEKEEPER, ` ${mode}`);
+      await impl.submitAction(GATEKEEPER, 81, pushDescription([head]), { from: "user" });
+      const record = actionRecord(impl, GATEKEEPER, 81);
+      const builder = new GitPackBuilderImpl(
+          impl.gitCache, impl.storage, GATEKEEPER, [record]);
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const original = impl.gitCache.buildPackForAction;
+      // Removing the connection breaks the stub the missing-object pull waits on, so the build
+      // reports the pull's own failure rather than the invalidation that caused it.
+      impl.gitCache.buildPackForAction = async () => {
+        started.resolve();
+        await release.promise;
+        throw new Error("pull failed");
+      };
+
+      try {
+        const build = builder.buildPack(81);
+        await started.promise;
+        if (invalidate) impl.removeGatekeeper(GATEKEEPER);
+        release.resolve();
+        await assert(build);
+      } finally {
+        release.resolve();
+        impl.gitCache.buildPackForAction = original;
+        builder[Symbol.dispose]();
+      }
+    });
+  });
+
   it("hands sessions a gatekeeper-scoped cache via getGitCache()", async () => {
     await inOverseer("push-session-cache", async impl => {
       let { head, base } = await seedPushableHistory(impl);
