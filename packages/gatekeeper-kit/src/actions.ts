@@ -717,8 +717,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             description,
             implementsRevert,
             // Spread, so an action with no git, no kind, or no awaited decision puts no key on the
-            // wire at all.
-            ...(pushedCommits ? { pushedCommits } : {}),
+            // wire at all. An empty list is "no git" too: the overseer reads presence as a push,
+            // and `[]` is a push of nothing it refuses to build a pack for.
+            ...(pushedCommits?.length ? { pushedCommits } : {}),
             autoApprovable: definition.autoApprovable === true,
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
