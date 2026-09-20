@@ -150,6 +150,46 @@ describe("spawned agent tools", () => {
     expect(impl.getChatAgentContext(chatId).spawnerConfig).toBeDefined();
   }));
 
+  it("greps a worktree before its first modification pins it, and after",
+      () => withImpl(async impl => {
+    seedGadget(impl);
+    let commit = await commitFiles(impl,
+        { "README.md": "hello\n", "src/util.js": "export let answer = 42;\n" });
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: { GADGET: GADGET_ID } });
+
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([
+        fauxToolCall("createWorktree", { title: "Repo", bindingName: "REPO", commitId: commit }),
+      ], { stopReason: "toolUse" }),
+      // Unpinned: the search resolves against the accepted commit.
+      fauxAssistantMessage([
+        fauxToolCall("grep", { workpiece: "REPO", pattern: "answer", path: "src" }),
+        fauxToolCall("grep", { workpiece: "REPO", pattern: "hello", path: "README.md" }),
+        fauxToolCall("grep", { workpiece: "REPO", pattern: "answer|hello" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([
+        fauxToolCall("writeFile",
+            { workpiece: "REPO", filename: "src/new.js", content: "let answer = 43;\n" }),
+      ], { stopReason: "toolUse" }),
+      // Pinned by the write: the search sees the overlay over the same base.
+      fauxAssistantMessage([
+        fauxToolCall("grep", { workpiece: "REPO", pattern: "answer", path: "src" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+
+    let calls = toolCalls(impl, chatId);
+    for (let call of calls) {
+      expect(call.error, `${call.toolName} failed`).toBeUndefined();
+    }
+    expect(calls.filter(call => call.toolName === "grep").map(call => call.output)).toEqual([
+      "src/util.js:1:export let answer = 42;",
+      "1:hello",
+      "README.md:1:hello\nsrc/util.js:1:export let answer = 42;",
+      "src/new.js:1:let answer = 43;\nsrc/util.js:1:export let answer = 42;",
+    ]);
+  }));
+
   it("still offers regular chats the full tool set", () => withImpl(async impl => {
     impl.storage.chatMeta.put(
         { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
