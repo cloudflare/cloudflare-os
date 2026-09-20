@@ -190,6 +190,20 @@ describe("spawned agent tools", () => {
     ]);
   }));
 
+  it("attributes the spawned turn to the gadget, with the creator's commit email",
+      () => withImpl(async impl => {
+    let creator = { ...OWNER, commitEmail: "owner@commits.example" };
+    impl.users.get = () => ({ getChatContext: async () => ({ profile: creator }) });
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+
+    let [prompt] = ([...impl.storage.chats.list()] as AiChatMessage[])
+        .filter(msg => msg.chatId === chatId);
+    expect(prompt.author).toEqual({
+      type: "gadget", id: OWNER.id, name: impl.storage.title.get(),
+      commitEmail: "owner@commits.example",
+    });
+  }));
+
   it("still offers regular chats the full tool set", () => withImpl(async impl => {
     impl.storage.chatMeta.put(
         { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });

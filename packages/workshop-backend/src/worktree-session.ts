@@ -56,8 +56,12 @@ export interface WorktreeRecordView {
  */
 @validateRpc()
 export class WorktreeSessionImpl extends RpcTarget implements Worktree {
+  /**
+   * `author` resolves who commits are attributed to. It is called only by commit(), so a session
+   * that never commits never pays for resolving it (env.GIT's may need an RPC to the owner's DO).
+   */
   constructor(private host: WorktreeSessionHost, private worktreeId: WorkpieceId,
-              private turn: WorktreeTurnAccess, private initiator: AiChatAuthorInfo) {
+              private turn: WorktreeTurnAccess, private author: () => Promise<AiChatAuthorInfo>) {
     super();
   }
 
@@ -224,6 +228,9 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
 
 
   async commit(message: string): Promise<string> {
+    // Resolved first: it may be an RPC, and the worktree state read below shouldn't go stale
+    // across it.
+    let author = commitIdentityForAuthor(await this.author());
     let base = this.#pinBase();
     let previousHead = this.#head();
 
@@ -243,9 +250,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     let commit = await this.host.gitStore.writeChangedFilesAsCommit(changes, {
       treeBase: base,
       parents: [previousHead],
-      // The turn's initiator: in a collaborative chat, a collaborator's work is attributed to
-      // the collaborator, matching how accepted commits use the acting user's profile.
-      author: commitIdentityForAuthor(this.initiator),
+      author,
       message,
       timestamp: new Date(),
     });

@@ -5585,8 +5585,12 @@ class OverseerImpl implements AgentHooks {
               "This worktree binding is no longer live; worktree bindings are usable only " +
               "while the executeCode call they were provided to is running.");
         }
+        // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
+        // attributed to the collaborator, matching how accepted commits use the acting user's
+        // profile.
+        let initiator = turn.initiator;
         return Promise.resolve(
-            new WorktreeSessionImpl(this, target.id, turn.access, turn.initiator));
+            new WorktreeSessionImpl(this, target.id, turn.access, async () => initiator));
       }
 
       case "git":
@@ -5601,11 +5605,24 @@ class OverseerImpl implements AgentHooks {
   // Who commits made through `caller`'s env.GIT are attributed to: for the agent, its turn's
   // initiator, exactly as its commits through a createWorktree binding are; for everything else
   // -- gadget code, with no user behind it -- the identity a spawned agent's turn carries, with
-  // the owner standing in for a spawner's creator.
+  // the owner standing in for a spawner's creator. Resolved at commit time, so read-only use
+  // of env.GIT never waits on the owner's DO.
   async #gitAuthorFor(caller: GatekeeperCaller): Promise<AiChatAuthorInfo> {
     let turn = caller.from === "agent" ? this.#activeWorktreeTurns.get(caller.chatId) : undefined;
     if (turn !== undefined) return turn.initiator;
-    return {type: "gadget", id: await this.getOwnerProfileId(), name: this.storage.title.get()};
+    return this.gadgetAuthorFor(await retryOnDoReset(() => this.#ownerUserDo().whoami(), this.logger));
+  }
+
+  // The author of work this workspace's gadgets do on `user`'s behalf -- spawned agent turns,
+  // agent callbacks, gadget code's own calls: accounted to `user`, displayed under the workspace
+  // title, and committing with `user`'s commit email (see AiChatAuthorInfo "gadget").
+  gadgetAuthorFor(user: AiChatAuthorInfo): AiChatAuthorInfo {
+    return {
+      type: "gadget",
+      id: user.id,
+      name: this.storage.title.get(),
+      ...(user.commitEmail !== undefined && {commitEmail: user.commitEmail}),
+    };
   }
 
   // The worktree turn state registered by a running executeCode, keyed by chat (one turn per
@@ -5641,14 +5658,8 @@ class OverseerImpl implements AgentHooks {
       } else if (caller.from !== "hook" && caller.chatId !== undefined && this.ownerId) {
         let owner = this.users.get(this.users.idFromString(this.ownerId));
         let userMeta = await owner.getChatContext(null);
-
-        let author: AiChatAuthorInfo = {
-          type: "gadget",
-          id: userMeta.profile.id,
-          name: this.storage.title.get(),
-        };
-
-        this.addChatMessages(caller.chatId, author, [{type: "action", actionId}]);
+        this.addChatMessages(caller.chatId, this.gadgetAuthorFor(userMeta.profile),
+                             [{type: "action", actionId}]);
       }
     } catch (err) {
       this.logger.warn("failed to post action chat message", {
@@ -7419,11 +7430,7 @@ class OverseerImpl implements AgentHooks {
         modelError = err;
         userMeta = await user.getChatContext(null);
       }
-      author = {
-        type: "gadget",
-        id: userMeta.profile.id,
-        name: this.storage.title.get(),
-      };
+      author = this.gadgetAuthorFor(userMeta.profile);
 
       // getChatContext() waits on the user's Durable Object. A user message may start an agent
       // while that call is pending, so wait for message preparation to finish and then re-read
@@ -10339,11 +10346,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (spawnerTypes) context.spawnerTypes = spawnerTypes;
     this.impl.storage.chatContext.put(context);
 
-    let author: AiChatAuthorInfo = {
-      type: "gadget",
-      id: userMeta.profile.id,
-      name: this.impl.storage.title.get(),
-    };
+    let author = this.impl.gadgetAuthorFor(userMeta.profile);
     return {chatId, meta, userMeta, author, initiatorUserId};
   }
 
@@ -11046,11 +11049,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let props: LanguageModelGatekeeperProps = {
       displayName: chatMeta.aiModel!.profile.name,
       config: chatMeta.aiModel!.config,
-      initiator: {
-        type: "gadget",
-        id: chatMeta.profile.id,
-        name: this.impl.storage.title.get(),
-      },
+      initiator: this.impl.gadgetAuthorFor(chatMeta.profile),
       metadata: { source: "model-binding", gadgetId: this.impl.ctx.id.toString() },
     }
 

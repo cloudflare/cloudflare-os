@@ -116,7 +116,7 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
 export class GitImpl extends RpcTarget implements Git {
   /**
    * `author` resolves the identity commits are attributed to, matching how the caller's commits
-   * through the agent's own worktree bindings would be.
+   * through the agent's own worktree bindings would be. Called only when a worktree commits.
    */
   constructor(private host: GitBindingHost, private author: () => Promise<AiChatAuthorInfo>) {
     super();
@@ -125,8 +125,7 @@ export class GitImpl extends RpcTarget implements Git {
   async newWorktree(commitId: string): Promise<Worktree> {
     let base = await this.host.gitCache.fetchCommit(commitId);
     let worktree = new InMemoryWorktree(this.host.gitCache, this.host.gitStore, base);
-    return new WorktreeSessionImpl(
-        worktree, IN_MEMORY_WORKTREE_ID, worktree, await this.author());
+    return new WorktreeSessionImpl(worktree, IN_MEMORY_WORKTREE_ID, worktree, this.author);
   }
 
   async readCommit(commitId: string): Promise<CommitMetadata> {
