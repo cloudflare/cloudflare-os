@@ -585,7 +585,12 @@ function getToolCallSummary(
     case "grep":
       return { verb: "Searched", target: tc.input.path ?? tc.input.workpiece };
     case "describeBinding":
-      return { verb: "Inspected", target: `${String(tc.input.name)} binding` };
+      return {
+        verb: "Inspected",
+        target: tc.input.gadget === undefined
+          ? `${String(tc.input.name)} binding`
+          : `${String(tc.input.name)} binding of ${tc.input.gadget}`,
+      };
     case "setBindingHook":
       return {
         verb: "Connected",
@@ -1480,6 +1485,11 @@ const ToolCallDetails = memo(function ToolCallDetails(
             </>
           )}
         </>
+      ) : tc.toolName === "describeBinding" && tc.output !== undefined ? (
+        // The description names the binding it describes, so the input would only repeat it.
+        <pre className="max-h-96 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
+          {tc.output}
+        </pre>
       ) : (
         <pre className="max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-subtle whitespace-pre-wrap">
           {JSON.stringify(tc.input, null, 2)}

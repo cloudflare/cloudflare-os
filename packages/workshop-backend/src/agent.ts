@@ -346,27 +346,42 @@ export type AgentGadgetInfo = {
  */
 export const GIT_BINDING_NAME = "GIT";
 
-// Resolves a `describeBinding` tool argument (a name in the chat's env) to its human-readable
-// description. Shared by the live tool and the replay path so the two can't drift. (Replay of
-// logs from before named chat bindings may pass a number -- a capsule index in the old numeric
-// env -- which no longer resolves; the model sees the same "no such binding" error it would get
-// if it used one today.)
-async function resolveBindingDescription(
-    name: string | number,
+// Describes the binding named by a `describeBinding` tool call: a name in the chat's env or,
+// given `gadget`, in that gadget's own env.
+async function describeBinding(
+    {name, gadget}: {name: string, gadget?: string},
     chatBindings: Map<string, ChatBindingEntry>,
-    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding">): Promise<string> {
-  let entry = chatBindings.get(`${name}`);
-  if (!entry && name === GIT_BINDING_NAME) return hooks.describeGitBinding(`env.${name}`);
-  if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
-  switch (entry.type) {
-    case "workpiece":
-      return hooks.describeBinding(`env.${name}`, entry.id);
-    case "value":
-      return `env.${name} is the arguments array of a call delivered to this agent (one element ` +
-          `per parameter of the call). Any RPC stubs among them may be called directly.`;
-    default:
-      return entry satisfies never;
+    chatId: number,
+    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding" | "listGadgetInfo">)
+    : Promise<string> {
+  if (gadget === undefined) {
+    let envName = `env.${name}`;
+    let entry = chatBindings.get(name);
+    if (!entry && name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
+    if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
+    switch (entry.type) {
+      case "workpiece":
+        return hooks.describeBinding(envName, entry.id);
+      case "value":
+        return `${envName} is the arguments array of a call delivered to this agent (one ` +
+            `element per parameter of the call). Any RPC stubs among them may be called directly.`;
+      default:
+        return entry satisfies never;
+    }
   }
+
+  let envName = `env.${name} (in gadget ${gadget}'s env)`;
+  let gadgetEntry = chatBindings.get(gadget);
+  let info = gadgetEntry?.type === "workpiece"
+      ? hooks.listGadgetInfo(chatId).find(candidate => candidate.id === gadgetEntry.id)
+      : undefined;
+  if (!info) throw new Error(`There is no gadget named "${gadget}" in your env.`);
+  // Mirrors the env getEnvForLoader builds: the gadget's own edges shadow GIT and GADGET.
+  let edge = info.bindings.find(binding => binding.name === name);
+  if (edge) return hooks.describeBinding(envName, edge.target);
+  if (name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
+  if (name === "GADGET") return hooks.describeBinding(envName, info.id);
+  throw new Error(`Gadget ${gadget} has no binding named "${name}".`);
 }
 
 /**
@@ -496,8 +511,9 @@ export interface AgentHooks {
   readCommitFiles(oid: string): Promise<Map<string, string>>;
 
   /**
-   * Summarize the workspace's gadgets for the system prompt (see AgentGadgetInfo). Gadgets still
-   * provisional to a chat other than `forChatId` are omitted.
+   * Summarize the workspace's gadgets for the system prompt and for describeBinding's `gadget`
+   * lookups (see AgentGadgetInfo). Gadgets still provisional to a chat other than `forChatId` are
+   * omitted.
    */
   listGadgetInfo(forChatId: number): AgentGadgetInfo[];
 
@@ -1072,6 +1088,8 @@ let DESCRIBE_BINDING_TOOL_DESCRIPTION = `
 Describe one of the bindings in your \`env\` (as used with the \`executeCode\` tool) by name, including TypeScript types specifying the API it offers.
 
 Sometimes user messages may contain text like \`[Resource Title](env.SOME_NAME)\`. This means the user has granted you access to an external resource, available in your \`env\` under that name. Describe it with this tool before using it.
+
+To describe one of a Gadget's own bindings (as the Gadget's code sees it) instead, pass the Gadget's env binding name as \`gadget\`. This works even for bindings that have no counterpart in your \`env\`.
 
 IMPORTANT: The objects found in \`env\` most likely do NOT implement any API you are familiar with from your training. DO NOT try to guess what API they implement, and DO NOT use executeCode to try to enumerate them programmatically (this will not work, as they are RPC interfaces). Use the describeBinding tool to learn what interface they provide before writing any code.
 `.trim();
@@ -2118,10 +2136,17 @@ async function runAgentPass(
                   break;
                 }
                 case "describeBinding":
-                  toolOutput = {
-                    text: await resolveBindingDescription(
-                        toolCall.input.name, chatBindings, hooks),
-                  };
+                  // Recorded rather than re-run, like grep: describing a gatekeeper means calling
+                  // it, and the binding (or its API) may have changed since. Logs from before
+                  // descriptions were recorded have nothing to return, so the agent re-describes.
+                  toolOutput = toolCall.output !== undefined
+                      ? {text: toolCall.output}
+                      : {
+                          text: "This call succeeded when the agent first invoked it, but the " +
+                              "description it returned is no longer available. Call " +
+                              "describeBinding again if you need it.",
+                          isError: true,
+                        };
                   break;
                 case "setBindingHook":
                 case "saveCapsuleAsBinding":
@@ -2735,6 +2760,9 @@ async function runAgentPass(
             return `* ${b.name}: ${b.title}` +
                 (chatName !== undefined
                     ? ` — in your env as \`env.${chatName}\``
+                    : envName !== undefined
+                    ? ` — (no binding for this in your env; describeBinding with ` +
+                      `\`gadget: "${envName}"\` describes it)`
                     : ` — (no binding for this in your env)`);
           }));
         }
@@ -3208,10 +3236,19 @@ async function runAgentPass(
       description: DESCRIBE_BINDING_TOOL_DESCRIPTION,
       parameters: Type.Object({
         name: Type.String({description: "Name of the binding (a property of `env`)."}),
+        gadget: Type.Optional(Type.String({
+          description:
+              "Env binding name of a gadget. When given, `name` is a binding in that gadget's " +
+              "own env (as its code sees it) rather than in yours.",
+        })),
       }),
-      execute: async (toolCallId, {name}) => {
+      execute: async (toolCallId, input) => {
         try {
-          return toolResult(await resolveBindingDescription(name, chatBindings, hooks));
+          // Deliberately not bounded to MAX_TOOL_RESULT_CHARS: the agent can't write code
+          // against a partial API description, and there is no way yet to query it
+          // progressively. Recorded so replay shows the model exactly what it saw.
+          let output = await describeBinding(input, chatBindings, chatId, hooks);
+          return toolResult(output, {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)

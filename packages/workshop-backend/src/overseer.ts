@@ -3478,7 +3478,8 @@ class OverseerImpl implements AgentHooks {
     let gadget = this.getGadgetRecord(gadgetId);
     env.GADGET = this.makeBindingLoopback({type: "gadget", id: gadgetId}, caller);
     // Before the named bindings, so an edge named GIT from before the name was reserved still
-    // shadows it (see bindWorkpiece).
+    // shadows it (see bindWorkpiece). The agent's describeBinding tool mirrors this order when
+    // describing a gadget's bindings (see describeBinding in agent.ts).
     env[GIT_BINDING_NAME] = this.makeBindingLoopback({type: "git"}, caller);
     for (let [name, edge] of this.visibleBindings(gadget, forChatId)) {
       env[name] = this.makeBindingLoopback({type: "gatekeeper", id: edge.target}, caller);
@@ -3502,7 +3503,7 @@ class OverseerImpl implements AgentHooks {
     let env: Record<string, any> = {};
 
     // Before the chat's bindings, so a chat binding named GIT shadows it -- matching
-    // describeBinding (see resolveBindingDescription in agent.ts).
+    // describeBinding (see describeBinding in agent.ts).
     env[GIT_BINDING_NAME] = this.makeBindingLoopback({type: "git"}, caller);
 
     for (let [name, entry] of Object.entries(bindings)) {
@@ -6965,9 +6966,6 @@ class OverseerImpl implements AgentHooks {
   async describeBinding(envName: string, id: WorkpieceId): Promise<string> {
     let gadget = this.storage.gadgets.get(id);
     if (gadget?.type === "worktree") {
-      // Only immutable record fields here (title, baseCommit -- never the mutable head):
-      // replayed describeBinding tool calls recompute this text, so it must not drift between
-      // the live call and its replay.
       return `Binding: ${envName}\n` +
           `\n` +
           `This binding is a worktree titled ${JSON.stringify(gadget.title)}: a file tree ` +
