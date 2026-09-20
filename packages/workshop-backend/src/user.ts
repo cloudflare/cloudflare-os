@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -95,6 +95,53 @@ export const CLOUDFLARE_VENDOR_ID = "cloudflare";
 export type UserAiModelRecord = {
   profile: AiChatAuthorInfo;
   config: AiModelConfig;
+}
+
+const withholdSecret = (secret: string) => secret === "" ? "" : null;
+
+/** Withholds the non-empty secrets of `config`, for returning it to a client. */
+function redactModelConfig(config: AiModelConfig): RedactedAiModelConfig {
+  let {apiToken, extraHeaders, ...rest} = config;
+  return {
+    ...rest,
+    apiToken: withholdSecret(apiToken),
+    ...(extraHeaders && {extraHeaders: Object.fromEntries(
+        Object.entries(extraHeaders).map(([name, value]) => [name, withholdSecret(value)]))}),
+  };
+}
+
+/**
+ * Fills in the `null` secrets of `config` from `source`, throwing if `source` is absent or doesn't
+ * hold them. Secrets only carry over to the endpoint they were configured for: otherwise a client
+ * could point the model at its own server and receive them.
+ */
+function resolveWithheldSecrets(
+    config: RedactedAiModelConfig, source?: AiModelConfig): AiModelConfig {
+  let resolve = (secret: string | null, stored: string | undefined, what: string) => {
+    if (secret !== null) return secret;
+    if (!source) {
+      throw new Error(`A value for ${what} is required.`);
+    }
+    if (source.provider !== config.provider || (source.apiUrl ?? "") !== (config.apiUrl ?? "")) {
+      throw new Error(`Please re-enter ${what}, since the provider or API URL changed.`);
+    }
+    if (stored === undefined) {
+      throw new Error(`There is no stored ${what} to keep.`);
+    }
+    return stored;
+  };
+
+  let storedHeader = (name: string) => source?.extraHeaders && Object.hasOwn(source.extraHeaders, name)
+      ? source.extraHeaders[name] : undefined;
+
+  let {apiToken, extraHeaders, ...rest} = config;
+  return {
+    ...rest,
+    apiToken: resolve(apiToken, source?.apiToken, "the API token"),
+    ...(extraHeaders && {extraHeaders: Object.fromEntries(
+        Object.entries(extraHeaders).map(([name, value]) =>
+            [name, resolve(value, storedHeader(name), `the value of header "${name}"`)]))}),
+  };
 }
 
 export type UserChatContext = {
@@ -620,7 +667,42 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
+  async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
+                 copySecretsFrom?: string): Promise<void> {
+    let source: AiModelConfig | undefined;
+    if (copySecretsFrom !== undefined) {
+      source = this.#getHandAddedModel(copySecretsFrom).config;
+      if (this.storage.aiModels.get(profile.id) || getAiGatewayConfig(this.env)?.resolveModel(profile.id)) {
+        throw new Error(`A model with ID "${profile.id}" already exists.`);
+      }
+    }
+    this.#putModel(profile, resolveWithheldSecrets(config, source));
+  }
+
+  async getModelConfig(id: string): Promise<{profile: AiChatAuthorInfo, config: RedactedAiModelConfig}> {
+    let {profile, config} = this.#getHandAddedModel(id);
+    return {profile, config: redactModelConfig(config)};
+  }
+
+  async updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
+    let stored = this.#getHandAddedModel(profile.id).config;
+    if (config.provider !== stored.provider || config.model !== stored.model) {
+      throw new Error("A model's provider and model ID can't be changed.");
+    }
+    this.#putModel(profile, resolveWithheldSecrets(config, stored));
+  }
+
+  /** The stored record of a model the user added, throwing for AI Gateway models. */
+  #getHandAddedModel(id: string): UserAiModelRecord {
+    let record = this.storage.aiModels.get(id);
+    // A stored model sharing a gateway model's ID is shadowed by it (see listModels()).
+    if (!record || getAiGatewayConfig(this.env)?.resolveModel(id)) {
+      throw new Error(`No such hand-added model: ${id}`);
+    }
+    return record;
+  }
+
+  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig) {
     let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);

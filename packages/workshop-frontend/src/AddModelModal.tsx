@@ -1,10 +1,21 @@
 import { useState, useEffect } from 'react'
-import { Dialog, Button, Input, Select, SensitiveInput, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelConfig, AiModelProvider, AiGatewayInfo, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
+import { Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
-import { headerRowsToRecord, validateHeaderRows, type HeaderRow } from './features/ai-models/extraHeaders'
+import { StoredSecretInput } from './features/ai-models/StoredSecretInput'
+import {
+  headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
+} from './features/ai-models/extraHeaders'
+
+/**
+ * Whether the modal adds a model from scratch, edits a stored one, or adds a model based on a
+ * stored one, with the stored model's withheld secrets carried over.
+ */
+export type ModelModalMode =
+  | { type: 'add' }
+  | { type: 'edit' | 'clone', source: { profile: AiChatAuthorInfo, config: RedactedAiModelConfig } }
 
 interface AddModelModalProps {
   visible: boolean
@@ -12,6 +23,7 @@ interface AddModelModalProps {
   onSuccess: () => void
   authenticatedApi: RpcStub<AuthenticatedApi>
   aiConfig: AiGatewayInfo | null
+  mode?: ModelModalMode
 }
 
 type SelectionType =
@@ -109,22 +121,29 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig }: AddModelModalProps) {
+export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' } }: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
+  // Edit and clone modes take their initial state from the source model, so the caller remounts
+  // the modal (with a `key`) to switch source.
+  const source = mode.type === 'add' ? null : mode.source
+  const editing = mode.type === 'edit'
+
   const [loading, setLoading] = useState(false)
-  const [selection, setSelection] = useState<SelectionType | null>(null)
+  const [selection, setSelection] = useState<SelectionType | null>(
+    source && { type: 'custom', provider: source.config.provider })
   const [selectValue, setSelectValue] = useState<string | undefined>(undefined)
 
-  // Form fields (used for custom models)
-  const [modelId, setModelId] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [apiToken, setApiToken] = useState('')
-  const [accountId, setAccountId] = useState('')
-  const [apiUrl, setApiUrl] = useState('')
-  const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
-  const [contextWindow, setContextWindow] = useState('')
-  const [outputLimit, setOutputLimit] = useState('')
+  // Form fields (used for custom models). A null secret keeps the source's withheld value.
+  const [modelId, setModelId] = useState(editing ? source!.config.model : '')
+  const [displayName, setDisplayName] = useState(editing ? source!.profile.name : '')
+  const [apiToken, setApiToken] = useState<string | null>(source ? source.config.apiToken : '')
+  const [accountId, setAccountId] = useState(source?.config.accountId ?? '')
+  const [apiUrl, setApiUrl] = useState(source?.config.apiUrl ?? '')
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => headerRowsFromRecord(source?.config.extraHeaders))
+  // Token limits are specific to a model, so a clone doesn't inherit them.
+  const [contextWindow, setContextWindow] = useState(editing ? String(source!.config.contextWindow ?? '') : '')
+  const [outputLimit, setOutputLimit] = useState(editing ? String(source!.config.outputLimit ?? '') : '')
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -137,6 +156,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const enabledProviders: Set<string> | null = gatewayMode
     ? new Set(aiConfig.enabledProviders)
     : null
+
+  // The server keeps withheld secrets only for the endpoint they were configured for. Once the URL
+  // changes, withheld values are shown (and sent) as blank, and header values must be re-entered.
+  const storedSecretsUsable = source !== null && apiUrl.trim() === (source.config.apiUrl ?? '')
+  const effectiveApiToken = apiToken === null && !storedSecretsUsable ? '' : apiToken
 
   // Reset all state when dialog closes
   useEffect(() => {
@@ -195,8 +219,10 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     const isCloudflare = selection?.provider === 'cloudflare'
     const showCredentials = !gatewayMode
 
-    if (showCredentials && selection && isTokenRequired(selection.provider, headerRows) && !apiToken.trim()) {
-      newErrors.apiToken = 'Please enter your API token'
+    if (showCredentials && selection && isTokenRequired(selection.provider, headerRows) && effectiveApiToken?.trim() === '') {
+      newErrors.apiToken = apiToken === null
+        ? 'Please re-enter your API token, since the API URL changed'
+        : 'Please enter your API token'
     }
 
     if (showCredentials && isCloudflare && !accountId.trim()) {
@@ -215,6 +241,13 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     }
 
     const newHeaderErrors = showCredentials ? validateHeaderRows(headerRows) : {}
+    if (showCredentials && !storedSecretsUsable) {
+      for (const row of headerRows) {
+        if (row.value === null && !newHeaderErrors[row.id]) {
+          newHeaderErrors[row.id] = "Please re-enter this header's value, since the API URL changed"
+        }
+      }
+    }
     // These fields live in the collapsible, so reveal their errors if it was closed.
     if (Object.keys(newHeaderErrors).length > 0 || newErrors.contextWindow || newErrors.outputLimit) {
       setAdvancedOpen(true)
@@ -236,17 +269,18 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
       const profile: AiChatAuthorInfo = {
         type: 'agent',
-        id: finalModelId,
+        // A model's ID is its identity to chats and settings, so editing never changes it.
+        id: editing ? source!.profile.id : finalModelId,
         name: finalDisplayName,
       }
 
       const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
       const contextWindowTokens = parseTokenLimit(contextWindow)
       const outputLimitTokens = parseTokenLimit(outputLimit)
-      const config: AiModelConfig = {
+      const config: RedactedAiModelConfig = {
         provider: selection!.provider,
         model: finalModelId,
-        apiToken: gatewayMode ? '' : apiToken.trim(),
+        apiToken: gatewayMode ? '' : effectiveApiToken?.trim() ?? null,
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
         ...(extraHeaders && { extraHeaders }),
@@ -254,12 +288,20 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
       }
 
-      await authenticatedApi.addModel(profile, config)
-      toasts.add({ title: 'AI model added successfully', variant: 'success' })
+      if (editing) {
+        await authenticatedApi.updateModel(profile, config)
+      } else {
+        await authenticatedApi.addModel(profile, config, source?.profile.id)
+      }
+      toasts.add({ title: editing ? 'AI model updated successfully' : 'AI model added successfully', variant: 'success' })
       onSuccess()
     } catch (error: any) {
-      console.error('Failed to add model:', error)
-      toasts.add({ title: 'Failed to add model', variant: 'error' })
+      console.error('Failed to save model:', error)
+      toasts.add({
+        title: editing ? 'Failed to update model' : 'Failed to add model',
+        description: error?.message,
+        variant: 'error',
+      })
     } finally {
       setLoading(false)
     }
@@ -272,6 +314,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const isCloudflare = selection?.provider === 'cloudflare'
   const showCredentials = !gatewayMode
   const tokenRequired = selection !== null && isTokenRequired(selection.provider, headerRows)
+  const title = { add: 'Add AI Model', edit: 'Edit AI Model', clone: 'Clone AI Model' }[mode.type]
 
   // Group options by provider for rendering with visual separators.
   const groupedOptions: { provider: string; items: typeof options }[] = []
@@ -288,11 +331,18 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
       <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
         <Dialog.Title className="text-lg font-semibold mb-4">
-          Add AI Model
+          {title}
         </Dialog.Title>
 
         <div className="space-y-4">
           {/* Model / Provider selection */}
+          {source ? (
+            <Input
+              label="Provider"
+              value={PROVIDER_LABELS[source.config.provider] || source.config.provider}
+              disabled
+            />
+          ) : (
           <Select
             label={gatewayMode ? 'Select Provider' : 'Select Model'}
             className="w-full text-sm"
@@ -321,6 +371,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               </div>
             ))}
           </Select>
+          )}
 
           {/* Custom model fields */}
           {showCustomFields && (
@@ -330,6 +381,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                 placeholder={`e.g., ${example!.modelId}`}
                 description={`The model identifier as specified by the provider (e.g., '${example!.modelId}')`}
                 value={modelId}
+                disabled={editing}
                 onChange={(e) => { setModelId(e.target.value); setErrors(prev => ({ ...prev, modelId: '' })) }}
                 error={errors.modelId}
                 variant={errors.modelId ? 'error' : 'default'}
@@ -362,8 +414,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
           {/* API Token */}
           {showCredentials && selection && (
-            <SensitiveInput
+            <StoredSecretInput
               label="API Token"
+              stored={storedSecretsUsable && source!.config.apiToken === null}
               placeholder={tokenRequired ? API_TOKEN_PLACEHOLDERS[selection.provider] : '(optional)'}
               description={
                 isOllama
@@ -374,10 +427,9 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                   ? `Your ${PROVIDER_LABELS[selection.provider]} API token for billing. Leave blank if the extra headers under Advanced Settings authenticate you to a proxy that supplies its own key.`
                   : `Your ${PROVIDER_LABELS[selection.provider]} API token for billing`
               }
-              value={apiToken}
+              value={effectiveApiToken}
               onValueChange={(v) => { setApiToken(v); setErrors(prev => ({ ...prev, apiToken: '' })) }}
               error={errors.apiToken}
-              variant={errors.apiToken ? 'error' : 'default'}
             />
           )}
 
@@ -415,6 +467,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                   {showCredentials && (
                     <ExtraHeadersEditor
                       rows={headerRows}
+                      storedValuesUsable={storedSecretsUsable}
                       errors={headerErrors}
                       onRowsChange={(rows) => {
                         setHeaderRows(rows)
@@ -463,7 +516,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             loading={loading}
             disabled={!selection}
           >
-            Add Model
+            {editing ? 'Save Changes' : 'Add Model'}
           </Button>
         </div>
       </Dialog>

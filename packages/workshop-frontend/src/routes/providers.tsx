@@ -14,8 +14,10 @@ import {
   Lightning,
   MagnifyingGlass,
   DotsThreeVertical,
+  PencilSimple,
+  Copy,
 } from '@phosphor-icons/react'
-import AddModelModal from '../AddModelModal'
+import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
 
@@ -36,12 +38,16 @@ function ModelRow({
   model,
   isQuick,
   isBuiltIn,
+  onEdit,
+  onClone,
   onDelete,
   onSetQuick,
 }: {
   model: AiChatAuthorInfo
   isQuick: boolean
   isBuiltIn: boolean
+  onEdit: () => void
+  onClone: () => void
   onDelete: () => void
   onSetQuick: () => void
 }) {
@@ -106,10 +112,20 @@ function ModelRow({
               {isQuick ? 'Clear quick model' : 'Set as quick model'}
             </DropdownMenu.Item>
             {!isBuiltIn && (
-              <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
-                <Trash size={13} className="mr-2" />
-                Delete provider
-              </DropdownMenu.Item>
+              <>
+                <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
+                  <PencilSimple size={13} className="mr-2" />
+                  Edit provider
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onClick={onClone} className={MENU_ITEM}>
+                  <Copy size={13} className="mr-2" />
+                  Clone provider
+                </DropdownMenu.Item>
+                <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
+                  <Trash size={13} className="mr-2" />
+                  Delete provider
+                </DropdownMenu.Item>
+              </>
             )}
           </DropdownMenu.Content>
         </DropdownMenu>
@@ -143,6 +159,8 @@ function ProvidersPage() {
   const [loadError, setLoadError] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // The stored model being edited or cloned, once its configuration has loaded.
+  const [sourceMode, setSourceMode] = useState<Exclude<ModelModalMode, { type: 'add' }> | null>(null)
 
   const fetchAll = async () => {
     setLoadError(false)
@@ -171,6 +189,15 @@ function ProvidersPage() {
     if (!aiConfig?.enabled) return false
     const enabled = new Set((aiConfig as Extract<AiGatewayInfo, { enabled: true }>).enabledProviders)
     return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])
+  }
+
+  const openWithSource = async (type: 'edit' | 'clone', model: AiChatAuthorInfo) => {
+    try {
+      setSourceMode({ type, source: await authenticatedApi.getModelConfig(model.id) })
+    } catch (err) {
+      console.error('Failed to load model configuration:', err)
+      toasts.add({ title: 'Failed to load provider configuration', variant: 'error' })
+    }
   }
 
   const handleDelete = async (model: AiChatAuthorInfo) => {
@@ -315,6 +342,8 @@ function ProvidersPage() {
                 model={model}
                 isQuick={quickModel === model.id}
                 isBuiltIn={isBuiltIn(model.id)}
+                onEdit={() => openWithSource('edit', model)}
+                onClone={() => openWithSource('clone', model)}
                 onDelete={() => handleDelete(model)}
                 onSetQuick={() => handleSetQuick(model.id)}
               />
@@ -334,6 +363,20 @@ function ProvidersPage() {
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
       />
+      {sourceMode && (
+        <AddModelModal
+          key={`${sourceMode.type}:${sourceMode.source.profile.id}`}
+          visible
+          mode={sourceMode}
+          onCancel={() => setSourceMode(null)}
+          onSuccess={() => {
+            setSourceMode(null)
+            fetchAll()
+          }}
+          authenticatedApi={authenticatedApi}
+          aiConfig={aiConfig}
+        />
+      )}
     </div>
   )
 }

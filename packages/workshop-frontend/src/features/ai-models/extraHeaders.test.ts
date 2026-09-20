@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { headerRowsToRecord, validateHeaderRows, type HeaderRow } from './extraHeaders'
+import {
+  canKeepStoredValue, headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
+} from './extraHeaders'
 
-const row = (id: number, name: string, value: string): HeaderRow => ({ id, name, value })
+const row = (id: number, name: string, value: string | null): HeaderRow => ({ id, name, value })
 
 describe('validateHeaderRows', () => {
   it('accepts valid rows and ignores blank ones', () => {
@@ -34,5 +36,19 @@ describe('headerRowsToRecord', () => {
 
   it('returns undefined when no headers remain', () => {
     expect(headerRowsToRecord([row(1, '', '')])).toBeUndefined()
+  })
+
+  it('passes withheld values through as null', () => {
+    expect(headerRowsToRecord([row(1, 'X-Key', null)])).toEqual({ 'X-Key': null })
+  })
+})
+
+describe('stored header rows', () => {
+  it('may keep a withheld value only under the name it was stored with', () => {
+    const [stored, plain] = headerRowsFromRecord({ 'X-Key': null, 'X-Plain': 'v' })
+    expect(canKeepStoredValue(stored)).toBe(true)
+    expect(canKeepStoredValue({ ...stored, name: 'x-key' })).toBe(false)
+    expect(canKeepStoredValue(plain)).toBe(false)
+    expect(headerRowsToRecord([stored, plain])).toEqual({ 'X-Key': null, 'X-Plain': 'v' })
   })
 })
