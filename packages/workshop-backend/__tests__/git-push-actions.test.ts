@@ -91,7 +91,6 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
   for (;;) {
     let { done, value } = await reader.read();
     if (done) break;
-
     chunks.push(value);
   }
   return concatBytes(chunks);
@@ -117,6 +116,8 @@ function actionRecord(impl: any, gatekeeperId: number, localAction: number)
   return record;
 }
 
+// Awaits inside a try/catch on purpose: handing an RPC-stub call's promise to `expect().rejects`
+// leaves an unhandled rejection behind in workerd.
 async function expectGitPackCode(
     operation: () => Promise<unknown>, expected: GitPackErrorCode): Promise<void> {
   let caught: unknown;
@@ -349,13 +350,10 @@ describe("push authorization through the Overseer chokepoints", () => {
           await collect(await builder.buildPack(foreignId + 3)), { maxObjectSize: 1 }))
           .toStrictEqual([]);
 
-      for (const selector of [own.id, nonPush.action]) {
+      for (const selector of [own.id, nonPush.action, noCommits.action]) {
         await expectGitPackCode(
             () => builder.buildPack(selector), GIT_PACK_ERROR_CODES.actionNotAuthorized);
       }
-      await expectGitPackCode(
-          () => builder.buildPack(noCommits.action),
-          GIT_PACK_ERROR_CODES.actionDeclaresNoPush);
 
       impl.storage.transaction(() => {
         zero.state = "rejected";
@@ -367,7 +365,7 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
 
-  it("reconciles partial results and preserves pending state when the response is lost", async () => {
+  it("reconciles partial results when the gatekeeper stops mid-batch", async () => {
     await inOverseer("batch-pack-stopped", async impl => {
       const firstHistory = await seedPushableHistory(impl, GATEKEEPER, " first");
       const secondHistory = await seedPushableHistory(impl, GATEKEEPER, " second");
@@ -409,7 +407,9 @@ describe("push authorization through the Overseer chokepoints", () => {
         await receiver.releaseRetained();
       }
     });
+  });
 
+  it("preserves pending state and marks when the batch response is lost", async () => {
     await inOverseer("batch-pack-response-lost", async impl => {
       const { head } = await seedPushableHistory(impl, GATEKEEPER, " response lost");
       const receiver = installPackReceiver(

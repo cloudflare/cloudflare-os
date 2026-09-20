@@ -1290,8 +1290,7 @@ export class GitPackBuilderImpl extends RpcTarget implements GitPackBuilder, Dis
   ) {
     super();
     for (const record of pendingPlan) {
-      if (record.gatekeeperId === gatekeeperId &&
-          record.description.pushedCommits !== undefined) {
+      if (record.description.pushedCommits?.length) {
         this.#workspaceActionByLocalId.set(record.action, record.id);
       }
     }
@@ -1306,13 +1305,9 @@ export class GitPackBuilderImpl extends RpcTarget implements GitPackBuilder, Dis
       throw createGitPackError(GIT_PACK_ERROR_CODES.actionNotAuthorized);
     }
     const record = this.storage.actions.get(workspaceId);
-    if (record?.type !== "action" || record.action !== action ||
-        record.gatekeeperId !== this.gatekeeperId || record.state !== "pending" ||
+    if (record?.type !== "action" || record.state !== "pending" ||
         this.storage.gatekeepers.get(this.gatekeeperId) === undefined) {
       throw createGitPackError(GIT_PACK_ERROR_CODES.actionUnavailable);
-    }
-    if (!record.description.pushedCommits?.length) {
-      throw createGitPackError(GIT_PACK_ERROR_CODES.actionDeclaresNoPush);
     }
     return record;
   }
@@ -1341,7 +1336,6 @@ export class GitPackBuilderImpl extends RpcTarget implements GitPackBuilder, Dis
 
   [Symbol.dispose](): void {
     this.#active = false;
-    this.#workspaceActionByLocalId.clear();
   }
 }
 
