@@ -30,11 +30,12 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
-  let maxOutputTokens = model?.outputLimit ??
+  let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
   return {
     inputBudget: model?.compactionInputBudget ??
-        (model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) - (maxOutputTokens ?? 0),
+        (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
+            (maxOutputTokens ?? 0),
     maxOutputTokens,
   };
 }

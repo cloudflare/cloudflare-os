@@ -121,6 +121,19 @@ describe("compaction trigger", () => {
         .toEqual({inputBudget: 128_000, maxOutputTokens: undefined});
   });
 
+  it("lets the model config override the window and output limit", () => {
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-unlisted", apiToken: "",
+      contextWindow: 1_000_000, outputLimit: 64_000,
+    })).toEqual({inputBudget: 936_000, maxOutputTokens: 64_000});
+
+    // An override beats the model table, too.
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
+      outputLimit: 16_384,
+    })).toEqual({inputBudget: 245_760, maxOutputTokens: 16_384});
+  });
+
   it("recognizes /compact as the newest message, and only there", () => {
     let compact = record(1, user, {
       type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
