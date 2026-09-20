@@ -1301,6 +1301,18 @@ export type AiModelConfig = {
    * Gateway configuration rather than contacting the provider directly.
    */
   extraHeaders?: Record<string, string>;
+
+  /**
+   * The maximum tokens one request may total, overriding the Workshop's built-in value for this
+   * model. Useful for a model the Workshop doesn't know, which is otherwise assumed to be small.
+   */
+  contextWindow?: number;
+
+  /**
+   * Overrides the built-in response cap for this model. Like `outputLimit` in the suggested-model
+   * table, it is both the requested response cap and the space reserved for it in the window.
+   */
+  outputLimit?: number;
 };
 
 /**

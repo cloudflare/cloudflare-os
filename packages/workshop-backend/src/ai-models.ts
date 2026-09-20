@@ -139,15 +139,16 @@ function catalogModel(provider: AiModelConfig["provider"], modelId: string): Mod
   }
 }
 
-// Token limits for a synthesized model. SUGGESTED_MODELS remains authoritative (compaction
-// budgets in agent-compaction.ts are computed from it and must not change); pi's catalog fills
-// gaps for models we don't list, and unknown models get conservative defaults.
+// Token limits for a synthesized model. The model config's own overrides come first, then
+// SUGGESTED_MODELS (compaction budgets in agent-compaction.ts are computed from the same two); pi's
+// catalog fills gaps for models we don't list, and unknown models get conservative defaults.
 function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   return {
-    contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
-    maxTokens: suggested?.outputLimit ??
+    contextWindow: config.contextWindow ?? suggested?.contextWindow ?? catalog?.contextWindow ??
+        128_000,
+    maxTokens: config.outputLimit ?? suggested?.outputLimit ??
         (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined) ??
         catalog?.maxTokens ?? 4096,
   };

@@ -625,6 +625,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (gwConfig && !gwConfig.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
+    for (let limit of [config.contextWindow, config.outputLimit]) {
+      if (limit !== undefined && !(Number.isSafeInteger(limit) && limit > 0)) {
+        throw new Error("Token limits must be positive integers.");
+      }
+    }
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config});

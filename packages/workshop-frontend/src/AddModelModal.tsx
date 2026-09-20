@@ -54,6 +54,15 @@ function exampleModel(provider: AiModelProvider): { modelId: string, name: strin
   return first ? { modelId: first[0], name: first[1].name } : FALLBACK_EXAMPLE_MODEL
 }
 
+// Parse an optional token-limit field: undefined when blank, null when invalid.
+function parseTokenLimit(text: string): number | undefined | null {
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+  if (!/^\d+$/.test(trimmed)) return null
+  const value = Number(trimmed)
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
 // Encode a selection into a string value for the Select component.
 function encodeSelection(provider: AiModelProvider, modelId?: string): string {
   return modelId ? `${provider}:${modelId}` : `other-${provider}`
@@ -114,6 +123,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [accountId, setAccountId] = useState('')
   const [apiUrl, setApiUrl] = useState('')
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>([])
+  const [contextWindow, setContextWindow] = useState('')
+  const [outputLimit, setOutputLimit] = useState('')
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -138,6 +149,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       setAccountId('')
       setApiUrl('')
       setHeaderRows([])
+      setContextWindow('')
+      setOutputLimit('')
       setErrors({})
       setHeaderErrors({})
       setAdvancedOpen(false)
@@ -162,6 +175,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setAccountId('')
     setApiUrl(sel.provider === 'ollama' ? 'http://localhost:11434' : '')
     setHeaderRows([])
+    setContextWindow('')
+    setOutputLimit('')
   }
 
   const validate = (): boolean => {
@@ -192,9 +207,18 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       newErrors.apiUrl = 'Please enter the Ollama API URL'
     }
 
+    if (parseTokenLimit(contextWindow) === null) {
+      newErrors.contextWindow = 'Please enter a positive whole number of tokens'
+    }
+    if (parseTokenLimit(outputLimit) === null) {
+      newErrors.outputLimit = 'Please enter a positive whole number of tokens'
+    }
+
     const newHeaderErrors = showCredentials ? validateHeaderRows(headerRows) : {}
-    // The header rows live in the collapsible, so reveal the errors if it was closed.
-    if (Object.keys(newHeaderErrors).length > 0) setAdvancedOpen(true)
+    // These fields live in the collapsible, so reveal their errors if it was closed.
+    if (Object.keys(newHeaderErrors).length > 0 || newErrors.contextWindow || newErrors.outputLimit) {
+      setAdvancedOpen(true)
+    }
 
     setErrors(newErrors)
     setHeaderErrors(newHeaderErrors)
@@ -217,6 +241,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       }
 
       const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
+      const contextWindowTokens = parseTokenLimit(contextWindow)
+      const outputLimitTokens = parseTokenLimit(outputLimit)
       const config: AiModelConfig = {
         provider: selection!.provider,
         model: finalModelId,
@@ -224,6 +250,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
         ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
         ...(extraHeaders && { extraHeaders }),
+        ...(contextWindowTokens && { contextWindow: contextWindowTokens }),
+        ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
       }
 
       await authenticatedApi.addModel(profile, config)
@@ -366,7 +394,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
             />
           )}
 
-          {showCredentials && selection && (
+          {selection && (
             <Collapsible.Root
               open={advancedOpen}
               onOpenChange={setAdvancedOpen}
@@ -375,7 +403,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               <Collapsible.DefaultPanel>
                 <div className="space-y-4">
                   {/* Ollama shows its API URL above; Workers AI's endpoint is derived from the account ID. */}
-                  {!isOllama && !isCloudflare && (
+                  {showCredentials && !isOllama && !isCloudflare && (
                     <Input
                       label="API URL"
                       placeholder="https://..."
@@ -384,15 +412,37 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
                       onChange={(e) => setApiUrl(e.target.value)}
                     />
                   )}
-                  <ExtraHeadersEditor
-                    rows={headerRows}
-                    errors={headerErrors}
-                    onRowsChange={(rows) => {
-                      setHeaderRows(rows)
-                      setHeaderErrors({})
-                      // Adding a header can make the token optional.
-                      setErrors(prev => ({ ...prev, apiToken: '' }))
-                    }}
+                  {showCredentials && (
+                    <ExtraHeadersEditor
+                      rows={headerRows}
+                      errors={headerErrors}
+                      onRowsChange={(rows) => {
+                        setHeaderRows(rows)
+                        setHeaderErrors({})
+                        // Adding a header can make the token optional.
+                        setErrors(prev => ({ ...prev, apiToken: '' }))
+                      }}
+                    />
+                  )}
+                  <Input
+                    label="Context Window"
+                    inputMode="numeric"
+                    placeholder="(default)"
+                    description="The maximum tokens one request may total. Leave blank to use the model's built-in default."
+                    value={contextWindow}
+                    onChange={(e) => { setContextWindow(e.target.value); setErrors(prev => ({ ...prev, contextWindow: '' })) }}
+                    error={errors.contextWindow}
+                    variant={errors.contextWindow ? 'error' : 'default'}
+                  />
+                  <Input
+                    label="Output Limit"
+                    inputMode="numeric"
+                    placeholder="(default)"
+                    description="The maximum tokens in one response, also reserved out of the context window. Leave blank to use the model's built-in default."
+                    value={outputLimit}
+                    onChange={(e) => { setOutputLimit(e.target.value); setErrors(prev => ({ ...prev, outputLimit: '' })) }}
+                    error={errors.outputLimit}
+                    variant={errors.outputLimit ? 'error' : 'default'}
                   />
                 </div>
               </Collapsible.DefaultPanel>
