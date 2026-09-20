@@ -16,11 +16,6 @@ import type {
 import type { ManualApproval } from "../src/actions.js";
 import { keyString } from "@gadgets/typed-storage";
 import {
-  createGitPackError,
-  getGitPackErrorCode,
-  GIT_PACK_ERROR_CODES,
-} from "@gadgets/workshop-shared/gatekeeper";
-import {
   FIXTURE_EPOCH, makeActionStorage as makeStorage, makeSubscriber, openFakeOverseer,
   putAction as putStoredAction,
 } from "./fixtures.js";
@@ -897,22 +892,6 @@ describe("ActionSyncDriver legacy fallback", () => {
 
     expect(isMethodMissing(error)).toBe(true);
   });
-  it("does not replay a coded batch failure whose message resembles method-missing prose",
-     async () => {
-    let storage = makeStorage();
-    putAction(storage, 1, { autoApprovable: false });
-    let { target, results } = makeBatchGatekeeper();
-    let failure = createGitPackError(GIT_PACK_ERROR_CODES.builderExpired);
-    failure.message = 'The RPC receiver does not implement "applyActionsThrough".';
-    results.push(failure);
-
-    let caught = await makeDriver(storage, target)
-        .apply(GK, { action: 1, resolvedBy: APPROVER }).catch(error => error);
-
-    expect(getGitPackErrorCode(caught)).toBe(GIT_PACK_ERROR_CODES.builderExpired);
-    expect(getAction(storage, 1).state).toBe("pending");
-  });
-
   it("falls back on workerd's method-missing TypeError, delivering vetoes then applies in " +
      "ascending order, and probes only once", async () => {
     let storage = makeStorage();

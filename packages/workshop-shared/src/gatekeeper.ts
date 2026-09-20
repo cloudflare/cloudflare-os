@@ -967,9 +967,8 @@ export interface Gatekeeper<Session> extends DurableObject {
    * reported via `stopped`. An action whose `submitAction()` call has not yet completed must not
    * be applied: wait for that call, then apply it. Omitting it would be the silent skip above, and
    * reporting it as `stopped` would record a failure on an action that has not been attempted.
-   * That wait is for an action already published to the caller: `submitAction()` publishes
-   * retained actions in ascending ID order, so a frontier covers every retained action below it.
-   * It is not licence to fold a still-unpublished lower ID into an open pass.
+   * (Such an action is already visible to the caller: see the publish-order rule on
+   * `ApprovalQueue.submitAction()`.)
    *
    * Every ID in `vetoes` must be durably recorded before any action is applied, including when
    * processing stops: the caller clears its staged veto on any call that returns, so a veto lost
@@ -1612,8 +1611,6 @@ export const GIT_PACK_ERROR_CODES = {
   actionNotAuthorized: "GIT_PACK_ACTION_NOT_AUTHORIZED",
   /** The selected action is no longer pending or its gatekeeper connection was removed. */
   actionUnavailable: "GIT_PACK_ACTION_UNAVAILABLE",
-  /** The selected action declares no pushed commits, so it has no pack to build. */
-  actionDeclaresNoPush: "GIT_PACK_ACTION_DECLARES_NO_PUSH",
 } as const;
 
 /** An expected `GitPackBuilder.buildPack()` failure code. */
@@ -1626,18 +1623,13 @@ const gitPackErrors = codedErrorFamily<GitPackErrorCode>({
       "Action is not authorized for Git pack building in this apply-through call.",
   [GIT_PACK_ERROR_CODES.actionUnavailable]:
       "Git pack action is no longer pending or its connection was removed.",
-  [GIT_PACK_ERROR_CODES.actionDeclaresNoPush]:
-      "Action declares no pushed commits, so it has no pack to build.",
 });
 
 /** Creates an expected Git pack failure carrying its stable machine-readable code. */
-export const createGitPackError: (
-  code: GitPackErrorCode,
-) => Error & { code: GitPackErrorCode } = gitPackErrors.create;
+export const createGitPackError = gitPackErrors.create;
 
 /** Classifies an expected Git pack failure by recognized `code` only. */
-export const getGitPackErrorCode: (error: unknown) => GitPackErrorCode | undefined =
-    gitPackErrors.getCode;
+export const getGitPackErrorCode = gitPackErrors.getCode;
 
 /**
  * Invocation-scoped native-RPC capability for building packs for authorized declared pushes.

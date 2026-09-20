@@ -10,7 +10,6 @@ import type {
   GitCache,
   GitPackBuilder,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { getGitPackErrorCode } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
 import type { ActionRecord, AutoApproveTagRecord, GatekeeperActionRecord } from "./overseer.js";
 
@@ -93,11 +92,10 @@ type StagedPass = PromiseWithResolvers<PassResult> & {
  * Returns whether `error` is workerd's code-less missing-`applyActionsThrough` RPC error.
  *
  * Production workerd includes `the method` in this error; Miniflare's real DO stub omits it.
- * Neither runtime attaches a code, so these two migration-only message forms remain the narrow
- * compatibility probe. Recognized application codes are authoritative and never trigger replay.
+ * Neither runtime attaches a code, so these two migration-only message forms are the probe.
  */
 export function isMethodMissing(error: unknown): boolean {
-  return getGitPackErrorCode(error) === undefined && error instanceof Error && (
+  return error instanceof Error && (
     error.message.includes('does not implement the method "applyActionsThrough"') ||
     error.message.includes('does not implement "applyActionsThrough"'));
 }
@@ -187,15 +185,11 @@ export class ActionSyncDriver {
       resolvedBy: AiChatAuthorInfo): Promise<PassResult> {
     let boundary = this.storage.actions.get(boundaryId);
     if (!boundary) throw new Error(`No such action: ${boundaryId}`);
-    if (boundary.type !== "action") throw new Error(`Not an action: ${boundaryId}`);
     let queuedGeneration = this.#running.get(boundary.gatekeeperId)?.stopGeneration ?? 0;
     return this.#enqueueDecision<PassResult>(boundary.gatekeeperId, async () => {
       let freshBoundary = this.storage.actions.get(boundaryId);
       if (!freshBoundary) throw new Error(`No such action: ${boundaryId}`);
       if (freshBoundary.type !== "action") throw new Error(`Not an action: ${boundaryId}`);
-      if (freshBoundary.gatekeeperId !== boundary.gatekeeperId) {
-        throw new Error("Action batch contains a different connection.");
-      }
 
       // A selection is a set: staging one record twice is work with nothing to say.
       let selected = [...new Set(vetoIds)].map(id => {
@@ -258,8 +252,6 @@ export class ActionSyncDriver {
 
       await this.getGatekeeper(record.gatekeeperId).rejectAction(fresh.action);
 
-      fresh = this.storage.actions.get(record.id);
-      if (fresh?.type !== "action" || fresh.state !== "pending") return;
       fresh.state = "rejected";
       fresh.resolvedBy = resolvedBy;
       fresh.appliedAt = new Date();
@@ -524,14 +516,7 @@ export class ActionSyncDriver {
     // overseer always has, and this path never reports `invalidatedByVeto`, so an un-migrated
     // gatekeeper's cascades leave their dependants pending until they too are decided.
     for (let veto of vetoes) {
-      try {
-        await gatekeeper.rejectAction(veto);
-      } catch (error) {
-        logger.warn("legacy rejectAction failed", {
-          event: "action.sync.legacy.reject.failed", gatekeeperId, error,
-        });
-        throw error;
-      }
+      await gatekeeper.rejectAction(veto);
       acknowledgeVeto(veto);
     }
     // Each approval is persisted as it lands: unlike a replayed frontier, a replayed per-action

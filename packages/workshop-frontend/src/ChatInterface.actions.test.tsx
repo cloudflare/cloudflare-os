@@ -127,15 +127,15 @@ async function cachePendingCard(key?: string) {
   flushFrames()
 }
 
-// Renders one resolved action card in a live chat, which is where its status label is derived.
-async function renderResolvedCard(over: Record<string, unknown>) {
-  const resolved = entry(1, over)
+// Renders one action card in a live chat, which is where its status label and notes are derived.
+async function renderCard(over: Record<string, unknown>) {
+  const log = entry(1, over)
   const server = makeOverseer()
   const chat = withChatApi(server)
   await renderChat(server.overseer, { selectedChatId: 1 })
   await server.resolveSubscription()
-  await server.resolvePendingQuery({ entries: [resolved] })
-  chat.emitMessage({ ...actionMessage, actionLog: resolved } as AiChatMessage)
+  await server.resolvePendingQuery({ entries: [log] })
+  chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
   flushFrames()
 }
 
@@ -228,13 +228,7 @@ describe('ChatInterface action refresh', () => {
 
 describe('ChatInterface action failure note', () => {
   it("shows the gatekeeper's reason on a pending action card", async () => {
-    const failed = entry(1, { failure: 'page was deleted upstream' })
-    const server = makeOverseer()
-    const chat = withChatApi(server)
-    await renderChat(server.overseer, { selectedChatId: 1 })
-    await server.resolveSubscription()
-    await server.resolvePendingQuery({ entries: [failed] })
-    chat.emitMessage({ ...actionMessage, actionLog: failed } as AiChatMessage)
+    await renderCard({ failure: 'page was deleted upstream' })
 
     expect(document.body.textContent).toContain('page was deleted upstream')
   })
@@ -380,14 +374,14 @@ describe('action fields', () => {
 
 describe('ChatInterface action status', () => {
   it('presents a cascade invalidation as invalidated rather than denied', async () => {
-    await renderResolvedCard({ state: 'rejected', cascadedFrom: 2 })
+    await renderCard({ state: 'rejected', cascadedFrom: 2 })
 
     expect(document.body.textContent).toContain('Invalidated')
     expect(document.body.textContent).not.toContain('Denied')
   })
 
   it('presents a direct rejection as denied', async () => {
-    await renderResolvedCard({ state: 'rejected' })
+    await renderCard({ state: 'rejected' })
 
     expect(document.body.textContent).toContain('Denied')
     expect(document.body.textContent).not.toContain('Invalidated')
