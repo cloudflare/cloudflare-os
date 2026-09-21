@@ -25,7 +25,7 @@ import { diffFiles, type FileChange } from "@gadgets/workshop-shared/code-change
 import { UnreadableContentError, type WorkspaceGitCache } from "./git-cache";
 import { commitIdentityForAuthor, type GitStore } from "./git-store";
 import { formatUnifiedDiff, type WorktreeTurnAccess } from "./agent";
-import { formatGrep, matchLines, scanWorktreeForGrep } from "./grep";
+import { formatGrep, matchLines, scanWorkpieceForGrep } from "./grep";
 
 /**
  * What the session needs from the overseer: the git plumbing and the worktree's registry record
@@ -199,14 +199,14 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
   }
 
   async grep(pattern: RegExp, path?: string | string[]): Promise<string> {
-    let scan = await scanWorktreeForGrep(
+    let scan = await scanWorkpieceForGrep(
         this.host.gitCache, this.turn, this.worktreeId, this.#pinBase(), path);
-    return formatGrep(scan, pattern);
+    return formatGrep(scan, pattern, Infinity);
   }
 
   async structuredGrep(pattern: RegExp, path?: string | string[])
       : Promise<StructuredGrepResult> {
-    let { files, errors } = await scanWorktreeForGrep(
+    let { files, errors } = await scanWorkpieceForGrep(
         this.host.gitCache, this.turn, this.worktreeId, this.#pinBase(), path);
     return {
       matches: files.flatMap(file =>

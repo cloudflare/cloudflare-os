@@ -1,8 +1,7 @@
 // File search for the agent's grep tool and the Worktree binding's grep()/structuredGrep(): resolve
-// a path argument to the searchable files, match lines, and render `grep -n` output. Worktrees
-// scan the overlay-over-base view and pull missing base blobs in one batch; a gadget's files are
-// already in hand. Kept apart from worktree-session.ts so agent.ts can call it without importing
-// the RpcTarget.
+// a path argument to the searchable files in a workpiece's overlay-over-base view, pulling missing
+// base blobs in one batch, then match lines and render `grep -n` output. Kept apart from
+// worktree-session.ts so agent.ts can call it without importing the RpcTarget.
 
 import type { GrepFileError } from "./worktree-binding";
 import type { WorkpieceId } from "@gadgets/workshop-shared/api";
@@ -19,42 +18,31 @@ export type GrepFile = { path: string, text: string };
  */
 export type GrepScan = { files: GrepFile[], errors: GrepFileError[], single: boolean };
 
-// One file to search: an overlay path (text in hand) or a base tree entry (blob by oid).
-type GrepCandidate = { path: string, oid?: GitOid };
+// One file to search: an overlay path (text in hand) or a base tree entry (blob by oid, in the
+// commit it was found in).
+type GrepCandidate = { path: string } | { path: string, oid: GitOid, base: string };
 
 /**
- * The gadget counterpart of scanWorktreeForGrep: a gadget's files are all in hand, so the scan is
- * a filter. `path` names a file or a directory (its files, recursively); absent means every file.
- * Throws when `path` names neither, matching the worktree scan's failed-scope error.
+ * Resolves a grep path argument to the searchable files' text, in the overlay-over-base view the
+ * file tools read: the turn's session content over the workpiece's base commit (a worktree's pin
+ * base or accepted commit; a gadget's pin or head; undefined for a gadget with no committed code,
+ * whose files all live in the session). Each listed scope is a file or a directory to scan
+ * recursively (undefined means the whole tree); unsearchable files -- symlinks, submodules,
+ * oversized and binary blobs -- and listed paths that don't exist degrade to error entries, except
+ * that when *every* listed scope fails, the whole call throws (so a lone bad path is an exception,
+ * not an easily-missed one-line result). Missing base blobs are filled in one batched pull across
+ * all scopes -- the reason the argument accepts an array -- never a serial walk-and-fetch; an
+ * oversized blob (measured, or omitted by the pull's own filter) drops out of the batch with an
+ * error entry rather than failing it.
  */
-export function scanGadgetForGrep(files: ReadonlyMap<string, string>, path?: string): GrepScan {
-  let single = path !== undefined && files.has(path);
-  let prefix = path === undefined ? "" : `${path}/`;
-  let matching = [...files]
-      .filter(([file]) => single ? file === path : file.startsWith(prefix))
-      .map(([file, text]) => ({ path: file, text }))
-      .toSorted((a, b) => a.path < b.path ? -1 : 1);
-  if (matching.length === 0 && path !== undefined) {
-    throw new Error(`${path}: no such file or directory`);
-  }
-  return { files: matching, errors: [], single };
-}
-
-/**
- * Resolves a grep path argument to the searchable files' text. Each listed scope is a file or a
- * directory to scan recursively in the overlay-over-base view (undefined means the whole tree);
- * unsearchable files -- symlinks, submodules, oversized and binary blobs -- and listed paths that
- * don't exist degrade to error entries, except that when *every* listed scope fails, the whole call
- * throws (so a lone bad path is an exception, not an easily-missed one-line result). Missing base
- * blobs are filled in one batched pull across all scopes -- the reason the argument accepts an
- * array -- never a serial walk-and-fetch; an oversized blob (measured, or omitted by the pull's own
- * filter) drops out of the batch with an error entry rather than failing it.
- */
-export async function scanWorktreeForGrep(
-    gitCache: WorkspaceGitCache, turn: WorktreeTurnAccess, worktreeId: WorkpieceId, base: string,
+export async function scanWorkpieceForGrep(
+    gitCache: Pick<WorkspaceGitCache,
+        "pathEntryAtCommit" | "listCommitTreePaths" | "ensureBlobs" | "readTextBlob">,
+    turn: Pick<WorktreeTurnAccess, "getOverlayFiles" | "getRemovedPaths">,
+    workpieceId: WorkpieceId, base: string | undefined,
     pathArg: string | string[] | undefined): Promise<GrepScan> {
-  let overlay = turn.getOverlayFiles(worktreeId);
-  let removed = turn.getRemovedPaths(worktreeId);
+  let overlay = turn.getOverlayFiles(workpieceId);
+  let removed = turn.getRemovedPaths(workpieceId);
 
   // Overlapping scopes (["src", "src/util.js"]) resolve to one candidate per path, and one
   // error entry per unsearchable file, no matter how many scopes cover it.
@@ -74,24 +62,26 @@ export async function scanWorktreeForGrep(
       single = typeof pathArg === "string";
       continue;
     }
-    let entry = scope !== "" && removed.has(scope)
-        ? undefined : await gitCache.pathEntryAtCommit(base, scope);
-    if (entry !== undefined && entry.kind !== "dir") {
+    // A base entry is only worth asking about when there is a base and the path isn't removed.
+    let entry = base !== undefined && !(scope !== "" && removed.has(scope))
+        ? await gitCache.pathEntryAtCommit(base, scope) : undefined;
+    if (base !== undefined && entry !== undefined && entry.kind !== "dir") {
       if (entry.kind === "symlink" || entry.kind === "submodule") {
         failedScopes.set(scope, `${scope} is a ${entry.kind}`);
         continue;
       }
-      candidates.set(scope, { path: scope, oid: entry.oid });
+      candidates.set(scope, { path: scope, oid: entry.oid, base });
       namedFiles.add(scope);
       single = typeof pathArg === "string";
       continue;
     }
 
     // A directory scope: its base entries (when it exists in the base) plus the overlay's
-    // paths under it. A scope with neither doesn't exist.
+    // paths under it. A scope with neither doesn't exist -- except the root, which does even
+    // when the workpiece has no committed code and no files yet.
     let prefix = scope === "" ? "" : `${scope}/`;
-    let found = false;
-    if (entry !== undefined) {
+    let found = scope === "";
+    if (base !== undefined && entry !== undefined) {
       found = true;
       for (let treeEntry of await gitCache.listCommitTreePaths(
           base, scope === "" ? undefined : scope, { recursive: true })) {
@@ -101,7 +91,7 @@ export async function scanWorktreeForGrep(
           continue;
         }
         if (removed.has(treeEntry.path) || overlay.has(treeEntry.path)) continue;
-        candidates.set(treeEntry.path, { path: treeEntry.path, oid: treeEntry.oid });
+        candidates.set(treeEntry.path, { path: treeEntry.path, oid: treeEntry.oid, base });
       }
     }
     for (let overlayPath of overlay.keys()) {
@@ -118,7 +108,7 @@ export async function scanWorktreeForGrep(
   // then notes each of those files, keeping the one-error-per-skipped-file promise.
   let pathsByOid = new Map<GitOid, string[]>();
   for (let candidate of candidates.values()) {
-    if (candidate.oid !== undefined) {
+    if ("oid" in candidate) {
       let oidPaths = pathsByOid.get(candidate.oid);
       if (oidPaths === undefined) pathsByOid.set(candidate.oid, oidPaths = []);
       oidPaths.push(candidate.path);
@@ -134,7 +124,7 @@ export async function scanWorktreeForGrep(
   let files: GrepFile[] = [];
   for (let candidate of [...candidates.values()]
       .toSorted((a, b) => a.path < b.path ? -1 : 1)) {
-    if (candidate.oid === undefined) {
+    if (!("oid" in candidate)) {
       files.push({ path: candidate.path, text: overlay.get(candidate.path)! });
       continue;
     }
@@ -142,7 +132,7 @@ export async function scanWorktreeForGrep(
     try {
       files.push({
         path: candidate.path,
-        text: await gitCache.readTextBlob(candidate.oid, base, candidate.path),
+        text: await gitCache.readTextBlob(candidate.oid, candidate.base, candidate.path),
       });
     } catch (err) {
       if (err instanceof UnreadableContentError) {
@@ -192,18 +182,40 @@ export function matchLines(text: string, pattern: RegExp): { line: number, text:
 
 /**
  * Renders a scan's matches the way `grep -n` would -- `path:line:text`, or `line:text` when the
- * scan named a single file -- followed by one `(skipped: ...)` line per unsearchable file.
+ * scan named a single file -- then one `(skipped: ...)` line per unsearchable file. The whole
+ * stays under `maxChars`: matches past it are dropped, then skipped-file lines, and one line each
+ * says how many were left out, so the model can narrow the pattern or the path.
  */
-export function formatGrep(scan: GrepScan, pattern: RegExp): string {
-  let out: string[] = [];
+export function formatGrep(scan: GrepScan, pattern: RegExp, maxChars: number): string {
+  let matches: string[] = [];
   for (let file of scan.files) {
     for (let match of matchLines(file.text, pattern)) {
-      out.push(scan.single
+      matches.push(scan.single
           ? `${match.line}:${match.text}`
           : `${file.path}:${match.line}:${match.text}`);
     }
   }
-  if (out.length === 0) out.push("(no matches)");
-  out.push(...scan.errors.map(error => `(skipped: ${error.error})`));
+  let skipped = scan.errors.map(error => `(skipped: ${error.error})`);
+
+  // Whole lines while they fit. Room for a group's "N more" note is reserved before any of its
+  // lines are taken, and for both groups before the first, so the notes fit whenever needed.
+  let groups: [string[], (n: number) => string][] = [
+    [matches, n => `(${n} more matches not shown; narrow the pattern or path)`],
+    [skipped, n => `(${n} more files skipped)`],
+  ];
+  let out: string[] = [];
+  let left = maxChars;
+  for (let [lines, more] of groups) left -= lines.length > 0 ? more(lines.length).length + 1 : 0;
+  if (matches.length === 0) out.push("(no matches)");
+  for (let [lines, more] of groups) {
+    let kept = 0;
+    while (kept < lines.length && lines[kept].length + 1 <= left) {
+      out.push(lines[kept]);
+      left -= lines[kept].length + 1;
+      kept++;
+    }
+    if (kept < lines.length) out.push(more(lines.length - kept));
+    else if (lines.length > 0) left += more(lines.length).length + 1;  // note not needed after all
+  }
   return out.join("\n");
 }
