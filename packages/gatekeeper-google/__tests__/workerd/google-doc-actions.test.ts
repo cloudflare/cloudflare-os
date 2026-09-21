@@ -823,14 +823,32 @@ describe("Google Doc list edits", () => {
     let actionId = await hooks().submitReplace(
       "restart-list", "2. Second", "3. Second",
     );
-    expect(await hooks().lastActionDescription).toContain("**New:** 1. Second");
-    expect(await hooks().lastActionDescription).not.toContain("3. Second");
+    expect(await hooks().lastActionDescription)
+      .toContain("**New:**\n\n```markdown\n1. Second\n```");
+    expect(await hooks().lastActionDescription)
+      .toContain("**Requested New:**\n\n```markdown\n3. Second\n```");
     let preview = await hooks().readContent("restart-list");
 
     expect(preview).toBe("1. First\n\nprose\n\n1. Second\n");
     expect(await hooks().applyAction("restart-list", actionId)).toBeNull();
     expect(docs.renderedText()).toBe("1. First\nprose\n1. Second");
     expect(await hooks().readContent("restart-list")).toBe(preview);
+  });
+
+  it("replays a dependent edit after appending adjacent mixed lists", async () => {
+    let docs = new DocsModel();
+    docs.setNumberedList(MAIN_TAB, ["base"]);
+    docs.interruptList(MAIN_TAB, 0);
+    docs.install();
+    let facet = "mixed-list-replay";
+    let appendId = await hooks().submitAppend(facet, "- one\n1. two");
+    let replaceId = await hooks().submitReplace(facet, "1. two", "1. changed");
+
+    expect(await hooks().readContent(facet)).toBe("base\n\n- one\n\n1. changed\n");
+    expect(await hooks().applyAction(facet, appendId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("base\n\n- one\n\n1. changed\n");
+    expect(await hooks().applyAction(facet, replaceId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("base\n\n- one\n\n1. changed\n");
   });
 
   it("joins a plain paragraph added to the preceding numbered list", async () => {
@@ -934,6 +952,53 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent(facet)).toBe("updated\n");
   });
 
+  it("replays a dependent edit after extending a paragraph", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "A", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let facet = "extended-paragraph-replay";
+    let firstId = await hooks().submitReplace(facet, "A", "A\nB");
+    let preview = await hooks().readContent(facet);
+    let secondId = await hooks().submitReplace(facet, preview.trimEnd(), "updated");
+
+    expect(preview).toBe("A\n\nB\n");
+    expect(await hooks().applyAction(facet, firstId)).toBeNull();
+    expect(await hooks().applyAction(facet, secondId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("updated\n");
+  });
+
+  it("replays a dependent edit after splitting existing paragraph text", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "AB", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let facet = "split-paragraph-replay";
+    let firstId = await hooks().submitReplace(facet, "AB", "A\nB");
+    let preview = await hooks().readContent(facet);
+    let secondId = await hooks().submitReplace(facet, preview.trimEnd(), "updated");
+
+    expect(preview).toBe("A\n\nB\n");
+    expect(await hooks().applyAction(facet, firstId)).toBeNull();
+    expect(await hooks().applyAction(facet, secondId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("updated\n");
+  });
+
+  it("replays a dependent edit after inserting a paragraph between contextual blocks", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [
+      { text: "A", namedStyleType: "NORMAL_TEXT" },
+      { text: "B", namedStyleType: "NORMAL_TEXT" },
+    ]);
+    docs.install();
+    let facet = "paragraph-boundary-replay";
+    let firstId = await hooks().submitReplace(facet, "A\n\nB", "A\nX\nB");
+    let preview = await hooks().readContent(facet);
+    let secondId = await hooks().submitReplace(facet, preview.trimEnd(), "updated");
+
+    expect(await hooks().applyAction(facet, firstId)).toBeNull();
+    expect(await hooks().applyAction(facet, secondId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("updated\n");
+  });
+
   it("invalidates a canonical no-op after its target vanishes", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([{ runs: [
@@ -987,6 +1052,21 @@ describe("Google Doc write receipts", () => {
 
     expect(await hooks().applyAction("literal-backslash", actionId)).toBeNull();
     expect(await hooks().readContent("literal-backslash")).toBe("Path files\n");
+  });
+
+  it("shows literal Markdown escapes in the replacement approval", async () => {
+    let docs = new DocsModel();
+    docs.setBody(MAIN_TAB, buildTab([{ runs: [
+      { text: "x", style: { italic: true } }, "\n",
+    ] }]).body);
+    docs.install();
+    let facet = "literal-markdown-approval";
+    await hooks().submitReplace(facet, "*x*", String.raw`\*x\*`);
+    let description = await hooks().lastActionDescription;
+
+    expect(description).toContain("**Old:**\n\n```markdown\n*x*\n```");
+    expect(description).toContain("**Requested New:**\n\n```markdown\n" + String.raw`\*x\*` + "\n```");
+    expect(description).toContain("**New:**\n\n```markdown\n*x*\n```");
   });
 
   it("commits whitespace when replacing a heading", async () => {
@@ -1123,7 +1203,7 @@ describe("Google Doc write receipts", () => {
     let docs = new DocsModel();
     docs.install();
     let facet = "append-storage";
-    let markdown = "**a** ".repeat(10_000);
+    let markdown = "abcdef ".repeat(10_000);
 
     let actionId = await hooks().submitAppend(facet, markdown);
     let storedLength = await hooks().storedValueJsonLength(
@@ -1132,6 +1212,49 @@ describe("Google Doc write receipts", () => {
 
     expect(storedLength).toBeLessThan(markdown.length + 512);
     await hooks().rejectAction(facet, actionId);
+  });
+
+  it("rejects an oversized UTF-8 append before reading the document", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    await expect(Promise.resolve(
+      hooks().submitAppend("oversized-append", "é".repeat(600_000)),
+    )).rejects.toThrow(/1048576-byte safe submission limit/);
+    expect(docs.documentFetches).toBe(0);
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("rejects an oversized aggregate replacement before reading the document", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    await expect(Promise.resolve(hooks().submitReplace(
+      "oversized-replacement", "x".repeat(600_000), "y".repeat(600_000),
+    ))).rejects.toThrow(/1048576-byte safe submission limit/);
+    expect(docs.documentFetches).toBe(0);
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("rejects complex Markdown before reading the document", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    await expect(Promise.resolve(
+      hooks().submitAppend("complex-append", "*x* ".repeat(2_501)),
+    )).rejects.toThrow(/5000-formatting-token complexity limit/);
+    expect(docs.documentFetches).toBe(0);
+    expect(await hooks().lastActionDescription).toBe("");
+  });
+
+  it("shows literal Markdown escapes in the append approval", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().submitAppend("literal-append-approval", String.raw`\# title`);
+
+    let description = await hooks().lastActionDescription;
+    expect(description).toContain("**Requested:**\n\n```markdown\n" + String.raw`\# title` + "\n```");
+    expect(description).toContain("**Resulting:**\n\n```markdown\n# title\n```");
   });
 
   it.each([

@@ -362,12 +362,22 @@ describe("Markdown write canonicalization", () => {
   }, 2_000);
 
   it("canonicalizes many formatting spans in linear time", () => {
-    let markdown = "**a** ".repeat(64_000);
+    let markdown = "**a** ".repeat(2_000);
     expect(canonicalizeMarkdownForWrite(markdown)).toBe(markdown);
   }, 2_000);
 
+  it("rejects excessive inline formatting complexity", () => {
+    expect(() => canonicalizeMarkdownForWrite("*x* ".repeat(2_501)))
+      .toThrow(/5000-formatting-token complexity limit/);
+  });
+
+  it("rejects excessive block complexity", () => {
+    expect(() => canonicalizeMarkdownForWrite(`${"x\n".repeat(2_000)}x`))
+      .toThrow(/2000-block complexity limit/);
+  });
+
   it("trims densely formatted replacement boundaries in linear time", () => {
-    let body = "~~a~~ ".repeat(32_000);
+    let body = "~~a~~ ".repeat(2_000);
     let oldMarkdown = `**${body}x**`;
     let newMarkdown = `**${body}y**`;
 
@@ -383,15 +393,28 @@ describe("Markdown write canonicalization", () => {
     expect(canonicalizeMarkdownForWrite("  \n\t")).toBe("  \n\n\t");
   });
 
-  it("preserves replacement line breaks while canonicalizing formatting", () => {
-    expect(canonicalizeMarkdownReplacement("BAR", "A\nBAR")).toBe("A\nBAR");
-  });
-
   it("canonicalizes a multiline replacement as one fragment", () => {
     expect(canonicalizeMarkdownReplacement("x", "a\nb")).toBe("a\n\nb");
   });
 
+  it("canonicalizes paragraph boundaries adjacent to unchanged context", () => {
+    expect(canonicalizeMarkdownReplacement("A\n\nB", "A\nX\nB"))
+      .toBe("A\n\nX\n\nB");
+  });
+
+  it("preserves an unchanged separator between provider lists", () => {
+    expect(canonicalizeMarkdownReplacement(
+      "1. First\n\n4. Fourth",
+      "1. First\n\n4. Changed",
+    )).toBe("1. First\n\n4. Changed");
+  });
+
+  it("separates adjacent list types", () => {
+    expect(canonicalizeMarkdownForWrite("- one\n1. two")).toBe("- one\n\n1. two");
+  });
+
 });
+
 
 describe("Google Docs tables", () => {
   let snapshot = docTabToMarkdown(buildTab([
@@ -483,6 +506,25 @@ describe("Google Docs tables", () => {
       "<p>owner@example.com · " +
       '<a href="https://docs.google.com/document/d/plan">Launch plan</a> · Sep 16, 2026</p>',
     );
+  });
+
+  it("renders active table link schemes as unlinked text", () => {
+    let tab = cellTab([{ runs: [
+      { text: "Run", style: { link: { url: "javascript:alert(1)" } } }, "\n",
+    ] }]);
+    let markdown = docTabToMarkdown(tab).markdown;
+
+    expect(markdown).toContain("<p>Run</p>");
+    expect(markdown).not.toContain("javascript:");
+  });
+
+  it("preserves internal table links", () => {
+    let tab = cellTab([{ runs: [
+      { text: "Details", style: { link: { tabId: "details" } } }, "\n",
+    ] }]);
+
+    expect(docTabToMarkdown(tab).markdown)
+      .toContain('<a href="?tab=details">Details</a>');
   });
 
   it("renders page auto-text in cells", () => {
@@ -681,6 +723,16 @@ describe("Google Docs tables", () => {
     let bodySnapshot = docTabToMarkdown(bodyTab);
     expect(() => computeReplaceOperations(
       bodySnapshot.sourceMap, bodySnapshot.markdown, 8, 15, "Label", TAB_ID,
+    )).toThrow("structured content cannot be edited");
+  });
+
+  it("protects text runs containing embedded content placeholders", () => {
+    let tab = buildTab([{ runs: ["A\uE907B\n"] }]);
+    let embeddedSnapshot = docTabToMarkdown(tab);
+
+    expect(embeddedSnapshot.sourceMap.protectedRanges).toEqual([{ mdStart: 0, mdEnd: 4 }]);
+    expect(() => computeReplaceOperations(
+      embeddedSnapshot.sourceMap, embeddedSnapshot.markdown, 0, 3, "# A\uE907B", TAB_ID,
     )).toThrow("structured content cannot be edited");
   });
 
@@ -884,6 +936,42 @@ describe("Markdown links", () => {
         fields: "link",
       },
     });
+  });
+
+  it.each([
+    ["?tab=details", { tabId: "details" }],
+    ["?tab=details#bookmark=bookmark-1", {
+      bookmark: { id: "bookmark-1", tabId: "details" },
+    }],
+    ["?tab=details#heading=heading-1", {
+      heading: { id: "heading-1", tabId: "details" },
+    }],
+    ["#bookmark=bookmark-2", { bookmarkId: "bookmark-2" }],
+    ["#heading=heading-2", { headingId: "heading-2" }],
+  ])("writes internal destination %s as an internal link", (destination, link) => {
+    let requests = markdownToDocRequests(`[x](${destination})`, 1, TAB_ID);
+
+    expect(requests).toContainEqual({
+      updateTextStyle: {
+        range: { startIndex: 1, endIndex: 2, tabId: TAB_ID },
+        textStyle: { link },
+        fields: "link",
+      },
+    });
+  });
+
+  it("coalesces adjacent links with the same destination", () => {
+    let requests = markdownToDocRequests(
+      "[a](https://e.com)[b](https://e.com)", 1, TAB_ID,
+    );
+
+    expect(requests.filter(request => request.updateTextStyle?.fields === "link")).toEqual([{
+      updateTextStyle: {
+        range: { startIndex: 1, endIndex: 3, tabId: TAB_ID },
+        textStyle: { link: { url: "https://e.com" } },
+        fields: "link",
+      },
+    }]);
   });
 
   it("materializes an empty-label link as literal text", () => {
@@ -1645,6 +1733,27 @@ describe("computeReplaceOperations", () => {
       });
     },
   );
+
+  it("inserts adjacent empty strikethrough delimiters literally", () => {
+    expect(markdownToDocRequests("~~~~", 1, TAB_ID)[0]).toEqual({
+      insertText: { location: { index: 1, tabId: TAB_ID }, text: "~~~~" },
+    });
+  });
+
+  it("joins adjacent strikethrough spans without retaining delimiters", () => {
+    let requests = markdownToDocRequests("~~a~~~~b~~", 1, TAB_ID);
+
+    expect(requests[0]).toEqual({
+      insertText: { location: { index: 1, tabId: TAB_ID }, text: "ab" },
+    });
+    expect(requests).toContainEqual({
+      updateTextStyle: {
+        range: { startIndex: 1, endIndex: 3, tabId: TAB_ID },
+        textStyle: { strikethrough: true },
+        fields: "strikethrough",
+      },
+    });
+  });
 
   it("calculates style ranges after removing provider-stripped characters", () => {
     let requests = markdownToDocRequests("**A\u0001B\uE000C**", 10, TAB_ID);

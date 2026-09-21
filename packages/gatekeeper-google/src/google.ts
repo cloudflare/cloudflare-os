@@ -18,7 +18,8 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-types";
 import {
-  applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
+  applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
+  canonicalizeMarkdownReplacement,
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
@@ -1366,6 +1367,27 @@ function googleDocPendingFingerprint(pending: GoogleDocPendingAction[]): string 
   return JSON.stringify(pending);
 }
 
+const MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES = 1024 * 1024;
+const googleDocActionEncoder = new TextEncoder();
+
+function assertGoogleDocActionMarkdownSize(...values: string[]): void {
+  let byteLength = 0;
+  for (let value of values) byteLength += value.length;
+  if (byteLength <= MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) {
+    byteLength = 0;
+    for (let value of values) {
+      byteLength += googleDocActionEncoder.encode(value).byteLength;
+      if (byteLength > MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) break;
+    }
+  }
+  if (byteLength > MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) {
+    throw new Error(
+      `Google Doc action Markdown exceeds the ${MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES}-byte ` +
+      "safe submission limit.",
+    );
+  }
+  for (let value of values) assertMarkdownWriteComplexity(value);
+}
 function findUniqueMarkdown(
   markdown: string,
   oldMarkdown: string,
@@ -2052,6 +2074,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     if (oldMarkdown === newMarkdown) {
       return;
     }
+    assertGoogleDocActionMarkdownSize(oldMarkdown, newMarkdown);
 
     let selected;
     let renderedNewMarkdown: string;
@@ -2083,16 +2106,19 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       newMarkdown,
     };
 
+    let description = buildDescription(`Replace text in tab ${googleDocTabLabel(tab)}.`)
+      .verbatim("Old", oldMarkdown, "markdown");
+    if (newMarkdown !== renderedNewMarkdown) {
+      description.verbatim("Requested New", newMarkdown, "markdown");
+    }
+    description.verbatim("New", renderedNewMarkdown, "markdown");
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Edit Google Doc",
-        ...buildDescription(`Replace text in tab ${googleDocTabLabel(tab)}.`)
-          .verbatim("Old", oldMarkdown, "markdown")
-          .verbatim("New", renderedNewMarkdown, "markdown")
-          .finish(),
+        ...description.finish(),
         implementsRevert: false,
         // Group all document edits under one tag
         actionKind: EDIT_DOCUMENT_ACTION,
@@ -2106,6 +2132,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   }
 
   async appendText(markdown: string, tabId?: string): Promise<void> {
+    assertGoogleDocActionMarkdownSize(markdown);
     let selected;
     try {
       selected = await this.#getSimulatedContent(tabId, "appendText");
@@ -2131,15 +2158,22 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       markdown,
     };
 
+    let description =
+      buildDescription(`Append content to the end of tab ${googleDocTabLabel(tab)}.`);
+    if (markdown === renderedMarkdown) {
+      description.verbatim("Content", renderedMarkdown, "markdown");
+    } else {
+      description
+        .verbatim("Requested", markdown, "markdown")
+        .verbatim("Resulting", renderedMarkdown, "markdown");
+    }
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Append to Google Doc",
-        ...buildDescription(`Append content to the end of tab ${googleDocTabLabel(tab)}.`)
-          .verbatim("Content", renderedMarkdown, "markdown")
-          .finish(),
+        ...description.finish(),
         implementsRevert: false,
         // Same "editDocument" tag as replaceText
         actionKind: EDIT_DOCUMENT_ACTION,

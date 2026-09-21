@@ -212,7 +212,8 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     writer.append("\n");
 
     let mdEnd = writer.length;
-    if (para.positionedObjectIds?.length || para.elements.some(element => !element.textRun)) {
+    if (para.positionedObjectIds?.length || para.elements.some(element =>
+      !element.textRun || element.textRun.content.includes("\uE907"))) {
       protectedRanges.push({ mdStart: protectedStart, mdEnd });
     }
     blocks.push({
@@ -453,6 +454,11 @@ function tableParagraphContentToHtml(paragraph: Paragraph): string {
   return images && content ? `${images} ${content}` : images || content;
 }
 
+/** Permit inert web links and native Docs destinations in generated table HTML. */
+function isSafeTableLink(link: string): boolean {
+  return /^(?:https?:|mailto:)/i.test(link) || parseInternalDocsLink(link) !== undefined;
+}
+
 function styledTextToHtml(
   text: string,
   style: TextStyle,
@@ -463,7 +469,7 @@ function styledTextToHtml(
   if (style.strikethrough) html = `<s>${html}</s>`;
   if (renderItalic && style.italic) html = `<em>${html}</em>`;
   if (style.bold) html = `<strong>${html}</strong>`;
-  if (link) html = `<a href="${escapeHtmlAttribute(link)}">${html}</a>`;
+  if (link && isSafeTableLink(link)) html = `<a href="${escapeHtmlAttribute(link)}">${html}</a>`;
   return html;
 }
 
@@ -717,6 +723,46 @@ type FormattingSpan = {
   link?: string;
 }
 
+const MAX_MARKDOWN_BLOCKS = 2_000;
+const MAX_MARKDOWN_FORMATTING_TOKENS = 5_000;
+// Current block and span budgets can produce at most 15,001 requests.
+const MAX_GOOGLE_DOC_REQUESTS = 16_000;
+
+/** Reject Markdown whose structure would consume excessive parser or Docs batch resources. */
+export function assertMarkdownWriteComplexity(markdown: string): void {
+  let blocks = markdown.length === 0 ? 0 : 1;
+  let formattingTokens = 0;
+  for (let index = 0; index < markdown.length; index++) {
+    let character = markdown[index];
+    if (character === "\n") {
+      blocks++;
+      if (blocks > MAX_MARKDOWN_BLOCKS) {
+        throw new Error(`Google Doc action Markdown exceeds the ${MAX_MARKDOWN_BLOCKS}-block complexity limit.`);
+      }
+      continue;
+    }
+    if (character === "\\" && markdown[index + 1] &&
+      isMarkdownPunctuation(markdown[index + 1])) {
+      index++;
+      continue;
+    }
+    if (character === "*") {
+      formattingTokens++;
+      while (markdown[index + 1] === "*") index++;
+    } else if (character === "~" && markdown[index + 1] === "~") {
+      formattingTokens++;
+      while (markdown[index + 1] === "~") index++;
+    } else if (character === "]" && markdown[index + 1] === "(") {
+      formattingTokens++;
+    }
+    if (formattingTokens > MAX_MARKDOWN_FORMATTING_TOKENS) {
+      throw new Error(
+        `Google Doc action Markdown exceeds the ${MAX_MARKDOWN_FORMATTING_TOKENS}-formatting-token complexity limit.`,
+      );
+    }
+  }
+}
+
 /**
  * Parse a Markdown string into blocks. This is a simple parser that handles
  * the subset of Markdown we support.
@@ -777,6 +823,21 @@ function parseMarkdown(markdown: string): ParsedBlock[] {
   }
   flushBlock();
 
+  return blocks;
+}
+
+function parseMarkdownForWrite(markdown: string): ParsedBlock[] {
+  assertMarkdownWriteComplexity(markdown);
+  let blocks = parseMarkdown(markdown);
+  let spanCount = 0;
+  for (let block of blocks) {
+    spanCount += block.spans.length;
+    if (spanCount > MAX_MARKDOWN_FORMATTING_TOKENS) {
+      throw new Error(
+        `Google Doc action Markdown exceeds the ${MAX_MARKDOWN_FORMATTING_TOKENS}-formatting-span complexity limit.`,
+      );
+    }
+  }
   return blocks;
 }
 
@@ -1026,6 +1087,8 @@ export function canonicalizeMarkdownReplacement(
   oldMarkdown: string,
   newMarkdown: string,
 ): string {
+  assertMarkdownWriteComplexity(oldMarkdown);
+  assertMarkdownWriteComplexity(newMarkdown);
   let bounds = markdownReplacementBounds(oldMarkdown, newMarkdown);
   let normalized = normalizeChangedListOrdinal(oldMarkdown, newMarkdown, bounds.prefixLen);
   if (normalized !== newMarkdown) {
@@ -1033,9 +1096,12 @@ export function canonicalizeMarkdownReplacement(
     bounds = markdownReplacementBounds(oldMarkdown, newMarkdown);
   }
   let { prefixLen, suffixLen } = bounds;
-  let changed = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
-  return oldMarkdown.slice(0, prefixLen) + canonicalizeMarkdownFragment(changed) +
+  let changed = canonicalizeMarkdownFragment(
+    newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen),
+  );
+  let canonical = oldMarkdown.slice(0, prefixLen) + changed +
     oldMarkdown.slice(oldMarkdown.length - suffixLen);
+  return normalizeChangedBlockBoundaries(canonical, prefixLen, prefixLen + changed.length);
 }
 
 const BOLD_STATE = 1;
@@ -1059,8 +1125,16 @@ function inlineTokens(text: string, links: MarkdownLinkIndex): InlineToken[] {
       continue;
     }
     if (text.startsWith("~~", index)) {
-      tokens.push({ start: index, end: index + 2, marker: "strikethrough" });
-      index += 2;
+      let end = index + 2;
+      while (text[end] === "~") end++;
+      let length = end - index;
+      if (length === 2 || length === 4) {
+        tokens.push({ start: index, end: index + 2, marker: "strikethrough" });
+        if (length === 4) {
+          tokens.push({ start: index + 2, end, marker: "strikethrough" });
+        }
+      }
+      index = end;
       continue;
     }
     if (text[index] === "*") {
@@ -1110,8 +1184,24 @@ function inlineMarkdownRanges(markdown: string, links: MarkdownLinkIndex): Markd
 
   for (let index = 0; index < tokens.length; index++) {
     let token = tokens[index];
+    let nextToken = tokens[index + 1];
+    if (state & STRIKETHROUGH_STATE && token.marker === "strikethrough" &&
+        nextToken?.marker === "strikethrough" && token.end === nextToken.start &&
+        completable[index + 2] & (1 << state)) {
+      index++;
+      continue;
+    }
+
     let next = inlineTransition(state, token);
     if (next === undefined || !(completable[index + 1] & (1 << next))) continue;
+    let previousToken = tokens[index - 1];
+    if (token.marker === "strikethrough" && state & STRIKETHROUGH_STATE &&
+        previousToken?.marker === "strikethrough" && previousToken.end === token.start &&
+        starts.get(STRIKETHROUGH_STATE) === previousToken.start) {
+      starts.delete(STRIKETHROUGH_STATE);
+      state = next;
+      continue;
+    }
     for (let style of INLINE_STYLE_STATES) {
       if (!(state & style) && next & style) starts.set(style, token.start);
       if (state & style && !(next & style)) {
@@ -1140,6 +1230,21 @@ function isGoogleDocsStrippedCharacter(code: number): boolean {
     code >= 0xe000 && code <= 0xf8ff;
 }
 
+function coalesceFormattingSpans(spans: FormattingSpan[]): FormattingSpan[] {
+  let coalesced: FormattingSpan[] = [];
+  for (let span of spans) {
+    let previous = coalesced.at(-1);
+    if (previous && previous.end === span.start && previous.bold === span.bold &&
+      previous.italic === span.italic && previous.strikethrough === span.strikethrough &&
+      previous.link === span.link) {
+      previous.end = span.end;
+    } else {
+      coalesced.push(span);
+    }
+  }
+  return coalesced;
+}
+
 function sanitizeGoogleDocsParsedText(
   plainText: string,
   spans: FormattingSpan[],
@@ -1151,7 +1256,7 @@ function sanitizeGoogleDocsParsedText(
       break;
     }
   }
-  if (firstRemoved === -1) return { plainText, spans };
+  if (firstRemoved === -1) return { plainText, spans: coalesceFormattingSpans(spans) };
 
   let removedBefore = new Uint32Array(plainText.length + 1);
   let chunks = [plainText.slice(0, firstRemoved)];
@@ -1170,11 +1275,11 @@ function sanitizeGoogleDocsParsedText(
   chunks.push(plainText.slice(chunkStart));
   return {
     plainText: chunks.join(""),
-    spans: spans.map(span => ({
+    spans: coalesceFormattingSpans(spans.map(span => ({
       ...span,
       start: span.start - removedBefore[span.start],
       end: span.end - removedBefore[span.end],
-    })),
+    }))),
   };
 }
 
@@ -1216,20 +1321,38 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
 
     let token = tokens[tokenIndex];
     if (token?.start === index) {
+      let nextToken = tokens[tokenIndex + 1];
+      if (state & STRIKETHROUGH_STATE && token.marker === "strikethrough" &&
+          nextToken?.marker === "strikethrough" && token.end === nextToken.start &&
+          completable[tokenIndex + 2] & (1 << state)) {
+        index = nextToken.end;
+        tokenIndex += 2;
+        continue;
+      }
+
       let next = inlineTransition(state, token);
       if (next !== undefined && completable[tokenIndex + 1] & (1 << next)) {
-        for (let style of INLINE_STYLE_STATES) {
-          if (!(state & style) && next & style) starts.set(style, plainText.length);
-          if (state & style && !(next & style)) {
-            spans.push({
-              start: starts.get(style)!,
-              end: plainText.length,
-              ...inlineSpanStyle(style),
-            });
-            starts.delete(style);
+        let previousToken = tokens[tokenIndex - 1];
+        if (token.marker === "strikethrough" && state & STRIKETHROUGH_STATE &&
+            previousToken?.marker === "strikethrough" && previousToken.end === token.start &&
+            starts.get(STRIKETHROUGH_STATE) === plainText.length) {
+          plainText += text.slice(previousToken.start, token.end);
+          starts.delete(STRIKETHROUGH_STATE);
+          state = next;
+        } else {
+          for (let style of INLINE_STYLE_STATES) {
+            if (!(state & style) && next & style) starts.set(style, plainText.length);
+            if (state & style && !(next & style)) {
+              spans.push({
+                start: starts.get(style)!,
+                end: plainText.length,
+                ...inlineSpanStyle(style),
+              });
+              starts.delete(style);
+            }
           }
+          state = next;
         }
-        state = next;
       } else {
         plainText += text.slice(token.start, token.end);
       }
@@ -1295,15 +1418,17 @@ function canonicalInlineMarkdown(block: ParsedBlock): string {
 /** Normalize supported Markdown to the form returned after writing and rereading it. */
 export function canonicalizeMarkdownForWrite(markdown: string): string {
   let result = "";
-  let lastWasListItem = false;
-  for (let block of parseMarkdown(markdown)) {
-    if (result && !(lastWasListItem && block.listType)) result += "\n";
+  let lastListType: ListType | null = null;
+  for (let block of parseMarkdownForWrite(markdown)) {
+    if (result && (!lastListType || !block.listType || lastListType !== block.listType)) {
+      result += "\n";
+    }
     if (block.listType) {
       result += "  ".repeat(block.nestingLevel) + (block.listType === "numbered" ? "1. " : "- ");
     }
     if (block.headingLevel !== null) result += `${"#".repeat(block.headingLevel)} `;
     result += canonicalInlineMarkdown(block) + "\n";
-    lastWasListItem = block.listType !== null;
+    lastListType = block.listType;
   }
   return result.slice(0, -1);
 }
@@ -1321,6 +1446,24 @@ type MarkdownWriteOptions = {
   preserveTrailingNewline?: boolean;
 };
 
+function parseInternalDocsLink(destination: string): NonNullable<TextStyle["link"]> | undefined {
+  let match = /^(?:\?tab=([^#&]+))?(?:#(bookmark|heading)=([^#&]+))?$/.exec(destination);
+  if (!match || !match[1] && !match[2]) return undefined;
+
+  try {
+    let tabId = match[1] ? decodeURIComponent(match[1]) : undefined;
+    let id = match[3] ? decodeURIComponent(match[3]) : undefined;
+    if (!match[2]) return tabId ? { tabId } : undefined;
+    if (!id) return undefined;
+    if (match[2] === "bookmark") {
+      return tabId ? { bookmark: { id, tabId } } : { bookmarkId: id };
+    }
+    return tabId ? { heading: { id, tabId } } : { headingId: id };
+  } catch {
+    return undefined;
+  }
+}
+
 function linkForWrite(
   source: MarkdownWriteOptions["source"], destination: string,
 ): NonNullable<TextStyle["link"]> {
@@ -1333,7 +1476,7 @@ function linkForWrite(
       }
     }
   }
-  return { url: destination };
+  return parseInternalDocsLink(destination) ?? { url: destination };
 }
 
 function targetNamedStyle(block: ParsedBlock, source?: BlockMapping): string {
@@ -1489,7 +1632,7 @@ export function markdownToDocRequests(
   tabId: string,
   options: MarkdownWriteOptions = {},
 ): any[] {
-  let blocks = parseMarkdown(markdown);
+  let blocks = parseMarkdownForWrite(markdown);
   if (blocks.length === 0) return [];
 
   let sourceBlockCount = options.source?.blocks.length ?? 0;
@@ -1530,8 +1673,16 @@ export function markdownToDocRequests(
   if (options.preserveTrailingNewline) fullText += "\n";
 
   let requests: any[] = [];
+  function addRequest(request: (typeof requests)[number]): void {
+    if (requests.length >= MAX_GOOGLE_DOC_REQUESTS) {
+      throw new Error(
+        `Google Doc action exceeds the ${MAX_GOOGLE_DOC_REQUESTS}-request batch limit.`,
+      );
+    }
+    requests.push(request);
+  }
   if (fullText.length > 0) {
-    requests.push({ insertText: { location: { index: insertAt, tabId }, text: fullText } });
+    addRequest({ insertText: { location: { index: insertAt, tabId }, text: fullText } });
   }
 
   let clearListIndent = options.source?.blocks.some(block => block.listId !== undefined) ?? false;
@@ -1541,20 +1692,20 @@ export function markdownToDocRequests(
     let range = { startIndex: paragraphStart, endIndex: paragraphEnd, tabId };
     if (!preserveStyle && source) {
       let resetList = !preserveList && (rebuild || source.listId !== undefined);
-      if (resetList) requests.push({ deleteParagraphBullets: { range } });
+      if (resetList) addRequest({ deleteParagraphBullets: { range } });
 
       let restyle = rebuild || source.namedStyleType !== targetStyle;
       if (restyle || resetList) {
-        requests.push(
-          updateParagraphStyleRequest(range, restyle ? targetStyle : undefined, resetList));
+        addRequest(updateParagraphStyleRequest(
+          range, restyle ? targetStyle : undefined, resetList));
       }
     } else if (!preserveStyle) {
       if (resetParagraphs) {
-        requests.push(updateParagraphStyleRequest(range, "NORMAL_TEXT", clearListIndent));
-        requests.push({ deleteParagraphBullets: { range } });
+        addRequest(updateParagraphStyleRequest(range, "NORMAL_TEXT", clearListIndent));
+        addRequest({ deleteParagraphBullets: { range } });
       }
       if (targetStyle !== "NORMAL_TEXT") {
-        requests.push(updateParagraphStyleRequest(range, targetStyle, false));
+        addRequest(updateParagraphStyleRequest(range, targetStyle, false));
       }
     }
 
@@ -1564,7 +1715,7 @@ export function markdownToDocRequests(
         endIndex: textStart + block.plainText.length,
         tabId,
       };
-      requests.push({
+      addRequest({
         updateTextStyle: {
           range: textRange,
           textStyle: options.sourceTextStyle ?? {},
@@ -1572,7 +1723,7 @@ export function markdownToDocRequests(
         },
       });
       if (targetStyle === "SUBTITLE") {
-        requests.push({
+        addRequest({
           updateTextStyle: { range: textRange, textStyle: { italic: false }, fields: "italic" },
         });
       }
@@ -1589,14 +1740,14 @@ export function markdownToDocRequests(
         if (span.bold) { textStyle.bold = true; fields.push("bold"); }
         if (span.italic) { textStyle.italic = true; fields.push("italic"); }
         if (span.strikethrough) { textStyle.strikethrough = true; fields.push("strikethrough"); }
-        requests.push({
+        addRequest({
           updateTextStyle: {
             range: { startIndex, endIndex, tabId }, textStyle, fields: fields.join(","),
           },
         });
       }
       if (span.link) {
-        requests.push({
+        addRequest({
           updateTextStyle: {
             range: { startIndex, endIndex, tabId },
             textStyle: { link: linkForWrite(options.source, span.link) },
@@ -1620,7 +1771,7 @@ export function markdownToDocRequests(
     }
   }
   for (let { listType, startIndex, endIndex } of bulletGroups.toReversed()) {
-    requests.push({
+    addRequest({
       createParagraphBullets: {
         range: { startIndex, endIndex, tabId },
         bulletPreset: listType === "numbered"
@@ -1680,11 +1831,47 @@ function separatorBefore(markdown: string, currentStart: number): TextEdit | und
   return length === expected ? undefined : { start, end: currentStart, text: "\n".repeat(expected) };
 }
 
+function changedSeparatorBefore(
+  markdown: string,
+  currentStart: number,
+  changeStart: number,
+  changeEnd: number,
+): TextEdit | undefined {
+  let edit = separatorBefore(markdown, currentStart);
+  if (edit && edit.end - edit.start === 2 &&
+      (edit.end <= changeStart || edit.start >= changeEnd)) return undefined;
+  return edit;
+}
+
 function nextLineStart(markdown: string, start: number): number | undefined {
   let next = markdown.indexOf("\n", start);
   if (next < 0) return undefined;
   while (markdown[next] === "\n") next++;
   return next < markdown.length ? next : undefined;
+}
+
+function normalizeChangedBlockBoundaries(
+  markdown: string,
+  changeStart: number,
+  changeEnd: number,
+): string {
+  let nextChangedLine = markdown[changeStart] === "\n"
+    ? nextLineStart(markdown, changeStart)
+    : undefined;
+  let first = nextChangedLine !== undefined && nextChangedLine < changeEnd
+    ? nextChangedLine
+    : lineStart(markdown, changeStart);
+  let last = lineStart(markdown, changeEnd > changeStart ? changeEnd - 1 : changeStart);
+  let next = nextLineStart(markdown, last);
+  let before = changedSeparatorBefore(markdown, first, changeStart, changeEnd);
+  let after = next === undefined
+    ? undefined
+    : changedSeparatorBefore(markdown, next, changeStart, changeEnd);
+
+  for (let edit of [after, before]) {
+    if (edit) markdown = markdown.slice(0, edit.start) + edit.text + markdown.slice(edit.end);
+  }
+  return markdown;
 }
 
 function normalizeChangedListBoundaries(
