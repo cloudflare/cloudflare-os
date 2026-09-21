@@ -10,6 +10,7 @@
 //   issues the inverse service call to restore that state.
 // - `executeAction()` — actually performs the action against HA (REST or WS).
 
+import { buildDescription, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   HomeAssistantWebSocket,
@@ -54,22 +55,6 @@ function labelName(labelId: string, registry: RegistrySnapshot): string {
 function deviceName(deviceId: string, registry: RegistrySnapshot): string {
   const device = registry.devices.find((d: any) => d.id === deviceId);
   return device?.name_by_user ?? device?.name ?? deviceId;
-}
-
-function fmtData(data?: Record<string, unknown>): string {
-  if (!data) return "";
-  const entries = Object.entries(data);
-  if (entries.length === 0) return "";
-  return entries.map(([k, v]) => `${k}=${formatValue(v)}`).join(", ");
-}
-
-function formatValue(v: unknown): string {
-  if (v === null) return "null";
-  if (typeof v === "string") return JSON.stringify(v);
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  if (Array.isArray(v)) return `[${v.map(formatValue).join(", ")}]`;
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +130,6 @@ function describeCallService(
     };
   }
 
-  const dataStr = fmtData(data);
-
   // Compute the total number of distinct entities affected by this call. Used to enrich
   // titles for area / label / device scopes (where one ID can fan out to many entities), and
   // to display per-area / per-label counts when the target uses only that one dimension.
@@ -164,7 +147,8 @@ function describeCallService(
   const targetIsExclusively = (dim: keyof HATarget) =>
     targetDimensions.length === 1 && targetDimensions[0] === dim;
 
-  // Build "what is targeted" text.
+  // "What is targeted", for the title only: titles are plain text, while the description lists
+  // the same ids in fields so no registry or agent text sits in its prose.
   let targetText = "";
   if (target) {
     const parts: string[] = [];
@@ -173,15 +157,15 @@ function describeCallService(
       if (ids.length === 1) {
         parts.push(`${entityFriendlyName(ids[0], registry)} (\`${ids[0]}\`)`);
       } else {
-        parts.push(`${ids.length} entities`);
+        parts.push(`${ids.length} entities (${ids.map((id) => `\`${id}\``).join(", ")})`);
       }
     }
     if (target.device_id) {
       const ids = asArray(target.device_id);
       parts.push(
         ids.length === 1
-          ? `device "${deviceName(ids[0], registry)}"`
-          : `${ids.length} devices`,
+          ? `device "${deviceName(ids[0], registry)}" (\`${ids[0]}\`)`
+          : `${ids.length} devices (${ids.map((id) => `\`${id}\``).join(", ")})`,
       );
     }
     if (target.area_id) {
@@ -193,9 +177,9 @@ function describeCallService(
       parts.push(
         ids.length === 1
           ? includeCount
-            ? `area "${areaName(ids[0], registry)}" (${affectedEntityCount} entities)`
-            : `area "${areaName(ids[0], registry)}"`
-          : `${ids.length} areas`,
+            ? `area "${areaName(ids[0], registry)}" (\`${ids[0]}\`, ${affectedEntityCount} entities)`
+            : `area "${areaName(ids[0], registry)}" (\`${ids[0]}\`)`
+          : `${ids.length} areas (${ids.map((id) => `\`${id}\``).join(", ")})`,
       );
     }
     if (target.label_id) {
@@ -204,9 +188,9 @@ function describeCallService(
       parts.push(
         ids.length === 1
           ? includeCount
-            ? `label "${labelName(ids[0], registry)}" (${affectedEntityCount} entities)`
-            : `label "${labelName(ids[0], registry)}"`
-          : `${ids.length} labels`,
+            ? `label "${labelName(ids[0], registry)}" (\`${ids[0]}\`, ${affectedEntityCount} entities)`
+            : `label "${labelName(ids[0], registry)}" (\`${ids[0]}\`)`
+          : `${ids.length} labels (${ids.map((id) => `\`${id}\``).join(", ")})`,
       );
     }
     if (target.floor_id) {
@@ -239,27 +223,50 @@ function describeCallService(
     if (targetText) title += ` on ${targetText}`;
   }
 
-  // Description — fuller detail for the approver.
-  let description = `Calls \`${domain}.${service}\``;
-  if (targetText) description += ` on ${targetText}`;
-  if (dataStr) description += ` with ${dataStr}`;
-  description += ".";
+  // Description: the lists name each targeted id beside its registry name, and the JSON is the
+  // exact target and data the call sends. Service, ids and names are agent or registry text, so
+  // they sit in fields, never in the prose.
+  const builder = buildDescription("Calls a Home Assistant service.")
+    .inline("Service", `${domain}.${service}`);
+  if (target) {
+    const named = (ids: string[], name: (id: string) => string) =>
+      ids.map((id) => (name(id) === id ? id : `${id} (${name(id)})`));
+    const entities = asArray(target.entity_id);
+    const devices = asArray(target.device_id);
+    const areas = asArray(target.area_id);
+    const labels = asArray(target.label_id);
+    const floors = asArray(target.floor_id);
+    if (entities.length) {
+      builder.list("Entities", named(entities, (id) => entityFriendlyName(id, registry)));
+    }
+    if (devices.length) builder.list("Devices", named(devices, (id) => deviceName(id, registry)));
+    if (areas.length) builder.list("Areas", named(areas, (id) => areaName(id, registry)));
+    if (labels.length) builder.list("Labels", named(labels, (id) => labelName(id, registry)));
+    if (floors.length) builder.list("Floors", floors);
+    if (!targetIsExclusively("entity_id") && affectedEntityCount > 0) {
+      builder.prose(
+        `The target currently resolves to ${affectedEntityCount} ` +
+        `entit${affectedEntityCount === 1 ? "y" : "ies"}.`);
+    }
+    builder.json("Target", target);
+  }
+  if (data && Object.keys(data).length > 0) builder.json("Service data", data);
 
   return {
-    title,
-    description,
+    // Titles name every target ID, so an unbounded target list is capped here.
+    title: sanitizeTitle(title),
+    ...builder.finish(),
     implementsRevert: canRevert(action),
   };
 }
 
 function describeFireEvent(action: HomeAssistantAction & { type: "fireEvent" }): ActionDescription {
-  const dataStr = fmtData(action.data);
+  const builder = buildDescription("Fires an event on the Home Assistant event bus.")
+    .inline("Event", action.eventType);
+  if (action.data && Object.keys(action.data).length > 0) builder.json("Event data", action.data);
   return {
-    title: `Fire event: ${action.eventType}`,
-    description:
-      `Fires the \`${action.eventType}\` event on the Home Assistant event bus` +
-      (dataStr ? ` with ${dataStr}` : "") +
-      ".",
+    title: sanitizeTitle(`Fire event: ${action.eventType}`),
+    ...builder.finish(),
     implementsRevert: false,
   };
 }
@@ -273,10 +280,14 @@ function describeSaveDashboard(
   const cardCount = countCards(config);
   const title = config?.title ? `${config.title}` : urlLabel;
   return {
-    title: `Edit dashboard: ${title}`,
-    description:
-      `Replaces the configuration of the Lovelace dashboard \`${urlLabel}\` ` +
-      `with ${viewCount} view${viewCount === 1 ? "" : "s"} and ${cardCount} card${cardCount === 1 ? "" : "s"}.`,
+    title: sanitizeTitle(`Edit dashboard: ${title}`),
+    // A configuration too large for the budget is truncated and, as intended, incomplete.
+    ...buildDescription(
+      `Replaces the configuration of a Lovelace dashboard ` +
+      `with ${viewCount} view${viewCount === 1 ? "" : "s"} and ${cardCount} card${cardCount === 1 ? "" : "s"}.`)
+      .inline("Dashboard", urlLabel)
+      .json("Dashboard configuration", action.config)
+      .finish(),
     implementsRevert: true,
   };
 }
