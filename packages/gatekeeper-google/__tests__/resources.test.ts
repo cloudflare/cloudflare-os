@@ -550,4 +550,18 @@ describe("recorded account grants", () => {
     expect(recordedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
     expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
   });
+
+  // A urlPattern retired by a later deploy. Keeping it would make every reconnect throw on an
+  // unknown pattern; the account re-consents under the live pattern instead.
+  it("drops a retired pattern from a recorded grant", () => {
+    const grant = {
+      resourceUrlPatterns: [
+        "https://drive.google.com/drive/folders/:driveId",
+        GMAIL_RESOURCE.urlPattern,
+      ],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GMAIL_RESOURCE.urlPattern]),
+    };
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
+    expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
+  });
 });

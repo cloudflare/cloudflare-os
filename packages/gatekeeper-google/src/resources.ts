@@ -313,9 +313,14 @@ export type RecordedResourceGrant = {
  * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
  * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
  * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ *
+ * A `urlPattern` a later deploy retired is dropped rather than returned: it maps to no scopes, so
+ * requesting it would throw and take the reconnect that repairs the account down with it.
  */
 export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
-  if (grant.resourceUrlPatterns !== undefined) return [...grant.resourceUrlPatterns];
+  if (grant.resourceUrlPatterns !== undefined) {
+    return grant.resourceUrlPatterns.filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
+  }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
   return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
 }

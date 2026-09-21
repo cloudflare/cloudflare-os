@@ -4,7 +4,8 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
-  BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, IDENTITY_SCOPES,
+  BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES,
+  recordedResourceUrlPatterns,
 } from "../src/resources";
 import { FakeKv } from "./fake-kv";
 
@@ -50,6 +51,27 @@ describe("stored OAuth flow", () => {
     expect(kv.get<string[]>("grantedResources")).toEqual([
       GOOGLE_DOC_RESOURCE.urlPattern,
       BIGQUERY_RESOURCE.urlPattern,
+    ]);
+  });
+
+  // Regression: the shared-drive resource's urlPattern was retired, and a reconnect feeds the
+  // recorded grant straight back in, so an unknown pattern made the repair path throw.
+  it("reconnects an account whose recorded grant names a retired resource", () => {
+    let kv = new FakeKv();
+    let requestable = recordedResourceUrlPatterns({
+      resourceUrlPatterns: [
+        "https://drive.google.com/drive/folders/:driveId",
+        GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
+      ],
+    });
+
+    prepareOAuthFlow(kv, "init", requestable, "reconnect", 0);
+
+    expect(beginStoredOAuthFlow(kv, "init", "oauth", OAUTH_REDIRECT_URI, 1)?.scopes).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
     ]);
   });
 
