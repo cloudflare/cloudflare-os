@@ -102,6 +102,15 @@ function contextRecord(document: ContextDocument): ContextRecord & { body: Uint8
   };
 }
 
+function contextRecordSize(record: ContextRecord): number {
+  let bodyBytes = record.body instanceof Uint8Array
+    ? record.body.byteLength
+    : new TextEncoder().encode(record.body).byteLength;
+  return bodyBytes + new TextEncoder().encode(
+    JSON.stringify({ ...record, body: "" }),
+  ).byteLength;
+}
+
 // Old records that predate git-based collections won't have `content` set in storage.
 // Unset `content` is defaulted to { "source": "web" } at the API layer, which is why
 // we have different types for storage vs. API interface.
@@ -143,6 +152,13 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // Set when an artifact refresh operation is in flight. Additional refresh requests should
   // await this promise when set instead of kicking off additional concurrent refreshes.
   #artifactRefresh?: Promise<void>;
+
+  #assertRecordSize(record: ContextRecord): void {
+    let byteLength = contextRecordSize(record);
+    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
+      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
+    }
+  }
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -389,12 +405,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       path, name: baseName(path), description: doc.description, contentType, body: doc.body,
       lastUpdated: new Date(),
     });
-    let byteLength = record.body.byteLength + new TextEncoder().encode(
-      JSON.stringify({ ...record, body: "" }),
-    ).byteLength;
-    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
-      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
-    }
+    this.#assertRecordSize(record);
 
     this.storage.transaction(() => {
       let existing = this.storage.documents.get(path);
@@ -590,6 +601,24 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
     if (!moves.some(move => move.record.path === manifestPath)) {
       throw new Error(`Document not found: ${manifestPath}`);
+    }
+
+    for (let move of moves) {
+      validateDocumentPath(move.newPath);
+    }
+
+    if (updatedBody !== undefined) {
+      let manifestMove = moves.find(move => move.record.path === manifestPath);
+      if (manifestMove) {
+        let updatedRecord: ContextRecord = {
+          ...manifestMove.record,
+          path: manifestMove.newPath,
+          name: baseName(manifestMove.newPath),
+          body: encodeStoredContextBody(manifestMove.record.contentType, updatedBody),
+          lastUpdated: new Date(),
+        };
+        this.#assertRecordSize(updatedRecord);
+      }
     }
 
     let movedFrom = new Set(moves.map(move => move.record.path));

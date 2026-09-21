@@ -140,7 +140,14 @@ const StyledRow = ({
     }
   }, []);
   useLayoutEffect(() => {
-    if (wasRenamingRef.current && !renaming) rowRef.current?.focus();
+    if (wasRenamingRef.current && !renaming) {
+      const active = document.activeElement;
+      // Only restore focus when the user completed the rename via Enter/Escape. If focus
+      // has already moved elsewhere (blur/Tab), leave it where the user put it.
+      if (!active || active === document.body || rowRef.current?.contains(active)) {
+        rowRef.current?.focus();
+      }
+    }
     wasRenamingRef.current = renaming;
   }, [renaming]);
   const contextMenu = renaming ? null : renderContextMenu?.(item);
