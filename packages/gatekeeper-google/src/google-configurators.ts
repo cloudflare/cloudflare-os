@@ -137,6 +137,10 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
     return calendarId;
   }
 
+  async canWriteCalendar(calendarId: string): Promise<boolean> {
+    return (await calendarApi(this)).canWriteCalendar(calendarId);
+  }
+
   async listCalendars(query: string): Promise<ConfiguratorOption[]> {
     let options = calendarConfiguratorCaches.get(this);
     if (!options) {
