@@ -1,0 +1,27 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_3b2fb672b69c26::t_af395c87e7daa8 342-347
+  s_3b2fb672b69c26::t_eea0bf7b4e3cf8 1022-1024
+  s_3b2fb672b69c26::t_9334bd023e4106 361-364
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_3b2fb672b69c26::t_4094fd5588dc58 1290-1291,1298-1316
+  s_3b2fb672b69c26::t_2c77448dd42be1 286,298-299,301-308,320
+  s_3b2fb672b69c26::t_b2442a8dc68d93 1260-1261
+  s_3b2fb672b69c26::t_d319917be6e66d 322-323
+  s_3b2fb672b69c26::t_adfc0e9887bf28 1317-1318
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "41c960d8c5e10890cd8ed53c25fedddcdff7ec3f",
+  "prompts": {},
+  "sessions": {
+    "s_3b2fb672b69c26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57a64fbc-8241-4cf2-93fc-9b7ceae8cf53",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
