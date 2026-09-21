@@ -185,7 +185,8 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
 
   // Share modal state
   const [shareTarget, setShareTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
-  const [shareOverseer, setShareOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
+  const [shareOverseer, setShareOverseer] =
+    useState<{ stub: RpcStub<Overseer>, subscription: RpcStub<{}> } | null>(null)
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
 
   useEffect(() => {
@@ -217,6 +218,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
   // Clean up share overseer when modal closes
   useEffect(() => {
     if (!shareTarget && shareOverseer) {
+      shareOverseer.subscription[Symbol.dispose]()
       shareOverseer.stub[Symbol.dispose]()
       setShareOverseer(null)
     }
@@ -226,7 +228,10 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
   const shareOverseerRef = useRef(shareOverseer)
   shareOverseerRef.current = shareOverseer
   useEffect(() => {
-    return () => { shareOverseerRef.current?.stub[Symbol.dispose]() }
+    return () => {
+      shareOverseerRef.current?.subscription[Symbol.dispose]()
+      shareOverseerRef.current?.stub[Symbol.dispose]()
+    }
   }, [])
 
   const handleDelete = (gadget: GadgetMetadataWithTimestamps) => {
@@ -263,9 +268,19 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
     let overseer: RpcStub<Overseer> | null = null
     try {
       overseer = authenticatedApi.openGadget(gadget.id)
-      const metadata = await overseer.getMetadata()
-      setShareOverseer({ stub: overseer })
-      setShareTarget({ ...gadget, ...metadata })
+      // Live, not a snapshot: the modal hides the controls the server refuses once
+      // ownerInvitesOnly is set, which can happen while it is open.
+      let opened = false
+      const subscription = await overseer.subscribeToMetadata((metadata) => {
+        if (!opened) {
+          opened = true
+          setShareTarget({ ...gadget, ...metadata })
+          return
+        }
+        // A functional update so a late delivery after close (prev === null) stays closed.
+        setShareTarget(prev => prev?.id === gadget.id ? { ...prev, ...metadata } : prev)
+      })
+      setShareOverseer({ stub: overseer, subscription })
       overseer = null
     } catch (err) {
       overseer?.[Symbol.dispose]()

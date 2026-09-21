@@ -81,7 +81,8 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   const [deleteTarget, setDeleteTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [shareTarget, setShareTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
-  const [shareOverseer, setShareOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
+  const [shareOverseer, setShareOverseer] =
+    useState<{ stub: RpcStub<Overseer>, subscription: RpcStub<{}> } | null>(null)
   const [currentUser, setCurrentUser] = useState<AiChatAuthorInfo | null>(null)
 
   useEffect(() => {
@@ -108,13 +109,17 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   // Dispose share overseer on close / unmount.
   useEffect(() => {
     if (!shareTarget && shareOverseer) {
+      shareOverseer.subscription[Symbol.dispose]()
       shareOverseer.stub[Symbol.dispose]()
       setShareOverseer(null)
     }
   }, [shareTarget, shareOverseer])
   const shareOverseerRef = useRef(shareOverseer)
   shareOverseerRef.current = shareOverseer
-  useEffect(() => () => { shareOverseerRef.current?.stub[Symbol.dispose]() }, [])
+  useEffect(() => () => {
+    shareOverseerRef.current?.subscription[Symbol.dispose]()
+    shareOverseerRef.current?.stub[Symbol.dispose]()
+  }, [])
 
   const needle = search.trim().toLowerCase()
   const matchText = useCallback(
@@ -172,9 +177,19 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     let overseer: RpcStub<Overseer> | null = null
     try {
       overseer = authenticatedApi.openGadget(g.id)
-      const metadata = await overseer.getMetadata()
-      setShareOverseer({ stub: overseer })
-      setShareTarget({ ...g, ...metadata })
+      // Live, not a snapshot: the modal hides the controls the server refuses once
+      // ownerInvitesOnly is set, which can happen while it is open.
+      let opened = false
+      const subscription = await overseer.subscribeToMetadata((metadata) => {
+        if (!opened) {
+          opened = true
+          setShareTarget({ ...g, ...metadata })
+          return
+        }
+        // A functional update so a late delivery after close (prev === null) stays closed.
+        setShareTarget(prev => prev?.id === g.id ? { ...prev, ...metadata } : prev)
+      })
+      setShareOverseer({ stub: overseer, subscription })
       overseer = null
     } catch (err) {
       overseer?.[Symbol.dispose]()
