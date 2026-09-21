@@ -714,4 +714,21 @@ describe("withheld observations", () => {
     refused.discard!();
     await expect(tracker.addObserver("late", allow())).rejects.toThrow(/can no longer be observed/);
   });
+
+  // Nothing left to protect: the latch is permanent and is checked before markers are scanned, so
+  // a further marker only strands a key when a read dies before settling it.
+  it("stages nothing once the latch is permanent", async () => {
+    let tracker = makeTracker();
+    tracker.prepareWithheld().commit();
+    await tracker.addObserver("settled", allow()).catch(() => {});
+
+    let check = tracker.prepareWithheld();
+    expect(withholdKeys()).toEqual([]);
+
+    check.commit();
+    expect(withholdKeys()).toEqual([]);
+    expect(tracker.prepareWithheld().discard).toBeUndefined();
+    expect(withholdKeys()).toEqual([]);
+    await expect(tracker.addObserver("late", allow())).rejects.toThrow(/can no longer be observed/);
+  });
 });

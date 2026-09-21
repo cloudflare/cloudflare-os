@@ -258,15 +258,20 @@ export class ObserverTracker<T, V> {
    * later candidate against — the backward check would pass vacuously over data the candidate was
    * never entitled to. The durable marker goes down before the caller asks for approval, so an
    * activation that dies mid-read leaves admission closed rather than open; `commit` latches and
-   * then clears it, and `discard` clears it when the read was refused.
+   * then clears it, and `discard` clears it when the read was refused. Once the latch is permanent
+   * there is nothing left to protect, so no marker goes down at all.
    */
   prepareWithheld(): ObserverCheck<T> {
     // Enumerated before the marker goes down: a throw here must strand nothing.
     let excludeObservers = [...this.observers()].map(([id]) => id);
+    let exclusions = excludeObservers.length > 0 ? { excludeObservers } : {};
+    if (this.#kv.get<boolean>(OBSERVER_WITHHELD_KEY)) {
+      return { ...exclusions, pendingSets: [], commit() {} };
+    }
     let markerKey = `${OBSERVER_WITHHOLD_PREFIX}${crypto.randomUUID()}`;
     this.#kv.put(markerKey, true);
     return {
-      ...(excludeObservers.length > 0 ? { excludeObservers } : {}),
+      ...exclusions,
       pendingSets: [],
       // Latch before the marker goes, so no state has neither fence standing.
       commit: () => {
