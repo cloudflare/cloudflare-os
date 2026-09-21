@@ -338,6 +338,8 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       await this.approvalQueue.submitAction(id, {
         title: `Set the test value to ${value}`,
         description: `Set the deterministic integration-test value to **${value}**.`,
+        // The number is the whole content of the write.
+        descriptionIsComplete: true,
         implementsRevert: false,
         awaitDecision: true,
         actionKind: { tag: "set-value", label: "Set value" },
