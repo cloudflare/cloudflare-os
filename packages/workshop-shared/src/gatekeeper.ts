@@ -1273,9 +1273,22 @@ export type ActionDescription = {
   /**
    * A complete description of the action to be taken, in Markdown-formatted natural language.
    * This will be displayed to the approver. It must include all details that might be relevant to
-   * consider before approving.
+   * consider before approving; see `descriptionIsComplete` for the standard this is held to.
    */
   description: string;
+
+  /**
+   * The gatekeeper's assertion that `description` reproduces, verbatim, every piece of content
+   * originating in this workspace that applying the action will write or send: bodies, field
+   * values, identifiers, serialized arguments. Bytes the gatekeeper re-sends unchanged from the
+   * same provider may instead be named by size and digest. A provisional ID standing for something
+   * this workspace creates counts as shown when the description says the gatekeeper sends the
+   * provider's ID in its place. Absent means incomplete: a summary, a
+   * truncated field, or opaque bytes the approver cannot read as text. A push (`pushedCommits`)
+   * is never complete. Approval surfaces tell the approver when this is absent; an incomplete
+   * description is never refused for that reason.
+   */
+  descriptionIsComplete?: boolean;
 
   /**
    * If present, applying this action will push the named commits to the remote resource this
