@@ -1085,6 +1085,9 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
     }
     const create = this.#store.createActionFor(this.#contentId)?.action;
     const spaceKey = await this.#spaceKey(create);
+    // The description names the parent's space, read from the parent itself.
+    await authorizeConfluenceObservation(this.#approvalQueue, this.#observe, this.#sets(),
+      observation("Read Confluence parent page", "Read the space of the page a child page is created under."));
     const provisionalId = this.#store.nextProvisionalId();
     await this.#stage({
       type: "createContent", provisionalId, kind: "page",
