@@ -14,7 +14,8 @@ import {
   GmailNormalizedRecipients, GmailOutboundAttachment, GmailOutboundMessage, GmailOutboundSpec, GmailParsedDraft,
   GmailParsedDraftSnapshot, MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
   extractRfc822Attachments, gmailMessageIdQueryValue, newGmailMessageId, normalizeAggregateRecipients,
-  normalizeEmailRecipients, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
+  normalizeContentId, normalizeEmailRecipients, normalizeMessageIdHeader, normalizeReferencesHeader,
+  normalizeTextBody, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
   summarizeGmailThread,
 } from "./google-api";
 import type {
@@ -43,6 +44,9 @@ import {
   gmailDraftStateFingerprint, newGmailLogicalId, overlayGmailDraft, overlayGmailLabels,
   PendingOverlayAction,
 } from "./gmail-state";
+import {
+  ActionDescriptionBuilder, buildDescription, RenderedDescription, sanitizeTitle,
+} from "@gadgets/gatekeeper-kit/action-description";
 import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
 import {CursorPager, Pager} from "./cursor";
 import TYPES_CODE from "./types.txt";
@@ -58,7 +62,6 @@ const GMAIL_FORWARD_SNAPSHOT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 const MAX_GMAIL_DRAFT_MIME_BYTES = MAX_GMAIL_FORWARD_SOURCE_BYTES;
 const GMAIL_LOGICAL_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 const GMAIL_PROVIDER_ID_RE = /^[a-f0-9]{1,256}$/i;
-const MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES = 128 * 1024;
 
 export type GmailGatekeeperImplProps = {
   userObjectId: string;
@@ -980,41 +983,117 @@ function labelPending(store: GmailStore): PendingOverlayAction<GmailLabelOverlay
     PendingOverlayAction<GmailLabelOverlayAction>[];
 }
 
-function formatApprovalField(label: string, value: string): string {
-  // Reject an individually oversized field before newline expansion can allocate millions of
-  // intermediate strings. The complete rendered description is checked again at submission.
-  validateApprovalDescription(value);
-  const block = value.split(/\r\n|\r|\n/).map(line => `    ${line}`).join("\n");
-  return `**${label}:**\n\n${block}`;
-}
+// Every header and body the approver reads, as the fields `buildEncodedEmail` writes them from.
+type DescribedMessage = {
+  from: string;
+  replyTo: string[];
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  messageId?: string;
+  date?: string;
+  inReplyTo?: string;
+  references?: string;
+  threadId?: string;
+  text: string;
+  html?: string;
+};
 
-function validateApprovalDescription(value: string): string {
-  if (value.length > MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES ||
-      new TextEncoder().encode(value).byteLength > MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES) {
-    throw new Error(
-      `This Gmail action exceeds the ${MAX_GMAIL_APPROVAL_DESCRIPTION_BYTES}-byte approval ` +
-      "description limit and cannot be submitted safely.");
+// The value `buildEncodedEmail` writes for `value`, or `value` itself when the builder refuses it;
+// such an action fails when applied, before anything is sent.
+function asSent(value: string, normalize: (value: string) => string): string {
+  try {
+    return normalize(value);
+  } catch {
+    return value;
   }
-  return value;
 }
 
-function sanitizeApprovalTitle(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").slice(0, 200);
+function referencesAsSent(references: string): string[] {
+  try {
+    return normalizeReferencesHeader(references);
+  } catch {
+    return [references];
+  }
 }
 
-function describeOutboundMessage(intro: string, message: GmailOutboundMessage): string {
-  const fields = [
-    formatApprovalField("From", message.from),
-    ...(message.to.length ? [formatApprovalField("To", message.to.join(", "))] : []),
-    ...(message.cc.length ? [formatApprovalField("Cc", message.cc.join(", "))] : []),
-    ...(message.bcc.length ? [formatApprovalField("Bcc", message.bcc.join(", "))] : []),
-    formatApprovalField("Subject", message.subject),
-    formatApprovalField("Plain text", message.body),
-    ...(message.html !== undefined ? [formatApprovalField("HTML", message.html)] : []),
-    ...message.attachments.map(attachment => formatApprovalField(
-      "Attachment", `${attachment.filename} (${attachment.contentType})\n${attachment.description}`)),
-  ];
-  return `${intro}\n\n${fields.join("\n\n")}`;
+// Every header the message is written with, its thread placement, and both bodies, exactly as
+// they will be sent. The identifiers are shown too: a reply's In-Reply-To and References name the
+// message it answers, and every recipient receives them.
+function describeMessage(intro: string, message: DescribedMessage): ActionDescriptionBuilder {
+  const builder = buildDescription(intro).inline("From", message.from);
+  if (message.replyTo.length) builder.list("Reply-To", message.replyTo);
+  if (message.to.length) builder.list("To", message.to);
+  if (message.cc.length) builder.list("Cc", message.cc);
+  if (message.bcc.length) builder.list("Bcc", message.bcc);
+  builder.inline("Subject", message.subject);
+  if (message.messageId !== undefined) {
+    builder.inline("Message-ID", asSent(message.messageId, normalizeMessageIdHeader));
+  } else {
+    builder.prose("A new Message-ID is generated when this action is applied.");
+  }
+  if (message.date !== undefined) {
+    builder.inline("Date", message.date);
+  } else {
+    builder.prose("The Date header is set to the time this action is applied.");
+  }
+  if (message.inReplyTo) {
+    builder.inline("In-Reply-To", asSent(message.inReplyTo, normalizeMessageIdHeader));
+  }
+  if (message.references) builder.list("References", referencesAsSent(message.references));
+  if (message.threadId !== undefined) builder.inline("Thread ID", message.threadId);
+  builder.verbatim("Plain text", asSent(message.text, normalizeTextBody));
+  if (message.html !== undefined) {
+    builder.verbatim("HTML", asSent(message.html, normalizeTextBody), "html");
+  }
+  return builder;
+}
+
+// One attachment's MIME part headers, named by size and digest: the bytes are copied from a
+// message this mailbox already holds. The MIME builder writes an inline disposition only for
+// `inline`, and `attachment` otherwise.
+function attachmentLines(
+    filename: string | null, contentType: string, size: number, digest: string | undefined,
+    disposition: string | null | undefined, contentId: string | undefined): string {
+  return `${filename || "(unnamed)"} (${contentType})\n` +
+    `${size} bytes${digest ? `, SHA-256 ${digest}` : ""}\n` +
+    `Disposition: ${disposition === "inline" ? "inline" : "attachment"}` +
+    (contentId ? `\nContent-ID: ${asSent(contentId, normalizeContentId)}` : "");
+}
+
+async function describeOutboundAttachments(
+    builder: ActionDescriptionBuilder, attachments: GmailOutboundAttachment[]): Promise<void> {
+  for (const [index, attachment] of attachments.entries()) {
+    const encoded = attachment.data.replace(/\s/g, "");
+    builder.verbatim(`Attachment ${index + 1}`,
+      `${attachmentLines(attachment.filename, attachment.contentType, atob(encoded).length,
+        await attachmentDigest(attachment), attachment.disposition, attachment.contentId)}\n` +
+      attachment.description);
+  }
+}
+
+// Every field the message carries, exactly as it will be sent. `threadId` is the Gmail thread the
+// send is placed in, when it has one.
+async function describeOutboundMessage(
+    intro: string, message: GmailOutboundMessage,
+    threadId?: string): Promise<ActionDescriptionBuilder> {
+  const builder = describeMessage(intro, {
+    from: message.from,
+    replyTo: message.replyTo,
+    to: message.to,
+    cc: message.cc,
+    bcc: message.bcc,
+    subject: message.subject,
+    messageId: message.messageId,
+    ...(message.inReplyTo ? {inReplyTo: message.inReplyTo} : {}),
+    ...(message.references ? {references: message.references} : {}),
+    ...(threadId !== undefined ? {threadId} : {}),
+    text: message.body,
+    ...(message.html !== undefined ? {html: message.html} : {}),
+  });
+  await describeOutboundAttachments(builder, message.attachments);
+  return builder;
 }
 
 function outboundSpec(message: GmailOutboundMessage, attachments = message.attachments): GmailOutboundSpec {
@@ -1466,7 +1545,7 @@ class RpcCursor<Entry> extends GmailRpcTarget implements Cursor<Entry> {
 
 async function submitAction(
     ctx: GmailContext, action: GmailAction,
-    description: {title: string; description: string; awaitDecision?: boolean},
+    description: {title: string; awaitDecision?: boolean} & RenderedDescription,
     onFailure?: () => void): Promise<number> {
   if (ctx.store.listActions().length >= 100) {
     throw new Error("Too many pending Gmail actions. Resolve existing actions before adding more.");
@@ -1475,7 +1554,6 @@ async function submitAction(
   try {
     await ctx.approvalQueue.submitAction(id, {
       ...description,
-      description: validateApprovalDescription(description.description),
       implementsRevert: false,
       ...gmailAutoApprovalMetadata(action),
     });
@@ -2123,7 +2201,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
     if (metadata.id !== providerId) throw new Error("Gmail message identity changed unexpectedly.");
     const info = parseGmailMessageMetadata(metadata);
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Open Gmail message: ${info.subject || "(no subject)"}`),
+      title: sanitizeTitle(`Open Gmail message: ${info.subject || "(no subject)"}`),
       description: "Open a known Gmail message by its stable ID within this binding.",
     });
     const scope = this.#ctx.restricted ? gmailRestrictedScope([providerId]) : GMAIL_MAILBOX_SCOPE;
@@ -2135,7 +2213,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
     if (!this.#ctx.restricted) {
       const info = await threadInfo(this.#ctx, await this.#ctx.api.getThreadInfo(id));
       await this.#ctx.approvalQueue.authorizeObservation({
-        title: sanitizeApprovalTitle(`Open Gmail thread: ${info.subject || "(no subject)"}`),
+        title: sanitizeTitle(`Open Gmail thread: ${info.subject || "(no subject)"}`),
         description: "Open a known Gmail thread by its stable ID within this binding.",
       });
       return new GmailThreadStub(this.#ctx, id, GMAIL_MAILBOX_SCOPE, info);
@@ -2174,8 +2252,8 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       mode: "new",
       spec: outboundSpec(message),
     }, {
-      title: sanitizeApprovalTitle(`Send email: ${message.subject}`),
-      description: describeOutboundMessage("Send a new email.", message),
+      title: sanitizeTitle(`Send email: ${message.subject}`),
+      ...(await describeOutboundMessage("Send a new email.", message)).finish(),
       awaitDecision: true,
     });
     return message.messageId;
@@ -2197,7 +2275,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
     }
     const {state} = await loadSimulatedDraft(this.#ctx, resource.logicalId);
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Open Gmail draft: ${state.subject || "(no subject)"}`),
+      title: sanitizeTitle(`Open Gmail draft: ${state.subject || "(no subject)"}`),
       description: "Reopen a known draft capability with pending changes overlaid.",
     });
     return new GmailDraftStub(this.#ctx, state.logicalId);
@@ -2225,6 +2303,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       version: 0,
     };
     validateDraftState(state);
+    const described = (await describeDraftAction("Create a draft.", state)).finish();
     const resource: GmailDraftResource = {
       logicalId, createdAt: now, status: "active", version: 0,
     };
@@ -2233,8 +2312,8 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       type: "draftCreate", draft: state,
     };
     await submitAction(this.#ctx, action, {
-      title: sanitizeApprovalTitle(`Create Gmail draft: ${state.subject || "(no subject)"}`),
-      description: describeDraftAction("Create a draft.", state),
+      title: sanitizeTitle(`Create Gmail draft: ${state.subject || "(no subject)"}`),
+      ...described,
     }, () => this.#ctx.store.deleteDraft(logicalId));
     return new GmailDraftStub(this.#ctx, logicalId);
   }
@@ -2270,8 +2349,8 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
     const resource: GmailLabelResource = {logicalId, name, status: "active"};
     this.#ctx.store.putLabel(resource);
     await submitAction(this.#ctx, {type: "labelCreate", label: resource}, {
-      title: sanitizeApprovalTitle(`Create Gmail label: ${name}`),
-      description: formatApprovalField("New label", name),
+      title: sanitizeTitle(`Create Gmail label: ${name}`),
+      ...buildDescription("Create a Gmail label.").inline("New label", name).finish(),
     }, () => this.#ctx.store.deleteLabel(logicalId));
     return {id: logicalId, name, type: "custom"};
   }
@@ -2294,9 +2373,9 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       type: "labelRename", labelId: resource.logicalId, name,
       expectedName: canonical.name, dependsOn: dependencies,
     }, {
-      title: sanitizeApprovalTitle(`Rename Gmail label: ${canonical.name}`),
-      description: `${formatApprovalField("Current name", canonical.name)}\n\n` +
-        formatApprovalField("New name", name),
+      title: sanitizeTitle(`Rename Gmail label: ${canonical.name}`),
+      ...buildDescription("Rename a Gmail label.")
+        .inline("Current name", canonical.name).inline("New name", name).finish(),
     });
     return {id: resource.logicalId, name, type: "custom"};
   }
@@ -2319,8 +2398,8 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
       labelId: resource.logicalId,
       dependsOn: dependenciesFor(this.#ctx.store, resource.logicalId, "label"),
     }, {
-      title: sanitizeApprovalTitle(`Delete Gmail label: ${canonical.name}`),
-      description: formatApprovalField("Label", canonical.name),
+      title: sanitizeTitle(`Delete Gmail label: ${canonical.name}`),
+      ...buildDescription("Delete a Gmail label.").inline("Label", canonical.name).finish(),
     });
   }
 }
@@ -2434,8 +2513,8 @@ function mutationAliasMethod(
 
 async function submitMutation(
     ctx: GmailContext, operation: GmailMutationOperation,
-    target: ReturnType<typeof gmailMutationTarget>, title: string, description: string,
-    label?: CanonicalMutableLabel): Promise<void> {
+    target: ReturnType<typeof gmailMutationTarget>, title: string,
+    description: ActionDescriptionBuilder, label?: CanonicalMutableLabel): Promise<void> {
   const alias = mutationAliasMethod(operation, label);
   if (alias && label) {
     throw new Error(`Use ${alias}() instead of ${operation}() with the ${label.id} system label.`);
@@ -2447,16 +2526,8 @@ async function submitMutation(
     target,
     ...(resolved ? {labelId: resolved.id, dependsOn: resolved.dependencies} : {}),
   }, {
-    title: sanitizeApprovalTitle(title),
-    description: description + "\n\n" + formatApprovalField(
-      "Mutation scope",
-      target.kind === "thread"
-        ? "the complete thread admitted by a whole-mailbox binding"
-        : `${target.messageIds.length} explicitly admitted individual message(s)`) +
-      "\n\n" + formatApprovalField(
-        target.kind === "thread" ? "Thread ID" : "Message IDs",
-        target.kind === "thread" ? target.threadId : target.messageIds.join("\n")) +
-      (resolved ? `\n\n${formatApprovalField("Label ID", resolved.id)}` : ""),
+    title: sanitizeTitle(title),
+    ...describeMutationTarget(description, target, resolved?.id).finish(),
     // Message label mutations are not overlaid into provider message reads.
     awaitDecision: true,
   });
@@ -2509,7 +2580,7 @@ class GmailThreadStub extends GmailRpcTarget implements GmailThread {
   async getMetadata(): Promise<GmailThreadInfo> {
     const info = await this.#loadInfo();
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Gmail thread: ${info.subject}`),
+      title: sanitizeTitle(`Gmail thread: ${info.subject}`),
       description: "Read metadata for the messages admitted by this thread capability.",
     });
     admitReturnedLabels(this.#ctx, info.labels);
@@ -2593,12 +2664,26 @@ function mutationTitle(operation: GmailMutationOperation): string {
 }
 
 function mutationDescription(
-    operation: GmailMutationOperation, label?: CanonicalMutableLabel): string {
+    operation: GmailMutationOperation, label?: CanonicalMutableLabel): ActionDescriptionBuilder {
   if (operation === "applyLabel" || operation === "removeLabel") {
-    return `${operation === "applyLabel" ? "Apply" : "Remove"} the resolved Gmail label.\n\n` +
-      formatApprovalField("Label", label?.name ?? "(unknown)");
+    return buildDescription(
+      `${operation === "applyLabel" ? "Apply" : "Remove"} the resolved Gmail label.`)
+      .inline("Label", label?.name ?? "(unknown)");
   }
-  return `${mutationTitle(operation)} only the messages admitted by this capability.`;
+  return buildDescription(
+    `${mutationTitle(operation)} only the messages admitted by this capability.`);
+}
+
+function describeMutationTarget(
+    builder: ActionDescriptionBuilder, target: ReturnType<typeof gmailMutationTarget>,
+    labelId?: string): ActionDescriptionBuilder {
+  builder.inline("Mutation scope", target.kind === "thread"
+    ? "the complete thread admitted by a whole-mailbox binding"
+    : `${target.messageIds.length} explicitly admitted individual message(s)`);
+  if (target.kind === "thread") builder.inline("Thread ID", target.threadId);
+  else builder.list("Message IDs", target.messageIds);
+  if (labelId !== undefined) builder.inline("Label ID", labelId);
+  return builder;
 }
 
 @validateRpc()
@@ -2654,7 +2739,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
   async getMetadata(): Promise<GmailMessageInfo> {
     const info = await messageInfo(this.#ctx, await this.#info());
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Gmail message: ${info.subject}`),
+      title: sanitizeTitle(`Gmail message: ${info.subject}`),
       description: "Read sender, recipients, timestamp, subject, and labels for this message.",
     });
     admitReturnedLabels(this.#ctx, info.labels);
@@ -2707,7 +2792,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
     }
     this.#cachedInfo = rawInfo;
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Read Gmail message: ${rawInfo.subject}`),
+      title: sanitizeTitle(`Read Gmail message: ${rawInfo.subject}`),
       description: "Read the plain-text and HTML representations of this message.",
     });
     return content;
@@ -2745,11 +2830,13 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
       threadId: this.#threadId,
       sourceMessageId: this.#messageId,
     }, {
-      title: sanitizeApprovalTitle(`${replyAll ? "Reply all" : "Reply"}: ${message.subject}`),
-      description: describeOutboundMessage(
-        replyAll ? "Send a reply to all calculated recipients." : "Send a reply.", message) +
-        `\n\n${formatApprovalField("Source message", this.#messageId)}` +
-        `\n\n${formatApprovalField("Threading mode", "reply in source thread")}`,
+      title: sanitizeTitle(`${replyAll ? "Reply all" : "Reply"}: ${message.subject}`),
+      ...(await describeOutboundMessage(
+        replyAll ? "Send a reply to all calculated recipients." : "Send a reply.", message,
+        this.#threadId))
+        .inline("Source message", this.#messageId)
+        .inline("Threading mode", "reply in source thread")
+        .finish(),
       awaitDecision: true,
     });
     return message.messageId;
@@ -2782,11 +2869,12 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
         sourceAttachment: snapshot,
         forwardFormat: "inline",
       }, {
-        title: sanitizeApprovalTitle(`Forward: ${message.subject}`),
-        description: describeOutboundMessage(
-          "Forward this message inline with its original body and attachments.", message) +
-          `\n\n${formatApprovalField("Source message", this.#messageId)}` +
-          `\n\n${formatApprovalField("Threading mode", "new forward message")}`,
+        title: sanitizeTitle(`Forward: ${message.subject}`),
+        ...(await describeOutboundMessage(
+          "Forward this message inline with its original body and attachments.", message))
+          .inline("Source message", this.#messageId)
+          .inline("Threading mode", "new forward message")
+          .finish(),
         awaitDecision: true,
       }, () => this.#ctx.store.deleteForwardSnapshot(snapshot));
       return message.messageId;
@@ -2908,45 +2996,50 @@ class GmailAttachmentStub extends GmailRpcTarget implements GmailAttachment {
   }
 }
 
-function describeDraftAction(
-    intro: string, state: GmailDraftState, message?: GmailOutboundMessage): string {
-  const from = message?.from ?? state.from;
-  const replyTo = message?.replyTo ?? state.replyTo;
-  const to = message?.to ?? state.to;
-  const cc = message?.cc ?? state.cc;
-  const bcc = message?.bcc ?? state.bcc;
-  const subject = message?.subject ?? state.subject;
-  const text = message?.body ?? state.text;
-  const html = message?.html ?? state.html;
-  const attachments = message
-    ? message.attachments.map(attachment => formatApprovalField(
-      "Attachment", `${attachment.filename || "(unnamed)"} (${attachment.contentType})\n` +
-      attachment.description))
-    : state.attachments.map(attachment => formatApprovalField(
-      "Attachment",
-      `${attachment.info.filename ?? "(unnamed)"} (${attachment.info.mimeType}, ` +
-      `${attachment.info.size} bytes)`));
-  const fields = [
-    formatApprovalField("From", from),
-    ...(replyTo.length ? [formatApprovalField("Reply-To", replyTo.join(", "))] : []),
-    ...(to.length ? [formatApprovalField("To", to.join(", "))] : []),
-    ...(cc.length ? [formatApprovalField("Cc", cc.join(", "))] : []),
-    ...(bcc.length ? [formatApprovalField("Bcc", bcc.join(", "))] : []),
-    formatApprovalField("Subject", subject),
-    formatApprovalField("Plain text", text),
-    ...(html !== undefined ? [formatApprovalField("HTML", html)] : []),
-    ...attachments,
-    ...(state.source ? [formatApprovalField(
-      "Source", `${state.source.kind} from message ${state.source.messageId}`)] : []),
-    ...(state.inReplyTo ? [formatApprovalField("Threading mode", "reply in source thread")] : []),
-  ];
-  return `${intro}\n\n${fields.join("\n\n")}`;
+// Every field the draft will hold, exactly as it will be written. Attachments are bytes the
+// mailbox already holds (a forwarded source, or parts of an existing draft), so they are named by
+// size and digest rather than shown. `message` is the inline forward rebuilt from its source
+// snapshot, whose headers and bodies apply writes in place of the state's own.
+async function describeDraftAction(
+    intro: string, state: GmailDraftState,
+    message?: GmailOutboundMessage): Promise<ActionDescriptionBuilder> {
+  const threading = message ?? state;
+  const builder = describeMessage(intro, {
+    from: message?.from ?? state.from,
+    replyTo: message?.replyTo ?? state.replyTo,
+    to: message?.to ?? state.to,
+    cc: message?.cc ?? state.cc,
+    bcc: message?.bcc ?? state.bcc,
+    subject: message?.subject ?? state.subject,
+    ...(state.rfcMessageId !== undefined ? {messageId: state.rfcMessageId} : {}),
+    ...(state.date !== undefined ? {date: state.date} : {}),
+    ...(threading.inReplyTo ? {inReplyTo: threading.inReplyTo} : {}),
+    ...(threading.references ? {references: threading.references} : {}),
+    ...(state.threadId !== undefined ? {threadId: state.threadId} : {}),
+    text: message?.body ?? state.text,
+    ...((message?.html ?? state.html) !== undefined ? {html: message?.html ?? state.html} : {}),
+  });
+  if (message) {
+    await describeOutboundAttachments(builder, message.attachments);
+  } else {
+    for (const [index, attachment] of state.attachments.entries()) {
+      builder.verbatim(`Attachment ${index + 1}`, attachmentLines(
+        attachment.info.filename, attachment.info.mimeType, attachment.info.size,
+        attachment.contentDigest, attachment.info.disposition, attachment.info.contentId));
+    }
+  }
+  if (state.source) {
+    builder.inline("Source", `${state.source.kind} from message ${state.source.messageId}`);
+  }
+  if (state.inReplyTo) builder.inline("Threading mode", "reply in source thread");
+  return builder;
 }
 
-function describeDraftDeletion(state: GmailDraftState): string {
-  return "Delete this draft without sending it.\n\n" +
-    formatApprovalField("Draft ID", state.logicalId) + "\n\n" +
-    formatApprovalField("Subject", state.subject.replace(/[\r\n]+/g, " "));
+function describeDraftDeletion(state: GmailDraftState): RenderedDescription {
+  return buildDescription("Delete this draft without sending it.")
+    .inline("Draft ID", state.logicalId)
+    .inline("Subject", state.subject)
+    .finish();
 }
 
 async function createDraftFromMessage(
@@ -2996,6 +3089,11 @@ async function createDraftFromMessage(
       version: 0,
     };
     validateDraftState(state);
+    const described = (await describeDraftAction(
+      source.kind === "reply"
+        ? "Create a threaded reply draft."
+        : "Create an inline forward draft.",
+      state, message)).finish();
     const resource: GmailDraftResource = {
       logicalId, source, createdAt: now, status: "active", version: 0,
       ...(source.format === "inline" && sourceSnapshot ? {
@@ -3011,12 +3109,8 @@ async function createDraftFromMessage(
       draft: state,
       ...(sourceSnapshot ? {sourceAttachment: sourceSnapshot} : {}),
     }, {
-      title: sanitizeApprovalTitle(`Create Gmail draft: ${state.subject || "(no subject)"}`),
-      description: describeDraftAction(
-        source.kind === "reply"
-          ? "Create a threaded reply draft."
-          : "Create an inline forward draft.",
-        state, message),
+      title: sanitizeTitle(`Create Gmail draft: ${state.subject || "(no subject)"}`),
+      ...described,
     }, () => {
       ctx.store.deleteDraft(logicalId);
       ctx.store.deleteForwardSnapshot(sourceSnapshot);
@@ -3154,7 +3248,7 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
     const {state} = await loadSimulatedDraft(this.#ctx, this.#logicalId);
     const info = draftInfo(state);
     await this.#ctx.approvalQueue.authorizeObservation({
-      title: sanitizeApprovalTitle(`Read Gmail draft: ${state.subject || "(no subject)"}`),
+      title: sanitizeTitle(`Read Gmail draft: ${state.subject || "(no subject)"}`),
       description: "Read the draft's simulated identifiers, recipients, subject, and timestamp.",
     });
     return info;
@@ -3295,6 +3389,10 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
     const descriptionMessage = sourceSnapshot
       ? await inlineForwardMessage(this.#ctx.api, this.#ctx.store, after, sourceSnapshot)
       : undefined;
+    const described = (await describeDraftAction(
+      "Replace this draft with the message below.", after, descriptionMessage))
+      .inline("Draft ID", logicalId)
+      .finish();
     const previousVersion = resource.version;
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail draft before update",
@@ -3320,9 +3418,8 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
       ...(sourceSnapshot ? {sourceAttachment: sourceSnapshot} : {}),
       dependsOn: dependencies,
     }, {
-      title: sanitizeApprovalTitle(`Update Gmail draft: ${after.subject || "(no subject)"}`),
-      description: describeDraftAction(
-        "Replace the selected draft fields.", after, descriptionMessage),
+      title: sanitizeTitle(`Update Gmail draft: ${after.subject || "(no subject)"}`),
+      ...described,
     }, () => this.#ctx.store.restoreDraftVersion(
       logicalId, after.version, previousVersion, dependencies));
   }
@@ -3360,8 +3457,8 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
       ...(sourceSnapshot ? {sourceAttachment: sourceSnapshot} : {}),
       dependsOn: dependencies,
     }, {
-      title: sanitizeApprovalTitle(`Delete Gmail draft: ${state.subject || "(no subject)"}`),
-      description: describeDraftDeletion(state),
+      title: sanitizeTitle(`Delete Gmail draft: ${state.subject || "(no subject)"}`),
+      ...describeDraftDeletion(state),
     }, () => this.#ctx.store.restoreDraftVersion(
       logicalId, submittedVersion, version, dependencies));
   }
@@ -3391,6 +3488,10 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
     const approvedMessage = sourceSnapshot
       ? await inlineForwardMessage(this.#ctx.api, this.#ctx.store, approved, sourceSnapshot)
       : undefined;
+    const described = (await describeDraftAction(
+      "Send this exact draft snapshot.", approved, approvedMessage))
+      .inline("Draft ID", logicalId)
+      .finish();
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail draft before send",
       description: "Read the exact simulated draft snapshot that will be sent.",
@@ -3417,9 +3518,8 @@ class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
       ...(sourceSnapshot ? {sourceAttachment: sourceSnapshot} : {}),
       dependsOn: dependencies,
     }, {
-      title: sanitizeApprovalTitle(`Send Gmail draft: ${state.subject || "(no subject)"}`),
-      description: describeDraftAction(
-        "Send this exact draft snapshot.", approved, approvedMessage),
+      title: sanitizeTitle(`Send Gmail draft: ${state.subject || "(no subject)"}`),
+      ...described,
       awaitDecision: true,
     }, () => this.#ctx.store.restoreDraftVersion(
       logicalId, submittedVersion, version, dependencies));

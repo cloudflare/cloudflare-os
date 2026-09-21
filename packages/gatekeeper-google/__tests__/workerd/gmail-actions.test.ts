@@ -1076,17 +1076,78 @@ describe("Gmail forward action snapshots", () => {
     expect(description.description).not.toContain("truncated");
   });
 
-  it("fails closed when rendering would exceed the approval description limit", async () => {
-    const {gatekeeper} = actionHarness(url => {
+  it("submits an oversize forward without the completeness flag", async () => {
+    // An outbound body is capped well under the description budget, but an inline forward quotes
+    // the whole source message, which is not.
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "x".repeat(100 * 1024),
+      messageId: "<oversize-source@gadgets.invalid>",
+      attachments: [],
+    });
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return url.searchParams.has("q")
+          ? json({messages: []})
+          : json({messages: [{id: "source-message", threadId: "source-thread"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/source-message" && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: "source-message", threadId: "source-thread", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          id: "source-message", threadId: "source-thread", internalDate: "1",
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: [],
+          payload: {headers: [
+            {name: "From", value: "source@example.com"},
+            {name: "To", value: "me@example.com"},
+            {name: "Subject", value: "Source subject"},
+            {name: "Message-ID", value: "<oversize-source@gadgets.invalid>"},
+          ]},
+        });
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const messages = await (await session.listMessages()).next();
+
+    await messages![0].message.forward(["to@example.com"], "Intro");
+    // The approver sees the truncated rendering; the missing flag tells them it is partial.
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBeUndefined();
+    expect(description.description).toMatch(/_Truncated: showing \d+ of \d+ bytes\._/);
+  });
+
+  it("submits a draft with an undisplayable character as incomplete", async () => {
+    const {gatekeeper, values} = actionHarness(url => {
       throw new Error(`Unexpected request: ${url}`);
     });
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
 
-    await expect(session.send(
-      ["to@example.com"], "Subject", "x\n".repeat(32 * 1024),
-    )).rejects.toThrow(/exceeds.*approval description limit/i);
-    expect((await queue.read!()).submissions).toHaveLength(0);
+    // A bell character renders as nothing in the approval text, so the body cannot be shown.
+    await session.createDraft({to: ["to@example.com"], subject: "Subject", text: "a\u0007b"});
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBeUndefined();
+    expect(description.description).toContain("cannot be displayed");
+    // The staged action and its draft are kept for the approver to decide on.
+    const keys = await values.keys();
+    expect(keys.some(key => key.startsWith("pending:action:"))).toBe(true);
+    expect(keys.some(key => key.startsWith("gmail:draft:"))).toBe(true);
   });
 
   it("sends a new forward inline with ordinary source attachments", async () => {
@@ -1197,6 +1258,114 @@ describe("Gmail forward action snapshots", () => {
     expect(description.description).toContain("Source body");
     expect(description.description).toContain("Source <strong>HTML</strong>");
     expect(description.description).toContain("source.txt (text/plain)");
+  });
+
+  it("shows every identifier a reply and a reply draft are written with", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        const metadata = messageMetadata("abc123", "def456", "<parent@example.com>");
+        return json({...metadata, payload: {headers: [
+          ...metadata.payload.headers,
+          {name: "References", value: "<root@example.com> <middle@example.com>"},
+        ]}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage("abc123");
+
+    // Overridden recipients receive the source message's identifiers all the same.
+    const replyId = await message.reply("Reply body", {to: ["other@example.com"]});
+    await message.createReplyDraft("Draft reply body");
+
+    const [reply, draft] = (await queue.read!()).submissions.map(submission =>
+      submission.description as {description: string; descriptionIsComplete?: true});
+    const references =
+      "**References:**\n\n```\n<root@example.com>\n<middle@example.com>\n<parent@example.com>\n```";
+    expect(reply?.descriptionIsComplete).toBe(true);
+    expect(reply?.description).toContain(`**Message-ID:** \`${replyId}\``);
+    expect(reply?.description).toContain("**In-Reply-To:** `<parent@example.com>`");
+    expect(reply?.description).toContain(references);
+    expect(reply?.description).toContain("**Thread ID:** `def456`");
+    expect(draft?.descriptionIsComplete).toBe(true);
+    expect(draft?.description).toMatch(/\*\*Message-ID:\*\* `<[^<>\s]+@gadgets\.invalid>`/);
+    expect(draft?.description).toMatch(/\*\*Date:\*\* `[^`]+ GMT`/);
+    expect(draft?.description).toContain("**In-Reply-To:** `<parent@example.com>`");
+    expect(draft?.description).toContain(references);
+    expect(draft?.description).toContain("**Thread ID:** `def456`");
+  });
+
+  it("shows each forwarded attachment's disposition and Content-ID", async () => {
+    const sourceId = "abc123";
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "Source body",
+      html: "<p><img src=\"cid:logo@example.com\"></p>",
+      messageId: "<source-parts@gadgets.invalid>",
+      attachments: [{
+        filename: "logo.png",
+        contentType: "image/png",
+        data: btoa("png bytes"),
+        disposition: "inline",
+        contentId: "logo@example.com",
+        description: "logo",
+      }, {
+        filename: "notes.txt",
+        contentType: "text/plain",
+        data: btoa("notes"),
+        disposition: "attachment",
+        description: "notes",
+      }],
+    });
+    const queue = approvalQueue();
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: sourceId, threadId: "abc124", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          ...messageMetadata(sourceId, "abc124", "<source-parts@gadgets.invalid>"),
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(queue);
+    await (await session.getMessage(sourceId)).forward(["recipient@example.com"], "Intro");
+
+    const description = (await queue.read!()).submissions[0]?.description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(description.description).toMatch(new RegExp(
+      "logo\\.png \\(image/png\\)\\n9 bytes, SHA-256 [0-9a-f]{64}\\n" +
+      "Disposition: inline\\nContent-ID: <logo@example\\.com>\\n"));
+    expect(description.description).toMatch(
+      /notes\.txt \(text\/plain\)\n5 bytes, SHA-256 [0-9a-f]{64}\nDisposition: attachment\n/);
+    expect(description.description).not.toMatch(/notes\.txt[^`]*Content-ID/);
+  });
+
+  it("shows a body's line breaks as the CRLF it is sent with, and stays complete", async () => {
+    const {gatekeeper} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await session.send(["to@example.com"], "Subject", "line one\nline two", {
+      html: "<p>one</p>\n<p>two</p>",
+    });
+
+    const description = (await queue.read!()).submissions[0]?.description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(description.description).toContain("```\nline one\r\nline two\n```");
+    expect(description.description).toContain("```html\n<p>one</p>\r\n<p>two</p>\n```");
+    expect(description.description).toContain("_Line breaks are CRLF");
   });
 
   it("creates an inline forward draft from the captured source snapshot", async () => {

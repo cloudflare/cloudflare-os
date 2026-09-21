@@ -4,7 +4,8 @@ import {
   enumerateGmailAttachments, extractRfc822Attachments, gmailMessageIdQueryValue, GmailApi,
   GmailApiError,
   MAX_GMAIL_ATTACHMENT_BYTES,
-  normalizeAggregateRecipients, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
+  normalizeAggregateRecipients, normalizeContentId, normalizeMessageIdHeader,
+  normalizeReferencesHeader, normalizeTextBody, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
   parseMimeMessage, type GmailPayloadPart,
 } from "../src/google-api";
 import {containsBytes} from "./gmail-test-utils";
@@ -46,7 +47,50 @@ const api = () => new GmailApi("me@example.com", async () => "token");
 
 afterEach(() => vi.unstubAllGlobals());
 
+// The decoded body of the first base64 MIME part whose Content-Type starts with `contentType`.
+function mimePartText(encodedRaw: string, contentType: string): string {
+  const raw = new TextDecoder().decode(decodeBase64UrlToBytes(encodedRaw));
+  const header = raw.indexOf(`Content-Type: ${contentType}`);
+  expect(header).toBeGreaterThanOrEqual(0);
+  const start = raw.indexOf("\r\n\r\n", header) + 4;
+  const end = raw.indexOf("\r\n--", start);
+  const binary = atob(raw.slice(start, end).replace(/\s/g, ""));
+  return new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+}
+
 describe("Gmail recipient and MIME construction", () => {
+  it("encodes exactly the normalized bodies and headers it exports", () => {
+    const text = "one\ntwo\rthree\r\nfour";
+    const html = "<p>one</p>\n<p>two</p>";
+    const encoded = buildEncodedEmail({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Bodies",
+      text,
+      html,
+      messageId: " <new@example.com> ",
+      inReplyTo: "<parent@example.com>",
+      references: "<root@example.com>\t<parent@example.com>",
+      attachments: [],
+    });
+    expect(normalizeTextBody(text)).toBe("one\r\ntwo\r\nthree\r\nfour");
+    expect(mimePartText(encoded, "text/plain")).toBe(normalizeTextBody(text));
+    expect(mimePartText(encoded, "text/html")).toBe(normalizeTextBody(html));
+    expect(() => normalizeTextBody("a\0b")).toThrow(/NUL/);
+
+    const raw = new TextDecoder().decode(decodeBase64UrlToBytes(encoded));
+    expect(raw).toContain(`Message-ID: ${normalizeMessageIdHeader(" <new@example.com> ")}\r\n`);
+    expect(normalizeMessageIdHeader(" <new@example.com> ")).toBe("<new@example.com>");
+    expect(raw).toContain(
+      `References: ${normalizeReferencesHeader("<root@example.com>\t<parent@example.com>")
+        .join(" ")}\r\n`);
+    expect(() => normalizeReferencesHeader("root@example.com")).toThrow(/References/);
+    expect(normalizeContentId("logo@example.com")).toBe("<logo@example.com>");
+    expect(normalizeContentId("<logo@example.com>")).toBe("<logo@example.com>");
+  });
+
   it("bounds ordered message headers without changing duplicates", () => {
     const gmail = api();
     expect(gmail.collectMessageHeaders([

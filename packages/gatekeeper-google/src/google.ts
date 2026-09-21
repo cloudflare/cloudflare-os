@@ -1,6 +1,7 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
@@ -1292,10 +1293,11 @@ function googleDocTabMetadata(tab: DocTabSnapshot): GoogleDocTab {
  * How a tab is named in approval and observation text.
  *
  * The ID is included because it is what the write actually targets: titles are user-authored,
- * are not required to be unique, and may be empty.
+ * are not required to be unique, and may be empty. The title sits in prose, so it is flattened
+ * with `plainInline` and cannot open Markdown or HTML structure there.
  */
 function googleDocTabLabel(tab: DocTabSnapshot): string {
-  return `"${tab.title}" (${tab.tabId})`;
+  return `"${plainInline(tab.title)}" (${tab.tabId})`;
 }
 
 function parseGoogleDocWriteReceipt(value: unknown): GoogleDocWriteReceipt | undefined {
@@ -1327,10 +1329,6 @@ type GoogleDocSimulationCacheHolder = {
 
 function googleDocPendingFingerprint(pending: GoogleDocPendingAction[]): string {
   return JSON.stringify(pending);
-}
-
-function previewMarkdown(markdown: string, maxLength: number): string {
-  return markdown.length > maxLength ? markdown.slice(0, maxLength) + "..." : markdown;
 }
 
 function findUniqueMarkdown(
@@ -2048,18 +2046,16 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       newMarkdown,
     };
 
-    let oldPreview = previewMarkdown(oldMarkdown, 80);
-    let newPreview = previewMarkdown(newMarkdown, 80);
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Edit Google Doc",
-        description:
-          `Replace text in tab ${googleDocTabLabel(tab)}.\n\n` +
-          `**Old:** ${oldPreview}\n\n` +
-          `**New:** ${newPreview}`,
+        ...buildDescription(`Replace text in tab ${googleDocTabLabel(tab)}.`)
+          .verbatim("Old", oldMarkdown, "markdown")
+          .verbatim("New", newMarkdown, "markdown")
+          .finish(),
         implementsRevert: false,
         // Group all document edits under one tag
         actionKind: EDIT_DOCUMENT_ACTION,
@@ -2096,14 +2092,15 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       markdown,
     };
 
-    let preview = previewMarkdown(markdown, 100);
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: "Append to Google Doc",
-        description: `Append content to the end of tab ${googleDocTabLabel(tab)}:\n\n${preview}`,
+        ...buildDescription(`Append content to the end of tab ${googleDocTabLabel(tab)}.`)
+          .verbatim("Content", markdown, "markdown")
+          .finish(),
         implementsRevert: false,
         // Same "editDocument" tag as replaceText
         actionKind: EDIT_DOCUMENT_ACTION,
@@ -2317,11 +2314,6 @@ type GoogleCalendarGatekeeperImplProps = {
   availabilityMode: CalendarAvailabilityMode;
 }
 
-function previewCalendarTime(time: CalendarTime): string {
-  if (time.kind === "date") return time.date;
-  return time.dateTime.toISOString();
-}
-
 function pendingCalendarEventFromDraft(
   id: number,
   action: GoogleCalendarCreateAction,
@@ -2381,21 +2373,6 @@ function priorCalendarPatch(oldEvent: CalendarEvent, patch: CalendarEventPatch):
     }));
   }
   return previous;
-}
-
-function summarizeCalendarPatch(patch: CalendarEventPatch): string {
-  let parts: string[] = [];
-  if (patch.title !== undefined) parts.push(`title \u2192 "${patch.title}"`);
-  if (patch.start !== undefined) parts.push(`start \u2192 ${previewCalendarTime(patch.start)}`);
-  if (patch.end !== undefined) parts.push(`end \u2192 ${previewCalendarTime(patch.end)}`);
-  if (patch.location !== undefined) parts.push(`location \u2192 "${patch.location}"`);
-  if (patch.description !== undefined) parts.push("description");
-  if (patch.attendees !== undefined) {
-    parts.push(`attendees \u2192 ${patch.attendees.map(a => a.email).join(", ") || "(none)"}`);
-  }
-  if (patch.transparency !== undefined) parts.push(`transparency \u2192 ${patch.transparency}`);
-  if (patch.visibility !== undefined) parts.push(`visibility \u2192 ${patch.visibility}`);
-  return parts.length ? parts.join("; ") : "(no changes)";
 }
 
 function applyPendingCalendarActions(
@@ -2732,11 +2709,15 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: `Create calendar event: ${event.title}`,
-        description:
-            `Create event **${event.title}** on calendar ${this.#calendarId} from ` +
-            `${previewCalendarTime(event.start)} to ${previewCalendarTime(event.end)}.` +
-            (event.attendees?.length ? ` Attendees: ${event.attendees.map(a => a.email).join(", ")}.` : "") +
-            ` Send updates: ${action.sendUpdates}.`,
+        // The JSON is the event exactly as it will be created, so the title, times, description,
+        // location, attendee names and reminders are all there to read. None of them sits in the
+        // prose, where agent text could open Markdown or HTML structure.
+        ...buildDescription(
+          `Create an event on calendar ${codeSpan(this.#calendarId)}.`)
+          .inline("Calendar ID", this.#calendarId)
+          .inline("Send updates", action.sendUpdates)
+          .json("Event", event)
+          .finish(),
         implementsRevert: true,
       });
     } catch (error) {
@@ -2777,10 +2758,13 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     try {
       await this.#approvalQueue.submitAction(actionId, {
         title: `Update calendar event ${eventId}`,
-        description:
-            `Update event ${eventId} on calendar ${this.#calendarId}: ` +
-            `${summarizeCalendarPatch(patch)}. ` +
-            `Send updates: ${action.sendUpdates}.`,
+        ...buildDescription(
+          `Update an event on calendar ${codeSpan(this.#calendarId)}.`)
+          .inline("Calendar ID", this.#calendarId)
+          .inline("Event", eventId)
+          .inline("Send updates", action.sendUpdates)
+          .json("Changes", patch)
+          .finish(),
         implementsRevert: true,
       });
     } catch (error) {

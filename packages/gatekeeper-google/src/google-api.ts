@@ -664,6 +664,23 @@ function normalizeReferences(references: string): string {
   return foldReferenceTokens(parseReferenceTokens(references));
 }
 
+/**
+ * The Message-ID `buildEncodedEmail` writes for `value` in a Message-ID or In-Reply-To header.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeMessageIdHeader(value: string): string {
+  return validateMessageId(value, "Message-ID");
+}
+
+/**
+ * The message IDs `buildEncodedEmail` writes, in order, for `references` in the References
+ * header. The header joins them with spaces, folded across lines.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeReferencesHeader(references: string): string[] {
+  return parseReferenceTokens(references);
+}
+
 function foldReferences(references: string | undefined, parentId: string): string {
   let valid: string[] = [];
   if (references) {
@@ -686,7 +703,12 @@ function foldReferences(references: string | undefined, parentId: string): strin
   return foldReferenceTokens(tokens);
 }
 
-function normalizeTextBody(body: string): string {
+/**
+ * The text `buildEncodedEmail` encodes for a plain-text or HTML body: every line break (CR, LF or
+ * CRLF) becomes CRLF, as RFC 5322 requires.
+ * @throws When the body contains a NUL character.
+ */
+export function normalizeTextBody(body: string): string {
   if (body.includes('\0')) throw new Error("Email body must not contain NUL bytes.");
   return body.replace(/\r\n|\r|\n/g, '\r\n');
 }
@@ -905,7 +927,12 @@ function encodeMimeParameter(value: string): string {
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-function normalizeContentId(value: string): string {
+/**
+ * The Content-ID header value `buildEncodedEmail` writes for an attachment's `contentId`,
+ * bracketed.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeContentId(value: string): string {
   const trimmed = value.trim();
   const id = trimmed.startsWith("<") && trimmed.endsWith(">")
     ? trimmed.slice(1, -1)
