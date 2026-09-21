@@ -76,7 +76,7 @@ describe("useSkillsNavigatorData", () => {
     expect(manageableIds).toEqual(["owned-web", "owned-git", "failed-web"]);
     expect(loadedMetadata.get("owned-git")?.content.source).toBe("git");
     expect(viewerInfo).toEqual({ isAdmin: true, supportsGitCollections: true });
-    expect(status).toBe("error");
+    expect(status).toBe("ready");
     act(() => root.unmount());
   });
 });

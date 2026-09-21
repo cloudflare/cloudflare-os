@@ -18,10 +18,10 @@ document editing surface.
 
 ## Legacy directories
 
-Existing organizational directories remain fully usable for backwards compatibility. Skills can be
-created in them and moved into, out of, or between them. Restricting movement to only one direction
-would make existing layouts confusing to manage and could prevent users from reorganizing their
-skills before eventually flattening a collection.
+Existing organizational directories remain usable for backwards compatibility: skills can be
+created in them and moved into, out of, or between them, and the directories themselves can be
+deleted. They cannot be created, renamed, or moved through the navigator, because the forward model
+treats only skill bundles as movable units.
 
 Legacy directories can also be deleted. Deleting one removes its complete document subtree,
 including files the skills-only projection does not display. None of these compatibility behaviors

@@ -73,13 +73,16 @@ const toListItem = (
   const id = nodeId(collectionId, node);
   collectionIdsByItemId.set(id, collectionId);
   if (node.type === "skill") {
-    const name = renamedSkill?.sourceId === id ? renamedSkill.name : node.name;
-    skillsById.set(id, name === node.name ? node : { ...node, name });
+    const renamed = renamedSkill?.sourceId === id;
+    const name = renamed ? renamedSkill.name : node.name;
+    const manifestPath = renamed ? renamedSkillManifestPath(node.manifestPath, renamedSkill.name) : node.manifestPath;
+    const directoryPath = renamed ? manifestPath.slice(0, manifestPath.lastIndexOf("/")) : node.directoryPath;
+    skillsById.set(id, renamed ? { ...node, name, manifestPath, directoryPath } : node);
     if (writable) {
       moveSourcesById.set(id, {
         collectionId,
-        manifestPath: node.manifestPath,
-        directoryPath: node.directoryPath,
+        manifestPath,
+        directoryPath,
       });
     }
     return {
@@ -203,6 +206,10 @@ export const SkillsNavigatorTree = ({
 
   useLayoutEffect(() => {
     if (!renamedSkill) return;
+    const active = document.activeElement;
+    // If the user has already moved focus elsewhere (e.g., Tab or mouse click),
+    // don't steal it back when the renamed row reappears after reload.
+    if (active && active !== document.body && !treeRef.current?.contains(active)) return;
     const destination = [...treeRef.current?.querySelectorAll<HTMLElement>(
       "[data-hierarchical-list-item]",
     ) ?? []].find((item) => item.dataset.itemId === renamedSkill.destinationId);

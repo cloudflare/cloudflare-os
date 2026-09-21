@@ -79,7 +79,10 @@ export const useSkillsNavigatorData = (
               ? [id]
               : [])),
           viewerInfo,
-          status: failedCollectionIds.size > 0 ? "error" : "ready",
+          // Individual document load failures are represented by empty documents and exclusion
+          // from writableCollectionIds. Keep successful collections visible instead of failing
+          // the whole navigator.
+          status: "ready",
         });
       } catch {
         if (!cancelled) setData((current) => ({ ...current, status: "error" }));

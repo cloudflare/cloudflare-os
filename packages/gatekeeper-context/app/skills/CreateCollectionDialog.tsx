@@ -99,7 +99,10 @@ export const CreateCollectionDialog = ({
     <Dialog.Root
       open={dialog.open}
       onOpenChange={(open) => { if (!open) dialog.requestClose(); }}
-      onOpenChangeComplete={dialog.onOpenChangeComplete}
+      onOpenChangeComplete={(isOpen) => {
+        dialog.onOpenChangeComplete(isOpen);
+        if (!isOpen && gitSetup) onCreated();
+      }}
     >
       <Dialog className="w-[min(520px,calc(100vw-32px))]! bg-kumo-base p-0 top-[10%]! translate-y-0!" size="sm">
         <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
