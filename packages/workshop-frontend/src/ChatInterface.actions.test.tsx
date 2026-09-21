@@ -47,7 +47,6 @@ vi.mock('./AuthContext', () => {
 import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
-import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
 
 const testRoot = makeTestRoot()
@@ -82,15 +81,13 @@ function withChatApi(
   }
 }
 
-function renderChat(
-  overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
-) {
+const onReviewActions = vi.fn<(gatekeeperId?: number) => void>()
+
+function renderChat(overseer: RpcStub<Overseer>, props: { selectedChatId?: number } = {}) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
-      restricted={props.restricted}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -98,6 +95,7 @@ function renderChat(
       consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ''}
       onDiscardConsoleLogs={() => {}}
+      onReviewActions={onReviewActions}
       onOpenGadget={() => {}}
       outputOfWorkpiece={() => undefined}
     />,
@@ -252,8 +250,7 @@ describe('ChatInterface action failure note', () => {
   })
 })
 
-// A pending action whose description runs to several paragraphs: what the approver has to read
-// in full when the workspace is restricted.
+// A pending action whose description runs to several paragraphs.
 const longDescription = [
   'Send the following email to alice@example.com:',
   'Hi Alice, attached are the quarterly numbers you asked for.',
@@ -268,90 +265,16 @@ function pendingLog(over: Partial<Record<string, unknown>> = {}) {
 
 // Renders chat 1 selected, so its messages -- and the action card for `log` -- are actually on
 // screen.
-async function renderPendingCard(log: ActionLogEntry, props: { restricted?: boolean } = {}) {
+async function renderPendingCard(log: ActionLogEntry) {
   const server = makeOverseer()
   const chat = withChatApi(server, undefined, [
     { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
   ])
-  await renderChat(server.overseer, { ...props, selectedChatId: 1 })
+  await renderChat(server.overseer, { selectedChatId: 1 })
   await server.resolveSubscription()
   await server.resolvePendingQuery({ entries: [log] })
   chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
 }
-
-const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
-
-// The text a screen reader announces as the Approve button's description.
-function approveDescribedBy(): string | null {
-  const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
-  if (!approve) throw new Error('No Approve button rendered')
-  const ids = approve.getAttribute('aria-describedby')
-  if (ids === null) return null
-  return ids.split(' ').map(id => {
-    const el = document.getElementById(id)
-    if (!el) throw new Error(`aria-describedby names a missing element: ${id}`)
-    return el.textContent ?? ''
-  }).join('\n')
-}
-
-describe('restricted approval', () => {
-  it('shows the notice and the full request on a pending card while restricted', async () => {
-    await renderPendingCard(pendingLog(), { restricted: true })
-
-    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(document.body.textContent).toContain('Regards, the workspace.')
-    expect(clampedDescription()).toBeNull()
-    // The controls precede the review text in DOM order, so the buttons name it explicitly.
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).toContain('Regards, the workspace.')
-    expect(described).toContain(INCOMPLETE_DESCRIPTION_COPY)
-  })
-
-  it('names only the restricted notice and request for a complete description', async () => {
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true }), { restricted: true })
-
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
-  })
-
-  it('shows the notice and the full request on a blocking card while restricted', async () => {
-    await renderPendingCard(pendingLog({ awaitDecision: true }), { restricted: true })
-
-    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(clampedDescription()).toBeNull()
-    const described = approveDescribedBy()
-    expect(described).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(described).toContain('Regards, the workspace.')
-  })
-
-  it('names the fields as part of the request while restricted', async () => {
-    const fields = [{ label: 'To', kind: 'list', items: ['a@example.com'] }]
-    await renderPendingCard(pendingLog({ descriptionIsComplete: true, fields }), { restricted: true })
-
-    expect(approveDescribedBy()).toContain('a@example.com')
-  })
-
-  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
-    it(`shows a ${name} card's long fields without a scroll cap while restricted`, async () => {
-      const fields = [{ label: 'Body', kind: 'text', value: 'Full body text' }]
-      await renderPendingCard(pendingLog({ ...over, fields }), { restricted: true })
-
-      const body = [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
-      expect(body?.className).not.toContain('max-h-56')
-      expect(document.querySelector('[class*="max-h-[360px]"]')).toBeNull()
-    })
-  }
-
-  it('keeps the scrolling description and no notice when not restricted', async () => {
-    await renderPendingCard(pendingLog())
-
-    expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
-    expect(clampedDescription()).not.toBeNull()
-    expect(approveDescribedBy()).toBeNull()
-  })
-})
 
 describe('incomplete description notice', () => {
   it('flags a pending action whose description is not marked complete', async () => {
@@ -390,41 +313,21 @@ describe('action fields', () => {
   }
 })
 
-// A pending card a rule would actually apply: gatekeeper-bound, tagged, auto-approvable.
-const ruleEligible = {
-  gatekeeperId: 1,
-  description: {
-    title: 'Action 1',
-    description: '',
-    implementsRevert: false,
-    actionKind: { tag: 'edit', label: 'Edits' },
-    autoApprovable: true,
-  },
-}
+describe('ChatInterface pending action card', () => {
+  it('sends the reviewer to the action’s own connection instead of deciding here', async () => {
+    await renderCard({ gatekeeperId: 4, description: { title: 'Action 1', description: '', implementsRevert: false, awaitDecision: true } })
 
-describe('ChatInterface always-approve offer', () => {
-  it('offers it on a card a rule would apply', async () => {
-    await renderCard(ruleEligible)
-
-    expect(document.body.textContent).toContain('Always approve')
-  })
-
-  it('withholds it once the card carries a failure', async () => {
-    await renderCard({ ...ruleEligible, failure: 'page was deleted upstream' })
-
-    // A stop disqualifies the action from the rule path, so enabling one here would promise an
-    // application that never happens and leave an awaiting agent turn suspended.
-    expect(document.body.textContent).toContain('page was deleted upstream')
+    const button = [...document.querySelectorAll('button')]
+      .find(node => node.textContent === 'Review actions')
+    expect(button).toBeDefined()
+    expect(document.body.textContent).not.toContain('Approve')
     expect(document.body.textContent).not.toContain('Always approve')
-  })
 
-  it('withholds it while the workspace is restricted', async () => {
-    await renderPendingCard(entry(1, ruleEligible), { restricted: true })
+    act(() => button!.click())
 
-    // No rule fires once the workspace has read restricted data, so enabling one here would
-    // promise an application that never happens.
-    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
-    expect(document.body.textContent).not.toContain('Always approve')
+    // Opening the review decides nothing: the card stays pending until the server says otherwise.
+    expect(onReviewActions).toHaveBeenCalledWith(4)
+    expect(document.body.textContent).toContain('Review actions')
   })
 })
 

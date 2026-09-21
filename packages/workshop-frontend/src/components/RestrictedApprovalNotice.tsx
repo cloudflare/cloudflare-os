@@ -9,9 +9,9 @@ export const RESTRICTED_APPROVAL_COPY =
   'are responsible for making sure it contains none of that data.'
 
 /**
- * Shown above a pending action's description on every approve surface (Activity review pane,
- * chat card, notifications popover) while the workspace is restricted. The surfaces render the
- * description untruncated alongside it, since the notice asks the approver to read all of it.
+ * Shown once above each connection's batch in the Activity review pane, the only surface that
+ * approves actions, while the workspace is restricted. The pane renders every row's description
+ * and fields untruncated beneath it, since the notice asks the approver to read all of it.
  */
 export function RestrictedApprovalNotice({ id, className = '' }: { id?: string, className?: string }) {
   return (

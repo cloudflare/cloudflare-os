@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 
 export interface AutoApprovalEntry {
@@ -18,7 +18,14 @@ export function autoApprovalKey(entry: { gatekeeperId: number; actionKind: Actio
   return `${entry.gatekeeperId}:${entry.actionKind.tag}`
 }
 
-export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
+/**
+ * The connection/action-kind rules the deployment offers, merged from what the connected
+ * gatekeepers advertise, what the pending review can see, and what is already enabled.
+ */
+export function useAutoApproval(
+  overseer: RpcStub<Overseer> | null,
+  pendingActions: readonly ActionLogEntry[],
+) {
   const toasts = useKumoToastManager()
   const [catalog, setCatalog] = useState<PreApprovableAction[]>([])
   const [rules, setRules] = useState<Array<{ gatekeeperId: number; actionKind: ActionKind }>>([])
@@ -82,6 +89,23 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
         orphaned: false,
       })
     }
+    // listPreApprovableActions only visits gadget-bound connections, so a pending card can name
+    // an eligible kind the catalogue never advertised. Advertised metadata still wins.
+    for (const record of pendingActions) {
+      if (record.type !== 'action' || record.gatekeeperId === undefined) continue
+      const { actionKind } = record.description
+      if (actionKind === undefined || record.description.autoApprovable !== true) continue
+      if (record.failure !== undefined) continue
+      const key = autoApprovalKey({ gatekeeperId: record.gatekeeperId, actionKind })
+      if (byKey.has(key)) continue
+      byKey.set(key, {
+        gatekeeperId: record.gatekeeperId,
+        resourceTitle: record.resourceTitle,
+        actionKind,
+        enabled: false,
+        orphaned: false,
+      })
+    }
     for (const rule of rules) {
       const key = autoApprovalKey(rule)
       const known = byKey.get(key)
@@ -97,7 +121,7 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
       }
     }
     return [...byKey.values()]
-  }, [catalog, rules])
+  }, [catalog, rules, pendingActions])
 
   const setEnabled = useCallback(async (entry: AutoApprovalEntry, enabled: boolean) => {
     if (!overseer) return

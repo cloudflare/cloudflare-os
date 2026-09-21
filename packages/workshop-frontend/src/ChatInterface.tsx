@@ -14,7 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
-import { actionStatusLabel, autoApproveTargetOf, type AutoApproveTarget } from './features/actions/actionStatus'
+import { actionStatusLabel } from './features/actions/actionStatus'
 import {
   Dialog,
   DropdownMenu,
@@ -99,13 +99,9 @@ import { HookToggle } from "./components/HookToggle";
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./components/IncompleteDescriptionNotice";
 import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
-import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
-import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
-import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
+
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { actionLogResumed, useActionEntries } from "./useActions";
-import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
-import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
@@ -2436,9 +2432,6 @@ function fallbackToStoredModelSelection(
 interface ChatInterfaceProps {
   workspaceId: string | undefined;
   overseer: RpcStub<Overseer>;
-  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden.
-  restricted?: boolean;
   selectedChatId: number | null;
   onNavigateToChat: (
     chatId: number | null,
@@ -2462,9 +2455,8 @@ interface ChatInterfaceProps {
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
   onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
-  // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
-  // Auto-approval list reflects it without a reload.
-  onAutoApproveChange?: () => void;
+  // Opens the Activity review focused on this connection's batch; chat itself decides nothing.
+  onReviewActions: (gatekeeperId?: WorkpieceId) => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2644,7 +2636,6 @@ function getOrCreateProvisionalToolCall(
 function ChatInterface({
   workspaceId,
   overseer,
-  restricted,
   selectedChatId,
   onNavigateToChat,
   onChatChangesChange,
@@ -2658,7 +2649,7 @@ function ChatInterface({
   onDiscardConsoleLogs,
   onChatCountChange,
   onAgentActiveChange,
-  onAutoApproveChange,
+  onReviewActions,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -4273,35 +4264,6 @@ function ChatInterface({
     return changed;
   };
 
-  const applyOptimisticActionState = (actionId: number, state: "approved" | "rejected"): boolean => {
-    let changed = false;
-    const locations = cacheRef.current.actionMessages.get(actionId);
-    if (!locations) return false;
-
-    for (const [key, location] of locations) {
-      const cached = getCachedActionMessage(location);
-      if (!cached || cached.msg.actionId !== actionId || !cached.msg.actionLog) {
-        locations.delete(key);
-        continue;
-      }
-
-      const nextMessages = [...cached.messages];
-      const log = cached.msg.actionLog;
-      nextMessages[location.sequence] = {
-        ...cached.msg,
-        // Approval clears the recorded failure, as the server does; a rejection retains it.
-        actionLog: log.type === "action" && state === "approved"
-            ? { ...log, state, appliedAt: new Date(), failure: undefined }
-            : { ...log, state, appliedAt: new Date() },
-      };
-      cacheRef.current.messages.set(location.chatId, nextMessages);
-      changed = true;
-    }
-
-    if (locations.size === 0) cacheRef.current.actionMessages.delete(actionId);
-    return changed;
-  };
-
   const applyOptimisticHookEnabled = (actionId: number, enabled: boolean): boolean => {
     let changed = false;
     const locations = cacheRef.current.actionMessages.get(actionId);
@@ -4345,18 +4307,6 @@ function ChatInterface({
     }
   }, [overseer, selectedChatId, toasts]);
 
-  // Pending "always approve this type" confirmation, opened from a pending action card.
-  const [autoApproveConfirm, setAutoApproveConfirm] = useState<AutoApproveTarget | null>(null);
-
-  // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) in an apply pass, and the state flips to
-  // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
-
-  const resolveAction = useResolveAction(overseer, setProcessingActions, (actionId, state) => {
-    if (applyOptimisticActionState(actionId, state)) forceUpdate();
-  });
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
@@ -4939,54 +4889,18 @@ function ChatInterface({
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
-    const autoApproveTarget = autoApproveTargetOf(log, restricted);
-
-    // While restricted the notices and the request follow the controls in DOM order, so the
-    // approve/deny buttons name them as their description. Ids derive from the action id: this is
-    // a render closure, not a component, so useId is unavailable, and one card renders per action.
-    const restrictedReview = restricted && isPending;
-    const noticeId = `action-${msg.actionId}-restricted-notice`;
-    const requestId = `action-${msg.actionId}-request`;
-    const fieldsId = `action-${msg.actionId}-fields`;
-    const incompleteId = `action-${msg.actionId}-incomplete-notice`;
     const hasFields = entryFields(log).length > 0;
     const incomplete = isPending && isDescriptionIncomplete(log);
-    const describedBy = restrictedReview
-      ? [
-        noticeId,
-        requestId,
-        ...(hasFields ? [fieldsId] : []),
-        ...(incomplete ? [incompleteId] : []),
-      ].join(" ")
-      : undefined;
 
+    // Decisions live in Activity, where the whole connection's batch is reviewed and applied
+    // together; the card only navigates there, pre-focused on this action's connection.
     const actionControls = isPending ? (
-      <>
-        {autoApproveTarget &&
-          !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
-          <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
-            <span className="flex">
-              <AlwaysApproveButton
-                onClick={() => setAutoApproveConfirm(autoApproveTarget)}
-                disabled={isProc}
-              />
-            </span>
-          </Tooltip>
-        )}
-        <ResolveButton
-          tone="deny"
-          onClick={() => void resolveAction(msg.actionId, "deny")}
-          disabled={isProc}
-          describedBy={describedBy}
-        />
-        <ResolveButton
-          tone="approve"
-          variant={isBlocking ? "filled" : "quiet"}
-          onClick={() => void resolveAction(msg.actionId, "approve")}
-          disabled={isProc}
-          describedBy={describedBy}
-        />
-      </>
+      <WorkshopButton
+        tone={isBlocking ? "primary" : "secondary"}
+        onClick={() => onReviewActions(log.gatekeeperId)}
+      >
+        Review actions
+      </WorkshopButton>
     ) : null;
 
     // Resource label, shown at the top of the blocking callout and at the bottom of the subtle
@@ -5031,17 +4945,19 @@ function ChatInterface({
                   </span>
                   {resourceMeta}
                 </div>
-                {restricted && <RestrictedApprovalNotice id={noticeId} className="mt-2" />}
-                <div id={requestId} className={`chat-panel mt-1 pr-1 text-[13px] leading-[18px] text-kumo-subtle ${restricted ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
+                <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
                 {hasFields && (
-                  <div id={fieldsId} className={`chat-panel mt-2 pr-1 ${restricted ? "" : "max-h-[360px] overflow-y-auto"}`}>
-                    <ActionFields fields={entryFields(log)} uncapped={restricted} />
+                  <div className="chat-panel mt-2 max-h-[360px] overflow-y-auto pr-1">
+                    <ActionFields fields={entryFields(log)} />
                   </div>
                 )}
-                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {incomplete && <IncompleteDescriptionNotice className="mt-2" />}
                 {log.failure && <ActionFailureNote failure={log.failure} />}
+                <p className="m-0 mt-1.5 text-[12px] leading-4 text-kumo-subtle">
+                  This turn stays paused until you apply this connection&apos;s batch in Activity.
+                </p>
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -5099,16 +5015,15 @@ function ChatInterface({
         )}
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
-            {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
-            <div id={requestId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
+            <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
             {hasFields && (
-              <div id={fieldsId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[360px] overflow-y-auto"}`}>
-                <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
+              <div className="chat-panel max-h-[360px] overflow-y-auto pr-1">
+                <ActionFields fields={entryFields(log)} />
               </div>
             )}
-            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+            {incomplete && <IncompleteDescriptionNotice />}
             {log.failure && <ActionFailureNote failure={log.failure} />}
             {resourceMeta}
           </div>
@@ -6339,7 +6254,7 @@ function ChatInterface({
                       hasPendingConnectionRequest
                         ? "Set up or deny the connection request above to continue."
                         : hasPendingAwaitedAction
-                          ? "Approve or reject the pending action above to continue."
+                          ? "Review the pending action above and apply its batch to continue."
                           : undefined
                     }
                     draftUpdateBanner={(() => {
@@ -6483,24 +6398,6 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && autoApproveConfirm && (
-        <AutoApproveConfirmDialog
-          open
-          actionLabel={autoApproveConfirm.actionLabel}
-          resourceTitle={autoApproveConfirm.resourceTitle}
-          isProcessing={processingActions.has(autoApproveConfirm.actionId)}
-          onOpenChange={(open) => {
-            if (!open) setAutoApproveConfirm(null);
-          }}
-          onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = autoApproveConfirm;
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
-              setAutoApproveConfirm(null);
-            }
-          }}
-        />
-      )}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}
