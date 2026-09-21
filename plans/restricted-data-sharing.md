@@ -174,6 +174,39 @@ path, and the scope-widening restart — landed separately in #380.
 The deferred items are collected in the Known-limitations section below. The Share
 modal unblock lives in `restricted-data-followups`.
 
+## Complete action descriptions
+
+A workspace that has read restricted data will let actions through only when a human
+approves each one, and the approver can only vouch for text they can read. The
+`ActionDescription.descriptionIsComplete` flag is the gatekeeper's assertion that the
+description reproduces, verbatim, every piece of workspace-originated content the action
+will write or send: bodies, field values, identifiers, serialized arguments. Bytes the
+gatekeeper re-sends unchanged from the same provider (a forwarded attachment) may instead
+be named by size and digest. Absent means incomplete: a summary, a truncated field, or
+opaque bytes.
+
+Gatekeepers build descriptions with `ActionDescriptionBuilder` from
+`@gadgets/gatekeeper-kit/action-description`. Content fields render as fenced code blocks
+whose fence is one backtick longer than any run in the content, so the bytes inside are
+exact and nothing in them renders as Markdown (no images, no links). The builder tracks
+one 96 KiB UTF-8 budget across all fields: the overseer stores each action record as a
+single Durable Object value, which is limited to 128 KiB after serialization, and the
+remaining room covers the record's other fields and the storage wrapper. An oversize
+field is truncated with a note, later fields are omitted, and `finish()` then leaves the
+flag unset. An incomplete description is still submitted, and every approval surface
+tells the approver that part of what the action will send isn't shown.
+
+Two kinds of action are never complete: a git push (`pushedCommits`), whose commits
+cannot be reviewed as text until there is a UI for it, and an upload of agent-supplied
+file bytes (Confluence `uploadAttachment`), which is named by size and digest.
+
+This branch adds the field, the builder, and complete descriptions for every shipped
+gatekeeper, and is behavior-neutral on `main`, which refuses every action while
+restricted. The submit-time gate lands with the manual-approval change in
+`restricted-data-manual-approval` (#487), and refuses only git pushes once
+`containsRestrictedData` is set. An incomplete action pends for manual approval like any
+other and carries the notice.
+
 ## Known limitations
 
 Revocations and role changes take effect within seconds (the revocation restart lands in
