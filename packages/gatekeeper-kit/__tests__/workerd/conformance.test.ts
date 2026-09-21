@@ -413,6 +413,7 @@ describe("actions", () => {
     expect(submissions).toEqual([[id, {
       title: 'Create project "Iota"',
       description: "Creates **Iota** in space space-1.",
+      descriptionIsComplete: true,
       implementsRevert: false,
       autoApprovable: false,
       actionKind: { tag: "create-project", label: "Create a project" },

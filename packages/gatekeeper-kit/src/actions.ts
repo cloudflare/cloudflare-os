@@ -101,7 +101,8 @@ export const APPLY_OUTCOME_UNKNOWN_MESSAGE = "This action was interrupted after 
   + "so it may or may not have taken effect. Check the provider before submitting it again.";
 
 type KitOwnedField = "awaitDecision" | "autoApprovable" | "actionKind";
-type ProviderOwnedField = "title" | "description" | "pushedCommits" | "implementsRevert";
+type ProviderOwnedField =
+  "title" | "description" | "descriptionIsComplete" | "pushedCommits" | "implementsRevert";
 type Unclassified = Exclude<keyof ActionDescription, KitOwnedField | ProviderOwnedField>;
 
 /**
@@ -707,7 +708,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           const staged = fence && { generation: fence.generation };
           // Cloned for the same reason as the payload: staging serializes behind the journal's
           // lane, and `describe` may still own what it returned.
-          const { title, description, pushedCommits, implementsRevert } =
+          const { title, description, descriptionIsComplete, pushedCommits, implementsRevert } =
             structuredClone(await definition.describe(payload, host));
           const action = { kind, payload } as TaggedAction<M>;
           return stageAction(journal, queue, action, {
@@ -716,9 +717,13 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             title,
             description,
             implementsRevert,
-            // Spread, so an action with no git, no kind, or no awaited decision puts no key on the
-            // wire at all.
+            // Spread, so an action with no git, no kind, no awaited decision, or no claim of
+            // completeness puts no key on the wire at all. A push is never complete, whatever the
+            // hook claims: the approver sees commit ids, not the bytes they carry.
             ...(pushedCommits ? { pushedCommits } : {}),
+            ...(descriptionIsComplete === true && !pushedCommits?.length
+              ? { descriptionIsComplete: true }
+              : {}),
             autoApprovable: definition.autoApprovable === true,
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),

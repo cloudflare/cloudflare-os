@@ -165,6 +165,8 @@ const actions = defineActions<ProviderHost, Actions>({
     describe: payload => ({
       title: `Create project "${payload.name}"`,
       description: `Creates **${payload.name}** in space ${payload.spaceId}.`,
+      // The text names every value the action sends.
+      descriptionIsComplete: true,
       implementsRevert: false,
     }),
     provides: payload => [payload.ref],
@@ -179,6 +181,7 @@ const actions = defineActions<ProviderHost, Actions>({
     describe: payload => ({
       title: `Rename ${payload.target}`,
       description: `Renames ${payload.target} to **${payload.name}**.`,
+      descriptionIsComplete: true,
       // The kit cannot check this claim, so the fixture must not make one it has no handler for.
       implementsRevert: false,
     }),

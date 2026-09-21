@@ -919,7 +919,8 @@ export function stageAction<A>(journal, queue: ActionSubmitter,
   action: A, description: ActionDescription, fence?: ActionFence): Promise<number>;
 
 export type ActionPresentation =                        // the approver-facing text; policy fields
-  Pick<ActionDescription, "title" | "description" | "implementsRevert">;   // come from the decl
+  Pick<ActionDescription, "title" | "description" |     // come from the decl
+    "descriptionIsComplete" | "pushedCommits" | "implementsRevert">;
 export type ActionContext = { readonly id: number; readonly gitCache?: RpcStub<GitCache>;
   readonly fence?: ActionFence };                       // staged fence reaches apply/reject handlers
 export type ActionApplyContext = { gitCache?: RpcStub<GitCache>; generation?: string };

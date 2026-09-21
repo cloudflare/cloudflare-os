@@ -457,6 +457,35 @@ provider" warning survives.
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
 
+### Describe with `buildDescription`
+
+Write `describe` with `buildDescription` from `@gadgets/gatekeeper-kit/action-description`. The
+approver vouches for the text they read, so every piece of content the action will send that came
+from the workspace — a body, a field value, an identifier, serialized arguments — goes through
+`verbatim`, `json`, or `list`, which render it in a fenced block containing exactly those bytes.
+Nothing inside renders as Markdown. Prose is for the gatekeeper's own summary: never interpolate
+agent- or provider-supplied text into it, since such text can open an HTML block the chat hides and
+take the fields after it along. Put the value in a field, or pass a mere label through `codeSpan` or
+`plainInline`. Spread `finish()` into the presentation and never set `descriptionIsComplete` by
+hand: the builder sets it only when every field was shown in full under its 96 KiB budget, and
+leaves the key off after truncating or omitting one, or when prose alone overflows it. An incomplete
+description is still submitted, and the approver is told part of the action isn't shown.
+
+```ts
+describe: payload => ({
+  title: `Comment on issue ${payload.issueId}`,
+  ...buildDescription("Posts a comment on an issue.")
+    .inline("Issue", payload.issueId)
+    .verbatim("Comment", payload.body)
+    .finish(),
+  implementsRevert: false,
+}),
+```
+
+Bytes the approver cannot read as text — an agent-supplied file, git objects — cannot be complete.
+Name them by size and digest and leave the flag off. Bytes re-sent unchanged from the same provider,
+such as a forwarded attachment, may be named that way with the flag on.
+
 Store action file bytes with `ActionFileStore`. Put only the bounded `ActionFileReference` in the
 action payload. Journal records must stay small, and approval text must describe the same bytes that
 will be applied.
