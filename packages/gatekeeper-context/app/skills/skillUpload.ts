@@ -41,7 +41,7 @@ const descriptionFromMarkdown = (body: string, fallbackName: string): string => 
       .filter((line) => !/^#{1,6}\s/.test(line.trim()))
       .join("\n")
       .trim();
-    if (!trimmed || /^```/.test(trimmed)) continue;
+    if (!trimmed || trimmed.startsWith("```")) continue;
     const description = trimmed
       .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
       .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
