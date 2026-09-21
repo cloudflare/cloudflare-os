@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_3b2fb672b69c26::t_ade5260d1941c6 392-394
+  s_3b2fb672b69c26::t_954c5c837c7041 395-396,399-400
+  s_3b2fb672b69c26::t_148af5506904ed 18,20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b2f7c8e215acc6928ba964b931678cc78d296a6",
+  "prompts": {},
+  "sessions": {
+    "s_3b2fb672b69c26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57a64fbc-8241-4cf2-93fc-9b7ceae8cf53",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

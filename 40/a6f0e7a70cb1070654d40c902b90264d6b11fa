@@ -1,0 +1,21 @@
+packages/gatekeeper-supabase/src/supabase.ts
+  s_6d79354b9d5d8c::t_77d2f069b88085 18,943-947
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_6d79354b9d5d8c::t_77d2f069b88085 19,1100-1108,1212-1213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "40a6f0e7a70cb1070654d40c902b90264d6b11fa",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

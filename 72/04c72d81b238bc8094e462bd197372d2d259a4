@@ -1,0 +1,19 @@
+packages/workshop-backend/src/overseer.ts
+  s_da75e44ab0f759::t_967b28af880ed5 4338-4350
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7204c72d81b238bc8094e462bd197372d2d259a4",
+  "prompts": {},
+  "sessions": {
+    "s_da75e44ab0f759": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4a2e2318ffeE669L5yTFjVqIq",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
