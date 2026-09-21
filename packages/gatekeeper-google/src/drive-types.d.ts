@@ -103,7 +103,27 @@ export type DriveSearchQuery = {
 export type DriveFolderListOptions = Pick<DriveListOptions, "order">;
 
 /** Provider search filters for the positioned folder's direct children. */
-export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId">;
+export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & {
+  /**
+   * Search inside these direct child folders instead of the positioned folder. Each must be a
+   * listable direct child, and one request covers them all, so polling many sibling folders does
+   * not cost a request each. At most 50 per search; search larger sets in batches.
+   *
+   * Every named folder is recorded as an observation, so one that later stops being listable
+   * fails collaborator admission for the whole set. Open folders individually to keep each
+   * folder's disclosure independent.
+   */
+  childFolderIds?: string[];
+};
+
+/**
+ * Every field either Drive search shape accepts.
+ *
+ * One class serves both session interfaces, so this is what the RPC boundary validates; each core
+ * refuses the field it does not serve rather than ignoring it.
+ */
+export type DriveSessionSearchQuery =
+  DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
 /** Read-only Drive metadata discovery and native Google Docs/Sheets access. */
 export interface GoogleDriveReadSession {
@@ -144,10 +164,10 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
   list(options?: DriveFolderListOptions): Promise<Cursor<DriveEntry>>;
 
   /**
-   * Search only the positioned folder's direct children using provider-side filters. At least one
-   * filter other than `order` is required, and omitting `order` for a full-text search preserves
-   * Drive's relevance order. An empty result is withheld because it is owner-relative and cannot
-   * be shared safely.
+   * Search the positioned folder's direct children, or those of the folders named by
+   * `childFolderIds`, using provider-side filters. At least one filter other than `order` is
+   * required, and omitting `order` for a full-text search preserves Drive's relevance order. An
+   * empty result is withheld because it is owner-relative and cannot be shared safely.
    */
   search(query: DriveFolderSearchQuery): Promise<Cursor<DriveEntry>>;
 

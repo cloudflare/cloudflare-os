@@ -28,7 +28,7 @@ import {
   type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DriveSearchQuery, GoogleDriveFolderSession,
+  DriveEntry, DriveListOptions, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
@@ -3062,7 +3062,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#cursor(core => core.list(options));
   }
 
-  async search(query: DriveSearchQuery): Promise<Cursor<DriveEntry>> {
+  async search(query: DriveSessionSearchQuery): Promise<Cursor<DriveEntry>> {
     return this.#cursor(core => core.search(query));
   }
 

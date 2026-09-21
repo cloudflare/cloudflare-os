@@ -289,6 +289,18 @@ describe("Drive session scope", () => {
     expect(events).toEqual([]);
   });
 
+  // One class serves both session interfaces, so the RPC boundary validates the widest shape and
+  // an account caller can still be handed `childFolderIds`. Ignoring it would search the whole
+  // account while the caller believes the read was narrowed.
+  it("refuses child folders on an account search", async () => {
+    let { session, listFiles, events } = core();
+
+    await expect(session.search({ namePrefix: "plan", childFolderIds: ["A"] } as DriveSearchQuery))
+      .rejects.toThrow(/childFolderIds is not accepted/);
+    expect(listFiles).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
   it("ends a search cleanly after an earlier page disclosed results", async () => {
     let { session, listFiles } = core({
       listFiles: async options => options.pageToken === "page-2"
@@ -602,10 +614,14 @@ describe("positioned Drive folder session", () => {
     const observations: DriveObservation[][] = [];
     const authorizations: ObservationDescription[] = [];
     const events: string[] = [];
+    const scopeBatches: string[][] = [];
     const session = new DriveFolderSessionCore({
       api: {
         getFile: provider.getFile,
-        getScopeNodes: provider.getScopeNodes,
+        getScopeNodes: async ids => {
+          scopeBatches.push([...ids]);
+          return provider.getScopeNodes(ids);
+        },
         listFiles: async options => {
           let query = options ?? {};
           queries.push(query);
@@ -613,7 +629,8 @@ describe("positioned Drive folder session", () => {
           return {
             files: nodes.filter(node =>
               node.trashed === false && node.parents?.length === 1 &&
-              node.parents[0] === query.directParentId && node.mimeType !== FOLDER_MIME_TYPE),
+              (query.directParentIds ?? []).includes(node.parents[0]) &&
+              node.mimeType !== FOLDER_MIME_TYPE),
           };
         },
       },
@@ -628,7 +645,7 @@ describe("positioned Drive folder session", () => {
         events.push("authorize");
       },
     });
-    return { session, provider, queries, observations, authorizations, events };
+    return { session, provider, queries, observations, authorizations, events, scopeBatches };
   }
 
   it("lists and searches only the positioned folder's direct children", async () => {
@@ -640,8 +657,8 @@ describe("positioned Drive folder session", () => {
     await expect((await session.search({ fullTextContains: "invoice" })).next())
       .resolves.toEqual([expect.objectContaining({ id: "D0" })]);
     expect(queries).toEqual([
-      expect.objectContaining({ directParentId: "R" }),
-      expect.objectContaining({ directParentId: "R", fullTextContains: "invoice" }),
+      expect.objectContaining({ directParentIds: ["R"] }),
+      expect.objectContaining({ directParentIds: ["R"], fullTextContains: "invoice" }),
     ]);
   });
 
@@ -688,7 +705,7 @@ describe("positioned Drive folder session", () => {
       expect.objectContaining({ id: "SD", driveId: "drive-1" }),
     ]);
     expect(queries).toEqual([expect.objectContaining({
-      directParentId: "SR", corpus: { kind: "drive", driveId: "drive-1" },
+      directParentIds: ["SR"], corpus: { kind: "drive", driveId: "drive-1" },
     })]);
   });
 
@@ -790,5 +807,117 @@ describe("positioned Drive folder session", () => {
     await expect((await session.search({ namePrefix: "missing" })).next()).resolves.toEqual([]);
     expect(observations).toEqual([[{ kind: "folder", fileId: "R" }]]);
     expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  // Polling N sibling folders one at a time costs a request each. The proof is unchanged: every
+  // named folder must still be a listable direct child, so this only removes repeated requests.
+  it("searches several proven child folders in one request", async () => {
+    const second = folder("B", { parents: ["R"] });
+    const secondDoc = child("D2", "B", { mimeType: docMime });
+    const { session, queries, observations, events } =
+      positioned([root, nested, second, nestedDoc, secondDoc]);
+
+    await expect((await session.search({
+      namePrefix: "D", childFolderIds: ["A", "B"],
+    })).next()).resolves.toEqual([
+      expect.objectContaining({ id: "D1" }),
+      expect.objectContaining({ id: "D2" }),
+    ]);
+    expect(queries).toEqual([
+      expect.objectContaining({ directParentIds: ["A", "B"], namePrefix: "D" }),
+    ]);
+    expect(observations).toEqual([[
+      { kind: "folder", fileId: "R" },
+      { kind: "folder", fileId: "A" },
+      { kind: "folder", fileId: "B" },
+      { kind: "file", fileId: "D1" },
+      { kind: "file", fileId: "D2" },
+    ]]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  it("names every searched folder in the recorded description", async () => {
+    const second = folder("B", { parents: ["R"] });
+    const { session, authorizations } =
+      positioned([root, nested, second, nestedDoc], undefined, async () => ({ files: [] }));
+
+    await expect((await session.search({ namePrefix: "D", childFolderIds: ["A", "B"] })).next())
+      .rejects.toThrow(/empty Drive search/);
+    expect(authorizations).toEqual([expect.objectContaining({
+      description: expect.stringContaining("parents A, B"),
+    })]);
+  });
+
+  it("refuses a page carrying a file from outside the named folders", async () => {
+    const { session } = positioned([root, nested, nestedDoc, foreignDoc], undefined,
+      async () => ({ files: [nestedDoc, foreignDoc] }));
+
+    await expect((await session.search({ namePrefix: "D", childFolderIds: ["A"] })).next())
+      .rejects.toThrow(/outside this Drive binding/);
+  });
+
+  // Same laziness the positioned path has: an unpaged cursor must not disclose whether the named
+  // folders are visible and connected.
+  it("reads nothing about the named folders until the first page", async () => {
+    const { session, queries, events } = positioned([root, nested, nestedDoc]);
+
+    const pager = await session.search({ namePrefix: "D", childFolderIds: ["D1"] });
+    expect(queries).toEqual([]);
+    expect(events).toEqual([]);
+    await expect(pager.next()).rejects.toThrow(/outside this Drive binding/);
+    expect(queries).toEqual([]);
+  });
+
+  it("fences a named child folder this account cannot list", async () => {
+    const unlistable = folder("B", { parents: ["R"], capabilities: { canListChildren: false } });
+    const { session, queries, events } = positioned([root, unlistable]);
+
+    await expect((await session.search({ namePrefix: "D", childFolderIds: ["B"] })).next())
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(events).toEqual(["authorize", "latch"]);
+    expect(queries).toEqual([]);
+  });
+
+  it.each([[[]], [["  "]]])("refuses a child folder set naming nothing: %j", async folders => {
+    const { session } = positioned([root, nested]);
+
+    await expect(session.search({ namePrefix: "D", childFolderIds: folders }))
+      .rejects.toThrow(/must name at least one folder/);
+  });
+
+  // Synchronously, not from the first page: the cursor is already in the caller's hands by then.
+  it("refuses more child folders than one query carries", async () => {
+    const { session, queries } = positioned([root, nested]);
+
+    await expect(session.search({
+      namePrefix: "D",
+      childFolderIds: Array.from({ length: 51 }, (_, index) => `f${index}`),
+    })).rejects.toThrow(/at most 50 folders; search them in batches/);
+    expect(queries).toEqual([]);
+  });
+
+  // A direct child that is not a folder is an objective refusal, recorded as a file unit exactly
+  // as openFolder does; leaving it unrecorded lets a later collaborator inherit the probe.
+  it("records a non-folder named child before refusing it", async () => {
+    const { session, observations, events } = positioned([root, directDoc]);
+
+    await expect((await session.search({ namePrefix: "D", childFolderIds: ["D0"] })).next())
+      .rejects.toThrow(/outside this Drive binding/);
+    expect(observations).toEqual([[
+      { kind: "folder", fileId: "R" }, { kind: "file", fileId: "D0" },
+    ]]);
+    expect(events).toEqual(["authorize", "commit"]);
+  });
+
+  // The authorizer revalidates immediately after `buildEntries` with no provider read between, so
+  // one page proves the path and the named folders once each side of the fetch, not three times.
+  it("proves a page's scope once before the fetch and once after", async () => {
+    const second = folder("B", { parents: ["R"] });
+    const { session, scopeBatches } =
+      positioned([root, nested, second, nestedDoc], undefined, async () => ({ files: [] }));
+
+    await expect((await session.search({ namePrefix: "D", childFolderIds: ["A", "B"] })).next())
+      .rejects.toThrow(/empty Drive search/);
+    expect(scopeBatches).toEqual([["R"], ["A", "B"], ["R"], ["A", "B"]]);
   });
 });

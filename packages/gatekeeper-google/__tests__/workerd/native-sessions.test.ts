@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
 import { GoogleDriveSessionImpl } from "../../src/google";
+import type { DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 
 const DOC_MIME = "application/vnd.google-apps.document";
@@ -390,6 +391,15 @@ describe("folder-scoped native sessions", () => {
       if (url.pathname === "/batch/drive/v3") {
         return batchResponse(String(init?.body ?? ""), nodes);
       }
+      if (url.pathname === "/drive/v3/files") {
+        const parents = [...(url.searchParams.get("q") ?? "").matchAll(/'([^']+)' in parents/g)]
+          .map(match => match[1]);
+        const files = [...nodes.values()].filter(
+          node => node.mimeType !== FOLDER_MIME && parents.includes(node.parents?.[0] ?? ""));
+        return Response.json({
+          files: files.map(node => ({ ...node, name: node.id, modifiedTime: "2026-08-20T12:00:00Z" })),
+        });
+      }
       if (url.pathname.includes("/drive/v3/files/")) {
         const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
         const node = nodes.get(id);
@@ -502,6 +512,34 @@ describe("folder-scoped native sessions", () => {
 
     await expect(Promise.resolve(doc.getContent())).rejects.toThrow(OUTSIDE);
     expect(queue.observations.slice(authorizedBefore)).toEqual([]);
+  });
+
+  // Every other childFolderIds test drives the core directly. This one crosses the RpcStub, which
+  // is where capnweb-validate applies -- the only place that can tell us the field survives the
+  // wire and that a malformed one is refused there rather than deep in a query builder.
+  it("searches named child folders across the RPC boundary", async () => {
+    const nodes = subtree();
+    nodes.set("sub-a", { id: "sub-a", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true } });
+    nodes.set("sub-b", { id: "sub-b", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true } });
+    nodes.set("doc-a", { id: "doc-a", mimeType: DOC_MIME, parents: ["sub-a"], trashed: false });
+    nodes.set("doc-b", { id: "doc-b", mimeType: DOC_MIME, parents: ["sub-b"], trashed: false });
+    installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+
+    using cursor = await session.search({ namePrefix: "doc", childFolderIds: ["sub-a", "sub-b"] });
+    expect((await cursor.next())?.map(entry => entry.id)).toEqual(["doc-a", "doc-b"]);
+  });
+
+  it("refuses a malformed child folder set at the RPC boundary", async () => {
+    const nodes = subtree();
+    installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+
+    await expect(Promise.resolve(session.search(
+      { namePrefix: "doc", childFolderIds: [7] } as unknown as DriveSessionSearchQuery,
+    ))).rejects.toThrow(/childFolderIds/);
   });
 
   // That refused read captured a revision while the document sat outside the subtree. Serving it

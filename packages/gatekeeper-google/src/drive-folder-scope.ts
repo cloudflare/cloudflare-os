@@ -59,8 +59,8 @@ export async function readFolderLocation(
   return nodes as DriveScopeNode[];
 }
 
-/** Whether a fresh file is a live direct child in the same Drive storage domain. */
-export function isDirectChild(file: DriveFile, parent: DriveScopeNode): boolean {
+/** Whether a fresh node is a live direct child in the same Drive storage domain. */
+export function isDirectChild(file: DriveScopeNode, parent: DriveScopeNode): boolean {
   return file.trashed === false && file.driveId === parent.driveId &&
     file.parents?.length === 1 && file.parents[0] === parent.id;
 }

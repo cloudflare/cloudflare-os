@@ -2,7 +2,8 @@ import { isObservationRefused } from "@gadgets/gatekeeper-kit/observers";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE, isListableFolderFile,
+  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, isListableFolderFile,
+  isListableFolderNode,
   type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -53,6 +54,8 @@ export function requireDriveBindingScope(scope: DriveBindingScope): DriveBinding
 
 type DriveSessionScope = Exclude<DriveBindingScope, { kind: "folder" }>;
 type DriveSessionApi = Pick<DriveApi, "listFiles" | "getFile" | "getScopeNodes">;
+/** A page's proven scope: the bound drive, and the parents its files must sit directly under. */
+type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 
 /** An observation description before scope enforcement supplies the observer exclusions. */
 export type NativeObservation = Omit<ObservationDescription, "excludeObservers">;
@@ -200,6 +203,25 @@ function narrowingParentId(directParentId?: string): string | undefined {
   return trimmed;
 }
 
+/**
+ * Like {@link narrowingParentId}: a set naming nothing would widen the search, so it is refused.
+ *
+ * Checked here as well as in the query builder so a caller learns synchronously rather than from
+ * the first page of a cursor it already holds.
+ */
+function narrowingChildFolderIds(ids?: readonly string[]): string[] | undefined {
+  if (ids === undefined) return undefined;
+  let trimmed = [...new Set(ids.map(id => id.trim()).filter(Boolean))];
+  if (!trimmed.length) {
+    throw new Error("childFolderIds must name at least one folder; omit it to search this folder.");
+  }
+  if (trimmed.length > MAX_QUERY_PARENTS) {
+    throw new Error(
+      `childFolderIds accepts at most ${MAX_QUERY_PARENTS} folders; search them in batches.`);
+  }
+  return trimmed;
+}
+
 function normalizeSearch(query: DriveSearchQuery): DriveSearchQuery {
   let namePrefix = query.namePrefix?.trim();
   let fullTextContains = query.fullTextContains?.trim();
@@ -258,8 +280,10 @@ function queryClauses(query: DriveListFilesOptions): string[] {
   }
   if (query.modifiedAfter) parts.push(`modified after ${query.modifiedAfter}`);
   if (query.modifiedBefore) parts.push(`modified before ${query.modifiedBefore}`);
-  if (query.directParentId) {
-    parts.push(`parent ${clip(query.directParentId, MAX_OBSERVATION_VALUE)}`);
+  if (query.directParentIds?.length) {
+    let noun = query.directParentIds.length === 1 ? "parent" : "parents";
+    parts.push(
+      `${noun} ${query.directParentIds.map(id => clip(id, MAX_OBSERVATION_VALUE)).join(", ")}`);
   }
   return parts;
 }
@@ -418,20 +442,23 @@ export class DriveSessionCore extends DriveCoreBase {
     if (directParentId) await this.#assertParent(directParentId);
     if (this.#scope.kind === "file") return this.#exactFileCursor();
     return this.#cursor({
-      ...(directParentId ? {directParentId} : {}),
+      ...(directParentId ? {directParentIds: [directParentId]} : {}),
       orderBy: orderBy(options.order),
     });
   }
 
   async search(query: DriveSearchQuery): Promise<Pager<DriveEntry>> {
+    rejectChildFolders(query);
     if (this.#scope.kind === "file") {
       throw new Error(
         "A single-file Drive binding cannot be searched; use getEntry() to read the bound file.");
     }
     let normalized = normalizeSearch(query);
     if (normalized.directParentId) await this.#assertParent(normalized.directParentId);
+    let {directParentId, ...filters} = normalized;
     return this.#cursor({
-      ...normalized,
+      ...filters,
+      ...(directParentId ? {directParentIds: [directParentId]} : {}),
       orderBy: normalized.fullTextContains ? null : orderBy(normalized.order),
     }, true);
   }
@@ -543,6 +570,14 @@ function rejectDirectParent(query: DriveFolderListOptions | DriveFolderSearchQue
   }
 }
 
+/** Only a positioned folder has child folders to search, so an account caller is refused here. */
+function rejectChildFolders(query: DriveSearchQuery): void {
+  if ((query as DriveFolderSearchQuery).childFolderIds !== undefined) {
+    throw new Error(
+      "Only a Drive folder binding can search child folders; childFolderIds is not accepted.");
+  }
+}
+
 /** Direct-child Drive access positioned at one provider-validated folder path. */
 export class DriveFolderSessionCore extends DriveCoreBase {
   #location: FolderLocation;
@@ -570,11 +605,13 @@ export class DriveFolderSessionCore extends DriveCoreBase {
 
   async search(query: DriveFolderSearchQuery): Promise<Pager<DriveEntry>> {
     rejectDirectParent(query);
-    let normalized = normalizeSearch(query);
+    let {childFolderIds, ...filters} = query;
+    let children = narrowingChildFolderIds(childFolderIds);
+    let normalized = normalizeSearch(filters);
     return this.#cursor({
       ...normalized,
       orderBy: normalized.fullTextContains ? null : orderBy(normalized.order),
-    }, true);
+    }, true, children);
   }
 
   async getEntry(fileId: string): Promise<DriveEntry> {
@@ -603,22 +640,27 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return file.id;
   }
 
+  /**
+   * Disclose why a folder cannot stand as a parent here, then refuse.
+   *
+   * Only `canListChildren` is owner-relative and needs the fence; a non-folder or a trashed one is
+   * an objective refusal `list()` would disclose anyway, so it is recorded as a file unit.
+   */
+  async #refuseUnlistable(node: DriveScopeNode): Promise<never> {
+    let title = "Check Google Drive folder";
+    let description = "Check whether a requested folder can be opened here.";
+    if (node.mimeType === FOLDER_MIME_TYPE) await this.authorizeWithheld(title, description);
+    else {
+      await this.authorizeUnits(
+        [this.#folderObservation(), {kind: "file", fileId: node.id}], title, description);
+    }
+    outsideScope();
+  }
+
   /** Open one live, listable direct child folder and append its checked path edge. */
   async openFolder(folderId: string): Promise<FolderLocation> {
-    // `#requireDirectFile` has already established the folder is live, so this is the listable
-    // half of the same predicate. Only `canListChildren` is owner-relative and needs the fence;
-    // a direct child that is not a folder at all is an objective refusal `list()` would disclose.
     let folder = await this.#requireDirectFile(folderId);
-    if (!isListableFolderFile(folder)) {
-      if (folder.mimeType === FOLDER_MIME_TYPE) {
-        await this.authorizeWithheld(
-          "Check Google Drive folder", "Check whether a requested folder can be opened here.");
-      } else {
-        await this.authorizeUnits([this.#folderObservation(), {kind: "file", fileId: folder.id}],
-          "Check Google Drive folder", "Check whether a requested folder can be opened here.");
-      }
-      outsideScope();
-    }
+    if (!isListableFolderFile(folder)) await this.#refuseUnlistable(folder);
     await this.authorizeUnits(
       [this.#folderObservation(), {kind: "folder", fileId: folder.id}],
       "Open Google Drive folder", `Open direct child folder ${folder.id}.`);
@@ -646,36 +688,80 @@ export class DriveFolderSessionCore extends DriveCoreBase {
    * before the cursor is returned, so calling `list()` and never paging authorizes nothing and
    * discloses nothing about the saved path.
    */
-  #cursor(query: DriveListFilesOptions, denyEmptySearch = false): Pager<DriveEntry> {
+  #cursor(
+    query: DriveListFilesOptions,
+    denyEmptySearch = false,
+    childFolderIds?: readonly string[],
+  ): Pager<DriveEntry> {
     let bound: {driveId: string | undefined} | undefined;
-    let requireCurrentLocation = async () => {
+    // Revalidated per page: the saved path, plus any named child folders, since one moved out
+    // mid-pagination would otherwise keep having its contents disclosed as in scope.
+    let readScope = async (): Promise<FolderPageScope> => {
       let path = await this.#readLocation();
       bound ??= {driveId: path[0].driveId};
       if (bound.driveId !== path[0].driveId) throw new Error(FOLDER_MOVED);
-      return path;
+      let current = path[path.length - 1];
+      return {
+        driveId: path[0].driveId,
+        parents: childFolderIds
+          ? await this.#requireChildFolders(childFolderIds, current)
+          : [current],
+      };
     };
+    // `buildEntries` and the authorizer run back to back with no provider read between them, so
+    // they share one post-fetch proof instead of taking the same batches twice.
+    let afterFetch: Promise<FolderPageScope> | undefined;
+    let sinceFetch = () => (afterFetch ??= readScope());
+    let parentIds = childFolderIds ?? [this.#currentFolderId()];
+    let audited = childFolderIds ? {...query, directParentIds: childFolderIds} : query;
     return new CursorPager<DriveFile, DriveEntry>({
       provider: "Google Drive",
       fetchPage: async pageToken => {
-        let {driveId} = (await requireCurrentLocation())[0];
+        afterFetch = undefined;
+        let {driveId} = await readScope();
         let page = await this.api.listFiles({
           ...query,
-          directParentId: this.#currentFolderId(),
+          directParentIds: parentIds,
           corpus: driveId ? {kind: "drive", driveId} : {kind: "user"},
           pageToken,
         });
         return {items: page.files, ...(page.nextPageToken ? {nextPageToken: page.nextPageToken} : {})};
       },
       buildEntries: async files => {
-        let path = await requireCurrentLocation();
-        let parent = path[path.length - 1];
-        if (files.some(file => !isDirectChild(file, parent))) outsideScope();
+        let {parents} = await sinceFetch();
+        if (files.some(file => !parents.some(parent => isDirectChild(file, parent)))) outsideScope();
         return files.map(file => driveFileToEntry(file));
       },
       authorize: this.pageAuthorizer(
-        {kind: "folder", folderId: this.#currentFolderId()}, query, denyEmptySearch,
-        {revalidate: requireCurrentLocation, baseUnits: [this.#folderObservation()]}),
+        {kind: "folder", folderId: this.#currentFolderId()}, audited, denyEmptySearch,
+        {revalidate: sinceFetch, baseUnits: [
+          this.#folderObservation(),
+          ...(childFolderIds ?? []).map(id => ({kind: "folder" as const, fileId: id})),
+        ]}),
     });
+  }
+
+  /**
+   * Prove every named folder is a listable direct child of `current`, in one batch.
+   *
+   * Same predicate and same fence as {@link openFolder}: invisible or live-but-unlistable is
+   * owner-relative, while a non-folder, a trashed one, or a non-child is an objective refusal a
+   * listing of this folder would disclose anyway.
+   */
+  async #requireChildFolders(
+    folderIds: readonly string[], current: DriveScopeNode,
+  ): Promise<DriveScopeNode[]> {
+    let nodes = await this.api.getScopeNodes(folderIds);
+    for (let node of nodes) {
+      if (!node) {
+        await this.authorizeWithheld("Check Google Drive folder",
+          "Check whether a requested folder is a listable direct child here.");
+        outsideScope();
+      }
+      if (!isDirectChild(node, current)) outsideScope();
+      if (!isListableFolderNode(node)) await this.#refuseUnlistable(node);
+    }
+    return nodes as DriveScopeNode[];
   }
 
   async #readLocation(): Promise<DriveScopeNode[]> {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  FOLDER_MIME_TYPE, buildDriveQuery, escapeDriveQueryLiteral,
+  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, escapeDriveQueryLiteral,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -108,7 +108,7 @@ describe("buildDriveQuery", () => {
       mimeTypes: ["application/pdf", "text/plain"],
       modifiedAfter: "2026-01-01T00:00:00Z",
       modifiedBefore: "2026-02-01T00:00:00Z",
-      directParentId: "folder-1",
+      directParentIds: ["folder-1"],
     })).toBe(
       "trashed = false and name contains 'Quarter' and fullText contains 'budget' and " +
       "(mimeType = 'application/pdf' or mimeType = 'text/plain') and " +
@@ -143,7 +143,7 @@ describe("buildDriveQuery", () => {
       excludeMimeTypes: ["app/x-'c"],
       modifiedAfter: "2026-'01",
       modifiedBefore: "2026-\\02",
-      directParentId: "folder-'1\\",
+      directParentIds: ["folder-'1\\"],
     })).toBe(
       "trashed = false and fullText contains 'Ada\\'s \\\\note' and " +
       "(mimeType = 'app/x-\\'a' or mimeType = 'app/x-\\\\b') and " +
@@ -152,6 +152,28 @@ describe("buildDriveQuery", () => {
       "modifiedTime < '2026-\\\\02' and " +
       "'folder-\\'1\\\\' in parents",
     );
+  });
+
+  it("ORs every parent so one query spans several proven folders", () => {
+    expect(buildDriveQuery({ directParentIds: ["a", "b", "c"] })).toBe(
+      "trashed = false and ('a' in parents or 'b' in parents or 'c' in parents)",
+    );
+  });
+
+  // Dropping an empty narrowing widens the read to the whole binding, which is the opposite of
+  // what was asked. Omitting the field is how a caller asks for that.
+  it.each([[[]], [["  "]]])("refuses a parent set naming nothing: %j", parents => {
+    expect(() => buildDriveQuery({ directParentIds: parents }))
+      .toThrow(/must name at least one parent/);
+  });
+
+  // Drive documents no `q` length limit, so the cap is ours: an OR group long enough to trip the
+  // provider would fail with an opaque 400 after the batched parent proof had already passed.
+  it("refuses more parents than one query carries", () => {
+    let ids = Array.from({ length: MAX_QUERY_PARENTS + 1 }, (_, index) => `f${index}`);
+    expect(() => buildDriveQuery({ directParentIds: ids })).toThrow(/at most 50 parents/);
+    expect(buildDriveQuery({ directParentIds: ids.slice(0, MAX_QUERY_PARENTS) }))
+      .toContain("'f49' in parents");
   });
 });
 
@@ -267,7 +289,7 @@ describe("listFiles", () => {
       namePrefix: "Quarter",
       fullTextContains: "budget",
       mimeTypes: ["application/pdf"],
-      directParentId: "folder-1",
+      directParentIds: ["folder-1"],
     });
     expect(calls[0].url.searchParams.get("q")).toBe(
       "trashed = false and name contains 'Quarter' and fullText contains 'budget' and " +

@@ -8,6 +8,12 @@ const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
+/**
+ * Parents one `q` may name. Drive documents no query-length limit, so this is ours: the batched
+ * parent proof chunks at 100, and without a cap here a longer set would pass that and then fail
+ * the search with an opaque provider 400.
+ */
+export const MAX_QUERY_PARENTS = 50;
 
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -93,7 +99,8 @@ export type DriveFileQuery = {
   fullTextContains?: string;
   modifiedAfter?: string;
   modifiedBefore?: string;
-  directParentId?: string;
+  /** Proven parent folders; a file matches when any one of them is its direct parent. */
+  directParentIds?: readonly string[];
 };
 
 /**
@@ -360,8 +367,17 @@ export function buildDriveQuery(query: DriveFileQuery): string {
   }
   if (query.modifiedAfter) clauses.push(literalClause("modifiedTime", ">", query.modifiedAfter));
   if (query.modifiedBefore) clauses.push(literalClause("modifiedTime", "<", query.modifiedBefore));
-  if (query.directParentId?.trim()) {
-    clauses.push(`'${escapeDriveQueryLiteral(query.directParentId.trim())}' in parents`);
+  if (query.directParentIds !== undefined) {
+    let parents = query.directParentIds.map(id => id.trim()).filter(Boolean);
+    if (!parents.length) {
+      throw new Error(
+        "directParentIds must name at least one parent; omit it to read the whole binding.");
+    }
+    if (parents.length > MAX_QUERY_PARENTS) {
+      throw new Error(`directParentIds accepts at most ${MAX_QUERY_PARENTS} parents.`);
+    }
+    let inParents = (id: string) => `'${escapeDriveQueryLiteral(id)}' in parents`;
+    clauses.push(parents.length === 1 ? inParents(parents[0]) : `(${parents.map(inParents).join(" or ")})`);
   }
   return clauses.join(" and ");
 }
