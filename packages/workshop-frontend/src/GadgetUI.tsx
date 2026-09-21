@@ -9,6 +9,8 @@ import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
 // content.
 import CAPNWEB_BUNDLE from 'capnweb?raw'
 
+// btoa() below requires this to stay ASCII; capnweb's build enforces ASCII-only dist bundles
+// since 0.11.1.
 let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
@@ -104,6 +106,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
 </head>
 <body>

@@ -66,14 +66,14 @@ function leadingYamlComment(lines: string[]): string | null {
 // Matches a leading YAML frontmatter block (`--- … ---`), capturing its inner text.
 const FRONTMATTER_RE = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
-// Split leading YAML frontmatter from markdown content. The rich editor can't round-trip it.
+/** Split leading YAML frontmatter from markdown content. The rich editor can't round-trip it. */
 export function splitFrontmatter(body: string): { frontmatter: string | null; content: string } {
   const m = FRONTMATTER_RE.exec(body);
   if (!m) return { frontmatter: null, content: body };
   return { frontmatter: m[1], content: body.slice(m[0].length) };
 }
 
-// Recombine frontmatter with content.
+/** Recombine frontmatter with content. */
 export function joinFrontmatter(frontmatter: string | null, content: string): string {
   if (frontmatter === null) return content;
   return `---\n${frontmatter}\n---\n\n${content.replace(/^\s*\n/, "")}`;
@@ -114,7 +114,7 @@ const extractors: DescriptionExtractor[] = [
   },
 ];
 
-// Return a derived description, or null when the author must supply one.
+/** Return a derived description, or null when the author must supply one. */
 export function extractDescription(contentType: string, body: string): string | null {
   for (const ex of extractors) {
     if (ex.appliesTo(contentType)) {

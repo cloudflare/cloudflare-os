@@ -48,8 +48,8 @@ export type SpreadsheetRange = {
   values: SpreadsheetCellValue[][];
 };
 
-/** Read-only access to one selected Google spreadsheet. */
-export interface GoogleSpreadsheetSession {
+/** Read-only access to one Google spreadsheet. */
+export interface GoogleSpreadsheetReadSession {
   /** Return spreadsheet metadata and its worksheet list. */
   getSpreadsheet(): Promise<SpreadsheetInfo>;
 
@@ -72,3 +72,6 @@ export interface GoogleSpreadsheetSession {
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]>;
 }
+
+/** The access provided by a directly bound Google spreadsheet, which is read-only. */
+export type GoogleSpreadsheetSession = GoogleSpreadsheetReadSession;

@@ -4,10 +4,12 @@
 // credentials. Writes are still allowed, since writing back to the server the data came from
 // discloses it to nobody new. See the README for the alternatives that were rejected.
 
-// Explains, to whoever tried to open a Gadget they do not own, why they cannot.
-//
-// @param source How to name the thing that was read from: a hostname for a bare endpoint, a gateway
-// name for a portal. Interpolated into a sentence, so it should read as a noun phrase.
+/**
+ * Explains, to whoever tried to open a Gadget they do not own, why they cannot.
+ *
+ * @param source How to name the thing that was read from: a hostname for a bare endpoint, a gateway
+ * name for a portal. Interpolated into a sentence, so it should read as a noun phrase.
+ */
 export function observerRefusalMessage(source: string): string {
   return `a workspace that reads from ${source} can only be opened by its owner, because there is no ` +
     `way to check whether anyone else is allowed to see what it read. Publish it as a blueprint ` +

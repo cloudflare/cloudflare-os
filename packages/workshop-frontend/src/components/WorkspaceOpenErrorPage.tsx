@@ -1,4 +1,4 @@
-import { Lock, MagnifyingGlass, WarningCircle } from '@phosphor-icons/react'
+import { LinkBreak, Lock, MagnifyingGlass, WarningCircle } from '@phosphor-icons/react'
 import { useEffect, useId, useRef } from 'react'
 import {
   getOpenGadgetErrorCode,
@@ -6,7 +6,8 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton } from './WorkshopControls'
 
-export type WorkspaceOpenFailureKind = 'access-denied' | 'not-found' | 'unexpected'
+export type WorkspaceOpenFailureKind =
+  'access-denied' | 'not-found' | 'share-links-disabled' | 'unexpected'
 
 const CONTENT = {
   'access-denied': {
@@ -20,6 +21,12 @@ const CONTENT = {
     message: 'The link may be incorrect, or the workspace may have been deleted.',
     Icon: MagnifyingGlass,
     retryable: false,
+  },
+  'share-links-disabled': {
+    title: 'Share links are turned off for this workspace',
+    message: 'Ask the workspace owner to add you directly, then try again.',
+    Icon: LinkBreak,
+    retryable: true,
   },
   unexpected: {
     title: "We couldn't load this workspace",
@@ -35,6 +42,8 @@ export function classifyWorkspaceOpenFailure(error: unknown): WorkspaceOpenFailu
       return 'access-denied'
     case OPEN_GADGET_ERROR_CODES.workspaceNotFound:
       return 'not-found'
+    case OPEN_GADGET_ERROR_CODES.shareLinksDisabled:
+      return 'share-links-disabled'
     default:
       return 'unexpected'
   }
@@ -57,7 +66,7 @@ export default function WorkspaceOpenErrorPage({ kind, onRetry, onGoToWorkspaces
   }, [])
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-kumo-base px-6 py-12">
+    <div className="flex min-h-full items-center justify-center bg-kumo-base px-6 py-12">
       <section
         aria-atomic="true"
         aria-describedby={descriptionId}

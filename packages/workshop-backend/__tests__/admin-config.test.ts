@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 
 describe("parseAdminConfig", () => {
   it("backfills fields missing from a config persisted before they existed", () => {
@@ -11,9 +11,23 @@ describe("parseAdminConfig", () => {
     expect(config.signupsEnabled).toBe(false);
     expect(config.siteName).toBe("acme");
     expect(config.formats).toEqual([]);
+    expect(config.userSearchEnabled).toBe(true);
     for (let key of Object.keys(DEFAULT_ADMIN_CONFIG)) {
       expect(config[key as keyof typeof config], key).toBeDefined();
     }
+  });
+
+  it("defaults user search opposite signups while preserving an explicit setting", () => {
+    expect(DEFAULT_ADMIN_CONFIG.userSearchEnabled).toBe(!DEFAULT_ADMIN_CONFIG.signupsEnabled);
+    expect(parseAdminConfig(JSON.stringify({ signupsEnabled: true })).userSearchEnabled).toBe(false);
+    expect(parseAdminConfig(JSON.stringify({
+      signupsEnabled: true,
+      userSearchEnabled: true,
+    })).userSearchEnabled).toBe(true);
+  });
+
+  it("applies the dependent default to legacy AdminSettings records", () => {
+    expect(normalizeAdminConfig({ signupsEnabled: false }).userSearchEnabled).toBe(true);
   });
 
   it("drops malformed format entries rather than the whole list", () => {

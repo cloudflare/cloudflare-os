@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { Check, Plus, UserCircle } from '@phosphor-icons/react'
 import { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
-// Account info as consumed by the chooser. Matches the shape used by GatekeeperModal and the
-// blueprint configure panel.
+/**
+ * Account info as consumed by the chooser. Matches the shape used by GatekeeperModal and the
+ * blueprint configure panel.
+ */
 export type AccountOption = {
   id: number
   description: AccountDescription
@@ -13,10 +15,12 @@ export type AccountOption = {
   credentialsValid: boolean
 }
 
-// Renders a connected-account avatar with graceful fallback. Some vendors (notably Google) hand
-// us short-lived signed CDN URLs for the user's profile photo that can stop working without the
-// credentials themselves expiring; on load failure we fall back to the vendor logo, then a
-// generic user icon.
+/**
+ * Renders a connected-account avatar with graceful fallback. Some vendors (notably Google) hand
+ * us short-lived signed CDN URLs for the user's profile photo that can stop working without the
+ * credentials themselves expiring; on load failure we fall back to the vendor logo, then a
+ * generic user icon.
+ */
 export function AccountAvatar({ avatarUrl, logoUrl }: { avatarUrl: string | undefined, logoUrl: string | undefined }) {
   const [failed, setFailed] = useState(false)
   if (avatarUrl && !failed) {

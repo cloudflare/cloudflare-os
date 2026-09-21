@@ -51,7 +51,7 @@ export function httpStatusFromError(errorMessage: string, handle: ModelHandle)
  */
 export async function completeText(handle: ModelHandle, args: {
   systemPrompt?: string;
-  // Convenience: wraps into a single user message. Exactly one of `prompt`/`messages` required.
+  /** Convenience: wraps into a single user message. Exactly one of `prompt`/`messages` required. */
   prompt?: string;
   messages?: Message[];
   maxTokens?: number;

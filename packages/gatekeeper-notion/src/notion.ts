@@ -19,6 +19,7 @@ import {
   stripTrailingSlashes,
   type AccountDescription,
   type ApprovalQueue,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperUser,
@@ -30,6 +31,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   NotionApi,
   NotionApiError,
@@ -111,6 +114,12 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 };
 
 type StoredAccountInfo = {
@@ -163,14 +172,6 @@ const ITEM_RESOURCE: SupportedResource = {
 };
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, ITEM_RESOURCE];
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -269,14 +270,13 @@ export default {
       if (!code) return new Response("Error: no 'code' provided");
 
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      if (!await stub.acceptAuthCode(code, oauthNonce)) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       }
-      return new Response(SELF_CLOSING_HTML, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     } else {
       return new Response("Not Found", { status: 404 });
     }
@@ -334,18 +334,20 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // Prepare this account for a reconnect: the next acceptAuthCode() replaces credentials and
-  // notifies via credentialsRestored() instead of complete().
+  /**
+   * Prepare this account for a reconnect: the next acceptAuthCode() stages the new credentials and
+   * notifies via reconnectComplete() instead of complete().
+   */
   async prepareReconnect(initiationNonce: string) {
-    this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
-  // Verify & consume the initiation nonce, returning a fresh OAuth nonce. Returns null if invalid.
+  /** Verify & consume the initiation nonce, returning a fresh OAuth nonce. Returns null if invalid. */
   async beginOAuthFlow(initiationNonce: string): Promise<{ oauthNonce: string } | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" ||
@@ -357,16 +359,20 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return { oauthNonce };
   }
 
-  // Exchange the auth code for tokens. Returns false if the OAuth nonce is invalid/expired.
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Exchange the auth code for tokens and return the handoff for the page the browser lands on, or
+   * null if the OAuth nonce is invalid/expired.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -382,23 +388,32 @@ export class UserAccount extends DurableObject<Env> {
     const grant = await exchangeAuthCode(
         code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
 
-    this.#storeGrant(grant);
-
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.#storeGrant(grant);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("accessToken");
         this.ctx.storage.kv.delete("refreshToken");
         throw err;
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const grant = commitStagedCredentials<NotionOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeGrant(grant);
   }
 
   #storeGrant(grant: NotionOAuthGrant) {
@@ -414,17 +429,21 @@ export class UserAccount extends DurableObject<Env> {
     });
   }
 
-  // Returns a usable access token. Notion access tokens are long-lived; if one ever expires, the
-  // caller should invoke refreshCredentials().
+  /**
+   * Returns a usable access token. Notion access tokens are long-lived; if one ever expires, the
+   * caller should invoke refreshCredentials().
+   */
   async getAccessToken(): Promise<string> {
     const token = this.ctx.storage.kv.get<string>("accessToken");
     if (!token) throw new Error("No Notion credentials set.");
     return token;
   }
 
-  // Rotate the access token using the stored refresh token. Notifies the Workshop (once) that
-  // credentials have expired whenever rotation is impossible or rejected, so the UI can prompt a
-  // reconnect. Always throws when it can't produce a fresh token.
+  /**
+   * Rotate the access token using the stored refresh token. Notifies the Workshop (once) that
+   * credentials have expired whenever rotation is impossible or rejected, so the UI can prompt a
+   * reconnect. Always throws when it can't produce a fresh token.
+   */
   async refreshCredentials(): Promise<string> {
     if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) {
       throw new Error("The Notion Gatekeeper is not configured.");
@@ -559,10 +578,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
-  // Mint a verifier representing this account, used by the Notion gatekeepers' addObserver to confirm
-  // a prospective observer may read a bound page/database (and, for workspace bindings, the workspace
-  // and each accessed item). The verifier carries this user's own account id, so the access checks
-  // run against the observer's *own* Notion token.
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
+  }
+
+  /**
+   * Mint a verifier representing this account, used by the Notion gatekeepers' addObserver to confirm
+   * a prospective observer may read a bound page/database (and, for workspace bindings, the workspace
+   * and each accessed item). The verifier carries this user's own account id, so the access checks
+   * run against the observer's *own* Notion token.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     const props: NotionVerifierProps = { userObjectId: this.ctx.props.userObjectId };
@@ -592,8 +617,10 @@ type NotionVerifierProps = {
   userObjectId: string;
 };
 
-// The non-standard methods the Notion gatekeepers call on their own verifier (see addObserver). Not
-// part of the generic GatekeeperUserVerifier contract.
+/**
+ * The non-standard methods the Notion gatekeepers call on their own verifier (see addObserver). Not
+ * part of the generic GatekeeperUserVerifier contract.
+ */
 export interface NotionVerifierApi extends GatekeeperUserVerifier {
   hasWorkspaceAccess(workspaceId: string): Promise<boolean>;
   hasItemAccess(itemId: string): Promise<boolean>;
@@ -750,11 +777,13 @@ export class NotionItemGatekeeperImpl extends DurableObject<Env, NotionItemGatek
     return new NotionPageSessionImpl(store, approvalQueue.dup(), this.ctx.props.itemId);
   }
 
-  // Observer tracking — "ACL check (single unit)". The binding is one page or database, so we just
-  // confirm the observer can retrieve it with their own token (hasItemAccess). A page's subtree and a
-  // database's rows inherit its access, so the bound item is the atomic unit: nothing read later could
-  // be outside it, so no observers are tracked and removeObserver is a no-op. The overseer re-runs
-  // addObserver on every open, catching loss of access promptly.
+  /**
+   * Observer tracking — "ACL check (single unit)". The binding is one page or database, so we just
+   * confirm the observer can retrieve it with their own token (hasItemAccess). A page's subtree and a
+   * database's rows inherit its access, so the bound item is the atomic unit: nothing read later could
+   * be outside it, so no observers are tracked and removeObserver is a no-op. The overseer re-runs
+   * addObserver on every open, catching loss of access promptly.
+   */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const verifier = user as unknown as Fetcher<NotionVerifierApi>;
     if (!(await verifier.hasItemAccess(this.ctx.props.itemId))) {

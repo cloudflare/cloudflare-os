@@ -61,11 +61,13 @@ function useWorkspacesContext(): WorkspacesContextValue {
   return ctx
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Provider: owns all the data + mutation handlers, plus the share / delete dialogs. Renders its
-// children inside its context so SidebarWorkspacesTools and SidebarWorkspacesLists can be placed
-// independently in the parent layout (pinned vs. scrolling areas).
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Provider: owns all the data + mutation handlers, plus the share / delete dialogs. Renders its
+ * children inside its context so SidebarWorkspacesTools and SidebarWorkspacesLists can be placed
+ * independently in the parent layout (pinned vs. scrolling areas).
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export function SidebarWorkspacesProvider({ children }: { children: ReactNode }) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -257,10 +259,12 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tools (search). Lives in the rail's pinned-top area so it stays put while the lists below scroll.
-// Only renders in collapsed mode — see the note below.
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Tools (search). Lives in the rail's pinned-top area so it stays put while the lists below scroll.
+ * Only renders in collapsed mode — see the note below.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: boolean }) {
   // No "New workspace" button: Home *is* the new-workspace launcher, so it would be redundant.
   // Search lives as a magnifying-glass icon in the brand row when expanded; when collapsed the
@@ -282,10 +286,12 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lists (Favorites / Recent workspaces). Lives in the rail's scrolling middle
-// region. In collapsed mode shows a compact avatar stack.
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Lists (Favorites / Recent workspaces). Lives in the rail's scrolling middle
+ * region. In collapsed mode shows a compact avatar stack.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: boolean }) {
   const {
     search,

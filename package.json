@@ -5,24 +5,31 @@
   "type": "module",
   "packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
   "scripts": {
-    "build": "pnpm run --recursive build",
-    "run-local": "node scripts/run-local.mjs",
-    "test": "node --test scripts/*.test.js && pnpm run --recursive --if-present test",
+    "build": "node scripts/vp/run.ts --filter=!cloudflare-os --cache build",
+    "run-local": "node scripts/run-local.ts",
+    "test": "node scripts/vp/run.ts --filter=!cloudflare-os --cache test",
+    "evals": "pnpm --filter @gadgets/workshop-evals evals",
+    "evals:ui": "pnpm --filter @gadgets/workshop-evals evals:ui",
+    "preview:config": "node scripts/preview/preview.ts config",
+    "preview:deploy": "node scripts/preview/preview.ts deploy",
+    "preview:delete": "node scripts/preview/preview.ts delete",
+    "preview:sweep": "node scripts/preview/preview.ts sweep",
     "dev-client": "cd packages/workshop-frontend && pnpm run dev",
-    "dev-server": "node run-dev-server.js",
-    "clean": "pnpm run --recursive clean",
-    "lint:check": "oxlint",
-    "lint:fix": "oxlint --fix",
-    "types:check": "pnpm run --recursive --if-present types:check",
-    "lint": "pnpm run lint:check && pnpm run types:check",
-    "types:generate": "node scripts/generate-worker-types.mjs"
+    "dev-server": "node scripts/run-dev-server.ts",
+    "clean": "node scripts/vp/run.ts --filter=!cloudflare-os clean",
+    "lint:check": "vp lint",
+    "lint:fix": "vp lint --fix",
+    "types:check": "pnpm run build",
+    "types:scripts": "tsc -p scripts/tsconfig.json",
+    "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run types:check",
+    "types:generate": "node scripts/generate-worker-types.ts"
   },
   "devDependencies": {
-    "aws4fetch": "^1.0.20",
-    "jsonc-parser": "^3.3.1",
-    "oxlint": "^1.76.0",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "wrangler": "^4.119.0"
+    "@gadgets/scripts": "workspace:*",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
   }
 }

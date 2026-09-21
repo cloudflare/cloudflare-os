@@ -1,5 +1,7 @@
-import { expect, it, describe } from "vitest"
-import { createTypedStorage, collection, UniqueIndex, NonUniqueIndex } from "../src/index.js";
+import { expect, expectTypeOf, it, describe } from "vitest"
+import { createTypedStorage, collection, singleton, Singleton, SingletonSchema, UniqueIndex,
+         NonUniqueIndex }
+    from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
 // We mock out DurableObjectStorage becaues otherwise we'd have to run the tests inside a
@@ -137,6 +139,243 @@ describe("singletons", () => {
     storage.counter.put(555);
     expect(subscriber.lastValue).toStrictEqual(321);
   });
+
+  it("uses the property name as the storage key by default", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        counter: singleton(0),
+      }
+    });
+
+    storage.counter.put(123);
+
+    // Declaring a singleton with no options must be byte-identical on disk to a bare default.
+    expect(mockStorage.kv.get("counter")).toStrictEqual(123);
+  });
+
+  it("reads and writes a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+
+    // Data written by an earlier version of the schema, when the property was called `oldName`.
+    mockStorage.kv.put("oldName", 42);
+
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(42);
+
+    storage.newName.put(43);
+
+    expect(storage.newName.get()).toStrictEqual(43);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(43);
+    expect(mockStorage.kv.get("newName")).toBeUndefined();
+  });
+
+  it("falls back to the default when the legacy key was never written", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(false, {storageKey: "oldName"}),
+      }
+    });
+
+    expect(storage.newName.get()).toStrictEqual(false);
+
+    storage.newName.put(true);
+
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(true);
+  });
+
+  it("notifies subscribers for a legacy storage key", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      singletons: {
+        newName: singleton(0, {storageKey: "oldName"}),
+      }
+    });
+
+    let subscriber = {
+      lastValue: -1,
+      update(value: number) {
+        this.lastValue = value;
+      }
+    };
+    storage.newName.subscribe(subscriber);
+
+    storage.newName.put(7);
+
+    expect(subscriber.lastValue).toStrictEqual(7);
+    expect(mockStorage.kv.get("oldName")).toStrictEqual(7);
+  });
+
+  it("accepts null and undefined defaults with options, like bare defaults do", () => {
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        bareNull: <string | null>null,
+        bareUndefined: <string | undefined>undefined,
+        optNull: singleton(<string | null>null, {storageKey: "legacyNull"}),
+        optUndefined: singleton(<string | undefined>undefined, {storageKey: "legacyUndefined"}),
+      }
+    });
+
+    expectTypeOf(storage.optNull).toEqualTypeOf<Singleton<string | null>>();
+    expectTypeOf(storage.optUndefined).toEqualTypeOf<Singleton<string | undefined>>();
+
+    expect(storage.bareNull.get()).toStrictEqual(null);
+    expect(storage.bareUndefined.get()).toStrictEqual(undefined);
+    expect(storage.optNull.get()).toStrictEqual(null);
+    expect(storage.optUndefined.get()).toStrictEqual(undefined);
+
+    storage.optNull.put("x");
+    expect(storage.optNull.get()).toStrictEqual("x");
+  });
+
+  it("rejects two singletons resolving to the same storage key", () => {
+    // Two explicit keys.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        a: singleton(0, {storageKey: "shared"}),
+        b: singleton(0, {storageKey: "shared"}),
+      }
+    })).toThrow('Two singletons resolve to the same storage key "shared".');
+
+    // An explicit key colliding with another slot's default (property-name) key, in either order.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        a: singleton(0, {storageKey: "b"}),
+        b: 0,
+      }
+    })).toThrow('Two singletons resolve to the same storage key "b".');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {
+        b: 0,
+        a: singleton(0, {storageKey: "b"}),
+      }
+    })).toThrow('Two singletons resolve to the same storage key "b".');
+  });
+
+  it("rejects a storage key containing a namespace delimiter", () => {
+    // `users:alice` is exactly where collection `users` stores record `alice`; an exact-name
+    // check would never notice, so the delimiters themselves are refused.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {users: collection<User>()({primaryKey: "name"})},
+      singletons: {alias: singleton(0, {storageKey: "users:alice"})},
+    })).toThrow('Singleton storage key "users:alice" must not contain "." or ":"');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      singletons: {alias: singleton(0, {storageKey: "users.byUid"})},
+    })).toThrow('Singleton storage key "users.byUid" must not contain "." or ":"');
+  });
+
+  it("types a bare default shaped like a schema as the object, not its defaultValue", () => {
+    // `SingletonSchema` is nominal: an object literal with the same public fields is a bare
+    // default at runtime, and must be one at the type level too, or `get()` would be typed as
+    // returning `number` while actually returning the object.
+    let lookalike = {defaultValue: 1, options: {}};
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        slot: lookalike,
+      }
+    });
+
+    expectTypeOf(storage.slot).toEqualTypeOf<Singleton<typeof lookalike>>();
+    expectTypeOf(storage.slot).not.toEqualTypeOf<Singleton<number>>();
+    expect(storage.slot.get()).toStrictEqual(lookalike);
+  });
+
+  it("types a union of schema and bare default distributively", () => {
+    // A schema entry typed as a union unwraps each member separately, rather than falling
+    // through to `Singleton<SingletonSchema<number> | string>`.
+    let either: SingletonSchema<number> | string = Math.random() < 2 ? singleton(0) : "s";
+    let storage = createTypedStorage(makeMockStorage(), {
+      singletons: {
+        slot: either,
+      }
+    });
+
+    expectTypeOf(storage.slot).toEqualTypeOf<Singleton<number | string>>();
+    expect(storage.slot.get()).toStrictEqual(0);
+  });
+});
+
+describe("collections with a legacy storage name", () => {
+  it("stores records and indexes under the legacy prefix", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, {
+      collections: {
+        people: collection<User>()({
+          storageName: "users",
+          primaryKey: "name",
+          uniqueIndexes: {
+            byUid: (user: User) => user.uid
+          },
+          nonUniqueIndexes: {
+            byLevel: (user: User) => user.level
+          }
+        })
+      }
+    });
+
+    storage.people.put(ALICE);
+
+    expect(storage.people.get("alice")).toStrictEqual(ALICE);
+    expect(storage.people.byUid.get(45)).toStrictEqual(ALICE);
+    expect([...storage.people.byLevel.get(8)]).toStrictEqual([ALICE]);
+
+    // Every key -- the record and both indexes -- lives under the legacy name, so a collection
+    // renamed in code reads data written before the rename.
+    let keys = [...mockStorage.kv.list({})].map(([key]) => key);
+    expect(keys.some(key => key.startsWith("users:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byUid:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("users.byLevel:"))).toStrictEqual(true);
+    expect(keys.some(key => key.startsWith("people"))).toStrictEqual(false);
+  });
+
+  it("rejects two collections resolving to the same storage name", () => {
+    // Two explicit names.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        a: collection<User>()({storageName: "shared", primaryKey: "name"}),
+        b: collection<User>()({storageName: "shared", primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "shared".');
+
+    // An explicit name colliding with another collection's default (property) name, either order.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        a: collection<User>()({storageName: "b", primaryKey: "name"}),
+        b: collection<User>()({primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "b".');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        b: collection<User>()({primaryKey: "name"}),
+        a: collection<User>()({storageName: "b", primaryKey: "name"}),
+      }
+    })).toThrow('Two collections resolve to the same storage name "b".');
+  });
+
+  it("rejects a storage name containing a namespace delimiter", () => {
+    // `users.byUid` is exactly the prefix of collection `users`'s `byUid` index; an exact-name
+    // check would never notice, so the delimiters themselves are refused.
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        users: collection<User>()({
+          primaryKey: "name",
+          uniqueIndexes: {byUid: (user: User) => user.uid},
+        }),
+        alias: collection<User>()({storageName: "users.byUid", primaryKey: "name"}),
+      }
+    })).toThrow('Collection storage name "users.byUid" must not contain "." or ":"');
+    expect(() => createTypedStorage(makeMockStorage(), {
+      collections: {
+        alias: collection<User>()({storageName: "users:alice", primaryKey: "name"}),
+      }
+    })).toThrow('Collection storage name "users:alice" must not contain "." or ":"');
+  });
 });
 
 type User = {
@@ -185,6 +424,32 @@ let EVE: User = {
   groups: []
 };
 
+// Schemas shared by the non-unique-index suites: users indexed by level, and the same collection
+// with no index declared (for simulating writes from before the index existed).
+const INDEXED_SCHEMA = {
+  collections: {
+    users: collection<User>()({
+      primaryKey: "name",
+      nonUniqueIndexes: {
+        byLevel: (user: User) => user.level == 0 ? null : user.level
+      }
+    })
+  }
+};
+const PLAIN_SCHEMA = {
+  collections: { users: collection<User>()({ primaryKey: "name" }) }
+};
+const GROUP_SCHEMA = {
+  collections: {
+    users: collection<User>()({
+      primaryKey: "name",
+      nonUniqueIndexes: {
+        byGroup: (user: User) => user.groups
+      }
+    })
+  }
+};
+
 describe("basic collections with string primary key", () => {
   let mockStorage = makeMockStorage();
   let storage = createTypedStorage(mockStorage, {
@@ -215,7 +480,8 @@ describe("basic collections with string primary key", () => {
   testByName(storage.users);
 });
 
-function testByName(index: UniqueIndex<User, string>) {
+// Accepts both a UniqueIndex and a Collection (which has no rebuild()).
+function testByName(index: Pick<UniqueIndex<User, string>, "get" | "list" | "delete">) {
   it("supports get", () => {
     expect(index.get("alice")).toStrictEqual(ALICE);
     expect(index.get("bob")).toStrictEqual(BOB);
@@ -276,7 +542,8 @@ describe("basic collections with integer primary key", () => {
   testByNumber(storage.users);
 });
 
-function testByNumber(index: UniqueIndex<User, number>) {
+// Accepts both a UniqueIndex and a Collection (which has no rebuild()).
+function testByNumber(index: Pick<UniqueIndex<User, number>, "get" | "list" | "delete">) {
   it("supports get", () => {
     expect(index.get(ALICE.uid)).toStrictEqual(ALICE);
     expect(index.get(BOB.uid)).toStrictEqual(BOB);
@@ -509,16 +776,7 @@ describe("unique index by array", () => {
 
 describe("non-unique index by number", () => {
   let mockStorage = makeMockStorage();
-  let storage = createTypedStorage(mockStorage, {
-    collections: {
-      users: collection<User>()({
-        primaryKey: "name",
-        nonUniqueIndexes: {
-          byLevel: (user: User) => user.level == 0 ? null : user.level
-        }
-      })
-    }
-  });
+  let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
 
   expect([...storage.users.byLevel.list()]).toStrictEqual([]);
 
@@ -609,5 +867,183 @@ describe("non-unique index by array", () => {
     expect(index.delete("nobody")).toStrictEqual(0);
 
     expect([...index.list()]).toStrictEqual([BOB, DAVE, DAVE]);
+  });
+});
+
+describe("non-unique index rebuild", () => {
+  it("backfills an index declared after records were written", () => {
+    let mockStorage = makeMockStorage();
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    legacy.users.put(BOB);
+    legacy.users.put(ALICE);
+    legacy.users.put(CAROL);
+    legacy.users.put(EVE);
+
+    let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
+
+    // Declared over pre-existing records, the index starts empty -- and resolving one of those
+    // records would throw on the index's remove.
+    expect([...storage.users.byLevel.list()]).toStrictEqual([]);
+    expect(() => storage.users.put({...ALICE, level: 0})).toThrow("inconsistent");
+
+    storage.users.byLevel.rebuild();
+    expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE, CAROL]);
+    expect([...storage.users.byLevel.get(8)]).toStrictEqual([ALICE, CAROL]);
+
+    // Writes after the rebuild keep the index consistent, including key removal.
+    storage.users.put({...ALICE, level: 0});
+    expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, CAROL]);
+  });
+
+  it("backfills a multi-key index (array index function)", () => {
+    let mockStorage = makeMockStorage();
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    legacy.users.put(ALICE);
+    legacy.users.put(BOB);
+    legacy.users.put(DAVE);
+    legacy.users.put(EVE);  // no groups: unindexed
+
+    let storage = createTypedStorage(mockStorage, GROUP_SCHEMA);
+    storage.users.byGroup.rebuild();
+
+    expect([...storage.users.byGroup.get("everyone")]).toStrictEqual([ALICE, BOB, DAVE]);
+    expect([...storage.users.byGroup.get("admin")]).toStrictEqual([ALICE]);
+    expect([...storage.users.byGroup.get("interns")]).toStrictEqual([DAVE]);
+    expect([...storage.users.byGroup.list({dedupe: true})]).toStrictEqual([ALICE, BOB, DAVE]);
+  });
+
+  it("reclaims orphaned child rows and never reuses child-group ids", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
+    storage.users.put(ALICE);  // level 8
+    storage.users.put(BOB);    // level 4
+
+    // A child row whose parent key vanished (e.g. a partially-applied wipe): unreachable from
+    // the parent keys, but still swept by rebuild's raw-range deleteAll.
+    mockStorage.kv.put("users.byLevel.999:zombie", {});
+    let preIds = new Set([...mockStorage.kv.list({prefix: "users.byLevel:"})].map(([, id]) => id));
+    let counterBefore = mockStorage.kv.get<number>("users.byLevel#")!;
+
+    storage.users.byLevel.rebuild();
+
+    expect(mockStorage.kv.get("users.byLevel.999:zombie")).toStrictEqual(undefined);
+    // The unique-id counter survives the wipe, so the rebuilt groups get fresh ids.
+    expect(mockStorage.kv.get<number>("users.byLevel#")).toBeGreaterThanOrEqual(counterBefore);
+    for (let [, id] of mockStorage.kv.list({prefix: "users.byLevel:"})) {
+      expect(preIds.has(id)).toStrictEqual(false);
+    }
+    expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE]);
+  });
+
+  it("discards stale entries for records changed behind the index's back", () => {
+    let mockStorage = makeMockStorage();
+    let storage = createTypedStorage(mockStorage, INDEXED_SCHEMA);
+    storage.users.put(ALICE);
+    storage.users.put(DAVE);
+
+    // Mutate through a view without the index, leaving it stale: DAVE gone, BOB unindexed.
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    legacy.users.delete("dave");
+    legacy.users.put(BOB);
+
+    storage.users.byLevel.rebuild();
+    expect([...storage.users.byLevel.list()]).toStrictEqual([BOB, ALICE]);
+    expect([...storage.users.byLevel.get(1)]).toStrictEqual([]);
+  });
+});
+
+describe("unique index rebuild", () => {
+  const UNIQUE_SCHEMA = {
+    collections: {
+      users: collection<User>()({
+        primaryKey: "name",
+        uniqueIndexes: {
+          byUid: (user: User) => user.uid === 404 ? null : user.uid
+        }
+      })
+    }
+  };
+
+  it("backfills an index declared after records were written", () => {
+    let mockStorage = makeMockStorage();
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    legacy.users.put(ALICE);
+    legacy.users.put(BOB);
+    legacy.users.put(EVE);
+
+    let storage = createTypedStorage(mockStorage, UNIQUE_SCHEMA);
+
+    // Declared over pre-existing records, the index starts empty -- and changing one of those
+    // records' keys would throw on the index's remove.
+    expect(storage.users.byUid.get(ALICE.uid)).toStrictEqual(undefined);
+    expect(() => storage.users.put({...ALICE, uid: 46})).toThrow("inconsistent");
+
+    storage.users.byUid.rebuild();
+    expect(storage.users.byUid.get(ALICE.uid)).toStrictEqual(ALICE);
+    expect(storage.users.byUid.get(BOB.uid)).toStrictEqual(BOB);
+    expect(storage.users.byUid.get(EVE.uid)).toStrictEqual(undefined);  // null-keyed, unindexed
+
+    // Writes after the rebuild keep the index consistent, including key changes.
+    storage.users.put({...ALICE, uid: 46});
+    expect(storage.users.byUid.get(ALICE.uid)).toStrictEqual(undefined);
+    expect(storage.users.byUid.get(46)).toStrictEqual({...ALICE, uid: 46});
+  });
+
+  it("throws when two records derive the same key, leaving no partial index", () => {
+    let mockStorage = makeMockStorage();
+    let legacy = createTypedStorage(mockStorage, PLAIN_SCHEMA);
+    legacy.users.put(ALICE);
+    legacy.users.put({...BOB, uid: ALICE.uid});
+
+    let storage = createTypedStorage(mockStorage, UNIQUE_SCHEMA);
+    expect(() => storage.users.byUid.rebuild()).toThrow("conflicts");
+
+    // The rebuild runs in one transaction: the entries added before the conflict rolled back.
+    expect(storage.users.byUid.get(ALICE.uid)).toStrictEqual(undefined);
+    expect([...storage.users.byUid.list()]).toStrictEqual([]);
+  });
+});
+
+describe("non-unique index ranged get", () => {
+  it("ranges and pages within one group by primary key", () => {
+    let storage = createTypedStorage(makeMockStorage(), GROUP_SCHEMA);
+    storage.users.put(BOB);
+    storage.users.put(DAVE);
+    storage.users.put(CAROL);
+    storage.users.put(ALICE);
+
+    let index = storage.users.byGroup;
+    expect([...index.get("everyone", {start: "bob"})]).toStrictEqual([BOB, CAROL, DAVE]);
+    expect([...index.get("everyone", {startAfter: "bob"})]).toStrictEqual([CAROL, DAVE]);
+    expect([...index.get("everyone", {end: "carol"})]).toStrictEqual([ALICE, BOB]);
+    expect([...index.get("everyone", {limit: 2})]).toStrictEqual([ALICE, BOB]);
+    expect([...index.get("everyone", {reverse: true})]).toStrictEqual([DAVE, CAROL, BOB, ALICE]);
+    expect([...index.get("admin", {reverse: true, limit: 1})]).toStrictEqual([CAROL]);
+    expect([...index.get("nobody", {limit: 2})]).toStrictEqual([]);
+  });
+
+  it("pages a numeric-pk group descending with an exclusive end", () => {
+    type Row = {id: number, group: string};
+    let storage = createTypedStorage(makeMockStorage(), {
+      collections: {
+        rows: collection<Row>()({
+          primaryKey: "id",
+          nonUniqueIndexes: {
+            byGroup: (row: Row) => row.group
+          }
+        })
+      }
+    });
+    for (let id = 0; id < 7; id++) {
+      storage.rows.put({id, group: id % 2 === 0 ? "even" : "odd"});
+    }
+
+    // The cursored-history shape: a newest-first page strictly below the cursor.
+    let index = storage.rows.byGroup;
+    expect([...index.get("even", {end: 6, reverse: true, limit: 2})].map(r => r.id))
+        .toStrictEqual([4, 2]);
+    expect([...index.get("even", {reverse: true, limit: 2})].map(r => r.id))
+        .toStrictEqual([6, 4]);
+    expect([...index.get("even", {end: 2})].map(r => r.id)).toStrictEqual([0]);
   });
 });

@@ -47,7 +47,7 @@ export class LibraryRegistryDurableObject extends DurableObject<Cloudflare.Env> 
     }
   }
 
-  // Refresh a public collection summary; no-op if it is no longer public.
+  /** Refresh a public collection summary; no-op if it is no longer public. */
   async syncPublic(domain: string, summary: ContextCollectionSummary): Promise<void> {
     let existing = this.storage.publicCollections.get(summary.id);
     if (!existing) return;

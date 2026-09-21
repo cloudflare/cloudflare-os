@@ -1,4 +1,9 @@
-import { exports } from "cloudflare:workers";
+import {
+  abortAllDurableObjects,
+  createExecutionContext,
+  runInDurableObject,
+} from "cloudflare:test";
+import { env, exports } from "cloudflare:workers";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
   createOpenGadgetError,
@@ -8,14 +13,21 @@ import {
   type OpenGadgetErrorCode,
   type PublicApi,
 } from "@gadgets/workshop-shared/api";
+import server from "../src/server";
 import { describe, expect, it } from "vitest";
 
 type CodedError = Error & { code?: unknown };
 
 const PASSWORD_HASH = new Uint8Array([1, 2, 3]);
+// Also whitelisted in vitest.integration.config.ts onUnhandledError: capabilities held across
+// the injected abort reject on their own schedule.
+const USER_DO_ABORT_REASON = "user-DO reset injected by test";
 const EXPECTED_MESSAGES: Record<OpenGadgetErrorCode, string> = {
   [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
   [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
+  [OPEN_GADGET_ERROR_CODES.shareLinksDisabled]:
+      "Share links are disabled for this workspace because it contains sensitive data. " +
+      "The owner must add each person directly.",
 };
 
 function username(prefix: string): string {
@@ -42,9 +54,11 @@ function expectRpcCode(error: CodedError, code: OpenGadgetErrorCode): void {
 }
 
 async function connect(): Promise<RpcStub<PublicApi>> {
-  const response = await exports.default.fetch(new Request("https://workshop.invalid/api", {
+  // A service-binding fetch context ends with the upgrade response, before the socket callbacks.
+  // Invoke the handler directly so the WebSocket session shares the test's execution context.
+  const response = await server.fetch(new Request("https://workshop.invalid/api", {
     headers: { Upgrade: "websocket" },
-  }));
+  }), env, createExecutionContext());
 
   expect(response.status).toBe(101);
   const socket = response.webSocket;
@@ -131,5 +145,105 @@ describe.skip("openGadget errors across native RPC and Cap'n Web", () => {
 
     const browserError = await openRejection(intruder, metadata.id);
     expectRpcCode(browserError, OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+  });
+});
+
+// In production, workerd tags rejections from a reset DO with the structured flags
+// do-retry.ts reads. Locally, vitest-pool-workers aborts reject FLAGLESS — this test pins that, so if a
+// future pool upgrade starts attaching the production flags, it fails and the flag paths can
+// graduate from synthetic unit tests to real-reset integration tests. abortAllDurableObjects()
+// is the non-graceful teardown (deliberately not evictDurableObject(), which never breaks a
+// stub).
+describe("user-DO reset flags", () => {
+  it("local aborts reject flagless — flag-based recovery is untestable locally", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "probe");
+    using authenticated = await publicApi.authenticate(account.token);
+
+    expect(await authenticated.listModels()).toBeInstanceOf(Array);
+
+    // Bind a native stub to the current DO incarnation BEFORE the reset — a stub minted after
+    // the abort would simply restart the object and succeed. This poisoned-stub rejection is
+    // the exact shape AuthenticatedApiImpl sees when one of its calls loses the reset race.
+    const userStub = exports.UserDurableObject.get(
+      exports.UserDurableObject.idFromName(account.username));
+    expect(await userStub.listModels()).toBeInstanceOf(Array);
+
+    await abortAllDurableObjects();
+
+    // The session recovers: AuthenticatedApiImpl resolves a fresh stub per call, so the
+    // restarted object serves this read — the browser never sees the reset.
+    expect(await authenticated.listModels()).toBeInstanceOf(Array);
+
+    const nativeErr = await rejection(userStub.listModels());
+    expect({
+      message: nativeErr.message,
+      durableObjectReset: (nativeErr as Record<string, unknown>).durableObjectReset,
+      retryable: (nativeErr as Record<string, unknown>).retryable,
+      overloaded: (nativeErr as Record<string, unknown>).overloaded,
+    }).toEqual({
+      message: "Application called abortAllDurableObjects().",
+      durableObjectReset: undefined,
+      retryable: undefined,
+      overloaded: undefined,
+    });
+
+    // Permanently broken, not fail-once: the fresh-stub-per-call design rests on this.
+    const nativeErr2 = await rejection(userStub.listModels());
+    expect(nativeErr2.message).toBe("Application called abortAllDurableObjects().");
+  });
+});
+
+// The asymmetric reset a retained-stub design can't absorb: the USER DO resets while the
+// workspace (Overseer) DO keeps running. The Overseer used to mint its owner/clientUser stubs
+// once at open(); after the user DO's incarnation died, every user-DO-carrying call on the
+// still-open session — newChat, listModels, createGadget, setPinned — failed against the
+// poisoned stub until the WebSocket reconnected. The session capabilities now mint a fresh stub
+// per call, so the first post-reset call simply restarts the object — no reset flags needed,
+// which is also why this is testable despite local aborts rejecting flagless (see above).
+// abortAllDurableObjects() can't produce the asymmetry (it kills the Overseer too), so the
+// reset is injected into the one object via runInDurableObject + state.abort().
+describe("workspace session across a user-DO-only reset", () => {
+  it("chat, models, and gadget capabilities survive the user DO resetting", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "chatreset");
+    using authenticated = await publicApi.authenticate(account.token);
+    using workspace = await authenticated.newGadget();
+
+    // Model id null: commits the message without starting an agent — the pure chat-start path.
+    expect(await workspace.newChat("before the reset", null)).toEqual(expect.any(Number));
+
+    const userStub = exports.UserDurableObject.get(
+      exports.UserDurableObject.idFromName(account.username));
+    // The abort kills the very call delivering it, so the rejection is the success signal.
+    await rejection(runInDurableObject(userStub, (_instance, state) => {
+      state.abort(USER_DO_ABORT_REASON);
+    }));
+
+    // Every operation below crosses into the user DO through the SAME retained workspace
+    // capability. Each minting a fresh stub is what restarts the object and recovers.
+    expect(await workspace.newChat("after the reset", null)).toEqual(expect.any(Number));
+    expect(await workspace.listModels()).toBeInstanceOf(Array);
+    // createGadget resolves the binding name via getChatContext, and hands back a nested
+    // GadgetClient capability that must also be born with the fresh-stub design.
+    using gadget = await workspace.createGadget("post-reset gadget");
+    expect(await gadget.getTitle()).toBe("post-reset gadget");
+  });
+});
+
+// Smoke the paged action-log read against a real workspace DO: proves the @validateRpc wiring
+// accepts the option shape (the semantics live in __tests__/action-log-pagination.test.ts).
+// Runs after the reset tests so this session's DOs aren't torn down by abortAllDurableObjects().
+describe("paged action-log reads", () => {
+  it("answers listActions on a fresh workspace", async () => {
+    using publicApi = await connect();
+    const account = await createAccount(publicApi, "actionlog");
+    using authenticated = await publicApi.authenticate(account.token);
+    using workspace = await authenticated.newGadget();
+
+    expect(await workspace.listActions({ filter: "action" })).toEqual({ entries: [] });
+    // The pending filter is a distinct union member; this proves the regenerated validator
+    // accepts it end to end.
+    expect(await workspace.listActions({ filter: "pending" })).toEqual({ entries: [] });
   });
 });

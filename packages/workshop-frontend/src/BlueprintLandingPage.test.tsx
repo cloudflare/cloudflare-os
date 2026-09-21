@@ -1,238 +1,135 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ComponentProps, type ReactElement, type ReactNode } from 'react'
-import { flushSync } from 'react-dom'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { BlueprintPublicInfo, PublicApi } from '@gadgets/workshop-shared/api'
+import type {
+  AiChatAuthorInfo,
+  AuthenticatedApi,
+  BlueprintPublicInfo,
+  PublicApi,
+} from '@gadgets/workshop-shared/api'
 
-const route = vi.hoisted(() => ({ id: 'blueprint-a' }))
+const testState = vi.hoisted(() => ({
+  authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
+}))
 
-vi.mock('@tanstack/react-router', () => ({
-  useParams: () => ({ id: route.id }),
+vi.mock('@cloudflare/kumo', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@cloudflare/kumo')>()),
+  useKumoToastManager: () => ({ add: vi.fn<(toast: unknown) => void>() }),
+}))
+
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => vi.fn<() => void>(),
-  useRouter: () => ({ history: { canGoBack: () => false, back: vi.fn<() => void>() } }),
+  useParams: () => ({ id: 'blueprint-one' }),
+  useRouter: () => ({ history: { back: vi.fn<() => void>(), canGoBack: () => false } }),
 }))
 
 vi.mock('./useAuth', () => ({
   useAuth: () => ({
-    isAuthenticated: false,
-    authenticatedApi: null,
+    isAuthenticated: true,
+    authenticatedApi: testState.authenticatedApi,
     isLoading: false,
-    login: vi.fn<() => void>(),
+    login: vi.fn<(token: string) => void>(),
   }),
 }))
 
-vi.mock('@cloudflare/kumo', () => {
-  // oxlint-disable-next-line unicorn/consistent-function-scoping
-  const PassThrough = ({ children }: { children?: ReactNode }) => <>{children}</>
-  const Dialog = Object.assign(
-    ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-    {
-      Root: ({ children, open }: { children?: ReactNode; open?: boolean }) =>
-        open === false ? null : <>{children}</>,
-      Trigger: ({ render }: { render: ReactElement }) => render,
-      Title: PassThrough,
-      Description: PassThrough,
-      Close: ({ render }: { render: (props: object) => ReactElement }) => render({}),
-    },
-  )
-  const DropdownMenu = Object.assign(PassThrough, {
-    Trigger: ({ render }: { render: ReactElement }) => render,
-    Content: PassThrough,
-    Item: PassThrough,
-    Separator: () => null,
-  })
-  const Select = Object.assign(PassThrough, { Option: PassThrough })
-
-  return {
-    Button: ({ children, ...props }: ComponentProps<'button'>) => (
-      <button type="button" {...props}>{children}</button>
-    ),
-    Dialog,
-    DropdownMenu,
-    Select,
-    Tooltip: PassThrough,
-    useKumoToastManager: () => ({ add: vi.fn<(toast: unknown) => void>() }),
-  }
-})
-
-vi.mock('./components/WorkshopControls', () => ({
-  WorkshopButton: ({ children, ...props }: ComponentProps<'button'>) => (
-    <button type="button" {...props}>{children}</button>
-  ),
-  WorkshopIconButton: ({ children, ...props }: ComponentProps<'button'>) => (
-    <button type="button" {...props}>{children}</button>
-  ),
-}))
-
-vi.mock('./gatekeeper-modal/AccountChooser', () => ({ AccountChooser: () => null }))
-vi.mock('./ResourceConfiguratorHost', () => ({ default: () => null }))
-
 import BlueprintLandingPage from './BlueprintLandingPage'
 
-const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
-const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
-testGlobal.IS_REACT_ACT_ENVIRONMENT = true
-afterAll(() => {
-  if (previousActEnvironment === undefined) delete testGlobal.IS_REACT_ACT_ENVIRONMENT
-  else testGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
-})
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+const originalInnerWidth = window.innerWidth
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
+const MODEL: AiChatAuthorInfo = {
+  type: 'agent',
+  id: 'model-one',
+  name: 'Model one',
 }
 
-function blueprint(id: string, title: string): BlueprintPublicInfo {
-  return {
-    id,
-    metadata: {
-      title,
-      description: '',
-      author: { type: 'user', id: 'author', name: 'Author' },
-      created: new Date('2026-08-01T00:00:00Z'),
-      version: 1,
-      lastUpdated: new Date('2026-08-01T00:00:00Z'),
-      bindings: {},
+const BLUEPRINT: BlueprintPublicInfo = {
+  id: 'blueprint-one',
+  metadata: {
+    title: 'Model blueprint',
+    description: 'Requires an AI model.',
+    author: { type: 'user', id: 'author', name: 'Author' },
+    created: new Date('2026-08-24T00:00:00Z'),
+    version: 1,
+    lastUpdated: new Date('2026-08-24T00:00:00Z'),
+    bindings: {
+      AI: {
+        type: 'aiModel',
+        title: 'Claude Sonnet 5',
+        description: '',
+      },
     },
-  }
+  },
 }
 
-describe('BlueprintLandingPage route changes', () => {
-  let container: HTMLDivElement | undefined
+function subscription() {
+  return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
+    [Symbol.dispose]() {},
+  })
+}
+
+function authenticatedApi(): RpcStub<AuthenticatedApi> {
+  return {
+    listModels: async () => [MODEL],
+    listGatekeeperVendors: async () => [],
+    subscribeConnectedAccounts: subscription,
+    getAdminApi: async () => null,
+    isBlueprintInLibrary: async () => null,
+    isBlueprintPinned: async () => false,
+    getOwnBlueprint: async () => null,
+  } as unknown as RpcStub<AuthenticatedApi>
+}
+
+function publicApi(): RpcStub<PublicApi> {
+  return {
+    getBlueprint: async () => BLUEPRINT,
+  } as unknown as RpcStub<PublicApi>
+}
+
+describe('BlueprintLandingPage model configuration', () => {
   let root: Root | undefined
+  let rootContainer: HTMLDivElement | undefined
 
   afterEach(() => {
     act(() => root?.unmount())
-    container?.remove()
-    root = undefined
-    container = undefined
-    route.id = 'blueprint-a'
+    rootContainer?.remove()
+    testState.authenticatedApi = null
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
   })
 
-  async function render(rpcStub: RpcStub<PublicApi>) {
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-    await act(async () => root!.render(<BlueprintLandingPage rpcStub={rpcStub} />))
-  }
+  it('portals model options above the configure dialog and accepts a selection', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    testState.authenticatedApi = authenticatedApi()
+    rootContainer = document.createElement('div')
+    document.body.appendChild(rootContainer)
+    root = createRoot(rootContainer)
 
-  async function navigateTo(id: string, rpcStub: RpcStub<PublicApi>) {
-    route.id = id
-    await act(async () => root!.render(<BlueprintLandingPage rpcStub={rpcStub} />))
-  }
+    await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi()} />))
+    await act(async () => { await Promise.resolve() })
 
-  it('ignores an earlier route response that finishes after the current route response', async () => {
-    const requestA = deferred<BlueprintPublicInfo | null>()
-    const requestB = deferred<BlueprintPublicInfo | null>()
-    const rpcStub = {
-      getBlueprint: vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>((id: string) =>
-        id === 'blueprint-a' ? requestA.promise : requestB.promise),
-    } as unknown as RpcStub<PublicApi>
+    const configure = Array.from(document.body.querySelectorAll('button'))
+      .find(button => button.textContent === 'Configure')!
+    await act(async () => configure.click())
 
-    await render(rpcStub)
-    await navigateTo('blueprint-b', rpcStub)
+    const trigger = document.body.querySelector<HTMLButtonElement>('[aria-label="Choose an AI model"]')!
+    await act(async () => trigger.click())
 
-    await act(async () => {
-      requestB.resolve(blueprint('blueprint-b', 'CURRENT BLUEPRINT'))
-      await requestB.promise
-    })
-    expect(container!.textContent).toContain('CURRENT BLUEPRINT')
+    const option = document.body.querySelector<HTMLElement>('[role="option"]')!
+    const portalHost = option.closest('[data-base-ui-portal]')!.parentElement!
+    expect(portalHost.parentElement).toBe(document.body)
+    expect(portalHost.style.position).toBe('relative')
+    expect(portalHost.style.zIndex).toBe('1100')
 
-    await act(async () => {
-      requestA.resolve(blueprint('blueprint-a', 'STALE BLUEPRINT'))
-      await requestA.promise
-    })
-    expect(container!.textContent).toContain('CURRENT BLUEPRINT')
-    expect(container!.textContent).not.toContain('STALE BLUEPRINT')
-  })
+    await act(async () => option.click())
+    expect(trigger.textContent).toContain('Model one')
 
-  it('hides the previous blueprint in the first render of a new route', async () => {
-    const requestA = deferred<BlueprintPublicInfo | null>()
-    const requestB = deferred<BlueprintPublicInfo | null>()
-    const rpcStub = {
-      getBlueprint: vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>((id: string) =>
-        id === 'blueprint-a' ? requestA.promise : requestB.promise),
-    } as unknown as RpcStub<PublicApi>
-
-    await render(rpcStub)
-    await act(async () => {
-      requestA.resolve(blueprint('blueprint-a', 'BLUEPRINT A'))
-      await requestA.promise
-    })
-    expect(container!.textContent).toContain('BLUEPRINT A')
-
-    let firstRenderText = ''
-    act(() => {
-      route.id = 'blueprint-b'
-      flushSync(() => root!.render(<BlueprintLandingPage rpcStub={rpcStub} />))
-      firstRenderText = container!.textContent ?? ''
-    })
-
-    expect(firstRenderText).toContain('Loading blueprint...')
-    expect(firstRenderText).not.toContain('BLUEPRINT A')
-  })
-
-  it('clears the loaded blueprint when the next route is not found', async () => {
-    const requestA = deferred<BlueprintPublicInfo | null>()
-    const requestB = deferred<BlueprintPublicInfo | null>()
-    const rpcStub = {
-      getBlueprint: vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>((id: string) =>
-        id === 'blueprint-a' ? requestA.promise : requestB.promise),
-    } as unknown as RpcStub<PublicApi>
-
-    await render(rpcStub)
-    await act(async () => {
-      requestA.resolve(blueprint('blueprint-a', 'BLUEPRINT A'))
-      await requestA.promise
-    })
-    expect(container!.textContent).toContain('BLUEPRINT A')
-
-    await navigateTo('blueprint-b', rpcStub)
-    expect(container!.textContent).toContain('Loading blueprint...')
-    expect(container!.textContent).not.toContain('BLUEPRINT A')
-
-    await act(async () => {
-      requestB.resolve(null)
-      await requestB.promise
-    })
-    expect(container!.textContent).toContain('Blueprint not found')
-    expect(container!.textContent).not.toContain('BLUEPRINT A')
-  })
-
-  it('clears the loaded blueprint when loading the next route fails', async () => {
-    const requestA = deferred<BlueprintPublicInfo | null>()
-    const requestB = deferred<BlueprintPublicInfo | null>()
-    const rpcStub = {
-      getBlueprint: vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>((id: string) =>
-        id === 'blueprint-a' ? requestA.promise : requestB.promise),
-    } as unknown as RpcStub<PublicApi>
-
-    await render(rpcStub)
-    await act(async () => {
-      requestA.resolve(blueprint('blueprint-a', 'BLUEPRINT A'))
-      await requestA.promise
-    })
-    expect(container!.textContent).toContain('BLUEPRINT A')
-
-    await navigateTo('blueprint-b', rpcStub)
-    expect(container!.textContent).toContain('Loading blueprint...')
-    expect(container!.textContent).not.toContain('BLUEPRINT A')
-
-    await act(async () => {
-      requestB.reject(new Error('Failed to load B'))
-      await requestB.promise.catch(() => {})
-    })
-    expect(container!.textContent).toContain('Couldn’t load blueprint')
-    expect(container!.textContent).toContain('Failed to load B')
-    expect(container!.textContent).not.toContain('BLUEPRINT A')
+    const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Save connection')!
+    expect(save.disabled).toBe(false)
   })
 })

@@ -9,7 +9,7 @@ export function gatekeeperBindingName(vendorId: string): string {
   return "GATEKEEPER_" + vendorId.toUpperCase();
 }
 
-// Return the gatekeeper vendor service binding for `vendorId`, or null if not bound.
+/** Return the gatekeeper vendor service binding for `vendorId`, or null if not bound. */
 export function getAuthVendorBinding(
   env: Cloudflare.Env, vendorId: string,
 ): Service<GatekeeperVendor> | null {
@@ -17,9 +17,11 @@ export function getAuthVendorBinding(
   return (binding as Service<GatekeeperVendor>) ?? null;
 }
 
-// Build a map of every bound gatekeeper, keyed by vendor id (the GATEKEEPER_<NAME> suffix,
-// lowercased). The set of gatekeepers is deployment-global (env bindings), so this is independent of
-// any particular user.
+/**
+ * Build a map of every bound gatekeeper, keyed by vendor id (the GATEKEEPER_<NAME> suffix,
+ * lowercased). The set of gatekeepers is deployment-global (env bindings), so this is independent of
+ * any particular user.
+ */
 export function buildGatekeeperVendorMap(
   env: Cloudflare.Env,
 ): Map<string, Service<GatekeeperVendor>> {

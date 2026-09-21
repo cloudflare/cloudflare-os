@@ -2,7 +2,7 @@ import { classifyRpcError, logRpcFailure } from "../rpcErrors";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
-import { ChatInput } from "../ChatInterface";
+import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import { useAuthenticatedApi } from "../AuthContext";
@@ -21,6 +21,7 @@ import {
 } from "../modelSelection";
 import { useDocumentTitle } from "../useDocumentTitle";
 import { homePromptFromSearch } from "../homePrompt";
+import { composerDraftStorageKey } from "../features/chat/composer/draft/composerDraft";
 
 type HomeSearch = { prompt?: string };
 
@@ -41,18 +42,18 @@ function HomePage() {
 export function HomePageContent({ prompt }: HomeSearch) {
   useDocumentTitle("Home");
 
-  const { authenticatedApi } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser } = useAuthenticatedApi();
   const navigate = useNavigate();
   const toasts = useKumoToastManager();
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
-  const [seed, setSeed] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
+  const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
   useEffect(() => {
     if (!prompt) return;
-    setSeed((previous) => ({ text: prompt, nonce: previous.nonce + 1 }));
+    setSeed((previous) => ({ text: prompt, nonce: (previous?.nonce ?? 0) + 1 }));
     navigate({ to: "/", search: {}, replace: true });
   }, [navigate, prompt]);
 
@@ -180,7 +181,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         </header>
 
         {/* Composer */}
-        <ChatInput
+        <ChatComposer
           createCapsuleGatekeeper={createCapsuleGatekeeper}
           getOverseer={getOverseer}
           onSend={handleSend}
@@ -192,14 +193,17 @@ export function HomePageContent({ prompt }: HomeSearch) {
           offerFormats
           autoFocus
           minRows={3}
-          seedText={seed.text}
-          seedNonce={seed.nonce}
+          seedText={seed?.text}
+          seedNonce={seed?.nonce}
+          draftStorageKey={currentUser
+            ? composerDraftStorageKey(currentUser.id, "home")
+            : undefined}
         />
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
         <HomeTaskSuggestions
           onPick={(suggestion) =>
-            setSeed((prev) => ({ text: suggestion, nonce: prev.nonce + 1 }))
+            setSeed((prev) => ({ text: suggestion, nonce: (prev?.nonce ?? 0) + 1 }))
           }
         />
       </div>

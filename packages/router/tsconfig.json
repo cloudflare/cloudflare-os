@@ -5,12 +5,7 @@
     "lib": ["esnext"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["./worker-configuration.d.ts"],
-    "outDir": "./dist",
-    "declaration": true,
-    "sourceMap": true,
-    "noEmit": false,
-    "baseUrl": "."
+    "types": ["./worker-configuration.d.ts"]
   },
   "include": ["src"],
   "exclude": ["dist", "node_modules"]

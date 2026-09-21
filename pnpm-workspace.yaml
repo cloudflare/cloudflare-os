@@ -1,10 +1,40 @@
 packages:
   - packages/*
+  # The shared build tooling as `@gadgets/scripts`, so packages reach it by name rather than by a
+  # relative path that breaks in forks vendoring this repo. Top level: it resolves from the root.
+  - scripts
+
+# The toolchain versions every package shares. Declared once here so a bump is one edit rather than
+# needing to hand edit a bunch of different package.json files.
+catalog:
+  '@cloudflare/vitest-pool-workers': ^0.22.0
+  '@cloudflare/workers-types': ^5.20260903.1
+  capnweb: ^0.12.0
+  # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
+  # simulated PR diff's hunks). One catalog entry so the two can't drift apart.
+  diff: ^8.0.4
+  # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
+  capnweb-validate: 0.3.0
+  # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
+  # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
+  # use the "typescript6" npm alias instead, declared by @gadgets/scripts; capnweb-validate
+  # ships its own JS-based compiler dependency since 0.2.4.
+  typescript: 7.0.2
+  # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
+  # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
+  vite: 7.3.6
+  vite-plus: ^0.2.8
+  vitest: ^4.1.11
+  wrangler: ^4.128.0
 
 overrides:
-  # Vitest peers can resolve vite@latest; pin 7.x until Oxc lowers Stage-3
-  # decorators (workers-sdk#12626).
-  vite: 7.3.6
+  # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
+  '@cloudflare/vitest-pool-workers>miniflare': 5.20260831.0-alpha
+  '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
+  # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
+  # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
+  # manifest declares itself, and the override is what reaches vite as somebody else's peer.
+  vite: "catalog:"
   # minimumReleaseAge gates direct deps but not these two, so pin them to the last
   # mature release (CI verifies every lockfile entry against the release-age policy):
   # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.

@@ -23,17 +23,17 @@
   },
   "scripts": {
     "build": "tsc",
-    "types:check": "tsc --noEmit && tsc -p tsconfig.type-tests.json",
     "clean": "rm -rf dist",
-    "test": "vitest run",
+    "test:run": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@gadgets/error-reporting": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.18.8",
-    "@cloudflare/workers-types": "^5.20260722.1",
-    "vitest": "^4.1.10"
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "vitest": "catalog:"
   }
 }

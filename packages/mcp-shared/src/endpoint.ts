@@ -3,7 +3,7 @@
 
 import { fetchOptions, type InsecureEnv } from "./fetch.js";
 
-// Result of validating a user-supplied endpoint.
+/** Result of validating a user-supplied endpoint. */
 export type EndpointValidation = { ok: true; url: string } | { ok: false; reason: string };
 
 // Hostnames that must never be reachable from a user-supplied endpoint.
@@ -51,18 +51,22 @@ function normalizeHost(hostname: string): string {
   return hostname;
 }
 
-// Whether a host must never be fetched on behalf of a user-supplied endpoint. Exported because the
-// endpoint the user typed is not the only URL its server can make us fetch: OAuth discovery follows
-// a `WWW-Authenticate` header and then an issuer, both chosen by the far side.
+/**
+ * Whether a host must never be fetched on behalf of a user-supplied endpoint. Exported because the
+ * endpoint the user typed is not the only URL its server can make us fetch: OAuth discovery follows
+ * a `WWW-Authenticate` header and then an issuer, both chosen by the far side.
+ */
 export function isBlockedHost(hostname: string): boolean {
   const host = normalizeHost(hostname);
   return BLOCKED_HOST_PATTERNS.some(pattern => pattern.test(host));
 }
 
-// Validates and canonicalizes a user-supplied MCP endpoint.
-//
-// Requires HTTPS and rejects private/link-local/metadata hosts. `MCP_ALLOW_INSECURE` disables both
-// checks for local development, allowing HTTP and otherwise-blocked hosts.
+/**
+ * Validates and canonicalizes a user-supplied MCP endpoint.
+ *
+ * Requires HTTPS and rejects private/link-local/metadata hosts. `MCP_ALLOW_INSECURE` disables both
+ * checks for local development, allowing HTTP and otherwise-blocked hosts.
+ */
 export function validateCustomEndpoint(env: InsecureEnv, input: string): EndpointValidation {
   const trimmed = input.trim();
   if (!trimmed) return { ok: false, reason: "Enter the MCP server's endpoint URL." };

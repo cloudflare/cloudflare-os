@@ -8,7 +8,7 @@ const MAX_VISIBLE = 3
 
 const ROLE_LABELS: Record<PresenceParticipant['role'], string> = {
   build: 'Workspace',
-  use: 'App only',
+  use: 'Gadget only',
 }
 
 export function GadgetPresence({
@@ -191,37 +191,39 @@ export function GadgetPresence({
         render={
           <button
             type="button"
-            className="inline-flex cursor-pointer items-center rounded-full border border-kumo-line bg-kumo-base/60 p-0.5 transition-[background-color,transform] duration-150 ease-out hover:bg-kumo-tint focus-visible:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring active:scale-[0.97]"
+            className="inline-flex shrink-0 cursor-pointer items-center rounded-full border border-kumo-line bg-kumo-base/60 p-0.5 transition-[background-color,transform] duration-150 ease-out hover:bg-kumo-tint focus-visible:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring active:scale-[0.97]"
             aria-label={ariaLabel}
           >
-            <span ref={stackRef} className="relative flex -space-x-2">
-              {visible.map((p) => (
-                <Tooltip key={p.user.id} content={`${p.user.name} · ${ROLE_LABELS[p.role]}`} asChild>
-                  {/* Outer span = FLIP target (translateX slide). Inner span = scale/opacity pop.
-                      Kept on separate elements so the two transforms don't overwrite each other. */}
-                  <span data-flip-id={p.user.id} className="inline-flex cursor-pointer">
+            <span ref={stackRef} className="relative inline-flex">
+              <span className="flex -space-x-2">
+                {visible.map((p) => (
+                  <Tooltip key={p.user.id} content={`${p.user.name} · ${ROLE_LABELS[p.role]}`} asChild>
+                    {/* Outer span = FLIP target (translateX slide). Inner span = scale/opacity pop.
+                        Kept on separate elements so the two transforms don't overwrite each other. */}
+                    <span data-flip-id={p.user.id} className="inline-flex cursor-pointer">
+                      <span
+                        className={`rounded-full ring-2 ring-kumo-base ${exiting.has(p.user.id) ? 'presence-pop-out' : 'presence-pop-in'}`}
+                      >
+                        <PersonAvatar
+                          api={authenticatedApi}
+                          userId={p.user.id}
+                          name={p.user.name}
+                          size={26}
+                        />
+                      </span>
+                    </span>
+                  </Tooltip>
+                ))}
+                {overflow > 0 && (
+                  <span data-flip-id="__overflow" className="inline-flex cursor-pointer">
                     <span
-                      className={`rounded-full ring-2 ring-kumo-base ${exiting.has(p.user.id) ? 'presence-pop-out' : 'presence-pop-in'}`}
+                      className="presence-pop-in grid h-[26px] w-[26px] place-items-center rounded-full bg-kumo-tint text-[10px] font-semibold text-kumo-strong ring-2 ring-kumo-base"
                     >
-                      <PersonAvatar
-                        api={authenticatedApi}
-                        userId={p.user.id}
-                        name={p.user.name}
-                        size={26}
-                      />
+                      +{overflow}
                     </span>
                   </span>
-                </Tooltip>
-              ))}
-              {overflow > 0 && (
-                <span data-flip-id="__overflow" className="inline-flex cursor-pointer">
-                  <span
-                    className="presence-pop-in grid h-[26px] w-[26px] place-items-center rounded-full bg-kumo-tint text-[10px] font-semibold text-kumo-strong ring-2 ring-kumo-base"
-                  >
-                    +{overflow}
-                  </span>
-                </span>
-              )}
+                )}
+              </span>
               <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-kumo-success ring-2 ring-kumo-base" />
             </span>
           </button>

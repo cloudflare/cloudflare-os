@@ -5,25 +5,30 @@
   "type": "module",
   "exports": {
     "./harness": "./src/harness.ts",
+    "./agent-session": "./src/agent-session.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
-    "./rpc-client": "./src/rpc-client.ts"
+    "./rpc-client": "./src/rpc-client.ts",
+    "./mock-model": "./src/mock-model.ts"
   },
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "types:check": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper",
+    "test:run": "pnpm run test:prebuild && vitest run",
+    "test:watch": "pnpm run test:prebuild && vitest"
   },
   "dependencies": {
     "@gadgets/workshop-shared": "workspace:*",
-    "capnweb": "^0.8.0",
+    "capnweb": "catalog:",
     "jsonc-parser": "^3.3.1",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260722.1",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.10",
-    "wrangler": "~4.119.0"
+    "capnweb-validate": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   }
 }

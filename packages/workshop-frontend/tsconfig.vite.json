@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    // Explicit because this config is standalone (unlike the gatekeepers', which inherit noEmit
+    // from their own tsconfig.app.json). Emitting here would leave a compiled `vite.config.js`,
+    // which vite resolves ahead of `vite.config.ts` -- so the stale copy would silently shadow the
+    // real config.
+    "noEmit": true
+  },
+  "include": ["vite.config.ts"]
+}

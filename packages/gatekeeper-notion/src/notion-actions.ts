@@ -79,9 +79,9 @@ export type StoredActionRecord = {
   action: NotionAction;
   state: "pending" | "applied" | "reverted";
   submittedAt: number;
-  // For appendContent revert: the IDs of the blocks created on apply.
+  /** For appendContent revert: the IDs of the blocks created on apply. */
   appendedBlockIds?: string[];
-  // For createPage: the real Notion page ID assigned on apply.
+  /** For createPage: the real Notion page ID assigned on apply. */
   createdPageId?: string;
 };
 
@@ -157,9 +157,11 @@ export class NotionStore {
     return this.allActions().filter(r => r.state === "pending");
   }
 
-  // Pending actions targeting a specific page, in submission order. The page may be addressed by
-  // either its provisional id or its real id (the same page can be reached both ways once a creation
-  // has been applied), so we compare *resolved* IDs on both sides.
+  /**
+   * Pending actions targeting a specific page, in submission order. The page may be addressed by
+   * either its provisional id or its real id (the same page can be reached both ways once a creation
+   * has been applied), so we compare *resolved* IDs on both sides.
+   */
   pendingForPage(pageId: string): StoredActionRecord[] {
     const target = this.resolveId(pageId);
     return this.pendingActions().filter(r => {
@@ -178,21 +180,23 @@ export class NotionStore {
     this.#kv.put(`prov:${provisionalId}`, realId);
   }
 
-  // Resolve a (possibly provisional) ID to a real Notion ID, if the creating action has applied.
+  /** Resolve a (possibly provisional) ID to a real Notion ID, if the creating action has applied. */
   resolveId(id: string): string {
     if (!NotionStore.isProvisional(id)) return id;
     return this.#kv.get<string>(`prov:${id}`) ?? id;
   }
 
-  // True if this provisional ID belongs to a page created in this session (still pending or already
-  // applied). Lets getPage() rehydrate a provisional handle.
+  /**
+   * True if this provisional ID belongs to a page created in this session (still pending or already
+   * applied). Lets getPage() rehydrate a provisional handle.
+   */
   knowsProvisional(id: string): boolean {
     if (this.resolveId(id) !== id) return true; // already applied -> real ID mapped
     return this.allActions().some(
       r => r.action.type === "createPage" && r.action.provisionalId === id);
   }
 
-  // The createPage action for a provisional ID, if any.
+  /** The createPage action for a provisional ID, if any. */
   createActionFor(provisionalId: string): StoredActionRecord | undefined {
     return this.allActions().find(
       r => r.action.type === "createPage" && r.action.provisionalId === provisionalId);
@@ -221,8 +225,10 @@ export class NotionStore {
     return markdown;
   }
 
-  // Resolve a user to its full form (name/avatar/email), cached — page metadata only includes
-  // partial `{id}` users, unlike property values.
+  /**
+   * Resolve a user to its full form (name/avatar/email), cached — page metadata only includes
+   * partial `{id}` users, unlike property values.
+   */
   async getUser(id: string): Promise<NotionUser> {
     const cached = this.#kv.get<{ fetchedAt: number; user: NotionUser }>(`cache:user:${id}`);
     if (cached && Date.now() - cached.fetchedAt < USER_TTL_MS) return cached.user;
@@ -240,7 +246,7 @@ export class NotionStore {
     return db;
   }
 
-  // The primary data source ID for a database (cached via the database response).
+  /** The primary data source ID for a database (cached via the database response). */
   async getDataSourceId(databaseId: string): Promise<string> {
     return primaryDataSourceId(await this.getDatabaseResponse(databaseId));
   }
@@ -253,7 +259,7 @@ export class NotionStore {
     return dataSource;
   }
 
-  // The row schema for a database, read from its primary data source.
+  /** The row schema for a database, read from its primary data source. */
   async getDatabaseSchema(databaseId: string): Promise<NotionDatabaseSchema> {
     const dataSourceId = await this.getDataSourceId(databaseId);
     return databaseSchema(await this.getDataSourceResponse(dataSourceId));
@@ -307,8 +313,10 @@ function defaultValueForType(type: NotionPropertyValue["type"]): NotionPropertyV
   }
 }
 
-// All columns of a schema with their default (empty) values, used to seed a pending row so it has
-// the same property keys an approved row would.
+/**
+ * All columns of a schema with their default (empty) values, used to seed a pending row so it has
+ * the same property keys an approved row would.
+ */
 export function defaultPropertiesFromSchema(schema: NotionDatabaseSchema): Record<string, NotionPropertyValue> {
   const props: Record<string, NotionPropertyValue> = {};
   for (const [name, prop] of Object.entries(schema.properties)) {
@@ -366,7 +374,7 @@ function pendingArchivedState(records: StoredActionRecord[]): boolean | undefine
   return state;
 }
 
-// Simulated page metadata. `base` is null for a provisional page that doesn't exist on Notion yet.
+/** Simulated page metadata. `base` is null for a provisional page that doesn't exist on Notion yet. */
 export function simulatePageMetadata(
   base: NotionPageMetadata | null,
   pageId: string,
@@ -406,8 +414,10 @@ export function simulatePageMetadata(
   return meta;
 }
 
-// The effective page title after applying pending records, considering every way a title can be
-// set: setTitle(), createPage `title`, and a `title`-typed property in createPage/setProperties.
+/**
+ * The effective page title after applying pending records, considering every way a title can be
+ * set: setTitle(), createPage `title`, and a `title`-typed property in createPage/setProperties.
+ */
 export function simulatedTitle(records: StoredActionRecord[], baseTitle: string): string {
   let title = baseTitle;
   for (const r of records) {
@@ -430,8 +440,10 @@ function iconInputDisplay(icon: NotionIconInput): string {
   return "emoji" in icon ? icon.emoji : icon.imageUrl;
 }
 
-// Simulated page property values. For a provisional page (`base` null), `seed` supplies the
-// parent database's full column set with default values so the shape matches an approved row.
+/**
+ * Simulated page property values. For a provisional page (`base` null), `seed` supplies the
+ * parent database's full column set with default values so the shape matches an approved row.
+ */
 export function simulatePageProperties(
   base: Record<string, NotionPropertyValue> | null,
   records: StoredActionRecord[],
@@ -478,7 +490,7 @@ function normalizeAppendedMarkdown(markdown: string): string {
   return blocksToMarkdown(blocks.map(block => ({ block: block as BlockWithChildren["block"] })));
 }
 
-// Simulated page body Markdown.
+/** Simulated page body Markdown. */
 export function simulatePageContent(
   base: string | null,
   records: StoredActionRecord[],
@@ -493,7 +505,7 @@ export function simulatePageContent(
   return parts.filter(Boolean).join("\n\n");
 }
 
-// Simulated comment list (base comments plus pending ones).
+/** Simulated comment list (base comments plus pending ones). */
 export function simulateComments(
   base: NotionComment[],
   records: StoredActionRecord[],
@@ -559,11 +571,13 @@ function createdInScope(
   });
 }
 
-// Overlay pending changes onto a batch of database query rows. `firstPage` controls whether
-// pending newly-created rows are prepended (only on the first page, to avoid duplication).
-//
-// NOTE: pending created rows ignore the query's filter and sort — they are always surfaced so the
-// agent sees its own writes. This is a documented simulation limitation.
+/**
+ * Overlay pending changes onto a batch of database query rows. `firstPage` controls whether
+ * pending newly-created rows are prepended (only on the first page, to avoid duplication).
+ *
+ * NOTE: pending created rows ignore the query's filter and sort — they are always surfaced so the
+ * agent sees its own writes. This is a documented simulation limitation.
+ */
 export function overlayDatabaseRows(
   rows: NotionPageSummary[],
   databaseId: string,
@@ -593,7 +607,7 @@ export function overlayDatabaseRows(
   return result;
 }
 
-// Overlay pending child pages created under a page (and drop pending-archived children).
+/** Overlay pending child pages created under a page (and drop pending-archived children). */
 export function overlayChildPages(
   items: NotionItemSummary[],
   parentPageId: string,
@@ -625,8 +639,10 @@ function itemFromCreated(summary: NotionPageSummary): NotionItemSummary {
   };
 }
 
-// Overlay pending changes onto search results: drop pending-archived items, and prepend pending
-// created pages (only when the caller isn't filtering to databases, since created items are pages).
+/**
+ * Overlay pending changes onto search results: drop pending-archived items, and prepend pending
+ * created pages (only when the caller isn't filtering to databases, since created items are pages).
+ */
 export function overlaySearch(
   items: NotionItemSummary[],
   store: NotionStore,
@@ -728,8 +744,10 @@ function truncate(text: string, max = 2000): string {
 // ---------------------------------------------------------------------------------------------
 // Apply / revert
 
-// Apply a previously-submitted action against Notion. Mutates and persists the record (e.g. to
-// store created IDs for later revert). Throws on failure (the overseer surfaces this to the user).
+/**
+ * Apply a previously-submitted action against Notion. Mutates and persists the record (e.g. to
+ * store created IDs for later revert). Throws on failure (the overseer surfaces this to the user).
+ */
 export async function applyNotionAction(store: NotionStore, record: StoredActionRecord): Promise<void> {
   const api = store.api;
   const action = record.action;
@@ -798,7 +816,7 @@ export async function applyNotionAction(store: NotionStore, record: StoredAction
   store.putAction(record);
 }
 
-// Revert a previously-applied action. Returns guidance if the revert can't fully complete.
+/** Revert a previously-applied action. Returns guidance if the revert can't fully complete. */
 export async function revertNotionAction(
   store: NotionStore,
   record: StoredActionRecord,
@@ -985,8 +1003,10 @@ export function buildCreateBody(
   return body;
 }
 
-// Record a pending action and submit it to the approval queue for later approval. If the submit
-// fails, the stored record is rolled back so it doesn't pollute simulation. Returns the action ID.
+/**
+ * Record a pending action and submit it to the approval queue for later approval. If the submit
+ * fails, the stored record is rolled back so it doesn't pollute simulation. Returns the action ID.
+ */
 export async function stageAction(
   store: NotionStore,
   approvalQueue: RpcStub<ApprovalQueue>,

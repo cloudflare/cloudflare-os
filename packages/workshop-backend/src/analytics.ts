@@ -25,14 +25,14 @@ export type ProductAnalyticsRecord = {
   properties: Record<string, unknown>;
 };
 
-// Events about a specific gadget.
+/** Events about a specific gadget. */
 export type ProductAnalyticsGadgetInput =
   | {
       event_name: "gadget_created";
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      // Whether the gadget was created from empty chat or via blueprint.
+      /** Whether the gadget was created from empty chat or via blueprint. */
       source: "blank" | "blueprint";
       blueprint_id?: string;
     }
@@ -41,7 +41,7 @@ export type ProductAnalyticsGadgetInput =
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      // Whether the gadget was opened with share link or not.
+      /** Whether the gadget was opened with share link or not. */
       source: "direct" | "share_key";
     }
   | {
@@ -55,7 +55,7 @@ export type ProductAnalyticsGadgetInput =
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      // Gadget-local id of the chat thread.
+      /** Gadget-local id of the chat thread. */
       chat_id?: number;
       interaction_type: "gadget_ui_connected" | "chat_started" | "chat_message_sent" | "code_merged";
     }
@@ -64,9 +64,9 @@ export type ProductAnalyticsGadgetInput =
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      // Gadget-local id of the connection.
+      /** Gadget-local id of the connection. */
       gatekeeper_id: number;
-      // What type of connection was created: gatekeeper, model, agent.
+      /** What type of connection was created: gatekeeper, model, agent. */
       connection_type: ProductAnalyticsConnectionType;
       vendor_id?: string;
     }

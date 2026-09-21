@@ -19,7 +19,7 @@ import {
 } from '@phosphor-icons/react'
 import type { BlueprintOutput, OutputIcon } from '@gadgets/workshop-shared/api'
 
-// The glyph for each key in the shared `OUTPUT_ICONS` vocabulary.
+/** The glyph for each key in the shared `OUTPUT_ICONS` vocabulary. */
 export const FORMAT_ICONS = {
   fileText: FileText,
   gridNine: GridNine,
@@ -33,8 +33,10 @@ export const FORMAT_ICONS = {
   listChecks: ListChecks,
 } satisfies Record<OutputIcon, PhosphorIcon>
 
-// Which wireframe illustrates a format. Derived from the icon rather than picked separately, so
-// the two can't disagree; icons depicting the same artefact (a page vs. a notebook) share one.
+/**
+ * Which wireframe illustrates a format. Derived from the icon rather than picked separately, so
+ * the two can't disagree; icons depicting the same artefact (a page vs. a notebook) share one.
+ */
 export type FormatWireframe = 'page' | 'grid' | 'slide' | 'window' | 'list' | 'board' | 'chart'
 
 const WIREFRAME_FOR_ICON: Record<OutputIcon, FormatWireframe> = {
@@ -50,8 +52,10 @@ const WIREFRAME_FOR_ICON: Record<OutputIcon, FormatWireframe> = {
   listChecks: 'list',
 }
 
-// How a gadget with no declared format is shown. Also the fallback for an icon this build doesn't
-// know, which is normal: a deployment can serve a format newer than the browser's cached bundle.
+/**
+ * How a gadget with no declared format is shown. Also the fallback for an icon this build doesn't
+ * know, which is normal: a deployment can serve a format newer than the browser's cached bundle.
+ */
 export const GENERIC_OUTPUT: BlueprintOutput = {
   id: 'app',
   noun: 'App',
@@ -59,7 +63,7 @@ export const GENERIC_OUTPUT: BlueprintOutput = {
   icon: 'appWindow',
 }
 
-// Resolve what to draw for a (possibly absent, possibly unrecognized) declared format.
+/** Resolve what to draw for a (possibly absent, possibly unrecognized) declared format. */
 export function formatOf(output?: BlueprintOutput): BlueprintOutput {
   if (!output || !Object.hasOwn(FORMAT_ICONS, output.icon)) return GENERIC_OUTPUT
   return output

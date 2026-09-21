@@ -26,8 +26,10 @@ import { resolveTargets } from "./registry-utils";
 // Re-export so existing callers (e.g. homeassistant.ts) keep working without an import switch.
 export { resolveTargets };
 
-// Raw HA state record shape (the shape returned by /api/states/<entity_id>). Mirrors HA's
-// snake_case naming because we operate on raw state before the normalize* helpers run.
+/**
+ * Raw HA state record shape (the shape returned by /api/states/<entity_id>). Mirrors HA's
+ * snake_case naming because we operate on raw state before the normalize* helpers run.
+ */
 export interface HAStateRecord {
   entity_id: string;
   state: string;

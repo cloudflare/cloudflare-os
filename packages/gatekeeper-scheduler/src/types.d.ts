@@ -266,10 +266,9 @@ export interface ScheduledTaskHook {
 /**
  * Workspace-scoped Scheduled Tasks capability.
  *
- * Define the callback in the Gadget's `[restore]()` method. Then call `ctx.restore()` directly from
- * `executeCode` and pass the resulting persistent stub to a registration method. Do not call
- * `this.ctx.restore()` inside a Gadget method invoked through an `env` Gadget binding; that facet
- * stub does not carry the required restore context. The parameters passed to `ctx.restore()` must
+ * Define the callback in the Gadget's `[restore]()` method. Then call `ctx.restore()` -- either
+ * directly from `executeCode`, or as `this.ctx.restore()` inside the Gadget itself -- and pass the
+ * resulting persistent stub to a registration method. The parameters passed to `ctx.restore()` must
  * be serializable; the system passes them to `[restore]()` both immediately and when restoring the
  * callback later. The restored `RpcTarget` is a separate object and does not inherit the Gadget's
  * `ctx`; pass any required dependencies, such as `this.ctx.storage`, to it from `[restore]()`.
@@ -280,9 +279,6 @@ export interface ScheduledTaskHook {
  * runs through the restored Gadget and does not need the Scheduler binding.
  *
  * Every successful registration call creates a distinct hook; registration is not idempotent.
- * `executeCode` ignores the exported function's return value, so print the schedule ID with
- * `console.log()`. Empty console output is not evidence that registration failed, and the disabled
- * hook appearing in Connections confirms success. Do not retry solely because no ID was printed.
  *
  * @example
  * // server.js

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import ts from "typescript";
+// typescript6 = npm:typescript@6.0.3: this test drives the JS compiler API, which the
+// TypeScript 7 package does not ship. The workspace "typescript" (tsgo) only type-checks.
+import ts from "typescript6";
 import { MCP_BASE_TYPES } from "../src/base-types.js";
 import { generateSessionTypes, sessionTypeName, } from "../src/schema-to-ts.js";
 import { classifyTool } from "../src/tools.js";
@@ -24,6 +26,10 @@ function generate(tools: ClassifiedTool[], baseTypes = "// base\n"): string {
   });
 }
 
+// The only gate on generated output being valid TypeScript: generateSessionTypes emits .d.ts text at
+// runtime (portal.ts, mcp.ts) from live MCP schemas, so tsgo never sees it. Note this is 6.0.3's
+// checker, not the 7.0.2 one the repo type-checks with -- forced, while TS 7 ships no compiler API.
+// The generated types are structural, not the inference corners where the port might plausibly differ.
 function expectTypeScriptToCompile(source: string): void {
   const fileName = "generated.d.ts";
   const options: ts.CompilerOptions = { noEmit: true, strict: true };
@@ -36,6 +42,23 @@ function expectTypeScriptToCompile(source: string): void {
   host.fileExists = name => name === fileName || ts.sys.fileExists(name);
   host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
 
+  const errors = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
+    .filter(diagnostic => diagnostic.file?.fileName === fileName)
+    .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+  expect(errors).toEqual([]);
+}
+
+function expectTypeScriptProgramToCompile(source: string): void {
+  const fileName = "generated.ts";
+  const options: ts.CompilerOptions = { noEmit: true, strict: true };
+  const host = ts.createCompilerHost(options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
+    name === fileName
+      ? ts.createSourceFile(name, source, languageVersion, true, ts.ScriptKind.TS)
+      : getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
+  host.fileExists = name => name === fileName || ts.sys.fileExists(name);
+  host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
   const errors = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
     .filter(diagnostic => diagnostic.file?.fileName === fileName)
     .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
@@ -95,6 +118,34 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     expect(output).toContain(
       `callTool(name: "create_contact", args: ${name}_CreateContactArgs)`);
     expect(output).toContain(`export interface ${name} {`);
+  });
+
+  it("keeps known tool overloads strict while accepting dynamic names", () => {
+    const output = generate([tool({
+      name: "search",
+      inputSchema: {
+        type: "object",
+        properties: { q: { type: "string" } },
+        required: ["q"],
+      },
+    })], MCP_BASE_TYPES);
+    const name = sessionTypeName("acme-crm", "https://acme.example/mcp");
+    expectTypeScriptProgramToCompile(`${output}
+declare const session: ${name};
+// @ts-expect-error known tool requires its arguments
+session.callTool("search");
+// @ts-expect-error known tool keeps its generated schema
+session.callTool("search", { q: 123 });
+declare const discovered: string;
+session.callTool(discovered, { anything: true });
+declare const options: McpToolListOptions;
+session.listTools(options);
+// @ts-expect-error search and name are mutually exclusive
+session.listTools({ search: "issues", name: "search" });
+declare const ambiguousOptions: { search: string; name: string };
+// @ts-expect-error variables containing both selectors are also rejected
+session.listTools(ambiguousOptions);
+`);
   });
 
   it("prepends the base types verbatim so the file is self-contained", () => {
@@ -304,6 +355,9 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     ]);
     expect(output).toContain("recorded as an observation");
     expect(output).toContain("queued for approval");
+    expect(output).toContain("return from that executeCode call");
+    expect(output).toContain("Approval resumes the agent;");
+    expect(output).toContain("denial ends the turn");
     expect(output).toContain("supplied by the user, so no action is ever applied automatically");
   });
 
@@ -390,10 +444,22 @@ describe("generateSessionTypes", { timeout: 15_000 }, () => {
     expect(output).toContain('callTool(name: "ping", args?: Record<string, never>)');
   });
 
-  it("always exposes listTools and getActionResult", () => {
+  it("always exposes discovery, generic calls, and action results", () => {
     const output = generate([]);
     expect(output).toContain("listTools(): Promise<McpToolInfo[]>;");
+    expect(output).toContain(
+      "listTools(options: { search: string; name?: never }): Promise<McpToolSummary[]>;");
+    expect(output).toContain(
+      "listTools(options: { name: string; search?: never }): Promise<McpToolInfo[]>;");
+    expect(output).toContain("callTool<Name extends string>(");
     expect(output).toContain("getActionResult(actionId: number): Promise<McpCallResult>;");
+  });
+
+  it("keeps discovery stable when an upstream tool collides with its method name", () => {
+    const output = generate([tool({ name: "search_tools" })]);
+    expect(output).toContain("searchTools(): Promise<McpCallResult>;");
+    expect(output).toContain("listTools(options: { search: string; name?: never })");
+    expect(output).toContain('callTool(name: "search_tools"');
   });
 });
 

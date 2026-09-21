@@ -5,12 +5,8 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["@cloudflare/workers-types/experimental", "./src/node-async-hooks.d.ts"],
-    "outDir": "./dist",
-    "declaration": true,
-    "sourceMap": true,
-    "noEmit": false
+    "types": ["@cloudflare/workers-types/experimental", "./src/node-async-hooks.d.ts"]
   },
-  "include": ["src"],
+  "include": ["src", "__tests__/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

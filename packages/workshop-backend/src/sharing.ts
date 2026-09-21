@@ -12,21 +12,26 @@
 // only flags the link revoked. Nothing cascades, no records are deleted, and downstream edges are
 // never touched -- users who lose their only path to the owner simply become unreachable and are
 // denied at open() time. Because the graph is never destructively pruned, revocation is reversible:
-// re-adding a removed collaborator restores them and, transitively, everyone they had shared with.
+// re-adding a removed collaborator restores them and, transitively, everyone they had shared with
+// (unless `ownerInvitesOnly` is set, when only the owner's direct grants count).
 // (Records and revoked keys accumulate in storage; a future GC could reclaim long-dead entries.)
 //
-// NOTE: The `prohibitAllSharing` policy flag intentionally does NOT live here. It is a broader
-// "is this gadget allowed to communicate with anyone other than the owner?" policy (it also
-// gates gatekeeper writes and web fetches) and is expected to grow into a separate policy engine.
-// The Overseer enforces that flag; this module only exposes `hasAnyShares()` so the policy can
-// ask about the current sharing state.
+// NOTE: The sensitive-data (`containsRestrictedData`) policy intentionally does NOT live here; the
+// Overseer enforces it. This module only answers questions about the sharing graph. The one
+// exception is the `ownerInvitesOnly` flag, which the Overseer supplies as a hook: once it is set,
+// only direct grants from the owner count, so it narrows which edges `computeEffectiveRoles`
+// follows and must be checked synchronously with each grant's storage write.
 
-import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator }
-    from "@gadgets/workshop-shared/api";
+import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
+    createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 
-// Roles are totally ordered: build > use. Higher rank means strictly more access.
-function roleRank(role: CollaboratorRole): number {
+/**
+ * Roles are totally ordered: build > use. Higher rank means strictly more access. Exported so
+ * role comparisons elsewhere (e.g. the Overseer's `requireRole` floor) rank rather than
+ * string-compare, which stays correct if a role is ever added between the two.
+ */
+export function roleRank(role: CollaboratorRole): number {
   return role === "build" ? 2 : 1;
 }
 
@@ -64,56 +69,68 @@ async function hashShareKey(rawKey: string): Promise<string> {
   return sig.toHex();
 }
 
-// Each gadget stores its collaborator list.
+/** Each gadget stores its collaborator list. */
 export type CollaboratorRecord = {
-  // Denormalized profile snapshot for display without hitting the user's DO.
+  /** Denormalized profile snapshot for display without hitting the user's DO. */
   profile: AiChatAuthorInfo;
 
-  // How this collaborator got access. Multiple edges are possible.
+  /** How this collaborator got access. Multiple edges are possible. */
   addedBy: PermissionEdge[];
 };
 
-// A share link. This is what the management UI shows and operates on, and it owns all of a link's
-// metadata. A link may have one or more keys (see ShareKeyAliasRecord): creating a link mints its
-// first key, and copying it later mints another for the same link.
+/**
+ * A share link. This is what the management UI shows and operates on, and it owns all of a link's
+ * metadata. A link may have one or more keys (see ShareKeyAliasRecord): creating a link mints its
+ * first key, and copying it later mints another for the same link.
+ */
 export type ShareLinkRecord = {
   id: string;        // HMAC-SHA-256 hex of the raw key; also the link id
 
-  // Never set on a link; present only on aliases, which discriminates the union.
+  /** Never set on a link; present only on aliases, which discriminates the union. */
   alias?: never;
 
   note?: string;
   created: Date;
   createdBy: string; // profile.id of the creator
 
-  // The role granted to anyone who redeems the link. Absent on links created before roles were
-  // introduced; treated as "build".
+  /**
+   * The role granted to anyone who redeems the link. Absent on links created before roles were
+   * introduced; treated as "build".
+   */
   role?: CollaboratorRole;
 
-  // Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
-  // permission graph keeps its `shareKey` edges intact (no dangling references) and access could
-  // be restored in the future. A revoked link contributes nothing to the permission graph and its
-  // keys can no longer be redeemed.
+  /**
+   * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
+   * permission graph keeps its `shareKey` edges intact (no dangling references) and access could
+   * be restored in the future. A revoked link contributes nothing to the permission graph and its
+   * keys can no longer be redeemed.
+   */
   revoked?: boolean;
 };
 
-// Another key for an existing link, minted when the user copies it. Carries no metadata of its
-// own: redeeming it resolves to the link record, so all of a link's keys behave identically.
+/**
+ * Another key for an existing link, minted when the user copies it. Carries no metadata of its
+ * own: redeeming it resolves to the link record, so all of a link's keys behave identically.
+ */
 export type ShareKeyAliasRecord = {
   id: string;        // HMAC-SHA-256 hex of the raw key
   alias: string;     // id of the link this key is a copy of
 };
 
-// A row of the share keys table: either a link or a copy of one. Because a link is itself a key
-// record, keys written before copies existed are already valid links -- no migration needed.
+/**
+ * A row of the share keys table: either a link or a copy of one. Because a link is itself a key
+ * record, keys written before copies existed are already valid links -- no migration needed.
+ */
 export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
 
-// The slice of Overseer storage this module operates on. Satisfied by the real OverseerStorage
-// and easily constructed over a Map-backed mock DurableObjectStorage in tests.
+/**
+ * The slice of Overseer storage this module operates on. Satisfied by the real OverseerStorage
+ * and easily constructed over a Map-backed mock DurableObjectStorage in tests.
+ */
 export interface SharingStorage {
   collaborators: Collection<CollaboratorRecord>;
   shareKeys: Collection<ShareKeyRecord> & {
-    // A link's copies, keyed by the link they alias.
+    /** A link's copies, keyed by the link they alias. */
     byAlias: NonUniqueIndex<ShareKeyRecord, string>;
   };
 }
@@ -123,37 +140,43 @@ function asLink(record: ShareKeyRecord | undefined): ShareLinkRecord | undefined
   return record !== undefined && record.alias === undefined ? record : undefined;
 }
 
-// Per-session caller identity. Mirrors the fields the OverseerClientInterface holds for the
-// connected client.
+/**
+ * Per-session caller identity. Mirrors the fields the OverseerClientInterface holds for the
+ * connected client.
+ */
 export interface SharingCaller {
-  // The caller's profile.id (username/email).
+  /** The caller's profile.id (username/email). */
   profileId: string;
-  // True if the caller is the gadget owner. The owner can manage anyone's collaborator edges
-  // and share keys; non-owners are restricted to edges/keys they created themselves.
+  /**
+   * True if the caller is the gadget owner. The owner can manage anyone's collaborator edges
+   * and share keys; non-owners are restricted to edges/keys they created themselves.
+   */
   isOwner: boolean;
 }
 
 export class SharingManager {
-  // `ownerProfileId` is stable for the lifetime of a gadget, so it's supplied once at
-  // construction rather than per call.
-  constructor(private storage: SharingStorage, private ownerProfileId: string) {}
+  /**
+   * `ownerProfileId` is stable for the lifetime of a gadget, so it's supplied once at
+   * construction rather than per call.
+   *
+   * `ownerInvitesOnly` reports the Overseer's `ownerInvitesOnly` flag (see
+   * `ObservationDescription.ownerInvitesOnly`). `computeEffectiveRoles` reads it to count only
+   * direct owner grants once it is set. Grants call it after their last await, right before the
+   * storage write, so an observation that sets the flag mid-call cannot slip a grant through.
+   */
+  constructor(
+      private storage: SharingStorage,
+      private ownerProfileId: string,
+      private ownerInvitesOnly: () => boolean) {}
 
-  // ---------------------------------------------------------------------------------------
-  // Sharing-state queries
-
-  // True if anyone other than the owner can currently access the gadget. Used by the Overseer's
-  // `prohibitAllSharing` policy to decide whether a sensitive observation must be blocked.
-  //
-  // Because removed collaborators and revoked links linger in storage (the lazy revocation model;
-  // see the module header and removeCollaborator/revokeShareLink), this must reflect *current*
-  // reachability, not mere table membership: a collaborator with a live path from the owner, or
-  // an un-revoked share link whose keys anyone could still redeem.
-  hasAnyShares(): boolean {
-    if (this.computeEffectiveRoles().size > 0) return true;
-    for (let link of this.#listLinks()) {
-      if (!link.revoked) return true;
+  // Throw if share links are disabled by `ownerInvitesOnly`. Redemption refusals surface
+  // from open(), so they carry the `shareLinksDisabled` open-gadget code; link management throws
+  // the same message uncoded.
+  #requireShareLinksAllowed(opts?: { redeeming: boolean }): void {
+    if (this.ownerInvitesOnly()) {
+      let error = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled);
+      throw opts?.redeeming ? error : new Error(error.message);
     }
-    return false;
   }
 
   // Every share link, revoked or not. Aliases are skipped.
@@ -167,29 +190,44 @@ export class SharingManager {
   // ---------------------------------------------------------------------------------------
   // Authorization (used by Overseer.open())
 
-  // True if `profileId` currently has a collaborator record. This only checks membership; use
-  // `getEffectiveRole()` to determine the actual access level (and whether the record is still
-  // reachable from the owner in the permission graph).
+  /**
+   * True if `profileId` currently has a collaborator record. This only checks membership; use
+   * `getEffectiveRole()` to determine the actual access level (and whether the record is still
+   * reachable from the owner in the permission graph).
+   */
   isCollaborator(profileId: string): boolean {
     return this.storage.collaborators.get(profileId) !== undefined;
   }
 
-  // The effective role of `profileId` -- the maximum role reachable from the owner through valid
-  // permission edges -- or undefined if the user has no access. The owner always has "build".
+  /**
+   * The effective role of `profileId` -- the maximum role reachable from the owner through valid
+   * permission edges -- or undefined if the user has no access. The owner always has "build".
+   */
   getEffectiveRole(profileId: string): CollaboratorRole | undefined {
     if (profileId === this.ownerProfileId) return "build";
     return this.computeEffectiveRoles().get(profileId);
   }
 
-  // Redeem a raw share key on behalf of a user opening the gadget. If the key exists, ensures the
-  // user is a collaborator with a `shareKey` edge for its link (adding the edge if missing, or
-  // creating the collaborator record if they're new). Does nothing if the key is unknown.
-  //
-  // The raw key is hashed internally; the plaintext is never stored. `fetchProfile` is invoked
-  // (an RPC, in production) only when a brand-new collaborator must be created, so existing
-  // collaborators are redeemed without any RPC.
-  //
-  // A key whose link is revoked behaves like an unknown key (it cannot be redeemed).
+  /**
+   * Redeem a raw share key on behalf of a user opening the gadget. If the key exists, ensures the
+   * user is a collaborator with a `shareKey` edge for its link (adding the edge if missing, or
+   * creating the collaborator record if they're new). Does nothing if the key is unknown.
+   *
+   * The raw key is hashed internally; the plaintext is never stored. `fetchProfile` is invoked
+   * (an RPC, in production) only when a brand-new collaborator must be created, so existing
+   * collaborators are redeemed without any RPC.
+   *
+   * A key whose link is revoked behaves like an unknown key (it cannot be redeemed).
+   *
+   * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: a collaborator the
+   * owner added directly is left as they are (so reopening an old link doesn't fail), and anyone
+   * else -- including someone who joined through a link before the flag was set -- is refused with
+   * a `shareLinksDisabled` exception.
+   *
+   * TODO: The edge is written before the redeeming open()'s observer verification runs, so a
+   * recipient whose verification fails lingers in listCollaborators until removed or the link is
+   * revoked.
+   */
   async redeemShareKey(opts: {
     rawKey: string;
     profileId: string;
@@ -207,6 +245,15 @@ export class SharingManager {
     let linkId = link.id;
     let role = link.role ?? "build";
 
+    if (this.ownerInvitesOnly()) {
+      // Only direct owner grants count (see computeEffectiveRoles), so the link can grant nothing.
+      // Let someone who already has access through the owner re-open with it; refuse anyone else.
+      if (!this.getEffectiveRole(opts.profileId)) {
+        this.#requireShareLinksAllowed({ redeeming: true });
+      }
+      return;
+    }
+
     let existing = this.storage.collaborators.get(opts.profileId);
     if (existing) {
       // User is already a collaborator. Only add an edge if they don't already have one for this
@@ -223,8 +270,10 @@ export class SharingManager {
         this.storage.collaborators.put(existing);
       }
     } else {
-      // New collaborator -- need full profile from their user DO.
+      // New collaborator -- need full profile from their user DO. The RPC may race an observation
+      // setting ownerInvitesOnly, so check again right before the write.
       let profile = await opts.fetchProfile();
+      this.#requireShareLinksAllowed({ redeeming: true });
       this.storage.collaborators.put({
         profile,
         addedBy: [{
@@ -240,9 +289,11 @@ export class SharingManager {
   // ---------------------------------------------------------------------------------------
   // Collaborator management
 
-  // List currently-active collaborators -- those with a live path from the owner. Under the lazy
-  // revocation model, removed collaborators linger in storage with no reachable role; they are
-  // omitted here (they reappear if re-added).
+  /**
+   * List currently-active collaborators -- those with a live path from the owner. Under the lazy
+   * revocation model, removed collaborators linger in storage with no reachable role; they are
+   * omitted here (they reappear if re-added).
+   */
   listCollaborators(): CollaboratorInfo[] {
     let roles = this.computeEffectiveRoles();
     let result: CollaboratorInfo[] = [];
@@ -258,9 +309,12 @@ export class SharingManager {
     return result;
   }
 
-  // Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
-  // responsible for resolving `profile` (via RPC) and for any policy checks (e.g.
-  // `prohibitAllSharing`). The caller may not grant a role higher than their own effective role.
+  /**
+   * Add a collaborator with a `user` edge from the caller, granting `role`. The caller is
+   * responsible for resolving `profile` (via RPC) and for any policy checks. The caller may not
+   * grant a role higher than their own effective role. Once `ownerInvitesOnly` is set, only the
+   * owner may call this.
+   */
   addCollaborator(opts: {
     caller: SharingCaller;
     profile: AiChatAuthorInfo;
@@ -270,6 +324,11 @@ export class SharingManager {
     // Don't add the owner as a collaborator.
     if (opts.profile.id === this.ownerProfileId) {
       throw new Error("Cannot add the workspace owner as a collaborator.");
+    }
+
+    if (this.ownerInvitesOnly() && !opts.caller.isOwner) {
+      throw new Error(
+          "Only the workspace owner can add people to a workspace that contains sensitive data.");
     }
 
     let callerRole = this.#requireCallerRole(opts.caller);
@@ -330,21 +389,23 @@ export class SharingManager {
     return this.#computeAffected(baseline, modified);
   }
 
-  // Remove a collaborator by severing the edges that grant them access. This is a *lazy* removal:
-  // nothing cascades and no records are deleted. The target's record (and crucially, any edges
-  // where the target is the *sharer* of access to others) is left intact, and dependents who lose
-  // their only path to the owner simply become unreachable -- they are denied at open() time, not
-  // pruned here. This makes the removal trivially reversible: re-adding the target (see
-  // addCollaborator) restores the target and, transitively, everyone they had shared with.
-  //
-  //   - The owner severs *all* incoming edges to the target (owner-removal means "gone now").
-  //   - A non-owner severs only their own `user` edge to the target; if the target retains other
-  //     edges, they keep access (possibly at a lower role).
-  //
-  // `keepUsers` is optional re-root sugar: any listed dependent who would otherwise lose access or
-  // be downgraded is granted a fresh edge from the caller at their prior role (see
-  // `#reRootKeptUsers`). Returns the collaborators whose access actually changed (removed or
-  // downgraded), excluding kept users.
+  /**
+   * Remove a collaborator by severing the edges that grant them access. This is a *lazy* removal:
+   * nothing cascades and no records are deleted. The target's record (and crucially, any edges
+   * where the target is the *sharer* of access to others) is left intact, and dependents who lose
+   * their only path to the owner simply become unreachable -- they are denied at open() time, not
+   * pruned here. This makes the removal trivially reversible: re-adding the target (see
+   * addCollaborator) restores the target and, transitively, everyone they had shared with.
+   *
+   *   - The owner severs *all* incoming edges to the target (owner-removal means "gone now").
+   *   - A non-owner severs only their own `user` edge to the target; if the target retains other
+   *     edges, they keep access (possibly at a lower role).
+   *
+   * `keepUsers` is optional re-root sugar: any listed dependent who would otherwise lose access or
+   * be downgraded is granted a fresh edge from the caller at their prior role (see
+   * `#reRootKeptUsers`). Returns the collaborators whose access actually changed (removed or
+   * downgraded), excluding kept users.
+   */
   removeCollaborator(
       caller: SharingCaller, profileId: string, keepUsers: string[]): AffectedCollaborator[] {
     let target = this.storage.collaborators.get(profileId);
@@ -409,6 +470,7 @@ export class SharingManager {
 
     // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
+    this.#requireShareLinksAllowed();
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
@@ -419,7 +481,7 @@ export class SharingManager {
     return { key, linkId: hash };
   }
 
-  // Mints another key for an existing link.
+  /** Mints another key for an existing link. */
   async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
     if (link.revoked) {
@@ -435,6 +497,7 @@ export class SharingManager {
     }
 
     let { key, hash } = await this.#mintKey();
+    this.#requireShareLinksAllowed();
     this.storage.shareKeys.put({ id: hash, alias: link.id });
     return { key };
   }
@@ -448,16 +511,20 @@ export class SharingManager {
     return { key, hash: await hashShareKey(key) };
   }
 
-  // Active (non-revoked) share links. The Overseer maps each `createdBy` profile.id to a display
-  // profile (which may require RPC) to produce `ShareLinkInfo`s; see `getCreatorProfile`.
+  /**
+   * Active (non-revoked) share links. The Overseer maps each `createdBy` profile.id to a display
+   * profile (which may require RPC) to produce `ShareLinkInfo`s; see `getCreatorProfile`.
+   */
   listShareLinkRecords(): ShareLinkRecord[] {
     return [...this.#listLinks()].filter(link => !link.revoked);
   }
 
-  // Resolve the display profile for a share link's creator using only locally-available data
-  // (the collaborator table). Returns undefined if the creator is neither a current collaborator
-  // nor matched here (e.g. the owner), in which case the Overseer resolves it via RPC. The final
-  // fallback (a bare profile from the id) is also the Overseer's responsibility.
+  /**
+   * Resolve the display profile for a share link's creator using only locally-available data
+   * (the collaborator table). Returns undefined if the creator is neither a current collaborator
+   * nor matched here (e.g. the owner), in which case the Overseer resolves it via RPC. The final
+   * fallback (a bare profile from the id) is also the Overseer's responsibility.
+   */
   getCreatorProfile(createdBy: string): AiChatAuthorInfo | undefined {
     return this.storage.collaborators.get(createdBy)?.profile;
   }
@@ -481,15 +548,17 @@ export class SharingManager {
     return this.#computeAffected(baseline, modified);
   }
 
-  // Revoke a share link by soft-revoking it (setting the `revoked` flag) rather than deleting it.
-  // This is the lazy counterpart to removeCollaborator: the link record and every `shareKey` edge
-  // referencing it stay intact (no dangling references), but the link contributes nothing to the
-  // permission graph and its keys can no longer be redeemed. Its copies are deleted outright,
-  // since no edge ever names an alias. Users who relied solely on it become unreachable and
-  // are denied at open() time.
-  //
-  // `keepUsers` is optional re-root sugar, identical to removeCollaborator. Returns the
-  // collaborators whose access actually changed (removed or downgraded), excluding kept users.
+  /**
+   * Revoke a share link by soft-revoking it (setting the `revoked` flag) rather than deleting it.
+   * This is the lazy counterpart to removeCollaborator: the link record and every `shareKey` edge
+   * referencing it stay intact (no dangling references), but the link contributes nothing to the
+   * permission graph and its keys can no longer be redeemed. Its copies are deleted outright,
+   * since no edge ever names an alias. Users who relied solely on it become unreachable and
+   * are denied at open() time.
+   *
+   * `keepUsers` is optional re-root sugar, identical to removeCollaborator. Returns the
+   * collaborators whose access actually changed (removed or downgraded), excluding kept users.
+   */
   revokeShareLink(
       caller: SharingCaller, linkId: string, keepUsers: string[]): AffectedCollaborator[] {
     let link = this.#requireLink(linkId);
@@ -511,19 +580,26 @@ export class SharingManager {
   // ---------------------------------------------------------------------------------------
   // Permission-graph engine
 
-  // Compute the effective role of every collaborator -- the maximum role reachable from the owner
-  // through valid permission edges. A collaborator absent from the returned map has no access.
-  //
-  // The owner is the implicit root at "build". Each edge grants min(edge role, sharer's effective
-  // role):
-  //   - A "user" edge's sharer is the owner (effective "build") or another collaborator.
-  //   - A "shareKey" edge's "sharer" is the key's creator; the edge grants the key's role bounded
-  //     by the creator's effective role.
-  //
-  // Optional modifications model a hypothetical change, used by the preview methods:
-  //   - `removedUser`: a profileId treated as removed (excluded from the graph entirely).
-  //   - `removedEdge`: a single user edge (target ← sharer) treated as removed.
-  //   - `revokedLinkId`: a link treated as revoked (its edges contribute nothing).
+  /**
+   * Compute the effective role of every collaborator -- the maximum role reachable from the owner
+   * through valid permission edges. A collaborator absent from the returned map has no access.
+   *
+   * The owner is the implicit root at "build". Each edge grants min(edge role, sharer's effective
+   * role):
+   *   - A "user" edge's sharer is the owner (effective "build") or another collaborator.
+   *   - A "shareKey" edge's "sharer" is the key's creator; the edge grants the key's role bounded
+   *     by the creator's effective role.
+   *
+   * Optional modifications model a hypothetical change, used by the preview methods:
+   *   - `removedUser`: a profileId treated as removed (excluded from the graph entirely).
+   *   - `removedEdge`: a single user edge (target ← sharer) treated as removed.
+   *   - `revokedLinkId`: a link treated as revoked (its edges contribute nothing).
+   *
+   * Once `ownerInvitesOnly` is set, only direct grants from the owner count: every `shareKey` edge
+   * (even for a link the owner created) and every `user` edge from anyone but the owner is
+   * skipped. People who reached the workspace any other way lose access, and a collaborator whose
+   * owner edge grants less than they reached transitively is downgraded to it.
+   */
   computeEffectiveRoles(opts: {
     removedUser?: string | null;
     removedEdge?: { target: string; sharer: string } | null;
@@ -532,6 +608,7 @@ export class SharingManager {
     let removedUser = opts.removedUser ?? null;
     let removedEdge = opts.removedEdge ?? null;
     let revokedLinkId = opts.revokedLinkId ?? null;
+    let ownerGrantsOnly = this.ownerInvitesOnly();
 
     // Map linkId → {creator, role}, excluding revoked links (the persisted `revoked` flag, and the
     // hypothetical `revokedLinkId` used by preview).
@@ -568,6 +645,7 @@ export class SharingManager {
         for (let edge of record.addedBy) {
           let granted: CollaboratorRole | undefined;
           if (edge.type === "shareKey") {
+            if (ownerGrantsOnly) continue;
             let info = linkInfo.get(edge.keyId);
             if (!info) continue;  // link revoked or no longer exists
             let creatorRole = sharerRole(info.creator);
@@ -580,6 +658,7 @@ export class SharingManager {
               continue;
             }
             if (edge.sharer === removedUser) continue;
+            if (ownerGrantsOnly && edge.sharer !== this.ownerProfileId) continue;
             let upstream = sharerRole(edge.sharer);
             if (!upstream) continue;
             granted = minRole(edgeGrantedRole(edge), upstream);
@@ -607,6 +686,15 @@ export class SharingManager {
       throw new Error("You do not have permission to share this workspace.");
     }
     return role;
+  }
+
+  /**
+   * The collaborators who lost access or were downgraded when `ownerInvitesOnly` was set, given
+   * `baseline`, the effective roles computed just before the flag was set.
+   */
+  computeAffectedByOwnerInvitesOnly(
+      baseline: Map<string, CollaboratorRole>): AffectedCollaborator[] {
+    return this.#computeAffected(baseline, this.computeEffectiveRoles());
   }
 
   // Diff two effective-role maps, returning the collaborators whose access changed. A user is

@@ -47,7 +47,7 @@ is **not** offered as a "Continue with…" sign-in method (`getAuthenticatedEmai
 ## Configuration
 
 The gatekeeper Worker reads `CLIENT_ID` and `CLIENT_SECRET`. In local development these are seeded
-from the root `.dev.vars` by `run-dev-server.js`:
+from the root `.dev.vars` by `run-dev-server.ts`:
 
 ```
 ZOOMINFO_CLIENT_ID=<oauth app client id>

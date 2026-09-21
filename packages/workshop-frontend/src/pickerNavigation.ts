@@ -5,13 +5,16 @@ import type React from 'react'
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react'
 import type { SelectableItem } from './ResourcePicker'
 import { getPlaceholderRanges } from './resourceMatching'
+import { isImeComposing } from './keyboardEvent'
 
-// Handle arrow-key navigation and Tab (placeholder advance / item activation)
-// for an input element paired with a ResourcePicker.
-//
-// `urlText`   – the URL string being edited (may be a substring of the input value)
-// `urlOffset` – position of urlText within the input element's value (0 if the
-//               input contains only the URL)
+/**
+ * Handle arrow-key navigation and Tab (placeholder advance / item activation)
+ * for an input element paired with a ResourcePicker.
+ *
+ * `urlText`   – the URL string being edited (may be a substring of the input value)
+ * `urlOffset` – position of urlText within the input element's value (0 if the
+ *               input contains only the URL)
+ */
 export function handlePickerKeyDown(
   e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
   urlText: string,
@@ -21,6 +24,7 @@ export function handlePickerKeyDown(
   itemsRef: MutableRefObject<SelectableItem[]>,
   activateRef: MutableRefObject<((index: number) => void) | null>,
 ): void {
+  if (isImeComposing(e)) return
   const items = itemsRef.current
   if (items.length === 0) return
 

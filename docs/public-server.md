@@ -13,7 +13,7 @@ connect the account's capabilities. There's no single switch — the pieces turn
 | Configure | Effect |
 | --- | --- |
 | `AUTH_GATEKEEPERS=cloudflare,google,github` | Allowlists which connected gatekeepers may be used to sign in. Each shows a "Continue with …" button alongside username/password. |
-| Each gatekeeper's OAuth credentials (on the gatekeeper Worker) | Required for that gatekeeper to actually authenticate. In dev, seeded from `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars (see `run-dev-server.js`). |
+| Each gatekeeper's OAuth credentials (on the gatekeeper Worker) | Required for that gatekeeper to actually authenticate. In dev, seeded from `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars (see `run-dev-server.ts`). |
 | `ENABLE_CLOUDFLARE_LIMITS=true` | Enables the free daily limit + Cloudflare-credits top-up flow. Billing reads a token from the connected Cloudflare gatekeeper. |
 | `DISABLE_PASSWORD_AUTH=true` | Hides username/password, leaving gatekeeper sign-in only (ignored unless `AUTH_GATEKEEPERS` is non-empty, to avoid lockout). |
 
@@ -40,25 +40,35 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 CF_AI_GATEWAY=your-gateway
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
-# Required whenever CF_AI_GATEWAY is set (all inference goes over HTTPS with tokens):
+# Required whenever CF_AI_GATEWAY is set:
 CF_AI_GATEWAY_ACCOUNT_ID=...
+# Required unless the WORKERS_AI binding carries gateway traffic (see below); always required
+# for the google provider:
 CF_AI_GATEWAY_API_TOKEN=...
-
-# To send Workers AI straight to its REST endpoint (no gateway, no cost logs):
-CF_AI_GATEWAY_WAI_DIRECT=true
 ```
 
-Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID` and `CF_AI_GATEWAY_API_TOKEN`; the token
-needs AI Gateway Run and Read permissions so Gadgets can execute models and report their costs
-(the Gateway may live in the Worker's own account or a different one). Workers AI defaults to the
-same Gateway ID; set `CF_AI_GATEWAY_WAI` to route it through a different Gateway in the same
-account, or `CF_AI_GATEWAY_WAI_DIRECT=true` to bypass gateways and call the Workers AI REST
-endpoint directly (using the same account/token pair; such requests produce no cost logs).
+Gateway mode always requires `CF_AI_GATEWAY_ACCOUNT_ID`, plus a transport for gateway requests.
+When the `WORKERS_AI` binding is present, the binding is that transport by default: its requests
+are pre-authenticated in-account, so inference and cost-log reads need no API token. This is only
+valid when the Gateway lives in the Worker's **own** account — binding requests can't reach
+another account's Gateway, and the Worker cannot verify where the Gateway lives at runtime — so
+deployments whose Gateway is in a different account must set `CF_AI_GATEWAY_USE_BINDING=false` to
+opt out and route over HTTPS instead. Keep `WORKERS_AI` bound when you do: it is also what the
+webFetch tool's document-to-Markdown conversion runs on, so unbinding it opts out of far more than
+the gateway transport. Without the binding transport, set
+`CF_AI_GATEWAY_API_TOKEN` — a token with AI Gateway Run and Read permissions so Gadgets can
+execute models and report their costs (over HTTPS the Gateway may live in the Worker's own
+account or a different one). The token stays required for the `google` provider regardless of the
+binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
+it, so the platform server itself still needs the token). Every provider, Workers AI included,
+routes through the same Gateway.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
-`pnpm run dev-server -- --use-workers-ai-binding` so the webFetch tool's document-to-Markdown
-conversion still has a `WORKERS_AI` binding. (Inference itself no longer uses the binding; it goes
-over HTTPS with the tokens above.)
+`pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
+the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
+it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
+lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
+`--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):

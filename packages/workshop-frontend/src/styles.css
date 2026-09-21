@@ -59,7 +59,8 @@
 
   /* Tooltip */
   --color-kumo-tip-shadow: #14111014;
-  --color-kumo-tip-stroke: transparent;
+  --color-kumo-arrow-edge: var(--color-kumo-line);
+  --color-kumo-arrow-stroke: transparent;
 
   /* Text color tokens — near-neutral greys (faint warm undertone, no brown) */
   --text-color-kumo-default: #1c1a18;
@@ -170,7 +171,8 @@
   --color-kumo-success-tint: oklch(0.25 0.06 150.069);
 
   --color-kumo-tip-shadow: #00000066;
-  --color-kumo-tip-stroke: oklch(0.34 0.022 285);
+  --color-kumo-arrow-edge: transparent;
+  --color-kumo-arrow-stroke: var(--color-kumo-line);
 
   --text-color-kumo-default: oklch(0.92 0.01 285);
   --text-color-kumo-default-hover: oklch(0.97 0.006 285);
@@ -216,11 +218,82 @@
     0 18px 40px 0 #00000033, 0 4px 12px 0 #0000002e;
 }
 
+:root {
+  --app-height: 100dvh;
+  --app-top: 0px;
+  --app-bottom: 0px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 0;
+}
+
 body {
   @apply m-0 antialiased;
+  overflow: hidden;
   font-family: var(--font-sans);
   background-color: var(--color-kumo-base);
   color: var(--text-color-kumo-default);
+}
+
+.app-viewport {
+  position: fixed;
+  top: var(--app-top);
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+  height: var(--app-height);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.visual-viewport-fixed {
+  position: fixed;
+  top: calc(var(--app-top) + env(safe-area-inset-top));
+  right: env(safe-area-inset-right);
+  bottom: calc(var(--app-bottom) + env(safe-area-inset-bottom));
+  left: env(safe-area-inset-left);
+}
+
+@layer utilities {
+  /* Turns a Kumo Dialog into a keyboard-safe bottom sheet on phones (and very short windows).
+     The `body` prefix and !important are load-bearing: they out-rank both Kumo's own dialog
+     styles and the per-dialog Tailwind `!` utilities (same layer, lower specificity), which
+     still apply on desktop where this block is inactive. */
+  @media (max-width: 767px), (max-height: 520px) {
+    body .responsive-dialog {
+      top: auto !important;
+      right: env(safe-area-inset-right) !important;
+      bottom: calc(var(--app-bottom) + env(safe-area-inset-bottom)) !important;
+      left: 50% !important;
+      width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) !important;
+      max-width: none !important;
+      max-height: calc(var(--app-height) - 8px - env(safe-area-inset-top)) !important;
+      border-bottom-right-radius: 0 !important;
+      border-bottom-left-radius: 0 !important;
+      translate: -50% 0 !important;
+      transform: none !important;
+    }
+
+    body .responsive-dialog :is(input, textarea, select) {
+      font-size: 16px;
+    }
+
+    body .connect-connector-dialog {
+      top: 50% !important;
+      bottom: auto !important;
+      right: auto !important;
+      left: 50% !important;
+      width: calc(100vw - 32px) !important;
+      max-height: calc(var(--app-height) - 32px) !important;
+      border-bottom-right-radius: var(--radius-xl) !important;
+      border-bottom-left-radius: var(--radius-xl) !important;
+      translate: -50% -50% !important;
+    }
+  }
 }
 
 ::selection {
@@ -825,4 +898,9 @@ html {
    Kumo's internal backdrop class names. */
 body:has([role="dialog"], [role="alertdialog"]) .app-header {
   z-index: 0;
+}
+
+/* Kumo applies Tooltip className to its trigger, so target this richer popup by its content. */
+.kumo-tooltip-popup:has([data-skill-tooltip]) {
+  border-radius: 10px;
 }

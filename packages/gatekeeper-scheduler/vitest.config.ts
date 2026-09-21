@@ -9,7 +9,7 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/worker.ts",
       miniflare: {
-        compatibilityDate: "2026-02-02",
+        compatibilityDate: "2026-09-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
         durableObjects: {
           SCHEDULE_DRIVER: { className: "ScheduleDriver", useSQLite: true },
@@ -30,5 +30,7 @@ export default defineConfig({
   ],
   test: {
     include: ["__tests__/*.test.ts"],
+    // Asserts the pool actually started, rather than trusting a green run to mean workerd.
+    setupFiles: ["@gadgets/scripts/assert-workerd"],
   },
 });

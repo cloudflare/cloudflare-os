@@ -120,10 +120,14 @@ describe("webFetch document conversion", () => {
       tokens: 1,
       data: "# Title",
     }));
+    // WORKERS_AI is what makes the gateway same-account: it is both the binding toMarkdown runs on
+    // and the gateway transport, and the overseer takes `ai` and this config from the one env, so a
+    // config built without it describes a deployment where the conversion could not happen at all.
     const gateway = new AiGatewayConfig({
       CF_AI_GATEWAY: "workers-ai-gateway",
       CF_AI_GATEWAY_ACCOUNT_ID: "gateway-account-id",
       CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      WORKERS_AI: {} as Ai,
     } as Cloudflare.Env);
 
     await webFetch(makeEnv(toMarkdown, gateway), { url: "https://example.com/page" });
@@ -134,7 +138,7 @@ describe("webFetch document conversion", () => {
     });
   });
 
-  it("does not pass a gateway to toMarkdown when direct Workers AI is configured", async () => {
+  it("does not pass a gateway to toMarkdown when the gateway is cross-account", async () => {
     mockResponse("<h1>Title</h1>", "text/html");
 
     const toMarkdown = vi.fn(async (doc: { name: string; blob: Blob }) => ({
@@ -145,11 +149,16 @@ describe("webFetch document conversion", () => {
       tokens: 1,
       data: "# Title",
     }));
+    // CF_AI_GATEWAY_USE_BINDING=false marks the platform gateway as living in a different
+    // account; the binding-based toMarkdown call can't log through it. WORKERS_AI stays bound --
+    // that is the whole shape of the opt-out: the binding is still there for the conversion, it
+    // just can't reach this gateway.
     const gateway = new AiGatewayConfig({
       CF_AI_GATEWAY: "platform-gateway",
       CF_AI_GATEWAY_ACCOUNT_ID: "gateway-account-id",
       CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-      CF_AI_GATEWAY_WAI_DIRECT: "true",
+      CF_AI_GATEWAY_USE_BINDING: "false",
+      WORKERS_AI: {} as Ai,
     } as Cloudflare.Env);
 
     await webFetch(makeEnv(toMarkdown, gateway), { url: "https://example.com/page" });

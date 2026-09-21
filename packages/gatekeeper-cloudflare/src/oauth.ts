@@ -7,11 +7,15 @@
 const CF_OAUTH_AUTH_URL = "https://dash.cloudflare.com/oauth2/auth";
 const CF_OAUTH_TOKEN_URL = "https://dash.cloudflare.com/oauth2/token";
 
-// Scopes for sign-in + the AI Gateway billing/BYOK flow: read account details and route inference
-// through the user's own AI Gateway. We deliberately do NOT request "openid" — the dashboard OAuth
-// client isn't permitted it; identity comes from user-details.read (the /user API). offline_access
-// yields a refresh token; account-settings.read is required to enumerate the user's account(s).
-export const FULL_SCOPES = [
+import { observabilityScopesForResources } from "./resources.js";
+
+/**
+ * Scopes for the AI Gateway billing/BYOK flow: read account details and route inference
+ * through the user's own AI Gateway. We deliberately do NOT request "openid" — the dashboard OAuth
+ * client isn't permitted it; identity comes from user-details.read (the /user API). offline_access
+ * yields a refresh token; account-settings.read is required to enumerate the user's account(s).
+ */
+export const BILLING_SCOPES = [
   "offline_access",
   "aig.read",
   "aig.run",
@@ -19,8 +23,15 @@ export const FULL_SCOPES = [
   "account-settings.read",
 ];
 
-// Minimal scopes for sign-in only: a refresh token + the /user identity read. Used in "auth" mode
-// (the resulting grant is transient).
+/** Persistent billing scopes plus the explicitly selected gadget resources. */
+export function persistentScopesForResources(resourceUrlPatterns?: string[]): string[] {
+  return [...BILLING_SCOPES, ...observabilityScopesForResources(resourceUrlPatterns)];
+}
+
+/**
+ * Minimal scopes for sign-in only: a refresh token + the /user identity read. Used in "auth" mode
+ * (the resulting grant is transient).
+ */
 export const AUTH_SCOPES = [
   "offline_access",
   "user-details.read",
@@ -34,8 +45,10 @@ export interface CloudflareOAuthConfig {
   redirectUri: string;
 }
 
-// Build the OAuth config from the gatekeeper's env. `redirectUri` is the gatekeeper's own /oauth
-// endpoint. Returns null if the client credentials aren't configured.
+/**
+ * Build the OAuth config from the gatekeeper's env. `redirectUri` is the gatekeeper's own /oauth
+ * endpoint. Returns null if the client credentials aren't configured.
+ */
 export function getOAuthConfig(
   clientId: string | undefined, clientSecret: string | undefined, baseUrl: string,
 ): CloudflareOAuthConfig | null {
@@ -54,7 +67,7 @@ function b64urlEncode(bytes: ArrayBuffer | Uint8Array): string {
   return btoa(String.fromCharCode(...arr)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// Generate a PKCE verifier and its S256 challenge.
+/** Generate a PKCE verifier and its S256 challenge. */
 export async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
   const verifier = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
@@ -80,6 +93,7 @@ export interface TokenResponse {
   refreshToken?: string;
   expiresIn: number;
   tokenType?: string;
+  scopes?: string[];
 }
 
 interface RawTokenResponse {
@@ -87,13 +101,14 @@ interface RawTokenResponse {
   refresh_token?: string;
   expires_in?: number;
   token_type?: string;
+  scope?: string;
 }
 
 function basicAuth(config: CloudflareOAuthConfig): string {
   return "Basic " + btoa(`${config.clientId}:${config.clientSecret}`);
 }
 
-// Exchange an authorization code (with its PKCE verifier) for tokens.
+/** Exchange an authorization code (with its PKCE verifier) for tokens. */
 export async function exchangeCode(
   config: CloudflareOAuthConfig, code: string, verifier: string,
 ): Promise<TokenResponse | null> {
@@ -105,7 +120,7 @@ export async function exchangeCode(
   }));
 }
 
-// Refresh an access token using a refresh token.
+/** Refresh an access token using a refresh token. */
 export async function refreshTokens(
   config: CloudflareOAuthConfig, refreshToken: string,
 ): Promise<TokenResponse | null> {
@@ -133,5 +148,6 @@ async function redeem(config: CloudflareOAuthConfig, body: URLSearchParams): Pro
     refreshToken: data.refresh_token,
     expiresIn: data.expires_in ?? 3600,
     tokenType: data.token_type,
+    scopes: data.scope?.split(/\s+/).filter(Boolean),
   };
 }

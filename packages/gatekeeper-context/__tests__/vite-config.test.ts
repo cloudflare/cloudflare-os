@@ -9,7 +9,7 @@ vi.mock('vite', async (importOriginal) => {
   }
 })
 
-import config from '../vite.config'
+import config from '../vite.app.config'
 
 async function resolveConfig(value: UserConfigExport): Promise<UserConfig> {
   if (typeof value !== 'function') return value

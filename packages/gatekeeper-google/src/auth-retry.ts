@@ -8,17 +8,23 @@
 //      stale-but-unexpired token would otherwise be served on every request and the 401 could not
 //      self-heal. On a 401 we mint a fresh token via `getAccessToken({ forceRefresh: true })` and
 //      retry exactly once. This is safe on any HTTP method: a 401 is rejected before the request
-//      takes effect, so a write is never applied twice. A 403 is an insufficient-scope error that a
-//      fresh token cannot fix, so it is never retried.
+//      takes effect, so a write is never applied twice.
+//
+//      A 403 is an insufficient-scope error, so minting cannot fix it: the same grant produces the
+//      same scopes. A *re-grant* can, and it always arrives as a different stored token — so on a
+//      403 we re-read the authority's stored token and replay only if it actually changed, minting
+//      nothing. That is what lets a binding whose resource gained scopes recover from the user's
+//      reconnect instead of failing until the memoized token happens to expire.
 //
 //   2. Transient failures (429 / 5xx / network timeout). Retried with exponential backoff plus full
-//      jitter, honoring `Retry-After` when present, on idempotent GETs only: a 429, a 5xx and a
-//      timeout all leave it ambiguous whether the server already applied a write. Retrying writes
-//      needs a per-request idempotency key (`X-Goog-Client-Request-Id` on Gmail send, a
-//      client-supplied event id on `events.insert`); that is a follow-up, not this change.
+//      jitter, honoring `Retry-After` when present, on requests that are safe to replay: GETs, and
+//      non-GETs that opt in via `idempotent`. A 429, a 5xx and a timeout all leave it ambiguous
+//      whether the server already applied a write. Retrying writes needs a per-request idempotency
+//      key (`X-Goog-Client-Request-Id` on Gmail send, a client-supplied event id on
+//      `events.insert`); that is a follow-up, not this change.
 //
-// Both concerns share a single attempt counter, so the worst case is a predictable `retries + 1`
-// requests: `retries` transient attempts plus at most one extra for the one-shot 401 refresh.
+// Both concerns share a single attempt counter, so the worst case is a predictable `retries + 2`
+// requests: `retries` transient attempts plus one each for the 401 refresh and the 403 reload.
 
 /**
  * Options for requesting an access token.
@@ -30,6 +36,12 @@ export type AccessTokenRequest = {
   forceRefresh?: boolean;
   /** The token the caller just had rejected. Never log this. */
   staleToken?: string;
+  /**
+   * Bypass the per-Durable-Object memo and answer from the authority's stored token, minting
+   * nothing. The caller saw a 403, which only a re-granted scope can fix; a mint of the same grant
+   * would cost a token exchange per failing call and return the same scopes.
+   */
+  reloadStored?: boolean;
 };
 
 export type AccessTokenProvider = (opts?: AccessTokenRequest) => Promise<string>;
@@ -42,19 +54,25 @@ export type FetchWithAuthRetryOptions = {
   retries?: number;
   /** Per-attempt abort timeout in milliseconds. Omitted means no timeout is imposed. */
   timeoutMs?: number;
+  /**
+   * Asserts this request is safe to replay on 429 / 5xx / timeout. Must only be set for a request
+   * that performs no writes. Non-GET methods default to unsafe; this is the opt-in for a POST that
+   * is still just a read (Drive's batch `files.get` envelope).
+   */
+  idempotent?: boolean;
 };
 
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 10_000;
 
 /**
- * Whether a transient failure status is worth replaying for this method.
+ * Whether a transient failure status is worth replaying.
  *
  * Neither a 429 nor a 5xx tells us whether the request took effect before the response, so both are
- * only replayed for idempotent GETs.
+ * only replayed when the caller has asserted the request is safe to send twice.
  */
-function canRetry(status: number, method: string): boolean {
-  if (status === 429 || (status >= 500 && status <= 599)) return method === "GET";
+function canRetry(status: number, idempotent: boolean): boolean {
+  if (status === 429 || (status >= 500 && status <= 599)) return idempotent;
   return false;
 }
 
@@ -84,14 +102,15 @@ export async function fetchWithAuthRetry(
 ): Promise<Response> {
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
-
+  let idempotent = method === "GET" || opts.idempotent === true;
   // A request can only be replayed if its body can be sent again. A string body (what every call
   // site uses today) re-serializes fine; a stream is consumed by the first attempt, so retrying it
   // would send an empty or errored body. Nothing to replay is likewise fine.
   let replayable = init.body === undefined || init.body === null || typeof init.body === "string";
 
-  // One-shot: a 401 buys exactly one refreshed retry
+  // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
+  let reloaded = false;
   let token = await getAccessToken();
   let attempt = 0;
 
@@ -114,8 +133,8 @@ export async function fetchWithAuthRetry(
         ...(signal ? { signal } : {}),
       });
     } catch (error) {
-      // Network error or timeout: ambiguous, so retry idempotent GETs only.
-      if (replayable && method === "GET" && attempt < retries - 1) {
+      // Network error or timeout: ambiguous, so retry only when the request is safe to replay.
+      if (replayable && idempotent && attempt < retries - 1) {
         await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
         attempt++;
         continue;
@@ -134,7 +153,19 @@ export async function fetchWithAuthRetry(
       continue;
     }
 
-    if (replayable && canRetry(response.status, method) && attempt < retries - 1) {
+    if (response.status === 403 && !reloaded && replayable) {
+      // Also one-shot, and it replays only on a token that really changed: an unchanged one means
+      // the grant itself is insufficient, and re-sending it would just 403 again.
+      reloaded = true;
+      let stored = await getAccessToken({ reloadStored: true });
+      if (stored !== token) {
+        token = stored;
+        await response.body?.cancel();
+        continue;
+      }
+    }
+
+    if (replayable && canRetry(response.status, idempotent) && attempt < retries - 1) {
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -170,6 +201,11 @@ export type MintAccessToken = (opts?: AccessTokenRequest) => Promise<MintedAcces
  * Each gatekeeper Durable Object holds its own instance, so these can briefly diverge: two
  * gatekeepers may sit on different vintages of a token, both valid. They converge because every miss
  * goes to the same `UserAccount`, which is the single authority and the only thing that mints.
+ *
+ * Divergence stops being harmless once a resource's scopes grow: the memo would keep serving a token
+ * minted under the narrower grant, and Google answers that with a 403 no mint can repair. So
+ * `reloadStored` bypasses the memo without asking the authority to mint, which is how the 403 retry
+ * picks up the token a reconnect just stored.
  */
 export class AccessTokenCache {
   #cached: MintedAccessToken | undefined;
@@ -187,10 +223,14 @@ export class AccessTokenCache {
    * The `staleToken` arm mirrors the re-check the authority performs, one layer up: a caller whose
    * token was just rejected can be served locally if this cache has already moved past that token,
    * because some earlier caller in the same 401 burst already replaced it.
+   *
+   * `reloadStored` is never satisfiable here: its whole purpose is to find out whether the authority
+   * holds something newer than this memo.
    */
   #satisfies(cached: MintedAccessToken | undefined, opts?: AccessTokenRequest)
       : cached is MintedAccessToken {
     if (!cached) return false;
+    if (opts?.reloadStored) return false;
     if (cached.expires.valueOf() <= Date.now() + this.#skewMs) return false;
     if (opts?.staleToken !== undefined) return cached.token !== opts.staleToken;
     return !opts?.forceRefresh;

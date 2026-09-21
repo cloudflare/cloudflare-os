@@ -111,7 +111,7 @@ async function postToken(
   };
 }
 
-// Exchange an authorization code for an access token + refresh token.
+/** Exchange an authorization code for an access token + refresh token. */
 export async function exchangeAuthCode(
   code: string,
   clientId: string,
@@ -125,7 +125,7 @@ export async function exchangeAuthCode(
   );
 }
 
-// Refresh an access token using a stored refresh token.
+/** Refresh an access token using a stored refresh token. */
 export async function refreshAccessToken(
   refreshToken: string,
   clientId: string,
@@ -195,8 +195,10 @@ export type NotionPageResponse = {
   properties?: Record<string, NotionPropertyResponse>;
 };
 
-// Under Notion-Version 2025-09-03, a database is a container of one or more data sources; the
-// schema (properties) lives on the data source, and the database response lists `data_sources`.
+/**
+ * Under Notion-Version 2025-09-03, a database is a container of one or more data sources; the
+ * schema (properties) lives on the data source, and the database response lists `data_sources`.
+ */
 export type NotionDatabaseResponse = {
   object: "database";
   id: string;
@@ -210,7 +212,7 @@ export type NotionDatabaseResponse = {
   data_sources?: { id: string; name: string }[];
 };
 
-// A data source holds the actual row schema (properties) and is what we query for rows.
+/** A data source holds the actual row schema (properties) and is what we query for rows. */
 export type NotionDataSourceResponse = {
   object: "data_source";
   id: string;
@@ -469,7 +471,7 @@ export function propertiesToValues(
 // ---------------------------------------------------------------------------------------------
 // Conversions: property values (write)
 
-// Convert a single writable property input into the Notion API property payload.
+/** Convert a single writable property input into the Notion API property payload. */
 export function propertyInputToNotion(input: NotionPropertyInput): unknown {
   switch (input.type) {
     case "title":
@@ -521,8 +523,10 @@ export function propertyInputsToNotion(
   return out;
 }
 
-// Convert a read property value back into a writable input, for capturing "previous" state so an
-// action can be reverted. Returns null for non-writable/computed types (which can't be reverted).
+/**
+ * Convert a read property value back into a writable input, for capturing "previous" state so an
+ * action can be reverted. Returns null for non-writable/computed types (which can't be reverted).
+ */
 export function propertyValueToInput(value: NotionPropertyValue): NotionPropertyInput | null {
   switch (value.type) {
     case "title":
@@ -558,7 +562,7 @@ export function propertyValueToInput(value: NotionPropertyValue): NotionProperty
   }
 }
 
-// Convert a page's current icon (the simplified string form) into an icon input, for revert.
+/** Convert a page's current icon (the simplified string form) into an icon input, for revert. */
 export function iconStringToInput(icon: string | undefined): NotionIconInput | null {
   if (!icon) return null;
   return /^https?:\/\//i.test(icon) ? { imageUrl: icon } : { emoji: icon };
@@ -636,7 +640,7 @@ export function itemResponseToSummary(
   };
 }
 
-// Build the simplified schema from a data source (or anything exposing a Notion `properties` map).
+/** Build the simplified schema from a data source (or anything exposing a Notion `properties` map). */
 export function databaseSchema(source: { properties?: Record<string, NotionPropertyResponse> }): NotionDatabaseSchema {
   const properties: Record<string, NotionPropertySchema> = {};
   for (const [name, prop] of Object.entries(source.properties ?? {})) {
@@ -645,7 +649,7 @@ export function databaseSchema(source: { properties?: Record<string, NotionPrope
   return { properties };
 }
 
-// The primary (first) data source ID of a database.
+/** The primary (first) data source ID of a database. */
 export function primaryDataSourceId(db: NotionDatabaseResponse): string {
   const id = db.data_sources?.[0]?.id;
   if (!id) {
@@ -657,7 +661,7 @@ export function primaryDataSourceId(db: NotionDatabaseResponse): string {
 // ---------------------------------------------------------------------------------------------
 // IDs
 
-// Build a canonical Notion URL for an object ID (accepts dashed or undashed IDs).
+/** Build a canonical Notion URL for an object ID (accepts dashed or undashed IDs). */
 export function notionUrlFromId(id: string): string {
   return `https://www.notion.so/${id.replace(/-/g, "")}`;
 }
@@ -686,11 +690,13 @@ function findNotionId(text: string): string | undefined {
   return last ? formatUuid(last) : undefined;
 }
 
-// Extract a Notion object ID from a raw ID or a Notion URL. Returns a dashed UUID.
-//
-// URL handling: a "peek" URL puts the focused page ID in the `?p=` query param (the path holds the
-// containing database), so that takes precedence. Otherwise the ID is the trailing path token; the
-// rest of the query (e.g. `?v=<viewId>`) is ignored.
+/**
+ * Extract a Notion object ID from a raw ID or a Notion URL. Returns a dashed UUID.
+ *
+ * URL handling: a "peek" URL puts the focused page ID in the `?p=` query param (the path holds the
+ * containing database), so that takes precedence. Otherwise the ID is the trailing path token; the
+ * rest of the query (e.g. `?v=<viewId>`) is ignored.
+ */
 export function parseNotionId(idOrUrl: string): string {
   const raw = idOrUrl.trim();
   let candidate = raw;
@@ -719,7 +725,7 @@ export function parseNotionId(idOrUrl: string): string {
 // nesting levels, while staying bounded (each level is a recursive API fetch).
 const MAX_BLOCK_DEPTH = 5;
 
-// Convert a list of Notion blocks (with their fetched children) into Markdown.
+/** Convert a list of Notion blocks (with their fetched children) into Markdown. */
 export function blocksToMarkdown(blocks: BlockWithChildren[], depth = 0): string {
   const lines: string[] = [];
   let numberedIndex = 0;
@@ -827,8 +833,10 @@ export type BlockWithChildren = {
   children?: BlockWithChildren[];
 };
 
-// Parse a block of Markdown into Notion block objects suitable for append_block_children.
-// Supports a focused subset; unsupported constructs degrade to plain paragraphs.
+/**
+ * Parse a block of Markdown into Notion block objects suitable for append_block_children.
+ * Supports a focused subset; unsupported constructs degrade to plain paragraphs.
+ */
 export function markdownToBlocks(markdown: string): unknown[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: unknown[] = [];
@@ -1079,20 +1087,22 @@ export class NotionApi {
     return await this.#request<NotionPageResponse>("GET", `/v1/pages/${id}`);
   }
 
-  // Get a database (metadata + its data_sources list). Uses the data-source-aware version so it
-  // works for multi-source / Meeting Notes / wiki databases that the legacy version rejects.
+  /**
+   * Get a database (metadata + its data_sources list). Uses the data-source-aware version so it
+   * works for multi-source / Meeting Notes / wiki databases that the legacy version rejects.
+   */
   async retrieveDatabase(id: string): Promise<NotionDatabaseResponse> {
     return await this.#request<NotionDatabaseResponse>(
       "GET", `/v1/databases/${id}`, undefined, DATA_SOURCE_VERSION);
   }
 
-  // Get a data source (its row schema lives here, including rollups).
+  /** Get a data source (its row schema lives here, including rollups). */
   async retrieveDataSource(dataSourceId: string): Promise<NotionDataSourceResponse> {
     return await this.#request<NotionDataSourceResponse>(
       "GET", `/v1/data_sources/${dataSourceId}`, undefined, DATA_SOURCE_VERSION);
   }
 
-  // Determine whether an ID refers to a page or a database (tries database first, then page).
+  /** Determine whether an ID refers to a page or a database (tries database first, then page). */
   async detectKind(id: string): Promise<NotionObjectKind> {
     try {
       await this.retrieveDatabase(id);
@@ -1167,7 +1177,7 @@ export class NotionApi {
     return await this.#request("GET", `/v1/comments?${params.toString()}`);
   }
 
-  // Recursively fetch a page's blocks and their children up to MAX_BLOCK_DEPTH.
+  /** Recursively fetch a page's blocks and their children up to MAX_BLOCK_DEPTH. */
   async fetchBlockTree(blockId: string, depth = 0): Promise<BlockWithChildren[]> {
     const out: BlockWithChildren[] = [];
     let cursor: string | undefined;
@@ -1198,7 +1208,7 @@ export class NotionApi {
     return await this.#request<NotionPageResponse>("PATCH", `/v1/pages/${id}`, body);
   }
 
-  // Appends children and returns the IDs of the newly created top-level blocks (used to revert).
+  /** Appends children and returns the IDs of the newly created top-level blocks (used to revert). */
   async appendBlockChildren(blockId: string, children: unknown[]): Promise<string[]> {
     const result = await this.#request<NotionListResponse<NotionBlockResponse>>(
       "PATCH",
@@ -1208,7 +1218,7 @@ export class NotionApi {
     return result.results.map(b => b.id);
   }
 
-  // Archives (deletes) a single block. Used to revert appendContent.
+  /** Archives (deletes) a single block. Used to revert appendContent. */
   async deleteBlock(blockId: string): Promise<void> {
     await this.#request("DELETE", `/v1/blocks/${blockId}`);
   }
@@ -1218,7 +1228,7 @@ export class NotionApi {
   }
 }
 
-// Map a comment response into the simplified shape.
+/** Map a comment response into the simplified shape. */
 export function commentToNotion(c: {
   id: string;
   rich_text: NotionRichText[];

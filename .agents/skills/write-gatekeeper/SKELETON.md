@@ -549,7 +549,7 @@ class MySessionImpl extends RpcTarget implements MySession {
 {
   "name": "gatekeeper-<name>",
   "main": "src/<name>.ts",
-  "compatibility_date": "2026-02-02",
+  "compatibility_date": "2026-09-04",
   "compatibility_flags": ["allow_irrevocable_stub_storage"],
   "migrations": [
     {
@@ -592,14 +592,47 @@ Add package scripts:
 ```json
 {
   "scripts": {
-    "build:configurator": "node ../../scripts/build-gatekeeper-configurator.mjs .",
-    "build": "pnpm run build:configurator && tsc",
-    "deploy": "pnpm run build:configurator && wrangler deploy"
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "workspace:*"
   }
 }
+```
+
+`@gadgets/scripts` has to be declared, not just imported. The shared task configs and the
+`gadgets-*` bins that run them belong to that package, and the workspace root depends on it too —
+so its bins are already on `PATH` and a `vite.config.ts` importing it resolves even with no
+declaration here. That is a phantom dependency: it works until this package is built somewhere that
+does not happen to hoist it.
+
+No `build` script: `build` is one of the shared Vite+ tasks below, and vp forbids a task and a
+script sharing a name. Build this one package with `pnpm exec vp run -F <package-name> build` —
+`pnpm --filter` cannot see a task, so `pnpm --filter <package-name> build` reports nothing to run;
+the workspace-wide `pnpm build` picks it up as usual. `deploy` goes through the task rather than
+calling
+`build-gatekeeper-configurator.ts` itself, so the codegen command lives in one place and cannot
+drift from the task that declares its env — `wrangler deploy` stays outside vp, since it has side
+effects and needs real credentials.
+
+Also add a `vite.config.ts` re-exporting the shared `build` and `build:configurator` Vite+ tasks —
+the latter is what the `pnpm dev-server` pre-flight builds (`vp run -r --cache build:configurator
+--dev`). Both are tasks rather than package.json scripts so `VITE_FRONTEND_ERROR_REPORTING` is
+passed through and cache-fingerprinted; a `build` script running the builder with `&&` would bypass
+that and silently bake the wrong value into the shipped HTML (do not add either script back):
+
+```typescript
+// Vite+ per-package settings. The build:configurator task definition is shared by all gatekeepers
+// with a configurator UI and ships as an export of `@gadgets/scripts`, alongside the builder it
+// runs.
+export { default } from '@gadgets/scripts/gatekeeper-configurator'
+
+// ...or, if the gatekeeper has tests, `withTests` instead: the same settings plus the shared vitest
+// `test` task. Add a `"test:run": "vitest run"` script too, for iterating without the cache.
+export { withTests as default } from '@gadgets/scripts/gatekeeper-configurator'
 ```
 
 Keep tokens and broad API clients out of public `RpcTarget` properties; use closures, `#private`, or `WeakMap` state and expose only narrow read-only helper methods.

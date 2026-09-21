@@ -26,9 +26,11 @@ const DO_RESET_MESSAGES = [
   WORKERD_DEAD_CAPABILITY_MESSAGE,
 ]
 
-// Transport failures raised locally by capnweb, plus its own-session teardown message. These
-// carry no flags, so matching messages is all we have; a canary test pins them to the installed
-// capnweb build so an upgrade fails loudly here instead of silently in the UX.
+/**
+ * Transport failures raised locally by capnweb, plus its own-session teardown message. These
+ * carry no flags, so matching messages is all we have; a canary test pins them to the installed
+ * capnweb build so an upgrade fails loudly here instead of silently in the UX.
+ */
 export const CONNECTION_MESSAGES = [
   'Peer closed WebSocket',
   'WebSocket connection failed.',
@@ -76,16 +78,18 @@ export function classifyRpcError(err: unknown): RpcErrorClass {
   return 'other'
 }
 
-// True for failures that a healthy retry or reconnect is expected to cure.
+/** True for failures that a healthy retry or reconnect is expected to cure. */
 export function isTransientRpcError(err: unknown): boolean {
   const cls = classifyRpcError(err)
   return cls === 'do-reset' || cls === 'connection'
 }
 
-// Logs an RPC failure: quietly for transient errors (a retry or reconnect is expected to cure
-// them), loudly otherwise. Returns true when transient so call sites can skip their toasts.
-// Pass `reportSite` from action paths (sends, creates) to also report do-reset errors to the
-// client-errors endpoint, so resets that cost the user an action stay visible in telemetry.
+/**
+ * Logs an RPC failure: quietly for transient errors (a retry or reconnect is expected to cure
+ * them), loudly otherwise. Returns true when transient so call sites can skip their toasts.
+ * Pass `reportSite` from action paths (sends, creates) to also report do-reset errors to the
+ * client-errors endpoint, so resets that cost the user an action stay visible in telemetry.
+ */
 export function logRpcFailure(
   message: string, err: unknown, options?: { reportSite?: string },
 ): boolean {

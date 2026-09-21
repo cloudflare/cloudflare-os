@@ -176,7 +176,7 @@ Install and build from the repository root:
 
 ```sh
 pnpm install
-pnpm --filter @gadgets/gatekeeper-scheduler test
+pnpm --filter @gadgets/gatekeeper-scheduler test:run
 pnpm --filter @gadgets/gatekeeper-scheduler build
 pnpm run dev-server
 pnpm run dev-client

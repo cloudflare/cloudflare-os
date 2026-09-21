@@ -1,9 +1,5 @@
-export type ConfiguratorOption = {
-  value: string;
-  title: string;
-  subtitle?: string;
-  meta?: string;
-}
+import type { ConfiguratorOption } from "./configurator-option";
+export type { ConfiguratorOption };
 
 export type GoogleDocConfiguratorValues = {
   docId?: string | null;

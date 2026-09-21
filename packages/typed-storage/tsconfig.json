@@ -7,10 +7,10 @@
     "moduleResolution": "bundler",
     "types": ["@cloudflare/workers-types/experimental"],
     "outDir": "./dist",
+    "rootDir": "./src",
     "declaration": true,
     "sourceMap": true,
-    "noEmit": false,
-    "baseUrl": "."
+    "noEmit": false
   },
   "include": ["src"],
   "exclude": ["dist", "node_modules"]

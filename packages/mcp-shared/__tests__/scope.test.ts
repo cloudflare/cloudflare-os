@@ -10,6 +10,7 @@ import {
   scopeAllows,
   validateToolScopeAgainstCatalog,
 } from "../src/scope.js";
+import { MAX_TOOLS_PER_SERVER } from "../src/tools.js";
 
 const ENDPOINT = "https://portal.example.com/mcp";
 
@@ -69,6 +70,15 @@ describe("parseToolScope", () => {
     // dropping an empty restriction on the way out would undo the fail-closed parse above.
     const emptied = { serverId: undefined, tools: [] };
     expect(parseToolScope(formatToolScope(ENDPOINT, emptied))).toEqual(emptied);
+  });
+
+  it("rejects oversized named-tool grants before they reach a connector", () => {
+    const fragment = new URLSearchParams();
+    for (let i = 0; i <= MAX_TOOLS_PER_SERVER; i++) fragment.append("tool", `tool_${i}`);
+    expect(() => parseToolScope(`${ENDPOINT}#${fragment}`)).toThrow(/at most 200/);
+    expect(() => formatToolScope(ENDPOINT, {
+      tools: Array.from({ length: MAX_TOOLS_PER_SERVER + 1 }, (_, i) => `tool_${i}`),
+    })).toThrow(/at most 200/);
   });
 });
 
@@ -173,9 +183,15 @@ describe("validateToolScopeAgainstCatalog", () => {
       .not.toThrow();
   });
 
-  it("refuses to validate named tools from a truncated catalog", () => {
+  it("accepts named tools that were found before an exact-name listing stopped", () => {
     expect(() => validateToolScopeAgainstCatalog(
       { tools: ["gh_list_issues"] }, { ...catalog, truncated: true }))
+      .not.toThrow();
+  });
+
+  it("refuses an unresolved named tool when its listing was truncated", () => {
+    expect(() => validateToolScopeAgainstCatalog(
+      { tools: ["missing"] }, { ...catalog, truncated: true }))
       .toThrow(/truncated/i);
   });
 
@@ -197,6 +213,15 @@ describe("validateToolScopeAgainstCatalog", () => {
 
   it("returns fallback metadata for a server established by its current tools", () => {
     expect(validateToolScopeAgainstCatalog({ serverId: "gh" }, catalog, [])).toEqual({
+      id: "gh",
+      name: "gh",
+      enabled: true,
+    });
+  });
+
+  it("uses current tool evidence to validate a pinned-empty grant", () => {
+    expect(validateToolScopeAgainstCatalog(
+      { serverId: "gh", tools: [] }, catalog, [])).toEqual({
       id: "gh",
       name: "gh",
       enabled: true,

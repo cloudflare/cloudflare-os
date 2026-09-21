@@ -335,7 +335,7 @@ export class BigQueryApi {
     await callRest<unknown>(url.toString(), { method: "POST" }, this.getAccessToken);
   }
 
-  // Run a synchronous query via jobs.query.
+  /** Run a synchronous query via jobs.query. */
   async query(
     billingProject: string,
     sql: string,

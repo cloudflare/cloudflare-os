@@ -12,38 +12,61 @@ import type { FetchLike } from "@modelcontextprotocol/client";
 // Enough for the http->https and apex->www hops real deployments use. Discovery already tries
 // several candidate URLs, so a longer chain is more likely a loop than a working server.
 const MAX_REDIRECTS = 3;
+/** Default wall-clock budget for one outbound operation, including redirects and body streaming. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-// Set by local development against an MCP server on localhost, which is otherwise refused.
-export type FetchOptions = { allowInsecure?: boolean };
+/** Policy and deadline options applied to one outbound operation. */
+export type FetchOptions = {
+  /** Permits plain HTTP and private hosts for local development. */
+  allowInsecure?: boolean;
+  /** Bounds the complete operation, including redirects and response-body streaming. */
+  timeoutMs?: number;
+  /** Absolute deadline shared by every request in a multi-page or retried operation. */
+  deadline?: number;
+};
 
-// The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally.
+/** The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally. */
 export type InsecureEnv = {
-  // When `"true"`, permits plain HTTP and private hosts. Local development only.
+  /** When `"true"`, permits plain HTTP and private hosts. Local development only. */
   MCP_ALLOW_INSECURE?: string;
 };
 
-// Reads the local-development escape hatch. One definition, since this switch turns off the SSRF
-// checks and copies of it would be copies of that.
+/** Outbound failure known to have happened before the platform `fetch()` call began. */
+export class FetchNotStartedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FetchNotStartedError";
+  }
+}
+
+/**
+ * Reads the local-development escape hatch. One definition, since this switch turns off the SSRF
+ * checks and copies of it would be copies of that.
+ */
 export function fetchOptions(env: InsecureEnv): FetchOptions {
   return { allowInsecure: (env.MCP_ALLOW_INSECURE ?? "").toLowerCase() === "true" };
 }
 
-// Cap on any single response body this gatekeeper buffers.
-//
-// Every response here is parsed whole -- JSON-RPC frames and SSE streams alike -- so the body is in
-// memory before any higher-level limit can apply. `listTools` bounds the catalog it *keeps*, which
-// bounds nothing about what arrives, and a `tools/call` result is not bounded at all: a server
-// answering one request with a gigabyte exhausts the Worker.
+/**
+ * Cap on any single response body this gatekeeper buffers.
+ *
+ * Every response here is parsed whole -- JSON-RPC frames and SSE streams alike -- so the body is in
+ * memory before any higher-level limit can apply. `listTools` bounds the catalog it *keeps*, which
+ * bounds nothing about what arrives, and a `tools/call` result is not bounded at all: a server
+ * answering one request with a gigabyte exhausts the Worker.
+ */
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
-// Reads a response body as text, refusing one larger than `maxBytes`.
-//
-// Refused rather than truncated: half a JSON document does not parse, and a clipped SSE stream can
-// lose the very event carrying the response, which would surface as a confusing protocol error
-// instead of the size problem it is. The body is cancelled on refusal so the transfer stops rather
-// than running to completion unread.
+/**
+ * Reads a response body as text, refusing one larger than `maxBytes`.
+ *
+ * Refused rather than truncated: half a JSON document does not parse, and a clipped SSE stream can
+ * lose the very event carrying the response, which would surface as a confusing protocol error
+ * instead of the size problem it is. The body is cancelled on refusal so the transfer stops rather
+ * than running to completion unread.
+ */
 export async function readTextCapped(
   response: Response, maxBytes: number = MAX_RESPONSE_BYTES,
 ): Promise<string> {
@@ -76,10 +99,15 @@ export async function readTextCapped(
   return new TextDecoder().decode(joined);
 }
 
-// Gives SDK OAuth helpers the same redirect and response-size policy as the local MCP transport.
+/** Gives SDK OAuth helpers the same redirect and response-size policy as the local MCP transport. */
 export function sdkFetch(options: FetchOptions = {}): FetchLike {
+  const operationOptions: FetchOptions = {
+    ...options,
+    deadline: options.deadline
+      ?? Date.now() + (options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
+  };
   return async (url, init) => {
-    const response = await guardedFetch(String(url), init ?? {}, options);
+    const response = await guardedFetch(String(url), init ?? {}, operationOptions);
     const body = await readTextCapped(response);
     return new Response(body || null, {
       status: response.status,
@@ -89,8 +117,10 @@ export function sdkFetch(options: FetchOptions = {}): FetchLike {
   };
 }
 
-// Whether a URL may be requested at all. Fails closed: an unparseable URL is refused rather than
-// handed to `fetch` to find out.
+/**
+ * Whether a URL may be requested at all. Fails closed: an unparseable URL is refused rather than
+ * handed to `fetch` to find out.
+ */
 export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
   let parsed: URL;
   try {
@@ -103,15 +133,17 @@ export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
   return !isBlockedHost(parsed.hostname);
 }
 
-// Fetches `url`, following redirects manually so each hop is checked.
-//
-// Throws if the first URL is not allowed; a redirect to a refused host returns the 3xx response
-// itself, which every caller already treats as a failure.
+/**
+ * Fetches `url`, following redirects manually so each hop is checked.
+ *
+ * Throws if the first URL is not allowed; a redirect to a refused host returns the 3xx response
+ * itself, which every caller already treats as a failure.
+ */
 export async function guardedFetch(
   url: string, init: RequestInit, options: FetchOptions = {},
 ): Promise<Response> {
   if (!isAllowedUrl(url, options)) {
-    throw new Error(`Refusing to contact ${hostForMessage(url)}.`);
+    throw new FetchNotStartedError(`Refusing to contact ${hostForMessage(url)}.`);
   }
 
   let current = url;
@@ -119,9 +151,20 @@ export async function guardedFetch(
   let method = init.method ?? "GET";
   let body = init.body;
   const origin = new URL(url).origin;
+  let signal = init.signal ?? undefined;
+  if (options.deadline !== undefined || options.timeoutMs !== undefined) {
+    const remaining = options.deadline === undefined
+      ? options.timeoutMs!
+      : Math.max(0, options.deadline - Date.now());
+    if (remaining === 0) throw new FetchNotStartedError("The outbound operation timed out.");
+    const timeout = AbortSignal.timeout(remaining);
+    signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  }
 
   for (let hop = 0; ; hop++) {
-    const response = await fetch(current, { ...init, method, body, headers, redirect: "manual" });
+    const response = await fetch(current, {
+      ...init, method, body, headers, redirect: "manual", signal,
+    });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get("Location");
@@ -161,6 +204,7 @@ export async function guardedFetch(
       headers.delete("Content-Type");
       headers.delete("Content-Length");
     }
+    await response.body?.cancel().catch(() => undefined);
     current = next;
   }
 }

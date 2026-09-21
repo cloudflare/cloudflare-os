@@ -1,6 +1,0 @@
-// Type-checks the tests too. Separate from `tsconfig.json` so `build` keeps emitting only `src`.
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "declaration": false },
-  "include": ["src", "__tests__"]
-}

@@ -8,8 +8,8 @@ This package provides Google OAuth integration for Gadgets. It serves two purpos
   which becomes the user's identity.
   The sign-in grant is transient (discarded right after the email is read).
 - **Connections:** when a user connects Google (or signs in and later connects it), the scopes for
-  the selected resources (Gmail, Docs, Sheets, Calendar, or BigQuery — see below) are requested so
-  gadgets can access those APIs on the user's behalf.
+  the selected resources (Gmail, Docs, Sheets, Drive, Calendar, or BigQuery — see below) are requested
+  so gadgets can access those APIs on the user's behalf.
 
 A single Google OAuth client is used for both. Set it up as follows.
 
@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Calendar, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -51,7 +51,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
 
-The Google Drive API is used only to search and display document and spreadsheet metadata in the resource pickers. Document reads and edits still go through the Google Docs API, and spreadsheet reads go through the Google Sheets API.
+The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -74,9 +74,10 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for Google Docs reads and edits.
-- `drive.metadata.readonly` so the resource pickers can search Google Docs and Sheets by title.
-- `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
+- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide or exact-file Drive bindings.
+- `drive.metadata.readonly` for the Docs and Sheets pickers, account-wide Drive discovery, exact-file metadata, and native-file scope checks.
+- `drive.readonly` for the shared-drive picker and scope lookup, metadata search, and native Docs or Sheets reads within one shared drive. This restricted scope conveys account-wide file content and remains after the account expands consent, but Google accepts nothing narrower for `drives.list`/`drives.get` and accepts this Drive scope for the native APIs. The gatekeeper still enforces the shared-drive binding boundary.
+- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide or exact-file Drive bindings.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
@@ -135,15 +136,53 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive Account, Google Workspace Shared Drive, Google Drive File, Google Calendar, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, project, dataset, or table to connect.
+10. Use the picker to choose the mailbox scope, document, shared drive, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Worker Preview OAuth callbacks
+
+Deployments using Worker Preview hostnames can register one stable Google callback and relay the
+result to the preview that initiated authorization. Configure the stable Worker and its previews
+with the same `OAUTH_STATE_SIGNING_SECRET` and `OAUTH_ALLOW_PREVIEW_REDIRECTS=true`. Set the fixed
+redirect only on previews:
+
+```text
+OAUTH_REDIRECT_URI=https://gatekeeper-google.example.workers.dev/oauth
+```
+
+Register `OAUTH_REDIRECT_URI` as the authorized redirect URI in Google. The preview sends that fixed
+URI to Google and carries its own callback in signed, short-lived OAuth state. The stable Worker
+accepts return URLs only on its `<preview>-<worker>.<workers.dev>` hosts and forwards only the OAuth
+result and state. Normal deployments should omit these settings and continue using
+`${BASE_URL}/oauth` directly.
+
+Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
+stores baseline and Preview secrets separately, so provision the same signing value in both places.
+
+## Google Drive read-only bindings
+
+Drive exposes three permanent resource URL forms:
+
+- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: listings set `includeItemsFromAllDrives`, so shared-drive items the account has accessed come back too, and reads by ID are not scope-checked at all, so anything the account's token resolves is inside this grant. Listings stay on `corpora=user` rather than `allDrives`, which Google flags as much less efficient and allows to return `incompleteSearch`, so a shared drive the account belongs to but has never touched may be readable by ID without appearing in a listing. It is the broadest of the three by design; bind a shared drive or a file if that is too much.
+- `https://drive.google.com/drive/folders/<driveId>` selects one Google Workspace shared drive, where the organization rather than an individual owns the files.
+- `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
+
+Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
+
+The agent-facing `GoogleDriveSession` reports the binding scope, lists entries, runs structured searches, and fetches one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. For a native Google Doc or Sheet, `openGoogleDoc()` or `openGoogleSheet()` returns an independently disposable, read-only nested session. Docs expose metadata for any tab count, but Markdown content requires exactly one tab; Sheets expose spreadsheet metadata and bounded A1 range reads. The API does not expose raw Drive `q` strings, file writes, shortcut traversal, arbitrary download or export, or Workers AI extraction. One caveat: the `fullTextContains` search filter compiles to Drive's `fullText contains`, which matches a file's indexed body text, description, and OCR text. Results carry metadata alone, but repeated queries remain a content oracle over files the agent cannot otherwise read.
+
+Every native open re-fetches Drive metadata, enforces the immutable account, shared-drive, or exact-file scope, authorizes the metadata observation, and then checks the exact MIME type. A folder, shortcut, non-native blob, wrong native type, or out-of-scope file cannot mint a content capability. Direct Google Doc bindings retain their existing editing API; Drive-opened Docs do not expose it.
+
+Account-wide and exact-file Drive bindings request `documents.readonly` and `spreadsheets.readonly` in addition to `drive.metadata.readonly`. An older metadata-only connection is therefore prompted to expand consent before it is treated as granting either resource. Shared-drive bindings remain on `drive.readonly`, which Google accepts for native Docs and Sheets reads, so they do not request redundant scopes.
+
+Account and shared-drive bindings use per-file observer tracking because individual shared-drive items can carry narrower ACLs. They remember every file ID whose metadata or native content a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires that their own account explicitly consented to a Drive resource — a Drive grant is never inferred from held OAuth scopes — and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page or native child capability is disclosed, it checks the file ID against every existing observer and excludes observers who cannot access it. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests, and a binding is capped at 2,000 distinct file IDs; attempting to cross the limit refuses the read and asks the user to bind a narrower scope. There is deliberately no cached access verdict, so revoked access fails closed on the next open.
 
 ## Troubleshooting
 

@@ -28,12 +28,40 @@ function stubChain(chain: Record<string, string>, status = 307): Hop[] {
   return hops;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("guardedFetch", () => {
+  it("does not impose a deadline unless the caller requests one", async () => {
+    let signal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) => {
+      signal = init.signal;
+      return new Response("ok");
+    });
+
+    await guardedFetch("https://mcp.example.com/mcp", {});
+    expect(signal).toBeUndefined();
+  });
+
   it("refuses a blocked host outright", async () => {
     stubChain({});
     await expect(guardedFetch("http://169.254.169.254/", {})).rejects.toThrow(/Refusing to contact/);
+  });
+
+  it("aborts an outbound operation after its configured timeout", async () => {
+    vi.stubGlobal("fetch", (_input: string, init: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        setTimeout(() => resolve(new Response("late")), 50);
+      }));
+
+    await expect(guardedFetch(
+      "https://mcp.example.com/mcp",
+      {},
+      { timeoutMs: 5 },
+    )).rejects.toThrow(/timed out|timeout/i);
   });
 
   it("does not follow a redirect into a blocked host", async () => {
@@ -155,6 +183,23 @@ describe("isAllowedUrl", () => {
 });
 
 describe("sdkFetch", () => {
+  it("shares one deadline across an OAuth SDK operation", async () => {
+    let now = 0;
+    let calls = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      now += 20;
+      return new Response("{}");
+    });
+    const fetchFn = sdkFetch({ timeoutMs: 30 });
+
+    await fetchFn("https://auth.example.com/one");
+    await fetchFn("https://auth.example.com/two");
+    await expect(fetchFn("https://auth.example.com/three")).rejects.toThrow(/timed out/i);
+    expect(calls).toBe(2);
+  });
+
   it("refuses an OAuth response larger than the shared response limit", async () => {
     vi.stubGlobal("fetch", async () => new Response("x".repeat(2 * 1024 * 1024)));
     await expect(sdkFetch()("https://auth.example.com/metadata"))

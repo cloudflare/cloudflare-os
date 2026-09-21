@@ -4,9 +4,8 @@
 // command. Every shipping public gatekeeper can do that only at a cost that would dominate the test:
 // the OAuth ones need a whole vendor's auth surface mocked before an account exists at all, and the
 // Context Library only refuses once an observation has been *recorded*, which takes a gadget read
-// session (so a Worker Loader), a slash-command invocation, or an AI-chat catalog snapshot. It is also
-// a singleton, so it can never produce the two simultaneously-failing bindings one of these cases
-// needs.
+// session (so a Worker Loader) or a slash-command invocation. It is also a singleton, so it can never
+// produce the two simultaneously-failing bindings one of these cases needs.
 //
 // So the overseer's own logic -- collect every failure, re-prompt once, then name what failed -- is
 // tested against this fixture, where an outcome is one HTTP call away. Realism about a *particular*
@@ -20,12 +19,16 @@
 // is one control knob here, `allow`, and the reason string is what carries the distinction to the
 // user. Tests exercise both narratives by choosing reason text.
 
-import { DurableObject, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  AccountDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperConnectCallback,
-  GatekeeperUser, GatekeeperUserVerifier, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
+  GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, ResourceDescription,
+  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ChatGatewayRpcTarget, GadgetResponse,
+} from "@gadgets/workshop-shared/external-message-gateway";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -38,8 +41,12 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
 }];
 
 const TYPES_CODE = `
-/** A stand-in resource. It has no operations; nothing here is ever called. */
-interface TestThing {}
+/** A stand-in resource whose reads and writes are deterministic and audited. */
+interface TestThing {
+  readValue(): Promise<number>;
+  writeValue(value: number): Promise<number>;
+  writeValues(values: number[]): Promise<number[]>;
+}
 `;
 
 // A 1x1 transparent GIF, so nothing here reaches for a network asset.
@@ -56,14 +63,49 @@ const AVATAR = {
 
 type VerifyOutcome = { allow: true } | { allow: false; reason: string };
 
+/**
+ * One addObserver()/removeObserver() call, mirrored here as it happens: the gatekeeper is a facet
+ * under the gadget's Overseer, unreachable from this worker's routes, and a log (not a boolean)
+ * also pins the add/remove ordering.
+ */
+type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
+
+type PendingTestAction = { id: number; value: number };
+type TestActionState = {
+  nextId: number;
+  pending: PendingTestAction[];
+  value?: number;
+  applyCount: number;
+};
+
+function outcomeKey(label: string, resourceUrl?: string): string {
+  return resourceUrl ? `outcome:${label}:${resourceUrl}` : `outcome:${label}`;
+}
+
+@validateRpc()
 export class TestControl extends DurableObject<Cloudflare.Env> {
-  setVerifyOutcome(label: string, outcome: VerifyOutcome): void {
-    this.ctx.storage.kv.put(`outcome:${label}`, outcome);
+  setVerifyOutcome(label: string, outcome: VerifyOutcome, resourceUrl?: string): void {
+    this.ctx.storage.kv.put(outcomeKey(label, resourceUrl), outcome);
   }
 
-  getVerifyOutcome(label: string): VerifyOutcome {
-    // Default to admitting: a collaborator's first open has to be able to succeed.
-    return this.ctx.storage.kv.get<VerifyOutcome>(`outcome:${label}`) ?? { allow: true };
+  getVerifyOutcome(label: string, resourceUrl?: string): VerifyOutcome {
+    // A resource-specific outcome wins over a label-wide one. Default to admitting: a
+    // collaborator's first open has to be able to succeed.
+    return this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label, resourceUrl))
+        ?? this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label))
+        ?? { allow: true };
+  }
+
+  recordObserverEvent(event: ObserverEvent): void {
+    const events = this.ctx.storage.kv.get<ObserverEvent[]>("observer-events") ?? [];
+    events.push(event);
+    this.ctx.storage.kv.put("observer-events", events);
+  }
+
+  /** Filtered here rather than in the test: tests run concurrently against one shared log. */
+  getObserverEvents(resourceUrl: string): ObserverEvent[] {
+    return (this.ctx.storage.kv.get<ObserverEvent[]>("observer-events") ?? [])
+        .filter(e => e.resourceUrl === resourceUrl);
   }
 
   recordAmbientVerification(label: string): void {
@@ -73,6 +115,38 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 
   getAmbientVerificationCount(label: string): number {
     return this.ctx.storage.kv.get<number>(`ambient-verifications:${label}`) ?? 0;
+  }
+
+  getActionState(label: string): TestActionState {
+    return this.ctx.storage.kv.get<TestActionState>(`actions:${label}`) ?? {
+      nextId: 1,
+      pending: [],
+      applyCount: 0,
+    };
+  }
+
+  stageAction(label: string, value: number): number {
+    const state = this.getActionState(label);
+    const id = state.nextId++;
+    state.pending.push({ id, value });
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+    return id;
+  }
+
+  discardAction(label: string, id: number): void {
+    const state = this.getActionState(label);
+    state.pending = state.pending.filter(action => action.id !== id);
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+  }
+
+  applyAction(label: string, id: number): void {
+    const state = this.getActionState(label);
+    const action = state.pending.find(candidate => candidate.id === id);
+    if (action === undefined) throw new Error(`Unknown pending test action ${id}`);
+    state.pending = state.pending.filter(candidate => candidate.id !== id);
+    state.value = action.value;
+    state.applyCount++;
+    this.ctx.storage.kv.put(`actions:${label}`, state);
   }
 }
 
@@ -88,6 +162,7 @@ function control(exports: Cloudflare.Exports): DurableObjectStub<TestControl> {
 type AccountProps = { label: string };
 type BindingProps = AccountProps & { resourceUrl: string; ambient?: true };
 
+@validateRpc()
 export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   async describe(): Promise<VendorDescription> {
     return {
@@ -101,8 +176,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
     };
   }
 
-  // Reached via provisionAmbientAccount(). Each call mints a distinct account, so two users -- or two
-  // concurrent tests -- never share one.
+  /**
+   * Reached via provisionAmbientAccount(). Each call mints a distinct account, so two users -- or two
+   * concurrent tests -- never share one.
+   */
+  @skipRpcValidation()
   async createAccount(): Promise<Fetcher<GatekeeperUser>> {
     const label = `test-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}@${VENDOR_HOST}`;
     return this.ctx.exports.TestAccount({ props: { label } });
@@ -116,8 +194,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
     return TYPES_CODE;
   }
 
-  // Required by the interface but unreachable: autoProvisionsAccount means the Workshop mints
-  // accounts through createAccount() and never offers a connect flow.
+  /**
+   * Required by the interface but unreachable: autoProvisionsAccount means the Workshop mints
+   * accounts through createAccount() and never offers a connect flow.
+   */
   async connectAccount(_callback: Fetcher<GatekeeperConnectCallback>): Promise<{ url: string }> {
     throw new Error("The test gatekeeper auto-provisions accounts; it has no connect flow.");
   }
@@ -126,6 +206,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
 // ---------------------------------------------------------------------------
 // Account
 
+@validateRpc()
 export class TestAccount
     extends WorkerEntrypoint<Cloudflare.Env, AccountProps> implements GatekeeperUser {
   async describe(): Promise<AccountDescription> {
@@ -148,8 +229,10 @@ export class TestAccount
     return SUPPORTED_RESOURCES;
   }
 
-  // Bind a resource. The Workshop calls this when the owner pastes a URL; the returned class becomes
-  // a Gatekeeper facet under that gadget's Overseer.
+  /**
+   * Bind a resource. The Workshop calls this when the owner pastes a URL; the returned class becomes
+   * a Gatekeeper facet under that gadget's Overseer.
+   */
   async getGatekeeperClassFor(url: string): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resource: SupportedResource;
@@ -166,7 +249,8 @@ export class TestAccount
     };
   }
 
-  // The capability the overseer hands to addObserver() to say "this is the user asking".
+  /** The capability the overseer hands to addObserver() to say "this is the user asking". */
+  @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.TestVerifier({ props: this.ctx.props });
   }
@@ -185,6 +269,10 @@ export class TestAccount
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
   }
 
+  commitReconnect(_stageId: string): Promise<void> {
+    throw new Error("The test gatekeeper has no credentials to reconnect.");
+  }
+
   reconnect(): Promise<{ url: string }> {
     throw new Error("The test gatekeeper has no credentials to reconnect.");
   }
@@ -201,6 +289,7 @@ export interface TestVerifierApi extends GatekeeperUserVerifier {
   identify(): Promise<string>;
 }
 
+@validateRpc()
 export class TestVerifier
     extends WorkerEntrypoint<Cloudflare.Env, AccountProps> implements TestVerifierApi {
   async identify(): Promise<string> {
@@ -211,9 +300,65 @@ export class TestVerifier
 // ---------------------------------------------------------------------------
 // Gatekeeper (one per bound resource, running as a facet under the gadget's Overseer)
 
-/** No operations: these tests never open a gadget's session, only verify observers. */
-export type TestSession = Record<string, never>;
+export interface TestSession {
+  /**
+   * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
+   * `ownerInvitesOnly`.
+   */
+  readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number>;
+  writeValue(value: number): Promise<number>;
+  writeValues(values: number[]): Promise<number[]>;
+}
 
+@validateRpc()
+class TestSessionTarget extends RpcTarget implements TestSession {
+  private readonly approvalQueue: RpcStub<ApprovalQueue>;
+
+  constructor(
+      approvalQueue: RpcStub<ApprovalQueue>,
+      private readonly state: DurableObjectStub<TestControl>,
+      private readonly label: string) {
+    super();
+    this.approvalQueue = approvalQueue.dup();
+  }
+
+  async readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number> {
+    await this.approvalQueue.authorizeObservation({
+      title: "Read the test value",
+      description: "Read the deterministic value exposed by the integration-test gatekeeper.",
+      ...(restricted ? { containsRestrictedData: true } : {}),
+      ...(ownerInvitesOnly ? { ownerInvitesOnly: true } : {}),
+    });
+    return 42;
+  }
+
+  async writeValue(value: number): Promise<number> {
+    const id = await this.state.stageAction(this.label, value);
+    try {
+      await this.approvalQueue.submitAction(id, {
+        title: `Set the test value to ${value}`,
+        description: `Set the deterministic integration-test value to **${value}**.`,
+        implementsRevert: false,
+        awaitDecision: true,
+        actionKind: { tag: "set-value", label: "Set value" },
+      });
+      return id;
+    } catch (error) {
+      await this.state.discardAction(this.label, id);
+      throw error;
+    }
+  }
+
+  async writeValues(values: number[]): Promise<number[]> {
+    return Promise.all(values.map(value => this.writeValue(value)));
+  }
+
+  [Symbol.dispose](): void {
+    this.approvalQueue[Symbol.dispose]();
+  }
+}
+
+@validateRpc()
 export class TestGatekeeper
     extends DurableObject<Cloudflare.Env, BindingProps> implements Gatekeeper<TestSession> {
   async describe(): Promise<ResourceDescription> {
@@ -245,8 +390,14 @@ export class TestGatekeeper
     return [];
   }
 
-  async startSession(_approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    return {};
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
+    return new TestSessionTarget(
+        approvalQueue, control(this.ctx.exports), this.ctx.props.label);
+  }
+
+  /** No discovery index: the ambient fixture is reached through its session alone. */
+  async getAgentCatalog(): Promise<AgentCatalog | null> {
+    return null;
   }
 
   /**
@@ -258,28 +409,33 @@ export class TestGatekeeper
    */
   async addObserver(id: string, user: Fetcher<TestVerifierApi>): Promise<void> {
     const label = await user.identify();
+    const { resourceUrl } = this.ctx.props;
     if (this.ctx.props.ambient) {
       await control(this.ctx.exports).recordAmbientVerification(label);
-      this.ctx.storage.kv.put(`observer:${id}`, label);
-      return;
+    } else {
+      const outcome = await control(this.ctx.exports).getVerifyOutcome(label, resourceUrl);
+      if (!outcome.allow) throw new Error(outcome.reason);
     }
-    const outcome = await control(this.ctx.exports).getVerifyOutcome(label);
-    if (!outcome.allow) throw new Error(outcome.reason);
     this.ctx.storage.kv.put(`observer:${id}`, label);
+    await control(this.ctx.exports).recordObserverEvent({ resourceUrl, type: "add", id });
   }
 
   async removeObserver(id: string): Promise<void> {
     this.ctx.storage.kv.delete(`observer:${id}`);
+    await control(this.ctx.exports).recordObserverEvent(
+        { resourceUrl: this.ctx.props.resourceUrl, type: "remove", id });
   }
 
-  async applyAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+  async applyAction(action: number): Promise<void> {
+    await control(this.ctx.exports).applyAction(this.ctx.props.label, action);
   }
 
-  async rejectAction(_action: number): Promise<void> {}
+  async rejectAction(action: number): Promise<void> {
+    await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
+  }
 
   async revertAction(_action: number): Promise<void> {
-    throw new Error("The test gatekeeper submits no actions.");
+    throw new Error("Test actions do not support revert.");
   }
 }
 
@@ -303,8 +459,17 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/**
+ * Discards Gadget responses. The control endpoint below only asserts on the submission result,
+ * and the rejection paths under test return before any response is produced.
+ */
+@validateRpc()
+class DevNullChatGateway extends RpcTarget implements ChatGatewayRpcTarget {
+  async onGadgetResponse(_response: GadgetResponse): Promise<void> {}
+}
+
 export default {
-  async fetch(req: Request, _env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
     let body: unknown;
@@ -319,27 +484,85 @@ export default {
       }
     }
 
-    // Set what addObserver() should do for one account.
-    // Body: {"label": "...", "allow": false, "reason": "..."}
+    // Set what addObserver() should do for one account, either everywhere or (when `resourceUrl`
+    // is given) at one binding only.
+    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
-      const { label, allow, reason } = body as Record<string, unknown>;
+      const { label, allow, reason, resourceUrl } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       if (typeof allow !== "boolean") return badRequest("`allow` must be a boolean");
       if (reason !== undefined && typeof reason !== "string") {
         return badRequest("`reason` must be a string when present");
       }
+      if (resourceUrl !== undefined && !isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string when present");
+      }
 
       const outcome: VerifyOutcome = allow
         ? { allow: true }
         : { allow: false, reason: reason ?? "The test gatekeeper refused this account." };
-      await control(ctx.exports).setVerifyOutcome(label, outcome);
+      await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl);
       return new Response(null, { status: 204 });
+    }
+
+    // Read back the addObserver()/removeObserver() calls one binding's gatekeeper has seen, in
+    // order.
+    // Body: {"resourceUrl": "..."} -> {"events": [{"resourceUrl", "type", "id"}, ...]}
+    if (url.pathname === "/control/observer-events" && req.method === "POST") {
+      const { resourceUrl } = body as Record<string, unknown>;
+      if (!isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string");
+      }
+      return Response.json({ events: await control(ctx.exports).getObserverEvents(resourceUrl) });
     }
 
     if (url.pathname === "/control/ambient-verification-count" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
+    }
+
+    if (url.pathname === "/control/action-state" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      const state = await control(ctx.exports).getActionState(label);
+      return Response.json({
+        pending: state.pending,
+        value: state.value,
+        applyCount: state.applyCount,
+      });
+    }
+
+    // Submit an external chat message through the Workshop's ExternalMessageGateway entrypoint,
+    // the way a chat-integration worker would, so tests can drive receiveExternalMessage().
+    // Body: {"callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"}
+    // -> SubmitExternalMessageResult
+    if (url.pathname === "/control/submit-external-message" && req.method === "POST") {
+      const fields =
+          ["callerEmail", "gadgetKey", "chatKey", "messageKey", "gadgetTitle", "prompt"] as const;
+      const input = {} as Record<(typeof fields)[number], string>;
+      for (const field of fields) {
+        const value = (body as Record<string, unknown>)[field];
+        if (!isNonEmptyString(value)) return badRequest(`\`${field}\` must be a non-empty string`);
+        input[field] = value;
+      }
+      // The instance becomes a stub when it crosses the RPC boundary; the parameter type can only
+      // name the stub side of that.
+      const chatGatewayRpcTarget =
+          new DevNullChatGateway() as unknown as RpcStub<ChatGatewayRpcTarget>;
+      return Response.json(await env.WORKSHOP_EXTERNAL_MESSAGES.submitExternalMessage(
+          { ...input, chatGatewayRpcTarget }));
+    }
+
+    // Map an external gadgetKey to the Overseer id the gateway targets -- the DO named
+    // "<source>:<gadgetKey>", where "test" is the `source` prop on WORKSHOP_EXTERNAL_MESSAGES --
+    // so a test can open the same workspace over the web API, which addresses by DO id string.
+    // Body: {"gadgetKey": "..."} -> {"gadgetId": "..."}
+    if (url.pathname === "/control/external-gadget-id" && req.method === "POST") {
+      const { gadgetKey } = body as Record<string, unknown>;
+      if (!isNonEmptyString(gadgetKey)) return badRequest("`gadgetKey` must be a non-empty string");
+      return Response.json(
+          { gadgetId: env.WORKSHOP_OVERSEER.idFromName(`test:${gadgetKey}`).toString() });
     }
 
     // Make this Worker issue a subrequest, so a test can prove that Worker-originated fetches really

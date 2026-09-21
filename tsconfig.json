@@ -12,7 +12,11 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    // tsgo's default parallel checkers each keep separate type caches, so every
+    // checker re-derives capnweb's recursive type graphs; single-threaded is
+    // both faster and smaller here. Measurements in AGENTS.md.
+    "singleThreaded": true
   },
   "include": [],
   "exclude": ["node_modules", "dist"]

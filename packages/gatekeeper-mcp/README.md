@@ -52,12 +52,18 @@ await env.MCP_LINEAR.callTool("search_issues", { query: "state:open" });
 
 Each generated method is a one-line delegate to `callTool`, so the scope check, approval queue, and
 observation record stay in one place. Tools whose names the RPC layer cannot deliver (`then`, `map`,
-`dup`), names that are not identifiers (`2fa`), and both sides of a case collision (`list_issues`
-and `listIssues`) get no method and remain callable through `callTool`.
+`dup`), names that collide with session methods (`listTools`, `callTool`, `getActionResult`), names
+that are not identifiers (`2fa`), and both
+sides of a case collision (`list_issues` and `listIssues`) get no method and remain callable through
+`callTool`.
 
-The agent discovers tools statically: `describeGatekeeper()` sends it the binding name and the full
-generated `.d.ts`, where each method carries the tool's own description as JSDoc and states whether
-calling it needs approval. `listTools()` exists for runtime enumeration but is rarely needed.
+The agent normally discovers tools statically: `describeGatekeeper()` sends it the binding name and
+the bounded generated `.d.ts`, where each method carries the tool's own description as JSDoc and
+states whether calling it needs approval. A server can publish more definitions than that bounded
+catalog holds: `listTools({ search })` returns up to 20 compact summaries from a bounded scan of the
+grant, limited to 5,000 tools / 4 MiB; `listTools({ name })` fetches one exact granted definition and
+schema under the same bound, and `callTool()` invokes it by wire name.
+`listTools()` remains the list of definitions currently described in the generated surface.
 
 See `src/types.d.ts` in `@gadgets/mcp-shared` for the base session API.
 
@@ -171,8 +177,8 @@ rules.
 A Gadget bound to an MCP server can only be opened by its owner: `addObserver` refuses
 unconditionally. Being able to authenticate to a server is not evidence of being allowed to see what
 the *owner* read from it, and the Gadget runs on the owner's credentials throughout. Writes still
-work — the alternative, marking every observation `prohibitAllSharing`, would latch a lockdown that
-blocks every action for the rest of the session. See
+work — the alternative, marking every observation `containsRestrictedData`, would set that
+flag, whose restricted mode blocks every action for the rest of the session. See
 [`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
 
 To share the work rather than the binding, publish the Gadget as a blueprint and let each person
@@ -200,9 +206,10 @@ connect their own server.
   compatibility flag in `wrangler.jsonc`, which makes workerd reject reserved IP ranges after
   resolution on every request and redirect hop. It does not apply under `wrangler dev`, which is
   what keeps `MCP_ALLOW_INSECURE` usable locally.
-- **Sharing UI reports late.** `GadgetMetadata.sharingProhibited` derives only from
-  `prohibitAllSharing`, so creating a share key appears to succeed and fails when the recipient
-  opens it. Fixing this needs a kernel change.
+- **Sharing UI reports late.** `GadgetMetadata.containsRestrictedData` derives only from
+  `ObservationDescription.containsRestrictedData`, so creating a share key appears to succeed and
+  fails when the recipient opens it (their observer verification is refused). Fixing this needs a
+  kernel change.
 
 ## Layout
 
@@ -219,8 +226,8 @@ The MCP client, OAuth, tool classification, generated TypeScript, and the scope 
 ## Build & test
 
 ```
-pnpm --filter @gadgets/mcp-gatekeeper build   # build:configurator + tsc
-pnpm --filter @gadgets/mcp-gatekeeper test    # vitest
+pnpm exec vp run -F @gadgets/mcp-gatekeeper build   # build:configurator + tsc
+pnpm --filter @gadgets/mcp-gatekeeper test:run    # vitest
 ```
 
 The Worker is run via the root `pnpm dev-server`, not directly.

@@ -6,23 +6,21 @@ import type { ProductAnalyticsRecord } from "./analytics";
 declare global {
   namespace Cloudflare {
     interface Env {
-      // Deployment-wide admin usernames.
-      ADMINS?: string[];
+      // Deployment-wide admin usernames: a JSON binding, or the same array as a JSON string
+      // (which is what a secret binding, can carry).
+      ADMINS?: string[] | string;
 
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
 
       // AI Gateway mode: when CF_AI_GATEWAY is set, supported providers are routed through
       // Cloudflare AI Gateway with server-managed keys. Users don't need their own keys.
-      // Inference goes over HTTPS with tokens (there is no Workers-binding transport), so the
-      // ACCOUNT_ID/API_TOKEN pair is REQUIRED whenever CF_AI_GATEWAY is set.
       CF_AI_GATEWAY?: string;            // Gateway name (enables gateway mode)
       CF_AI_GATEWAY_PROVIDERS?: string;   // Comma-separated list: "anthropic,openai,google,cloudflare"
       CF_AI_GATEWAY_ACCOUNT_ID?: string;  // Gateway owner account ID (required with CF_AI_GATEWAY)
-      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token for inference and cost-log reads
-      CF_AI_GATEWAY_WAI?: string;         // Optional Workers AI gateway override
-      CF_AI_GATEWAY_WAI_DIRECT?: string;  // "true" to route Workers AI to its plain REST endpoint
-                                          // (no gateway, no cost logs) instead of a named Gateway
+      CF_AI_GATEWAY_API_TOKEN?: string;   // Run + Read token; optional when the binding transport
+                                          // applies (still required for google)
+      CF_AI_GATEWAY_USE_BINDING?: string;
       // Note: outside gateway mode, Workers AI (provider "cloudflare") is BYOK like every other
       // provider -- the account ID and API token live in the user's model config, not in env.
 
@@ -47,8 +45,10 @@ declare global {
       >;
       FRONTEND_ERROR_RATE_LIMITER?: RateLimit;
 
-      // Browser Run binding used to render Gadget exports. Optional for self-hosted deployments.
-      BROWSER?: BrowserRun;
+      // The Browser Run binding (BROWSER) used to render Gadget exports is intentionally NOT
+      // redeclared here: wrangler's generated types make it required, and TypeScript 7 rejects
+      // weakening it to optional in a merged augmentation. Self-hosted deployments may omit the
+      // binding, so use sites read it as `BrowserRun | undefined` and null-check.
 
       // ---------------------------------------------------------------------------------------------
       // Optional features: sign-in via authentication gatekeepers + AI Gateway billing (free-tier

@@ -1,8 +1,8 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
-  AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, FetchFunction, Model,
+  ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
@@ -21,9 +21,11 @@ import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./a
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 
- // Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
- // exhausted). Defined here to avoid a backend->ai-gateway-billing type import cycle at runtime.
- // Inference is routed through the account's "default" AI Gateway.
+ /**
+  * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
+  * exhausted). Defined here to avoid a backend->ai-gateway-billing type import cycle at runtime.
+  * Inference is routed through the account's "default" AI Gateway.
+  */
  export interface UserGatewayRouting {
    accountId: string;
    apiKey: string;
@@ -58,10 +60,12 @@ type ModelRoutingOptions = {
  * handle-level knobs.
  */
 export type ModelStreamOptions = SimpleStreamOptions & {
-  // When false, suppress the handle's per-API thinking/reasoning defaults so the request runs
-  // without extended thinking (as far as the model allows). Used by completeText(): one-shot
-  // calls -- titles, binding names, compaction summaries, gadget model bindings -- should be
-  // quick, and none of them benefit from cross-step reasoning. Default: true.
+  /**
+   * When false, suppress the handle's per-API thinking/reasoning defaults so the request runs
+   * without extended thinking (as far as the model allows). Used by completeText(): one-shot
+   * calls -- titles, binding names, compaction summaries, gadget model bindings -- should be
+   * quick, and none of them benefit from cross-step reasoning. Default: true.
+   */
   thinking?: boolean;
 };
 
@@ -72,24 +76,30 @@ export type ModelStreamOptions = SimpleStreamOptions & {
  * failures; failures surface as a final AssistantMessage with stopReason "error"/"aborted".
  */
 export type ModelHandle = {
-  // pi model descriptor (plain data; pi dispatches purely on `model.api`).
+  /** pi model descriptor (plain data; pi dispatches purely on `model.api`). */
   model: Model<Api>;
 
-  // Streams a response. Merges the handle's routing/auth and per-API options into whatever
-  // per-call options the caller (e.g. the agent loop) passes. Assignable to pi-agent-core's
-  // StreamFn (the extra ModelStreamOptions knobs are optional).
+  /**
+   * Streams a response. Merges the handle's routing/auth and per-API options into whatever
+   * per-call options the caller (e.g. the agent loop) passes. Assignable to pi-agent-core's
+   * StreamFn (the extra ModelStreamOptions knobs are optional).
+   */
   stream: (model: Model<Api>, context: Context, options?: ModelStreamOptions)
       => AssistantMessageEventStream;
 
-  // Route for retrieving this model's AI Gateway logs for cost accounting. Absent when requests
-  // don't flow through an AI Gateway (direct provider access, direct Workers AI REST).
+  /**
+   * Route for retrieving this model's AI Gateway logs for cost accounting. Absent when requests
+   * don't flow through an AI Gateway (direct provider access, direct Workers AI REST).
+   */
   aiGatewayLogRoute?: AiGatewayLogRoute;
 
-  // Status and AI Gateway log id of the most recent HTTP response observed by `stream`. Reset at
-  // the start of every request and set from pi's onResponse callback (which fires only once a
-  // response arrives -- an SDK-level failure leaves this undefined), so consumers must read it
-  // right after the request they care about completes. Turns run requests sequentially, so this
-  // is safe.
+  /**
+   * Status and AI Gateway log id of the most recent HTTP response observed by `stream`. Reset at
+   * the start of every request and set from pi's onResponse callback (which fires only once a
+   * response arrives -- an SDK-level failure leaves this undefined), so consumers must read it
+   * right after the request they care about completes. Turns run requests sequentially, so this
+   * is safe.
+   */
   lastResponse?: { status: number; aiGatewayLogId?: string };
 };
 
@@ -155,9 +165,11 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
 }
 
 // Build the pi model descriptor for reaching a provider's own native API through an AI Gateway
-// (the platform's or a user's). `gatewayUrl` is a gateway root
-// (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}); each provider's native API is
-// exposed under a per-provider path on it. AI Gateway also offers a unified OpenAI-compat
+// (the platform's or a user's). `gatewayUrl` is a gateway root -- over HTTPS
+// (https://gateway.ai.cloudflare.com/v1/{accountId}/{gateway}) or, for binding-routed requests,
+// over the AI binding (https://workers-binding.ai/ai-gateway/gateways/{gateway}); each
+// provider's native API is exposed under the same per-provider path on either. AI Gateway also
+// offers a unified OpenAI-compat
 // translation layer (/compat), which we deliberately never use: we already speak every
 // provider's native API, and the translation drops provider features pi relies on (extended
 // thinking, Anthropic cache_control prompt caching, the OpenAI Responses API). Billing --
@@ -258,6 +270,10 @@ type HandleArgs = {
   gatewayMetadata?: GatewayMetadata;
   sessionAffinity?: string;
   aiGatewayLogRoute?: AiGatewayLogRoute;
+  // Transport override for every request on this handle: how a binding-routed model reaches the
+  // gateway over env.WORKERS_AI.fetch() instead of the global fetch (see bindingFetch).
+  // A per-call options.fetch still wins, which tests rely on to capture requests.
+  fetch?: FetchFunction;
 };
 
 function makeHandle(args: HandleArgs): ModelHandle {
@@ -305,6 +321,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
         ...(thinking
             ? apiExtras
             : args.model.api === "anthropic-messages" ? { thinkingEnabled: false } : {}),
+        ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
@@ -323,9 +340,6 @@ function makeHandle(args: HandleArgs): ModelHandle {
           const replaced = await options.onPayload?.(payload, payloadModel);
           return bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
         },
-        // NOTE(binding-transport): pi passes `options.fetch` into its SDK clients on all paths.
-        // If Workers-binding-backed inference returns (upstream ask filed), inject a
-        // fetch-to-binding shim here and relax the token requirements in ai-gateway.ts.
       };
       return streamFn(model, context, merged);
     },
@@ -401,6 +415,28 @@ function getModelViaUserGateway(
   });
 }
 
+/**
+ * Placeholder auth value for binding-routed requests. pi's API impls require an API key or a
+ * recognized auth header (authorization, x-api-key, cf-aig-authorization) before dispatch;
+ * binding calls are pre-authenticated in-account, so this satisfies the check and the gateway
+ * recognizes and strips it rather than treating it as a BYOK provider key.
+ */
+const CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL = "cloudflare-gateway-binding";
+
+/**
+ * `Ai#fetch` exists at runtime but @cloudflare/workers-types' `Ai` doesn't declare it, so the
+ * binding is cast structurally to reach the passthrough.
+ */
+type AiFetchBinding = {
+  fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>;
+};
+
+// pi drives the model's baseUrl, which already names the gateway route on the binding's host,
+// so the binding's fetch passes through unchanged -- no URL rewriting needed.
+function bindingFetch(binding: Ai): FetchFunction {
+  return (input, init) => (binding as unknown as AiFetchBinding).fetch(input, init);
+}
+
 // Platform free-tier path: route through the deployment's configured AI Gateway (platform-funded).
 // Used only for requests that are NOT billed to a connected user's account.
 function getModelViaGateway(
@@ -410,48 +446,40 @@ function getModelViaGateway(
   options: ModelRoutingOptions,
 ): ModelHandle {
   const metadata = buildMetadata(initiator, options.metadata);
+  const binding = gwConfig.bindingFor(config.provider);
+  // No binding means either the provider can't ride one or the deployment has none; the second
+  // case already required a token in the constructor, so this only fires for the first
+  if (!binding && !gwConfig.apiToken) {
+    throw new Error(`Provider "${config.provider}" cannot use the Workers AI binding transport, ` +
+        "and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.");
+  }
   const gatewayAuthHeaders: ProviderHeaders = {
     // pi's API impls explicitly recognize cf-aig-authorization and skip SDK auth; the null
     // values suppress the SDKs' own auth headers so the gateway's server-managed provider keys
     // apply.
-    "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
+    "cf-aig-authorization":
+        `Bearer ${binding ? CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL : gwConfig.apiToken}`,
     Authorization: null,
     "x-api-key": null,
   };
   const gatewayBase =
       `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}`;
-  const logRoute = (gateway: string): AiGatewayLogRoute =>
-      ({ gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken });
+  // Cost-log reads are same-account, so the binding arm applies whenever the binding transport
+  // is active (gwConfig.binding is unset when CF_AI_GATEWAY_USE_BINDING=false opts out) --
+  // even for Google inference, which itself rides HTTPS (see AiGatewayConfig.bindingFor).
+  const logRoute = (gateway: string): AiGatewayLogRoute => gwConfig.binding
+      ? { gateway }
+      : { gateway, accountId: gwConfig.accountId, apiToken: gwConfig.apiToken! };
 
-  if (config.provider === "cloudflare" && !gwConfig.workersAiGateway) {
-    // CF_AI_GATEWAY_WAI_DIRECT: the plain Workers AI REST endpoint -- no gateway, no log route,
-    // no gateway metadata (mirroring the old direct-binding path, which had no
-    // aiGatewayLogRoute). Reuses the CF_AI_GATEWAY_* account/token pair.
-    const catalog = catalogModel(config.provider, config.model);
-    const model: Model<Api> = {
-      id: config.model,
-      name: catalog?.name ?? config.model,
-      api: "openai-completions",
-      provider: "cloudflare-workers-ai",
-      baseUrl: `https://api.cloudflare.com/client/v4/accounts/${gwConfig.accountId}/ai/v1`,
-      reasoning: catalog?.reasoning ?? false,
-      input: catalog?.input ?? ["text"],
-      cost: catalog?.cost ?? ZERO_COST,
-      ...modelTokenWindow(config, catalog),
-      compat: workersAiCompat(catalog),
-    };
-    return makeHandle({
-      model,
-      apiKey: gwConfig.apiToken,
-      sessionAffinity: options.sessionAffinity,
-    });
-  }
-
-  // Workers AI may be routed through a different gateway than the other providers
-  // (CF_AI_GATEWAY_WAI); either way, gateway log route and attribution metadata apply.
-  const gateway = config.provider === "cloudflare"
-      ? gwConfig.workersAiGateway! : gwConfig.gateway;
-  const model = gatewayNativeModel(config, `${gatewayBase}/${gateway}`);
+  // Every provider -- Workers AI included -- rides the same gateway, with the same log route
+  // and attribution metadata. Binding-routed providers address it on the binding's host, which
+  // takes no account id (the binding channel carries identity); the paths are otherwise the
+  // same, so the model descriptors are built identically from either root.
+  const gateway = gwConfig.gateway;
+  const gatewayUrl = binding
+      ? `https://workers-binding.ai/ai-gateway/gateways/${gateway}`
+      : `${gatewayBase}/${gateway}`;
+  const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {
     throw new Error(
       `Provider "${config.provider}" is not supported through AI Gateway. ` +
@@ -469,6 +497,7 @@ function getModelViaGateway(
     // the gateway recognizes its own token there and applies the stored Google key instead.
     ...(config.provider === "google" ? { apiKey: gwConfig.apiToken } : {}),
     headers: gatewayAuthHeaders,
+    ...(binding ? { fetch: bindingFetch(binding) } : {}),
     gatewayMetadata: metadata,
     sessionAffinity: options.sessionAffinity,
     aiGatewayLogRoute: logRoute(gateway),
@@ -562,6 +591,29 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           reasoning: true,
           input: ["text", "image"],
           cost: ZERO_COST,
+
+          // Pi's OpenAI compat uses the "developer" role for the system prompt by default,
+          // disabling it only for certain hostnames which are known not to support it.
+          //
+          // In ollama, some models support it and some do not. Frustratingly, the ones that do not
+          // don't necessarily throw an error. They may just proceed without a system prompt. For
+          // example, when I tested Muse Glimmer the day after it was released, I found it
+          // understood what tool calls were available to it but didn't know any of the info in
+          // the system prompt. Annoyingly, Muse Glimmer seems to be trained to treat the system
+          // prompt as secret, so refused to answer my questions about it directly. But I figured
+          // out it clearly wasn't getting the system prompt. And when I disabled  the "developer"
+          // role, the problem was fixed. In contrast, though, Gemma 4 running under otherwise
+          // exactly the same setup does understand the "developer" role and works fine. Weird!
+          //
+          // Some users also filed issues about this because they were trying to use the ollama
+          // provider as a way to target an arbitrary third-party OpenAI-compatible provider. This
+          // is not the intended use case for the ollama provider -- we should add an explicit
+          // provider for this. The ollama provider could in the future switch to using the ollama
+          // native API rather than the OpenAI-compatible endpoint, which would break users using
+          // it in this way. That said, if this flag works as a temporary work-around for them
+          // util we add a real OpenAI provider option... great.
+          compat: catalog?.compat ?? {supportsDeveloperRole: false},
+
           ...window,
         },
         ...(config.apiToken === ""

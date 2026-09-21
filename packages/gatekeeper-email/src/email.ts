@@ -16,7 +16,9 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
   stripTrailingSlashes,
+  type ConnectHandoff,
 } from '@gadgets/workshop-shared/gatekeeper';
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import {
   EmailSession,
   EmailHook,
@@ -131,14 +133,6 @@ class EmailMailboxConfiguratorUI extends RpcTarget implements EmailMailboxConfig
 
 // =======================================================================================
 
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.
-  </body>
-</html>`;
-
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -172,16 +166,13 @@ export default {
       // This is a connectAccount completion URL. Route to the UserAccount DO.
       let userObjectId = ctx.exports.UserAccount.idFromString(path[0]);
       let stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(userObjectId);
-      if (!await stub.complete(path[1])) {
+      let handoff = await stub.complete(path[1]);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" }
         });
       }
-      return new Response(SELF_CLOSING_HTML, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8"
-        }
-      });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     } else {
       return new Response("Not Found", { status: 404 });
     }
@@ -307,29 +298,32 @@ export class UserAccount extends DurableObject<Env> {
     this.ctx.storage.kv.put("nonce", { value: nonce, expiresAt: Date.now() + NONCE_LIFETIME_MS });
   }
 
-  // Returns false if the nonce is invalid or expired.
-  async complete(nonce: string): Promise<boolean> {
+  /**
+   * Returns the handoff for the page the browser lands on, or null if the nonce is invalid or
+   * expired.
+   */
+  async complete(nonce: string): Promise<ConnectHandoff | null> {
     let stored = this.ctx.storage.kv.get<{value: string, expiresAt: number}>("nonce");
     if (!stored || Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, nonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
     let callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
     if (!callback) {
-      return false;
+      return null;
     }
 
     let props: GatekeeperUserImplProps = {
       userAccountId: this.ctx.id.toString(),
     };
-    await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+    let handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
 
     // Clean up the callback, but keep the DO alive to track claimed email addresses.
     this.ctx.storage.deleteAlarm();
     this.ctx.storage.kv.delete("callback");
 
-    return true;
+    return handoff;
   }
 
   async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
@@ -363,7 +357,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     };
   }
 
-  // This gatekeeper does not provide sign-in.
+  /** This gatekeeper does not provide sign-in. */
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
@@ -453,15 +447,22 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     throw new Error("Email connections do not require re-authentication.");
   }
 
+  async commitReconnect(_stageId: string): Promise<void> {
+    // reconnect() never starts a flow, so nothing can ever be staged.
+    throw new Error("No reconnect is awaiting confirmation. Please try again.");
+  }
+
   async ensureResources(_resourceUrlPatterns: string[]): Promise<{url?: string}> {
     return {};
   }
 
-  // Mint a verifier representing this account. The email gatekeeper uses the "low-stakes" observer
-  // strategy (see EmailGatekeeperImpl.addObserver): a mailbox here is a fresh address minted on the
-  // deployment's own domain specifically for the Gadget, so the Gadget's collaborators are the
-  // intended audience. The verifier carries no identity and is never consulted — but the overseer
-  // mints one on every open, so it must exist and not throw.
+  /**
+   * Mint a verifier representing this account. The email gatekeeper uses the "low-stakes" observer
+   * strategy (see EmailGatekeeperImpl.addObserver): a mailbox here is a fresh address minted on the
+   * deployment's own domain specifically for the Gadget, so the Gadget's collaborators are the
+   * intended audience. The verifier carries no identity and is never consulted — but the overseer
+   * mints one on every open, so it must exist and not throw.
+   */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     return this.ctx.exports.EmailVerifier({});
@@ -572,11 +573,13 @@ export class EmailGatekeeperImpl extends DurableObject<Env, EmailGatekeeperImplP
     throw new Error("Email gatekeeper has no actions to revert");
   }
 
-  // Observer tracking: the email gatekeeper uses the "low-stakes" strategy. Each mailbox is a fresh
-  // address minted on the deployment's own domain for this Gadget; there is no external ACL and no
-  // other party who "independently has access" to that inbox, so the Gadget's own collaborators are
-  // the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and we
-  // never set excludeObservers on observations.
+  /**
+   * Observer tracking: the email gatekeeper uses the "low-stakes" strategy. Each mailbox is a fresh
+   * address minted on the deployment's own domain for this Gadget; there is no external ACL and no
+   * other party who "independently has access" to that inbox, so the Gadget's own collaborators are
+   * the natural audience. Any collaborator may observe: addObserver/removeObserver are no-ops and we
+   * never set excludeObservers on observations.
+   */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
   async removeObserver(_id: string): Promise<void> {}
 }
@@ -584,8 +587,11 @@ export class EmailGatekeeperImpl extends DurableObject<Env, EmailGatekeeperImplP
 @validateRpc()
 export class EmailHookControllerImpl extends WorkerEntrypoint<Env, EmailGatekeeperImplProps>
     implements HookController<EmailHookTarget> {
-  // `_target` is unused -- email doesn't display its hooks -- but must be declared, since RPC
-  // argument validation is generated from this signature and would reject the extra argument.
+  /**
+   * `_target` is unused -- email doesn't display its hooks. It no longer strictly needs to be
+   * declared (since capnweb-validate 0.3.0, extra arguments to a validated method are dropped
+   * rather than rejected), but declaring it keeps the signature aligned with the interface.
+   */
   async enable(initiator: Fetcher<HookInitiator<EmailHookTarget>>,
                _target: HookTargetMetadata): Promise<void> {
     return this.#setHook(initiator);
@@ -612,9 +618,11 @@ export class EmailHookControllerImpl extends WorkerEntrypoint<Env, EmailGatekeep
 // Stores the hook Fetcher and dispatches inbound emails to it.
 
 export class EmailAddress extends DurableObject<Env> {
-  // Claim this email address for a user account. The first caller to claim an address becomes
-  // its permanent owner. Subsequent calls from the same owner are idempotent. Calls from a
-  // different owner are rejected.
+  /**
+   * Claim this email address for a user account. The first caller to claim an address becomes
+   * its permanent owner. Subsequent calls from the same owner are idempotent. Calls from a
+   * different owner are rejected.
+   */
   async claim(userAccountId: string): Promise<boolean> {
     let owner = this.ctx.storage.kv.get<string>("owner");
     if (owner && owner !== userAccountId) {

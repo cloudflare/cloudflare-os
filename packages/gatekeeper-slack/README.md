@@ -12,7 +12,7 @@ OAuth 2.0 using a **user token** (`xoxp-…`), requested via `user_scope` (not a
 agent sees exactly what the connecting user can see — including private channels, DMs, and search.
 
 Create a Slack app (https://api.slack.com/apps) and provide its client credentials to the worker
-as `CLIENT_ID` / `CLIENT_SECRET`. For local dev, `run-dev-server.js` maps `SLACK_CLIENT_ID` /
+as `CLIENT_ID` / `CLIENT_SECRET`. For local dev, `run-dev-server.ts` maps `SLACK_CLIENT_ID` /
 `SLACK_CLIENT_SECRET` (e.g. from a root `.dev.vars`) into those vars.
 
 App configuration:
@@ -64,5 +64,5 @@ names.
 ## Build
 
 ```
-pnpm --filter @gadgets/slack-gatekeeper build
+pnpm exec vp run -F @gadgets/slack-gatekeeper build
 ```

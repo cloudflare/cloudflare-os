@@ -24,7 +24,10 @@ it("every method the .d.ts promises is really installed, and routes to the right
     trust: "byo", tools,
   });
   const promised = [...dts.matchAll(/^ {2}([a-z]\w*)\(/gm)].map(match => match[1])
-    .filter(name => !["listTools", "callTool", "getActionResult"].includes(name));
+    .filter(name => ![
+      "listTools", "callTool",
+      "getActionResult",
+    ].includes(name));
 
   class Base {
     called: string | null = null;

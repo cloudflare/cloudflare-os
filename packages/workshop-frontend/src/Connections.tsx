@@ -21,6 +21,7 @@ import {
   loadBindingCardData,
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
+import { isImeComposing } from './keyboardEvent'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
@@ -35,8 +36,10 @@ interface ConnectionsProps {
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
 }
 
-// Auto-approval rules live in Activity because they apply across the workspace, while this view is
-// scoped to one gadget.
+/**
+ * Auto-approval rules live in Activity because they apply across the workspace, while this view is
+ * scoped to one gadget.
+ */
 export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
@@ -275,6 +278,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
                           onKeyDown={(e) => {
+                            if (isImeComposing(e)) return
                             if (e.key === 'Enter') handleEditSave(gk.name)
                             if (e.key === 'Escape') handleEditCancel()
                           }}
@@ -553,7 +557,7 @@ function BlueprintAnnotationModal({
   return (
     <>
       <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-        <Dialog className="!z-[1000] !w-[min(480px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0" size="lg">
+        <Dialog className="responsive-dialog !z-[1000] !w-[min(480px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0" size="lg">
           <div className="flex items-start justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-5">
             <div className="min-w-0">
               <Dialog.Title className="text-[15px] leading-5 font-medium tracking-[-0.3px] text-kumo-default">
