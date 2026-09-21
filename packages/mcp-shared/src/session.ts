@@ -193,7 +193,7 @@ export class McpSessionBase extends RpcTarget {
     const entry = await host.findTool(name);
     if (!entry) throw new Error(this.#noSuchToolMessage(name));
 
-    const described = describeCall({
+    const { title, description: text, descriptionIsComplete } = describeCall({
       serverName: host.serverName,
       endpoint: host.endpoint,
       tool: entry.tool,
@@ -205,13 +205,16 @@ export class McpSessionBase extends RpcTarget {
     if (entry.mode === "read") {
       const result = await host.call(client => client.callTool(name, toolArgs));
       // Authorize before the data is handed back, per the gatekeeper contract.
-      await this.#queue.authorizeObservation(described);
+      await this.#queue.authorizeObservation({ title, description: text });
       return toCallResult(result);
     }
 
     const staged = host.stageAction(name, toolArgs);
     const description: ActionDescription = {
-      ...described,
+      title,
+      description: text,
+      // Absent unless the arguments were shown in full; the overseer reads presence as a claim.
+      ...(descriptionIsComplete ? { descriptionIsComplete } : {}),
       // MCP describes no inverse operation for a tool call.
       implementsRevert: false,
       // Nothing about a queued call is simulated, so later reads would show a world in which it
