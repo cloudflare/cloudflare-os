@@ -3,9 +3,8 @@ import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
-import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { ActionFailureNote } from './ActionFailureNote'
-import { actionStatusLabel } from './features/actions/actionStatus'
+import { actionStatusLabel, autoApproveTargetOf, type AutoApproveTarget } from './features/actions/actionStatus'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
@@ -173,13 +172,7 @@ export default function Activity({
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
-  const [confirmAutoApprove, setConfirmAutoApprove] = useState<{
-    actionId: number
-    gatekeeperId: number
-    resourceTitle: string
-    actionKind: ActionKind
-    actionLabel: string
-  } | null>(null)
+  const [confirmAutoApprove, setConfirmAutoApprove] = useState<AutoApproveTarget | null>(null)
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
@@ -236,17 +229,7 @@ export default function Activity({
           <div className="min-h-0 flex-1 overflow-auto">
             {pendingActions.map(record => {
               const autoApproveTarget =
-                record.type === 'action' && record.gatekeeperId !== undefined &&
-                record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true && record.failure === undefined
-                  ? {
-                      actionId: record.id,
-                      gatekeeperId: record.gatekeeperId,
-                      resourceTitle: record.resourceTitle,
-                      actionKind: record.description.actionKind,
-                      actionLabel: record.description.title,
-                    }
-                  : undefined
+                record.type === 'action' ? autoApproveTargetOf(record) : undefined
               return (
                 <ReviewRequest
                   key={record.id}

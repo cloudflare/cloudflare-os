@@ -14,7 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
-import { actionStatusLabel } from './features/actions/actionStatus'
+import { actionStatusLabel, autoApproveTargetOf, type AutoApproveTarget } from './features/actions/actionStatus'
 import {
   Dialog,
   DropdownMenu,
@@ -87,7 +87,6 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { composeCodeChange, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow } from "./features/code/otClient";
-import { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
@@ -4329,10 +4328,7 @@ function ChatInterface({
   }, [overseer, selectedChatId, toasts]);
 
   // Pending "always approve this type" confirmation, opened from a pending action card.
-  const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
-  >(null);
+  const [autoApproveConfirm, setAutoApproveConfirm] = useState<AutoApproveTarget | null>(null);
 
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
   // server applies the now-eligible pending action(s) in an apply pass, and the state flips to
@@ -4924,22 +4920,7 @@ function ChatInterface({
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
-    // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable, whose last attempt did not stop. (A non-auto-approvable action stays a
-    // manual gate even with a rule; a stopped one needs an explicit retry; an auto-approvable
-    // action with an existing rule wouldn't still be pending.)
-    const autoApproveTarget =
-      log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true && log.failure === undefined
-        ? {
-            actionId: msg.actionId,
-            gatekeeperId: log.gatekeeperId,
-            resourceTitle: log.resourceTitle,
-            actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
-          }
-        : undefined;
+    const autoApproveTarget = autoApproveTargetOf(log);
 
     const actionControls = isPending ? (
       <>
