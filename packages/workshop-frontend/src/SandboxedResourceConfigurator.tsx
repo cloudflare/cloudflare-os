@@ -21,6 +21,7 @@ function clamp(value: number, min: number, max: number): number {
 
 class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfiguratorHost {
   readonly #gatekeeper: RpcStub<RpcTarget>
+  readonly #disposeRateLimiter: () => void
 
   constructor(
     configurator: any,
@@ -31,14 +32,17 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
   ) {
     super()
     // The configurator form is short-lived, so a burst past the per-minute cap is always a bug:
-    // reject rather than throttle. (No resume timer is created in reject mode, so no dispose needed.)
-    this.#gatekeeper = createRateLimitedCapability(configurator, {
+    // reject rather than throttle. Disposal still rejects queued calls and closes admission when
+    // the iframe session is torn down.
+    const { capability, dispose } = createRateLimitedCapability(configurator, {
       maxConcurrency: 4,
       maxCallsPerMinute: 120,
       maxPendingCalls: 32,
       onRateLimit: 'reject',
       label: 'Resource configurator',
-    }).capability
+    })
+    this.#gatekeeper = capability
+    this.#disposeRateLimiter = dispose
   }
 
   get gatekeeper(): RpcStub<RpcTarget> {
@@ -59,6 +63,10 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
 
   forwardScroll(deltaX: number, deltaY: number): void {
     this.onScroll(deltaX, deltaY)
+  }
+
+  dispose(): void {
+    this.#disposeRateLimiter()
   }
 }
 
@@ -87,6 +95,7 @@ export default function SandboxedResourceConfigurator({
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const rpcSessionRef = useRef<{ [Symbol.dispose]?(): void } | null>(null)
   const iframeRpcRef = useRef<RpcStub<ResourceConfiguratorIframe> | null>(null)
+  const hostRef = useRef<ResourceConfiguratorHostImpl | null>(null)
   // The configurator stub is an arbitrary gatekeeper-defined capability: its method shape is
   // unknown to Workshop, so we treat it as `any` and let Cap'n Web carry calls through.
   const configuratorRef = useRef<any>(null)
@@ -201,6 +210,8 @@ export default function SandboxedResourceConfigurator({
       port.close()
       iframeRpcRef.current?.[Symbol.dispose]?.()
       iframeRpcRef.current = null
+      hostRef.current?.dispose()
+      hostRef.current = null
       rpcSessionRef.current?.[Symbol.dispose]?.()
       rpcSessionRef.current = null
       return
@@ -210,8 +221,7 @@ export default function SandboxedResourceConfigurator({
       port.close()
       return
     }
-    rpcSessionRef.current?.[Symbol.dispose]?.()
-    const iframe = newMessagePortRpcSession<ResourceConfiguratorIframe>(port, new ResourceConfiguratorHostImpl(
+    const host = new ResourceConfiguratorHostImpl(
       configuratorRef.current,
       (nextHeight, nextLayoutHeight) => {
         if (!Number.isFinite(nextHeight)) return
@@ -226,7 +236,11 @@ export default function SandboxedResourceConfigurator({
         clamp(Number(deltaY) || 0, -SCROLL_FORWARD_MAX_DELTA, SCROLL_FORWARD_MAX_DELTA),
       ),
       () => initialResourceRef.current,
-    ))
+    )
+    hostRef.current?.dispose()
+    hostRef.current = host
+    rpcSessionRef.current?.[Symbol.dispose]?.()
+    const iframe = newMessagePortRpcSession<ResourceConfiguratorIframe>(port, host)
     rpcSessionRef.current = iframe
     iframeRpcRef.current?.[Symbol.dispose]?.()
     iframeRpcRef.current = iframe.dup()
@@ -243,6 +257,8 @@ export default function SandboxedResourceConfigurator({
       iframeInvalidatedRef.current = true
       iframeRpcRef.current?.[Symbol.dispose]?.()
       iframeRpcRef.current = null
+      hostRef.current?.dispose()
+      hostRef.current = null
       rpcSessionRef.current?.[Symbol.dispose]?.()
       rpcSessionRef.current = null
     }
@@ -290,6 +306,8 @@ export default function SandboxedResourceConfigurator({
     onSelectionReadyChange?.(null)
     iframeRpcRef.current?.[Symbol.dispose]?.()
     iframeRpcRef.current = null
+    hostRef.current?.dispose()
+    hostRef.current = null
     rpcSessionRef.current?.[Symbol.dispose]?.()
     rpcSessionRef.current = null
     scrollAncestorRef.current = null
@@ -378,6 +396,8 @@ export default function SandboxedResourceConfigurator({
       onSelectionReadyChange?.(null)
       iframeRpcRef.current?.[Symbol.dispose]?.()
       iframeRpcRef.current = null
+      hostRef.current?.dispose()
+      hostRef.current = null
       rpcSessionRef.current?.[Symbol.dispose]?.()
       rpcSessionRef.current = null
     }

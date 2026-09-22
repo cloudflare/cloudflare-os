@@ -23,6 +23,7 @@ import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { disposeGatekeeperUiFrame } from './gatekeeperUiFrameLifecycle'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -1458,8 +1459,7 @@ function BindingField({
 // Dispose the host-side capability bundle returned with a configurator frame, releasing the
 // gatekeeper-side resources backing the iframe.
 function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
-  const uiDisposable = frame?.ui as any
-  uiDisposable?.[Symbol.dispose]?.()
+  disposeGatekeeperUiFrame(frame)
 }
 
 function formatSuggestedResource(resourceUrl: string): string {
@@ -1591,17 +1591,22 @@ function BlueprintGatekeeperBindingField({
     }
 
     let cancelled = false
+    let settled = false
+    let requestDisposed = false
     setFrameLoading(true)
     setFrameError(null)
     onReadyChangeRef.current(false)
     replaceFrameState(null)
 
-    authenticatedApi.startResourceConfigurator(selectedAccount.id, resource.urlPattern)
+    const request = authenticatedApi.startResourceConfigurator(selectedAccount.id, resource.urlPattern)
+    request
       .then(frame => {
-        if (cancelled) {
+        settled = true
+        if (cancelled && !requestDisposed) {
           disposeConfiguratorFrame(frame)
           return
         }
+        if (cancelled) return
         replaceFrameState({ key: ++frameKeyRef.current, frame })
       })
       .catch(err => {
@@ -1614,6 +1619,13 @@ function BlueprintGatekeeperBindingField({
 
     return () => {
       cancelled = true
+      if (!settled) {
+        const disposeRequest = (request as unknown as { [Symbol.dispose]?: () => void })[Symbol.dispose]
+        if (disposeRequest) {
+          requestDisposed = true
+          disposeRequest.call(request)
+        }
+      }
     }
   }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern, replaceFrameState])
 

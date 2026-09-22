@@ -3,11 +3,7 @@ import type { GatekeeperUiFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from './AuthContext'
 import SandboxedGatekeeperApp from './SandboxedGatekeeperApp'
 import { reportIssue } from './errorReporting'
-
-// The frame's `ui` is an RPC stub at runtime; dispose it to release the server-side capability.
-function disposeFrame(frame: GatekeeperUiFrame | null) {
-  (frame?.ui as { [Symbol.dispose]?(): void } | undefined)?.[Symbol.dispose]?.()
-}
+import { disposeGatekeeperUiFrame } from './gatekeeperUiFrameLifecycle'
 
 /**
  * Renders a gatekeeper's full-page management app (a sandboxed SPA the gatekeeper serves).
@@ -23,17 +19,23 @@ export default function GatekeeperAppPage({ appId }: { appId: string }) {
   useEffect(() => {
     let cancelled = false
     let acquired: GatekeeperUiFrame | null = null
-    authenticatedApi
-      .getGatekeeperApp(appId)
+    let settled = false
+    let requestDisposed = false
+    setState(null)
+    setError(null)
+    const request = authenticatedApi.getGatekeeperApp(appId)
+    Promise.resolve(request)
       .then((frame) => {
+        settled = true
         if (!frame) {
           if (!cancelled) setError('This app is not available on this deployment.')
           return
         }
-        if (cancelled) {
-          disposeFrame(frame)
+        if (cancelled && !requestDisposed) {
+          disposeGatekeeperUiFrame(frame)
           return
         }
+        if (cancelled) return
         acquired = frame
         setState({ frame })
       })
@@ -46,7 +48,14 @@ export default function GatekeeperAppPage({ appId }: { appId: string }) {
       })
     return () => {
       cancelled = true
-      disposeFrame(acquired)
+      if (!settled) {
+        const disposeRequest = (request as unknown as { [Symbol.dispose]?: () => void })[Symbol.dispose]
+        if (disposeRequest) {
+          requestDisposed = true
+          disposeRequest.call(request)
+        }
+      }
+      disposeGatekeeperUiFrame(acquired)
     }
   }, [authenticatedApi, appId])
 

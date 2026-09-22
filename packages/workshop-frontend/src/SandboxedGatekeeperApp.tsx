@@ -307,10 +307,10 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
         // A second handshake (e.g. iframe reloaded) invalidates the session.
         invalidatedRef.current = true
         port.close()
-        sessionRef.current?.[Symbol.dispose]?.()
-        sessionRef.current = null
         hostRef.current?.dispose()
         hostRef.current = null
+        sessionRef.current?.[Symbol.dispose]?.()
+        sessionRef.current = null
         setOverlayPhase(null)
         return
       }
@@ -349,10 +349,10 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
     window.addEventListener('message', handleMessage)
     return () => {
       window.removeEventListener('message', handleMessage)
-      sessionRef.current?.[Symbol.dispose]?.()
-      sessionRef.current = null
       hostRef.current?.dispose()
       hostRef.current = null
+      sessionRef.current?.[Symbol.dispose]?.()
+      sessionRef.current = null
       setOverlayPhase(null)
     }
     // Re-establish the session if either the HTML or the `ui` capability changes, so a new frame

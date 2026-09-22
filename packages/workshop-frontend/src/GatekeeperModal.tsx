@@ -37,6 +37,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { disposeGatekeeperUiFrame } from './gatekeeperUiFrameLifecycle'
 
 export interface GatekeeperModalProps {
   open: boolean
@@ -180,8 +181,7 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
 }
 
 function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
-  const uiDisposable = frame?.ui as any
-  uiDisposable?.[Symbol.dispose]?.()
+  disposeGatekeeperUiFrame(frame)
 }
 
 export default function GatekeeperModal({
@@ -540,17 +540,22 @@ export default function GatekeeperModal({
     }
 
     let cancelled = false
+    let settled = false
+    let requestDisposed = false
     setConfiguratorLoading(true)
     updateConfiguratorFrameState(null)
     setConfiguratorError(null)
     setConfiguratorSelectionReady(null)
 
-    authenticatedApi.startResourceConfigurator(selectedAccount.id, resourceUrlPattern)
+    const request = authenticatedApi.startResourceConfigurator(selectedAccount.id, resourceUrlPattern)
+    request
       .then(frame => {
-        if (cancelled) {
+        settled = true
+        if (cancelled && !requestDisposed) {
           disposeConfiguratorFrame(frame)
           return
         }
+        if (cancelled) return
         updateConfiguratorFrameState({
           key: ++nextConfiguratorFrameKeyRef.current,
           frame,
@@ -573,6 +578,13 @@ export default function GatekeeperModal({
 
     return () => {
       cancelled = true
+      if (!settled) {
+        const disposeRequest = (request as unknown as { [Symbol.dispose]?: () => void })[Symbol.dispose]
+        if (disposeRequest) {
+          requestDisposed = true
+          disposeRequest.call(request)
+        }
+      }
     }
   }, [open, authenticatedApi, selectedConnection?.id, selectedConnection?.resourceUrlPattern, selectedAccount?.id, hasMissingResourceGrants])
 
