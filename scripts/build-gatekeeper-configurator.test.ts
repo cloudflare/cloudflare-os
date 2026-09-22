@@ -322,6 +322,47 @@ describe("generated configurator error reporting", () => {
   });
 });
 
+// The host decides to prefill with `matchesResourceUrlPattern`, which tries both slash forms, and
+// the server mints the capability from a parser that also accepts both. Extraction sits between
+// them, so a strict match here lands the caller on the right configurator with an empty field.
+describe("generated configurator prefill", () => {
+  const pattern = "https://drive.google.com/drive/folders/:folderId";
+
+  it("extracts named groups with or without a trailing slash", async () => {
+    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
+      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
+
+    // The doubled form also proves the strip regex survived the runtime template literal, where a
+    // single backslash would have emitted `//` and commented out the rest of the line.
+    for (const url of [
+      "https://drive.google.com/drive/folders/FOLDER123",
+      "https://drive.google.com/drive/folders/FOLDER123/",
+      "https://drive.google.com/drive/folders/FOLDER123//",
+    ]) {
+      assert.deepEqual(defaultValuesFromResourceUrl(url, pattern), { folderId: "FOLDER123" });
+    }
+  });
+
+  it("decodes an encoded group and ignores a wildcard", async () => {
+    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
+      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
+
+    assert.deepEqual(
+      defaultValuesFromResourceUrl(
+        "https://docs.google.com/document/d/doc%2F1/edit",
+        "https://docs.google.com/document/d/:docId/*"),
+      { docId: "doc/1" });
+  });
+
+  it("returns nothing for a URL the pattern does not describe", async () => {
+    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
+      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
+
+    assert.deepEqual(
+      defaultValuesFromResourceUrl("https://drive.google.com/drive/my-drive", pattern), {});
+  });
+});
+
 describe("generated configurator option sanitizing", () => {
   it("truncates an overflowing suggestion list but refuses an overflowing grant list", async () => {
     const { sanitizeOptions } = readRuntimeFunctions(

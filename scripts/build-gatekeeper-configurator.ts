@@ -744,7 +744,13 @@ function defaultValuesFromResourceUrl(resourceUrl, resourceUrlPattern) {
   if (!resourceUrlPattern || resourceUrlPattern === "https://*") return null;
   if (typeof URLPattern === "undefined") return null;
   try {
-    const match = new URLPattern(resourceUrlPattern).exec(resourceUrl);
+    const compiled = new URLPattern(resourceUrlPattern);
+    // The host matches tolerantly and the server parses tolerantly, so a strict exec here would
+    // seed nothing and leave the caller on the right configurator with an empty field.
+    const alternate = resourceUrl.endsWith("/")
+      ? resourceUrl.replace(/\\/+$/, "")
+      : resourceUrl + "/";
+    const match = compiled.exec(resourceUrl) ?? compiled.exec(alternate);
     const groups = match?.pathname?.groups ?? {};
     const out = {};
     for (const [key, value] of Object.entries(groups)) {
