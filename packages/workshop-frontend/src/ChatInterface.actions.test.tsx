@@ -422,4 +422,12 @@ describe('ChatInterface action status', () => {
     expect(document.body.textContent).toContain('Denied')
     expect(document.body.textContent).not.toContain('Invalidated')
   })
+
+  it('presents a refused veto as already applied rather than approved', async () => {
+    await renderCard({ state: 'approved', vetoRefused: true })
+
+    // The user asked for the opposite, so the bare state would read as a verdict they never gave.
+    expect(document.body.textContent).toContain('Already applied')
+    expect(document.body.textContent).not.toContain('Approved')
+  })
 })

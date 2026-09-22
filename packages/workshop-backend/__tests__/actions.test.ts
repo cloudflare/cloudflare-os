@@ -610,9 +610,11 @@ describe("ActionSyncDriver.apply", () => {
     let refused = getAction(storage, 2);
     expect(refused.state).toBe("approved");
     expect(refused.vetoPending).toBeUndefined();
-    // The approving pass never got to record who authorized it, and the vetoer did not.
+    // The approving pass never got to record who authorized it, and the vetoer did not. The
+    // marker is what keeps the card from reading as a decision someone made.
     expect(refused.resolvedBy).toBeUndefined();
     expect(refused.failure).toBeUndefined();
+    expect(refused.vetoRefused).toBe(true);
     // Action 4's veto sat beyond the boundary, so it was never sent and is not the gatekeeper's
     // to refuse.
     expect(getAction(storage, 4)).toMatchObject({ state: "rejected", vetoPending: true });
@@ -1053,10 +1055,11 @@ describe("Overseer action decisions", () => {
 
     let error = await client.applyActionsThrough(boundary, [boundary]).catch(caught => caught);
 
-    // Staging already showed the card denied, so the flip to approved has to be explained;
-    // nothing on the record itself says a rejection was asked for and refused.
+    // Staging already showed the card denied, so the flip to approved has to be explained: the
+    // caller hears it now, and the record carries it for everyone who only sees the card later.
     expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.vetoRefused);
-    expect(storage.actions.get(boundary)).toMatchObject({ state: "approved" });
+    expect(storage.actions.get(boundary))
+        .toMatchObject({ state: "approved", vetoRefused: true });
   });
 
   it("replays a recorded stop to a client resuming after the action was created", async () => {

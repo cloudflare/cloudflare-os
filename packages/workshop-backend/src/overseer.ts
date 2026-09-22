@@ -704,6 +704,9 @@ export type ActionRecord = {
   /** Outstanding veto from a previously staged rejection; cleared after delivery. */
   vetoPending?: true;
 
+  /** Set when a gatekeeper refused this action's veto because it had already applied it. */
+  vetoRefused?: true;
+
   /**
    * Whether submitting this action suspended its agent turn. Absent on records written before the
    * field existed; `suspendedAgentTurn()` answers for those.
@@ -1049,6 +1052,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         autoApproved: record.autoApproved,
         cascadedFrom: record.cascadedFrom,
         failure: record.failure,
+        vetoRefused: record.vetoRefused,
       };
     case "bindHook":
       return {

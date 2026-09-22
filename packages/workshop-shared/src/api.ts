@@ -1752,6 +1752,13 @@ export type ActionLogEntry = {
    * outcome the gatekeeper never confirmed. Cleared when the action applies.
    */
   failure?: string;
+
+  /**
+   * Set when the user rejected this action but the gatekeeper had already applied it, so the
+   * rejection could not be honoured. Only ever set alongside state "approved", which nobody
+   * chose: the pass that applied it lost its response before an approver was recorded.
+   */
+  vetoRefused?: true;
 } | {
   type: "observation";
   description: ObservationDescription;
