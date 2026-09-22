@@ -1291,7 +1291,7 @@ type SuggestedModel = {
 
   /**
    * When present, the prompt size compaction keeps the chat under. Set below the window for models
-   * whose input is priced higher past a threshold (GPT-5.6 doubles above 272K), so ordinary use
+   * whose input is priced higher past a threshold (GPT-6 and GPT-5.6 double above 272K), so ordinary use
    * stays in the cheaper tier while the window remains the hard limit.
    */
   compactionInputBudget?: number;
@@ -1319,17 +1319,17 @@ const SUGGESTED_MODEL_CATALOG = {
   "anthropic": {
     // TODO: Include Fable -- but we need an admin option to disable it, since many orgs don't
     //   allow it for ZDR reasons. It's sort of overkill for building gadgets anyway.
-    "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000},
+    "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000},
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
   },
   "openai": {
-    "gpt-5.6-sol": {
-      name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: 128000,
+    "gpt-6-sol": {
+      name: "GPT 6 Sol", contextWindow: 1050000, outputLimit: 128000,
       compactionInputBudget: 272000,
     },
-    "gpt-5.6-luna": {
-      name: "GPT 5.6 Luna", contextWindow: 1050000, outputLimit: 128000,
+    "gpt-6-luna": {
+      name: "GPT 6 Luna", contextWindow: 1050000, outputLimit: 128000,
       compactionInputBudget: 272000,
     },
     "gpt-5.6-terra": {

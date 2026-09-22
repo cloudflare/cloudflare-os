@@ -10,7 +10,7 @@ export type EvalModel = { provider: AiModelProvider; model: SuggestedModelId };
  * The model published baselines are measured on. Served only through an AI Gateway with an OpenAI
  * key; WORKSHOP_EVAL_MODELS selects another model, at the cost of comparability (see global-setup).
  */
-export const DEFAULT_MODEL: SuggestedModelId = "gpt-5.6-luna";
+export const DEFAULT_MODEL: SuggestedModelId = "gpt-6-luna";
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 
 export type EvalIdentity = { gitCommit: string; taskVersion: string };
