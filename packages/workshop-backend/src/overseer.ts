@@ -2042,11 +2042,10 @@ class OverseerImpl implements AgentHooks {
 
     this.#actionSync = new ActionSyncDriver(
         this.storage, gatekeeperId => this.getGatekeeperFacet(gatekeeperId), {
-          createGitCache: gatekeeperId => new GitCacheImpl(this.gitCache, gatekeeperId),
+          createGitCache: (gatekeeperId, actionId) =>
+            new GitCacheImpl(this.gitCache, gatekeeperId, actionId),
           createGitPackBuilder: (gatekeeperId, pendingPlan) =>
             new GitPackBuilderImpl(this.gitCache, this.storage, gatekeeperId, pendingPlan),
-          applyLegacyAction: (gatekeeper, record) => gatekeeper.applyAction(record.action,
-              new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id)),
           persistApproved: record => this.storage.transaction(() => {
             this.gitCache.convertPushMarksToOnRemote(record.id);
             this.storage.actions.put(record);

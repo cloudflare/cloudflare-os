@@ -22,6 +22,7 @@ import { concatBytes, decodePackBytes, encodeLooseObject, gitObjectOid }
   from "../src/git-codec";
 import { GitPackBuilderImpl } from "../src/git-cache.js";
 import type { GitObjectMetadataRecord } from "../src/git-cache.js";
+import { rejectBatchProbe, rejectionOf } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -130,17 +131,9 @@ function actionRecord(impl: any, gatekeeperId: number, localAction: number)
   return record;
 }
 
-// Awaits inside a try/catch on purpose: handing an RPC-stub call's promise to `expect().rejects`
-// leaves an unhandled rejection behind in workerd.
 async function expectGitPackCode(
     operation: () => Promise<unknown>, expected: GitPackErrorCode): Promise<void> {
-  let caught: unknown;
-  try {
-    await operation();
-  } catch (error) {
-    caught = error;
-  }
-  expect(getGitPackErrorCode(caught)).toBe(expected);
+  expect(getGitPackErrorCode(await rejectionOf(operation()))).toBe(expected);
 }
 
 describe("push authorization through the Overseer chokepoints", () => {
@@ -159,10 +152,7 @@ describe("push authorization through the Overseer chokepoints", () => {
       // gatekeeper would: reads a pending commit (simulation view) and builds the pack.
       let sawPack: Uint8Array | undefined;
       impl.getGatekeeperFacet = () => ({
-        async applyActionsThrough() {
-          throw new TypeError(
-              'The RPC receiver does not implement the method "applyActionsThrough".');
-        },
+        async applyActionsThrough() { rejectBatchProbe(); },
         async applyAction(action: number, cache: any) {
           expect(action).toBe(1);
           expect((await cache.get(head))!.type).toBe("commit");
@@ -445,12 +435,8 @@ describe("push authorization through the Overseer chokepoints", () => {
       try {
         await impl.submitAction(GATEKEEPER, 71, pushDescription([head]), { from: "user" });
         const record = actionRecord(impl, GATEKEEPER, 71);
-        let caught: unknown;
-        try {
-          await impl.applyDecidedActions(GATEKEEPER, { action: 71, resolvedBy: USER });
-        } catch (error) {
-          caught = error;
-        }
+        const caught = await rejectionOf(
+            impl.applyDecidedActions(GATEKEEPER, { action: 71, resolvedBy: USER }));
 
         expect(caught).toBeInstanceOf(Error);
         expect(getGitPackErrorCode(caught)).toBeUndefined();

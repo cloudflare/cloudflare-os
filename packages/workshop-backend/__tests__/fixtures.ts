@@ -6,7 +6,9 @@ import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import type { RpcStub } from "capnweb";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
-import type { ActionLogEntry, ActionsSubscriber, Overseer } from "@gadgets/workshop-shared/api";
+import type {
+  ActionLogEntry, ActionsSubscriber, AiChatAuthorInfo, Overseer,
+} from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject, makeOverseerStorage } from "../src/overseer.js";
 import { createWorkshopLogger } from "../src/observability.js";
 import type { ActionRecord } from "../src/overseer.js";
@@ -52,17 +54,25 @@ export function makeSubscriber(entry?: (record: ActionLogEntry) => Promise<void>
   return { subscriber: subscriber as unknown as RpcStub<ActionsSubscriber>, events };
 }
 
-/** Puts a record and keeps nextActionId ahead of it, as the real allocator does. */
+/**
+ * Puts a record and keeps nextActionId ahead of it, as the real allocator does. `action` is the
+ * gatekeeper-local ID (defaults to `id`); the remaining action-only options land on the record
+ * only when given, matching how the overseer writes them.
+ */
+export type PutActionOptions = {
+  state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
+  actionTag?: string, autoApprovable?: boolean, createdAt?: Date, appliedAt?: Date,
+  action?: number, chatId?: number, awaitDecision?: boolean, suspendedTurn?: boolean,
+  vetoPending?: true, resolvedBy?: AiChatAuthorInfo, failure?: string,
+};
+
 export function putAction(
     storage: { actions: Collection<ActionRecord, number>, nextActionId: Singleton<number> },
-    id: number,
-    opts: { state?: ActionRecord["state"], type?: ActionRecord["type"], gatekeeperId?: number,
-            actionTag?: string, autoApprovable?: boolean, createdAt?: Date,
-            appliedAt?: Date } = {}) {
+    id: number, opts: PutActionOptions = {}) {
   let base = {
     id,
     gatekeeperId: opts.gatekeeperId ?? 1,
-    caller: { from: "agent", chatId: 1 } as const,
+    caller: { from: "agent", chatId: opts.chatId ?? 1 } as const,
     resourceTitle: `Resource ${id}`,
     createdAt: opts.createdAt ?? new Date(FIXTURE_EPOCH + id),
     ...(opts.appliedAt !== undefined ? { appliedAt: opts.appliedAt } : {}),
@@ -71,15 +81,44 @@ export function putAction(
   let description = { title: `Action ${id}`, description: `Action ${id} description` };
   let type = opts.type ?? "action";
   storage.actions.put(
-      type === "action" ? { ...base, type, action: id, description: {
-        ...description,
-        implementsRevert: true,
-        actionKind: { tag: opts.actionTag ?? "edit", label: "Edits" },
-        autoApprovable: opts.autoApprovable ?? true,
-      } }
+      type === "action" ? {
+        ...base,
+        type,
+        action: opts.action ?? id,
+        ...(opts.vetoPending ? { vetoPending: true } : {}),
+        ...(opts.suspendedTurn !== undefined ? { suspendedTurn: opts.suspendedTurn } : {}),
+        ...(opts.resolvedBy ? { resolvedBy: opts.resolvedBy } : {}),
+        ...(opts.failure !== undefined ? { failure: opts.failure } : {}),
+        description: {
+          ...description,
+          implementsRevert: true,
+          actionKind: { tag: opts.actionTag ?? "edit", label: "Edits" },
+          autoApprovable: opts.autoApprovable ?? true,
+          ...(opts.awaitDecision ? { awaitDecision: true } : {}),
+        },
+      }
     : type === "observation" ? { ...base, type, description }
     : { ...base, type, description, enabled: true });
   if (id >= storage.nextActionId.get()) storage.nextActionId.put(id + 1);
+}
+
+/**
+ * Awaits `promise` and returns what it rejected with (undefined if it resolved). A try/catch on
+ * purpose: handing an RPC-stub call's promise to `expect().rejects` leaves an unhandled rejection
+ * behind in workerd.
+ */
+export async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+/** Fails a batch call the way workerd's stub does for a gatekeeper that predates the method. */
+export function rejectBatchProbe(): never {
+  throw new TypeError('The RPC receiver does not implement the method "applyActionsThrough".');
 }
 
 /**
