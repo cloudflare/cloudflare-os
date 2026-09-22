@@ -402,7 +402,8 @@ export class ActionSyncDriver {
     let sentVetoes = new Map(sendVetoes.map(veto => [veto.action, veto]));
     // A veto the gatekeeper refused because it had already applied that action. Acknowledging it
     // would enter an executed action as rejected. The pass that applied it lost its response
-    // before recording an approver, and this one only knows the vetoer, so it records no one.
+    // before recording an approver, and this one only knows the vetoer, so it records no one and
+    // marks the record instead: the state says applied, which nobody chose.
     let vetoRefused: true | undefined;
     for (let action of result.alreadyApplied ?? []) {
       if (!sentVetoes.has(action)) continue;
@@ -410,6 +411,7 @@ export class ActionSyncDriver {
       if (fresh?.state !== "rejected") continue;
       fresh.state = "approved";
       fresh.appliedAt = new Date();
+      fresh.vetoRefused = true;
       delete fresh.vetoPending;
       delete fresh.resolvedBy;
       delete fresh.failure;
