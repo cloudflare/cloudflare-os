@@ -1,0 +1,27 @@
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_ea0ed5df37b4df::t_c56fd1c6d49dcd 110-113,119-125,129-154,156-162
+  s_ea0ed5df37b4df::t_ef49a7d05e05da 155
+  s_ea0ed5df37b4df::t_cd1512011401ef 126-128
+  s_ea0ed5df37b4df::t_57d21c61c26ffc 163
+packages/gatekeeper-kit/src/action-description.ts
+  s_ea0ed5df37b4df::t_cd1512011401ef 41-42,190-192,204-205
+  s_ea0ed5df37b4df::t_0b0db0d7198d5a 73-74,76-77
+  s_ea0ed5df37b4df::t_78ef3c9c4282b8 36-37,39-40,96-97,115-126,128-129,132,158-160,165-166,177-179,194,206-207,213-214,220-223,237-238,245-247,257-262
+  s_ea0ed5df37b4df::t_ef49a7d05e05da 38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "268a13810f15873cf5f9b7dce76a1412acc79def",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
