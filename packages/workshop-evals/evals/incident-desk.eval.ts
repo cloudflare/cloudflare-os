@@ -297,8 +297,11 @@ null when there is nothing to average. Everything already on the board stays.`,
         const before = IncidentSchema.parse(await api.incident({ id: "race-6" }));
         const acknowledged = OkSchema.parse(await api.escalate({ id: "race-6" }));
         const after = IncidentSchema.parse(await api.incident({ id: "race-6" }));
+        const resolvedBefore = IncidentSchema.parse(await api.incident({ id: "inc-1" }));
         const resolved = OkSchema.parse(await api.escalate({ id: "inc-1" }));
+        const resolvedAfter = IncidentSchema.parse(await api.incident({ id: "inc-1" }));
         const unknown = OkSchema.parse(await api.escalate({ id: "esc-x" }));
+        const board = BoardSchema.parse(await api.board()).incidents;
         const untouched = IncidentSchema.parse(await api.incident({ id: "race-1" }));
         return {
           pass: first.ok && escalatedOnce(opened, afterFirst) &&
@@ -307,9 +310,11 @@ null when there is nothing to average. Everything already on the board stays.`,
             JSON.stringify(afterThird) === JSON.stringify(afterSecond) &&
             before.status === "acknowledged" && acknowledged.ok && escalatedOnce(before, after) &&
             code(resolved) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
+            JSON.stringify(resolvedAfter) === JSON.stringify(resolvedBefore) &&
+            !board.some(incident => incident.id === "esc-x") &&
             (untouched.escalations ?? 0) === 0,
           evidence: { opened, first, afterFirst, second, afterSecond, third, afterThird, before,
-            acknowledged, after, resolved, unknown },
+            acknowledged, after, resolved, resolvedAfter, unknown },
         };
       });
 

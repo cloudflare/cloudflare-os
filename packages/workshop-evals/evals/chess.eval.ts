@@ -526,24 +526,30 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
         }
         const afterTwo = seen[0];
         const afterThree = seen[1];
+        // The start position has now occurred three times; loading it again begins a new game.
+        const reloaded = LoadSchema.parse(await api.loadFen({ fen: new Chess().fen() }));
+        const afterReload = StatusSchema.parse(await api.status());
         const fiftyFen = "8/8/8/8/8/4k3/8/R3K3 w - - 99 80";
         const fiftyOracle = new Chess(fiftyFen);
         const loadedFifty = LoadSchema.parse(await api.loadFen({ fen: fiftyFen }));
         const beforeFifty = StatusSchema.parse(await api.status());
+        const expectedBeforeFifty = oracleStatus(fiftyOracle, DRAW_STATUS);
         played.push(MoveResultSchema.parse(await api.move({ from: "a1", to: "a2" })));
         fiftyOracle.move({ from: "a1", to: "a2" });
         const afterFifty = StatusSchema.parse(await api.status());
         const expectedThree = oracleStatus(oracle, DRAW_STATUS);
         return {
-          pass: afterTwo !== undefined && afterThree !== undefined && loadedFifty.ok &&
+          pass: afterTwo !== undefined && afterThree !== undefined && reloaded.ok && loadedFifty.ok &&
+            afterReload.threefoldRepetition === false && afterReload.draw === false &&
             played.every(result => result.ok) &&
             afterTwo.threefoldRepetition === false && afterTwo.draw === false &&
             statusMismatch(afterThree, expectedThree, DRAW_STATUS).length === 0 &&
             expectedThree.threefoldRepetition === true &&
-            beforeFifty.fiftyMoveRule === false &&
+            statusMismatch(beforeFifty, expectedBeforeFifty, DRAW_STATUS).length === 0 &&
             statusMismatch(afterFifty, oracleStatus(fiftyOracle, DRAW_STATUS), DRAW_STATUS).length === 0 &&
             afterFifty.fiftyMoveRule === true && afterFifty.gameOver === true,
-          evidence: { played, afterTwo, afterThree, expectedThree, loadedFifty, beforeFifty, afterFifty },
+          evidence: { played, afterTwo, afterThree, expectedThree, afterReload, loadedFifty,
+            beforeFifty, afterFifty },
         };
       });
 

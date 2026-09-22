@@ -71,7 +71,10 @@ const INDEX_REBUILD: Window = { id: "mw-104", service: "billing",
 const DNS_CHANGE: Window = { id: "mw-105", service: "dns",
   startIso: "2027-10-19T22:00:00Z", endIso: "2027-10-19T23:00:00Z", reason: "Anycast route change" };
 const WEEK_41: readonly Window[] = [TLS_ROTATION, CACHE_WARM, GATEWAY_UPGRADE, INDEX_REBUILD];
-const SEEDED: readonly Window[] = [...WEEK_41, DNS_CHANGE];
+// Week 43, six hours: valid now, over the billing cap turn 2 introduces, which must not remove it.
+const BILLING_MIGRATION: Window = { id: "mw-106", service: "billing",
+  startIso: "2027-10-26T22:00:00Z", endIso: "2027-10-27T04:00:00Z", reason: "Ledger schema migration" };
+const SEEDED: readonly Window[] = [...WEEK_41, DNS_CHANGE, BILLING_MIGRATION];
 const API_GATEWAY_HOURS = 6.5;
 
 function sameWindows(actual: readonly Window[], expected: readonly Window[]): boolean {
