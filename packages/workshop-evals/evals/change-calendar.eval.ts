@@ -79,6 +79,10 @@ function sameWindows(actual: readonly Window[], expected: readonly Window[]): bo
   return JSON.stringify(actual.map(key)) === JSON.stringify(expected.map(key));
 }
 
+function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
+}
+
 function plainText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -87,12 +91,22 @@ async function week41(api: CalendarApi): Promise<Window[]> {
   return WindowsSchema.parse(await api.windows(WEEK)).windows;
 }
 
-/** Every seeded window, week 42's included, is still there unchanged, and nothing else is. */
+/**
+ * Every seeded window, week 42's included, is still there unchanged, nothing else is, and
+ * conflicts() still sees them: the range overlaps both api-gateway windows, so the answer is the
+ * same whether or not an implementation also counts windows that are merely too close.
+ */
 async function checkSeededWindowsIntact(verifier: EvalVerifier, id: string): Promise<void> {
   await verifier.check(id, async () => {
     using api = await verifier.connect<CalendarApi>(CALENDAR);
     const windows = WindowsSchema.parse(await api.windows(OCTOBER)).windows;
-    return { pass: sameWindows(windows, SEEDED), evidence: { windows } };
+    const conflicts = ConflictsSchema.parse(await api.conflicts({
+      service: "api-gateway", startIso: "2027-10-12T23:30:00Z", endIso: "2027-10-14T23:00:00Z",
+    }));
+    return {
+      pass: sameWindows(windows, SEEDED) && sameIds(conflicts.ids, ["mw-101", "mw-103"]),
+      evidence: { windows, conflicts },
+    };
   });
 }
 
@@ -100,6 +114,23 @@ async function checkSeededWindowsIntact(verifier: EvalVerifier, id: string): Pro
 function statedHours(bullet: string): number | null {
   const match = /(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b/i.exec(bullet);
   return match === null ? null : Number(match[1]);
+}
+
+/** A bullet describes a window when it states its reason, its start time and its length. */
+function describes(bullet: string, window: Window): boolean {
+  const hours = (Date.parse(window.endIso) - Date.parse(window.startIso)) / 3_600_000;
+  return bullet.toLowerCase().includes(window.reason.toLowerCase()) &&
+    bullet.includes(window.startIso.slice(11, 16)) && statedHours(bullet) === hours;
+}
+
+/** One bullet per window: the windows can be assigned to distinct bullets that describe them. */
+function oneBulletPerWindow(bullets: readonly string[], windows: readonly Window[]): boolean {
+  const assign = (index: number, used: ReadonlySet<number>): boolean => {
+    const window = windows[index];
+    return window === undefined || bullets.some((bullet, at) =>
+      !used.has(at) && describes(bullet, window) && assign(index + 1, new Set([...used, at])));
+  };
+  return bullets.length === windows.length && assign(0, new Set());
 }
 
 const task = defineEvalTask({
@@ -205,7 +236,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const week = await week41(api);
         return {
           pass: touching.ok && !overlapping.ok && overlapping.error === "OVERLAP" &&
-            otherService.ok && conflicts.ids.join() === ["mw-101", "mw-touch"].join() &&
+            otherService.ok && sameIds(conflicts.ids, ["mw-101", "mw-touch"]) &&
             cancelled[0]?.ok === true && cancelled[1]?.ok === true &&
             cancelled[2]?.ok === false && cancelled[2].error === "UNKNOWN_WINDOW" &&
             sameWindows(week, WEEK_41),
@@ -246,17 +277,8 @@ nothing scheduled that week.`,
         }
         const expected = [...new Set(WEEK_41.map(window => window.service))].toSorted();
         const headings = sections.map(section => section.heading.toLowerCase());
-        const bulletsMatch = expected.every((service, index) => {
-          const windows = WEEK_41.filter(window => window.service === service);
-          const bullets = sections[index]?.bullets ?? [];
-          return bullets.length === windows.length && windows.every(window => {
-            const hours = (Date.parse(window.endIso) - Date.parse(window.startIso)) / 3_600_000;
-            const startClock = window.startIso.slice(11, 16);
-            return bullets.some(bullet =>
-              bullet.toLowerCase().includes(window.reason.toLowerCase()) &&
-              bullet.includes(startClock) && statedHours(bullet) === hours);
-          });
-        });
+        const bulletsMatch = expected.every((service, index) => oneBulletPerWindow(
+            sections[index]?.bullets ?? [], WEEK_41.filter(window => window.service === service)));
         return {
           pass: headings.length === expected.length &&
             expected.every((service, index) => headings[index]?.includes(service)) && bulletsMatch,

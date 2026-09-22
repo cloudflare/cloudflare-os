@@ -65,13 +65,43 @@ async function openIncident(
   return OkSchema.parse(await api.open({ id, service, severity, summary: `Incident ${id}` }));
 }
 
-/** What turn 1 leaves on the board, by id: the state each must still be in after turn 2. */
-const TURN_ONE_BOARD: Record<string, Incident["status"]> = {
-  "inc-1": "resolved",
-  "race-1": "acknowledged", "race-2": "acknowledged", "race-3": "acknowledged",
-  "race-4": "acknowledged", "race-5": "acknowledged",
-  "race-open": "open",
+/**
+ * What turn 1 leaves on the board, by id, as far as it is known before the races run: who won a
+ * race and when is decided at run time, so owners are checked against the responder set and
+ * timestamps against the status they go with.
+ */
+const TURN_ONE_BOARD: Record<string, {
+  service: string; severity: number | null; status: Incident["status"];
+  owners: readonly string[] | null;
+}> = {
+  "inc-1": { service: "api-gateway", severity: 2, status: "resolved", owners: ["alice"] },
+  ...Object.fromEntries(["race-1", "race-2", "race-3", "race-4", "race-5"].map(id =>
+    [id, { service: "edge-cache", severity: 1, status: "acknowledged", owners: RESPONDERS }])),
+  "race-open": { service: "dns", severity: null, status: "open", owners: null },
 };
+
+function instant(iso: string | null): number | null {
+  return iso === null ? null : Date.parse(iso);
+}
+
+function asTurnOneLeftIt(incident: Incident): boolean {
+  const seeded = TURN_ONE_BOARD[incident.id];
+  if (seeded === undefined) return false;
+  const openedAt = Date.parse(incident.openedAt);
+  const acknowledgedAt = instant(incident.acknowledgedAt);
+  const resolvedAt = instant(incident.resolvedAt);
+  return incident.service === seeded.service && incident.status === seeded.status &&
+    (seeded.severity === null || incident.severity === seeded.severity) &&
+    (incident.id === "race-open"
+      ? /^attempt [0-7]$/.test(incident.summary) : incident.summary === `Incident ${incident.id}`) &&
+    (seeded.owners === null
+      ? incident.owner === null : incident.owner !== null && seeded.owners.includes(incident.owner)) &&
+    (acknowledgedAt === null) === (incident.status === "open") &&
+    (resolvedAt === null) === (incident.status !== "resolved") &&
+    (acknowledgedAt === null || acknowledgedAt >= openedAt) &&
+    (resolvedAt === null || acknowledgedAt === null || resolvedAt >= acknowledgedAt) &&
+    (incident.escalations ?? 0) === 0;
+}
 
 /** Twenty responders acknowledge at once; exactly one may win and everyone must be told who. */
 async function race(api: DeskApi, id: string) {
@@ -82,6 +112,7 @@ async function race(api: DeskApi, id: string) {
   const incident = IncidentSchema.parse(await api.incident({ id }));
   const winner = winners[0];
   const consistent = winners.length === 1 && winner !== undefined &&
+    attempts.every(attempt => !attempt.result.ok || attempt.result.owner === attempt.responder) &&
     incident.status === "acknowledged" && incident.owner === winner &&
     incident.acknowledgedAt !== null &&
     losers.every(result => result.error === "ALREADY_ACKNOWLEDGED" && result.owner === winner);
@@ -176,7 +207,8 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
             acked.ok && acked.owner === "alice" &&
             !again.ok && again.error === "ALREADY_ACKNOWLEDGED" && again.owner === "alice" &&
             code(notOwner) === "NOT_OWNER" && resolved.ok && code(twice) === "ALREADY_RESOLVED" &&
-            code(lateAck) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
+            !lateAck.ok && lateAck.error === "ALREADY_RESOLVED" && lateAck.owner === null &&
+            !unknown.ok && unknown.error === "UNKNOWN_INCIDENT" && unknown.owner === null &&
             incident.status === "resolved" && incident.owner === "alice" &&
             incident.acknowledgedAt !== null && incident.resolvedAt !== null &&
             Date.parse(incident.openedAt) <= Date.parse(incident.acknowledgedAt) &&
@@ -228,13 +260,11 @@ null when there is nothing to average. Everything already on the board stays.`,
       await verifier.check("existing-incidents-survive-and-race-still-holds", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
         const board = BoardSchema.parse(await api.board()).incidents;
-        const survivors = Object.fromEntries(board.map(incident => [incident.id, incident.status]));
         const intact = board.length === Object.keys(TURN_ONE_BOARD).length &&
-          Object.entries(TURN_ONE_BOARD).every(([id, status]) => survivors[id] === status) &&
-          board.every(incident => incident.status === "open" || incident.owner !== null);
+          board.every(asTurnOneLeftIt);
         await openIncident(api, "race-6", 2, "billing");
         const outcome = await race(api, "race-6");
-        return { pass: intact && outcome.consistent, evidence: { survivors, outcome } };
+        return { pass: intact && outcome.consistent, evidence: { board, outcome } };
       });
 
       await verifier.check("escalation-moves-toward-severity-one-and-stops", async () => {
@@ -245,6 +275,10 @@ null when there is nothing to average. Everything already on the board stays.`,
         const second = OkSchema.parse(await api.escalate({ id: "esc-1" }));
         const third = OkSchema.parse(await api.escalate({ id: "esc-1" }));
         const afterThird = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
+        // race-6 is acknowledged at severity 2: escalation must not touch its ownership.
+        const before = IncidentSchema.parse(await api.incident({ id: "race-6" }));
+        const acknowledged = OkSchema.parse(await api.escalate({ id: "race-6" }));
+        const after = IncidentSchema.parse(await api.incident({ id: "race-6" }));
         const resolved = OkSchema.parse(await api.escalate({ id: "inc-1" }));
         const unknown = OkSchema.parse(await api.escalate({ id: "esc-x" }));
         const untouched = IncidentSchema.parse(await api.incident({ id: "race-1" }));
@@ -252,31 +286,41 @@ null when there is nothing to average. Everything already on the board stays.`,
           pass: first.ok && afterFirst.severity === 2 && afterFirst.escalations === 1 &&
             second.ok && code(third) === "AT_MAX_SEVERITY" &&
             afterThird.severity === 1 && afterThird.escalations === 2 &&
+            before.status === "acknowledged" && acknowledged.ok &&
+            after.severity === 1 && after.escalations === 1 && after.status === "acknowledged" &&
+            after.owner === before.owner && after.acknowledgedAt === before.acknowledgedAt &&
             code(resolved) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
             (untouched.escalations ?? 0) === 0,
-          evidence: { first, afterFirst, second, third, afterThird, resolved, unknown },
+          evidence: { first, afterFirst, second, third, afterThird, before, acknowledged, after,
+            resolved, unknown },
         };
       });
 
       await verifier.check("metrics-follow-the-boards-own-timestamps", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
+        // billing then holds one incident in each state: race-6 acknowledged, and these two.
+        await openIncident(api, "bill-open", 3, "billing");
+        await openIncident(api, "bill-done", 2, "billing");
+        const acked = AckSchema.parse(await api.acknowledge({ id: "bill-done", responder: "dana" }));
+        const done = OkSchema.parse(await api.resolve({ id: "bill-done", responder: "dana" }));
         const board = BoardSchema.parse(await api.board()).incidents;
+        const billingIncidents = board.filter(incident => incident.service === "billing");
         const all = MetricsSchema.parse(await api.metrics({}));
-        const edge = MetricsSchema.parse(await api.metrics({ service: "edge-cache" }));
+        const billing = MetricsSchema.parse(await api.metrics({ service: "billing" }));
         const none = MetricsSchema.parse(await api.metrics({ service: "no-such-service" }));
         const expectedAll = referenceMetrics(board);
-        const expectedEdge = referenceMetrics(
-            board.filter(incident => incident.service === "edge-cache"));
+        const expectedBilling = referenceMetrics(billingIncidents);
         const matches = (actual: z.infer<typeof MetricsSchema>, expected: typeof expectedAll) =>
           actual.count === expected.count && actual.acknowledged === expected.acknowledged &&
           actual.resolved === expected.resolved &&
           closeEnough(actual.meanTimeToAcknowledgeMs, expected.meanTimeToAcknowledgeMs) &&
           closeEnough(actual.meanTimeToResolveMs, expected.meanTimeToResolveMs);
         return {
-          pass: matches(all, expectedAll) && matches(edge, expectedEdge) &&
-            none.count === 0 && none.meanTimeToAcknowledgeMs === null &&
-            none.meanTimeToResolveMs === null && expectedAll.resolved >= 1,
-          evidence: { all, expectedAll, edge, expectedEdge, none },
+          pass: acked.ok && done.ok &&
+            new Set(billingIncidents.map(incident => incident.status)).size === 3 &&
+            matches(all, expectedAll) && matches(billing, expectedBilling) &&
+            matches(none, referenceMetrics([])) && expectedAll.resolved >= 1,
+          evidence: { all, expectedAll, billing, expectedBilling, none },
         };
       });
 

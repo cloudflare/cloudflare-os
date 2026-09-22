@@ -1,4 +1,4 @@
-import { Chess, DEFAULT_POSITION, validateFen } from "chess.js";
+import { Chess, DEFAULT_POSITION, type Move as OracleMove, validateFen } from "chess.js";
 import { z } from "zod";
 import { Seeded } from "./seeded.js";
 import { defineTaskEval } from "../src/eval.js";
@@ -141,20 +141,24 @@ async function compareHere(
   return null;
 }
 
+type GameOptions = {
+  plies: number;
+  fields: readonly (keyof Status)[];
+  /** Once turn 2 adds PGN, a refused move must leave the game's own record unchanged too. */
+  pgn: boolean;
+};
+
 /**
  * Play a seeded random game on both engines, comparing legal moves, status, and the position after
  * every move. Every few plies, also try moves the oracle says are illegal and require that they are
- * refused without changing the position.
+ * refused without changing the position, or the recorded game once there is one.
  */
 async function differentialGame(
-    api: ChessApi, seed: number, plies: number, fields: readonly (keyof Status)[],
-    fromFen = DEFAULT_POSITION): Promise<Divergence | null> {
+    api: ChessApi, seed: number, { plies, fields, pgn }: GameOptions): Promise<Divergence | null> {
   const random = new Seeded(seed);
-  const oracle = new Chess(fromFen);
-  if (fromFen === DEFAULT_POSITION) await api.newGame();
-  else if (!LoadSchema.parse(await api.loadFen({ fen: fromFen })).ok) {
-    return { at: fromFen, what: "loadFen", gadget: "refused", oracle: "valid" };
-  }
+  const oracle = new Chess();
+  const record = async () => pgn ? PgnSchema.parse(await api.pgn()).pgn : null;
+  await api.newGame();
   for (let ply = 0; ply < plies && !oracle.isGameOver(); ply++) {
     const divergence = await compareHere(api, oracle, fields);
     if (divergence !== null) return divergence;
@@ -165,10 +169,14 @@ async function differentialGame(
         const from = random.pick(legal).from;
         const to = `${"abcdefgh"[random.int(0, 7)]}${random.int(1, 8)}`;
         if (legalKeys.has(`${from}${to}`) || legalKeys.has(`${from}${to}q`)) continue;
+        const before = await record();
         const refused = MoveResultSchema.parse(await api.move({ from, to }));
         const after = FenSchema.parse(await api.fen()).fen;
-        if (refused.ok || refused.error !== "ILLEGAL_MOVE" || !sameFen(after, oracle.fen())) {
-          return { at: oracle.fen(), what: `illegal ${from}${to}`, gadget: { refused, after }, oracle: "ILLEGAL_MOVE" };
+        const afterRecord = await record();
+        if (refused.ok || refused.error !== "ILLEGAL_MOVE" || !sameFen(after, oracle.fen()) ||
+            afterRecord !== before) {
+          return { at: oracle.fen(), what: `illegal ${from}${to}`,
+            gadget: { refused, after, pgn: { before, after: afterRecord } }, oracle: "ILLEGAL_MOVE" };
         }
       }
     }
@@ -185,20 +193,36 @@ async function differentialGame(
   return await compareHere(api, oracle, fields);
 }
 
+// Special moves for both colours: an engine that only castles or captures en passant as White
+// would otherwise pass every position here.
 const CURATED: Record<string, string> = {
   bothCastles: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+  blackBothCastles: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1",
   castleThroughCheck: "4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1",
   castleRightsPartlyLost: "r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w Kq - 0 1",
   enPassantAvailable: "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3",
+  blackEnPassant: "rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3",
   enPassantExposesKing: "8/8/8/8/k2pP2R/8/8/4K3 b - e3 0 1",
   promotion: "8/P7/8/8/8/8/8/k6K w - - 0 1",
   promotionByCapture: "1n6/P7/8/8/8/8/8/k6K w - - 0 1",
+  blackPromotion: "k6K/8/8/8/8/8/p7/8 b - - 0 1",
   pinnedBishop: "4k3/4r3/8/8/8/8/4B3/4K3 w - - 0 1",
   inCheck: "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
   checkmate: "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
   stalemate: "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
   middlegame: "r1bq1rk1/pp2bppp/2n1pn2/3p4/2PP4/2N2N2/PP2BPPP/R2QKB1R w KQ - 0 9",
 };
+
+// Six-field FENs that a parser must inspect, not just count, to refuse.
+const INVALID_FENS = [
+  "not a position",
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR x KQkq - 0 1",
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP w KQkq - 0 1",
+  "rnbqkbnr/pppppppp/9/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "rnbq1bnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - -1 1",
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e9 0 1",
+];
 
 async function checkCurated(
     verifier: EvalVerifier, id: string, fields: readonly (keyof Status)[],
@@ -261,17 +285,17 @@ async function playSpecialMoves(
 }
 
 async function checkGames(
-    verifier: EvalVerifier, id: string, seeds: readonly number[], plies: number,
-    fields: readonly (keyof Status)[]): Promise<void> {
+    verifier: EvalVerifier, id: string, seeds: readonly number[],
+    options: GameOptions): Promise<void> {
   await verifier.check(id, async () => {
     using api = await verifier.connect<ChessApi>(TITLE);
     for (const seed of seeds) {
-      const divergence = await differentialGame(api, seed, plies, fields);
+      const divergence = await differentialGame(api, seed, options);
       if (divergence !== null) {
         return { pass: false, evidence: asEvidence({ seed, ...divergence }) };
       }
     }
-    return { pass: true, evidence: asEvidence({ seeds, plies }) };
+    return { pass: true, evidence: asEvidence({ seeds, ...options }) };
   });
 }
 
@@ -339,18 +363,24 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const read = FenSchema.parse(await api.fen()).fen;
         const status = StatusSchema.parse(await api.status());
         const moves = await gadgetMoves(api);
-        const invalid = LoadSchema.parse(await api.loadFen({ fen: "not a position" }));
-        const unchanged = FenSchema.parse(await api.fen()).fen;
+        const refusals = [];
+        for (const fen of INVALID_FENS) {
+          const refused = LoadSchema.parse(await api.loadFen({ fen }));
+          const after = FenSchema.parse(await api.fen()).fen;
+          refusals.push({ fen, refused, unchanged: after === DEFAULT_POSITION });
+        }
         return {
           pass: started === DEFAULT_POSITION && read === DEFAULT_POSITION &&
             statusMismatch(status, oracleStatus(new Chess(), BASE_STATUS), BASE_STATUS).length === 0 &&
             sameList(moves, oracleMoves(new Chess())) &&
-            !invalid.ok && invalid.error === "INVALID_FEN" && unchanged === DEFAULT_POSITION,
-          evidence: { started, status, moveCount: moves.length, invalid },
+            refusals.every(({ refused, unchanged }) =>
+              !refused.ok && refused.error === "INVALID_FEN" && unchanged),
+          evidence: { started, status, moveCount: moves.length, refusals },
         };
       });
       await checkCurated(verifier, "agrees-with-the-oracle-on-the-hard-positions", BASE_STATUS, CURATED);
-      await checkGames(verifier, "agrees-with-the-oracle-through-random-games", [1, 2], 60, BASE_STATUS);
+      await checkGames(verifier, "agrees-with-the-oracle-through-random-games", [1, 2],
+          { plies: 60, fields: BASE_STATUS, pgn: false });
 
       // Two phones share one game: a position reached over one connection must be what the next
       // connection sees, which a per-connection or in-memory game does not give.
@@ -463,7 +493,8 @@ Everything that already worked keeps working.`,
         return { pass: Object.keys(failures).length === 0, evidence: asEvidence(failures) };
       });
 
-      await checkGames(verifier, "rules-still-agree-with-the-oracle", [3], 50, BASE_STATUS);
+      await checkGames(verifier, "rules-still-agree-with-the-oracle", [3],
+          { plies: 50, fields: BASE_STATUS, pgn: true });
     },
   }, {
     prompt: `Add draw detection to status(): threefoldRepetition, fiftyMoveRule and
@@ -517,7 +548,8 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
         middlegame: CURATED.middlegame ?? "",
       });
 
-      await checkGames(verifier, "rules-still-agree-with-the-oracle-after-draws", [4], 50, BASE_STATUS);
+      await checkGames(verifier, "rules-still-agree-with-the-oracle-after-draws", [4],
+          { plies: 50, fields: DRAW_STATUS, pgn: true });
     },
   }],
 });
@@ -541,6 +573,21 @@ for (const pgn of INVALID_PGNS) {
 }
 for (const [name, fen] of Object.entries(CURATED)) {
   if (!validateFen(fen).ok) throw new Error(`CURATED.${name} is not a valid FEN`);
+}
+for (const fen of INVALID_FENS) {
+  if (validateFen(fen).ok) throw new Error(`INVALID_FENS entry is accepted by the oracle: ${fen}`);
+}
+// A Black fixture is only worth its name if the oracle offers the move it exists for.
+const BLACK_FIXTURES: Record<string, (move: OracleMove) => boolean> = {
+  blackBothCastles: move => move.isKingsideCastle() || move.isQueensideCastle(),
+  blackEnPassant: move => move.isEnPassant(),
+  blackPromotion: move => move.isPromotion(),
+};
+for (const [name, offers] of Object.entries(BLACK_FIXTURES)) {
+  const fen = CURATED[name];
+  if (fen === undefined || !new Chess(fen).moves({ verbose: true }).some(offers)) {
+    throw new Error(`CURATED.${name} does not offer the move it is named for`);
+  }
 }
 
 defineTaskEval(task);

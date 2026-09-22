@@ -29,9 +29,20 @@ const WORKERS: Record<string, { base: number; routes: string[] }> = {
 const COLOS = ["FRA", "LHR", "SIN", "SJC"];
 const PLANTED = { worker: "checkout-api", hour: 14, errorRate: 0.6 };
 const DECOY = { worker: "webhook-relay", hour: 3, errorRate: 0.25 };
+// Three worker+route pairs share one planted slow tail, so their p95s tie exactly and
+// slowestRoutes has to fall back to the worker-then-route order the prompt requires.
+const TIED = {
+  p95Ms: 3000,
+  perPair: 40,
+  pairs: [["auth-edge", "/logout"], ["auth-edge", "/token/refresh"], ["pricing-svc", "/price/bulk"]],
+} as const;
 
 function hourIso(hour: number): string {
-  return `${DAY}T${String(hour).padStart(2, "0")}:00:00Z`;
+  return `${DAY}T${pad(hour)}:00:00Z`;
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 function generate(): LogEvent[] {
@@ -50,16 +61,23 @@ function generate(): LogEvent[] {
           ? random.next() < 0.015
           : index < Math.round(volume * planted.errorRate);
         const status = failed
-          ? random.pick([500, 502, 503])
+          ? random.pick([500, 501, 502, 503, 504])
           : random.next() < 0.06 ? random.pick([301, 404]) : 200;
         const spread = 0.5 + random.next() * random.next() * 3;
         const durationMs = Math.round(profile.base * spread * (failed ? 4 : 1));
         events.push({
-          ts: `${DAY}T${String(hour).padStart(2, "0")}:${String(random.int(0, 59)).padStart(2, "0")}:${
-            String(random.int(0, 59)).padStart(2, "0")}Z`,
+          ts: `${DAY}T${pad(hour)}:${pad(random.int(0, 59))}:${pad(random.int(0, 59))}Z`,
           worker, colo: random.pick(COLOS), status, durationMs, route: random.pick(profile.routes),
         });
       }
+    }
+  }
+  for (const [worker, route] of TIED.pairs) {
+    for (let index = 0; index < TIED.perPair; index++) {
+      events.push({
+        ts: `${DAY}T${pad(index % 24)}:${pad(random.int(0, 59))}:${pad(random.int(0, 59))}Z`,
+        worker, colo: random.pick(COLOS), status: 200, durationMs: TIED.p95Ms, route,
+      });
     }
   }
   return events;
@@ -222,6 +240,14 @@ const TITLE = "Worker Logs";
 const FULL_DAY: Range = { fromIso: hourIso(0), toIso: `2027-03-10T00:00:00Z` };
 const AFTERNOON: Range = { fromIso: hourIso(12), toIso: hourIso(16) };
 
+// The planted tail must sit at the top of the day's ranking, tied, in the order the tie-break gives.
+const SLOWEST = referenceSlowestRoutes(FULL_DAY, TIED.pairs.length);
+if (!TIED.pairs.every(([worker, route], index) => SLOWEST[index]?.worker === worker &&
+    SLOWEST[index]?.route === route && SLOWEST[index]?.p95Ms === TIED.p95Ms)) {
+  throw new Error(`Seeded data no longer ties the slowest routes as the task expects: ${
+    JSON.stringify(SLOWEST)}`);
+}
+
 /**
  * Rows agree when every field agrees: error rates to within rounding, hours as instants, and
  * key order not at all (the agent's rows and the reference build theirs in different orders).
@@ -370,6 +396,20 @@ The events I've already loaded must still be there.`,
             sameRows(slowest, referenceSlowestRoutes(FULL_DAY, 5)) &&
             sameRows(slowestSin, referenceSlowestRoutes({ ...FULL_DAY, colo: "SIN" }, 3)),
           evidence: { perColo, slowest, expectedSlowest: referenceSlowestRoutes(FULL_DAY, 5) },
+        };
+      });
+
+      // Turn 1 proved reset() and ingest(); the extension must not have broken either.
+      await verifier.check("reset-and-ingest-still-work", async () => {
+        using api = await verifier.connect<LogsApi>(TITLE);
+        const cleared = OkSchema.parse(await api.reset());
+        const afterReset = SummarySchema.parse(await api.summary(FULL_DAY)).perWorker;
+        const accepted = await ingestAll(api);
+        const summary = SummarySchema.parse(await api.summary(FULL_DAY)).perWorker;
+        return {
+          pass: cleared.ok && afterReset.length === 0 && accepted === EVENTS.length &&
+            sameRows(summary, referenceSummary(FULL_DAY)),
+          evidence: { cleared, afterReset, accepted },
         };
       });
     },
