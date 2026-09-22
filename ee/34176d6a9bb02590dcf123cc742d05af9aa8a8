@@ -1,0 +1,19 @@
+packages/gatekeeper-linear/src/linear.ts
+  s_ea0ed5df37b4df::t_81854dd4790ad6 21,2152-2154,2363-2369,2386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ee34176d6a9bb02590dcf123cc742d05af9aa8a8",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
