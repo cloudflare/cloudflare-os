@@ -154,6 +154,26 @@ describe('ChatInterface action refresh', () => {
     expect(document.body.textContent).toContain('page was deleted while disconnected')
   })
 
+  it('shows a veto refused while disconnected as already applied', async () => {
+    const vetoed = { state: 'rejected', appliedAt: new Date(1700005000000) }
+    await renderCard(vetoed, { entries: [] })
+
+    const refused = entry(1, {
+      state: 'approved', vetoRefused: true, appliedAt: new Date(1700006000000),
+    })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(async () =>
+      ({ ...actionMessage, actionLog: refused }) as AiChatMessage))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [] })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('Already applied')
+    expect(document.body.textContent).not.toContain('Denied')
+  })
+
   it('lets a resumed reconnect replay the gap instead of refetching', async () => {
     await cachePendingCard('ws-chat-resume')
 

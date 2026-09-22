@@ -11368,7 +11368,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Only resume when every awaited action in the turn has been decided and all were approved.
     if (awaited.length === 0) return;                       // No awaited action in current turn.
     if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
-    if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
+    // Denial leaves the turn ended, even one the gatekeeper refused because it had already applied.
+    if (awaited.some(r => r.state === "rejected" || r.vetoRefused)) return;
 
     // Persist one note for replay; raw action cards are not surfaced to the LLM. Concurrent
     // approvals could both pass the gate above and append duplicate notes (the DO input gate is
@@ -11404,7 +11405,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.rejectPendingAction(action, profile);
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
-    // sibling approval from resuming this turn.
+    // sibling approval from resuming this turn. Rule-approved actions it unblocked apply now.
+    this.#applyDecidedInBackground(action.gatekeeperId);
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
@@ -11424,8 +11426,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
-    // Apply the currently-visible pending action(s) with this tag right away, resuming any turn
-    // that was suspended waiting on one.
+    // Apply the currently-visible pending action(s) with this tag right away.
+    this.#applyDecidedInBackground(gatekeeperId);
+  }
+
+  // Runs an apply pass without holding up the caller, resuming any turn that was suspended waiting
+  // on an action it applies.
+  #applyDecidedInBackground(gatekeeperId: number): void {
     this.impl.ctx.waitUntil(this.impl.applyDecidedActions(gatekeeperId)
         .then(({decided}) => this.#resumeDecidedActionChats(decided)));
   }

@@ -151,7 +151,9 @@ export async function openFakeOverseer(
       // which these tests never pass.
       authorizeCollaborator: async () => role,
       getSharingManager: async () => ({}),
-      ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
+      ctx: {
+        id: { toString: () => "workspace-id" }, exports: opts.exports ?? {}, waitUntil: () => {},
+      },
       users: {
         idFromString: (id: string) => id,
         get: () => ({

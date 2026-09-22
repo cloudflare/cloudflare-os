@@ -3821,16 +3821,17 @@ function ChatInterface({
   });
   // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
   // cards. Otherwise (cold open, or the prior session never settled) re-fetch cached action
-  // cards whose log can still change: blank or pending cards (a resolution may have landed
-  // while we were away), and bindHook cards, which stay mutable after resolution (`enabled`
-  // toggles). Runs after useActionEntries, whose effect creates the store and its resumed flag.
+  // cards whose log can still change: blank cards, any not approved (a resolution may have landed
+  // while we were away, or a staged veto the gatekeeper refused flipped to applied), and bindHook
+  // cards, which stay mutable after resolution (`enabled` toggles). Runs after
+  // useActionEntries, whose effect creates the store and its resumed flag.
   useEffect(() => {
     if (actionLogResumed(overseer)) return;
     let cancelled = false;
     const targets = [...cacheRef.current.actionMessages.values()].flatMap((locations) => {
       const location = locations.values().next().value;
       const msg = location && getCachedActionMessage(location)?.msg;
-      return msg && (!msg.actionLog || msg.actionLog.state === "pending" ||
+      return msg && (!msg.actionLog || msg.actionLog.state !== "approved" ||
           msg.actionLog.type === "bindHook") ? [location] : [];
     });
 

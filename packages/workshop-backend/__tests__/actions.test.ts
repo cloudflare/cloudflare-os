@@ -113,9 +113,11 @@ function makeDriver(
   });
 }
 
-function makeClient(storage: ActionSyncStorage, target: GatekeeperActionTarget) {
+function makeClient(
+    storage: ActionSyncStorage, target: GatekeeperActionTarget, impl: Record<string, unknown> = {}) {
   let driver = makeDriver(storage, target);
   return openFakeOverseer(storage, { impl: {
+    ...impl,
     applyDecidedActions: (gatekeeperId: number, approval?: ManualApproval) =>
         driver.apply(gatekeeperId, approval),
     rejectPendingAction: (record: GatekeeperActionRecord, author: AiChatAuthorInfo) =>
@@ -1048,10 +1050,17 @@ describe("Overseer action decisions", () => {
 
   it("tells the rejecting client its veto was refused as already applied", async () => {
     let storage = makeStorage();
-    let boundary = putAction(storage, 1, { autoApprovable: false });
+    enableRule(storage);
+    let sibling = putAction(storage, 1, { chatId: 7, awaitDecision: true, suspendedTurn: true });
+    let boundary = putAction(storage, 2,
+        { autoApprovable: false, chatId: 7, awaitDecision: true, suspendedTurn: true });
     let batch = makeBatchGatekeeper();
-    batch.results.push({ alreadyApplied: [1] });
-    let client = await makeClient(storage, batch.target);
+    batch.results.push({ alreadyApplied: [2] });
+    let notes = vi.fn();
+    let client = await makeClient({
+      ...storage,
+      chats: { list: () => [sibling, boundary].map(actionId => ({ type: "action", actionId })) },
+    }, batch.target, { addChatMessages: notes });
 
     let error = await client.applyActionsThrough(boundary, [boundary]).catch(caught => caught);
 
@@ -1060,6 +1069,9 @@ describe("Overseer action decisions", () => {
     expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.vetoRefused);
     expect(storage.actions.get(boundary))
         .toMatchObject({ state: "approved", vetoRefused: true });
+    // Its sibling applied, but a veto means stop, even one that came too late.
+    expect(storage.actions.get(sibling)).toMatchObject({ state: "approved" });
+    expect(notes).not.toHaveBeenCalled();
   });
 
   it("replays a recorded stop to a client resuming after the action was created", async () => {
@@ -1218,6 +1230,34 @@ describe("Overseer action decisions", () => {
     expect(notes.mock.calls).toEqual([
       [7, expect.anything(), [expect.objectContaining({
         type: "message", message: expect.stringContaining("Action 1"),
+      })]],
+    ]);
+  });
+
+  it("applies rule-approved actions a rejection unblocks, resuming their chat", async () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let blocker = putAction(storage, 1, { autoApprovable: false });
+    let waiting = putAction(storage, 2, { chatId: 7, awaitDecision: true, suspendedTurn: true });
+    let legacy = makeLegacyGatekeeper();
+    let notes = vi.fn();
+    let waits: Promise<unknown>[] = [];
+    let client = await makeClient({
+      ...storage,
+      chats: { list: () => [{ type: "action", actionId: waiting }] },
+    }, legacy.target, {
+      ctx: { waitUntil: (promise: Promise<unknown>) => waits.push(promise) },
+      addChatMessages: notes,
+      waitForChatMessagePreparation: () => undefined,
+    });
+
+    await client.rejectAction(blocker);
+    await Promise.all(waits);
+
+    expect(legacy.calls).toEqual(["reject:1", "apply:2"]);
+    expect(notes.mock.calls).toEqual([
+      [7, expect.anything(), [expect.objectContaining({
+        type: "message", message: expect.stringContaining("Action 2"),
       })]],
     ]);
   });
