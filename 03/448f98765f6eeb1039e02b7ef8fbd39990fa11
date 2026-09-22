@@ -1,0 +1,20 @@
+packages/gatekeeper-kit/USAGE.md
+  s_2d1ae144546e14::t_0de625658249ed 468-472
+  s_2d1ae144546e14::t_4b49575447cd80 466-467,477-478
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03448f98765f6eeb1039e02b7ef8fbd39990fa11",
+  "prompts": {},
+  "sessions": {
+    "s_2d1ae144546e14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd809748-14fd-4762-8298-cc33631a1092",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
