@@ -82,121 +82,124 @@ jobs:
             exit 1
           fi
 
-  main-baseline:
-    name: Cache main baseline
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    permissions:
-      contents: read
-    steps:
-      - name: Check out main
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Enable Corepack
-        run: corepack enable
-
-      - name: Set up Vite+, Node.js and dependencies
-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: true
-          run-install: true
-
-      - name: Run evals
-        continue-on-error: true
-        env:
-          CF_AI_GATEWAY: ${{ secrets.CF_AI_GATEWAY_NAME }}
-          CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
-          CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
-          WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
-          WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
-        run: pnpm evals
-
-      # Fails the job when the run cannot serve as a baseline, so a flaky main is visible rather
-      # than silently uncached.
-      - name: Require a complete baseline
-        run: >-
-          node scripts/evals/validate-results.ts
-          packages/workshop-evals/.wrangler/evals/results.json "$EVAL_TRIALS"
-
-      - name: Cache the baseline for pull requests on this commit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: workshop-evals-baseline-${{ github.sha }}-${{ env.EVAL_TRIALS }}
-          path: packages/workshop-evals/.wrangler/evals/results.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 90
-
-  pr-evals:
-    name: Eval ${{ matrix.revision }}
+  # Decides what to measure: every eval file of every revision that needs measuring gets its own
+  # runner, so a run takes as long as its slowest task and each runner hosts one file's trials.
+  # A push measures its own commit; a pull request measures its head, and its base unless that is
+  # already cached. Only file names are read from the checkouts; no repository code runs here.
+  plan:
+    name: Plan eval runs
     needs: trust
+    # A push has no trust job to pass, so the skipped need has to be let through explicitly.
+    if: >-
+      ${{ !cancelled() && (needs.trust.result == 'success' ||
+      (github.event_name == 'push' && github.repository_owner == 'cloudflare')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - revision: baseline
-            sha: ${{ github.event.pull_request.base.sha }}
-          - revision: candidate
-            sha: ${{ github.event.pull_request.head.sha }}
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      assemble: ${{ steps.plan.outputs.assemble }}
+      cached-baseline: ${{ steps.stored.outputs.artifact-id }}
+    env:
+      BASELINE_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.base.sha }}
     steps:
       # Baselines are cached per base commit, so a PR can only ever reuse a baseline measured at its
       # own base. Any trusted PR run may fill the cache; the same maintainer trust that lets it run
-      # candidate code with the gateway token lets it store a result for its base.
+      # candidate code with the gateway token lets it store a result for its base. A push always
+      # measures its own commit.
       - name: Find cached baseline
-        if: matrix.revision == 'baseline'
+        if: github.event_name == 'pull_request'
         id: stored
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          # The trial count comes from this workflow file, so it is part of what a baseline is.
-          ARTIFACT_NAME: workshop-evals-baseline-${{ matrix.sha }}-${{ env.EVAL_TRIALS }}
+          # The trial count and the one-file-per-runner layout come from this workflow file, so
+          # they are part of what a baseline is.
+          ARTIFACT_NAME: workshop-evals-baseline-${{ github.event.pull_request.base.sha }}-${{ env.EVAL_TRIALS }}-per-task
         run: |
           artifact_id=$(gh api "repos/$GH_REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
             --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // ""')
           echo "artifact-id=$artifact_id" >> "$GITHUB_OUTPUT"
 
-      - name: Restore cached baseline
-        if: matrix.revision == 'baseline' && steps.stored.outputs.artifact-id != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          ARTIFACT_ID: ${{ steps.stored.outputs.artifact-id }}
-        run: |
-          mkdir -p packages/workshop-evals/.wrangler/evals
-          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/workshop-evals-baseline.zip
-          unzip -q /tmp/workshop-evals-baseline.zip -d packages/workshop-evals/.wrangler/evals
+      - name: Check out baseline eval files
+        if: steps.stored.outputs.artifact-id == ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: baseline
+          sparse-checkout: packages/workshop-evals/evals
+          persist-credentials: false
 
+      - name: Check out candidate eval files
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          sparse-checkout: packages/workshop-evals/evals
+          persist-credentials: false
+
+      - name: Plan the runs
+        id: plan
+        env:
+          CACHED: ${{ steps.stored.outputs.artifact-id != '' }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # One target per revision: {revision, sha, files, cached}. Files are relative to
+          # packages/workshop-evals, matching vitest.eval.config.ts's include.
+          target() {
+            local files='[]'
+            if [[ "$3" == false ]]; then
+              files=$(cd "$1/packages/workshop-evals" && find evals -name '*.eval.ts' | sort |
+                jq -Rnc '[inputs]')
+            fi
+            jq -nc --arg revision "$1" --arg sha "$2" --argjson files "$files" --argjson cached "$3" \
+              '{revision: $revision, sha: $sha, files: $files, cached: $cached}'
+          }
+          targets=$(target baseline "$BASELINE_SHA" "$CACHED")
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            targets="$targets $(target candidate "$CANDIDATE_SHA" false)"
+          fi
+          targets=$(jq -sc . <<<"$targets")
+          # A task's artifact is named after its path, e.g. evals/chess.eval.ts -> chess.
+          echo "run=$(jq -c '{include: [.[] | . as $t | .files[] |
+            {revision: $t.revision, sha: $t.sha, file: .,
+             task: (sub("^evals/"; "") | sub("\\.eval\\.ts$"; "") | gsub("/"; "-"))}]}' \
+            <<<"$targets")" >> "$GITHUB_OUTPUT"
+          echo "assemble=$(jq -c '{include: .}' <<<"$targets")" >> "$GITHUB_OUTPUT"
+
+  evals:
+    name: Eval ${{ matrix.revision }} ${{ matrix.task }}
+    needs: plan
+    # Explicit, or a push would skip this too: the implicit success() also covers the skipped trust.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.run) }}
+    steps:
       - name: Check out ${{ matrix.revision }}
-        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ matrix.sha }}
           persist-credentials: false
 
       - name: Enable Corepack
-        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
         run: corepack enable
 
       - name: Set up Vite+, Node.js and dependencies
-        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
         uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
           run-install: true
 
-      - name: Run ${{ matrix.revision }} evals
-        if: matrix.revision == 'candidate' || steps.stored.outputs.artifact-id == ''
+      - name: Run ${{ matrix.task }}
         continue-on-error: true
         # The same AI Gateway and token the manual eval workflow and Bonk already use.
         env:
@@ -205,42 +208,126 @@ jobs:
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
           WORKSHOP_EVAL_COMMIT: ${{ matrix.sha }}
-        run: pnpm evals
+          EVAL_FILE: ${{ matrix.file }}
+        run: pnpm evals "$EVAL_FILE"
 
-      # Only a complete, infrastructure-clean baseline is worth sharing; a broken one is still
-      # compared against here (its cohorts read "baseline run errors") but the next PR on this base
-      # measures it again rather than inheriting it.
-      - name: Check whether the baseline is complete
-        if: matrix.revision == 'baseline' && steps.stored.outputs.artifact-id == ''
-        id: complete
-        continue-on-error: true
-        run: >-
-          node scripts/evals/validate-results.ts
-          packages/workshop-evals/.wrangler/evals/results.json "$EVAL_TRIALS"
-
-      - name: Cache the baseline for other pull requests on this base
-        if: steps.complete.outcome == 'success'
+      - name: Upload ${{ matrix.task }} results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: workshop-evals-baseline-${{ matrix.sha }}-${{ env.EVAL_TRIALS }}
+          name: workshop-evals-${{ matrix.revision }}-task-${{ matrix.task }}
           path: packages/workshop-evals/.wrangler/evals/results.json
           include-hidden-files: true
           if-no-files-found: error
+          overwrite: true
+          # "Re-run failed jobs" keeps the passing legs, so their reports must outlive the re-run window.
+          retention-days: 30
+
+  # Joins one revision's per-task reports into the single results.json compare and review read.
+  # Runs per revision even when the other one failed, so a complete baseline is still cached.
+  assemble:
+    name: Assemble ${{ matrix.revision }}
+    needs: [plan, evals]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.assemble) }}
+    steps:
+      - name: Check out ${{ matrix.revision }}
+        if: matrix.revision == 'baseline' && !matrix.cached
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+
+      - name: Enable Corepack
+        if: matrix.revision == 'baseline' && !matrix.cached
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        if: matrix.revision == 'baseline' && !matrix.cached
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Restore cached baseline
+        if: matrix.cached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ needs.plan.outputs.cached-baseline }}
+        run: |
+          mkdir -p artifacts
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/workshop-evals-baseline.zip
+          unzip -q /tmp/workshop-evals-baseline.zip -d artifacts
+
+      - name: Download per-task results
+        if: ${{ !matrix.cached }}
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: workshop-evals-${{ matrix.revision }}-task-*
+          path: artifacts/tasks
+
+      # Exactly the planned files, each once: a missing task would otherwise read as removed, and a
+      # baseline missing one would be cached that way.
+      - name: Join per-task results
+        if: ${{ !matrix.cached }}
+        env:
+          FILES: ${{ toJSON(matrix.files) }}
+        run: |
+          mapfile -t reports < <(find artifacts/tasks -name results.json | sort)
+          if [[ ${#reports[@]} -ne $(jq length <<<"$FILES") ]]; then
+            echo "::error::Expected $(jq length <<<"$FILES") task reports, found ${#reports[@]}"
+            exit 1
+          fi
+          jq -s '{testResults: map(.testResults[])}' "${reports[@]}" > artifacts/results.json
+          expected=$(jq -c 'sort' <<<"$FILES")
+          actual=$(jq -c '[.testResults[].name | sub("^.*/packages/workshop-evals/"; "")] | sort' \
+            artifacts/results.json)
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Expected eval files $expected, got $actual"
+            exit 1
+          fi
+
+      # Only a complete, infrastructure-clean baseline is worth sharing. On a pull request a broken
+      # one is still compared against (its cohorts read "baseline run errors") but the next PR on
+      # this base measures it again; on main the job fails, so a flaky main is visible rather than
+      # silently uncached.
+      - name: Check whether the baseline is complete
+        if: matrix.revision == 'baseline' && !matrix.cached
+        id: complete
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: node scripts/evals/validate-results.ts artifacts/results.json "$EVAL_TRIALS"
+
+      - name: Cache the baseline for pull requests on this commit
+        if: steps.complete.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workshop-evals-baseline-${{ matrix.sha }}-${{ env.EVAL_TRIALS }}-per-task
+          path: artifacts/results.json
+          if-no-files-found: error
+          overwrite: true
           retention-days: 90
 
       - name: Upload current-run ${{ matrix.revision }} trajectories
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: workshop-evals-${{ matrix.revision }}
-          path: packages/workshop-evals/.wrangler/evals/results.json
-          include-hidden-files: true
+          path: artifacts/results.json
           if-no-files-found: error
           overwrite: true
           retention-days: 30
 
   compare:
     name: Compare evals
-    needs: [trust, pr-evals]
+    needs: [trust, assemble]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
