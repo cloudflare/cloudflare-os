@@ -1,7 +1,6 @@
 // Serializes gatekeeper decisions. Explicit batches durably stage vetoes; immediate rejections
 // become terminal only after acknowledgement, and only authorized actions are applied.
 
-import type { Collection, NonUniqueIndex, TypedStorage } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type {
   ApplyActionsThroughResult,
@@ -10,17 +9,11 @@ import type {
   GitPackBuilder,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
-import type { ActionRecord, AutoApproveTagRecord, GatekeeperActionRecord } from "./overseer.js";
+import type { ActionRecord, GatekeeperActionRecord, OverseerStorage } from "./overseer.js";
 
 const logger = createWorkshopLogger("workshop.action.sync");
 
-export interface ActionSyncStorage extends TypedStorage {
-  actions: Collection<ActionRecord, number> & {
-    pendingByGatekeeper: NonUniqueIndex<ActionRecord, number>;
-    vetoPendingByGatekeeper: NonUniqueIndex<ActionRecord, number>;
-  };
-  autoApproveTags: Collection<AutoApproveTagRecord>;
-}
+export type ActionSyncStorage = Pick<OverseerStorage, "actions" | "autoApproveTags" | "transaction">;
 
 /**
  * The slice of the gatekeeper stub surface the driver drives, derived from the RPC contract.
@@ -30,17 +23,18 @@ export interface ActionSyncStorage extends TypedStorage {
 export type GatekeeperActionTarget = Pick<Fetcher<Gatekeeper<unknown>>,
     "applyActionsThrough" | "applyAction" | "rejectAction">;
 
+// The stub type widens the optional method with a `Promise<undefined>` property read; this is the
+// callable half.
 type LiveApplyActionsThrough = Extract<GatekeeperActionTarget["applyActionsThrough"],
     (...args: never[]) => unknown>;
 
 type ActionSyncHooks = {
-  createGitCache: (gatekeeperId: number) => GitCache;
+  /** Scoped to the gatekeeper, and to one action for the legacy per-action apply. */
+  createGitCache: (gatekeeperId: number, actionId?: number) => GitCache;
   createGitPackBuilder: (
     gatekeeperId: number,
     pendingPlan: readonly GatekeeperActionRecord[],
   ) => GitPackBuilder & Disposable;
-  applyLegacyAction: (
-      gatekeeper: GatekeeperActionTarget, record: GatekeeperActionRecord) => Promise<void>;
   persistApproved: (record: GatekeeperActionRecord) => void;
   persistRejected: (record: GatekeeperActionRecord) => void;
 };
@@ -507,7 +501,8 @@ export class ActionSyncDriver {
     // pending forever.
     for (let record of pendingPlan) {
       try {
-        await this.hooks.applyLegacyAction(gatekeeper, record);
+        await gatekeeper.applyAction(
+            record.action, this.hooks.createGitCache(gatekeeperId, record.id));
       } catch (error) {
         return {stopped: {
           at: record.action,

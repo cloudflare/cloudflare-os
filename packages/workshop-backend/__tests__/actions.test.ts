@@ -4,9 +4,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   ActionSyncDriver, ActionSyncStorage, GatekeeperActionTarget, isMethodMissing,
 } from "../src/actions.js";
-import type {
-  ActionRecord, GatekeeperActionRecord, OverseerDurableObject,
-} from "../src/overseer.js";
+import type { GatekeeperActionRecord, OverseerDurableObject } from "../src/overseer.js";
 import {
   ACTION_ERROR_CODES, getActionErrorCode, type ActionLogEntry, type AiChatAuthorInfo, type Overseer,
 } from "@gadgets/workshop-shared/api";
@@ -15,7 +13,7 @@ import type { ManualApproval } from "../src/actions.js";
 import { keyString } from "@gadgets/typed-storage";
 import {
   FIXTURE_EPOCH, makeActionStorage as makeStorage, makeSubscriber, openFakeOverseer,
-  putAction as putStoredAction,
+  putAction as putStoredAction, rejectBatchProbe, rejectionOf, type PutActionOptions,
 } from "./fixtures.js";
 
 vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
@@ -40,33 +38,10 @@ function enableRule(storage: ActionSyncStorage, actionTag = "edit", gatekeeperId
 // so a test that confuses the two ID spaces fails loudly. `id` overrides that, for tests that need
 // the same local action id on two connections.
 function putAction(
-    storage: ActionSyncStorage, action: number,
-    opts: { gatekeeperId?: number; actionTag?: string; autoApprovable?: boolean;
-            state?: ActionRecord["state"]; chatId?: number; awaitDecision?: boolean;
-            suspendedTurn?: boolean; vetoPending?: true; resolvedBy?: AiChatAuthorInfo;
-            failure?: string; createdAt?: Date; id?: number } = {}): number {
-  let id = opts.id ?? action * 10;
-  storage.actions.put({
-    id,
-    gatekeeperId: opts.gatekeeperId ?? GK,
-    caller: { from: "agent", chatId: opts.chatId ?? 1 },
-    createdAt: opts.createdAt ?? new Date(),
-    state: opts.state ?? "pending",
-    type: "action",
-    action,
-    ...(opts.vetoPending ? { vetoPending: true } : {}),
-    ...(opts.suspendedTurn !== undefined ? { suspendedTurn: opts.suspendedTurn } : {}),
-    ...(opts.resolvedBy ? { resolvedBy: opts.resolvedBy } : {}),
-    ...(opts.failure !== undefined ? { failure: opts.failure } : {}),
-    description: {
-      title: `Action ${action}`,
-      description: `Action ${action} description`,
-      implementsRevert: true,
-      actionKind: { tag: opts.actionTag ?? "edit", label: "Edits" },
-      autoApprovable: opts.autoApprovable ?? true,
-      ...(opts.awaitDecision ? { awaitDecision: true } : {}),
-    },
-  });
+    storage: ReturnType<typeof makeStorage>, action: number,
+    opts: Omit<PutActionOptions, "action" | "type"> & { id?: number } = {}): number {
+  let { id = action * 10, ...rest } = opts;
+  putStoredAction(storage, id, { gatekeeperId: GK, ...rest, action });
   return id;
 }
 
@@ -111,8 +86,7 @@ function makeLegacyGatekeeper(opts: {failApply?: number[]} = {}) {
   let target = {
     async applyActionsThrough() {
       probes++;
-      throw new TypeError(
-          'The RPC receiver does not implement the method "applyActionsThrough".');
+      rejectBatchProbe();
     },
     async applyAction(action: number) {
       calls.push(`apply:${action}`);
@@ -132,10 +106,6 @@ function makeDriver(
   return new ActionSyncDriver(storage, typeof target === "function" ? target : () => target, {
     createGitCache: vi.fn(),
     createGitPackBuilder: vi.fn(),
-    applyLegacyAction: async (gatekeeper, record) => {
-      let apply = gatekeeper.applyAction as unknown as (action: number) => Promise<void>;
-      await apply(record.action);
-    },
     persistApproved: record => storage.actions.put(record),
     persistRejected: record => storage.actions.put(record),
   });
@@ -804,14 +774,8 @@ describe("ActionSyncDriver legacy fallback", () => {
     // The DO itself lacks the client interface's batch method; probe workerd's actual rejection.
     const receiver = stub as unknown as Fetcher<Pick<Overseer, "applyActionsThrough">>;
     using call = receiver.applyActionsThrough(1, []);
-    let error: unknown;
-    try {
-      await call;
-    } catch (caught) {
-      error = caught;
-    }
 
-    expect(isMethodMissing(error)).toBe(true);
+    expect(isMethodMissing(await rejectionOf(call))).toBe(true);
   });
   it("falls back on workerd's method-missing TypeError, delivering vetoes then applies in " +
      "ascending order, and probes only once", async () => {
