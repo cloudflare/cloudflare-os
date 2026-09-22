@@ -37,7 +37,7 @@
       "types": "./release/manifest-lib.ts",
       "import": "./release/manifest-lib.ts"
     },
-    "./oxlint-plugin": "./oxlint-plugin.mjs"
+    "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
@@ -46,6 +46,7 @@
     "vite": "catalog:"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.73.0",
     "@types/node": "26.1.0",
     "jsdom": "^26.1.0"
   }

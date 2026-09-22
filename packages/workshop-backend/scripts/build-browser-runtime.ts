@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const packageDir = dirname(fileURLToPath(import.meta.url));
+const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeOutputFile = resolve(packageDir, "src/generated/browser-export-runtime.txt");
 const sanitizerOutputFile = resolve(packageDir, "src/generated/html-sanitizer-runtime.txt");
 const pageOutputFile = resolve(packageDir, "src/generated/browser-export-page.js");
@@ -39,7 +39,7 @@ writeIfChanged(runtimeOutputFile, runtimeResult.outputFiles[0].contents);
 writeIfChanged(sanitizerOutputFile, sanitizerResult.outputFiles[0].contents);
 writeIfChanged(pageOutputFile, pageResult.outputFiles[0].contents);
 
-function writeIfChanged(outputFile, bytes) {
+function writeIfChanged(outputFile: string, bytes: Uint8Array) {
   const contents = new TextDecoder().decode(bytes);
   if (!existsSync(outputFile) || readFileSync(outputFile, "utf8") !== contents) {
     mkdirSync(dirname(outputFile), { recursive: true });

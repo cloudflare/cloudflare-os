@@ -5,8 +5,8 @@
  * `gatekeeper-configurator-vite-config.ts` takes that shape. The task types below are structural
  * copies of Vite+'s rather than imports of them, which is what keeps that true.
  *
- * TypeScript, unlike the `.mjs` beside it in this directory, because being TS means a malformed task
- * or a mistyped `base` is a compile error rather than a glob that silently never matches.
+ * Being TypeScript means a malformed task or a mistyped `base` is a compile error rather than a glob
+ * that silently never matches.
  *
  * Reached as `@gadgets/scripts/vitest-task`, an `exports` subpath of this directory's package, not
  * as a relative path. A relative specifier only resolves for a consumer at `packages/<name>/` of
@@ -181,7 +181,7 @@ export const TESTS_WITH_TIMEOUT_ENV: string[] = ['TESTS_WITH_TIMEOUT_DISABLE']
  * needs any: nothing else here writes a build artifact into a directory its own tests track.
  *
  * Every command is wrapped in the watchdog above, including the codegen steps some packages bundle
- * into this task (`workshop-backend`'s `node build-browser-runtime.mjs`) -- those are equally
+ * into this task (`workshop-backend`'s `node scripts/build-browser-runtime.ts`) -- those are equally
  * unbounded.
  */
 export function vitestTask(

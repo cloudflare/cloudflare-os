@@ -214,7 +214,7 @@ function describe(error: unknown): string {
 // per task, so this is cheap on a warm tree.
 //
 // Whether the UI signs in through Cloudflare Access or with a password is a build-time flag
-// (workshop-frontend/src/useAuth.ts), so a preview needs the same one build-release.mjs sets:
+// (workshop-frontend/src/useAuth.ts), so a preview needs the same one build-release.ts sets:
 // otherwise it serves a password form the backend rejects every password from. The frontend's
 // `build` task already declares `env: ['VITE_*']`.
 function buildWorkspace(): Promise<void> {

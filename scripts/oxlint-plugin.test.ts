@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import plugin from "./oxlint-plugin.mjs";
+import plugin from "./oxlint-plugin.ts";
 
 const require = createRequire(import.meta.url);
 const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"));
@@ -9,6 +10,14 @@ const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"))
 const { RuleTester } = await import(
   pathToFileURL(vitePlusRequire.resolve("oxlint/plugins-dev")).href,
 );
+
+// `@oxlint/plugins` is a direct dependency only for its types, so it has to follow Vite+'s pin.
+it("types the plugin against the @oxlint/plugins version Vite+ pins", () => {
+  const ours = require("./package.json").devDependencies["@oxlint/plugins"];
+  const vitePlus = require("vite-plus/package.json").dependencies["@oxlint/plugins"];
+  assert.equal(ours, vitePlus.replace(/^=/, ""),
+    "Update @gadgets/scripts' @oxlint/plugins devDependency to match vite-plus's.");
+});
 
 RuleTester.describe = describe;
 RuleTester.it = it;

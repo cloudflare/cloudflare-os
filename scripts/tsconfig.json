@@ -5,8 +5,6 @@
 // consumers (vite, and `node` for the task graph) both handle TS.
 //
 // Checked by `pnpm types:scripts` in CI's lint job, deliberately NOT by `pnpm build` (hot-path and no need)
-// `scripts/oxlint-plugin.mjs` stays JS because oxlint's plugin runtime loads it, not
-// Node's module loader.
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
@@ -17,11 +15,13 @@
     "allowImportingTsExtensions": true,
     "types": ["node"],
     "erasableSyntaxOnly": true,
-    "verbatimModuleSyntax": true,
-    // The root sets allowJs; oxlint-plugin.mjs stays untyped.
-    "checkJs": false
+    "verbatimModuleSyntax": true
   },
-  // The backend's Node-only build/import tools are excluded from its Worker tsconfig and need the
+  // The packages' Node-only build/import tools are excluded from their Worker tsconfigs and need the
   // same Node runtime and erasable-syntax checks as the repo-level scripts.
-  "include": ["**/*.ts", "../packages/workshop-backend/scripts/*.ts"]
+  "include": [
+    "**/*.ts",
+    "../packages/workshop-backend/scripts/*.ts",
+    "../packages/gatekeeper-*/build-app.ts"
+  ]
 }

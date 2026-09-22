@@ -1278,6 +1278,9 @@ importers:
         specifier: 7.3.6
         version: 7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)
     devDependencies:
+      '@oxlint/plugins':
+        specifier: 1.73.0
+        version: 1.73.0
       '@types/node':
         specifier: 26.1.0
         version: 26.1.0

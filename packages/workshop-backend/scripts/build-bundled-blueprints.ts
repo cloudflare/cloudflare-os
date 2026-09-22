@@ -32,7 +32,7 @@ const { text: generated, count, totalBytes } = await generateBundledBlueprintsMo
 
 // Skip the write when nothing changed. This script runs as a prerequisite of `build` and `test`,
 // and rewriting an identical module would give it a fresh mtime, invalidating tsc's incremental
-// cache for the whole package on every invocation. Same reason build-browser-runtime.mjs and the
+// cache for the whole package on every invocation. Same reason build-browser-runtime.ts and the
 // two SPA builds compare before writing.
 let unchanged = false;
 try {

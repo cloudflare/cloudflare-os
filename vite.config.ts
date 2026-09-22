@@ -17,7 +17,7 @@ export default defineConfig({
       suspicious: 'error',
     },
     plugins: ['typescript', 'unicorn', 'oxc', 'import'],
-    jsPlugins: ['./scripts/oxlint-plugin.mjs'],
+    jsPlugins: ['./scripts/oxlint-plugin.ts'],
     options: {
       // Note: type-aware linting is intentionally not enabled yet.
       // Enabling them is its own change: triage the first run's findings, decide a `no-floating-promises` policy (RPC promise
@@ -140,7 +140,7 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts', 'scripts/**/*.mjs'],
+        files: ['scripts/**/*.ts'],
         env: {
           node: true,
           es2024: true,

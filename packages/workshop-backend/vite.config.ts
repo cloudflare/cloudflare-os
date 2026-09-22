@@ -28,7 +28,7 @@ export default {
         cache: false,
       },
       'build:browser-runtime': {
-        command: withTestTimeout('node build-browser-runtime.mjs'),
+        command: withTestTimeout('node scripts/build-browser-runtime.ts'),
         cache: false,
       },
       /**

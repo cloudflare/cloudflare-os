@@ -29,7 +29,7 @@ import { describe, it } from "node:test";
  *               script run directly, with the full ambient environment. Nothing about the artifact
  *               a cached run produces depends on it.
  *   injected  — set explicitly by the build setup, never inherited. Stripping is correct here:
- *               `build-app.mjs` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
+ *               `build-app.ts` always passes `GATEKEEPER_APP_UNMINIFIED`, and the frontend build
  *               task sets `NODE_ENV` before importing Vite.
  *   external  — read outside any vp task (release/dev tooling invoked directly), so vp never
  *               filters it.

@@ -1,4 +1,6 @@
-const preferJsdoc = {
+import type { Comment, Diagnostic, ESTree, Plugin, Rule } from "@oxlint/plugins";
+
+const preferJsdoc: Rule = {
   meta: {
     type: "layout",
     docs: {
@@ -32,12 +34,12 @@ const preferJsdoc = {
       "TSParameterProperty",
     ]);
 
-    function startsOnOwnLine(comment) {
+    function startsOnOwnLine(comment: Comment) {
       const lineStart = sourceCode.text.lastIndexOf("\n", comment.range[0] - 1) + 1;
       return sourceCode.text.slice(lineStart, comment.range[0]).trim() === "";
     }
 
-    function checkComments(node) {
+    function checkComments(node: ESTree.Node) {
       const comments = sourceCode.getCommentsBefore(node);
       const lastComment = comments.at(-1);
       if (!lastComment || lastComment.loc.end.line + 1 !== node.loc.start.line ||
@@ -85,7 +87,7 @@ const preferJsdoc = {
         : `/**\n${docComments.map((comment) =>
           `${indent} *${comment.value.trimEnd()}`).join("\n")}\n${indent} */`;
 
-      const report = {
+      const report: Diagnostic = {
         node,
         loc: {
           start: firstComment.loc.start,
@@ -102,19 +104,21 @@ const preferJsdoc = {
       context.report(report);
     }
 
-    function checkExport(node) {
+    function checkExport(node: ESTree.ExportNamedDeclaration | ESTree.ExportDefaultDeclaration) {
       if (node.declaration) checkComments(node);
     }
 
-    function isExportedApiMember(node) {
-      if (node.accessibility === "private" || node.key?.type === "PrivateIdentifier") return false;
+    function isPrivateMember(node: ESTree.Node) {
+      return ("accessibility" in node && node.accessibility === "private") ||
+        ("key" in node && node.key?.type === "PrivateIdentifier");
+    }
 
-      let root = node.parent;
+    function isExportedApiMember(node: ESTree.Node) {
+      if (isPrivateMember(node)) return false;
+
+      let root: ESTree.Node | null = node.parent;
       while (root) {
-        if (classMemberTypes.has(root.type) &&
-            (root.accessibility === "private" || root.key?.type === "PrivateIdentifier")) {
-          return false;
-        }
+        if (classMemberTypes.has(root.type) && isPrivateMember(root)) return false;
         if ((root.type === "FunctionDeclaration" || root.type === "FunctionExpression" ||
             root.type === "ArrowFunctionExpression") && root.body &&
             node.range[0] >= root.body.range[0] && node.range[1] <= root.body.range[1]) {
@@ -130,7 +134,7 @@ const preferJsdoc = {
       }
       if (!root) return false;
 
-      let parent = root.parent;
+      let parent: ESTree.Node | null = root.parent;
       while (parent?.type === "VariableDeclarator" || parent?.type === "VariableDeclaration") {
         parent = parent.parent;
       }
@@ -138,7 +142,7 @@ const preferJsdoc = {
           parent?.type === "ExportNamedDeclaration") && parent.declaration !== null;
     }
 
-    function checkApiMember(node) {
+    function checkApiMember(node: ESTree.Node) {
       if (isExportedApiMember(node)) checkComments(node);
     }
 
@@ -162,4 +166,4 @@ export default {
   rules: {
     "prefer-jsdoc": preferJsdoc,
   },
-};
+} satisfies Plugin;
