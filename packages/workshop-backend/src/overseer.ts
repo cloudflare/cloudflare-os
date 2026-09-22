@@ -5960,6 +5960,18 @@ class OverseerImpl implements AgentHooks {
           "removed from this workspace.");
     }
 
+    // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
+    // be reviewed as text here, so a push is refused outright until there is a UI to review
+    // commits. Any other action pends for manual approval; one whose description is not complete
+    // (ActionDescription.descriptionIsComplete) is flagged to the approver rather than refused.
+    // The message reaches the agent as the tool error.
+    if (this.storage.containsRestrictedData.get() && description.pushedCommits?.length) {
+      throw new Error(
+          "This workspace has observed sensitive data. To prevent leaks, an action is only accepted " +
+          "when the approver can review everything it will send, and a git push cannot be " +
+          "reviewed as of yet.");
+    }
+
     // Push authorization (see ActionDescription.pushedCommits): before anything is queued,
     // verify that every declared head's ancestry reaches a commit proven on this gatekeeper's
     // remote. This is the chokepoint that makes an accidental push to an unrelated remote fail

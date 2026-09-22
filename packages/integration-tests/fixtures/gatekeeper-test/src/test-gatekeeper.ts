@@ -311,7 +311,8 @@ export interface TestSession {
    * `ownerInvitesOnly`.
    */
   readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number>;
-  writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number>;
+  /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
+  writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
 }
 
@@ -337,14 +338,15 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return 42;
   }
 
-  async writeValue(value: number, opts?: { autoApprovable?: boolean }): Promise<number> {
+  async writeValue(
+      value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number> {
     const id = await this.state.stageAction(this.label, value);
     try {
       await this.approvalQueue.submitAction(id, {
         title: `Set the test value to ${value}`,
         description: `Set the deterministic integration-test value to **${value}**.`,
         // The number is the whole content of the write.
-        descriptionIsComplete: true,
+        ...(opts?.incomplete ? {} : { descriptionIsComplete: true }),
         implementsRevert: false,
         awaitDecision: true,
         actionKind: SET_VALUE_ACTION_KIND,

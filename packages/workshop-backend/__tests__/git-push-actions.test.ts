@@ -151,6 +151,20 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
 
+  it("refuses a push while the workspace is restricted, queuing nothing", async () => {
+    await inOverseer("push-restricted", async impl => {
+      let { head } = await seedPushableHistory(impl);
+      impl.storage.containsRestrictedData.put(true);
+
+      // Proven ancestry does not help: the commits cannot be reviewed as text by the approver.
+      await expect(impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" }))
+          .rejects.toThrow(/git push cannot be reviewed as of yet/);
+      expect(Array.from(impl.storage.actions.list())).toStrictEqual([]);
+      expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
+          .toStrictEqual([]);
+    });
+  });
+
   it("cleans a queued push's marks when its gatekeeper is removed", async () => {
     await inOverseer("push-gatekeeper-removed", async impl => {
       let { head } = await seedPushableHistory(impl);

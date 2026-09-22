@@ -36,7 +36,8 @@ observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
 puts the workspace into a restricted mode — no web fetches, and every action requires manual
 approval (auto-approval rules are suspended), the approver checking the action text for restricted
-data. Its coverage rests on admission: nobody can open the workspace without being verified
+data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
+is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
 against the producing gatekeeper, and anything that widens what they must be verified against
 restarts every live session. An observation that also carries **`ownerInvitesOnly`** sets that
 flag on the workspace: from then on only direct grants from the owner count, so share links admit
@@ -676,7 +677,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
    puts the workspace into a restricted mode: no web fetches, and every action requires manual
    approval (auto-approval rules are suspended), the approver checking the action text for
-   restricted data.
+   restricted data. An action whose description is not complete
+   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
+   pushes are refused.
    Verification is held to each collaborator's own role scope, because `ensureObserver` can
    never verify beyond it: a `use` collaborator can't be covered for a gatekeeper outside their
    scope (one no gadget binds and no enabled hook feeds — see `#useScopeGatekeeperIds`).

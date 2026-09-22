@@ -6,10 +6,10 @@
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
 // and sharing stays available. The observation also sets `containsRestrictedData`, putting the
 // workspace into a restricted mode: once it is set, every action pends for manual approval and is
-// never auto-approved, and the workspace may not fetch from the web (which has no client-reachable
-// surface to assert here). An observation that also carries `ownerInvitesOnly` sets that flag too:
-// from then on only direct grants from the owner count, so share links stop admitting anyone and
-// people who joined through one lose access.
+// never auto-approved, a git push is refused, and the workspace may not fetch from the web (which
+// has no client-reachable surface to assert here). An observation that also carries
+// `ownerInvitesOnly` sets that flag too: from then on only direct grants from the owner count, so
+// share links stop admitting anyone and people who joined through one lose access.
 //
 // The fixture gatekeeper's session drives all of this through the real ApprovalQueue funnel:
 // `readValue(true)` records a `containsRestrictedData` observation, `writeValue()` submits an
@@ -240,6 +240,18 @@ describe("sensitive observations", () => {
       await expect(ws.session.readValue(true)).resolves.toBe(42);
 
       expect((await ws.overseer.getMetadata()).containsRestrictedData).toBe(true);
+
+      // A write whose gatekeeper does not vouch for its description is not refused: it pends like
+      // any other, carrying no completeness claim for the approval surfaces to flag.
+      const incompleteWrite = ws.session.writeValue(0, { incomplete: true });
+      const [incomplete] = await waitFor("the incomplete write to be held for approval", async () => {
+        const { entries } = await ws.overseer.listActions({ filter: "pending" });
+        return entries.length > 0 ? entries : null;
+      });
+      expect(incomplete.type === "action" && incomplete.description.descriptionIsComplete)
+          .toBeFalsy();
+      await ws.overseer.rejectAction(incomplete.id);
+      await expect(incompleteWrite).rejects.toThrow();
 
       // A write back to the producing connection is held for approval and goes through once
       // approved...
