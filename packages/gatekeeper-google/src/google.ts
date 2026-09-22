@@ -1119,6 +1119,8 @@ type GoogleDocActionBase = {
   baseRevisionId?: string;
   writeId?: string;
   invalidatedReason?: string;
+  /** The Markdown version the edit was previewed under. */
+  markdownVersion?: number;
 }
 
 type GoogleDocReplaceAction = GoogleDocActionBase & {
@@ -1437,12 +1439,21 @@ function appendMarkdownForSimulation(markdown: string, appendedMarkdown: string)
   return markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + terminatedAppend;
 }
 
+function assertGoogleDocActionReplayable(action: GoogleDocAction): void {
+  if (action.invalidatedReason) throw new Error(action.invalidatedReason);
+  if (action.markdownVersion !== MARKDOWN_RENDERING_VERSION) {
+    throw new Error(
+      "Pending Google Doc edit was queued under an earlier Markdown format and may no longer " +
+      "apply as previewed. Reject it and retry.");
+  }
+}
+
 function applyGoogleDocActionToContent(
   content: GoogleDocSimulatedContent,
   action: GoogleDocAction,
   tabId: string,
 ): GoogleDocSimulatedContent {
-  if (action.invalidatedReason) throw new Error(action.invalidatedReason);
+  assertGoogleDocActionReplayable(action);
 
   switch (action.type) {
     case "replaceText":
@@ -1553,9 +1564,7 @@ function materializeGoogleDocAction(
   snapshot: GoogleDocSnapshot,
   action: GoogleDocAction,
 ): { tab: GoogleDocTabSnapshot; requests: any[] } {
-  if (action.invalidatedReason) {
-    throw new Error(action.invalidatedReason);
-  }
+  assertGoogleDocActionReplayable(action);
   let tab = googleDocActionTab(snapshot, action);
 
   switch (action.type) {
@@ -2100,6 +2109,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       documentId: this.#documentId,
       tabId: tab.tabId,
       submittedAt: Date.now(),
+      markdownVersion: MARKDOWN_RENDERING_VERSION,
       baseRevisionId: snapshot.revisionId,
       writeId: crypto.randomUUID(),
       oldMarkdown,
@@ -2153,6 +2163,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       documentId: this.#documentId,
       tabId: tab.tabId,
       submittedAt: Date.now(),
+      markdownVersion: MARKDOWN_RENDERING_VERSION,
       baseRevisionId: snapshot.revisionId,
       writeId: crypto.randomUUID(),
       markdown,

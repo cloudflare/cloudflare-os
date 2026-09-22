@@ -725,8 +725,13 @@ type FormattingSpan = {
 
 const MAX_MARKDOWN_BLOCKS = 2_000;
 const MAX_MARKDOWN_FORMATTING_TOKENS = 5_000;
-// Current block and span budgets can produce at most 15,001 requests.
-const MAX_GOOGLE_DOC_REQUESTS = 16_000;
+// The most requests `markdownToDocRequests` can emit within those limits, which
+// `parseMarkdownForWrite` enforces on everything it writes, rebuilt blocks included: the insert
+// and the style reset; one bullet removal per run of blocks (runs are separated, so at most half
+// the blocks); one paragraph style per block; one subtitle override or bullet run per block
+// (subtitles are never list items); and one request per span.
+const MAX_GOOGLE_DOC_REQUESTS = 2 + Math.ceil(MAX_MARKDOWN_BLOCKS / 2) + 2 * MAX_MARKDOWN_BLOCKS +
+  MAX_MARKDOWN_FORMATTING_TOKENS;
 
 /** Reject Markdown whose structure would consume excessive parser or Docs batch resources. */
 export function assertMarkdownWriteComplexity(markdown: string): void {
@@ -996,7 +1001,7 @@ function assertMarkdownEscapeBoundaries(markdown: string, start: number, end: nu
 
 function markdownTokenSplits(markdown: string): Uint8Array {
   let links = indexMarkdownLinks(markdown);
-  let ranges = inlineMarkdownRanges(markdown, links);
+  let ranges: MarkdownRange[] = inlineMarkdownRanges(markdown, links);
   for (let index = 0; index < markdown.length;) {
     let link = matchMarkdownLink(markdown, index, links);
     if (!link) {
@@ -1175,8 +1180,11 @@ function completableInlineStates(tokens: InlineToken[]): Uint8Array {
   return completable;
 }
 
-function inlineMarkdownRanges(markdown: string, links: MarkdownLinkIndex): MarkdownRange[] {
-  let ranges: MarkdownRange[] = [];
+function inlineMarkdownRanges(
+  markdown: string,
+  links: MarkdownLinkIndex,
+): (MarkdownRange & { style: number })[] {
+  let ranges: (MarkdownRange & { style: number })[] = [];
   let starts = new Map<number, number>();
   let state = 0;
   let tokens = inlineTokens(markdown, links);
@@ -1205,7 +1213,7 @@ function inlineMarkdownRanges(markdown: string, links: MarkdownLinkIndex): Markd
     for (let style of INLINE_STYLE_STATES) {
       if (!(state & style) && next & style) starts.set(style, token.start);
       if (state & style && !(next & style)) {
-        ranges.push({ mdStart: starts.get(style)!, mdEnd: token.end });
+        ranges.push({ mdStart: starts.get(style)!, mdEnd: token.end, style });
         starts.delete(style);
       }
     }
@@ -1405,7 +1413,7 @@ function canonicalInlineMarkdown(block: ParsedBlock): string {
       strikethrough: strikethrough > 0,
     };
     let link = links.keys().next().value;
-    let nextFormats = markdownFormats(style, link, false);
+    let nextFormats = markdownFormats(style, link && canonicalLinkDestination(link), false);
     markdown += markdownFormatTransition(formats, nextFormats);
     let text = block.plainText.slice(start, end);
     markdown += link ? escapeMarkdownLinkLabelText(text) : text;
@@ -1462,6 +1470,10 @@ function parseInternalDocsLink(destination: string): NonNullable<TextStyle["link
   } catch {
     return undefined;
   }
+}
+
+function canonicalLinkDestination(destination: string): string {
+  return docsLinkDestination(parseInternalDocsLink(destination)) ?? destination;
 }
 
 function linkForWrite(
@@ -1595,6 +1607,27 @@ function alignSourceBlocks(
 }
 
 /**
+ * Merge each range into its predecessor when the two abut and `same` holds. A paragraph-range
+ * request applies to every paragraph it touches, so abutting paragraphs that need the same change
+ * can share one request.
+ */
+function coalesceRanges<T extends { startIndex: number; endIndex: number }>(
+  ranges: readonly T[],
+  same: (previous: T, next: T) => boolean,
+): T[] {
+  let merged: T[] = [];
+  for (let range of ranges) {
+    let previous = merged.at(-1);
+    if (previous?.endIndex === range.startIndex && same(previous, range)) {
+      previous.endIndex = range.endIndex;
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
+/**
  * One `updateParagraphStyle` request. At least one of a style change or an indent reset must be
  * asked for, since Google rejects a request that names no fields.
  */
@@ -1686,90 +1719,105 @@ export function markdownToDocRequests(
   }
 
   let clearListIndent = options.source?.blocks.some(block => block.listId !== undefined) ?? false;
-
-  for (let { block, source, preserveList, preserveStyle, targetStyle, paragraphStart, textStart,
-    paragraphEnd } of positioned) {
-    let range = { startIndex: paragraphStart, endIndex: paragraphEnd, tabId };
-    if (!preserveStyle && source) {
+  let paragraphChanges = positioned.map(({ source, preserveList, preserveStyle, targetStyle,
+    paragraphStart, paragraphEnd }) => {
+    let change = {
+      startIndex: paragraphStart,
+      endIndex: paragraphEnd,
+      deleteBullets: false,
+      namedStyleType: undefined as string | undefined,
+      clearIndent: false,
+    };
+    if (preserveStyle) return change;
+    if (source) {
       let resetList = !preserveList && (rebuild || source.listId !== undefined);
-      if (resetList) addRequest({ deleteParagraphBullets: { range } });
-
-      let restyle = rebuild || source.namedStyleType !== targetStyle;
-      if (restyle || resetList) {
-        addRequest(updateParagraphStyleRequest(
-          range, restyle ? targetStyle : undefined, resetList));
-      }
-    } else if (!preserveStyle) {
-      if (resetParagraphs) {
-        addRequest(updateParagraphStyleRequest(range, "NORMAL_TEXT", clearListIndent));
-        addRequest({ deleteParagraphBullets: { range } });
-      }
-      if (targetStyle !== "NORMAL_TEXT") {
-        addRequest(updateParagraphStyleRequest(range, targetStyle, false));
-      }
+      change.deleteBullets = change.clearIndent = resetList;
+      if (rebuild || source.namedStyleType !== targetStyle) change.namedStyleType = targetStyle;
+    } else if (resetParagraphs) {
+      change.deleteBullets = true;
+      change.clearIndent = clearListIndent;
+      change.namedStyleType = targetStyle;
+    } else if (targetStyle !== "NORMAL_TEXT") {
+      change.namedStyleType = targetStyle;
     }
+    return change;
+  });
+  // Bullets go first: removing them indents each paragraph to keep its nesting visible, and the
+  // indent reset below undoes that.
+  for (let { startIndex, endIndex } of coalesceRanges(
+    paragraphChanges.filter(change => change.deleteBullets), () => true)) {
+    addRequest({ deleteParagraphBullets: { range: { startIndex, endIndex, tabId } } });
+  }
+  for (let { startIndex, endIndex, namedStyleType, clearIndent } of coalesceRanges(
+    paragraphChanges.filter(change => change.namedStyleType !== undefined || change.clearIndent),
+    (previous, next) => previous.namedStyleType === next.namedStyleType &&
+      previous.clearIndent === next.clearIndent)) {
+    addRequest(updateParagraphStyleRequest(
+      { startIndex, endIndex, tabId }, namedStyleType, clearIndent));
+  }
 
-    if (block.plainText.length > 0) {
-      let textRange = {
-        startIndex: textStart,
-        endIndex: textStart + block.plainText.length,
-        tabId,
-      };
-      addRequest({
-        updateTextStyle: {
-          range: textRange,
-          textStyle: options.sourceTextStyle ?? {},
-          fields: "bold,italic,strikethrough,link",
+  // Reset inherited inline styling across all inserted text in one request. Starting at the first
+  // character of text leaves a leading inserted newline, which terminates the paragraph before the
+  // insertion, with the style it already has.
+  let textBlocks = positioned.filter(({ block }) => block.plainText.length > 0);
+  let firstText = textBlocks[0];
+  let lastText = textBlocks.at(-1);
+  if (firstText && lastText) {
+    addRequest({
+      updateTextStyle: {
+        range: {
+          startIndex: firstText.textStart,
+          endIndex: lastText.textStart + lastText.block.plainText.length,
+          tabId,
         },
-      });
-      if (targetStyle === "SUBTITLE") {
-        addRequest({
-          updateTextStyle: { range: textRange, textStyle: { italic: false }, fields: "italic" },
-        });
-      }
-    }
+        textStyle: options.sourceTextStyle ?? {},
+        fields: "bold,italic,strikethrough,link",
+      },
+    });
+  }
+  for (let { block, targetStyle, textStart } of textBlocks) {
+    if (targetStyle !== "SUBTITLE") continue;
+    addRequest({
+      updateTextStyle: {
+        range: { startIndex: textStart, endIndex: textStart + block.plainText.length, tabId },
+        textStyle: { italic: false },
+        fields: "italic",
+      },
+    });
+  }
 
+  for (let { block, textStart } of positioned) {
     for (let span of block.spans) {
       let startIndex = textStart + span.start;
       let endIndex = textStart + span.end;
       if (startIndex >= endIndex) continue;
 
-      if (span.bold || span.italic || span.strikethrough) {
-        let textStyle: Record<string, true> = {};
-        let fields: string[] = [];
-        if (span.bold) { textStyle.bold = true; fields.push("bold"); }
-        if (span.italic) { textStyle.italic = true; fields.push("italic"); }
-        if (span.strikethrough) { textStyle.strikethrough = true; fields.push("strikethrough"); }
-        addRequest({
-          updateTextStyle: {
-            range: { startIndex, endIndex, tabId }, textStyle, fields: fields.join(","),
-          },
-        });
-      }
+      let textStyle: Record<string, unknown> = {};
+      let fields: string[] = [];
+      if (span.bold) { textStyle.bold = true; fields.push("bold"); }
+      if (span.italic) { textStyle.italic = true; fields.push("italic"); }
+      if (span.strikethrough) { textStyle.strikethrough = true; fields.push("strikethrough"); }
       if (span.link) {
-        addRequest({
-          updateTextStyle: {
-            range: { startIndex, endIndex, tabId },
-            textStyle: { link: linkForWrite(options.source, span.link) },
-            fields: "link",
-          },
-        });
+        textStyle.link = linkForWrite(options.source, span.link);
+        fields.push("link");
       }
-    }
-  }
-
-  let bulletGroups: { listType: ListType; startIndex: number; endIndex: number }[] = [];
-  for (let { block, preserveList, paragraphStart, paragraphEnd } of positioned) {
-    if (!block.listType || preserveList) continue;
-    let previous = bulletGroups.at(-1);
-    if (previous?.listType === block.listType && previous.endIndex === paragraphStart) {
-      previous.endIndex = paragraphEnd;
-    } else {
-      bulletGroups.push({
-        listType: block.listType, startIndex: paragraphStart, endIndex: paragraphEnd,
+      if (fields.length === 0) continue;
+      addRequest({
+        updateTextStyle: {
+          range: { startIndex, endIndex, tabId }, textStyle, fields: fields.join(","),
+        },
       });
     }
   }
+
+  let bulletGroups = coalesceRanges(
+    positioned.flatMap(({ block, preserveList, paragraphStart, paragraphEnd }) =>
+      block.listType && !preserveList
+        ? [{ listType: block.listType, startIndex: paragraphStart, endIndex: paragraphEnd }]
+        : []),
+    (previous, next) => previous.listType === next.listType,
+  );
+  // Reversed: creating bullets strips each paragraph's leading tabs, shifting later indices.
   for (let { listType, startIndex, endIndex } of bulletGroups.toReversed()) {
     addRequest({
       createParagraphBullets: {
@@ -1934,6 +1982,7 @@ export function applyMarkdownEdit(
     newMarkdown = newMarkdown.slice(bounds.prefixLen, newMarkdown.length - bounds.suffixLen);
   }
   assertMarkdownRangeEditable(content.protectedRanges, mdStart, mdEnd);
+  newMarkdown = closeFormattingAtBreaks(content.markdown, mdStart, mdEnd, newMarkdown);
   let offset = newMarkdown.length - (mdEnd - mdStart);
   return {
     markdown: content.markdown.slice(0, mdStart) + newMarkdown + content.markdown.slice(mdEnd),
@@ -1943,6 +1992,58 @@ export function applyMarkdownEdit(
         mdEnd: range.mdEnd + offset,
       }),
   };
+}
+
+/** Formats open at `offset` in one rendered line, outermost first. */
+function openFormatsAt(line: string, offset: number): MarkdownFormat[] {
+  let links = indexMarkdownLinks(line);
+  for (let index = 0; index < offset;) {
+    if (line[index] === "\\" && isMarkdownPunctuation(line[index + 1] ?? "")) {
+      index += 2;
+      continue;
+    }
+    let link = matchMarkdownLink(line, index, links);
+    if (!link) {
+      index++;
+      continue;
+    }
+    let labelEnd = index + 1 + link.label.length;
+    if (offset <= labelEnd) {
+      return [
+        { open: "[", close: line.slice(labelEnd, link.end + 1) },
+        ...openFormatsAt(link.label, offset - index - 1),
+      ];
+    }
+    index = link.end + 1;
+  }
+  let state = 0;
+  for (let range of inlineMarkdownRanges(line, links)) {
+    if (range.mdStart < offset && offset < range.mdEnd) state |= range.style;
+  }
+  return markdownFormats({
+    bold: !!(state & BOLD_STATE),
+    italic: !!(state & ITALIC_STATE),
+    strikethrough: !!(state & STRIKETHROUGH_STATE),
+  }, undefined, false);
+}
+
+/** Close and reopen the formatting around an edit at each paragraph break it inserts. */
+function closeFormattingAtBreaks(
+  markdown: string,
+  start: number,
+  end: number,
+  text: string,
+): string {
+  if (!text.includes("\n") || BLOCK_SYNTAX_LINE.test(text) ||
+    markdown.slice(start, end).includes("\n")) return text;
+  let lineFrom = lineStart(markdown, start);
+  let lineTo = markdown.indexOf("\n", end);
+  let line = markdown.slice(lineFrom, lineTo < 0 ? undefined : lineTo);
+  let formats = openFormatsAt(line, start - lineFrom);
+  if (markdownFormatTransition(formats, openFormatsAt(line, end - lineFrom))) return text;
+  let close = markdownFormatTransition(formats, []);
+  let open = markdownFormatTransition([], formats);
+  return text.replace(/\n+/g, breaks => close + breaks + open);
 }
 
 /**

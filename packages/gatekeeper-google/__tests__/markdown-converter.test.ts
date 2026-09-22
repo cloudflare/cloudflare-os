@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { TextStyle } from "../src/docs-api";
 import {
-  canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement, computeReplaceOperations,
+  applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
+  computeReplaceOperations,
   docTabToMarkdown, markdownToDocRequests,
 } from "../src/markdown-converter";
 import type { Segment } from "../src/markdown-converter";
@@ -413,6 +414,35 @@ describe("Markdown write canonicalization", () => {
     expect(canonicalizeMarkdownForWrite("- one\n1. two")).toBe("- one\n\n1. two");
   });
 
+  it("spells internal link destinations as a reread does", () => {
+    expect(canonicalizeMarkdownForWrite("[x](?tab=%64etails)")).toBe("[x](?tab=details)");
+  });
+
+  function splitEdit(text: string, style: TextStyle, old: string, next: string) {
+    let snapshot = docTabToMarkdown(buildTab([{ runs: [{ text, style }, "\n"] }]));
+    let start = snapshot.markdown.indexOf(old);
+    return applyMarkdownEdit(
+      { markdown: snapshot.markdown, protectedRanges: snapshot.sourceMap.protectedRanges },
+      start, start + old.length, canonicalizeMarkdownReplacement(old, next),
+    ).markdown;
+  }
+
+  it.each([...INLINE_STYLES, ["bold linked", { bold: true, link: { url: "https://e.com" } }]] as const)(
+    "splits a %s run the way a reread renders it", (_name, style: TextStyle) => {
+      let reread = docTabToMarkdown(buildTab(["A", "B"].map(text => ({
+        runs: [{ text, style }, "\n"],
+      }))));
+
+      expect(splitEdit("AB", style, "AB", "A\nB")).toBe(reread.markdown);
+    });
+
+  it("keeps untouched text verbatim when splitting a line", () => {
+    expect(splitEdit("literal \\* AB", {}, "AB", "A\nB")).toBe("literal \\* A\n\nB\n");
+  });
+
+  it("leaves formatting spanning inserted breaks as the write parses it", () => {
+    expect(splitEdit("Old", {}, "Old", "**a\nb**")).toBe("**a\n\nb**\n");
+  });
 });
 
 
@@ -1463,12 +1493,14 @@ describe("computeReplaceOperations", () => {
       "plain\n\nsecond", TAB_ID,
     ).requests;
 
+    // One request per change across both paragraphs, bullets removed before the indent reset.
     expect(requests.filter(request =>
       "updateParagraphStyle" in request || "deleteParagraphBullets" in request,
     )).toEqual([
+      { deleteParagraphBullets: { range: { startIndex: 1, endIndex: 14, tabId: TAB_ID } } },
       {
         updateParagraphStyle: {
-          range: { startIndex: 1, endIndex: 7, tabId: TAB_ID },
+          range: { startIndex: 1, endIndex: 14, tabId: TAB_ID },
           paragraphStyle: {
             namedStyleType: "NORMAL_TEXT",
             indentStart: { magnitude: 0, unit: "PT" },
@@ -1477,19 +1509,6 @@ describe("computeReplaceOperations", () => {
           fields: "namedStyleType,indentStart,indentFirstLine",
         },
       },
-      { deleteParagraphBullets: { range: { startIndex: 1, endIndex: 7, tabId: TAB_ID } } },
-      {
-        updateParagraphStyle: {
-          range: { startIndex: 7, endIndex: 14, tabId: TAB_ID },
-          paragraphStyle: {
-            namedStyleType: "NORMAL_TEXT",
-            indentStart: { magnitude: 0, unit: "PT" },
-            indentFirstLine: { magnitude: 0, unit: "PT" },
-          },
-          fields: "namedStyleType,indentStart,indentFirstLine",
-        },
-      },
-      { deleteParagraphBullets: { range: { startIndex: 7, endIndex: 14, tabId: TAB_ID } } },
     ]);
   });
 
@@ -1788,5 +1807,39 @@ describe("computeReplaceOperations", () => {
         bulletPreset: "NUMBERED_DECIMAL_ALPHA_ROMAN",
       },
     });
+  });
+
+  it("inserts plain paragraphs with a constant number of requests", () => {
+    let markdown = Array.from({ length: 50 }, (_, index) => `Paragraph ${index}`).join("\n\n");
+    let requests = markdownToDocRequests(markdown, 1, TAB_ID);
+    let text = requests[0].insertText.text;
+
+    expect(requests).toEqual([
+      { insertText: { location: { index: 1, tabId: TAB_ID }, text } },
+      {
+        updateTextStyle: {
+          range: { startIndex: 1, endIndex: 1 + text.length, tabId: TAB_ID },
+          textStyle: {},
+          fields: "bold,italic,strikethrough,link",
+        },
+      },
+    ]);
+  });
+
+  it("shares paragraph requests across adjacent paragraphs that need the same change", () => {
+    let markdown = ["# One", "# Two", "Three", "Four", "# Five"].join("\n\n");
+    let requests = markdownToDocRequests(markdown, 1, TAB_ID, { resetParagraphs: true });
+
+    expect(requests.filter(request => "deleteParagraphBullets" in request)).toHaveLength(1);
+    expect(requests.flatMap(request => {
+      let update = request.updateParagraphStyle;
+      return update
+        ? [[update.paragraphStyle.namedStyleType, update.range.startIndex, update.range.endIndex]]
+        : [];
+    })).toEqual([
+      ["HEADING_1", 1, 9],
+      ["NORMAL_TEXT", 9, 20],
+      ["HEADING_1", 20, 25],
+    ]);
   });
 });
