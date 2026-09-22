@@ -1,0 +1,19 @@
+packages/gatekeeper-spotify/src/spotify.ts
+  s_6d79354b9d5d8c::t_75ef05e56d4929 19,857-893,896-956,1805,1809-1810,2079,2081,2129,2133,2137,2141,2149,2157,2166,2175,2182,2187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c50c0572694be4c72ff8566c7c8e3147737b2d2c",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_6d79354b9d5d8c::t_77d2f069b88085 13,160,167-168,180-182,191-193,253,257,265,268,283-284,286,288-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a7c8b59bba9afebf589b7b00db0ef6bb0878eee",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
