@@ -11166,8 +11166,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // The batch is validated by the driver, inside its decision queue, where the records are
     // re-read fresh; a copy of those checks here could only ever act on stale reads.
     let profile = await this.#getClientProfile();
-    let {decided, stopped} = await this.impl.applyActionBatch(id, vetoes, profile);
+    let {decided, stopped, vetoRefused} = await this.impl.applyActionBatch(id, vetoes, profile);
     await this.#resumeDecidedActionChats(decided);
+    // Ahead of the stop: a stop leaves its reason on the card, whereas an action the user
+    // rejected silently reading as applied has nothing on it to explain the reversal.
+    if (vetoRefused) throw createActionError(ACTION_ERROR_CODES.vetoRefused);
     if (stopped) throw createActionError(ACTION_ERROR_CODES.stopped);
   }
 

@@ -384,6 +384,8 @@ export const ACTION_ERROR_CODES = {
   blocked: "ACTION_BLOCKED",
   /** The gatekeeper could not apply an action and recorded why on its card. */
   stopped: "ACTION_STOPPED",
+  /** A rejection could not take effect because the gatekeeper had already applied the action. */
+  vetoRefused: "ACTION_VETO_REFUSED",
 } as const;
 
 /** An expected action outcome failure code. */
@@ -396,6 +398,8 @@ export const ACTION_ERROR_MESSAGES: Record<ActionErrorCode, string> = {
     "An earlier action needs a decision before this one can be applied.",
   [ACTION_ERROR_CODES.stopped]:
     "Action could not be completed. Check this connection's action cards for the reason.",
+  [ACTION_ERROR_CODES.vetoRefused]:
+    "Some actions were already applied and could not be rejected.",
 };
 
 const actionErrors = codedErrorFamily(ACTION_ERROR_MESSAGES);

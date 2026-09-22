@@ -509,6 +509,36 @@ describe("ActionSyncDriver.apply", () => {
     expect(getAction(storage, 1).state).toBe("approved");
   });
 
+  it("records a veto the gatekeeper refused as already applied", async () => {
+    let storage = makeStorage();
+    let a1 = putAction(storage, 1, { autoApprovable: false });
+    let a2 = putAction(storage, 2,
+        { autoApprovable: false, failure: "an earlier attempt stopped here" });
+    putAction(storage, 4, { state: "rejected", vetoPending: true, resolvedBy: REJECTER });
+
+    // Action 2 stopped once, was applied on the retry with the reply lost, and was then
+    // rejected. Recording that rejection would enter an executed action as denied, and the
+    // stale reason would ride along onto an approved card.
+    let { target, calls, results } = makeBatchGatekeeper();
+    results.push({ alreadyApplied: [2, 4] });
+    let { decided, vetoRefused } = await makeDriver(storage, target)
+        .applyThrough(a2, [a2], REJECTER);
+
+    expect(calls).toEqual([{ actionId: 2, vetoes: [2] }]);
+    expect(decided.toSorted((a, b) => a - b)).toEqual([a1, a2]);
+    expect(vetoRefused).toBe(true);
+    expect(getAction(storage, 1).state).toBe("approved");
+    let refused = getAction(storage, 2);
+    expect(refused.state).toBe("approved");
+    expect(refused.vetoPending).toBeUndefined();
+    // The approving pass never got to record who authorized it, and the vetoer did not.
+    expect(refused.resolvedBy).toBeUndefined();
+    expect(refused.failure).toBeUndefined();
+    // Action 4's veto sat beyond the boundary, so it was never sent and is not the gatekeeper's
+    // to refuse.
+    expect(getAction(storage, 4)).toMatchObject({ state: "rejected", vetoPending: true });
+  });
+
   it("coalesces concurrent approvals into one follow-up pass at the highest frontier", async () => {
     let storage = makeStorage();
     putAction(storage, 1, { autoApprovable: false });
@@ -933,6 +963,21 @@ describe("Overseer action decisions", () => {
       state: "pending", failure: "provider refused action one",
     });
     expect(storage.actions.get(boundary)).toMatchObject({ state: "rejected" });
+  });
+
+  it("tells the rejecting client its veto was refused as already applied", async () => {
+    let storage = makeStorage();
+    let boundary = putAction(storage, 1, { autoApprovable: false });
+    let batch = makeBatchGatekeeper();
+    batch.results.push({ alreadyApplied: [1] });
+    let client = await makeClient(storage, batch.target);
+
+    let error = await client.applyActionsThrough(boundary, [boundary]).catch(caught => caught);
+
+    // Staging already showed the card denied, so the flip to approved has to be explained;
+    // nothing on the record itself says a rejection was asked for and refused.
+    expect(getActionErrorCode(error)).toBe(ACTION_ERROR_CODES.vetoRefused);
+    expect(storage.actions.get(boundary)).toMatchObject({ state: "approved" });
   });
 
   it("replays a recorded stop to a client resuming after the action was created", async () => {

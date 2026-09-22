@@ -809,6 +809,18 @@ export interface ApplyActionsThroughResult {
    * Gatekeeper to decide the right trade-off between implementation complexity and UX.
    */
   invalidatedByVeto?: Array<{action: number, invalidatedBy: number}>;
+
+  /**
+   * Vetoed action numbers this gatekeeper had already applied, so the veto did not take effect.
+   * Every entry must be an ID from this call's `vetoes`. Acknowledging one would record an
+   * executed action as rejected, which is why the refusal is reported rather than swallowed: the
+   * caller reconciles these to applied instead.
+   *
+   * Reported rather than thrown, so the rest of the batch still completes. A throw would abort
+   * every other veto and apply in the call, and the caller replays its staged vetoes, so it would
+   * throw again on each retry and strand them.
+   */
+  alreadyApplied?: number[];
 }
 
 /**
@@ -987,8 +999,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * the gatekeeper is nevertheless expected to submit all actions for approval; there is no mode
    * in which it's OK to skip the check.
    *
-   * Calls must be idempotent. Missing IDs and vetoes of unknown or already-applied actions are
-   * ignored. A repeated request must re-report persisted invalidations attributable to its vetoes.
+   * Calls must be idempotent. Missing IDs and vetoes of unknown or already-rejected actions are
+   * ignored; a veto of an action this gatekeeper already applied goes in `alreadyApplied`. A
+   * repeated request must re-report persisted invalidations attributable to its vetoes, and
+   * repeat an `alreadyApplied` refusal for as long as the caller keeps sending that veto.
    */
   applyActionsThrough?(actionId: number, vetoes: number[],
                        context: ApplyActionContext): Promise<ApplyActionsThroughResult>;

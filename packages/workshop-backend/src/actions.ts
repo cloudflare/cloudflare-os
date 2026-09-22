@@ -63,6 +63,13 @@ export type PassResult = {
    * the failure and cannot retry it.
    */
   stopped?: true;
+
+  /**
+   * Set when the gatekeeper refused a veto because it had already applied that action. The
+   * record now reads approved, which is the opposite of what the user asked for, so the pass
+   * says so rather than letting the card flip unexplained.
+   */
+  vetoRefused?: true;
 };
 
 // A queued manual approval, stamped with the connection's stop count when it was admitted. A
@@ -392,8 +399,25 @@ export class ActionSyncDriver {
       }
       stoppedFailure = undefined;
     }
-    for (let veto of sendVetoes) acknowledgeVeto(veto.action);
     let sentVetoes = new Map(sendVetoes.map(veto => [veto.action, veto]));
+    // A veto the gatekeeper refused because it had already applied that action. Acknowledging it
+    // would enter an executed action as rejected. The pass that applied it lost its response
+    // before recording an approver, and this one only knows the vetoer, so it records no one.
+    let vetoRefused: true | undefined;
+    for (let action of result.alreadyApplied ?? []) {
+      if (!sentVetoes.has(action)) continue;
+      let fresh = this.#freshAction(byAction, action);
+      if (fresh?.state !== "rejected") continue;
+      fresh.state = "approved";
+      fresh.appliedAt = new Date();
+      delete fresh.vetoPending;
+      delete fresh.resolvedBy;
+      delete fresh.failure;
+      this.hooks.persistApproved(fresh);
+      decided.push(fresh.id);
+      vetoRefused = true;
+    }
+    for (let veto of sendVetoes) acknowledgeVeto(veto.action);
     // Cascade invalidations first: an action inside the frontier can also be cascade-invalidated
     // by a veto delivered in this same pass, and then it was deleted, not applied -- marking it
     // rejected here keeps the approval loop below (which only touches pending records) from
@@ -448,7 +472,9 @@ export class ActionSyncDriver {
         });
       }
     }
-    return {decided, blocked, stopped: stoppedAt === undefined ? stopped : true};
+    return {
+      decided, blocked, vetoRefused, stopped: stoppedAt === undefined ? stopped : true,
+    };
   }
 
   // Re-read before each mutation; earlier checkpoints and cascade refreshes may replace snapshots.
