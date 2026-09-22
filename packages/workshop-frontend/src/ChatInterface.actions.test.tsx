@@ -114,29 +114,27 @@ const actionMessage = {
   actionLog: entry(1),
 } as AiChatMessage
 
-// Renders a first session that caches a pending action card, then settles it so a linked swap
-// can resume. Pass a key to link the stub; unlinked sessions never park a watermark.
-async function cachePendingCard(key?: string) {
-  const first = makeOverseer()
-  const firstChat = withChatApi(first)
-  if (key !== undefined) linkActionLog(first.overseer, key)
-  await renderChat(first.overseer, { selectedChatId: 1 })
-  await first.resolveSubscription()
-  await first.resolvePendingQuery({ entries: [entry(1), entry(2)] })
-  firstChat.emitMessage(actionMessage)
-  flushFrames()
-}
-
-// Renders one action card in a live chat, which is where its status label and notes are derived.
-async function renderCard(over: Record<string, unknown>) {
+// Renders action 1's card in a live chat, which is where its status label and notes are derived.
+// `entries` is the pending page the session settles with; `linkKey` links the stub so a later
+// session can resume (unlinked sessions never park a watermark).
+async function renderCard(
+  over: Record<string, unknown> = {},
+  { entries, linkKey }: { entries?: ActionLogEntry[]; linkKey?: string } = {},
+) {
   const log = entry(1, over)
   const server = makeOverseer()
   const chat = withChatApi(server)
+  if (linkKey !== undefined) linkActionLog(server.overseer, linkKey)
   await renderChat(server.overseer, { selectedChatId: 1 })
   await server.resolveSubscription()
-  await server.resolvePendingQuery({ entries: [log] })
+  await server.resolvePendingQuery({ entries: entries ?? [log] })
   chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
   flushFrames()
+}
+
+// A first session that caches a pending card, with a second pending action behind it.
+function cachePendingCard(linkKey?: string) {
+  return renderCard({}, { entries: [entry(1), entry(2)], linkKey })
 }
 
 describe('ChatInterface action refresh', () => {
@@ -397,6 +395,15 @@ describe('ChatInterface always-approve offer', () => {
     // A stop disqualifies the action from the rule path, so enabling one here would promise an
     // application that never happens and leave an awaiting agent turn suspended.
     expect(document.body.textContent).toContain('page was deleted upstream')
+    expect(document.body.textContent).not.toContain('Always approve')
+  })
+
+  it('withholds it while the workspace is restricted', async () => {
+    await renderPendingCard(entry(1, ruleEligible), { restricted: true })
+
+    // No rule fires once the workspace has read restricted data, so enabling one here would
+    // promise an application that never happens.
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
     expect(document.body.textContent).not.toContain('Always approve')
   })
 })
