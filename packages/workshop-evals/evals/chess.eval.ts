@@ -436,11 +436,13 @@ Everything that already worked keeps working.`,
       await verifier.check("refuses-invalid-pgn-without-changing-the-game", async () => {
         using api = await verifier.connect<ChessApi>(TITLE);
         const before = LoadPgnSchema.parse(await api.loadPgn({ pgn: PGN_GAMES.legalTrap ?? "" }));
+        const beforePgn = PgnSchema.parse(await api.pgn()).pgn;
         const results = [];
         for (const pgn of INVALID_PGNS) {
           const refused = LoadPgnSchema.parse(await api.loadPgn({ pgn }));
           const after = FenSchema.parse(await api.fen()).fen;
-          results.push({ refused, unchanged: before.ok && sameFen(after, before.fen) });
+          const afterPgn = PgnSchema.parse(await api.pgn()).pgn;
+          results.push({ refused, unchanged: before.ok && sameFen(after, before.fen) && afterPgn === beforePgn });
         }
         return {
           pass: before.ok && results.every(result =>

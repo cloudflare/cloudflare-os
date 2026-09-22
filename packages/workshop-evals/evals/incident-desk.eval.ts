@@ -232,7 +232,8 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
 
       await verifier.check("simultaneous-opens-of-one-id-admit-exactly-one", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
-        const results = (await Promise.all([1, 2, 3, 1, 2, 3, 1, 2].map((severity, index) =>
+        const severities = [1, 2, 3, 1, 2, 3, 1, 2];
+        const results = (await Promise.all(severities.map((severity, index) =>
           api.open({ id: "race-open", service: "dns", severity, summary: `attempt ${index}` }))))
           .map(result => OkSchema.parse(result));
         const incident = IncidentSchema.parse(await api.incident({ id: "race-open" }));
@@ -240,7 +241,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const winner = winners[0];
         return {
           pass: winners.length === 1 && winner !== undefined &&
-            incident.summary === `attempt ${winner}` &&
+            incident.summary === `attempt ${winner}` && incident.severity === severities[winner] &&
             results.every(result => result.ok || result.error === "DUPLICATE_ID"),
           evidence: { results, incident },
         };
