@@ -1,10 +1,12 @@
 docs/observers.md
   s_7fb837265947ac::t_736ca1b322d7a7 38-40,786-789
+  s_6d79354b9d5d8c::t_eddb68eebcf01f 37,41-44,677-679
 packages/integration-tests/__tests__/auto-approval-policy.test.ts
   s_7fb837265947ac::t_736ca1b322d7a7 127
   s_7fb837265947ac::t_e6fc2ca0c3424a 1-126,128-150
 packages/integration-tests/__tests__/sensitive-observations.test.ts
   s_7fb837265947ac::t_736ca1b322d7a7 225,243-269
+  s_6d79354b9d5d8c::t_eddb68eebcf01f 8-12,224
 packages/workshop-shared/src/gatekeeper.ts
   s_7fb837265947ac::t_736ca1b322d7a7 1207-1210,1213-1215
 packages/workshop-backend/__tests__/auto-approval.test.ts
@@ -25,6 +27,14 @@ packages/workshop-backend/src/overseer.ts
   "base_commit_sha": "4316043736d63eaf7ce9e2b31cd2294a5b4992da",
   "prompts": {},
   "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_7fb837265947ac": {
       "agent_id": {
         "tool": "claude",
