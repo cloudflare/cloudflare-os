@@ -4,6 +4,7 @@ import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
+import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
 import { ResolveButton } from './components/ResolveButton'
 import {
   formatRelativeTime,
@@ -114,6 +115,9 @@ export default function ActivityNotifications({
                       />
                     </div>
                   </div>
+                  {isDescriptionIncomplete(action) && (
+                    <IncompleteDescriptionNotice className="mt-2 px-2.5 py-2" />
+                  )}
                 </div>
               )
             })}

@@ -4,12 +4,16 @@
 import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AiChatMessage, AiChatSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type {
+  ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
+} from '@gadgets/workshop-shared/api'
 
 vi.stubGlobal('ResizeObserver', class {
   observe() {}
   disconnect() {}
 })
+// jsdom lays nothing out; the message list scrolls itself to the bottom on every render.
+Element.prototype.scrollTo = () => {}
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -42,6 +46,7 @@ vi.mock('./AuthContext', () => {
 
 import { entry, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
+import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 import { linkActionLog } from './useActions'
 
 const testRoot = makeTestRoot()
@@ -54,11 +59,13 @@ afterEach(() => {
 function withChatApi(
   server: ReturnType<typeof makeOverseer>,
   getChatMessage = vi.fn<(chatId: number, sequence: number) => Promise<AiChatMessage | null>>(),
+  chats: AiChatMetadata[] = [],
 ) {
   let subscriber: AiChatSubscriber | undefined
   Object.assign(server.overseer as object, {
     getChatMessage,
-    listChats: async () => [],
+    getChatHistory: async () => ({ messages: [] }),
+    listChats: async () => chats,
     listModels: async () => [],
     onRpcBroken: () => {},
     subscribeToChat: (next: AiChatSubscriber) => {
@@ -74,12 +81,12 @@ function withChatApi(
   }
 }
 
-function renderChat(overseer: RpcStub<Overseer>) {
+function renderChat(overseer: RpcStub<Overseer>, props: { selectedChatId?: number } = {}) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
-      selectedChatId={null}
+      selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
       consoleLogPreview=""
@@ -137,5 +144,45 @@ describe('ChatInterface action refresh', () => {
     await second.resolveSubscription()
     await second.resolvePendingQuery({ entries: [entry(1)] })
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
+  })
+})
+
+function pendingLog(over: Partial<Record<string, unknown>> = {}) {
+  return entry(1, {
+    description: { title: 'Send email', description: 'Send an email.', implementsRevert: false, ...over },
+  })
+}
+
+// Renders chat 1 selected, so its messages -- and the action card for `log` -- are actually on
+// screen.
+async function renderPendingCard(log: ActionLogEntry) {
+  const server = makeOverseer()
+  const chat = withChatApi(server, undefined, [
+    { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+  ])
+  await renderChat(server.overseer, { selectedChatId: 1 })
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries: [log] })
+  chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+}
+
+describe('incomplete description notice', () => {
+  it('flags a pending action whose description is not marked complete', async () => {
+    await renderPendingCard(pendingLog())
+
+    expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
+  it('flags a blocking action whose description is not marked complete', async () => {
+    await renderPendingCard(pendingLog({ awaitDecision: true }))
+
+    expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
+  })
+
+  it('shows no notice when the description is complete', async () => {
+    await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+
+    expect(document.body.textContent).toContain('Send an email.')
+    expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 })

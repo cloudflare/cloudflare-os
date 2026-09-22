@@ -19,6 +19,7 @@ import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
+import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
 
 export type ActivityView = 'review' | 'history' | 'auto'
 
@@ -655,6 +656,10 @@ function ReviewRequest({
         <p className={`mt-1.5 max-w-2xl whitespace-pre-wrap text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle ${expanded ? '' : 'line-clamp-2'}`}>
           {record.description.description}
         </p>
+      )}
+
+      {isDescriptionIncomplete(record) && (
+        <IncompleteDescriptionNotice className="mt-2 max-w-2xl" />
       )}
     </article>
   )
