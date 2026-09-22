@@ -7,6 +7,8 @@ import { copyToClipboard } from './clipboard'
 
 type ActionDecision = 'approve' | 'deny'
 
+const inFlightActions = new WeakMap<RpcStub<Overseer>, Set<number>>()
+
 /** Build bounded diagnostics without copying arbitrary properties attached to the error. */
 export function actionErrorDiagnostics(
   error: unknown,
@@ -29,6 +31,11 @@ export function useResolveAction(
   onResolvedRef.current = onResolved
 
   return useCallback(async function resolveAction(actionId: number, decision: ActionDecision) {
+    const inFlight = inFlightActions.get(overseer) ?? new Set<number>()
+    if (inFlight.has(actionId)) return
+    inFlightActions.set(overseer, inFlight)
+    inFlight.add(actionId)
+
     setProcessing(previous => new Set(previous).add(actionId))
     try {
       if (decision === 'approve') await overseer.approveAction(actionId)
@@ -40,6 +47,7 @@ export function useResolveAction(
       const toastId = toasts.add({
         title: `Failed to ${decision} action`,
         variant: 'error',
+        timeout: 0,
         actions: [{
           children: 'Try again',
           size: 'sm',
@@ -61,6 +69,7 @@ export function useResolveAction(
         }],
       })
     } finally {
+      inFlight.delete(actionId)
       setProcessing(previous => {
         const next = new Set(previous)
         next.delete(actionId)
