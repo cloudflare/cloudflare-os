@@ -30,10 +30,12 @@ const COLOS = ["FRA", "LHR", "SIN", "SJC"];
 const PLANTED = { worker: "checkout-api", hour: 14, errorRate: 0.6 };
 const DECOY = { worker: "webhook-relay", hour: 3, errorRate: 0.25 };
 // Three worker+route pairs share one planted slow tail, so their p95s tie exactly and
-// slowestRoutes has to fall back to the worker-then-route order the prompt requires.
+// slowestRoutes has to fall back to the worker-then-route order the prompt requires. The tail is
+// in one colo only, so a colo-filtered ranking is a different list from the day's.
 const TIED = {
   p95Ms: 3000,
   perPair: 40,
+  colo: "FRA",
   pairs: [["auth-edge", "/logout"], ["auth-edge", "/token/refresh"], ["pricing-svc", "/price/bulk"]],
 } as const;
 
@@ -76,7 +78,7 @@ function generate(): LogEvent[] {
     for (let index = 0; index < TIED.perPair; index++) {
       events.push({
         ts: `${DAY}T${pad(index % 24)}:${pad(random.int(0, 59))}:${pad(random.int(0, 59))}Z`,
-        worker, colo: random.pick(COLOS), status: 200, durationMs: TIED.p95Ms, route,
+        worker, colo: TIED.colo, status: 200, durationMs: TIED.p95Ms, route,
       });
     }
   }
@@ -342,13 +344,17 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const afternoon = SummarySchema.parse(await api.summary(AFTERNOON)).perWorker;
         const one = { ...AFTERNOON, worker: PLANTED.worker };
         const onlyOne = SummarySchema.parse(await api.summary(one)).perWorker;
+        // Endpoints inside an hour: the range is on the events, not on the hour they fall in.
+        const partial = { fromIso: `${DAY}T13:30:00Z`, toIso: `${DAY}T14:45:00Z` };
+        const partialHours = SummarySchema.parse(await api.summary(partial)).perWorker;
         const single = { fromIso: hourIso(14), toIso: hourIso(15) };
         const singleHour = HourlySchema.parse(await api.hourly(single)).buckets;
         return {
           pass: sameRows(afternoon, referenceSummary(AFTERNOON)) &&
             sameRows(onlyOne, referenceSummary(one)) &&
+            sameRows(partialHours, referenceSummary(partial)) &&
             sameRows(singleHour, referenceHourly(single)),
-          evidence: { afternoon, onlyOne, singleHour },
+          evidence: { afternoon, onlyOne, partialHours, singleHour },
         };
       });
     },

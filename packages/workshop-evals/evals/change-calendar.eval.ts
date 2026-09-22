@@ -110,10 +110,11 @@ async function checkSeededWindowsIntact(verifier: EvalVerifier, id: string): Pro
   });
 }
 
-/** The length a bullet states, in hours: "2 hours", "2h", "2.5 hrs", "4.5-hour". */
+/** The length a bullet states, in hours: "2 hours", "2h", "2.5 hrs", "4.5-hour", "2h 30m". */
 function statedHours(bullet: string): number | null {
-  const match = /(\d+(?:\.\d+)?)\s*-?\s*(?:h|hr|hrs|hour|hours)\b/i.exec(bullet);
-  return match === null ? null : Number(match[1]);
+  const match = /(\d+(?:\.\d+)?)\s*-?\s*(?:hours?|hrs?|h)(?![a-z])(?:\s*(?:and\s+)?(\d+)\s*(?:minutes?|mins?|m)(?![a-z]))?/i
+    .exec(bullet);
+  return match === null ? null : Number(match[1]) + Number(match[2] ?? 0) / 60;
 }
 
 /** A bullet describes a window when it states its reason, its start time and its length. */
@@ -194,6 +195,10 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
           INVALID_RANGE_too_long: OkSchema.parse(await api.schedule({
             ...base, startIso: "2027-10-20T22:00:00Z", endIso: "2027-10-21T07:00:00Z",
           })),
+          // 23:00 in +05:00 is 18:00 UTC; the prompt fixes no code for this, only that it fails.
+          OUTSIDE_HOURS_offset: OkSchema.parse(await api.schedule({
+            ...base, startIso: "2027-10-20T23:00:00+05:00", endIso: "2027-10-21T00:00:00+05:00",
+          })),
         };
         const all = WindowsSchema.parse(await api.windows({
           fromIso: "2027-01-01T00:00:00Z", toIso: "2028-01-01T00:00:00Z",
@@ -205,6 +210,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
             code(attempts.OUTSIDE_HOURS) === "OUTSIDE_HOURS" &&
             code(attempts.INVALID_RANGE_backwards) === "INVALID_RANGE" &&
             code(attempts.INVALID_RANGE_too_long) === "INVALID_RANGE" &&
+            !attempts.OUTSIDE_HOURS_offset.ok &&
             sameWindows(all, SEEDED),
           evidence: { attempts, count: all.length },
         };
@@ -212,9 +218,10 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
 
       await verifier.check("overlap-is-per-service-and-touching-is-allowed", async () => {
         using api = await verifier.connect<CalendarApi>(CALENDAR);
-        // Ends exactly when mw-101 starts: allowed.
+        // Ends exactly when mw-101 starts: allowed. Its id sorts before mw-101 but is scheduled
+        // after it, so conflicts() has to sort rather than return insertion order.
         const touching = OkSchema.parse(await api.schedule({
-          id: "mw-touch", service: "api-gateway", reason: "test",
+          id: "mw-100", service: "api-gateway", reason: "test",
           startIso: "2027-10-12T22:00:00Z", endIso: "2027-10-12T23:00:00Z",
         }));
         const overlapping = OkSchema.parse(await api.schedule({
@@ -229,14 +236,14 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
           service: "api-gateway", startIso: "2027-10-12T22:30:00Z", endIso: "2027-10-12T23:30:00Z",
         }));
         const cancelled = [
-          OkSchema.parse(await api.cancel({ id: "mw-touch" })),
+          OkSchema.parse(await api.cancel({ id: "mw-100" })),
           OkSchema.parse(await api.cancel({ id: "mw-other" })),
           OkSchema.parse(await api.cancel({ id: "mw-nope" })),
         ];
         const week = await week41(api);
         return {
           pass: touching.ok && !overlapping.ok && overlapping.error === "OVERLAP" &&
-            otherService.ok && sameIds(conflicts.ids, ["mw-101", "mw-touch"]) &&
+            otherService.ok && sameIds(conflicts.ids, ["mw-100", "mw-101"]) &&
             cancelled[0]?.ok === true && cancelled[1]?.ok === true &&
             cancelled[2]?.ok === false && cancelled[2].error === "UNKNOWN_WINDOW" &&
             sameWindows(week, WEEK_41),
@@ -313,16 +320,27 @@ instead of 8, still "INVALID_RANGE". Everything already scheduled stays exactly 
           id: "mw-auth-close", service: "auth", reason: "test",
           startIso: "2027-10-13T02:00:00Z", endIso: "2027-10-13T03:00:00Z",
         }));
+        // Spacing also applies between two windows added in this same turn: 22 hours apart.
+        const newA = OkSchema.parse(await api.schedule({
+          id: "mw-auth-a", service: "auth", reason: "test",
+          startIso: "2027-10-20T23:00:00Z", endIso: "2027-10-21T00:00:00Z",
+        }));
+        const newB = OkSchema.parse(await api.schedule({
+          id: "mw-auth-b", service: "auth", reason: "test",
+          startIso: "2027-10-21T22:00:00Z", endIso: "2027-10-21T23:00:00Z",
+        }));
         const cancelled = [
           OkSchema.parse(await api.cancel({ id: "mw-far" })),
           OkSchema.parse(await api.cancel({ id: "mw-auth-close" })),
+          OkSchema.parse(await api.cancel({ id: "mw-auth-a" })),
         ];
         return {
           pass: !tooClose.ok && tooClose.error === "TOO_CLOSE" &&
             !stillOverlap.ok && stillOverlap.error === "OVERLAP" &&
-            farEnough.ok && otherService.ok && cancelled.every(result => result.ok) &&
+            farEnough.ok && otherService.ok && newA.ok && !newB.ok && newB.error === "TOO_CLOSE" &&
+            cancelled.every(result => result.ok) &&
             sameWindows(await week41(api), WEEK_41),
-          evidence: { tooClose, stillOverlap, farEnough, otherService, cancelled },
+          evidence: { tooClose, stillOverlap, farEnough, otherService, newA, newB, cancelled },
         };
       });
 

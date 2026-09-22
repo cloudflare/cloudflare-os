@@ -120,13 +120,16 @@ function statusMismatch(
 type Divergence = { at: string; what: string; gadget: unknown; oracle: unknown };
 
 /**
- * Compare legal moves and status with the oracle at the Gadget's current position. Once a game is
- * drawn by material, repetition or the fifty-move rule the pieces can still move but play is over,
- * and engines differ on whether to list those moves; either answer is accepted there.
+ * Compare the stored position, legal moves and status with the oracle at the Gadget's current
+ * position. Once a game is drawn by material, repetition or the fifty-move rule the pieces can
+ * still move but play is over, and engines differ on whether to list those moves; either answer
+ * is accepted there.
  */
 async function compareHere(
     api: ChessApi, oracle: Chess, fields: readonly (keyof Status)[]): Promise<Divergence | null> {
   const fen = oracle.fen();
+  const stored = FenSchema.parse(await api.fen()).fen;
+  if (!sameFen(stored, fen)) return { at: fen, what: "fen", gadget: stored, oracle: fen };
   const [moves, status] = [await gadgetMoves(api), StatusSchema.parse(await api.status())];
   const expectedMoves = oracleMoves(oracle);
   const drawnWithMovesLeft = oracle.isGameOver() && !oracle.isCheckmate() && !oracle.isStalemate();
@@ -139,6 +142,14 @@ async function compareHere(
     return { at: fen, what: `status.${mismatch.join(",")}`, gadget: status, oracle: expected };
   }
   return null;
+}
+
+/**
+ * The Gadget's own record of the game, without tag pairs: the prompt asks for movetext, and a
+ * Gadget that also writes a Date or clock tag must not fail "changes nothing" on that.
+ */
+async function movetext(api: ChessApi): Promise<string> {
+  return PgnSchema.parse(await api.pgn()).pgn.replace(/^\[[^\]]*\]\s*$/gm, "").trim();
 }
 
 type GameOptions = {
@@ -157,7 +168,7 @@ async function differentialGame(
     api: ChessApi, seed: number, { plies, fields, pgn }: GameOptions): Promise<Divergence | null> {
   const random = new Seeded(seed);
   const oracle = new Chess();
-  const record = async () => pgn ? PgnSchema.parse(await api.pgn()).pgn : null;
+  const record = async () => pgn ? await movetext(api) : null;
   await api.newGame();
   for (let ply = 0; ply < plies && !oracle.isGameOver(); ply++) {
     const divergence = await compareHere(api, oracle, fields);
@@ -273,13 +284,8 @@ async function playSpecialMoves(
     if (!played.ok || !sameFen(played.fen, expected.fen())) {
       return { at: fen, what: `after ${move.san}`, gadget: played, oracle: expected.fen() };
     }
-    const status = StatusSchema.parse(await api.status());
-    const expectedStatus = oracleStatus(expected, fields);
-    const mismatch = statusMismatch(status, expectedStatus, fields);
-    if (mismatch.length > 0) {
-      return { at: expected.fen(), what: `status.${mismatch.join(",")} after ${move.san}`,
-        gadget: status, oracle: expectedStatus };
-    }
+    const divergence = await compareHere(api, expected, fields);
+    if (divergence !== null) return { ...divergence, what: `${divergence.what} after ${move.san}` };
   }
   return null;
 }
@@ -436,12 +442,12 @@ Everything that already worked keeps working.`,
       await verifier.check("refuses-invalid-pgn-without-changing-the-game", async () => {
         using api = await verifier.connect<ChessApi>(TITLE);
         const before = LoadPgnSchema.parse(await api.loadPgn({ pgn: PGN_GAMES.legalTrap ?? "" }));
-        const beforePgn = PgnSchema.parse(await api.pgn()).pgn;
+        const beforePgn = await movetext(api);
         const results = [];
         for (const pgn of INVALID_PGNS) {
           const refused = LoadPgnSchema.parse(await api.loadPgn({ pgn }));
           const after = FenSchema.parse(await api.fen()).fen;
-          const afterPgn = PgnSchema.parse(await api.pgn()).pgn;
+          const afterPgn = await movetext(api);
           results.push({ refused, unchanged: before.ok && sameFen(after, before.fen) && afterPgn === beforePgn });
         }
         return {
@@ -509,10 +515,11 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
         await api.newGame();
         const shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"];
         const seen: Status[] = [];
+        const played: z.infer<typeof MoveResultSchema>[] = [];
         for (let repeat = 0; repeat < 2; repeat++) {
           for (const key of shuffle) {
             const move = { from: key.slice(0, 2), to: key.slice(2) };
-            await api.move(move);
+            played.push(MoveResultSchema.parse(await api.move(move)));
             oracle.move(move);
           }
           seen.push(StatusSchema.parse(await api.status()));
@@ -521,21 +528,22 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
         const afterThree = seen[1];
         const fiftyFen = "8/8/8/8/8/4k3/8/R3K3 w - - 99 80";
         const fiftyOracle = new Chess(fiftyFen);
-        await api.loadFen({ fen: fiftyFen });
+        const loadedFifty = LoadSchema.parse(await api.loadFen({ fen: fiftyFen }));
         const beforeFifty = StatusSchema.parse(await api.status());
-        await api.move({ from: "a1", to: "a2" });
+        played.push(MoveResultSchema.parse(await api.move({ from: "a1", to: "a2" })));
         fiftyOracle.move({ from: "a1", to: "a2" });
         const afterFifty = StatusSchema.parse(await api.status());
         const expectedThree = oracleStatus(oracle, DRAW_STATUS);
         return {
-          pass: afterTwo !== undefined && afterThree !== undefined &&
+          pass: afterTwo !== undefined && afterThree !== undefined && loadedFifty.ok &&
+            played.every(result => result.ok) &&
             afterTwo.threefoldRepetition === false && afterTwo.draw === false &&
             statusMismatch(afterThree, expectedThree, DRAW_STATUS).length === 0 &&
             expectedThree.threefoldRepetition === true &&
             beforeFifty.fiftyMoveRule === false &&
             statusMismatch(afterFifty, oracleStatus(fiftyOracle, DRAW_STATUS), DRAW_STATUS).length === 0 &&
             afterFifty.fiftyMoveRule === true && afterFifty.gameOver === true,
-          evidence: { afterTwo, afterThree, expectedThree, beforeFifty, afterFifty },
+          evidence: { played, afterTwo, afterThree, expectedThree, loadedFifty, beforeFifty, afterFifty },
         };
       });
 

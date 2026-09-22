@@ -55,6 +55,8 @@ interface DeskApi {
 
 const TITLE = "Incident Desk";
 const RESPONDERS = Array.from({ length: 20 }, (_unused, index) => `oncall-${index + 1}`);
+/** The severities the simultaneous opens of race-open carry; attempt N's summary names N. */
+const RACE_OPEN_SEVERITIES = [1, 2, 3, 1, 2, 3, 1, 2];
 
 function code(result: Ok | Ack): string {
   return result.ok ? "ok" : result.error;
@@ -63,6 +65,19 @@ function code(result: Ok | Ack): string {
 async function openIncident(
     api: DeskApi, id: string, severity: number, service = "api-gateway"): Promise<Ok> {
   return OkSchema.parse(await api.open({ id, service, severity, summary: `Incident ${id}` }));
+}
+
+/** Open an incident a check depends on; a refusal fails the check rather than the later steps. */
+async function mustOpen(api: DeskApi, id: string, severity: number, service: string): Promise<void> {
+  const result = await openIncident(api, id, severity, service);
+  if (!result.ok) throw new Error(`open(${id}) was refused: ${result.error}`);
+}
+
+/** Escalation changes severity and the count and nothing else about an incident. */
+function escalatedOnce(before: Incident, after: Incident): boolean {
+  return after.severity === before.severity - 1 && after.escalations === (before.escalations ?? 0) + 1 &&
+    JSON.stringify({ ...after, severity: before.severity, escalations: before.escalations }) ===
+      JSON.stringify(before);
 }
 
 /**
@@ -90,10 +105,13 @@ function asTurnOneLeftIt(incident: Incident): boolean {
   const openedAt = Date.parse(incident.openedAt);
   const acknowledgedAt = instant(incident.acknowledgedAt);
   const resolvedAt = instant(incident.resolvedAt);
+  // race-open's winner is decided at run time, but its summary names the attempt that won.
+  const attempt = /^attempt ([0-7])$/.exec(incident.summary);
+  const summaryAndSeverity = incident.id === "race-open"
+    ? attempt !== null && incident.severity === RACE_OPEN_SEVERITIES[Number(attempt[1])]
+    : incident.summary === `Incident ${incident.id}` && incident.severity === seeded.severity;
   return incident.service === seeded.service && incident.status === seeded.status &&
-    (seeded.severity === null || incident.severity === seeded.severity) &&
-    (incident.id === "race-open"
-      ? /^attempt [0-7]$/.test(incident.summary) : incident.summary === `Incident ${incident.id}`) &&
+    summaryAndSeverity &&
     (seeded.owners === null
       ? incident.owner === null : incident.owner !== null && seeded.owners.includes(incident.owner)) &&
     (acknowledgedAt === null) === (incident.status === "open") &&
@@ -209,10 +227,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
             code(notOwner) === "NOT_OWNER" && resolved.ok && code(twice) === "ALREADY_RESOLVED" &&
             !lateAck.ok && lateAck.error === "ALREADY_RESOLVED" && lateAck.owner === null &&
             !unknown.ok && unknown.error === "UNKNOWN_INCIDENT" && unknown.owner === null &&
-            incident.status === "resolved" && incident.owner === "alice" &&
-            incident.acknowledgedAt !== null && incident.resolvedAt !== null &&
-            Date.parse(incident.openedAt) <= Date.parse(incident.acknowledgedAt) &&
-            Date.parse(incident.acknowledgedAt) <= Date.parse(incident.resolvedAt),
+            asTurnOneLeftIt(incident),
           evidence: { opened, duplicate, badSeverity, early, acked, again, notOwner, resolved,
             twice, lateAck, unknown, incident },
         };
@@ -224,7 +239,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         using api = await verifier.connect<DeskApi>(TITLE);
         const outcomes = [];
         for (const id of ["race-1", "race-2", "race-3", "race-4", "race-5"]) {
-          await openIncident(api, id, 1, "edge-cache");
+          await mustOpen(api, id, 1, "edge-cache");
           outcomes.push({ id, ...await race(api, id) });
         }
         return { pass: outcomes.every(outcome => outcome.consistent), evidence: outcomes };
@@ -232,8 +247,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
 
       await verifier.check("simultaneous-opens-of-one-id-admit-exactly-one", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
-        const severities = [1, 2, 3, 1, 2, 3, 1, 2];
-        const results = (await Promise.all(severities.map((severity, index) =>
+        const results = (await Promise.all(RACE_OPEN_SEVERITIES.map((severity, index) =>
           api.open({ id: "race-open", service: "dns", severity, summary: `attempt ${index}` }))))
           .map(result => OkSchema.parse(result));
         const incident = IncidentSchema.parse(await api.incident({ id: "race-open" }));
@@ -241,7 +255,8 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const winner = winners[0];
         return {
           pass: winners.length === 1 && winner !== undefined &&
-            incident.summary === `attempt ${winner}` && incident.severity === severities[winner] &&
+            incident.summary === `attempt ${winner}` &&
+            incident.severity === RACE_OPEN_SEVERITIES[winner] &&
             results.every(result => result.ok || result.error === "DUPLICATE_ID"),
           evidence: { results, incident },
         };
@@ -263,17 +278,19 @@ null when there is nothing to average. Everything already on the board stays.`,
         const board = BoardSchema.parse(await api.board()).incidents;
         const intact = board.length === Object.keys(TURN_ONE_BOARD).length &&
           board.every(asTurnOneLeftIt);
-        await openIncident(api, "race-6", 2, "billing");
+        await mustOpen(api, "race-6", 2, "billing");
         const outcome = await race(api, "race-6");
         return { pass: intact && outcome.consistent, evidence: { board, outcome } };
       });
 
       await verifier.check("escalation-moves-toward-severity-one-and-stops", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
-        await openIncident(api, "esc-1", 3, "auth");
+        await mustOpen(api, "esc-1", 3, "auth");
+        const opened = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
         const first = OkSchema.parse(await api.escalate({ id: "esc-1" }));
         const afterFirst = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
         const second = OkSchema.parse(await api.escalate({ id: "esc-1" }));
+        const afterSecond = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
         const third = OkSchema.parse(await api.escalate({ id: "esc-1" }));
         const afterThird = IncidentSchema.parse(await api.incident({ id: "esc-1" }));
         // race-6 is acknowledged at severity 2: escalation must not touch its ownership.
@@ -284,24 +301,23 @@ null when there is nothing to average. Everything already on the board stays.`,
         const unknown = OkSchema.parse(await api.escalate({ id: "esc-x" }));
         const untouched = IncidentSchema.parse(await api.incident({ id: "race-1" }));
         return {
-          pass: first.ok && afterFirst.severity === 2 && afterFirst.escalations === 1 &&
-            second.ok && code(third) === "AT_MAX_SEVERITY" &&
-            afterThird.severity === 1 && afterThird.escalations === 2 &&
-            before.status === "acknowledged" && acknowledged.ok &&
-            after.severity === 1 && after.escalations === 1 && after.status === "acknowledged" &&
-            after.owner === before.owner && after.acknowledgedAt === before.acknowledgedAt &&
+          pass: first.ok && escalatedOnce(opened, afterFirst) &&
+            second.ok && escalatedOnce(afterFirst, afterSecond) && afterSecond.severity === 1 &&
+            code(third) === "AT_MAX_SEVERITY" &&
+            JSON.stringify(afterThird) === JSON.stringify(afterSecond) &&
+            before.status === "acknowledged" && acknowledged.ok && escalatedOnce(before, after) &&
             code(resolved) === "ALREADY_RESOLVED" && code(unknown) === "UNKNOWN_INCIDENT" &&
             (untouched.escalations ?? 0) === 0,
-          evidence: { first, afterFirst, second, third, afterThird, before, acknowledged, after,
-            resolved, unknown },
+          evidence: { opened, first, afterFirst, second, afterSecond, third, afterThird, before,
+            acknowledged, after, resolved, unknown },
         };
       });
 
       await verifier.check("metrics-follow-the-boards-own-timestamps", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
         // billing then holds one incident in each state: race-6 acknowledged, and these two.
-        await openIncident(api, "bill-open", 3, "billing");
-        await openIncident(api, "bill-done", 2, "billing");
+        await mustOpen(api, "bill-open", 3, "billing");
+        await mustOpen(api, "bill-done", 2, "billing");
         const acked = AckSchema.parse(await api.acknowledge({ id: "bill-done", responder: "dana" }));
         const done = OkSchema.parse(await api.resolve({ id: "bill-done", responder: "dana" }));
         const board = BoardSchema.parse(await api.board()).incidents;
