@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
 
-const { BrowserRpcTransport, renderGadgetInBrowser } =
+const {
+  BrowserRpcTransport,
+  pdfExportSnapshotKind,
+  readPdfExportSnapshot,
+  renderGadgetInBrowser,
+} =
     await import("../src/browser-export.js");
 const { createExportDeadline, limitExportStream } =
     await import("../src/export-limits.js");
@@ -26,6 +31,7 @@ type Harness = {
   screenshotCaptureBeyondViewport: () => boolean | undefined;
   setDocumentDimensions: (width: number, height: number) => void;
   setSnapshot: (value: string) => void;
+  setExportReady: (value: { ready: boolean; waitedMs: number }) => void;
 };
 
 function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
@@ -49,6 +55,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let snapshot = "<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>";
   let navigated = false;
   let requestHandler: ((request: unknown) => void) | undefined;
+  let exportReadyResult: { ready: boolean; waitedMs: number } = { ready: true, waitedMs: 0 };
   const evaluate = (
     isolated: boolean,
     fn: ((...args: never[]) => unknown) | string,
@@ -63,6 +70,10 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
       if (isolated) throw new Error("Client module was awaited outside the main world.");
       clientInitialized = true;
       return Promise.resolve();
+    }
+    if (fn.toString().includes("exportReady")) {
+      expect(clientInitialized).toBe(true);
+      return Promise.resolve(exportReadyResult);
     }
     if (fn.toString().includes("MutationObserver")) {
       if (!isolated) throw new Error("DOM settling ran in the main world.");
@@ -197,6 +208,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     screenshotCaptureBeyondViewport: () => screenshotCaptureBeyondViewport,
     setDocumentDimensions: (width, height) => { documentDimensions = {width, height}; },
     setSnapshot: value => { snapshot = value; },
+    setExportReady: (value: { ready: boolean; waitedMs: number }) => { exportReadyResult = value; },
   };
   return { gadget, harness };
 }
@@ -307,7 +319,80 @@ describe("limitStream", () => {
   });
 });
 
+describe("pdf export snapshot", () => {
+  it("maps bundled output ids to the native read method", () => {
+    expect(pdfExportSnapshotKind("spreadsheet")).toBe("document");
+    expect(pdfExportSnapshotKind("document")).toBe("document");
+    expect(pdfExportSnapshotKind("presentation")).toBe("deck");
+    expect(pdfExportSnapshotKind("custom")).toBeUndefined();
+    expect(pdfExportSnapshotKind(undefined)).toBeUndefined();
+  });
+
+  it("reads getDocument or getDeck on the Worker, and skips unknown kinds", async () => {
+    let document = { title: "Quote", cells: { A1: { value: "Item A" } } };
+    let deck = { slides: [{ id: "s1" }] };
+    expect(await readPdfExportSnapshot({
+      getDocument: async () => document,
+      getDeck: async () => { throw new Error("deck must not run"); },
+    }, "document")).toEqual(document);
+    expect(await readPdfExportSnapshot({
+      getDocument: async () => { throw new Error("document must not run"); },
+      getDeck: async () => deck,
+    }, "deck")).toEqual(deck);
+    expect(await readPdfExportSnapshot({
+      getDocument: async () => document,
+      getDeck: async () => deck,
+    }, undefined)).toBeUndefined();
+  });
+});
+
 describe("renderGadgetInBrowser", () => {
+  it("inlines the Worker snapshot into the export page", async () => {
+    let { gadget, harness } = makeHarness();
+    let snapshot = { title: "Quote", cells: { A1: { value: "Item A" } } };
+    expect(await collect(await renderGadgetInBrowser(
+      {} as BrowserRun,
+      "export default {}",
+      "Test Gadget",
+      gadget as never,
+      {
+        id: "pdf",
+        label: "PDF",
+        mode: "browser",
+        contentType: "application/pdf",
+        fileExtension: ".pdf",
+      },
+      snapshot,
+    ))).toBe("%PDF-1.4");
+    // The snapshot lives in the client data: URL, which is itself encoded into
+    // the runtime data: URL, so the raw HTML sees the string twice-encoded.
+    expect(harness.exportDocument()).toContain("__workshopExportSnapshot");
+    expect(harness.exportDocument()).toContain("%2522Quote%2522");
+    expect(harness.pdfRequested()).toBe(true);
+  });
+
+  it("fails the export instead of capturing a blank PDF when the client never becomes ready", async () => {
+    let { gadget, harness } = makeHarness();
+    harness.setExportReady({ ready: false, waitedMs: 8000 });
+
+    await expect(renderGadgetInBrowser(
+      {} as BrowserRun,
+      "export default {}",
+      "Test Gadget",
+      gadget as never,
+      {
+        id: "pdf",
+        label: "PDF",
+        mode: "browser",
+        contentType: "application/pdf",
+        fileExtension: ".pdf",
+      },
+      { title: "Quote" },
+    )).rejects.toThrow("The Gadget was not ready to export.");
+    expect(harness.pdfRequested()).toBe(false);
+    expect(harness.browserClosed()).toBe(true);
+  });
+
   it("waits for the client module and DOM to settle, then streams a PDF", async () => {
     let { stream, harness } = render();
 

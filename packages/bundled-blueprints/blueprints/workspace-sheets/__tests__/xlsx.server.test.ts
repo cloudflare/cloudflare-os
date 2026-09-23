@@ -781,7 +781,7 @@ describe("Workspace Sheets cell formatting", () => {
 });
 
 describe("Workspace Sheets export formats", () => {
-  it("reserves one of 32 slots for XLSX and applies the same CSV eligibility rules at export", async () => {
+  it("reserves two of 32 slots for XLSX and PDF and applies the same CSV eligibility rules at export", async () => {
     const ids = Array.from({length: 40}, (_, index) => `sheet-${index}`);
     const longId = "x".repeat(125);
     const sheetOrder = [ids[0], ids[0], longId, ...ids.slice(1)];
@@ -797,6 +797,13 @@ describe("Workspace Sheets export formats", () => {
       mode: "server",
       contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       fileExtension: ".xlsx",
+    });
+    expect(formats[1]).toEqual({
+      id: "pdf",
+      label: "PDF",
+      mode: "browser",
+      contentType: "application/pdf",
+      fileExtension: ".pdf",
     });
     expect(new Set(formats.map(format => format.id)).size).toBe(32);
     expect(formats.some(format => format.id === `csv:${longId}`)).toBe(false);

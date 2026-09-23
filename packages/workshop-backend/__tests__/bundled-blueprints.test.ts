@@ -97,6 +97,37 @@ describe("bundled blueprints", () => {
     }
   });
 
+  it("marks the export tree ready after the first snapshot is applied", async () => {
+    for (let entry of BUNDLED_BLUEPRINTS) {
+      expect(await readBlueprintFile(entry, "client.js"), entry.blueprintId)
+        .toContain('dataset.exportReady = "1"');
+    }
+  });
+
+  it("loads Sheets, Docs, and Slides PDF export from an inlined snapshot", async () => {
+    for (let blueprintId of [
+      "format.spreadsheet", "format.document", "format.slides",
+    ] as const) {
+      let entry = BUNDLED_BLUEPRINTS.find(blueprint => blueprint.blueprintId === blueprintId);
+      expect(entry, blueprintId).toBeDefined();
+      let client = await readBlueprintFile(entry!, "client.js");
+      expect(client, blueprintId).toContain('gadgetExportFormatId === "pdf"');
+      expect(client, blueprintId).toContain("__workshopExportSnapshot");
+      expect(client, blueprintId).toContain("pdf export snapshot is missing");
+      expect(client.indexOf("__workshopExportSnapshot"), blueprintId)
+        .toBeLessThan(client.indexOf('dataset.exportReady = "1"'));
+    }
+  });
+
+  it("builds the Sheets print workbook before export-ready, like Slides", async () => {
+    let sheets = BUNDLED_BLUEPRINTS.find(entry => entry.blueprintId === "format.spreadsheet");
+    expect(sheets).toBeDefined();
+    let client = await readBlueprintFile(sheets!, "client.js");
+    expect(client).toContain("renderPrintWorkbook()");
+    expect(client.lastIndexOf("renderPrintWorkbook()"))
+      .toBeLessThan(client.indexOf('dataset.exportReady = "1"'));
+  });
+
   it("renders document HTML and PDF exports without the editor chrome", async () => {
     let entry = BUNDLED_BLUEPRINTS.find(blueprint => blueprint.blueprintId === "format.document")!;
     let client = await readBlueprintFile(entry, "client.js");
@@ -125,6 +156,9 @@ describe("bundled blueprints", () => {
         'id: "xlsx"',
         'label: "Excel Workbook"',
         'contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"',
+        'id: "pdf"',
+        'label: "PDF"',
+        'contentType: "application/pdf"',
         'mode: "server"',
         'contentType: "text/csv"',
       ],
