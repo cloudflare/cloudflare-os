@@ -18,6 +18,8 @@ type TrialOptions = {
   cost?: number;
   errors?: { name: string; message: string }[];
   outcomeStatus?: "completed" | "error" | "timedOut" | "cancelled";
+  checks?: { id: string; pass: boolean; evidence?: string }[];
+  events?: object[];
 };
 
 function trial(options: TrialOptions = {}) {
@@ -33,6 +35,8 @@ function trial(options: TrialOptions = {}) {
     cost,
     errors = [],
     outcomeStatus = "completed",
+    checks = [],
+    events = [],
   } = options;
   return {
     status,
@@ -40,14 +44,14 @@ function trial(options: TrialOptions = {}) {
     meta: {
       harness: {
         run: {
-          session: { metadata: { taskId, taskVersion, gitCommit } },
+          session: { metadata: { taskId, taskVersion, gitCommit }, events },
           usage: {
             model: MODEL,
             metadata: cost === undefined ? {} : { observedCumulativeChatCostUsd: cost },
           },
           output: {
             metrics: { modelTurns, toolCalls, toolErrors },
-            turns: [{ outcome: { status: outcomeStatus } }],
+            turns: [{ outcome: { status: outcomeStatus }, checks }],
           },
           errors,
         },
@@ -81,10 +85,13 @@ it("compares three-trial task cohorts", () => {
 
   expect(comparison.baselineSha).toBe(BASE_SHA);
   expect(comparison.candidateSha).toBe(HEAD_SHA);
+  const noFailures = { failedChecks: [], toolErrors: [], infrastructureErrors: [] };
+  expect(comparison.verdict).toBe("unchanged");
   expect(comparison.rows).toEqual([{
     taskId: "project-doc",
     model: MODEL,
     reason: null,
+    pValue: expect.closeTo(1),
     baseline: {
       trials: 3,
       passed: 2,
@@ -93,6 +100,7 @@ it("compares three-trial task cohorts", () => {
       meanToolCalls: 3,
       meanToolErrors: 1 / 3,
       meanCostUsd: (0.1 + 0.2 + 0.3) / 3,
+      ...noFailures,
     },
     candidate: {
       trials: 3,
@@ -102,13 +110,50 @@ it("compares three-trial task cohorts", () => {
       meanToolCalls: 3,
       meanToolErrors: 0,
       meanCostUsd: (0.2 + 0.3 + 0.4) / 3,
+      ...noFailures,
     },
   }]);
   const markdown = renderEvalComparison(comparison);
-  expect(markdown).toContain("| project-doc | 2 | 3 | \u{1F7E2} +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
-  // Two of three trials is two thirds, which rounds to seven of ten cells.
-  expect(markdown).toContain(`| project-doc | ${"\u{1F7E9}".repeat(7)}${"\u{1F7E5}".repeat(3)} 2/3 |`);
-  expect(markdown).toContain(`\`${BASE_SHA.slice(0, 8)}\` vs candidate \`${HEAD_SHA.slice(0, 8)}\` \u00b7 ${MODEL} \u00b7 3 trials per task.`);
+  expect(markdown).toContain("**Verdict: \u26AA Unchanged.**");
+  // Two of three trials is two thirds, which rounds to seven of ten cells. A 33 pp rise over three
+  // trials is noise, so it gets no colour.
+  expect(markdown).toContain(
+    `| project-doc | ${"\u{1F7E9}".repeat(7)}${"\u{1F7E5}".repeat(3)} 2/3 | ${"\u{1F7E9}".repeat(10)} 3/3 | ` +
+    "\u26AA +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
+});
+
+it("calls a significant fall a regression and a small one noise", () => {
+  const passes = (passed: number, gitCommit: string) => report(Array.from({ length: 10 }, (_, index) =>
+    trial({ gitCommit, status: index < passed ? "passed" : "failed" })));
+  const fell = compareEvalResults(passes(9, BASE_SHA), passes(3, HEAD_SHA));
+  expect(fell.verdict).toBe("regressed");
+  expect(renderEvalComparison(fell)).toContain("\u{1F534} \u221260 pp (p = 0.02)");
+  expect(compareEvalResults(passes(9, BASE_SHA), passes(7, HEAD_SHA)).verdict).toBe("unchanged");
+  expect(compareEvalResults(passes(3, BASE_SHA), passes(9, HEAD_SHA)).verdict).toBe("improved");
+});
+
+it("reports what failed, quoting trial text so it cannot inject markup", () => {
+  const failed = (evidence: string) => trial({
+    gitCommit: HEAD_SHA, status: "failed",
+    checks: [{ id: "shows-the-target", pass: false, evidence }, { id: "builds", pass: true }],
+    events: [
+      { type: "tool_call", id: "1", name: "createGadget" },
+      { type: "tool_result", toolCallId: "1", name: "createGadget",
+        error: { name: "Error", message: "Key name cannot be empty\nat kv.get" } },
+    ],
+  });
+  const comparison = compareEvalResults(report([trial(), trial()]),
+    report([failed("`@here` shown $40M"), failed("again")]));
+  const { candidate } = comparison.rows[0];
+  expect(candidate?.failedChecks).toEqual([
+    { check: "t1 shows-the-target", trials: 2, evidence: JSON.stringify("`@here` shown $40M") },
+  ]);
+  expect(candidate?.toolErrors).toEqual(
+    [{ tool: "createGadget", message: "Key name cannot be empty", count: 2 }]);
+  const markdown = renderEvalComparison(comparison);
+  expect(markdown).toContain("| `t1 shows-the-target` | 0 | \u{1F534} 2 |");
+  expect(markdown).toContain("`createGadget` `Key name cannot be empty` \u00d72");
+  expect(markdown).toContain("`\"'@here' shown $40M\"`");
 });
 
 it("does not compare costs from different trial populations", () => {
@@ -174,12 +219,14 @@ it("does not compare changed tasks or unequal trial counts", () => {
 
   expect(compareEvalResults(baseline, changed).rows[0].reason).toBe("task version changed");
   const asked: string[][] = [];
-  expect(compareEvalResults(baseline, changed, (...shas) => {
-    asked.push(shas);
-    return true;
+  expect(compareEvalResults(baseline, changed, {
+    definitionsChanged: (...shas) => {
+      asked.push(shas);
+      return true;
+    },
   }).rows[0].reason).toBe("eval definition changed");
   expect(asked).toEqual([[BASE_SHA, HEAD_SHA]]);
-  expect(compareEvalResults(baseline, shorter).rows[0].reason).toBe("trial counts differ");
+  expect(compareEvalResults(baseline, shorter).rows[0].reason).toBe("run counts differ");
 });
 
 it("accepts a complete baseline with agent failures but not infrastructure failures", () => {
