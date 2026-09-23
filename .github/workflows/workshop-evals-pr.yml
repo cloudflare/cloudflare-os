@@ -28,9 +28,9 @@ on:
       - packages/workshop-backend/src/web-fetch.ts
       # Output formats the prompt steers toward
       - packages/bundled-blueprints/**
-  # A merge measures its own commit right away and caches it under the same commit key, so the
-  # first pull request on that base runs one arm instead of two, and every relevant main commit
-  # gets a score. The two path lists must stay identical: GitHub Actions has no YAML anchors.
+  # A merge that touches these paths measures its own commit right away, so the first pull request
+  # after it runs one arm instead of two. The two path lists must stay identical: GitHub Actions
+  # has no YAML anchors.
   push:
     branches: [main]
     paths:
@@ -84,6 +84,8 @@ jobs:
 
   # Decides what to measure: every eval file of every revision that needs measuring gets its own
   # runner, so a run takes as long as its slowest task and each runner hosts one file's trials.
+  # A Workshop needs about 340 MB: all four files on one 16 GB runner (40 Workshops) ran it out of
+  # memory in under two minutes.
   # A push measures its own commit; a pull request measures its head, and its base unless that is
   # already cached. Only file names are read from the checkouts; no repository code runs here.
   plan:
@@ -102,35 +104,45 @@ jobs:
       run: ${{ steps.plan.outputs.run }}
       assemble: ${{ steps.plan.outputs.assemble }}
       cached-baseline: ${{ steps.stored.outputs.artifact-id }}
+      baseline-key: ${{ steps.key.outputs.key }}
     env:
       BASELINE_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.base.sha }}
     steps:
-      # Baselines are cached per base commit, so a PR can only ever reuse a baseline measured at its
-      # own base. Any trusted PR run may fill the cache; the same maintainer trust that lets it run
-      # candidate code with the gateway token lets it store a result for its base. A push always
-      # measures its own commit.
+      - name: Check out baseline eval files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASELINE_SHA }}
+          path: baseline
+          sparse-checkout: |
+            .github/workflows
+            packages/workshop-evals/evals
+          persist-credentials: false
+
+      # A baseline is keyed by the content of the files this workflow triggers on, not by commit:
+      # every commit that leaves them alone shares one measurement, whichever PR or push made it.
+      # The index lists every file's blob even in a sparse checkout, and this workflow file is on
+      # its own list, so its trial count and runner layout are part of the key too.
+      - name: Key the baseline
+        id: key
+        working-directory: baseline
+        run: |
+          mapfile -t paths < <(yq '.on.pull_request.paths[]' .github/workflows/workshop-evals-pr.yml)
+          digest=$(git ls-files --stage -- "${paths[@]/#/:(glob)}" | sha256sum | cut -c1-16)
+          echo "key=workshop-evals-baseline-$digest" >> "$GITHUB_OUTPUT"
+
+      # Any trusted PR run may fill the cache; the same maintainer trust that lets it run candidate
+      # code with the gateway token lets it store a result for its base. A push always measures.
       - name: Find cached baseline
         if: github.event_name == 'pull_request'
         id: stored
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          # The trial count and the one-file-per-runner layout come from this workflow file, so
-          # they are part of what a baseline is.
-          ARTIFACT_NAME: workshop-evals-baseline-${{ github.event.pull_request.base.sha }}-${{ env.EVAL_TRIALS }}-per-task
+          ARTIFACT_NAME: ${{ steps.key.outputs.key }}
         run: |
           artifact_id=$(gh api "repos/$GH_REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
             --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // ""')
           echo "artifact-id=$artifact_id" >> "$GITHUB_OUTPUT"
-
-      - name: Check out baseline eval files
-        if: steps.stored.outputs.artifact-id == ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASELINE_SHA }}
-          path: baseline
-          sparse-checkout: packages/workshop-evals/evals
-          persist-credentials: false
 
       - name: Check out candidate eval files
         if: github.event_name == 'pull_request'
@@ -309,7 +321,7 @@ jobs:
         if: steps.complete.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: workshop-evals-baseline-${{ matrix.sha }}-${{ env.EVAL_TRIALS }}-per-task
+          name: ${{ needs.plan.outputs.baseline-key }}
           path: artifacts/results.json
           if-no-files-found: error
           overwrite: true
@@ -474,14 +486,16 @@ jobs:
           node scripts/evals/render-trajectories.ts \
             artifacts/candidate/results.json artifacts/candidate/trajectories.md
 
+      # The PR's own diff: a shared baseline may have been measured at an older commit, and the
+      # main commits since then changed nothing the evals exercise.
       - name: Prepare the read-only pull request diff
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          BASELINE_SHA=$(jq -er '.baselineSha' artifacts/comparison/comparison.json)
-          git cat-file -e "$BASELINE_SHA^{commit}" 2>/dev/null ||
-            git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
-          git diff --no-ext-diff --unified=80 "$BASELINE_SHA" "$HEAD_SHA" > artifacts/pull-request.diff
+          git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --no-ext-diff --unified=80 "$BASE_SHA" "$HEAD_SHA" > artifacts/pull-request.diff
 
       - name: Review trajectory changes
         continue-on-error: true
