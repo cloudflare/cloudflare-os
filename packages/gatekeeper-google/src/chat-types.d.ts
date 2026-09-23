@@ -227,13 +227,7 @@ export type GoogleChatReaction = {
   user?: GoogleChatUser;
 };
 
-// ── Read state and notification settings ────────────────────────────
-
-/** How far the connected user has read a conversation or thread. */
-export type GoogleChatReadState = {
-  /** Everything created at or before this time has been read. */
-  lastReadTime: Date;
-};
+// ── Notification settings ───────────────────────────────────────────
 
 /** The connected user's notification behavior for one conversation. */
 export type GoogleChatNotificationSettings = {
@@ -398,18 +392,6 @@ export interface GoogleChatSpace {
 
   /** List the messages currently pinned in this conversation. */
   listPinnedMessages(): Promise<Cursor<GoogleChatMessageEntry>>;
-
-  /** Return how far the connected user has read this conversation. */
-  getReadState(): Promise<GoogleChatReadState>;
-
-  /**
-   * Return how far the connected user has read one thread, named by
-   * `GoogleChatMessageInfo.threadName`.
-   */
-  getThreadReadState(threadName: string): Promise<GoogleChatReadState>;
-
-  /** Return the connected user's notification and mute settings for this conversation. */
-  getNotificationSettings(): Promise<GoogleChatNotificationSettings>;
 
   /** Change the connected user's notification or mute settings for this conversation. */
   updateNotificationSettings(patch: GoogleChatNotificationSettingsPatch): Promise<void>;

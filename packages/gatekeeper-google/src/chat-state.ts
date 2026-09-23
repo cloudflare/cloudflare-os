@@ -11,8 +11,7 @@
 
 import type {
   GoogleChatListMessagesOptions, GoogleChatMembership, GoogleChatMessageInfo,
-  GoogleChatNotificationSettings, GoogleChatNotificationSettingsPatch, GoogleChatReaction,
-  GoogleChatUser,
+  GoogleChatNotificationSettingsPatch, GoogleChatReaction, GoogleChatUser,
 } from "./chat-types";
 
 /** One attachment held in the gatekeeper's own storage until its message is approved. */
@@ -311,23 +310,6 @@ export function overlayPins(
       seen.add(name);
       result.push(name);
     }
-  }
-  return result;
-}
-
-/** Overlay a space's notification settings with any queued change. */
-export function overlayNotificationSettings(
-  settings: GoogleChatNotificationSettings,
-  pending: readonly PendingChatAction[],
-  spaceName: string,
-): GoogleChatNotificationSettings {
-  let result = settings;
-  for (const { action } of pending) {
-    if (action.type !== "updateNotificationSettings" || action.spaceName !== spaceName) continue;
-    result = {
-      level: action.patch.level ?? result.level,
-      muted: action.patch.muted ?? result.muted,
-    };
   }
   return result;
 }

@@ -15,7 +15,7 @@ import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import type {
   GoogleChatAttachmentInfo, GoogleChatMembership, GoogleChatMessageInfo,
   GoogleChatNotificationSettings, GoogleChatNotificationSettingsPatch, GoogleChatReaction,
-  GoogleChatReadState, GoogleChatSpaceEvent, GoogleChatSpaceEventType, GoogleChatSpaceInfo,
+  GoogleChatSpaceEvent, GoogleChatSpaceEventType, GoogleChatSpaceInfo,
   GoogleChatSpaceType, GoogleChatMessageSearch, GoogleChatListMessagesOptions,
   GoogleChatListEventsOptions, GoogleChatUser,
 } from "./chat-types";
@@ -1011,25 +1011,7 @@ export class ChatApi {
       "messagePins.delete", `/spaces/${spaceId}/messagePins/${messageId}`, { method: "DELETE" });
   }
 
-  // ── Read state and notification settings ──────────────────────────
-
-  async getSpaceReadState(spaceName: string): Promise<GoogleChatReadState> {
-    const spaceId = chatSpaceId(spaceName);
-    const body = await this.#request<{ lastReadTime?: string }>(
-      "users.spaces.getSpaceReadState", `/users/me/spaces/${spaceId}/spaceReadState`);
-    return { lastReadTime: chatTime(body.lastReadTime) ?? new Date(0) };
-  }
-
-  async getThreadReadState(
-    spaceName: string,
-    threadName: string,
-  ): Promise<GoogleChatReadState> {
-    const { spaceId, threadId } = chatThreadPartsInSpace(spaceName, threadName);
-    const body = await this.#request<{ lastReadTime?: string }>(
-      "users.spaces.threads.getThreadReadState",
-      `/users/me/spaces/${spaceId}/threads/${threadId}/threadReadState`);
-    return { lastReadTime: chatTime(body.lastReadTime) ?? new Date(0) };
-  }
+  // ── Notification settings ─────────────────────────────────────────
 
   async getNotificationSettings(spaceName: string): Promise<GoogleChatNotificationSettings> {
     const spaceId = chatSpaceId(spaceName);

@@ -5,8 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ChatAction, PendingChatAction, hasPendingLeave, overlayMemberships, overlayMessage,
-  overlayMessageList, overlayNotificationSettings, overlayPins, overlayReactions,
-  pendingMessageActionId, pendingMessageName,
+  overlayMessageList, overlayPins, overlayReactions, pendingMessageActionId, pendingMessageName,
 } from "../src/chat-state";
 import type { GoogleChatMessageInfo, GoogleChatUser } from "../src/chat-types";
 
@@ -190,16 +189,7 @@ describe("pin overlay", () => {
   });
 });
 
-describe("settings and membership overlay", () => {
-  it("shows queued notification changes", () => {
-    expect(overlayNotificationSettings({ level: "all", muted: false }, pending({
-      type: "updateNotificationSettings",
-      spaceName: SPACE,
-      patch: { muted: true },
-      submittedAt: Date.now(),
-    }), SPACE)).toEqual({ level: "all", muted: true });
-  });
-
+describe("membership overlay", () => {
   it("removes only the connected user's membership once leaving is queued", () => {
     const mine = {
       name: `${SPACE}/members/me`, state: "joined" as const, role: "member" as const, member: SELF,

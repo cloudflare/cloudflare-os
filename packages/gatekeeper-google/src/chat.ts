@@ -32,7 +32,7 @@ import {
 import {
   ChatAction, ChatSendMessageAction, ChatUploadRecord, PendingChatAction, chatActionSpaceName,
   hasPendingLeave, isPendingMessageName, overlayMemberships, overlayMessage, overlayMessageList,
-  overlayNotificationSettings, overlayPins, overlayReactions, pendingMessageActionId,
+  overlayPins, overlayReactions, pendingMessageActionId,
   pendingMessageInfo, pendingMessageName,
 } from "./chat-state";
 import type {
@@ -40,7 +40,7 @@ import type {
   GoogleChatListEventsOptions, GoogleChatListMessagesOptions, GoogleChatListSpacesOptions,
   GoogleChatMembership, GoogleChatMessage, GoogleChatMessageEntry, GoogleChatMessageInfo,
   GoogleChatMessageSearch, GoogleChatNotificationSettings, GoogleChatNotificationSettingsPatch,
-  GoogleChatReaction, GoogleChatReadState, GoogleChatSendOptions, GoogleChatSession,
+  GoogleChatReaction, GoogleChatSendOptions, GoogleChatSession,
   GoogleChatSpace, GoogleChatSpaceEntry, GoogleChatSpaceEvent, GoogleChatSpaceInfo,
   GoogleChatUpload, GoogleChatUser,
 } from "./chat-types";
@@ -578,7 +578,20 @@ class GoogleChatSpaceImpl extends ChatRpcTarget implements GoogleChatSpace {
   }
 
   async getMessage(name: string): Promise<GoogleChatMessage> {
-    if (!isPendingMessageName(name)) {
+    if (isPendingMessageName(name)) {
+      const actionId = pendingMessageActionId(name);
+      const sent = actionId === undefined ? undefined : this.ctx.store.sentMessage(actionId);
+      if (sent !== undefined) {
+        if (`spaces/${chatMessageParts(sent).spaceId}` !== this.#spaceName) {
+          throw new Error("That message does not belong to this conversation.");
+        }
+      } else {
+        const action = actionId === undefined ? undefined : this.ctx.store.get(actionId);
+        if (action?.type !== "sendMessage" || action.spaceName !== this.#spaceName) {
+          throw new Error("That message does not belong to this conversation.");
+        }
+      }
+    } else {
       const { spaceId } = chatMessageParts(name);
       if (`spaces/${spaceId}` !== this.#spaceName) {
         throw new Error("That message belongs to a different conversation.");
@@ -665,38 +678,6 @@ class GoogleChatSpaceImpl extends ChatRpcTarget implements GoogleChatSpace {
         `Read ${entries.length} pinned message(s) from ${this.#spaceName}.`),
       disposeEntries: disposeMessageEntries,
     }));
-  }
-
-  async getReadState(): Promise<GoogleChatReadState> {
-    const state = await this.ctx.api.getSpaceReadState(this.#spaceName);
-    await observe(
-      this.ctx,
-      "Read Google Chat read state",
-      `Read how far the connected account has read ${this.#spaceName} (through ` +
-      `${state.lastReadTime.toISOString()}).`);
-    return state;
-  }
-
-  async getThreadReadState(threadName: string): Promise<GoogleChatReadState> {
-    const state = await this.ctx.api.getThreadReadState(this.#spaceName, threadName);
-    await observe(
-      this.ctx,
-      "Read Google Chat thread read state",
-      `Read how far the connected account has read thread ${threadName}.`);
-    return state;
-  }
-
-  async getNotificationSettings(): Promise<GoogleChatNotificationSettings> {
-    const settings = overlayNotificationSettings(
-      await this.ctx.api.getNotificationSettings(this.#spaceName),
-      this.#pending(),
-      this.#spaceName);
-    await observe(
-      this.ctx,
-      "Read Google Chat notification settings",
-      `Read the connected account's notification level (${settings.level}) and mute state ` +
-      `(${settings.muted ? "muted" : "unmuted"}) for ${this.#spaceName}.`);
-    return settings;
   }
 
   async updateNotificationSettings(patch: GoogleChatNotificationSettingsPatch): Promise<void> {
@@ -952,7 +933,7 @@ class GoogleChatMessageImpl extends ChatRpcTarget implements GoogleChatMessage {
       return {
         info,
         attachment: new GoogleChatAttachmentImpl(
-          this.ctx, info, chatAttachmentMediaName(attachment)),
+          this.ctx, name, info, chatAttachmentMediaName(attachment)),
       };
     });
     await observe(
@@ -995,11 +976,19 @@ class GoogleChatMessageImpl extends ChatRpcTarget implements GoogleChatMessage {
 
 @validateRpc()
 class GoogleChatAttachmentImpl extends ChatRpcTarget implements GoogleChatAttachment {
+  #messageName: string;
   #info: GoogleChatAttachmentInfo;
   #mediaName: string | undefined;
 
-  constructor(ctx: ChatContext, info: GoogleChatAttachmentInfo, mediaName: string | undefined) {
+  constructor(
+    ctx: ChatContext,
+    messageName: string,
+    info: GoogleChatAttachmentInfo,
+    mediaName: string | undefined,
+  ) {
     super(ctx);
+    requireInScope(ctx, `spaces/${chatMessageParts(messageName).spaceId}`);
+    this.#messageName = messageName;
     this.#info = info;
     this.#mediaName = mediaName;
   }
@@ -1018,6 +1007,15 @@ class GoogleChatAttachmentImpl extends ChatRpcTarget implements GoogleChatAttach
         "This attachment is a Google Drive file. Read it through a Google Drive connection.");
     }
     if (!this.#mediaName) throw new Error("This attachment's content is not available.");
+
+    // Re-read the parent before downloading so an old attachment capability cannot outlive the
+    // message, its attachment, the connected account's access, or the private-message filter.
+    const message = await this.ctx.api.getRawMessage(this.#messageName);
+    const current = (message.attachment ?? []).find(attachment =>
+      attachment.name === this.#info.name &&
+      chatAttachmentMediaName(attachment) === this.#mediaName);
+    if (!current) throw new Error("This attachment is no longer available on its message.");
+
     const content = await this.ctx.api.downloadAttachment(this.#mediaName);
     await observe(
       this.ctx,
