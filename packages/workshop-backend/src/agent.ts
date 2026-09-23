@@ -2476,8 +2476,8 @@ async function runAgentPass(
 
   // The two system prompt slots: the non-project-specific parts, followed by the
   // project-specific parts. Kept as a two-part construction (static slot first) so the shared
-  // prefix stays byte-stable for prompt caching; they are concatenated into pi's single
-  // Context.systemPrompt string below.
+  // prefix stays byte-stable for prompt caching; they are concatenated into the leading system
+  // message in pi's transcript below.
   let systemPromptSlots: [string, string];
 
   if (agentContext.spawnerConfig) {
