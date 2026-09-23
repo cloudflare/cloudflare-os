@@ -157,6 +157,7 @@ export const CreateCollectionDialog = ({
                     value={title}
                     onChange={(event) => setTitle(event.target.value)}
                     onKeyDown={(event) => { if (event.key === "Enter") void create(); }}
+                    maxLength={100}
                     placeholder="A short name, e.g., Brand guidelines"
                     autoFocus
                     className="min-w-0 flex-1"

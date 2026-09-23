@@ -37,16 +37,19 @@ const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
       directoryPath: "legacy/review",
       name: "incident-response",
       description: "Review code",
-      lastUpdated: new Date(),
+      lastUpdated: new Date(Date.now() - 12 * 60_000),
     }],
   }],
 }];
 
-const metadata = (source: "web" | "git"): ContextCollectionMetadata => ({
+const metadata = (
+  source: "web" | "git",
+  visibility: ContextCollectionMetadata["visibility"] = "private",
+): ContextCollectionMetadata => ({
   id: "collection",
   title: "collection",
   description: "",
-  visibility: "private",
+  visibility,
   created: new Date(),
   lastUpdated: new Date(),
   documentCount: 1,
@@ -62,16 +65,21 @@ describe("SkillsNavigatorTree", () => {
   afterEach(() => {
     if (root) act(() => root?.unmount());
     container?.remove();
+    vi.unstubAllGlobals();
   });
 
   const renderTree = ({
     writable,
     manageable = writable,
+    metadataAvailable = true,
     source = "web",
+    visibility = "private",
   }: {
     writable: boolean;
     manageable?: boolean;
+    metadataAvailable?: boolean;
     source?: "web" | "git";
+    visibility?: ContextCollectionMetadata["visibility"];
   }) => {
     container = document.createElement("div");
     document.body.append(container);
@@ -79,6 +87,7 @@ describe("SkillsNavigatorTree", () => {
     const syncContextCollectionArtifactSource = vi.fn<
       ContextApi["syncContextCollectionArtifactSource"]
     >(async () => {});
+    const onDelete = vi.fn();
     const api = {
       renameContextSkill: async () => {},
       syncContextCollectionArtifactSource,
@@ -88,7 +97,9 @@ describe("SkillsNavigatorTree", () => {
         <Toasty>
           <SkillsNavigatorTree
             navigator={navigator("collection")}
-            collectionMetadata={new Map([["collection", metadata(source)]])}
+            collectionMetadata={metadataAvailable
+              ? new Map([["collection", metadata(source, visibility)]])
+              : new Map()}
             manageableCollectionIds={manageable ? new Set(["collection"]) : new Set()}
             writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
             supportsGitCollections
@@ -96,13 +107,13 @@ describe("SkillsNavigatorTree", () => {
             onSelectSkill={() => {}}
             onAddSkill={() => {}}
             onEditCollection={() => {}}
-            onDelete={() => {}}
+            onDelete={onDelete}
             onChanged={() => {}}
           />
         </Toasty>
       </ContextApiProvider>,
     ));
-    return { syncContextCollectionArtifactSource };
+    return { onDelete, syncContextCollectionArtifactSource };
   };
 
   const row = (name: string) => [...container!.querySelectorAll<HTMLElement>(
@@ -127,8 +138,8 @@ describe("SkillsNavigatorTree", () => {
 
     expect(row("Incident Response")?.draggable).toBe(true);
     expect(row("Incident Response")?.textContent).toContain("Review code");
-    expect(row("Incident Response")?.textContent).toContain("now");
-    expect(row("Incident Response")?.querySelector('[aria-label="Updated just now"]'))
+    expect(row("Incident Response")?.textContent).toContain("12m ago");
+    expect(row("Incident Response")?.querySelector('[aria-label="Updated 12 minutes ago"]'))
       .not.toBeNull();
     expect(row("legacy")?.draggable).toBe(false);
   });
@@ -142,6 +153,9 @@ describe("SkillsNavigatorTree", () => {
     const collectionRow = row("collection");
 
     expect(collectionRow?.textContent).toContain("Git managed");
+    expect(collectionRow?.textContent).toContain("Private");
+    expect(collectionRow?.textContent).toContain("just now");
+    expect(collectionRow?.querySelector('[aria-label="Updated just now"]')).not.toBeNull();
     act(() => collectionRow?.dispatchEvent(new MouseEvent("contextmenu", {
       bubbles: true,
       cancelable: true,
@@ -155,5 +169,52 @@ describe("SkillsNavigatorTree", () => {
       await Promise.resolve();
     });
     expect(syncContextCollectionArtifactSource).toHaveBeenCalledWith("collection");
+  });
+
+  it("identifies an organization collection", () => {
+    renderTree({ writable: true, visibility: "public" });
+
+    expect(row("collection")?.textContent).toContain("Organization");
+  });
+
+  it("keeps delete available when collection metadata fails to load", () => {
+    const { onDelete } = renderTree({
+      writable: false,
+      manageable: true,
+      metadataAvailable: false,
+    });
+
+    act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const menuItems = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")];
+    expect(menuItems.map((item) => item.textContent)).toEqual(["Delete"]);
+
+    act(() => menuItems[0]?.click());
+    expect(onDelete).toHaveBeenCalledWith({
+      type: "collection",
+      collectionId: "collection",
+      name: "collection",
+    });
+  });
+
+  it("shows collection actions in the narrow-layout drawer", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn<() => void>(),
+      removeEventListener: vi.fn<() => void>(),
+    })));
+    renderTree({ writable: true });
+
+    act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+
+    const drawer = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(drawer).not.toBeNull();
+    expect([...drawer!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+      .map((item) => item.textContent)).toEqual(["Add skill", "Edit", "Delete"]);
   });
 });

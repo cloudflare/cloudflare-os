@@ -67,8 +67,8 @@ export const useSkillsNavigatorData = (
         ] as const);
         const collectionMetadata = new Map(accessResults.flatMap(({ id, metadata }) =>
           metadata ? [[id, metadata] as const] : []));
-        const manageableCollectionIds = new Set(accessResults.flatMap(({ id, canWrite, metadata }) =>
-          canWrite && metadata ? [id] : []));
+        const manageableCollectionIds = new Set(accessResults.flatMap(({ id, canWrite }) =>
+          canWrite ? [id] : []));
         setData({
           collections,
           collectionMetadata,

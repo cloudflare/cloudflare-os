@@ -45,8 +45,10 @@ describe("useSkillsNavigatorData", () => {
         return [];
       },
       canWriteContextCollection: async (id: string) => id !== "organization",
-      getContextCollectionMetadata: async (id: string) =>
-        metadata(id, id === "owned-git" ? "git" : "web"),
+      getContextCollectionMetadata: async (id: string) => {
+        if (id === "failed-web") throw new Error("unavailable");
+        return metadata(id, id === "owned-git" ? "git" : "web");
+      },
     } as unknown as ContextApi;
     let writableIds: readonly string[] = [];
     let manageableIds: readonly string[] = [];
@@ -74,6 +76,7 @@ describe("useSkillsNavigatorData", () => {
 
     expect(writableIds).toEqual(["owned-web"]);
     expect(manageableIds).toEqual(["owned-web", "owned-git", "failed-web"]);
+    expect(loadedMetadata.has("failed-web")).toBe(false);
     expect(loadedMetadata.get("owned-git")?.content.source).toBe("git");
     expect(viewerInfo).toEqual({ isAdmin: true, supportsGitCollections: true });
     expect(status).toBe("ready");
