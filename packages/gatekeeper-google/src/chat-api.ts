@@ -51,10 +51,18 @@ async function chatApiFailure(operation: string, response: Response): Promise<ne
   throw new ChatApiError(response.status, operation);
 }
 
+/** A deliberately omitted app-authored message with a viewer narrower than its space. */
+class PrivateChatMessageError extends Error {
+  constructor() {
+    super("This Google Chat message is not available through this connection.");
+  }
+}
+
 /** Whether an error means "this identity cannot see that", rather than a transient failure. */
 export function isChatNoAccessError(error: unknown): boolean {
-  return error instanceof ChatApiError &&
-    (error.status === 401 || error.status === 403 || error.status === 404);
+  return error instanceof PrivateChatMessageError ||
+    (error instanceof ChatApiError &&
+      (error.status === 401 || error.status === 403 || error.status === 404));
 }
 
 // ── Identifier validation ───────────────────────────────────────────
@@ -206,6 +214,8 @@ export type ChatMessageRaw = {
   emojiReactionSummaries?: { emoji?: ChatEmojiRaw; reactionCount?: number }[];
   threadReply?: boolean;
   deletionMetadata?: { deletionType?: string };
+  /** Set only for an app-authored message visible to one user in an otherwise shared space. */
+  privateMessageViewer?: ChatUserRaw;
 };
 
 export type ChatMembershipRaw = {
@@ -329,6 +339,10 @@ export function chatAttachmentMediaName(raw: ChatAttachmentRaw): string | undefi
 }
 
 export function chatMessageInfoFromRaw(raw: ChatMessageRaw): GoogleChatMessageInfo {
+  // App-authored private messages have a message-level ACL narrower than their containing space.
+  // This user-authenticated integration deliberately omits them everywhere rather than exposing
+  // owner-only content through a shareable space capability.
+  if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
   if (!raw.name) throw new Error("Google Chat returned a message with no resource name.");
   const { spaceId } = chatMessageParts(raw.name);
   const createTime = chatTime(raw.createTime);
@@ -450,16 +464,19 @@ export function chatSpaceEventsFromRaw(raw: ChatSpaceEventRaw): GoogleChatSpaceE
   const eventTime = chatTime(raw.eventTime) ?? new Date(0);
   const base = { name: raw.name, type, eventTime };
 
-  const messages = [
+  const messagePayloads = [
     raw.messageCreatedEventData?.message,
     raw.messageUpdatedEventData?.message,
     raw.messageDeletedEventData?.message,
     ...(raw.messageBatchCreatedEventData?.messages ?? []).map(item => item.message),
     ...(raw.messageBatchUpdatedEventData?.messages ?? []).map(item => item.message),
     ...(raw.messageBatchDeletedEventData?.messages ?? []).map(item => item.message),
-  ].filter((item): item is ChatMessageRaw => item !== undefined && item.name !== undefined);
-  if (messages.length > 0) {
-    return messages.map(message => ({ ...base, message: chatMessageInfoFromRaw(message) }));
+  ];
+  if (messagePayloads.some(item => item !== undefined)) {
+    return messagePayloads
+      .filter((item): item is ChatMessageRaw =>
+        item !== undefined && item.name !== undefined && item.privateMessageViewer === undefined)
+      .map(message => ({ ...base, message: chatMessageInfoFromRaw(message) }));
   }
 
   const reactions = [
@@ -761,7 +778,9 @@ export class ChatApi {
     const body = await this.#request<{ messages?: ChatMessageRaw[]; nextPageToken?: string }>(
       "messages.list", `/spaces/${spaceId}/messages?${params}`);
     return {
-      items: (body.messages ?? []).map(chatMessageInfoFromRaw),
+      items: (body.messages ?? [])
+        .filter(message => message.privateMessageViewer === undefined)
+        .map(chatMessageInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -789,7 +808,8 @@ export class ChatApi {
     return {
       items: (body.results ?? [])
         .map(result => result.message)
-        .filter((message): message is ChatMessageRaw => message !== undefined)
+        .filter((message): message is ChatMessageRaw =>
+          message !== undefined && message.privateMessageViewer === undefined)
         .map(chatMessageInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
@@ -804,8 +824,10 @@ export class ChatApi {
   /** The raw message, needed where attachment data references matter. */
   async getRawMessage(messageName: string): Promise<ChatMessageRaw> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    return this.#request<ChatMessageRaw>(
+    const raw = await this.#request<ChatMessageRaw>(
       "messages.get", `/spaces/${spaceId}/messages/${messageId}`);
+    if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
+    return raw;
   }
 
   /**

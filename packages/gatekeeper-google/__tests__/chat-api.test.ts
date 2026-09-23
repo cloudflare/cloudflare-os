@@ -205,6 +205,15 @@ describe("Chat response mapping", () => {
     }).deleted).toBe(true);
   });
 
+  it("rejects app-authored private messages", () => {
+    expect(() => chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/PRIVATE",
+      createTime: "2024-01-02T03:04:05Z",
+      text: "only one space member may see this",
+      privateMessageViewer: { name: "users/123" },
+    })).toThrow(/not available through this connection/);
+  });
+
   it("maps a membership", () => {
     expect(chatMembershipFromRaw({
       name: "spaces/AAAA/members/111",
@@ -232,6 +241,20 @@ describe("Chat response mapping", () => {
     expect(events.map(event => event.type)).toEqual(["messageCreated", "messageCreated"]);
     expect(events.map(event => event.message?.name))
       .toEqual(["spaces/AAAA/messages/1", "spaces/AAAA/messages/2"]);
+  });
+
+  it("drops private-message events", () => {
+    expect(chatSpaceEventsFromRaw({
+      name: "spaces/AAAA/spaceEvents/EEE",
+      eventTime: "2024-06-01T00:00:00Z",
+      eventType: "google.workspace.chat.message.v1.created",
+      messageCreatedEventData: {
+        message: {
+          name: "spaces/AAAA/messages/PRIVATE",
+          privateMessageViewer: { name: "users/123" },
+        },
+      },
+    })).toEqual([]);
   });
 
   it("drops an event whose type it does not model", () => {
