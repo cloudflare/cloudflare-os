@@ -1,12 +1,14 @@
 import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
 import {
   ArrowClockwise,
-  CalendarBlankIcon,
+  Buildings,
+  Clock,
   GitBranch,
   PencilSimple,
   PlusIcon,
   ScrollIcon,
   TrashIcon,
+  User,
 } from "@phosphor-icons/react";
 import {
   HierarchicalList,
@@ -15,7 +17,7 @@ import {
 } from "@gadgets/ui/hierarchical-list";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContextCollectionMetadata } from "../../src/context-types";
-import { useContextApi } from "../bridge";
+import { useContextApi, usePresentWhileOpen } from "../bridge";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import { RenameInput } from "./RenameInput";
@@ -53,6 +55,11 @@ type SkillsNavigatorTreeProps = {
 type PendingRename = { collectionId: string; path: string; name: string };
 
 const skillCountLabel = (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`;
+
+const relativeUpdatedAt = (date: Date, now: number) => {
+  const age = formatSkillUpdatedAt(date, now);
+  return age === "now" ? "just now" : `${age} ago`;
+};
 
 const nodeId = (collectionId: string, node: SkillNavigatorNode) => node.type === "skill"
   ? `${collectionId}:skill:${node.manifestPath}`
@@ -96,8 +103,8 @@ const toListItem = (
           aria-label={skillUpdatedAtLabel(node.lastUpdated, now)}
           title={`Updated ${node.lastUpdated.toLocaleString()}`}
         >
-          <CalendarBlankIcon aria-hidden size={12} />
-          <span aria-hidden>{formatSkillUpdatedAt(node.lastUpdated, now)}</span>
+          <Clock aria-hidden size={12} />
+          <span aria-hidden>{relativeUpdatedAt(node.lastUpdated, now)}</span>
         </span>
       ),
       draggable: writable,
@@ -153,6 +160,8 @@ export const SkillsNavigatorTree = ({
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
   const [refreshingCollectionId, setRefreshingCollectionId] = useState<string | null>(null);
+  const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
+  const actionDrawerPresentation = usePresentWhileOpen(actionDrawerOpen);
   const [now, setNow] = useState(Date.now);
   const treeRef = useRef<HTMLDivElement>(null);
   const skillsById = new Map<string, SkillNavigatorSkill>();
@@ -168,21 +177,39 @@ export const SkillsNavigatorTree = ({
     collectionsById.set(id, { collection, children });
     if (writable) moveTargetsById.set(id, { collectionId: collection.id, directoryPath: "" });
     const metadata = collectionMetadata.get(collection.id);
+    const updatedAt = metadata?.content.source === "git"
+      ? metadata.content.lastRefreshedAt
+      : metadata?.lastUpdated;
     return {
       id,
       name: collection.title,
       icon: collection.icon ? <span aria-hidden>{collection.icon}</span> : undefined,
-      metadata: (
+      metadata: metadata ? (
         <span className="flex items-center gap-3">
-          {metadata?.content.source === "git" && (
+          <span className="flex items-center gap-1">
+            {metadata.visibility === "public"
+              ? <Buildings aria-hidden size={12} />
+              : <User aria-hidden size={12} />}
+            {metadata.visibility === "public" ? "Organization" : "Private"}
+          </span>
+          {metadata.content.source === "git" && (
             <span className="flex items-center gap-1">
               <GitBranch aria-hidden size={12} />
               Git managed
             </span>
           )}
-          <span>{skillCountLabel(countSkills(children))}</span>
+          {updatedAt && (
+            <span
+              className="flex items-center gap-1"
+              aria-label={skillUpdatedAtLabel(updatedAt, now)}
+              title={`Updated ${updatedAt.toLocaleString()}`}
+            >
+              <Clock aria-hidden size={12} />
+              <span aria-hidden>{relativeUpdatedAt(updatedAt, now)}</span>
+            </span>
+          )}
         </span>
-      ),
+      ) : undefined,
       droppable: writable,
       children: children.map((child) => toListItem(
         collection.id,
@@ -302,10 +329,10 @@ export const SkillsNavigatorTree = ({
 
     const collectionInfo = collectionsById.get(item.id);
     if (collectionInfo) {
+      if (!manageableCollectionIds.has(collectionId)) return null;
       const metadata = collectionMetadata.get(collectionId);
-      if (!metadata || !manageableCollectionIds.has(collectionId)) return null;
       const writable = writableCollectionIds.has(collectionId);
-      const refreshable = metadata.content.source === "git" && supportsGitCollections;
+      const refreshable = metadata?.content.source === "git" && supportsGitCollections;
       return (
         <>
           {writable && (
@@ -330,12 +357,14 @@ export const SkillsNavigatorTree = ({
             </DropdownMenu.Item>
           )}
           {(writable || refreshable) && <DropdownMenu.Separator />}
-          <DropdownMenu.Item
-            icon={<PencilSimple size={13} className="mr-2" />}
-            onClick={() => onEditCollection(metadata)}
-          >
-            Edit
-          </DropdownMenu.Item>
+          {metadata && (
+            <DropdownMenu.Item
+              icon={<PencilSimple size={13} className="mr-2" />}
+              onClick={() => onEditCollection(metadata)}
+            >
+              Edit
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item
             icon={<TrashIcon size={13} className="mr-2" />}
             variant="danger"
@@ -420,10 +449,15 @@ export const SkillsNavigatorTree = ({
 
   return (
     <div ref={treeRef}>
+      {/* Movement is desktop-only. Nested collection directories remain supported for backwards
+          compatibility, but the product is moving away from deeper collection hierarchies. */}
       <HierarchicalList
       items={items}
       label="Skills"
       expandAll={expandAll}
+      showTouchDragHandle={false}
+      onActionDrawerOpenChange={setActionDrawerOpen}
+      onActionDrawerOpenChangeComplete={actionDrawerPresentation.onOpenChangeComplete}
       dragAndDrop={{
         autoScroll: true,
         canMoveTo: (item, parent) => {

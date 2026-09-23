@@ -64,6 +64,12 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   dragAndDrop?: HierarchicalListDragAndDropOptions;
   /** Customizes the touch-drag threshold and action-drawer breakpoint. */
   interaction?: HierarchicalListInteractionOptions;
+  /** Whether draggable rows expose a dedicated touch drag handle. */
+  showTouchDragHandle?: boolean;
+  /** Notifies a host that the narrow-layout action drawer is opening or closing. */
+  onActionDrawerOpenChange?: (open: boolean) => void;
+  /** Notifies a host after the action drawer's open or close transition completes. */
+  onActionDrawerOpenChangeComplete?: (open: boolean) => void;
   onItemClick?: (item: HierarchicalListItem) => void;
   onSelectionClear?: () => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
@@ -76,7 +82,9 @@ type StyledRowProps = {
   state: HierarchicalListPrimitiveRowState;
   actionsOpen: boolean;
   useActionDrawer: boolean;
+  showTouchDragHandle: boolean;
   onActionsOpenChange: (open: boolean) => void;
+  onActionsOpenChangeComplete?: (open: boolean) => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
   rename?: HierarchicalListRenameOptions;
 };
@@ -88,7 +96,9 @@ const StyledRow = ({
   state,
   actionsOpen,
   useActionDrawer,
+  showTouchDragHandle,
   onActionsOpenChange,
+  onActionsOpenChangeComplete,
   renderContextMenu,
   rename,
 }: StyledRowProps) => {
@@ -133,6 +143,7 @@ const StyledRow = ({
         setActionsClosing(false);
       });
     }
+    onActionsOpenChangeComplete?.(open);
   };
   useEffect(() => () => {
     if (actionsClosedTimerRef.current !== null) {
@@ -208,7 +219,7 @@ const StyledRow = ({
           size="xs"
           variant="secondary"
           truncate
-          DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap tabular-nums"
+          DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap font-normal tabular-nums"
         >
           {item.metadata}
         </Text>
@@ -225,7 +236,7 @@ const StyledRow = ({
           />
         )}
       </AnimatePresence>
-      {!renaming && state.draggable && (
+      {!renaming && state.draggable && showTouchDragHandle && (
         <span
           {...state.touchDragHandleProps}
           aria-hidden="true"
@@ -245,7 +256,7 @@ const StyledRow = ({
     "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
     !renaming && "active:!bg-kumo-recessed",
     !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
-    !renaming && state.draggable && "[@media(any-pointer:coarse)]:pr-11",
+    !renaming && state.draggable && showTouchDragHandle && "[@media(any-pointer:coarse)]:pr-11",
     highlighted && "bg-kumo-recessed",
     coarsePointer && !renaming && (
       highlighted
@@ -336,12 +347,13 @@ const StyledRow = ({
               )}
             >
               <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-kumo-line" />
-              <Drawer.Title id={drawerTitleId} className="px-2 pb-2 text-xs text-kumo-subtle">
-                {item.name}
+              <Drawer.Title id={drawerTitleId} className="sr-only">
+                {item.name} actions
               </Drawer.Title>
               <Menu.Root open={actionsOpen} modal={false} onOpenChange={handleActionsOpenChange}>
                 <Menu.Portal container={drawerPopupRef}>
-                  <Menu.Positioner
+                   <Menu.Positioner
+                    anchor={drawerPopupRef}
                     className="!static !block !min-h-0 !w-full !flex-1 !transform-none overflow-y-auto overscroll-contain"
                     sideOffset={0}
                   >
@@ -366,14 +378,23 @@ const StyledRow = ({
 export const HierarchicalList = ({
   renderContextMenu,
   rename,
+  showTouchDragHandle = true,
+  onActionDrawerOpenChange,
+  onActionDrawerOpenChangeComplete,
   ...props
 }: HierarchicalListProps) => {
   const [openActions, setOpenActions] = useState<OpenActions | null>(null);
   const useActionDrawer = useHierarchicalListActionDrawer(props.interaction);
 
   useEffect(() => {
-    if (openActions && openActions.drawer !== useActionDrawer) setOpenActions(null);
-  }, [openActions, useActionDrawer]);
+    if (openActions && openActions.drawer !== useActionDrawer) {
+      if (openActions.drawer) {
+        onActionDrawerOpenChange?.(false);
+        onActionDrawerOpenChangeComplete?.(false);
+      }
+      setOpenActions(null);
+    }
+  }, [openActions, onActionDrawerOpenChange, onActionDrawerOpenChangeComplete, useActionDrawer]);
 
   return (
     <LayerCard className="bg-kumo-control p-1">
@@ -383,7 +404,10 @@ export const HierarchicalList = ({
           ? (item) => Boolean(renderContextMenu(item)) && !rename?.isRenaming(item)
           : undefined}
         onItemLongPress={renderContextMenu && useActionDrawer
-          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
+          ? (item) => {
+              onActionDrawerOpenChange?.(true);
+              setOpenActions({ itemId: item.id, drawer: true });
+            }
           : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{
@@ -424,9 +448,14 @@ export const HierarchicalList = ({
             actionsOpen={openActions?.itemId === state.item.id
               && openActions.drawer === useActionDrawer}
             useActionDrawer={useActionDrawer}
-            onActionsOpenChange={(open) => setOpenActions(open
-              ? { itemId: state.item.id, drawer: useActionDrawer }
-              : null)}
+            showTouchDragHandle={showTouchDragHandle}
+            onActionsOpenChange={(open) => {
+              if (useActionDrawer) onActionDrawerOpenChange?.(open);
+              setOpenActions(open ? { itemId: state.item.id, drawer: useActionDrawer } : null);
+            }}
+            onActionsOpenChangeComplete={useActionDrawer
+              ? onActionDrawerOpenChangeComplete
+              : undefined}
             renderContextMenu={renderContextMenu}
             rename={rename}
           />

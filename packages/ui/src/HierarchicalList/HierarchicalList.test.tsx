@@ -462,7 +462,7 @@ describe("HierarchicalList", () => {
     const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
     expect(menu.parentElement?.className).toContain("overflow-y-auto");
     const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
-    expect(label?.textContent).toBe("Review code");
+    expect(label?.textContent).toBe("Review code actions");
     const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
     act(() => menuItem.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Escape",
