@@ -139,7 +139,7 @@ it("reports what failed, quoting trial text so it cannot inject markup", () => {
     events: [
       { type: "tool_call", id: "1", name: "createGadget" },
       { type: "tool_result", toolCallId: "1", name: "createGadget",
-        error: { name: "Error", message: "Key name cannot be empty\nat kv.get" } },
+        error: { name: "Error", message: "Key `@here` is empty\nat kv.get" } },
     ],
   });
   const comparison = compareEvalResults(report([trial(), trial()]),
@@ -149,11 +149,10 @@ it("reports what failed, quoting trial text so it cannot inject markup", () => {
     { check: "t1 shows-the-target", trials: 2, evidence: JSON.stringify("`@here` shown $40M") },
   ]);
   expect(candidate?.toolErrors).toEqual(
-    [{ tool: "createGadget", message: "Key name cannot be empty", count: 2 }]);
+    [{ tool: "createGadget", message: "Key `@here` is empty", count: 2 }]);
   const markdown = renderEvalComparison(comparison);
-  expect(markdown).toContain("| `t1 shows-the-target` | 0 | \u{1F534} 2 |");
-  expect(markdown).toContain("`createGadget` `Key name cannot be empty` \u00d72");
-  expect(markdown).toContain("`\"'@here' shown $40M\"`");
+  expect(markdown).toContain("| `t1 shows-the-target` | 0 | 2 |");
+  expect(markdown).toContain("`createGadget` `Key '@here' is empty` \u00d72");
 });
 
 it("does not compare costs from different trial populations", () => {

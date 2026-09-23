@@ -347,8 +347,8 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     "# Eval results", "",
     `**Verdict: ${VERDICT[comparison.verdict]}.** ${why}`, "",
     files.length === 0 ? "**Evals exercise no file this change touches.**"
-      : `**Evals exercise these changed files:** ${files.slice(0, 8).map(file => `\`${file}\``).join(", ")}` +
-        (files.length > 8 ? `, and ${files.length - 8} more` : ""),
+      : `**Evals exercise these changed files:** ${files.slice(0, 8).map(file =>
+          `\`${basename(file)}\``).join(", ")}` + (files.length > 8 ? `, and ${files.length - 8} more` : ""),
     "",
     [`Baseline \`${comparison.baselineSha.slice(0, 8)}\` (PR base) vs candidate ` +
         `\`${comparison.candidateSha.slice(0, 8)}\` (PR head)`,
@@ -380,21 +380,17 @@ export function renderEvalComparison(comparison: EvalComparison): string {
       lines.push("| Check | Baseline failed | Candidate failed |", "| --- | --- | --- |");
       for (const { check, trials: count } of candidate.failedChecks.slice(0, 8)) {
         const before = baseline?.failedChecks.find(failure => failure.check === check)?.trials ?? 0;
-        // Only a comparable task's counts can be set against each other.
-        const worse = row.reason === null && count > before;
-        lines.push(`| \`${check}\` | ${baseline === null ? "\u2014" : before} | ${worse ? "\u{1F534} " : ""}${count} |`);
+        lines.push(`| \`${check}\` | ${baseline === null ? "\u2014" : before} | ${count} |`);
       }
       const hidden = candidate.failedChecks.length - 8;
       if (hidden > 0) lines.push(`| _${hidden} more checks_ | | |`);
       lines.push("");
     }
-    const [first] = candidate.failedChecks;
-    if (first?.evidence) {
-      lines.push(`First failing evidence (\`${first.check}\`): ${quoted(first.evidence, 240)}`, "");
-    }
-    if (candidate.toolErrors.length > 0) {
-      lines.push(`Tool errors: ${candidate.toolErrors.slice(0, 5).map(error =>
-        `\`${error.tool}\` ${quoted(error.message, 100)} \u00d7${error.count}`).join(" \u00b7 ")}`, "");
+    const [top] = candidate.toolErrors;
+    if (top !== undefined) {
+      const others = candidate.toolErrors.length - 1;
+      lines.push(`Most common tool error: \`${top.tool}\` ${quoted(top.message, 100)} \u00d7${top.count}` +
+        (others > 0 ? `, and ${others} other kind${others === 1 ? "" : "s"}` : ""), "");
     }
     if (candidate.infrastructureErrors.length > 0) {
       lines.push(`Infrastructure errors, not the agent's work: ${candidate.infrastructureErrors.map(error =>
