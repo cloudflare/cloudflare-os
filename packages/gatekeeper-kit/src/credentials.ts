@@ -157,8 +157,8 @@ const refreshes = perStorage(() => new SingleFlight());
  * Must return the **complete** canonical record, not the provider's response. Providers routinely
  * omit values that did not change — an unchanged rotating refresh token, granted scopes, provider
  * metadata — and the coordinator replaces the stored record wholesale, so anything absent is lost
- * and the *next* refresh fails after the first successful rotation. Merge from `current`:
- * `{ ...current, ...response, refreshToken: response.refreshToken ?? current.refreshToken }`.
+ * and the *next* refresh fails after the first successful rotation. Merge from `current`; for an
+ * OAuth 2.0 grant, `oauthRefresh` with `mergeOAuthTokens` in `./oauth-client` does this.
  *
  * Throw `CredentialsExpiredError` only when the provider proves the grant is dead.
  * @param current The stored grant being refreshed.

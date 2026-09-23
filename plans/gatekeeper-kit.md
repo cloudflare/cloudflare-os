@@ -121,11 +121,13 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
   credentials. The kit ships `oauth2` and `tokenAuth`; Cloudflare Access and other exotic flows
   implement the same interface elsewhere.
 - **Grant death:** a provider response that proves the stored grant is gone. For OAuth this is an
-  RFC 6749 §5.2 token-error response — HTTP 400, or 401 for client authentication, or an
-  `invalid_grant`/`invalid_token` error code. A 403 WAF page, a 404, an unexpected redirect, a
-  malformed 2xx, or a network failure is infrastructure, and must never destroy stored
-  credentials. Strategies signal grant death by throwing `CredentialsExpiredError`; everything
-  else propagates with credentials intact.
+  RFC 6749 §5.2 `invalid_grant` returned to a refresh, below HTTP 500 other than 429 (never to a
+  code exchange); `invalid_client` is misconfiguration unless the gatekeeper opts in (e.g. a
+  deleted dynamically registered client); `invalid_token` (RFC 6750) triggers a refresh, never
+  death. `isInvalidGrant` (§4.19) is that default, and a gatekeeper widens it only on provider
+  evidence. A 403 WAF page, a 404, an unexpected redirect, a malformed 2xx, or a network failure is
+  infrastructure, and must never destroy stored credentials. Strategies signal grant death by
+  throwing `CredentialsExpiredError`; everything else propagates with credentials intact.
 - **Identity fencing:** a refresh result is committed only if the stored credential record is
   still the one the refresh started from, so a stale refresh cannot clobber a newer reconnect.
 - **Attempt generation:** a random value stored when a connect attempt starts and re-checked after
@@ -2057,6 +2059,130 @@ are consumed by cloudflare, confluence, google, homeassistant, linear, notion, s
 supabase, zoominfo, and `mcp-shared`; the conformance account
 (`__tests__/workerd/conformance/gatekeeper.ts`) is the executable reference for the full sequence.
 
+### 4.19 `./oauth-client`
+
+```ts
+export type Pkce = { codeVerifier: string; codeChallenge: string; codeChallengeMethod: "S256" };
+export function createPkce(options?: { verifierBytes?: number }): Promise<Pkce>;
+export function pkceChallenge(codeVerifier: string): Promise<string>;
+export type OAuthClientAuth =
+  | { method: "none"; id: string }
+  | { method: "basic"; id: string; secret: string; encoding?: "raw" | "form" }
+  | { method: "post"; id: string; secret: string };
+export type OAuthClientOptions = {
+  label: string; client: OAuthClientAuth; tokenEndpoint: string;
+  authorizationEndpoint?: string; revocationEndpoint?: string;
+  bodyEncoding?: "form" | "json"; headers?: Record<string, string>;
+  defaultExpiresIn?: number; scopeSeparator?: string; timeoutMs?: number; maxResponseBytes?: number;
+  fetch?: (input: string, init: RequestInit) => Promise<Response>;
+};
+export type OAuthTokens = { accessToken: string; tokenType?: string; refreshToken?: string;
+  expiresAt?: number; scopes?: string[]; idToken?: string; raw: Record<string, unknown> };
+export class OAuthResponseError extends Error {
+  readonly httpStatus: number; readonly oauthError?: string; readonly description?: string;
+}
+export function isInvalidGrant(error: unknown): boolean;
+export class OAuthClient {
+  constructor(options: OAuthClientOptions);
+  authorizationUrl(request: { redirectUri: string; state: string; scopes?: readonly string[];
+    codeChallenge?: string; params?: Record<string, string> }): URL;
+  exchangeCode(request: { code: string; redirectUri: string; codeVerifier?: string;
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<OAuthTokens>;
+  refresh(request: { refreshToken: string; scopes?: readonly string[];
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<OAuthTokens>;
+  revoke(request: { token: string; tokenTypeHint?: "access_token" | "refresh_token";
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<void>;
+  request(endpoint: "token" | "revocation", params: Record<string, string>,
+    options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+}
+export function parseTokenResponse(body: Record<string, unknown>, options: {
+  requestedAt: number; defaultExpiresIn?: number; scopeSeparator?: string }): OAuthTokens;
+export function oauthRefresh<Creds>(client: OAuthClient, options: {
+  refreshToken(current: Creds): string | undefined;
+  merge(current: Creds, tokens: OAuthTokens): Creds;
+  isGrantDeath?(error: OAuthResponseError): boolean;       // default isInvalidGrant
+  request?(current: Creds): { scopes?: readonly string[]; params?: Record<string, string> };
+  expiredMessage: string;
+}): RefreshCredentials<Creds>;
+export type OAuthGrant = Pick<OAuthTokens, "accessToken" | "refreshToken" | "expiresAt" | "scopes">;
+export function mergeOAuthTokens<G extends OAuthGrant>(current: G, tokens: OAuthTokens): G;
+```
+
+Every public gatekeeper hand-rolls token exchange, refresh, and revoke — cloudflare, supabase,
+confluence, notion, slack, linear, google, spotify, zoominfo, and github — and none of them refuses
+redirects, caps the response, or bounds the request in time. Each also classifies failures its own
+way: cloudflare reports *any* failed refresh, a 5xx or a timeout included, as an expired grant
+(`cloudflare.ts:356-386`), which hides a healthy account and asks for a reconnect that fixes
+nothing. This leaf is the protocol client only. Single-flight, identity fencing, and adjudication
+stay `CredentialCoordinator`'s (§4.6): `oauthRefresh` is a `RefreshCredentials` and adds no lock.
+
+The defaults and their evidence:
+
+- **Redirects are refused, not followed.** A followed 307 or 308 re-POSTs the client secret and
+  the code to wherever the provider pointed, so a 3xx is an `OAuthResponseError` with no
+  `oauthError`. The internal `chore-oauth-refresh` branch (`access-oauth.ts`) established this,
+  along with the timeout combined with the caller's signal (`AbortSignal.any`), which also bounds
+  `revoke` because the coordinator awaits `discardMint` inside its single-flight.
+- **Bodies go through `readTextCapped` (§4.15)** with a 64 KiB default; token responses are small.
+  Oversize, transport, abort, and timeout failures propagate as the same instance and are never
+  grant death.
+- **Basic auth sends the raw `base64(utf8(id:secret))` by default.** RFC 6749 §2.3.1 form-encodes
+  the id and secret first, but the corpus sends the raw form (cloudflare `oauth.ts`, supabase
+  `basicAuthHeader`), as providers' docs do. Each form fails against the other kind of server once
+  a credential holds a character form encoding escapes (a base64 `+`, `/` or `=`), so neither is a
+  safe default; the corpus decides it. `encoding: "form"` opts in to the RFC. Ory Hydra (fosite,
+  and so Cloudflare) decodes, so the Cloudflare pilot works raw only because its credentials hold
+  no such character. It stays raw to keep the wire unchanged. Pre-encoding the credentials instead
+  would double-encode the id in `authorizationUrl`. A raw id containing `:` is rejected at
+  construction: RFC 7617 forbids it, and servers split at the first colon.
+- **A 2xx body with a string `error` and no non-empty `access_token` is a rejection**, so
+  providers that report errors with a 200 need no extra code. A 2xx exchange or refresh without an
+  `access_token` is malformed: it carries no `oauthError`, so no death rule matches it.
+- **Only `invalid_grant` below 500, other than 429, is death by default (§3).** With static
+  `CLIENT_ID`/`CLIENT_SECRET`, `invalid_client`, `unauthorized_client`, and `invalid_scope` are
+  operator faults, and 429 and 5xx are provider faults; reading any as death would expire every
+  user at once. `isGrantDeath` is the widening for provider evidence. It replaces the default
+  rather than extending it, so a port composes with `isInvalidGrant`. `oauthRefresh` is its only
+  reader, so an exchange never proves death.
+- **A refresh that requests scopes reports them when the response omits `scope`**, which RFC 6749
+  §5.1 allows only when the grant matches the request. Otherwise `mergeOAuthTokens`, which keeps
+  unreported scopes, would record the wider set a narrowing refresh gave up. A provider that
+  ignores the request errs toward recording too little.
+- **`expiresAt` is absolute epoch milliseconds, anchored at the request's start**, so it feeds
+  `CredentialCoordinatorOptions.expiresAt` directly and errs early. `expires_in` must be a positive
+  number or numeric string that stays finite in milliseconds; otherwise `defaultExpiresIn`
+  applies, and failing that `expiresAt` is absent, which means refresh on rejection only rather
+  than on every read.
+  `mergeOAuthTokens` replaces `expiresAt` rather than carrying it forward for the same reason.
+- **`params` and `headers` may not redeclare what the leaf owns** (the grant, code, verifier, token,
+  scope, and client-authentication keys; `Authorization` and `Content-Type`), following
+  `rejectReservedKeys` in `./connect-handshake`. `request()` is the unreserved escape hatch.
+- **Endpoints must be HTTPS without userinfo or a fragment**, checked by a private helper that keeps
+  the query string. `normalizeVendorEndpoint` (§4.14) does not fit: it requires a host pattern and
+  drops the query.
+
+The error's field names are part of the no-wedging contract with the other leaves.
+`OAuthResponseError` carries `httpStatus` rather than `status`, and is not an `HttpError`, because
+`isNoAccessError` (§4.5) duck-types `status` 401/403/404 and would read a bad client secret as "the
+user lacks access". It carries `oauthError` rather than `code`, because the credential marks match
+`code`, and a provider answering `{"error":"CredentialsExpiredError"}` must not spoof them. Its
+message holds only the label, status, and a validated code; `description` is non-enumerable and
+sanitized, for death evidence rather than display. `redirectUri` is per call rather than client
+configuration because `PreviewOAuth.redirectUri` (§4.16) depends on the deployment; it rides the
+handshake's nonce metadata with the PKCE verifier. The two OAuth leaves import nothing from each
+other.
+
+Escape hatches, most assisted first: `oauthRefresh` with `mergeOAuthTokens`; the client methods,
+which classify nothing, with `params`, `headers`, `bodyEncoding`, and `searchParams.append` on the
+returned authorization `URL` (Google's `access_type`/`prompt`, Access's repeated `resource`);
+`request()` with `parseTokenResponse` for request or response shapes outside RFC 6749 (Slack's
+`authed_user`); and a native `RefreshCredentials`, where non-RFC revocation (supabase's JSON body,
+github's `DELETE`) stays. The workerd suite (`__tests__/workerd/oauth-client.test.ts`) drives the
+leaf through the handshake and the coordinator, including a `discardMint` revoke of a mint a
+reconnect overtook. Cloudflare is the first consumer, with an `isGrantDeath` widened to any OAuth
+error in a 4xx but 429, other than `invalid_client`, until live evidence shows what its token
+endpoint answers for a revoked grant. A 4xx without one, such as a WAF challenge, is never death.
+
 ## 5. Layer 2: the assembly
 
 **Layer-1 reconciliation, 2026-09-05 — the leaf contracts this section now builds on.** Observation
@@ -2262,9 +2388,11 @@ Provider behavior remains compatible with the handlers it replaces (`supabase.ts
 `htmlResponse(connectHandoffPageHtml(handoff))` for a completed one. Provider errors yield a 400
 plain-text restart message.
 `scopes.auth` is the sign-in-only subset used when
-`GatekeeperConnectOptions.scopes === "auth"`. The README instructs config
-authors to wrap provider refresh calls so only 400/401/`invalid_grant`/`invalid_token` become
-`CredentialsExpiredError` and everything else rethrows untouched.
+`GatekeeperConnectOptions.scopes === "auth"`. Absent a provider quirk, `exchange`, `refresh`, and
+`revoke` are thin wrappers over an `OAuthClient` (§4.19), and `refresh` is `oauthRefresh`, so only
+grant death as §3 defines it — an RFC 6749 §5.2 `invalid_grant` returned to a refresh, below HTTP 500 other than 429 (never to a code exchange); `invalid_client` is misconfiguration unless the gatekeeper opts in (e.g. a deleted dynamically registered client); `invalid_token` (RFC 6750) triggers a refresh, never death — becomes `CredentialsExpiredError` and
+everything else rethrows untouched. A config with provider evidence widens that rule through
+`isGrantDeath`.
 
 ### 5.4 `./auth-token`
 
@@ -2895,9 +3023,10 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
       `publicCredentials` maps `accessToken` onto `token`, so no refresh material crosses to a
       facet. The `oauth2` config wraps the untouched `supabase-api.ts` helpers (`exchangeAuthCode`,
       `refreshAccessToken`, `revokeRefreshToken`); its `refresh` maps `SupabaseApiError.isAuthError`
-      (the client derives it from 401, or an exact 400 `invalid_grant` — never 403) to
-      `CredentialsExpiredError` and rethrows everything else untouched, so infrastructure failures
-      stop destroying sessions; `extraAuthorizeParams:
+      (the client derives it from 401, or an exact 400 `invalid_grant` — never 403; the 401 is a
+      provider-specific widening of §3's default, which an `oauthRefresh` port expresses as
+      `isGrantDeath`, §4.19) to `CredentialsExpiredError` and rethrows everything else untouched,
+      so infrastructure failures stop destroying sessions; `extraAuthorizeParams:
       { response_type: "code" }`; `expiredMessage` and the not-configured wording preserved
       verbatim; `legacyKeys` declares
       `accessToken`/`refreshToken`/`accessTokenExpiresAt` and `upgradeStoredCredentials` reassembles
@@ -3069,6 +3198,12 @@ evidence, and the trigger.
   `claimed`, and the work is extending it past the tier boundary. *Trigger:* the first
   non-idempotent compensating write — today's are mostly restores of a previous value, which is why
   the gap has cost nothing yet.
+- **OAuth discovery and dynamic client registration** (RFC 8414, RFC 7591) behind
+  `OAuthClientOptions`. The internal Access client discovers its endpoints and registers itself,
+  then speaks the same token protocol `./oauth-client` implements (§4.19); discovery would produce
+  the endpoints and DCR the `OAuthClientAuth`, and a registered client is the case where
+  `invalid_client` is evidence for `isGrantDeath`. *Trigger:* the internal Access port, whose
+  submodule bump also migrates the internal OAuth gatekeepers to the connect handoff.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
   interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
   Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth`) — the same doctrine at the auth seam.

@@ -19,23 +19,35 @@ These sequences compose Layer-1 leaves; the kit ships no connect assembly. The c
 in [`__tests__/workerd/conformance/gatekeeper.ts`](__tests__/workerd/conformance/gatekeeper.ts) is
 the executable reference. Production gatekeepers stage and commit reconnects, but none fences a
 connect on its connection generation yet, so the fenced variants below are the recommended shape
-rather than established practice. `disposeMintIfSafe` and `revokeLiveGrantBestEffort` are
-gatekeeper-owned placeholders, not kit exports.
+rather than established practice. `disposeMintIfSafe`, `revokeLiveGrantBestEffort`, and `toGrant`
+are gatekeeper-owned placeholders, not kit exports; `client` is an `OAuthClient` (see
+[OAuth token endpoint](#oauth-token-endpoint)).
 
 Every browser connect flow must claim its OAuth nonce before exchanging the provider code. An
-expired or replayed callback must not mint a grant. When the attempt advances to OAuth, capture the
-account's connection generation so a disconnect or newer connect cannot be overwritten during the
-exchange:
+expired or replayed callback must not mint a grant. When the attempt advances to OAuth, store the
+PKCE verifier and the exact redirect URI with it, and capture the account's connection generation
+so a disconnect or newer connect cannot be overwritten during the exchange:
 
 ```ts
-const state = advanceToOAuth(kv, linkNonce, Date.now(),
-  { startedUnder: this.#creds.connectionGeneration() });
-if (state === null) throw new Error("This connect link has expired. Start again.");
+type ConnectAttempt = { codeVerifier: string; redirectUri: string; startedUnder: string };
 
-const claim = claimOAuth<{ startedUnder: string }>(kv, oauthNonce, Date.now());
+const pkce = await createPkce();
+const state = advanceToOAuth<ConnectAttempt>(kv, linkNonce, Date.now(), {
+  codeVerifier: pkce.codeVerifier,
+  redirectUri,
+  startedUnder: this.#creds.connectionGeneration(),
+});
+if (state === null) throw new Error("This connect link has expired. Start again.");
+const authorize = client.authorizationUrl({
+  redirectUri, state, scopes, codeChallenge: pkce.codeChallenge,
+});
+
+const claim = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
 if (claim === null) throw new Error("This connect attempt has expired. Start again.");
 
-const grant = await exchangeCode(code);
+const grant = toGrant(await client.exchangeCode({
+  code, redirectUri: claim.redirectUri, codeVerifier: claim.codeVerifier,
+}));
 ```
 
 The handshake holds one OAuth nonce, so a second `advanceToOAuth` invalidates the first unclaimed
@@ -216,13 +228,19 @@ Both methods stay thin because the coordinator owns the atomic credential, ident
 triple, refresh fencing, and rejection verdicts:
 
 ```ts
+#refresh = oauthRefresh<Grant>(this.#client, {
+  refreshToken: grant => grant.refreshToken,
+  merge: mergeOAuthTokens,
+  expiredMessage: "Reconnect the Vendor account in the Workshop.",
+});
+
 async getCredentials(): Promise<CredentialsWithIdentity<PublicGrant>> {
   const { creds, identity, generation } = await this.#creds.snapshot(
-    grant => refreshAtProvider(grant),
+    this.#refresh,
     { notify: () => this.#notify() },
   );
   return {
-    creds: { token: creds.token, expiresAt: creds.expiresAt },
+    creds: { token: creds.accessToken, expiresAt: creds.expiresAt },
     identity,
     generation,
   };
@@ -230,7 +248,7 @@ async getCredentials(): Promise<CredentialsWithIdentity<PublicGrant>> {
 
 reportCredentialsRejected(identity: string) {
   return this.#creds.adjudicateRejection(identity, {
-    refresh: grant => refreshAtProvider(grant),
+    refresh: this.#refresh,
     notify: () => this.#notify(),
   });
 }
@@ -249,21 +267,31 @@ reportCredentialsRejected(identity: string) {
 Project credentials before returning them. Refresh material must not cross the account RPC
 boundary.
 
-`refreshAtProvider` owns a classification the kit cannot make: throw `CredentialsExpiredError` only
-when the provider proves the *grant* is dead — `invalid_grant` from the token endpoint, a revoked
-refresh token, or provider-specific evidence of the same. Let transport, malformed-response, and
-5xx failures travel unchanged, and never read a bare `invalid_token` as that proof: it is RFC 6750
-for the presented access token, which a refresh recovers. Treating either an outage or a recoverable
-token rejection as grant death destroys healthy authority and prompts an unnecessary reconnect.
+The refresh owns a classification the coordinator cannot make: throw `CredentialsExpiredError` only
+when the provider proves the *grant* is dead. `oauthRefresh` carries that classification in its
+`isGrantDeath` option, which defaults to `isInvalidGrant` — an RFC 6749 `invalid_grant` below HTTP
+500, other than 429. A supplied predicate replaces that default, so widen it by composing,
+`error => isInvalidGrant(error) || …`, and only for provider-specific evidence of the same, such as
+a revoked refresh token reported another way. Key it on `oauthError`, not a bare status, which a
+proxy or WAF page carries too. Let transport, malformed-response, and 5xx failures travel
+unchanged, and never read a bare `invalid_token` as that proof: it is RFC 6750 for the presented
+access token, which a refresh recovers. Treating either an outage or a recoverable token
+rejection as grant death destroys healthy authority and prompts an unnecessary reconnect.
 
 It also owes the *complete* canonical record, not the provider's response. Providers routinely omit
 values that did not change — an unchanged rotating refresh token, granted scopes, provider metadata
 — and the coordinator replaces the stored record wholesale, so anything absent is lost and the next
-refresh fails after the first successful rotation:
+refresh fails after the first successful rotation. `mergeOAuthTokens` keeps those values but
+replaces `expiresAt`, since a carried-forward past expiry would refresh on every read. A grant with
+other provider-reported fields extends it, picking each field rather than spreading the response:
 
 ```ts
-const response = await exchangeRefreshToken(grant);
-return { ...grant, ...response, refreshToken: response.refreshToken ?? grant.refreshToken };
+merge: (grant, tokens) => ({
+  ...mergeOAuthTokens(grant, tokens),
+  instanceUrl: typeof tokens.raw.instance_url === "string"
+    ? tokens.raw.instance_url
+    : grant.instanceUrl,
+}),
 ```
 
 Omit `adjudicateRejection`'s `refresh` callback when rejection of a current credential proves the
@@ -330,6 +358,14 @@ grant, so where a reconnect reuses one grant per (user, client) the disposal kil
 that just won. For such a provider omit `discardMint` and order refresh against connect and clear in
 the account itself — the kit supplies no primitive for that.
 
+Where it can, `discardMint` is `mint => client.revoke({ token: mint.refreshToken!, tokenTypeHint:
+"refresh_token" })`. The coordinator awaits it inside the refresh single-flight, which the client's
+`timeoutMs` bounds. The recipe assumes every refresh rotates. `mergeOAuthTokens` carries an
+unrotated refresh token forward, so on a provider that may not rotate, the mint holds the token the
+refresh started from: revoking it disposes of more than the mint, and kills a winner handed the same
+token back. The mint added only a short-lived access token there, so such a provider omits
+`discardMint`.
+
 Errors from `discardMint` are logged and do not replace the winning operation. It cannot recover a
 crash between provider rotation and storage; the user must reconnect in that case.
 
@@ -367,6 +403,54 @@ staged under one and applied under the other fails terminally on every attempt. 
 entry check, so a reconnect may still land between it and the provider call. A handler that must
 not run under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the
 same `run` callback that issues the request.
+
+## OAuth token endpoint
+
+`OAuthClient` in `./oauth-client` makes the token-endpoint calls behind a connect flow and a
+refresh: authorization URLs with PKCE, code exchange, refresh, and RFC 7009 revocation. Every
+request refuses redirects, is bounded in time and size, and reports a rejection as
+`OAuthResponseError`, whose message carries no provider text beyond a validated `error` code;
+transport, abort, and oversize failures propagate unchanged. The `oauth-client with the connect
+handshake and CredentialCoordinator` suite in
+[`__tests__/workerd/oauth-client.test.ts`](__tests__/workerd/oauth-client.test.ts) is the
+executable reference.
+
+```ts
+#client = new OAuthClient({
+  label: "Vendor",
+  client: { method: "basic", id: this.env.CLIENT_ID, secret: this.env.CLIENT_SECRET },
+  authorizationEndpoint: "https://vendor.example/oauth/authorize",
+  tokenEndpoint: "https://vendor.example/oauth/token",
+});
+```
+
+- Pass `redirectUri` per call, from what the connect attempt stored. It is deliberately not client
+  configuration: under `PreviewOAuth` it depends on the deployment, and the exchange must repeat the
+  exact URI the authorization used.
+- Pick fields explicitly. A `claimOAuth` claim also carries the nonce's own `value` and `expiresAt`,
+  and `OAuthTokens.raw` is whatever the provider sent, so spreading either into a grant stores
+  nonce or provider data as credentials. `OAuthTokens.expiresAt` is absolute epoch milliseconds,
+  anchored at the request's start, and feeds `CredentialCoordinator`'s `expiresAt` unchanged.
+- Only a refresh can prove grant death. `invalid_client`, `unauthorized_client`, `invalid_scope`,
+  429, and 5xx are rethrown: with one static client they are operator or provider faults, and
+  treating them as death would expire every user at once. A deleted dynamically registered client
+  is the kind of evidence that justifies widening `isGrantDeath`. An `invalid_grant` answering
+  `exchangeCode` is a failed connect.
+- A response with no `expires_in` and a client with no `defaultExpiresIn` leave `expiresAt` absent,
+  so the grant refreshes only when a rejection is adjudicated. A lifetime within the coordinator's
+  `refreshSkewMs` refreshes on every read.
+
+When a provider does not fit, step down one rung at a time:
+
+1. `oauthRefresh` with `mergeOAuthTokens`.
+2. The client's own methods, with `params`, `headers`, and `bodyEncoding`, plus
+   `searchParams.append` on the returned authorization `URL` for a repeated parameter. They classify
+   nothing, so the caller decides which failures prove grant death, composing `isInvalidGrant`.
+3. `client.request()` with `parseTokenResponse`, for a request or response shaped outside RFC 6749
+   (Slack nests user tokens under `authed_user`). `request()` reserves no parameters and does not
+   require an `access_token`; the parser does.
+4. A native `RefreshCredentials<Grant>`, keeping every other leaf. A non-RFC revocation, such as a
+   JSON body or a `DELETE`, stays hand-written.
 
 ## Storage
 
@@ -673,6 +757,8 @@ The kit supplies defaults where they apply across consumers:
 | `maxTrackedCollections` | 1000 |
 | `maxObservers` | 10 |
 | `remotePageSize` | 100 |
+| `OAuthClient` `timeoutMs` | 30 000 ms |
+| `OAuthClient` `maxResponseBytes` | 64 KiB |
 
 The kit requires values where no general default is safe:
 
@@ -701,6 +787,10 @@ cannot exceed the provider's page cap.
   allowlisted host.
 - Use `PreviewOAuth` when previews must share one stable callback registered with the OAuth
   provider.
+- Use `OAuthClient` for OAuth 2.0 token-endpoint calls rather than a hand-written `fetch`. It is
+  stateless and classifies nothing as grant death on its own, so a refresh still goes through
+  `CredentialCoordinator` via `oauthRefresh`, and the two modules share no state with
+  `PreviewOAuth`.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.

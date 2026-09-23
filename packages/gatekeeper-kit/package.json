@@ -19,6 +19,7 @@
     "./endpoint": "./src/endpoint.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
+    "./oauth-client": "./src/oauth-client.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
     "./simulation": "./src/simulation.ts"
