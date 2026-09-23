@@ -1,0 +1,60 @@
+packages/gatekeeper-github/__tests__/git-commits.test.ts
+  s_b235d7e85db519::t_4dd5363ae37baf 1-4,8,99-104
+packages/gatekeeper-github/__tests__/workerd/pull-simulation.test.ts
+  s_b235d7e85db519::t_6b410adb89c789 14
+packages/gatekeeper-github/__tests__/workerd/push.test.ts
+  s_b235d7e85db519::t_03451ecaac3047 19
+packages/gatekeeper-github/__tests__/workerd/session-git.test.ts
+  s_b235d7e85db519::t_3483562209682a 3
+packages/gatekeeper-github/package.json
+  s_b235d7e85db519::t_22a8f51057f63d 18
+packages/gatekeeper-github/src/github-api.ts
+  s_b235d7e85db519::t_1afe9ee4e484ba 1365,1401
+packages/gatekeeper-github/src/github.ts
+  s_b235d7e85db519::t_b7cb90643b04a8 47-54,62-71,1053,3595
+pnpm-lock.yaml
+  s_b235d7e85db519::t_9cd069a6f11606 541-543
+  s_b235d7e85db519::t_641057d0c06291 416-438,440-450,452-455
+packages/gatekeeper-gitlab/deploy-inputs.json
+  s_b235d7e85db519::t_b273ec6756d945 1-20
+packages/gatekeeper-gitlab/package.json
+  s_b235d7e85db519::t_21c598984de1da 1-9,11-28
+packages/gatekeeper-gitlab/src/gitlab-logo.svg
+  s_b235d7e85db519::t_91211320a9d0f2 1-22
+packages/gatekeeper-gitlab/src/observability.ts
+  s_b235d7e85db519::t_65d6284fe4f966 1-7
+packages/gatekeeper-gitlab/src/text-modules.d.ts
+  s_b235d7e85db519::t_799abb29187a36 1-9
+packages/gatekeeper-gitlab/src/types.txt
+  s_b235d7e85db519::t_310a9fef9538cf 1
+packages/gatekeeper-gitlab/storage-schema.md
+  s_b235d7e85db519::t_9b118d67454306 1-18,22-25
+packages/gatekeeper-gitlab/tsconfig.json
+  s_b235d7e85db519::t_4153d2e22336f0 1-9,11-19
+packages/gatekeeper-gitlab/vite.config.ts
+  s_b235d7e85db519::t_8fd8464c6eaa3b 1-4,9-11,13
+packages/gatekeeper-gitlab/vitest.config.ts
+  s_b235d7e85db519::t_f5eb6ecd131cd4 1-8
+packages/gatekeeper-gitlab/wrangler.jsonc
+  s_b235d7e85db519::t_d75a662a05da5a 1-27
+scripts/release/testdata/fixture-bundles/gatekeeper-gitlab/gitlab.js
+  s_b235d7e85db519::t_3cb5c23fa9a870 1
+scripts/release/testdata/golden-manifest.json
+  s_b235d7e85db519::t_476f6dd194b965 317-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4424b05ed35975895554cf8471dcdc1a6437521c",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
