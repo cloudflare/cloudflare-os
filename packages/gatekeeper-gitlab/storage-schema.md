@@ -1,0 +1,37 @@
+# GitLab gatekeeper storage schema
+
+Durable Object storage layout for `UserAccount` and `GitLabGatekeeperImpl`. Written from the code
+as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape this mirrors.
+
+## UserAccount
+
+| Key | Value | Notes |
+|---|---|---|
+| `callback` | `Fetcher<GatekeeperConnectCallback>` | Stored at connect; used for `complete`, `reconnectComplete`, `credentialsExpired`. |
+| `nonce` | `{ value, expiresAt, stage: "initiation" \| "oauth", reconnect?: true, redirectUri? }` | Two-stage connect nonce. At the `oauth` stage `redirectUri` is the `redirect_uri` the authorize request carried (the stable Worker's, on a preview), repeated verbatim in the code exchange. |
+| `codeVerifier` | `string` | PKCE verifier, written with the `oauth`-stage nonce and deleted at code exchange. |
+| `requestedScopes` | `string[]` | Scopes requested for this flow (auth-only or full). |
+| `ephemeral` | `boolean` | Auth-only sign-in grant; self-destructs two minutes after `complete()`. |
+| `accessToken` | `string` | Current access token. |
+| `accessTokenExpiresAt` | `number` | Epoch ms, from the token response's `expires_in`. |
+| `refreshToken` | `string` | Current refresh token. Rotates on every refresh; the new value is written with the new access token in one transaction. |
+| `scopes` | `string[]` | Scopes the live grant was requested with. Absent on stub-era accounts, which is the reconnect trigger. |
+| `grantId` | `string` | Names the live authorization: minted by connect/reconnect, kept across refreshes. Derived facts (`userId`) are trusted only while it is unchanged. |
+| `userId` | `number` | The GitLab user the live grant belongs to, read from `GET /user` on first need (the observer probe) and dropped with `grantId`. |
+| `expiredNotified`, `expiredNotifiedArm` | kit `credential-expiry` latch | `credentialsExpired()` sent once per grant: latched after the Workshop acknowledges, re-armed by every grant write. A refusal is reported against the `grantId` whose token was refused and dropped if that grant is no longer live. |
+| `stagedCredentials` | kit `credential-stage` record | A reconnect's grant, until `commitReconnect(stageId)`. |
+
+## GitLabGatekeeperImpl
+
+KV only. Two families: a TTL cache that any queued/applied/rejected action invalidates wholesale
+(one generation counter, not a sweep), and durable state that survives cache clears.
+
+| Key | Value | Notes |
+|---|---|---|
+| `cacheGeneration` | `number` | Bumped by `#clearCaches()`; every `cache:*` entry records the generation it was written under and is ignored once it differs. |
+| `cache:<kind>:<parts…>` | `{ fetchedAt, value, generation }` | TTL cache. Families: `viewer` (5 min), `project`, `project-by-id`, `issue`, `mr-raw`, `mr`, `mr-approvals`, `discussions`, `compare`, `commit`, `branch-head`, `mr-simulated` (30 s), `list-issues`, `list-mrs`, `list-branches`, `list-tags`, `list-commits`, `mr-commits`, `mr-diffs` (15 s), `merge-base` (never expires -- a pure function of its two shas). No ETags: GitLab REST does not reliably answer conditional requests. |
+| `counter:<name>` | `number` | Action ids (`action`) and provisional ids: `resource` (`~N`), and `comment`/`review`/`diff`/`reply` (`~comment1`, …). |
+| `action:<approvalId>` | `{ action, state: "staged" \| "pending", progress?, … }` | A queued action; `#listPendingActions()` reads the `pending` ones and the read side overlays them. A `push` record binds `{ branch, expectedOldSha, newSha, force }` at queue time. `progress` records the steps of a multi-call apply that have landed -- for a review, `approved`, `publishedComments` (a prefix count), `draftIds` (created, not yet published), `summaryPosted` -- so a retry resumes instead of repeating them, and clears its own leftover drafts rather than mistaking them for the user's. |
+| `retiredAction:<approvalId>` | `{ action, state: "approved" \| "rejected", appliedAt?, rejectedAt?, revertInfo? }` | An action past its lifetime, kept for revert. |
+| `provisional:<~N>` | `{ kind, realId? }` | A provisional issue or merge request and, once created, its real number. Both `#~N` and `!~N` resolve through it, each against its own kind. |
+| `diffAlias:<~id>` | `string` | A provisional diff-comment id's real note id, once its review is published. |

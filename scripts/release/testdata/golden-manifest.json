@@ -314,6 +314,77 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/github"
       }
     },
+    "gatekeeper-gitlab": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://gitlab.com/-/user_settings/applications",
+          "kind": "secret",
+          "label": "OAuth application ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/gitlab/oauth",
+          "setupSteps": [
+            "In GitLab, open User settings → Applications (or a group's Settings → Applications) and add a new application.",
+            "Set the Redirect URI to the value below and leave Confidential checked.",
+            "Select the scopes: api, write_repository, and read_user.",
+            "Save the application, then copy the Application ID and Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth application secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "gitlab.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "GitLabGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "gitlab.js",
+          "r2Key": "blobs/modules/e22ff8c153d0d137a829c9816ccaa05e65dac47ca4f676e687fc0df99dbb27ab",
+          "sha256": "e22ff8c153d0d137a829c9816ccaa05e65dac47ca4f676e687fc0df99dbb27ab",
+          "size": 59,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "gitlab",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/gitlab"
+      }
+    },
     "gatekeeper-google": {
       "bindings": [
         {

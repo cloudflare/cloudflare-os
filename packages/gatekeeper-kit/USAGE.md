@@ -772,6 +772,31 @@ refusing valid reads once later pages reveal new collections. `maxObservers` mus
 subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
 cannot exceed the provider's page cap.
 
+## Git
+
+`git-transport`, `git-objects`, and `git-diff` implement the worktree contract in
+`plans/worktrees.md` §3 for any smart-HTTP host. The gatekeeper supplies a fetch callback that adds
+the URL, credentials, and timeouts; the kit owns the framing. Two rules of the framing are easy to
+break from the outside and fail late when broken:
+
+- **Never send a `have`.** A `have` asserts full reachability of that commit, but every pull here
+  is filtered or shallow, so the workspace cache holds commits whose blobs or ancestors it lacks.
+  Sending one makes upload-pack withhold objects a later fault will `want`. `buildGitFetchRequest`
+  sends an empty have list and `done`; do not build a fetch request another way to "save bytes".
+- **At most one `filter` line.** upload-pack accepts a single filter-spec — a second `filter` line
+  is not merged, and GitHub rejects the request outright. Combining hints is spelled in the
+  filter-spec grammar or not at all; `filterSpecForHints` is the one place that chooses, and its
+  limits are documented on it (`blob:limit` and `tree:0` are known to work on GitHub; `combine:`
+  is not).
+
+Every ref update goes through `pushGitRefUpdate` with the *queue-time* old sha, so receive-pack's
+compare-and-swap protects a branch that moved between approval and apply; a rejected update is a
+`GitRefUpdateRejectedError` whose `reason` is the server's own line, which the gatekeeper passes
+through rather than matching on. Advertise every commit id a read hands out
+(`CommitAdvertisingCursor`, `advertiseCommits`) except those served from the cache while queued for
+push — advertising one of those would record a pull-routing hint for an object the remote does not
+have.
+
 ## Other module boundaries
 
 - Use `withAuthRetry` only for token flows without `CredentialSource`. Otherwise,
