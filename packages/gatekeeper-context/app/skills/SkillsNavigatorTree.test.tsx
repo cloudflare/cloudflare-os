@@ -11,6 +11,7 @@ import type {
   EnabledCollectionInfo,
 } from "../../src/context-types";
 import { ContextApiProvider } from "../bridge";
+import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import type { SkillNavigatorCollection } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
 
@@ -87,7 +88,7 @@ describe("SkillsNavigatorTree", () => {
     const syncContextCollectionArtifactSource = vi.fn<
       ContextApi["syncContextCollectionArtifactSource"]
     >(async () => {});
-    const onDelete = vi.fn();
+    const onDelete = vi.fn<(target: NavigatorDeleteTarget) => void>();
     const api = {
       renameContextSkill: async () => {},
       syncContextCollectionArtifactSource,
