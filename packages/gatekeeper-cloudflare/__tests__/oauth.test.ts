@@ -1,8 +1,10 @@
+import { OAuthResponseError } from "@gadgets/gatekeeper-kit/oauth-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildAuthorizeUrl,
   exchangeCode,
   generatePkce,
+  isGrantDeath,
   refreshTokens,
   type CloudflareOAuthConfig,
 } from "../src/oauth";
@@ -17,7 +19,7 @@ const config: CloudflareOAuthConfig = {
   redirectUri: "https://gatekeeper.example/oauth",
 };
 
-/** Captures the single request `redeem` makes, so the tests can assert on how the code is redeemed. */
+/** Captures each token request, so the tests can assert on how the code is redeemed. */
 function captureRedeem(payload: Record<string, unknown>) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -25,6 +27,15 @@ function captureRedeem(payload: Record<string, unknown>) {
     return Response.json(payload);
   }));
   return calls;
+}
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected a rejection.");
 }
 
 describe("Cloudflare OAuth", () => {
@@ -61,9 +72,9 @@ describe("Cloudflare OAuth", () => {
     expect(call!.init.method).toBe("POST");
     // Cloudflare's token endpoint takes the client credentials as Basic auth, not form fields, so a
     // regression here fails every connection.
-    const headers = call!.init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe(`Basic ${btoa("client:secret")}`);
-    expect(headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    const headers = new Headers(call!.init.headers);
+    expect(headers.get("Authorization")).toBe(`Basic ${btoa("client:secret")}`);
+    expect(headers.get("Content-Type")).toBe("application/x-www-form-urlencoded");
     // The verifier and the redirect URI both have to be replayed exactly, or the provider rejects the
     // redemption -- and omitting the verifier would silently drop PKCE's protection.
     expect(Object.fromEntries(call!.init.body as URLSearchParams)).toEqual({
@@ -85,16 +96,23 @@ describe("Cloudflare OAuth", () => {
     });
   });
 
-  it("returns null rather than a token on a rejected redemption", async () => {
+  it("rejects a refused redemption", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
 
-    expect(await exchangeCode(config, "code", "verifier")).toBeNull();
+    const error = await rejection(exchangeCode(config, "code", "verifier"));
+
+    expect(error).toBeInstanceOf(OAuthResponseError);
+    expect(error).toMatchObject({ httpStatus: 401 });
   });
 
-  it("returns null when a successful response carries no access token", async () => {
+  it("rejects a successful response that carries no access token", async () => {
     captureRedeem({ refresh_token: "refresh", expires_in: 3600 });
 
-    expect(await exchangeCode(config, "code", "verifier")).toBeNull();
+    const error = await rejection(exchangeCode(config, "code", "verifier"));
+
+    expect(error).toBeInstanceOf(OAuthResponseError);
+    expect(error).toMatchObject({ httpStatus: 200 });
+    expect(error).not.toHaveProperty("oauthError");
   });
 
   it("derives the PKCE challenge as the URL-safe SHA-256 of the verifier", async () => {
@@ -131,5 +149,37 @@ describe("Cloudflare OAuth", () => {
     });
     // The client secret authenticates the token call only; it must never appear in a browser redirect.
     expect(url.toString()).not.toContain("secret");
+  });
+});
+
+describe("isGrantDeath", () => {
+  // How Cloudflare rejects a revoked grant is unverified, so every OAuth error in a 4xx but 429
+  // still expires the account; only failures that say nothing about the grant, the client's own
+  // included, leave it connected.
+  it.each<[string, boolean, () => Response]>([
+    ["invalid_grant", true, () => Response.json({ error: "invalid_grant" }, { status: 400 })],
+    ["a 200 invalid_grant", true, () => Response.json({ error: "invalid_grant" })],
+    ["another OAuth error", true, () => Response.json({ error: "invalid_request" }, { status: 400 })],
+    ["invalid_client", false, () => Response.json({ error: "invalid_client" }, { status: 401 })],
+    ["a bare 400", false, () => new Response("nope", { status: 400 })],
+    ["a WAF challenge", false, () => new Response("<html></html>", {
+      status: 403, headers: { "Content-Type": "text/html" },
+    })],
+    ["a 503", false, () => new Response("unavailable", { status: 503 })],
+    ["a 429 invalid_grant", false, () => Response.json({ error: "invalid_grant" }, { status: 429 })],
+    ["a redirect", false, () => new Response(null, {
+      status: 307, headers: { Location: "https://elsewhere.example/token" },
+    })],
+    ["a malformed success", false, () => Response.json({})],
+    ["a network error", false, () => {
+      throw new TypeError("fetch failed");
+    }],
+    ["a timeout", false, () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    }],
+  ])("treats %s as grant death: %s", async (_, dead, respond) => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond()));
+
+    expect(isGrantDeath(await rejection(refreshTokens(config, "refresh")))).toBe(dead);
   });
 });

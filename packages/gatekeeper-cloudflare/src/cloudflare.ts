@@ -10,7 +10,7 @@ import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/co
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import {
-  getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens,
+  getOAuthConfig, buildAuthorizeUrl, generatePkce, exchangeCode, refreshTokens, isGrantDeath,
   AUTH_SCOPES, BILLING_SCOPES, persistentScopesForResources,
 } from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
@@ -213,6 +213,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 export class UserAccount extends DurableObject<Env> {
+  #refreshing: { generation: number; token: Promise<string | null> } | undefined;
+  // Bumped by every grant write. It keys and fences refreshes, so a replaced grant is detected even
+  // when the new grant reuses the refresh token.
+  #grantGeneration = 0;
+
   #config() {
     const config = getOAuthConfig(this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env));
     if (!config) throw new Error("The Cloudflare Gatekeeper is not configured.");
@@ -293,9 +298,11 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Took too long to complete the authorization. Please try again.");
     }
 
-    const tokens = await exchangeCode(this.#config(), code, stored.verifier);
-    if (!tokens || !tokens.refreshToken) {
-      throw new Error("Cloudflare OAuth exchange failed or returned no refresh token.");
+    const tokens = await exchangeCode(this.#config(), code, stored.verifier).catch((cause: unknown) => {
+      throw new Error("Cloudflare OAuth exchange failed.", { cause });
+    });
+    if (!tokens.refreshToken) {
+      throw new Error("Cloudflare OAuth exchange returned no refresh token.");
     }
 
     // Fail closed for the same reason as `beginOAuthFlow`: recording the full scope list here when
@@ -303,7 +310,7 @@ export class UserAccount extends DurableObject<Env> {
     // `ensureResources` would then short-circuit into a binding that 403s with no way to fix it.
     const grant: StoredGrant = {
       refreshToken: tokens.refreshToken,
-      accessToken: { token: tokens.accessToken, expires: Date.now() + tokens.expiresIn * 1000 },
+      accessToken: { token: tokens.accessToken, expires: tokens.expiresAt ?? 0 },
       grantedScopes: tokens.scopes ?? this.ctx.storage.kv.get<string[]>("scopes") ?? [...BILLING_SCOPES],
     };
 
@@ -340,6 +347,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   #writeGrant(grant: StoredGrant) {
+    this.#grantGeneration++;
     this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", grant.accessToken);
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
@@ -352,6 +360,8 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * Returns a usable access token (refreshing if needed), or null if the credentials are gone or
    * can no longer be refreshed (in which case the workshop is notified via credentialsExpired()).
+   * A refresh that fails without proving the grant dead falls back to the still-unexpired cached
+   * token, or throws.
    */
   async getAccessToken(): Promise<string | null> {
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
@@ -362,15 +372,48 @@ export class UserAccount extends DurableObject<Env> {
       return cached.token;
     }
 
-    const refreshed = await refreshTokens(this.#config(), refreshToken);
-    if (!refreshed) {
-      const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-      callback?.credentialsExpired().catch(err =>
-        logger.warn("failed to notify credential expiry", {
-          event: "credentials.expiry.notify.failed", error: err,
-        }));
-      return null;
+    // Reads of one grant share a refresh, so a rotating refresh token is never redeemed twice. A read
+    // after a reconnect starts its own rather than joining one whose result will be fenced out.
+    const generation = this.#grantGeneration;
+    if (this.#refreshing?.generation !== generation) {
+      const flight = {
+        generation,
+        token: this.#refresh(refreshToken, generation).finally(() => {
+          if (this.#refreshing === flight) this.#refreshing = undefined;
+        }),
+      };
+      this.#refreshing = flight;
     }
+    return this.#refreshing.token;
+  }
+
+  async #refresh(refreshToken: string, generation: number): Promise<string | null> {
+    const outcome = await refreshTokens(this.#config(), refreshToken)
+      .then(tokens => ({ tokens }), (error: unknown) => ({ error }));
+    // A reconnect or revoke landed mid-flight, so its grant supersedes whatever this refresh got.
+    if (this.#grantGeneration !== generation
+      || this.ctx.storage.kv.get<string>("refreshToken") !== refreshToken) {
+      return this.ctx.storage.kv.get<StoredAccessToken>("accessToken")?.token ?? null;
+    }
+
+    if ("error" in outcome) {
+      const { error } = outcome;
+      if (isGrantDeath(error)) {
+        logger.info("refresh rejected; grant expired", { event: "credentials.refresh.expired", error });
+        const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+        callback?.credentialsExpired().catch(err =>
+          logger.warn("failed to notify credential expiry", {
+            event: "credentials.expiry.notify.failed", error: err,
+          }));
+        return null;
+      }
+      logger.warn("access token refresh failed", { event: "credentials.refresh.failed", error });
+      const cached = this.ctx.storage.kv.get<StoredAccessToken>("accessToken");
+      if (cached && cached.expires > Date.now()) return cached.token;
+      throw error;
+    }
+
+    const refreshed = outcome.tokens;
     if (refreshed.refreshToken) {
       this.ctx.storage.kv.put<string>("refreshToken", refreshed.refreshToken);
     }
@@ -379,7 +422,7 @@ export class UserAccount extends DurableObject<Env> {
     }
     const token: StoredAccessToken = {
       token: refreshed.accessToken,
-      expires: Date.now() + refreshed.expiresIn * 1000,
+      expires: refreshed.expiresAt ?? 0,
     };
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", token);
     return token.token;
@@ -414,7 +457,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     // Both reads start before either is awaited, and settle together so a failure in one cannot
     // abandon the other as an unhandled rejection.
     const [token, grantedScopes] = await Promise.all([
-      account.getAccessToken(), account.getGrantedScopes(),
+      account.getAccessToken().catch(() => null), account.getGrantedScopes(),
     ]);
     const identity = token ? await fetchIdentity(token) : null;
     return {
@@ -444,7 +487,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getUsableAccessToken(): Promise<string | null> {
-    return this.#account().getAccessToken();
+    return this.#account().getAccessToken().catch(() => null);
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
