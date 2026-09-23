@@ -105,7 +105,9 @@ it("compares three-trial task cohorts", () => {
     },
   }]);
   const markdown = renderEvalComparison(comparison);
-  expect(markdown).toContain("| project-doc | 2 | 3 | +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
+  expect(markdown).toContain("| project-doc | 2 | 3 | \u{1F7E2} +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
+  // Two of three trials is two thirds, which rounds to seven of ten cells.
+  expect(markdown).toContain(`| project-doc | ${"\u{1F7E9}".repeat(7)}${"\u{1F7E5}".repeat(3)} 2/3 |`);
   expect(markdown).toContain(`\`${BASE_SHA.slice(0, 8)}\` vs candidate \`${HEAD_SHA.slice(0, 8)}\` \u00b7 ${MODEL} \u00b7 3 trials per task.`);
 });
 

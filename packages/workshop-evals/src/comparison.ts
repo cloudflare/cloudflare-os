@@ -182,9 +182,10 @@ function uniform<T>(values: readonly T[]): T | null {
 }
 
 /**
- * Render the comparison for a pull request comment: one table of the cohorts that can be
- * compared, then the cohorts that cannot, grouped by why. Whatever every row shares (the model,
- * the trial count) is said once in the header rather than repeated down a column.
+ * Render the comparison for a pull request comment: each cohort's pass rate as a bar, one table
+ * of the cohorts that can be compared, then the cohorts that cannot, grouped by why. Whatever
+ * every row shares (the model, the trial count) is said once in the header rather than repeated
+ * down a column.
  */
 export function renderEvalComparison(comparison: EvalComparison): string {
   const { rows } = comparison;
@@ -197,6 +198,20 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     ...(trials === null ? [] : [`${trials} trials per task`]),
   ].join(" \u00b7 ");
   const lines = ["# Eval runs comparison", "", `${header}.`, ""];
+  const name = (row: EvalComparisonRow) =>
+    model === null ? `${row.taskId} (${row.model})` : row.taskId;
+
+  lines.push("| Task | Baseline | Candidate |", "| --- | --- | --- |");
+  for (const row of rows) {
+    // Ten cells whatever the trial count, so bars line up down the table: green passed, red failed.
+    const [baseline, candidate] = [row.baseline, row.candidate].map(stats => {
+      if (stats === null) return "\u2014";
+      const passed = Math.round(passRate(stats) * 10);
+      return `${"\u{1F7E9}".repeat(passed)}${"\u{1F7E5}".repeat(10 - passed)} ${stats.passed}/${stats.trials}`;
+    });
+    lines.push(`| ${name(row)} | ${baseline} | ${candidate} |`);
+  }
+  lines.push("");
 
   const side = (stats: EvalStats) =>
     trials === null ? `${stats.passed}/${stats.trials}` : String(stats.passed);
@@ -211,9 +226,10 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     lines.push(`| ${columns.join(" | ")} |`, `|${" --- |".repeat(columns.length)}`);
     for (const row of compared) {
       const { baseline, candidate } = row;
+      const passDelta = (passRate(candidate) - passRate(baseline)) * 100;
       const cells = [row.taskId, ...(model === null ? [row.model] : []),
         side(baseline), side(candidate),
-        signed((passRate(candidate) - passRate(baseline)) * 100, 0, " pp"),
+        `${passDelta > 0 ? "\u{1F7E2}" : passDelta < 0 ? "\u{1F534}" : "\u26AA"} ${signed(passDelta, 0, " pp")}`,
         signed((candidate.meanDurationMs - baseline.meanDurationMs) / 1000, 1, " s"),
         signed(candidate.meanToolErrors - baseline.meanToolErrors, 1),
         costDelta(baseline, candidate)];
@@ -229,8 +245,7 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     if (row.reason === null) continue;
     const scores = [row.baseline, row.candidate].flatMap(stats =>
       stats === null ? [] : [`${stats.passed}/${stats.trials}`]).join(" \u2192 ");
-    const name = model === null ? `${row.taskId} (${row.model})` : row.taskId;
-    skipped.set(row.reason, [...(skipped.get(row.reason) ?? []), `${name} ${scores}`]);
+    skipped.set(row.reason, [...(skipped.get(row.reason) ?? []), `${name(row)} ${scores}`]);
   }
   if (skipped.size > 0) {
     lines.push("Not compared:");
