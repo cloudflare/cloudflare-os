@@ -2,6 +2,7 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
+import { ChatApi } from "./chat-api";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
@@ -11,6 +12,10 @@ import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-typ
 import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configurator-types";
 import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
+import type {
+  ChatAccountConfiguratorRpc,
+} from "./configurator/chat-account-configurator-types";
+import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
@@ -254,6 +259,48 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
     return listDriveFiles(
       this, query, "application/vnd.google-apps.spreadsheet", "Google Sheets",
     );
+  }
+}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class ChatAccountConfiguratorUI extends RpcTarget implements ChatAccountConfiguratorRpc {}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  /**
+   * One page of the conversations this account has joined, filtered locally.
+   *
+   * Chat's own space search only matches named spaces, so it would hide every direct message and
+   * group chat -- exactly the conversations whose id is hardest to find by hand. Listing instead
+   * keeps them all offerable from a single request.
+   */
+  async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
+    const api = new ChatApi(googleTokenProvider(this));
+    const page = await api.listSpaces({ pageSize: 200 });
+    return page.items
+      .map(space => {
+        const id = space.name.slice("spaces/".length);
+        const kind = space.type === "directMessage"
+          ? "Direct message"
+          : space.type === "groupChat" ? "Group chat" : "Space";
+        return {
+          value: id,
+          title: space.displayName ?? kind,
+          subtitle: space.lastActiveTime
+            ? `${kind} · Active ${space.lastActiveTime.toLocaleDateString()}`
+            : kind,
+          meta: idTail(id),
+        };
+      })
+      .filter(option => optionMatches([option.title, option.subtitle, option.value], query))
+      .slice(0, 100);
   }
 }
 

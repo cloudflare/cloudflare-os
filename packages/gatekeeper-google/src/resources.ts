@@ -60,6 +60,33 @@ export const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
+/**
+ * Every Google Chat conversation the connected account can reach.
+ *
+ * Deliberately not shareable: the grant spans direct messages and every space the owner belongs
+ * to, so no collaborator can be verified against it (see `GoogleChatGatekeeperImpl.addObserver`).
+ * Users who want a Gadget others can open should connect a single conversation instead.
+ */
+export const GOOGLE_CHAT_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/",
+  title: "Google Chat Account",
+  description:
+      "Find conversations, read and search messages across them, and post, react, or edit as " +
+      "you. Covers direct messages as well as spaces, so it cannot be shared with " +
+      "collaborators — connect a single conversation for that.",
+  grantable: true,
+};
+
+/** One selected Google Chat space, group chat, or direct message. */
+export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/room/:spaceId",
+  title: "Google Chat Conversation",
+  description:
+      "Read and post in one selected conversation as you, including its members, reactions, " +
+      "attachments, pins, and your own notification settings for it.",
+  grantable: true,
+};
+
 /** A BigQuery project, optionally narrowed to a dataset or table. */
 export const BIGQUERY_RESOURCE: SupportedResource = {
   urlPattern: `https://${BIGQUERY_HOST}/:projectId/*`,
@@ -134,6 +161,22 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
   BIGQUERY_RESOURCE.urlPattern,
 ];
 
+/**
+ * The user scopes the Chat resources need.
+ *
+ * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
+ * because the binding also edits and deletes messages, which only the combined scope permits.
+ */
+const CHAT_SCOPES = [
+  "https://www.googleapis.com/auth/chat.spaces.readonly",
+  "https://www.googleapis.com/auth/chat.messages",
+  "https://www.googleapis.com/auth/chat.messages.reactions",
+  "https://www.googleapis.com/auth/chat.memberships",
+  "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+  "https://www.googleapis.com/auth/chat.users.spacesettings",
+  "https://www.googleapis.com/auth/chat.spaces.pins",
+];
+
 /** The OAuth scopes each grantable resource needs. */
 export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] = [
   {
@@ -190,6 +233,18 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
     ],
+  },
+  // Both Chat resources request the same scopes: Google grants Chat authority per API, not per
+  // space, so narrowing to one conversation is enforced by the binding rather than by consent.
+  // Every scope here is a user scope; `chat.bot`, `chat.app.*`, `chat.admin.*`, `chat.import`
+  // and `chat.delete` are all deliberately absent.
+  {
+    resource: GOOGLE_CHAT_RESOURCE,
+    scopes: CHAT_SCOPES,
+  },
+  {
+    resource: GOOGLE_CHAT_SPACE_RESOURCE,
+    scopes: CHAT_SCOPES,
   },
   {
     resource: BIGQUERY_RESOURCE,
@@ -260,6 +315,18 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   ],
   "https://www.googleapis.com/auth/spreadsheets.readonly": [
     "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.readonly": [
+    "https://www.googleapis.com/auth/chat.spaces",
+  ],
+  "https://www.googleapis.com/auth/chat.messages.reactions": [
+    "https://www.googleapis.com/auth/chat.messages",
+  ],
+  "https://www.googleapis.com/auth/chat.users.readstate.readonly": [
+    "https://www.googleapis.com/auth/chat.users.readstate",
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.pins": [
+    "https://www.googleapis.com/auth/chat.spaces",
   ],
 };
 
@@ -345,7 +412,9 @@ export type ResourceTarget =
   | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
   | { kind: "driveAccount" }
   | { kind: "driveFolder"; folderId: string }
-  | { kind: "driveFile"; fileId: string };
+  | { kind: "driveFile"; fileId: string }
+  | { kind: "chatAccount" }
+  | { kind: "chatSpace"; spaceId: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
@@ -357,6 +426,8 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   driveAccount: GOOGLE_DRIVE_RESOURCE,
   driveFolder: GOOGLE_DRIVE_FOLDER_RESOURCE,
   driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
+  chatAccount: GOOGLE_CHAT_RESOURCE,
+  chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
 };
 
 /**
@@ -385,6 +456,7 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case "calendar.google.com": return parseCalendarUrl(parsed);
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
     case "drive.google.com": return parseDriveUrl(parsed);
+    case "chat.google.com": return parseChatUrl(parsed);
   }
   throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
 }
@@ -471,6 +543,27 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
   if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]) };
 
   throw new Error(`Unsupported Google Drive resource URL: ${describeUrl(parsed)}`);
+}
+
+/**
+ * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
+ * the configurator mints: the bare host for the whole account, `/room/{space}` for one
+ * conversation. The id is the Chat space id without its `spaces/` prefix, and it is validated
+ * here because every downstream request interpolates it into a path.
+ */
+function parseChatUrl(parsed: URL): ResourceTarget {
+  if (/^\/?$/.test(parsed.pathname)) return { kind: "chatAccount" };
+
+  let room = /^\/room\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (room) {
+    let spaceId = decodeURIComponent(room[1]);
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(spaceId)) {
+      throw new Error("Invalid Google Chat conversation ID.");
+    }
+    return { kind: "chatSpace", spaceId };
+  }
+
+  throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);
 }
 
 function parseBigQueryUrl(parsed: URL): ResourceTarget {

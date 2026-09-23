@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DOC_RESOURCE,
+  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
+  GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
   RESOURCE_BY_KIND, RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
@@ -31,6 +32,8 @@ describe("resource declarations", () => {
       "https://drive.google.com/drive/my-drive",
       "https://drive.google.com/drive/folders/:folderId",
       "https://drive.google.com/file/d/:fileId/view",
+      "https://chat.google.com/",
+      "https://chat.google.com/room/:spaceId",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
   });
@@ -100,6 +103,28 @@ describe("resource declarations", () => {
       "Google Docs and Sheets.",
       "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
     ]);
+  });
+
+  // The gatekeeper is deliberately a user-authenticated Chat client: `chat.bot` and the
+  // `chat.app.*` family would make it post as a configured Chat app instead of as the person,
+  // `chat.admin.*` would reach conversations the connected user cannot open, and `chat.import`
+  // and `chat.delete` are destructive surfaces the session never exposes.
+  it("requests only user-authentication Chat scopes", () => {
+    for (const resource of [GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE]) {
+      const scopes = RESOURCE_SCOPES.find(entry => entry.resource === resource)!.scopes;
+      expect(scopes).toEqual([
+        "https://www.googleapis.com/auth/chat.spaces.readonly",
+        "https://www.googleapis.com/auth/chat.messages",
+        "https://www.googleapis.com/auth/chat.messages.reactions",
+        "https://www.googleapis.com/auth/chat.memberships",
+        "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+        "https://www.googleapis.com/auth/chat.users.spacesettings",
+        "https://www.googleapis.com/auth/chat.spaces.pins",
+      ]);
+      for (const forbidden of ["chat.bot", "chat.app.", "chat.admin.", "chat.import", "chat.delete"]) {
+        expect(scopes.some(scope => scope.includes(forbidden))).toBe(false);
+      }
+    }
   });
 
   it("matches the natural folder URL only to the folder resource", () => {
@@ -472,6 +497,42 @@ describe("parseResourceUrl", () => {
     it("rejects paths outside the permanent Drive grammar", () => {
       expect(() => parseResourceUrl("https://drive.google.com/drive/u/0/my-drive"))
         .toThrow(/Unsupported Google Drive resource URL/);
+    });
+  });
+
+  describe("Google Chat", () => {
+    it.each([
+      ["the whole account", "https://chat.google.com/", { kind: "chatAccount" }],
+      ["the whole account with no trailing slash", "https://chat.google.com", { kind: "chatAccount" }],
+      ["one conversation", "https://chat.google.com/room/AAAA1234",
+        { kind: "chatSpace", spaceId: "AAAA1234" }],
+      ["one conversation with a trailing slash", "https://chat.google.com/room/AAAA1234/",
+        { kind: "chatSpace", spaceId: "AAAA1234" }],
+    ] as const)("scopes to %s", (_name, url, expected) => {
+      expect(parseResourceUrl(url)).toEqual(expected);
+    });
+
+    // The id is interpolated into every Chat request path, so anything outside Google's alphabet
+    // has to be refused where the capability is minted rather than deeper in.
+    it.each([
+      "https://chat.google.com/room/",
+      "https://chat.google.com/room/AAA%2F..%2FBBB",
+      "https://chat.google.com/room/AAA/BBB",
+      "https://chat.google.com/dm/AAAA1234",
+      "https://chat.google.com/u/0/",
+    ])("rejects %s", url => {
+      expect(() => parseResourceUrl(url)).toThrow(/Google Chat/);
+    });
+
+    it("matches each Chat URL to exactly one resource pattern", () => {
+      for (const [url, expected] of [
+        ["https://chat.google.com/", GOOGLE_CHAT_RESOURCE],
+        ["https://chat.google.com/room/AAAA1234", GOOGLE_CHAT_SPACE_RESOURCE],
+      ] as const) {
+        for (const resource of SUPPORTED_RESOURCES) {
+          expect(new URLPattern(resource.urlPattern).test(url)).toBe(resource === expected);
+        }
+      }
     });
   });
 
