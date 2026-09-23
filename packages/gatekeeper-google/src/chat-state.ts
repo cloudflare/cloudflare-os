@@ -1,9 +1,10 @@
 // Pending Chat actions and the read-time overlay that simulates them.
 //
 // An action submitted for approval is not sent to Google until applyAction() runs, but every read
-// through this gatekeeper is answered as though it already had: a queued message appears in the
-// space's history, a queued edit shows its new text, a queued reaction is counted, and so on. The
-// caller therefore never has to know that approval sits between the two.
+// through this gatekeeper reflects most queued writes: a queued message appears in the space's
+// history and a queued edit shows its new text. Detailed reaction lists are simulated too, while
+// aggregate reaction summaries remain provider-backed because their counts do not reveal whether
+// the connected user is already included.
 //
 // The overlay is computed at read time rather than by mutating a cache, so rejecting an action
 // simply removes it and the next read is correct again. Every function here is pure, which is
@@ -143,21 +144,6 @@ export function pendingMessageInfo(
   };
 }
 
-function withReaction(
-  info: GoogleChatMessageInfo,
-  emoji: string,
-  delta: 1 | -1,
-): GoogleChatMessageInfo {
-  const reactions = info.reactions.map(summary => ({ ...summary }));
-  const existing = reactions.find(summary => summary.emoji === emoji);
-  if (existing) {
-    existing.count = Math.max(0, existing.count + delta);
-  } else if (delta > 0) {
-    reactions.push({ emoji, count: 1 });
-  }
-  return { ...info, reactions: reactions.filter(summary => summary.count > 0) };
-}
-
 /**
  * Apply every pending action that touches one already-committed message.
  *
@@ -182,11 +168,11 @@ export function overlayMessage(
           result = { ...result, deleted: true, text: "", attachments: [], reactions: [] };
         }
         break;
+      // Aggregate reaction counts do not say whether the connected user is already included.
+      // Leave summaries provider-backed rather than guessing a pending delta. listReactions()
+      // still simulates the connected user's final desired reaction state.
       case "addReaction":
-        if (action.messageName === info.name) result = withReaction(result, action.emoji, 1);
-        break;
       case "removeReaction":
-        if (action.messageName === info.name) result = withReaction(result, action.emoji, -1);
         break;
       default:
         break;
@@ -211,8 +197,8 @@ function pendingSendMatches(
 /**
  * Overlay one page of a space's messages.
  *
- * Queued sends are appended to the page only once the provider has no more pages to give, so a
- * caller paging oldest-first does not meet tomorrow's message halfway through last week.
+ * Queued sends appear on the final page when paging oldest-first, or the first page when paging
+ * newest-first, so their simulated position matches the requested order.
  */
 export function overlayMessageList(
   messages: readonly GoogleChatMessageInfo[],
@@ -222,6 +208,8 @@ export function overlayMessageList(
     self: GoogleChatUser;
     options: GoogleChatListMessagesOptions;
     exhausted: boolean;
+    /** Whether this is the first provider page. Defaults to true for direct callers. */
+    firstPage?: boolean;
   },
 ): GoogleChatMessageInfo[] {
   const includeDeleted = context.options.includeDeleted === true;
@@ -230,7 +218,10 @@ export function overlayMessageList(
     const overlaid = overlayMessage(message, pending, { includeDeleted });
     if (overlaid) result.push(overlaid);
   }
-  if (!context.exhausted) return result;
+  const showQueued = context.options.order === "newestFirst"
+    ? context.firstPage !== false
+    : context.exhausted;
+  if (!showQueued) return result;
 
   const queued = pending
     .filter((entry): entry is { id: number; action: ChatSendMessageAction } =>
@@ -293,20 +284,18 @@ export function overlayPins(
   pending: readonly PendingChatAction[],
   context: { spaceName: string; exhausted: boolean },
 ): string[] {
-  const removed = new Set<string>();
-  const added: string[] = [];
+  const desired = new Map<string, boolean>();
   for (const { action } of pending) {
-    if (action.type === "pinMessage" && action.spaceName === context.spaceName) {
-      added.push(action.messageName);
-    } else if (action.type === "unpinMessage" && action.spaceName === context.spaceName) {
-      removed.add(action.messageName);
+    if ((action.type === "pinMessage" || action.type === "unpinMessage") &&
+        action.spaceName === context.spaceName) {
+      desired.set(action.messageName, action.type === "pinMessage");
     }
   }
-  const result = pinned.filter(name => !removed.has(name));
+  const result = pinned.filter(name => desired.get(name) !== false);
   if (!context.exhausted) return result;
   const seen = new Set(result);
-  for (const name of added) {
-    if (!seen.has(name) && !removed.has(name)) {
+  for (const [name, shouldBePinned] of desired) {
+    if (shouldBePinned && !seen.has(name)) {
       seen.add(name);
       result.push(name);
     }

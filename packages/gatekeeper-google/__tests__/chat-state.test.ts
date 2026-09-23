@@ -61,10 +61,16 @@ describe("message list overlay", () => {
     });
   });
 
-  it("puts a queued message first when the caller asked for newest first", () => {
-    expect(overlayMessageList([message("1", "first")], pending(send), {
-      spaceName: SPACE, self: SELF, options: { order: "newestFirst" }, exhausted: true,
-    }).map(info => info.text)).toEqual(["queued hello", "first"]);
+  it("puts a queued message on only the first page when newest comes first", () => {
+    const context = {
+      spaceName: SPACE, self: SELF, options: { order: "newestFirst" as const }, exhausted: false,
+    };
+    expect(overlayMessageList([message("1", "newest")], pending(send), {
+      ...context, firstPage: true,
+    }).map(info => info.text)).toEqual(["queued hello", "newest"]);
+    expect(overlayMessageList([message("2", "older")], pending(send), {
+      ...context, firstPage: false,
+    }).map(info => info.text)).toEqual(["older"]);
   });
 
   it("keeps another conversation's queued message out", () => {
@@ -123,16 +129,11 @@ describe("reaction overlay", () => {
     type: "removeReaction", messageName: target, emoji: "👍", submittedAt: Date.now(),
   };
 
-  it("counts a queued reaction in the summary", () => {
+  it("leaves aggregate counts provider-backed rather than guessing the user's presence", () => {
     const info = overlayMessage(
-      message("1", "first", { reactions: [{ emoji: "🎉", count: 1 }] }), pending(add));
-    expect(info?.reactions).toEqual([{ emoji: "🎉", count: 2 }]);
-  });
-
-  it("drops a summary that a queued removal empties", () => {
-    const info = overlayMessage(
-      message("1", "first", { reactions: [{ emoji: "👍", count: 1 }] }), pending(remove));
-    expect(info?.reactions).toEqual([]);
+      message("1", "first", { reactions: [{ emoji: "🎉", count: 1 }] }),
+      pending(add, add, remove));
+    expect(info?.reactions).toEqual([{ emoji: "🎉", count: 1 }]);
   });
 
   it("adds and removes the connected user's own reaction in the detailed list", () => {
@@ -181,10 +182,11 @@ describe("pin overlay", () => {
     expect(overlayPins([first], actions, { spaceName: SPACE, exhausted: true })).toEqual([second]);
   });
 
-  it("does not pin the same message twice", () => {
-    const actions = pending({
-      type: "pinMessage", spaceName: SPACE, messageName: first, submittedAt: Date.now(),
-    });
+  it("uses the final queued state and does not pin the same message twice", () => {
+    const actions = pending(
+      { type: "unpinMessage", spaceName: SPACE, messageName: first, submittedAt: Date.now() },
+      { type: "pinMessage", spaceName: SPACE, messageName: first, submittedAt: Date.now() },
+    );
     expect(overlayPins([first], actions, { spaceName: SPACE, exhausted: true })).toEqual([first]);
   });
 });

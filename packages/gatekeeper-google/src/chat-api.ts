@@ -1140,11 +1140,26 @@ export class ChatApi {
       throw new Error(
         `Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_CHAT_DOWNLOAD_BYTES) {
-      throw new Error(`Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
+    const reader = response.body?.getReader();
+    if (!reader) return new ArrayBuffer(0);
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_CHAT_DOWNLOAD_BYTES) {
+        await reader.cancel();
+        throw new Error(`Attachment exceeds the ${MAX_CHAT_DOWNLOAD_BYTES}-byte safe-read limit.`);
+      }
+      chunks.push(value);
     }
-    return bytes.buffer.slice(
-      bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes.buffer;
   }
 }

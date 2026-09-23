@@ -173,8 +173,9 @@ export type GoogleChatListMessagesOptions = {
  *
  * Google's message search omits some messages by design: private messages, messages posted by
  * Chat apps, messages in Chat app direct messages, messages from blocked users, and messages in
- * conversations the connected user has muted. Use `GoogleChatSpace.listMessages()` when complete
- * history for one known conversation is required.
+ * conversations the connected user has muted. Search reflects committed provider state and does
+ * not simulate pending sends or edits. Use `GoogleChatSpace.listMessages()` when complete history
+ * for one known conversation is required.
  */
 export type GoogleChatMessageSearch = {
   /** Words or quoted phrases the message must contain. */

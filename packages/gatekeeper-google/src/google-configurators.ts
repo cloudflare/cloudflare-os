@@ -275,32 +275,38 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   }
 
   /**
-   * One page of the conversations this account has joined, filtered locally.
+   * Conversations this account has joined, filtered locally.
    *
    * Chat's own space search only matches named spaces, so it would hide every direct message and
-   * group chat -- exactly the conversations whose id is hardest to find by hand. Listing instead
-   * keeps them all offerable from a single request.
+   * group chat -- exactly the conversations whose id is hardest to find by hand. Scan a bounded
+   * five provider pages, stopping once the picker has its 100 visible options.
    */
   async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
     const api = new ChatApi(googleTokenProvider(this));
-    const page = await api.listSpaces({ pageSize: 200 });
-    return page.items
-      .map(space => {
-        const id = space.name.slice("spaces/".length);
-        const kind = space.type === "directMessage"
-          ? "Direct message"
-          : space.type === "groupChat" ? "Group chat" : "Space";
-        return {
-          value: id,
-          title: space.displayName ?? kind,
-          subtitle: space.lastActiveTime
-            ? `${kind} · Active ${space.lastActiveTime.toLocaleDateString()}`
-            : kind,
-          meta: idTail(id),
-        };
-      })
-      .filter(option => optionMatches([option.title, option.subtitle, option.value], query))
-      .slice(0, 100);
+    const options: ConfiguratorOption[] = [];
+    let pageToken: string | undefined;
+    for (let pageNumber = 0; pageNumber < 5 && options.length < 100; pageNumber++) {
+      const page = await api.listSpaces({ pageSize: 200, ...(pageToken ? { pageToken } : {}) });
+      options.push(...page.items
+        .map(space => {
+          const id = space.name.slice("spaces/".length);
+          const kind = space.type === "directMessage"
+            ? "Direct message"
+            : space.type === "groupChat" ? "Group chat" : "Space";
+          return {
+            value: id,
+            title: space.displayName ?? kind,
+            subtitle: space.lastActiveTime
+              ? `${kind} · Active ${space.lastActiveTime.toLocaleDateString()}`
+              : kind,
+            meta: idTail(id),
+          };
+        })
+        .filter(option => optionMatches([option.title, option.subtitle, option.value], query)));
+      pageToken = page.nextPageToken;
+      if (!pageToken) break;
+    }
+    return options.slice(0, 100);
   }
 }
 

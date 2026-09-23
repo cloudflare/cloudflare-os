@@ -85,6 +85,7 @@ const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
 
 /** What an applied action needs in order to be undone. */
 type ChatRevertInfo =
+  | { type: "none" }
   | { type: "sentMessage"; messageName: string }
   | { type: "updatedMessage"; messageName: string; previousText: string }
   | { type: "addedReaction"; reactionName: string }
@@ -480,16 +481,16 @@ class GoogleChatSessionImpl extends ChatRpcTarget implements GoogleChatSession {
 
   async searchMessages(query: GoogleChatMessageSearch): Promise<Cursor<GoogleChatMessageEntry>> {
     const filter = chatMessagesSearchFilter(query);
-    const pending = this.ctx.store.list();
     return new ChatCursor(this.ctx, new CursorPager<GoogleChatMessageInfo, GoogleChatMessageEntry>({
       provider: "Google Chat",
       fetchPage: pageToken => this.ctx.api.searchMessages("spaces/-", {
         filter, ...(pageToken ? { pageToken } : {}),
       }),
-      buildEntries: async items => items
-        .map(info => overlayMessage(info, pending))
-        .filter((info): info is GoogleChatMessageInfo => info !== null)
-        .map(info => ({ info, message: new GoogleChatMessageImpl(this.ctx, info.name) })),
+      // Search is provider-backed rather than simulated: overlaying pending edits after Google
+      // applies its filter can return non-matches and cannot discover newly matching messages.
+      buildEntries: async items => items.map(info => ({
+        info, message: new GoogleChatMessageImpl(this.ctx, info.name),
+      })),
       authorize: entries => observe(
         this.ctx,
         "Search Google Chat messages",
@@ -553,6 +554,7 @@ class GoogleChatSpaceImpl extends ChatRpcTarget implements GoogleChatSpace {
     // provider has run out of pages. `exhausted` is set by fetchPage and read by buildEntries,
     // which the pager always runs in that order for one page.
     let exhausted = false;
+    let firstPage = true;
     return new ChatCursor(this.ctx, new CursorPager<GoogleChatMessageInfo, GoogleChatMessageEntry>({
       provider: "Google Chat",
       fetchPage: async pageToken => {
@@ -562,12 +564,19 @@ class GoogleChatSpaceImpl extends ChatRpcTarget implements GoogleChatSpace {
         exhausted = page.nextPageToken === undefined;
         return page;
       },
-      buildEntries: async items => overlayMessageList(items, pending, {
-        spaceName: this.#spaceName,
-        self: this.ctx.self,
-        options,
-        exhausted,
-      }).map(info => ({ info, message: new GoogleChatMessageImpl(this.ctx, info.name) })),
+      buildEntries: async items => {
+        const overlaid = overlayMessageList(items, pending, {
+          spaceName: this.#spaceName,
+          self: this.ctx.self,
+          options,
+          exhausted,
+          firstPage,
+        });
+        firstPage = false;
+        return overlaid.map(info => ({
+          info, message: new GoogleChatMessageImpl(this.ctx, info.name),
+        }));
+      },
       authorize: entries => observe(
         this.ctx,
         "Read Google Chat messages",
@@ -928,19 +937,19 @@ class GoogleChatMessageImpl extends ChatRpcTarget implements GoogleChatMessage {
   async attachments(): Promise<GoogleChatAttachmentEntry[]> {
     const name = this.#requireCommitted("read for attachments");
     const raw: ChatMessageRaw = await this.ctx.api.getRawMessage(name);
-    const entries = (raw.attachment ?? []).map(attachment => {
-      const info = chatAttachmentInfoFromRaw(attachment);
-      return {
-        info,
-        attachment: new GoogleChatAttachmentImpl(
-          this.ctx, name, info, chatAttachmentMediaName(attachment)),
-      };
-    });
+    const attachments = (raw.attachment ?? []).map(attachment => ({
+      info: chatAttachmentInfoFromRaw(attachment),
+      mediaName: chatAttachmentMediaName(attachment),
+    }));
     await observe(
       this.ctx,
       "List Google Chat message attachments",
-      `Read the filenames and media types of ${entries.length} attachment(s) on message ${name}.`);
-    return entries;
+      `Read the filenames and media types of ${attachments.length} attachment(s) on message ` +
+      `${name}.`);
+    return attachments.map(({ info, mediaName }) => ({
+      info,
+      attachment: new GoogleChatAttachmentImpl(this.ctx, name, info, mediaName),
+    }));
   }
 
   async pin(): Promise<void> {
@@ -1190,18 +1199,26 @@ export class GoogleChatGatekeeperImpl
         const self = await this.#getSelf();
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.name);
-        const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
-        store.setRevert(actionId, { type: "addedReaction", reactionName: reaction.name });
+        if (existing) {
+          store.setRevert(actionId, { type: "none" });
+        } else {
+          const reaction = await api.createReaction(action.messageName, action.emoji);
+          store.setRevert(actionId, { type: "addedReaction", reactionName: reaction.name });
+        }
         store.remove(actionId);
         return;
       }
       case "removeReaction": {
         const self = await this.#getSelf();
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.name);
-        if (existing) await api.deleteReaction(existing.name);
-        store.setRevert(actionId, {
-          type: "removedReaction", messageName: action.messageName, emoji: action.emoji,
-        });
+        if (existing) {
+          await api.deleteReaction(existing.name);
+          store.setRevert(actionId, {
+            type: "removedReaction", messageName: action.messageName, emoji: action.emoji,
+          });
+        } else {
+          store.setRevert(actionId, { type: "none" });
+        }
         store.remove(actionId);
         return;
       }
@@ -1258,6 +1275,8 @@ export class GoogleChatGatekeeperImpl
     }
     const api = this.#api();
     switch (info.type) {
+      case "none":
+        break;
       case "sentMessage":
         await api.deleteMessage(info.messageName);
         break;
