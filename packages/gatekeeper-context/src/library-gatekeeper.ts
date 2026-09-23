@@ -130,10 +130,10 @@ export class ContextAccount
 
   async describe(): Promise<AccountDescription> {
     return {
-      displayName: "Context",
+      displayName: "Skills",
       avatar: LIBRARY_ICON,
       singleton: { tsType: "ContextLibrary" },
-      providesUi: { title: "Context & Skills", icon: LIBRARY_ICON },
+      providesUi: { title: "Skills", icon: LIBRARY_ICON },
     };
   }
 
@@ -258,7 +258,7 @@ export class ContextGatekeeper
   async describe(): Promise<ResourceDescription> {
     return {
       url: "context://library",
-      title: "Context",
+      title: "Skills",
       snippet: "Search and read your team's shared context collections.",
       suggestedBindingName: "CONTEXT",
       tsType: "ContextLibrary",
@@ -371,14 +371,14 @@ type GatekeeperVendorProps = {
 export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env, GatekeeperVendorProps> {
   async describe(): Promise<VendorDescription> {
     return {
-      displayName: "Context",
+      displayName: "Skills",
       url: "https://workers.cloudflare.com/",
       logo: LIBRARY_ICON,
-      tagline: "Author and consult shared context collections",
+      tagline: "Reusable instructions and workflows for agents",
       description:
-        "The Context Library lets you and your team author collections of context documents " +
-        "that agents can consult to learn how to perform tasks. It is always available — no " +
-        "connection needed.",
+        "Skills provide agents with reusable instructions, workflows, and supporting resources. " +
+        "Enable this feature to let users create their own skills and use skills shared by your " +
+        "organization.",
       autoProvisionsAccount: true,
       providesAuth: false,
     };
