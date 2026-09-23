@@ -420,10 +420,12 @@ describe("getModel direct routing (no gateway)", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
     ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000],
-    ["openai", "gpt-6-astra", "GPT-6 Astra", 272_000],
-    ["openai", "gpt-6-sol", "GPT-6 Sol", 272_000],
-    ["openai", "gpt-6-luna", "GPT-6 Luna", 272_000],
-  ] as const)("offers %s model %s with its catalog metadata", (provider, model, name, contextWindow) => {
+    ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000],
+    ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000],
+    ["openai", "gpt-6-luna", "GPT-6 Luna", 1_050_000],
+  ] as const)(
+      "offers %s model %s with configured limits and catalog metadata",
+      (provider, model, name, contextWindow) => {
     expect(SUGGESTED_MODELS[provider][model]).toMatchObject({name, contextWindow});
 
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {

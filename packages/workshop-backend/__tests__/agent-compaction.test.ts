@@ -103,14 +103,14 @@ describe("compaction trigger", () => {
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
   });
 
-  it("sizes GPT-5.6 against its cheaper input tier and reserves GPT-6 output capacity", () => {
+  it("uses the suggested 272K compaction budget for GPT-5.6 and GPT-6", () => {
     for (let model of ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
           .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
     }
     for (let model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
-          .toEqual({inputBudget: 144_000, maxOutputTokens: 128_000});
+          .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
     }
   });
 
