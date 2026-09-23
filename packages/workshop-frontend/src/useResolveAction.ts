@@ -1,4 +1,4 @@
-import { useCallback, useRef, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { serializeException } from '@gadgets/error-reporting'
 import type { RpcStub } from 'capnweb'
@@ -9,18 +9,6 @@ type ActionDecision = 'approve' | 'deny'
 
 const inFlightActions = new WeakMap<RpcStub<Overseer>, Set<number>>()
 
-/** Build bounded diagnostics without copying arbitrary properties attached to the error. */
-export function actionErrorDiagnostics(
-  error: unknown,
-  context: Readonly<{ actionId: number, decision: ActionDecision }>,
-): string {
-  return JSON.stringify({
-    operation: `${context.decision}-action`,
-    actionId: context.actionId,
-    error: serializeException(error),
-  }, null, 2)
-}
-
 export function useResolveAction(
   overseer: RpcStub<Overseer>,
   setProcessing: Dispatch<SetStateAction<Set<number>>>,
@@ -29,8 +17,20 @@ export function useResolveAction(
   const toasts = useKumoToastManager()
   const onResolvedRef = useRef(onResolved)
   onResolvedRef.current = onResolved
+  const currentOverseer = useRef<RpcStub<Overseer> | null>(overseer)
+  const closeFailureToast = useRef<(() => void) | undefined>(undefined)
+
+  useEffect(() => {
+    currentOverseer.current = overseer
+    return () => {
+      currentOverseer.current = null
+      closeFailureToast.current?.()
+    }
+  }, [overseer])
 
   return useCallback(async function resolveAction(actionId: number, decision: ActionDecision) {
+    if (currentOverseer.current !== overseer) return
+    closeFailureToast.current?.()
     const inFlight = inFlightActions.get(overseer) ?? new Set<number>()
     if (inFlight.has(actionId)) return
     inFlightActions.set(overseer, inFlight)
@@ -43,7 +43,17 @@ export function useResolveAction(
       onResolvedRef.current?.(actionId, decision === 'approve' ? 'approved' : 'rejected')
     } catch (error) {
       console.error(`Failed to ${decision} action:`, error)
-      const diagnostics = actionErrorDiagnostics(error, { actionId, decision })
+      if (currentOverseer.current !== overseer) return
+      closeFailureToast.current?.()
+      const diagnostics = JSON.stringify({
+        operation: `${decision}-action`,
+        actionId,
+        error: serializeException(error),
+      }, null, 2)
+      const close = () => {
+        toasts.close(toastId)
+        closeFailureToast.current = undefined
+      }
       const toastId = toasts.add({
         title: `Failed to ${decision} action`,
         variant: 'error',
@@ -53,7 +63,7 @@ export function useResolveAction(
           size: 'sm',
           variant: 'primary',
           onClick: () => {
-            toasts.close(toastId)
+            if (closeFailureToast.current !== close) return
             return resolveAction(actionId, decision)
           },
         }, {
@@ -68,6 +78,7 @@ export function useResolveAction(
           },
         }],
       })
+      closeFailureToast.current = close
     } finally {
       inFlight.delete(actionId)
       setProcessing(previous => {

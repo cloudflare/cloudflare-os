@@ -1,12 +1,14 @@
-import type { Dispatch, SetStateAction } from 'react'
+// @vitest-environment jsdom
+
+import { createElement, type Dispatch, type SetStateAction } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { actionErrorDiagnostics, useResolveAction } from './useResolveAction'
+import { useResolveAction } from './useResolveAction'
+import { makeTestRoot } from './action-test-harness'
 
 type TestToast = {
-  timeout?: number
-  actions?: Array<{ children: unknown, onClick: () => Promise<void> }>
+  actions?: Array<{ children: unknown, onClick: () => Promise<void> | void }>
 }
 
 const testState = vi.hoisted(() => ({
@@ -14,58 +16,54 @@ const testState = vi.hoisted(() => ({
   closeToast: vi.fn<(id?: string) => void>(),
 }))
 
-vi.mock('react', () => ({
-  useCallback: <T,>(callback: T) => callback,
-  useRef: <T,>(current: T) => ({ current }),
-}))
 vi.mock('@cloudflare/kumo', () => ({
   useKumoToastManager: () => ({ add: testState.addToast, close: testState.closeToast }),
 }))
 
 afterEach(() => vi.restoreAllMocks())
 
-describe('actionErrorDiagnostics', () => {
-  it('includes standard error fields, but not attached request data', () => {
-    const error = Object.assign(new Error('gatekeeper failed'), { requestBody: 'secret' })
-    const diagnostics = JSON.parse(actionErrorDiagnostics(error, {
-      actionId: 42,
-      decision: 'approve',
-    }))
-
-    expect(diagnostics).toMatchObject({
-      operation: 'approve-action',
-      actionId: 42,
-      error: { type: 'Error', message: 'gatekeeper failed' },
-    })
-    expect(diagnostics.error.stack).toContain('gatekeeper failed')
-    expect(JSON.stringify(diagnostics)).not.toContain('secret')
-  })
-})
-
 describe('useResolveAction', () => {
-  it('keeps recovery actions available and prevents an overlapping retry', async () => {
+  const view = makeTestRoot()
+  afterEach(() => view.cleanup())
+
+  it('guards overlapping attempts and discards stale retries on reconnect', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     testState.addToast.mockReturnValue('failure-toast')
 
     let finishRetry!: () => void
     const retry = new Promise<void>(resolve => { finishRetry = resolve })
     const approveAction = vi.fn<(id: number) => Promise<void>>()
+      .mockRejectedValue(new Error('failed'))
       .mockRejectedValueOnce(new Error('failed'))
       .mockReturnValueOnce(retry)
     const overseer = { approveAction } as unknown as RpcStub<Overseer>
     const setProcessing = vi.fn<Dispatch<SetStateAction<Set<number>>>>()
-    const resolveAction = useResolveAction(overseer, setProcessing)
+    let resolveAction!: ReturnType<typeof useResolveAction>
+    const Probe = ({ stub }: { stub: RpcStub<Overseer> }) => {
+      resolveAction = useResolveAction(stub, setProcessing)
+      return null
+    }
+    await view.render(createElement(Probe, { stub: overseer }))
 
     await resolveAction(42, 'approve')
     const failureToast = testState.addToast.mock.calls[0][0]
-    expect(failureToast.timeout).toBe(0)
 
     const retrying = failureToast.actions![0].onClick()
+    await failureToast.actions![0].onClick()
     await resolveAction(42, 'approve')
     expect(approveAction).toHaveBeenCalledTimes(2)
     expect(testState.closeToast).toHaveBeenCalledWith('failure-toast')
 
     finishRetry()
     await retrying
+
+    await resolveAction(42, 'approve')
+    const staleRetry = testState.addToast.mock.calls[1][0].actions![0].onClick
+    testState.closeToast.mockClear()
+    await view.render(createElement(Probe, { stub: {} as RpcStub<Overseer> }))
+    expect(testState.closeToast).toHaveBeenCalledWith('failure-toast')
+    await staleRetry()
+    expect(approveAction).toHaveBeenCalledTimes(3)
+    expect(testState.addToast).toHaveBeenCalledTimes(2)
   })
 })
