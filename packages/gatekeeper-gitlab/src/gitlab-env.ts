@@ -3,9 +3,17 @@
 // (gitlab-gatekeeper.ts) so neither imports the other for these.
 
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabCredential, type GitLabInstance } from "./gitlab-api";
 
-export type Env = Cloudflare.Env & {
+/**
+ * The Worker's environment. `PreviewOAuthEnv` adds the kit's three optional preview-relay
+ * variables (`OAUTH_ALLOW_PREVIEW_REDIRECTS`, `OAUTH_REDIRECT_URI`, `OAUTH_STATE_SIGNING_SECRET`):
+ * unset, OAuth callbacks are direct, as in production; set, a Worker Preview -- whose hostname
+ * cannot be registered with the OAuth application -- sends GitLab to the stable Worker's
+ * callback, which relays to the preview (see `gatekeeper-kit/preview-oauth`).
+ */
+export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   /** Where this worker is reachable; the OAuth redirect URI is `${BASE_URL}/oauth`. */
   BASE_URL?: string;
   /** OAuth application credentials (secrets). */

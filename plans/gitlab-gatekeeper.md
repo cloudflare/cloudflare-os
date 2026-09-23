@@ -482,6 +482,15 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   it → `beginOAuthFlow()` swaps in an OAuth-stage nonce **and generates the PKCE verifier**
   (stored beside the nonce, one per flow) → 302 to `{instanceUrl}/oauth/authorize` with
   `state = ${doId}:${oauthNonce}`, `code_challenge`, `code_challenge_method=S256`, `scope`.
+  The `state` and `redirect_uri` come from the kit's `PreviewOAuth` (as in `gatekeeper-google`):
+  with none of `OAUTH_ALLOW_PREVIEW_REDIRECTS` / `OAUTH_REDIRECT_URI` /
+  `OAUTH_STATE_SIGNING_SECRET` set — production — that is the plain `doId:nonce` state and this
+  Worker's own callback; on a Worker Preview, whose hostname the GitLab application cannot list,
+  it is a signed state carrying the preview's callback and the *stable* Worker's redirect, and
+  the stable Worker's `/oauth` relays GitLab's answer (code or error) to the preview. The
+  `redirect_uri` the authorize request carried is stored on the `oauth`-stage nonce and repeated
+  verbatim in the code exchange (RFC 6749 §4.1.3). Added for the internal deployment's MR
+  previews; `gatekeeper-github` does not have it yet (Punted).
   `/oauth` callback → `acceptAuthCode(code, oauthNonce)` verifies the nonce in constant time,
   deletes it and the verifier, exchanges the code (with `code_verifier`), and either stages the
   grant (`reconnect` flows → `stageCredentials` → `callback.reconnectComplete(stageId)`) or writes
@@ -1165,6 +1174,8 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   fails transiently silences the account for good (the kit's `credential-expiry` module is the
   fix, adopted here); and a 401 arriving for a token that a reconnect has since replaced retires
   the new grant (this port's `grantId` on `GitLabApiError` + `credentialsRejected(grantId)`).
+  Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
+  which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential
   issues, and an agent that knows an issue is confidential can avoid quoting it into a public
   merge request description. A one-field addition to the approved API, deferred to its own review.

@@ -33,6 +33,7 @@ import {
 } from "@gadgets/gatekeeper-kit/connect-nonce";
 import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import {
   GitLabApi,
   GitLabApiError,
@@ -95,6 +96,12 @@ type StoredNonce = {
   expiresAt: number;
   stage: "initiation" | "oauth";
   /**
+   * The `redirect_uri` the authorize request carried, kept for the code exchange, which must
+   * repeat it exactly. Usually this Worker's own callback; on a Worker Preview it is the stable
+   * Worker's, which relays the callback here (`PreviewOAuth`). Set at the `oauth` stage.
+   */
+  redirectUri?: string;
+  /**
    * Set when this flow reconnects an existing account, so its grant is staged rather than made
    * live. The mode travels with the flow instead of living on the account: committing one
    * reconnect while another is in flight must not change how that other flow lands.
@@ -154,6 +161,21 @@ class Mutex {
   }
 }
 
+/**
+ * The OAuth callback policy for this Worker: direct in production, a relay through the stable
+ * Worker on a Worker Preview. A misconfiguration (half the preview variables set) is a 503 with
+ * the kit's display-safe message rather than an authorize request GitLab would refuse anyway.
+ */
+function previewOAuthFor(env: Env): PreviewOAuth | Response {
+  try {
+    return new PreviewOAuth({ callbackUri: getRedirectUri(env), env });
+  } catch (error) {
+    return new Response(
+      error instanceof Error ? error.message : "GitLab OAuth callback is not configured.",
+      { status: 503 });
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
@@ -172,8 +194,10 @@ export default {
 
       const doId = path[0];
       const initiationNonce = path[1];
+      const previewOAuth = previewOAuthFor(env);
+      if (previewOAuth instanceof Response) return previewOAuth;
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      const begun = await stub.beginOAuthFlow(initiationNonce);
+      const begun = await stub.beginOAuthFlow(initiationNonce, previewOAuth.redirectUri);
       if (begun === null) {
         return htmlResponse(INVALID_LINK_HTML);
       }
@@ -181,31 +205,39 @@ export default {
       // The authorize page is on the browser-facing instance: the user's own session must reach it.
       return Response.redirect(buildAuthorizeUrl(instanceUrl(env), {
         clientId: env.CLIENT_ID,
-        redirectUri: getRedirectUri(env),
+        redirectUri: previewOAuth.redirectUri,
         scopes: begun.scopes,
-        state: `${doId}:${begun.oauthNonce}`,
+        state: await previewOAuth.createAuthorizationState({ userObjectId: doId, oauthNonce: begun.oauthNonce }),
         codeChallenge: begun.codeChallenge,
       }), 302);
     }
 
     if (relPath === "/oauth") {
-      const error = url.searchParams.get("error");
-      if (error) {
+      // The kit decides whose callback this is: a preview's, arriving at the stable Worker, is
+      // relayed there with GitLab's parameters (an `error` included) and the state untouched.
+      const previewOAuth = previewOAuthFor(env);
+      if (previewOAuth instanceof Response) return previewOAuth;
+      let doId: string;
+      let oauthNonce: string;
+      try {
+        const result = await previewOAuth.handleCallback(url);
+        if (result.kind === "relay") return result.response;
+        ({ userObjectId: doId, oauthNonce } = result.state);
+      } catch (error) {
+        if (error instanceof PreviewOAuthConfigurationError) {
+          return new Response(error.message, { status: 500 });
+        }
+        return new Response("Error: malformed state", { status: 400 });
+      }
+
+      if (url.searchParams.get("error")) {
         return new Response("GitLab authorization failed. Please restart the connection flow from Cloudflare OS.", {
           status: 400,
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       }
-
-      const state = url.searchParams.get("state");
-      if (!state) return new Response("Error: no 'state' provided");
-      const colonIndex = state.indexOf(":");
-      if (colonIndex < 0) return new Response("Error: malformed state");
-
-      const doId = state.slice(0, colonIndex);
-      const oauthNonce = state.slice(colonIndex + 1);
       const code = url.searchParams.get("code");
-      if (!code) return new Response("Error: no 'code' provided");
+      if (!code) return new Response("Error: no 'code' provided", { status: 400 });
 
       const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
         ctx.exports.UserAccount.idFromString(doId),
@@ -319,7 +351,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * Swap the initiation nonce for the OAuth-stage nonce and mint this flow's PKCE verifier. The
    * challenge goes into the authorize URL; the verifier waits in storage for the code exchange.
    */
-  async beginOAuthFlow(initiationNonce: string):
+  async beginOAuthFlow(initiationNonce: string, redirectUri: string):
       Promise<{ oauthNonce: string; scopes: string[]; codeChallenge: string } | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "initiation" || Date.now() >= stored.expiresAt ||
@@ -334,6 +366,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
       reconnect: stored.reconnect,
+      redirectUri,
     });
     this.ctx.storage.kv.put("codeVerifier", pkce.verifier);
     const scopes = this.ctx.storage.kv.get<string[]>("requestedScopes") ?? OAUTH_SCOPES;
@@ -371,7 +404,9 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
 
     const scopes = this.ctx.storage.kv.get<string[]>("requestedScopes") ?? OAUTH_SCOPES;
     const grant = await exchangeAuthCode(gitlabInstance(this.env), {
-      code, clientId, clientSecret, redirectUri: getRedirectUri(this.env), codeVerifier,
+      code, clientId, clientSecret, codeVerifier,
+      // The exchange must repeat the authorize request's redirect_uri exactly (RFC 6749 §4.1.3).
+      redirectUri: stored.redirectUri ?? getRedirectUri(this.env),
     });
 
     // The exchange ran outside the lock (it is a network call no other operation waits on), so

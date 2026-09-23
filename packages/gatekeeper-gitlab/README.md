@@ -107,6 +107,31 @@ push go, and a policy scoped to the API alone makes worktree pulls fail with a l
 Register the OAuth application on the instance itself, with the same redirect URI and scopes as
 above.
 
+## Worker Preview OAuth callbacks
+
+A Worker Preview's hostname cannot be registered with the GitLab application, so a deployment
+that tests on previews registers one **stable** callback and relays the result to the preview
+that started the flow (`@gadgets/gatekeeper-kit/preview-oauth`, as `gatekeeper-google` does).
+Give the stable Worker and its previews the same `OAUTH_STATE_SIGNING_SECRET` and
+`OAUTH_ALLOW_PREVIEW_REDIRECTS=true`, and set the fixed redirect on previews only:
+
+```text
+OAUTH_REDIRECT_URI=https://gatekeeper-gitlab.example.workers.dev/oauth
+```
+
+Register `OAUTH_REDIRECT_URI` as the application's redirect URI. A preview sends that URI to
+GitLab and carries its own callback in signed, short-lived state; the stable Worker accepts
+return URLs only on its `<preview>-<worker>.<workers.dev>` hosts and forwards only GitLab's
+result and the state. The preview then exchanges the code with the same redirect URI it
+authorized under. Normal deployments omit all three settings and use `${BASE_URL}/oauth` directly.
+
+Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Previews
+do not inherit the stable Worker's secrets: set `CLIENT_ID`, `CLIENT_SECRET`,
+`OAUTH_STATE_SIGNING_SECRET` and, for an Access-protected instance, `CF_ACCESS_CLIENT_ID` /
+`CF_ACCESS_CLIENT_SECRET` on the stable Worker (`wrangler secret put`) **and** in its Previews
+Base configuration (`wrangler preview base-config secret put`); a preview created afterwards
+receives them.
+
 ## Troubleshooting
 
 ### "The GitLab project has been renamed or transferred"
@@ -125,7 +150,8 @@ idle past the instance's refresh-token lifetime. Reconnect the account.
 ### The redirect URI does not match
 
 The **Redirect URI** on the GitLab application must be exactly
-`<PUBLIC_BASE_URL>/gatekeeper/gitlab/oauth` (no trailing slash, `http` for local dev).
+`<PUBLIC_BASE_URL>/gatekeeper/gitlab/oauth` (no trailing slash, `http` for local dev) -- or, on a
+Worker Preview, the stable Worker's `OAUTH_REDIRECT_URI` (see above).
 
 ### "Not configured" page during authorization
 

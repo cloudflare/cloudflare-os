@@ -8,7 +8,7 @@ as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape th
 | Key | Value | Notes |
 |---|---|---|
 | `callback` | `Fetcher<GatekeeperConnectCallback>` | Stored at connect; used for `complete`, `reconnectComplete`, `credentialsExpired`. |
-| `nonce` | `{ value, expiresAt, stage: "initiation" \| "oauth", reconnect?: true }` | Two-stage connect nonce. |
+| `nonce` | `{ value, expiresAt, stage: "initiation" \| "oauth", reconnect?: true, redirectUri? }` | Two-stage connect nonce. At the `oauth` stage `redirectUri` is the `redirect_uri` the authorize request carried (the stable Worker's, on a preview), repeated verbatim in the code exchange. |
 | `codeVerifier` | `string` | PKCE verifier, written with the `oauth`-stage nonce and deleted at code exchange. |
 | `requestedScopes` | `string[]` | Scopes requested for this flow (auth-only or full). |
 | `ephemeral` | `boolean` | Auth-only sign-in grant; self-destructs two minutes after `complete()`. |
