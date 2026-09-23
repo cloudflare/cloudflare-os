@@ -18,12 +18,47 @@ import { createExportDeadline, limitExportStream, MAX_EXPORT_BYTES } from "./exp
 type BrowserExportLogFields = {
   event?: string;
   error?: unknown;
+  ready?: boolean;
+  timedOut?: boolean;
+  waitedMs?: number;
 };
 
 const logger = createLogger<BrowserExportLogFields>({ component: "workshop.browser-export" });
 
+/** Which Gadget method holds the print snapshot for a bundled output format. */
+export type PdfExportSnapshotKind = "document" | "deck";
+
+/**
+ * Maps a gadget's output id to the native method that returns its print snapshot.
+ * Unknown outputs (scratch gadgets) have no snapshot to inline.
+ */
+export function pdfExportSnapshotKind(outputId: string | undefined): PdfExportSnapshotKind | undefined {
+  if (outputId === "spreadsheet" || outputId === "document") return "document";
+  if (outputId === "presentation") return "deck";
+  return undefined;
+}
+
+/**
+ * Reads the print snapshot over Worker-to-Gadget native RPC, before Browser Rendering starts.
+ * Must not be called from the export page: that path cannot `.move()` the result.
+ */
+export async function readPdfExportSnapshot(
+  gadget: { getDocument?: () => Promise<unknown>; getDeck?: () => Promise<unknown> },
+  kind: PdfExportSnapshotKind | undefined,
+): Promise<unknown | undefined> {
+  if (kind === "document" && typeof gadget.getDocument === "function") {
+    return await gadget.getDocument();
+  }
+  if (kind === "deck" && typeof gadget.getDeck === "function") {
+    return await gadget.getDeck();
+  }
+  return undefined;
+}
+
 /** Compatibility fallback for clients that schedule DOM work outside top-level await. */
 const DOM_SETTLE_MS = 250;
+/** How long to wait for `documentElement.dataset.exportReady` before failing a snapshotted PDF. */
+const EXPORT_READY_TIMEOUT_MS = 8_000;
 /** Budget for releasing the browser session once an export has settled. */
 const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
 /** Maximum number of pending Worker-to-browser RPC messages. */
@@ -130,8 +165,31 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(clientCode: string, formatId: string): string {
-  let clientPrefix = String.raw`//# sourceURL=client.js
+/** Waits for the Gadget to mark the print tree ready, then reports timeout without capturing. */
+async function waitForExportReady(page: Page): Promise<{ ready: boolean; waitedMs: number }> {
+  return await page.evaluate(async (timeoutMs: number) => {
+    const root = (globalThis as unknown as { document: { documentElement: { dataset: { exportReady?: string } } } })
+      .document.documentElement;
+    const started = Date.now();
+    if (root.dataset.exportReady === "1") return { ready: true, waitedMs: 0 };
+    return await new Promise<{ ready: boolean; waitedMs: number }>(resolve => {
+      const timer = setInterval(() => {
+        const ready = root.dataset.exportReady === "1";
+        const waitedMs = Date.now() - started;
+        if (ready || waitedMs >= timeoutMs) {
+          clearInterval(timer);
+          resolve({ ready, waitedMs });
+        }
+      }, 50);
+    });
+  }, EXPORT_READY_TIMEOUT_MS);
+}
+
+function makeExportHtml(clientCode: string, formatId: string, snapshot?: unknown): string {
+  let snapshotPrelude = snapshot === undefined
+    ? ""
+    : `globalThis.__workshopExportSnapshot = ${JSON.stringify(snapshot)};\n`;
+  let clientPrefix = snapshotPrelude + String.raw`//# sourceURL=client.js
 const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
 delete globalThis.__workshopExportRuntime;
 `;
@@ -165,6 +223,7 @@ export async function renderGadgetInBrowser(
   documentTitle: string,
   gadget: RpcStub<any>,
   format: GadgetExportFormat,
+  snapshot?: unknown,
 ): Promise<ReadableStream<Uint8Array>> {
   const deadline = createExportDeadline("Browser export timed out.");
 
@@ -217,7 +276,7 @@ export async function renderGadgetInBrowser(
               status: 200,
               contentType: "text/html",
               headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-              body: makeExportHtml(clientCode, format.id),
+              body: makeExportHtml(clientCode, format.id, snapshot),
             });
           } else {
             void request.abort();
@@ -234,6 +293,18 @@ export async function renderGadgetInBrowser(
       let rpcSession = new RpcSession(transport, gadget);
       sessionCloser = rpcSession.getRemoteMain();
       await page.evaluate(waitForClientModule);
+      if (snapshot !== undefined) {
+        const wait = await waitForExportReady(page);
+        if (!wait.ready) {
+          logger.warn("gadget export ready wait failed", {
+            event: "gadget.export.ready.wait.failed",
+            ready: false,
+            timedOut: true,
+            waitedMs: wait.waitedMs,
+          });
+          throw new Error("The Gadget was not ready to export.");
+        }
+      }
       const frame = page.mainFrame() as FrameWithIsolatedRealm;
       const isolatedRealm = frame.isolatedRealm();
       await isolatedRealm.evaluate(waitForDomSettled, DOM_SETTLE_MS);

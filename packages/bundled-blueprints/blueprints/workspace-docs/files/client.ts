@@ -38,6 +38,7 @@ import type {
   BlockContent,
   DocCursor,
   DocPresenceEvent,
+  DocumentSnapshot,
   GadgetStub,
   OperationEvent,
   PresenceUpdate,
@@ -1601,21 +1602,33 @@ if (isDocumentExport) {
 
 // --- Init ------------------------------------------------------------------
 
-  try {
-    let doc = await gadget.subscribe(subscriber, { clientId, name: me.name, color: me.color });
+  if ((globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId === "pdf") {
+    const doc = (globalThis as { __workshopExportSnapshot?: DocumentSnapshot }).__workshopExportSnapshot;
+    if (!doc) throw new Error("pdf export snapshot is missing");
     if (!doc.blocks) {
-      // One-time, backwards-compatible conversion of the former HTML snapshot.
       editor.innerHTML = doc.legacyContent || "";
       normalizeBlocks();
-      doc = await gadget.initializeBlocks({
-        blocks: serializeBlocks(), title: doc.title, senderId: clientId,
-      });
+    } else {
+      applySnapshot(doc);
     }
-    applySnapshot(doc);
-    setStatus("saved", "Saved");
-    presence.sendNow();
-  } catch (e) {
-    console.error(e);
-    setStatus("bad", "Offline");
+  } else {
+    try {
+      let doc = await gadget.subscribe(subscriber, { clientId, name: me.name, color: me.color });
+      if (!doc.blocks) {
+        // One-time, backwards-compatible conversion of the former HTML snapshot.
+        editor.innerHTML = doc.legacyContent || "";
+        normalizeBlocks();
+        doc = await gadget.initializeBlocks({
+          blocks: serializeBlocks(), title: doc.title, senderId: clientId,
+        });
+      }
+      applySnapshot(doc);
+      setStatus("saved", "Saved");
+      presence.sendNow();
+    } catch (e) {
+      console.error(e);
+      setStatus("bad", "Offline");
+    }
   }
   refreshToolbarState();
+  document.documentElement.dataset.exportReady = "1";

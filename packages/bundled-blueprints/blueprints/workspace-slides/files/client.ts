@@ -4082,10 +4082,16 @@ const subscriber = () => createSubscriber<DeckCallbacks>(RpcTarget, {
 /* ====================== Boot ============================================= */
 
 
-  try {
-    deck = (await gadget.getDeck()) || { slides: [] };
-  } catch (e) { deck = { slides: [] }; }
-  try { await gadget.subscribe(subscriber()); } catch (e) {}
+  if ((globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId === "pdf") {
+    const snap = (globalThis as { __workshopExportSnapshot?: Deck }).__workshopExportSnapshot;
+    if (!snap) throw new Error("pdf export snapshot is missing");
+    deck = snap.slides ? snap : { slides: [] };
+  } else {
+    try {
+      deck = (await gadget.getDeck()) || { slides: [] };
+    } catch (e) { deck = { slides: [] }; }
+    try { await gadget.subscribe(subscriber()); } catch (e) {}
+  }
   mountShell();
   updateCounter();
   render();
@@ -4095,10 +4101,13 @@ const subscriber = () => createSubscriber<DeckCallbacks>(RpcTarget, {
     shellRef.root!.remove();
   }
   // Initial undo-button state. Subsequent updates piggy-back on
-  // deckChanged broadcasts.
-  try {
-    const s = await gadget.getUndoState();
-    canUndo = !!s?.canUndo; canRedo = !!s?.canRedo;
-    updateUndoButtons();
-  } catch {}
+  // deckChanged broadcasts. PDF export must not call back into the Gadget.
+  if ((globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId !== "pdf") {
+    try {
+      const s = await gadget.getUndoState();
+      canUndo = !!s?.canUndo; canRedo = !!s?.canRedo;
+      updateUndoButtons();
+    } catch {}
+  }
+  document.documentElement.dataset.exportReady = "1";
 

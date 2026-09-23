@@ -2540,15 +2540,23 @@ const subscriber = createSubscriber(RpcTarget, {
 // Init
 // ===========================================================================
 
-  try {
-    const doc = await gadget.subscribe(subscriber, me);
+  if ((globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId === "pdf") {
+    const doc = (globalThis as { __workshopExportSnapshot?: SheetsDocument }).__workshopExportSnapshot;
+    if (!doc) throw new Error("pdf export snapshot is missing");
     applySnapshot(doc);
-    saveStatus.set("saved", "Saved");
-    updateUndoButtons();
-    presence.schedule();
-    gridScroll.focus();
-  } catch (e) {
-    console.error(e);
-    saveStatus.set("bad", "Offline");
+    renderPrintWorkbook();
+  } else {
+    try {
+      const doc = await gadget.subscribe(subscriber, me);
+      applySnapshot(doc);
+      saveStatus.set("saved", "Saved");
+      updateUndoButtons();
+      presence.schedule();
+      gridScroll.focus();
+    } catch (e) {
+      console.error(e);
+      saveStatus.set("bad", "Offline");
+    }
   }
+  document.documentElement.dataset.exportReady = "1";
 
