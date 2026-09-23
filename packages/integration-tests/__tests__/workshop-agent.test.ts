@@ -107,6 +107,10 @@ it("keeps multi-turn history and returns provider errors", async () => {
     role: "user",
     content: expect.stringContaining("Read the test value"),
   }));
+  expect(firstRequest.messages).toContainEqual(expect.objectContaining({
+    role: "system",
+    content: expect.stringContaining("You are a helpful assistant who helps users get things done."),
+  }));
   expect(firstRequest.tools).toContainEqual(expect.objectContaining({
     type: "function",
     function: expect.objectContaining({

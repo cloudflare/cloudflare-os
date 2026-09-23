@@ -1317,13 +1317,24 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "anthropic": {
-    // TODO: Include Fable -- but we need an admin option to disable it, since many orgs don't
-    //   allow it for ZDR reasons. It's sort of overkill for building gadgets anyway.
+    "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
+    "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000},
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
   },
   "openai": {
+    // pi's GPT-6 catalog advertises a 272K window; reserve the 128K response cap when sizing
+    // the prompt budget rather than carrying GPT-5.6's larger window or cheaper-tier override.
+    "gpt-6-sol": {
+      name: "GPT-6 Sol", contextWindow: 272000, outputLimit: 128000,
+    },
+    "gpt-6-luna": {
+      name: "GPT-6 Luna", contextWindow: 272000, outputLimit: 128000,
+    },
+    "gpt-6-astra": {
+      name: "GPT-6 Astra", contextWindow: 272000, outputLimit: 128000,
+    },
     "gpt-5.6-sol": {
       name: "GPT 5.6 Sol", contextWindow: 1050000, outputLimit: 128000,
       compactionInputBudget: 272000,
