@@ -304,7 +304,12 @@ null when there is nothing to average. Everything already on the board stays.`,
         const board = BoardSchema.parse(await api.board()).incidents;
         const untouched = IncidentSchema.parse(await api.incident({ id: "race-1" }));
         return {
-          pass: first.ok && escalatedOnce(opened, afterFirst) &&
+          // The desk's extension must not have broken open(): esc-1 reads back as submitted.
+          pass: opened.service === "auth" && opened.severity === 3 &&
+            opened.summary === "Incident esc-1" && opened.status === "open" &&
+            opened.owner === null && opened.acknowledgedAt === null && opened.resolvedAt === null &&
+            (opened.escalations ?? 0) === 0 &&
+            first.ok && escalatedOnce(opened, afterFirst) &&
             second.ok && escalatedOnce(afterFirst, afterSecond) && afterSecond.severity === 1 &&
             code(third) === "AT_MAX_SEVERITY" &&
             JSON.stringify(afterThird) === JSON.stringify(afterSecond) &&

@@ -82,7 +82,9 @@ function generate(): LogEvent[] {
       });
     }
   }
-  return events;
+  // Arrival order is not time order, so ordering results by first appearance does not pass.
+  return events.map(event => ({ event, key: random.next() }))
+    .toSorted((left, right) => left.key - right.key).map(({ event }) => event);
 }
 
 const EVENTS = generate();

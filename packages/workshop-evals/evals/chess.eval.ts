@@ -121,9 +121,9 @@ type Divergence = { at: string; what: string; gadget: unknown; oracle: unknown }
 
 /**
  * Compare the stored position, legal moves and status with the oracle at the Gadget's current
- * position. Once a game is drawn by material, repetition or the fifty-move rule the pieces can
- * still move but play is over, and engines differ on whether to list those moves; either answer
- * is accepted there.
+ * position. A drawn game can still have movable pieces, and engines differ on whether to list
+ * them once play is over; either answer is accepted there. Until turn 3 defines draws, only a
+ * dead position (insufficient material) ends play by itself, as it does over the board.
  */
 async function compareHere(
     api: ChessApi, oracle: Chess, fields: readonly (keyof Status)[]): Promise<Divergence | null> {
@@ -132,7 +132,9 @@ async function compareHere(
   if (!sameFen(stored, fen)) return { at: fen, what: "fen", gadget: stored, oracle: fen };
   const [moves, status] = [await gadgetMoves(api), StatusSchema.parse(await api.status())];
   const expectedMoves = oracleMoves(oracle);
-  const drawnWithMovesLeft = oracle.isGameOver() && !oracle.isCheckmate() && !oracle.isStalemate();
+  const drawnWithMovesLeft = fields.includes("draw")
+    ? oracle.isGameOver() && !oracle.isCheckmate() && !oracle.isStalemate()
+    : oracle.isInsufficientMaterial();
   if (!sameList(moves, expectedMoves) && !(drawnWithMovesLeft && moves.length === 0)) {
     return { at: fen, what: "legalMoves", gadget: moves, oracle: expectedMoves };
   }
@@ -150,6 +152,19 @@ async function compareHere(
  */
 async function movetext(api: ChessApi): Promise<string> {
   return PgnSchema.parse(await api.pgn()).pgn.replace(/^\[[^\]]*\]\s*$/gm, "").trim();
+}
+
+/** Every malformed FEN is refused with INVALID_FEN and leaves the stored position as it was. */
+async function refusesInvalidFens(api: ChessApi, position: string) {
+  const refusals = [];
+  for (const fen of INVALID_FENS) {
+    const refused = LoadSchema.parse(await api.loadFen({ fen }));
+    const after = FenSchema.parse(await api.fen()).fen;
+    refusals.push({ fen, refused, unchanged: sameFen(after, position) });
+  }
+  const ok = refusals.every(({ refused, unchanged }) =>
+    !refused.ok && refused.error === "INVALID_FEN" && unchanged);
+  return { ok, refusals };
 }
 
 type GameOptions = {
@@ -317,6 +332,10 @@ function randomPgn(seed: number, plies: number): string {
 
 const PGN_GAMES: Record<string, string> = {
   foolsMate: "1. f3 e5 2. g4 Qh4#",
+  blackWins: "1. f3 e5 2. g4 Qh4# 0-1",
+  // Sam Loyd's ten-move stalemate.
+  stalemate: "1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. h4 Rah6 5. Qxc7 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 " +
+    "8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6 1/2-1/2",
   scholarsMate: "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0",
   legalTrap: "1. e4 e5 2. Nf3 d6 3. Bc4 Bg4 4. Nc3 g6 5. Nxe5 Bxd1 6. Bxf7+ Ke7 7. Nd5#",
   operaGame: `[Event "Paris"]
@@ -369,19 +388,12 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const read = FenSchema.parse(await api.fen()).fen;
         const status = StatusSchema.parse(await api.status());
         const moves = await gadgetMoves(api);
-        const refusals = [];
-        for (const fen of INVALID_FENS) {
-          const refused = LoadSchema.parse(await api.loadFen({ fen }));
-          const after = FenSchema.parse(await api.fen()).fen;
-          refusals.push({ fen, refused, unchanged: after === DEFAULT_POSITION });
-        }
+        const refusals = await refusesInvalidFens(api, DEFAULT_POSITION);
         return {
           pass: started === DEFAULT_POSITION && read === DEFAULT_POSITION &&
             statusMismatch(status, oracleStatus(new Chess(), BASE_STATUS), BASE_STATUS).length === 0 &&
-            sameList(moves, oracleMoves(new Chess())) &&
-            refusals.every(({ refused, unchanged }) =>
-              !refused.ok && refused.error === "INVALID_FEN" && unchanged),
-          evidence: { started, status, moveCount: moves.length, refusals },
+            sameList(moves, oracleMoves(new Chess())) && refusals.ok,
+          evidence: { started, status, moveCount: moves.length, refusals: refusals.refusals },
         };
       });
       await checkCurated(verifier, "agrees-with-the-oracle-on-the-hard-positions", BASE_STATUS, CURATED);
@@ -494,6 +506,8 @@ Everything that already worked keeps working.`,
           // The replay's own canonical SAN of what it parsed, against the game actually played.
           if (!sameList(replay.history(), oracle.history())) {
             failures[name] = { exported, replayed: replay.history(), played: oracle.history() };
+          } else if (!sameFen(replay.fen(), oracle.fen())) {
+            failures[name] = { exported, replayedTo: replay.fen(), playedTo: oracle.fen() };
           } else if (oracle.isGameOver() && !/(1-0|0-1|1\/2-1\/2)\s*$/.test(exported.trim())) {
             failures[name] = { exported, what: "missing result" };
           }
@@ -550,6 +564,28 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
             afterFifty.fiftyMoveRule === true && afterFifty.gameOver === true,
           evidence: { played, afterTwo, afterThree, expectedThree, afterReload, loadedFifty,
             beforeFifty, afterFifty },
+        };
+      });
+
+      await verifier.check("still-refuses-invalid-fen", async () => {
+        using api = await verifier.connect<ChessApi>(TITLE);
+        await api.newGame();
+        const refusals = await refusesInvalidFens(api, DEFAULT_POSITION);
+        return { pass: refusals.ok, evidence: { refusals: refusals.refusals } };
+      });
+
+      // Reached by play rather than loaded: the capture leaves king and knight against king.
+      await verifier.check("detects-insufficient-material-after-a-capture", async () => {
+        using api = await verifier.connect<ChessApi>(TITLE);
+        const start = "4k3/8/8/8/8/8/3p4/4K2N w - - 0 1";
+        const oracle = new Chess(start);
+        const loaded = LoadSchema.parse(await api.loadFen({ fen: start }));
+        const played = MoveResultSchema.parse(await api.move({ from: "e1", to: "d2" }));
+        oracle.move({ from: "e1", to: "d2" });
+        const divergence = await compareHere(api, oracle, DRAW_STATUS);
+        return {
+          pass: loaded.ok && played.ok && divergence === null,
+          evidence: asEvidence({ loaded, played, divergence }),
         };
       });
 

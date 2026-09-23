@@ -281,11 +281,13 @@ nothing scheduled that week.`,
         const html = (document.blocks ?? []).map(block => block.html).join("\n");
         // Walk headings and bullets in source order; a bullet belongs to the latest heading.
         const sections: { heading: string; bullets: string[] }[] = [];
+        const bullets: string[] = [];
         for (const match of html.matchAll(/<(h[1-6]|li)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/gi)) {
           const text = plainText(match[2] ?? "");
           if (match[1]?.toLowerCase().startsWith("h")) {
             if (text.toLowerCase() !== PLAN.toLowerCase()) sections.push({ heading: text, bullets: [] });
           } else {
+            bullets.push(text);
             sections.at(-1)?.bullets.push(text);
           }
         }
@@ -293,9 +295,14 @@ nothing scheduled that week.`,
         const headings = sections.map(section => section.heading.toLowerCase());
         const bulletsMatch = expected.every((service, index) => oneBulletPerWindow(
             sections[index]?.bullets ?? [], WEEK_41.filter(window => window.service === service)));
+        // Every bullet counts here, including any before the first heading.
+        const otherWeeks = SEEDED.filter(window => !WEEK_41.includes(window));
+        const listsOtherWeeks = bullets.some(bullet => otherWeeks.some(window =>
+          bullet.toLowerCase().includes(window.reason.toLowerCase())));
         return {
           pass: headings.length === expected.length &&
-            expected.every((service, index) => headings[index]?.includes(service)) && bulletsMatch,
+            expected.every((service, index) => headings[index]?.includes(service)) && bulletsMatch &&
+            !listsOtherWeeks,
           evidence: { sections, expected },
         };
       });
