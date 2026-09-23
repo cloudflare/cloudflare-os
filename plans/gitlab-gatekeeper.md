@@ -524,6 +524,15 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   it → `beginOAuthFlow()` swaps in an OAuth-stage nonce **and generates the PKCE verifier**
   (stored beside the nonce, one per flow) → 302 to `{instanceUrl}/oauth/authorize` with
   `state = ${doId}:${oauthNonce}`, `code_challenge`, `code_challenge_method=S256`, `scope`.
+  The `state` and `redirect_uri` come from the kit's `PreviewOAuth` (as in `gatekeeper-google`):
+  with none of `OAUTH_ALLOW_PREVIEW_REDIRECTS` / `OAUTH_REDIRECT_URI` /
+  `OAUTH_STATE_SIGNING_SECRET` set — production — that is the plain `doId:nonce` state and this
+  Worker's own callback; on a Worker Preview, whose hostname the GitLab application cannot list,
+  it is a signed state carrying the preview's callback and the *stable* Worker's redirect, and
+  the stable Worker's `/oauth` relays GitLab's answer (code or error) to the preview. The
+  `redirect_uri` the authorize request carried is stored on the `oauth`-stage nonce and repeated
+  verbatim in the code exchange (RFC 6749 §4.1.3). Added for the internal deployment's MR
+  previews; `gatekeeper-github` does not have it yet (Punted).
   `/oauth` callback → `acceptAuthCode(code, oauthNonce)` verifies the nonce in constant time,
   deletes it and the verifier, exchanges the code (with `code_verifier`), and either stages the
   grant (`reconnect` flows → `stageCredentials` → `callback.reconnectComplete(stageId)`) or writes
@@ -1185,6 +1194,11 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 7. **repo plumbing and docs** — `run-dev-server.ts`'s `SHARED_GATEKEEPER_CREDS` entry and the
    self-hosted instance variables in its `PASSTHROUGH_GATEKEEPER_VARS`, the AGENTS.md bullet, the
    write-gatekeeper skill's reference list, this section brought in line with what landed.
+8. **gitlab: OAuth callbacks relayed to Worker Previews** — the kit's `PreviewOAuth` in the
+   authorize redirect and the `/oauth` callback (§3: direct in production; on a preview, the
+   stable Worker's redirect and a signed state, relayed back), the `redirect_uri` recorded on the
+   `oauth`-stage nonce for the exchange, and the README's preview setup. Workerd:
+   `oauth-relay.test.ts`.
 
 **PR B — internal repo** (companion plan there has the specifics)
 
@@ -1368,6 +1382,8 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   applies `setLabels` with the set computed at prepare from the overlay, so a label an
   unapproved `addLabels` queued reaches GitHub and one a human added since is dropped (this
   port sends GitLab's `remove_labels` delta).
+  Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
+  which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential
   issues, and an agent that knows an issue is confidential can avoid quoting it into a public
   merge request description. A one-field addition to the approved API, deferred to its own review.

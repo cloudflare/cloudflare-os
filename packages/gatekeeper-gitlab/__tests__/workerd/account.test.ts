@@ -6,6 +6,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GitLabCredential } from "../../src/gitlab-api.js";
+import { getRedirectUri } from "../../src/gitlab-env.js";
 import type { UserAccount } from "../../src/gitlab.js";
 import { FakeGitLab, hooks, json, seedAccount, unwrap } from "./fake-gitlab.js";
 
@@ -36,11 +37,12 @@ async function expireAccessToken(userObjectId: string): Promise<void> {
 
 /**
  * Run a reconnect inside the account up to the stage it leaves, GitLab answering with
- * authorization code `code`; returns the stage id its handoff names (see TestCallback).
+ * authorization code `code`; returns the stage id its handoff names (see TestCallback). The flow
+ * authorizes under the Worker's own callback, as production does.
  */
 async function stageReconnect(account: UserAccount, code: string): Promise<string> {
   await account.prepareReconnect(`initiation-${code}`);
-  const flow = await account.beginOAuthFlow(`initiation-${code}`);
+  const flow = await account.beginOAuthFlow(`initiation-${code}`, getRedirectUri(env));
   const handoff = await account.acceptAuthCode(code, flow!.oauthNonce);
   return handoff!.ticket;
 }
