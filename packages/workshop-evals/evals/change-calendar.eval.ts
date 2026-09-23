@@ -185,7 +185,11 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         using api = await verifier.connect<CalendarApi>(CALENDAR);
         const base = { id: "mw-bad", service: "auth", reason: "test" };
         const attempts = {
-          DUPLICATE_ID: OkSchema.parse(await api.schedule(TLS_ROTATION)),
+          // Valid in every other way: resubmitting mw-101 as it is also overlaps it, and the prompt
+          // does not say which rule wins.
+          DUPLICATE_ID: OkSchema.parse(await api.schedule({
+            ...TLS_ROTATION, startIso: "2027-10-20T23:00:00Z", endIso: "2027-10-21T00:00:00Z",
+          })),
           UNKNOWN_SERVICE: OkSchema.parse(await api.schedule({
             ...base, service: "cdn", startIso: "2027-10-20T23:00:00Z", endIso: "2027-10-21T00:00:00Z",
           })),
