@@ -1433,7 +1433,8 @@ function appendMarkdownForSimulation(markdown: string, appendedMarkdown: string)
   let terminatedAppend = appendedMarkdown + "\n";
 
   if (markdown.length === 0) return terminatedAppend;
-  return markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + terminatedAppend;
+  return canonicalizeMarkdownReplacement(
+    markdown, markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + terminatedAppend);
 }
 
 function assertGoogleDocActionReplayable(action: GoogleDocAction): void {
@@ -1582,7 +1583,8 @@ function materializeGoogleDocAction(
       let appendIndex = requireGoogleDocAppendIndex(googleDocAppendIndex(tab));
       return {
         tab,
-        requests: markdownToDocRequests("\n" + action.markdown, appendIndex, tab.tabId),
+        requests: markdownToDocRequests("\n" + action.markdown, appendIndex, tab.tabId,
+          { resetParagraphs: true, preserveLeadingParagraph: true }),
       };
     }
 

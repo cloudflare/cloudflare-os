@@ -456,12 +456,12 @@ class DocsModel {
     range: { startIndex: number; endIndex: number },
     preset?: string,
   ): void {
-    let lists = tab.paragraphLists ??= tab.text.split("\n").map(() => null);
     let indexes = paragraphsIn(tab.text, range);
     if (!preset) {
-      for (let index of indexes) if (lists[index]) lists[index] = "indented";
+      for (let index of indexes) if (tab.paragraphLists?.[index]) tab.paragraphLists[index] = "indented";
       return;
     }
+    let lists = tab.paragraphLists ??= tab.text.split("\n").map(() => null);
     let first = indexes[0];
     if (first === undefined) return;
     let preceding = lists[first - 1];
@@ -918,6 +918,26 @@ describe("Google Doc list edits", () => {
     setup(docs);
     docs.install();
     let actionId = await hooks().submitReplace(facet, from, to);
+
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe(expected);
+  });
+
+  let styled = (namedStyleType: string) => (docs: DocsModel) =>
+    docs.setParagraphs(MAIN_TAB, [{ text: "Plan", namedStyleType }]);
+  it.each<[string, (docs: DocsModel) => void, string, string]>([
+    ["heading", styled("HEADING_1"), "Notes", "# Plan\n\nNotes\n"],
+    ["title", styled("TITLE"), "Notes", "# Plan\n\nNotes\n"],
+    ["numbered-list", docs => docs.setNumberedList(MAIN_TAB, ["one"]), "Notes", "1. one\n\nNotes\n"],
+    ["bulleted-list", bullets("one"), "a\n\nb", "- one\n\na\n\nb\n"],
+    ["list-continuation", bullets("one"), "- two", "- one\n- two\n"],
+  ])("appends after a %s as previewed", async (name, setup, markdown, expected) => {
+    let docs = new DocsModel();
+    setup(docs);
+    docs.install();
+    let facet = `append-after-${name}`;
+    let actionId = await hooks().submitAppend(facet, markdown);
 
     expect(await hooks().readContent(facet)).toBe(expected);
     expect(await hooks().applyAction(facet, actionId)).toBeNull();
