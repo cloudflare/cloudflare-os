@@ -177,21 +177,23 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     let listNumber = nextOrderedListNumber(listItem, listNumbers);
     let continuesList = listItem !== undefined && listItem.listId === previousListId;
     if (!continuesList) continuedListLevels.length = 0;
-    if (listItem) continuedListLevels.length = listItem.nestingLevel + 1;
-    let continuesListLevel = listItem !== undefined &&
-      !!continuedListLevels[listItem.nestingLevel];
-    if (listItem) continuedListLevels[listItem.nestingLevel] = true;
+    let continuesListLevel = false;
+    if (listItem) {
+      continuedListLevels.length = listItem.nestingLevel + 1;
+      continuesListLevel = !!continuedListLevels[listItem.nestingLevel];
+      continuedListLevels[listItem.nestingLevel] = true;
+    }
     let markdownListNumber = !continuesListLevel && listNumber !== 1 ? listNumber : undefined;
 
     // Blank line between blocks, except within one provider list.
     // A protected paragraph owns the preceding unmapped boundary.
     let separatorStart = writer.length;
     let previousProtected = protectedRanges.at(-1);
-    let protectedStart = previousProtected?.mdEnd === separatorStart
-      ? separatorStart : Math.max(0, separatorStart - 1);
+    let abutsProtected = previousProtected?.mdEnd === separatorStart;
+    let protectedStart = abutsProtected ? separatorStart : Math.max(0, separatorStart - 1);
     if (writer.length > 0 && !continuesList) {
       writer.append("\n");
-      if (previousProtected?.mdEnd === separatorStart) {
+      if (previousProtected && abutsProtected) {
         previousProtected.mdEnd = writer.length;
         protectedStart = writer.length;
       }
@@ -668,11 +670,10 @@ function emitParagraphContent(para: Paragraph, writer: MarkdownWriter): void {
     if (transition) writer.syntax(transition);
     formats = nextFormats;
 
-    let text = element.textRun ? visible.text : escapeMarkdownText(visible.text);
     if (element.textRun) {
-      emitMappedTextRun(writer, text, visible.style, element.startIndex, !!visible.link);
+      emitMappedTextRun(writer, visible.text, visible.style, element.startIndex, !!visible.link);
     } else {
-      writer.syntax(text);
+      writer.syntax(escapeMarkdownText(visible.text));
     }
   }
 
@@ -958,39 +959,8 @@ function matchMarkdownLink(
   };
 }
 
-/** Canonicalize escapes to the form returned by a subsequent document read. */
-export function canonicalizeMarkdownEscapes(markdown: string): string {
-  let links = indexMarkdownLinks(markdown);
-  let result = "";
-  for (let index = 0; index < markdown.length;) {
-    let link = matchMarkdownLink(markdown, index, links);
-    if (link) {
-      let end = link.end + 1;
-      result += link.label
-        ? `[${canonicalizeMarkdownLinkLabel(link.label)}]` +
-          `(${escapeMarkdownLinkDestination(link.url)})`
-        : markdown.slice(index, end);
-      index = end;
-      continue;
-    }
-
-    let escaped = markdown[index + 1];
-    if (markdown[index] === "\\" && escaped && isMarkdownPunctuation(escaped)) {
-      result += escaped;
-      index += 2;
-    } else {
-      result += markdown[index++];
-    }
-  }
-  return result;
-}
-
 function escapeMarkdownLinkLabelText(text: string): string {
   return text.replaceAll("\\", "\\\\").replaceAll("[", "\\[").replaceAll("]", "\\]");
-}
-
-function canonicalizeMarkdownLinkLabel(label: string): string {
-  return escapeMarkdownLinkLabelText(canonicalizeMarkdownEscapes(label));
 }
 
 function isMarkdownPunctuation(character: string): boolean {
@@ -1109,8 +1079,6 @@ export function canonicalizeMarkdownReplacement(
   oldMarkdown: string,
   newMarkdown: string,
 ): string {
-  assertMarkdownWriteComplexity(oldMarkdown);
-  assertMarkdownWriteComplexity(newMarkdown);
   let bounds = markdownReplacementBounds(oldMarkdown, newMarkdown);
   let normalized = normalizeChangedListOrdinal(oldMarkdown, newMarkdown, bounds.prefixLen);
   if (normalized !== newMarkdown) {
@@ -1458,6 +1426,8 @@ export function canonicalizeMarkdownForWrite(markdown: string): string {
   return result.slice(0, -1);
 }
 
+type DocsLink = NonNullable<TextStyle["link"]>;
+
 type MarkdownWriteOptions = {
   /**
    * The paragraph written into, and the source blocks of the rewrite it belongs to. New paragraphs
@@ -1465,6 +1435,8 @@ type MarkdownWriteOptions = {
    */
   source?: {
     blocks: BlockMapping[];
+    /** The source blocks' links, keyed by Markdown destination. */
+    links: Map<string, DocsLink>;
     markdown: string;
     container: BlockMapping;
     pairedIndex?: number;
@@ -1479,7 +1451,7 @@ type MarkdownWriteOptions = {
   preserveTrailingNewline?: boolean;
 };
 
-function parseInternalDocsLink(destination: string): NonNullable<TextStyle["link"]> | undefined {
+function parseInternalDocsLink(destination: string): DocsLink | undefined {
   let match = /^(?:\?tab=([^#&]+))?(?:#(bookmark|heading)=([^#&]+))?$/.exec(destination);
   if (!match || !match[1] && !match[2]) return undefined;
 
@@ -1501,19 +1473,23 @@ function canonicalLinkDestination(destination: string): string {
   return docsLinkDestination(parseInternalDocsLink(destination)) ?? destination;
 }
 
-function linkForWrite(
-  source: MarkdownWriteOptions["source"], destination: string,
-): NonNullable<TextStyle["link"]> {
-  if (source) {
-    for (let block of source.blocks) {
-      for (let segment of block.segments) {
-        if ("syntaxOnly" in segment) continue;
-        let link = segment.textStyle.link;
-        if (link && docsLinkDestination(link) === destination) return link;
+function sourceLinks(blocks: BlockMapping[]): Map<string, DocsLink> {
+  let links = new Map<string, DocsLink>();
+  for (let block of blocks) {
+    for (let segment of block.segments) {
+      if ("syntaxOnly" in segment || !segment.textStyle.link) continue;
+      let destination = docsLinkDestination(segment.textStyle.link);
+      if (destination !== undefined && !links.has(destination)) {
+        links.set(destination, segment.textStyle.link);
       }
     }
   }
-  return parseInternalDocsLink(destination) ?? { url: destination };
+  return links;
+}
+
+function linkForWrite(source: MarkdownWriteOptions["source"], destination: string): DocsLink {
+  return source?.links.get(destination) ?? parseInternalDocsLink(destination) ??
+    { url: destination };
 }
 
 function targetNamedStyle(block: ParsedBlock, source?: BlockMapping): string {
@@ -1535,10 +1511,13 @@ function sourceBlockText(source: BlockMapping, markdown: string): string {
   return text;
 }
 
-function blocksMatch(source: BlockMapping, sourceText: string, target: ParsedBlock): boolean {
-  return sourceText === target.plainText &&
-    source.listType === target.listType && source.listNestingLevel === target.nestingLevel &&
+function sameBlockShape(source: BlockMapping, target: ParsedBlock): boolean {
+  return source.listType === target.listType && source.listNestingLevel === target.nestingLevel &&
     source.namedStyleType === targetNamedStyle(target, source);
+}
+
+function blocksMatch(source: BlockMapping, sourceText: string, target: ParsedBlock): boolean {
+  return sourceText === target.plainText && sameBlockShape(source, target);
 }
 
 function canPreserveListItem(
@@ -1594,18 +1573,21 @@ function alignSourceBlocks(
   let rows = sourceEnd - head;
   let columns = targetEnd - head;
   if (rows * columns <= MAX_ALIGNED_BLOCK_PAIRS) {
-    let lengths = Array.from({ length: rows + 1 },
-      () => Array.from({ length: columns + 1 }, () => 0));
+    // Row-major (rows + 1) x (columns + 1); a length never exceeds sqrt(MAX_ALIGNED_BLOCK_PAIRS).
+    let width = columns + 1;
+    let lengths = new Uint16Array((rows + 1) * width);
     for (let s = rows - 1; s >= 0; s--) {
       for (let t = columns - 1; t >= 0; t--) {
-        lengths[s][t] = match(head + s, head + t)
-          ? lengths[s + 1][t + 1] + 1
-          : Math.max(lengths[s + 1][t], lengths[s][t + 1]);
+        let cell = s * width + t;
+        lengths[cell] = match(head + s, head + t)
+          ? lengths[cell + width + 1] + 1
+          : Math.max(lengths[cell + width], lengths[cell + 1]);
       }
     }
     for (let s = 0, t = 0; s < rows && t < columns;) {
-      if (lengths[s][t] === lengths[s + 1][t]) s++;
-      else if (lengths[s][t] === lengths[s][t + 1]) t++;
+      let cell = s * width + t;
+      if (lengths[cell] === lengths[cell + width]) s++;
+      else if (lengths[cell] === lengths[cell + 1]) t++;
       else matches.push([head + s++, head + t++]);
     }
   }
@@ -1639,9 +1621,7 @@ function pairGap(
   targetEnd: number,
 ): [number, number][] {
   let count = Math.min(sourceEnd - sourceStart, targetEnd - targetStart);
-  let sameShape = (s: number, t: number) => sources[s].listType === targets[t].listType &&
-    sources[s].listNestingLevel === targets[t].nestingLevel &&
-    sources[s].namedStyleType === targetNamedStyle(targets[t], sources[s]);
+  let sameShape = (s: number, t: number) => sameBlockShape(sources[s], targets[t]);
   let front = 0;
   while (front < count && sameShape(sourceStart + front, targetStart + front)) front++;
   let back = 0;
@@ -2017,16 +1997,13 @@ export function applyMarkdownEdit(
     content.markdown.slice(mdEnd);
   let normalized = normalizeChangedListBoundaries(
     content.markdown, updated, mdStart, mdEnd, mdStart + newMarkdown.length);
-  let normalizedBoundaries = normalized !== updated;
-  updated = normalized;
-  let bounds = normalizedBoundaries
-    ? markdownReplacementBounds(content.markdown, updated)
-    : markdownReplacementBounds(oldMarkdown, newMarkdown);
-  if (normalizedBoundaries) {
+  if (normalized !== updated) {
+    let bounds = markdownReplacementBounds(content.markdown, normalized);
     mdStart = bounds.prefixLen;
     mdEnd = content.markdown.length - bounds.suffixLen;
-    newMarkdown = updated.slice(bounds.prefixLen, updated.length - bounds.suffixLen);
+    newMarkdown = normalized.slice(bounds.prefixLen, normalized.length - bounds.suffixLen);
   } else {
+    let bounds = markdownReplacementBounds(oldMarkdown, newMarkdown);
     mdStart += bounds.prefixLen;
     mdEnd -= bounds.suffixLen;
     newMarkdown = newMarkdown.slice(bounds.prefixLen, newMarkdown.length - bounds.suffixLen);
@@ -2202,12 +2179,12 @@ function mappedTextStyle(
     if (block.mdStart > mdEnd) break;
     for (let segment of block.segments) {
       if ("syntaxOnly" in segment) continue;
-      if (mdStart === mdEnd) {
-        if (mdStart >= segment.mdStart && mdStart < segment.mdEnd) return segment.textStyle;
-        if (mdStart === segment.mdEnd) preceding = segment.textStyle;
-      } else if (mdStart < segment.mdEnd && mdEnd > segment.mdStart) {
+      if (markdownRangeTouches(mdStart, mdEnd, segment)) {
+        if (mdStart === mdEnd) return segment.textStyle;
         if (matched && !textStylesEqual(matched, segment.textStyle)) return undefined;
         matched ??= segment.textStyle;
+      } else if (mdStart === mdEnd && mdStart === segment.mdEnd) {
+        preceding = segment.textStyle;
       }
     }
   }
@@ -2307,15 +2284,17 @@ function rewriteBlocks(
   tabId: string,
 ): any[] {
   let requests: any[] = [];
+  let links = sourceLinks(sources);
   let write = (blocks: ParsedBlock[], at: number, container: BlockMapping,
     options: MarkdownWriteOptions = {}, pairedIndex?: number) => blocksToDocRequests(blocks, at,
     tabId, {
       ...options, resetParagraphs: true,
-      source: { blocks: sources, markdown, container, pairedIndex },
+      source: { blocks: sources, links, markdown, container, pairedIndex },
     }, requests);
   let remove = (startIndex: number, endIndex: number) =>
     addRequest(requests, { deleteContentRange: { range: { startIndex, endIndex, tabId } } });
 
+  let blockStarts = new Set(sourceMap.blocks.map(block => block.docStart));
   let pairs = alignSourceBlocks(sources, targets, markdown);
   for (let index = pairs.length - 1; index >= 0; index--) {
     let [s, t] = pairs[index];
@@ -2324,7 +2303,7 @@ function rewriteBlocks(
     let removed = sources.slice(s + 1, nextSource);
     let last = removed.at(-1);
     if (last && (nextSource < sources.length ||
-        sourceMap.blocks.some(block => block.docStart === last.docEnd))) {
+        blockStarts.has(last.docEnd))) {
       remove(removed[0].docStart, last.docEnd);
     } else if (last) {
       // The paragraph break before a table or at the tab's end can't be deleted, so the kept

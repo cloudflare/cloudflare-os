@@ -1373,14 +1373,11 @@ const MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES = 1024 * 1024;
 const googleDocActionEncoder = new TextEncoder();
 
 function assertGoogleDocActionMarkdownSize(...values: string[]): void {
-  let byteLength = 0;
-  for (let value of values) byteLength += value.length;
+  // UTF-16 length is a lower bound on UTF-8 bytes, so an oversized input is refused unencoded.
+  let byteLength = values.reduce((total, value) => total + value.length, 0);
   if (byteLength <= MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) {
-    byteLength = 0;
-    for (let value of values) {
-      byteLength += googleDocActionEncoder.encode(value).byteLength;
-      if (byteLength > MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) break;
-    }
+    byteLength = values.reduce(
+      (total, value) => total + googleDocActionEncoder.encode(value).byteLength, 0);
   }
   if (byteLength > MAX_GOOGLE_DOC_ACTION_MARKDOWN_BYTES) {
     throw new Error(
