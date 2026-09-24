@@ -50,7 +50,7 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
  * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
  * code. It lives here because edits to this file are what invalidate them.
  */
-export const MARKDOWN_RENDERING_VERSION = 4;
+export const MARKDOWN_RENDERING_VERSION = 5;
 
 type ListType = "bullet" | "numbered";
 
@@ -792,65 +792,26 @@ export function assertMarkdownWriteComplexity(markdown: string): void {
 }
 
 /**
- * Parse a Markdown string into blocks. This is a simple parser that handles
- * the subset of Markdown we support.
- *
- * Unlike standard Markdown, we preserve blank lines as empty blocks so that
- * they produce empty paragraphs in Google Docs. This ensures that `\n\n` in
- * the input produces two paragraph breaks (i.e., a visible blank line) in
- * the document, rather than collapsing to a single paragraph break.
+ * Parse Markdown into one block per line. Between two lines, each pair of blank lines is an empty
+ * paragraph, the inverse of how rendering separates paragraphs; before the first line every blank
+ * line is one, and after the last all but the first are.
  */
 function parseMarkdown(markdown: string): ParsedBlock[] {
   let blocks: ParsedBlock[] = [];
-
-  let lines = markdown.split("\n");
-  // Track whether we just flushed content lines, so we know when a blank
-  // line follows content (= paragraph separator) vs. additional blank lines
-  // (= empty paragraphs).
-  let currentLines: string[] = [];
-  let justFlushed = false;
-
-  function flushBlock() {
-    if (currentLines.length === 0) return;
-    let blockText = currentLines.join("\n");
-    currentLines = [];
-
-    // Each line could be a heading or list item on its own, so split them.
-    let sublines = blockText.split("\n");
-    for (let line of sublines) {
-      if (line.length === 0) continue;
-      blocks.push(parseLine(line));
-    }
-    justFlushed = true;
-  }
-
-  for (let line of lines) {
+  let blankLines = 0;
+  let pushEmpty = (count: number) => {
+    for (let index = 0; index < count; index++) blocks.push(parseLine(""));
+  };
+  for (let line of markdown.split("\n")) {
     if (line === "") {
-      flushBlock();
-      if (justFlushed) {
-        // First blank line after content is the normal paragraph separator
-        // (already handled by the \n between blocks in the output). Reset
-        // the flag so subsequent blank lines produce empty paragraphs.
-        justFlushed = false;
-      } else {
-        // Additional blank line — emit an empty block so it becomes an
-        // empty paragraph (\n) in the document.
-        blocks.push({
-          plainText: "",
-          headingLevel: null,
-          listType: null,
-          listNumber: null,
-          nestingLevel: 0,
-          spans: [],
-        });
-      }
-    } else {
-      currentLines.push(line);
-      justFlushed = false;
+      blankLines++;
+      continue;
     }
+    pushEmpty(blocks.length > 0 ? blankLines >> 1 : blankLines);
+    blocks.push(parseLine(line));
+    blankLines = 0;
   }
-  flushBlock();
-
+  pushEmpty(blocks.length > 0 ? blankLines - 1 : blankLines);
   return blocks;
 }
 
@@ -1454,6 +1415,8 @@ type MarkdownWriteOptions = {
   preserveLeadingParagraph?: boolean;
   /** Keep a fragment's final paragraph break. */
   preserveTrailingNewline?: boolean;
+  /** Receives the index of each block needing bullets, for a caller that creates them itself. */
+  bulleted?: (index: number) => void;
 };
 
 function parseInternalDocsLink(destination: string): DocsLink | undefined {
@@ -1893,15 +1856,23 @@ function blocksToDocRequests(
     }
   }
 
-  let bulletGroups = coalesceRanges(
-    positioned.flatMap(({ block, preserveList, paragraphStart, paragraphEnd }) =>
-      block.listType && !preserveList
-        ? [{ listType: block.listType, startIndex: paragraphStart, endIndex: paragraphEnd }]
-        : []),
-    (previous, next) => previous.listType === next.listType,
-  );
+  let bullets = positioned.flatMap(({ block, preserveList, paragraphStart, paragraphEnd }, index) =>
+    block.listType && !preserveList
+      ? [{ index, listType: block.listType, startIndex: paragraphStart, endIndex: paragraphEnd }]
+      : []);
+  if (options.bulleted) bullets.forEach(({ index }) => options.bulleted!(index));
+  else addBulletRequests(requests, bullets, tabId);
+  return requests;
+}
+
+function addBulletRequests(
+  requests: any[],
+  paragraphs: { listType: ListType; startIndex: number; endIndex: number }[],
+  tabId: string,
+): void {
+  let groups = coalesceRanges(paragraphs, (previous, next) => previous.listType === next.listType);
   // Reversed: creating bullets strips each paragraph's leading tabs, shifting later indices.
-  for (let { listType, startIndex, endIndex } of bulletGroups.toReversed()) {
+  for (let { listType, startIndex, endIndex } of groups.toReversed()) {
     addRequest(requests, {
       createParagraphBullets: {
         range: { startIndex, endIndex, tabId },
@@ -1911,7 +1882,6 @@ function blocksToDocRequests(
       },
     });
   }
-  return requests;
 }
 
 // ---------------------------------------------------------------------------
@@ -1955,10 +1925,10 @@ function separatorBefore(markdown: string, currentStart: number): TextEdit | und
   let start = currentStart;
   while (start > 0 && markdown[start - 1] === "\n") start--;
   let length = currentStart - start;
-  if (start === 0 || length === 0 || length > 2) return undefined;
+  if (start === 0 || length === 0 || markdown[currentStart] === "\n") return undefined;
   let previousType = listLineType(markdown, lineStart(markdown, start - 1));
-  let currentType = listLineType(markdown, currentStart);
-  let expected = previousType !== null && previousType === currentType ? 1 : 2;
+  let expected = length > 2 ? length + length % 2
+    : previousType !== null && previousType === listLineType(markdown, currentStart) ? 1 : 2;
   return length === expected ? undefined : { start, end: currentStart, text: "\n".repeat(expected) };
 }
 
@@ -2189,13 +2159,17 @@ function blockReplacementRange(
   mdStart: number,
   mdEnd: number,
   force: boolean,
+  deletesBreak: boolean,
 ): BlockReplacementRange | undefined {
-  let replaceWholeBlocks = force;
+  let replaceWholeBlocks = force || deletesBreak;
   let blocks: BlockMapping[] = [];
 
   for (let block of sourceMap.blocks) {
     if (block.mdStart > mdEnd) break;
-    if (!markdownRangeTouches(mdStart, mdEnd, block)) continue;
+    // A deleted break joins the blocks on either side of it, so those count as touched.
+    if (deletesBreak ? block.mdEnd < mdStart : !markdownRangeTouches(mdStart, mdEnd, block)) {
+      continue;
+    }
     blocks.push(block);
     replaceWholeBlocks ||= block.segments.some(segment =>
       "syntaxOnly" in segment && markdownRangeTouches(mdStart, mdEnd, segment));
@@ -2276,16 +2250,22 @@ export function computeReplaceOperations(
     trimmedMatchStart,
     trimmedMatchEnd,
     BLOCK_SYNTAX_LINE.test(trimmedNew),
+    trimmedOld.includes("\n"),
   );
   if (blockRange) {
     assertMarkdownRangeEditable(
       sourceMap.protectedRanges, blockRange.mdStart, blockRange.mdEnd - 1,
     );
-    let blockMarkdown = (
+    let rewritten = (
       literalMarkdownSlice(sourceMap, markdown, blockRange.mdStart, trimmedMatchStart) +
       trimmedNew +
       literalMarkdownSlice(sourceMap, markdown, trimmedMatchEnd, blockRange.mdEnd)
     ).replace(/\n$/, "");
+    // Leading newlines extend the separator before the range, which already holds its breaks.
+    let lead = newlineRun(rewritten, 0, 1);
+    let before = newlineRun(markdown, blockRange.mdStart - 1, -1);
+    let blockMarkdown = "\n".repeat(Math.ceil((before + lead) / 2) - Math.ceil(before / 2)) +
+      rewritten.slice(lead);
     let targets = parseMarkdownForWrite(blockMarkdown);
     if (/[^\n]\n+$/.test(blockMarkdown)) targets.push(parseLine(""));
     let requests = rewriteBlocks(sourceMap, markdown, blockRange.blocks, targets, tabId);
@@ -2298,25 +2278,17 @@ export function computeReplaceOperations(
       "replaceText: could not map the Markdown range to document indices. " +
       "The match may span unsupported content.");
   }
-  let insertMarkdown = trimmedNew;
-  // A blank-line separator beside paragraph text is a single paragraph break.
-  let besideText = (index: number) => markdown[index] !== undefined && markdown[index] !== "\n";
-  if (besideText(trimmedMatchEnd) && insertMarkdown.endsWith("\n\n")) {
-    insertMarkdown = insertMarkdown.slice(0, -1);
+  let insertMarkdown = fragmentInsertMarkdown(
+    markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew, docRange.startsAfterParagraph);
+  // Paragraphs split off the one written into would inherit its list and style.
+  let writeOptions: MarkdownWriteOptions = {
+    resetParagraphs: true,
+    preserveLeadingParagraph: true,
+    preserveTrailingNewline: /[^\n]\n+$/.test(insertMarkdown),
+  };
+  if (!docRange.startsAfterParagraph) {
+    writeOptions.sourceTextStyle = mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd);
   }
-  if (besideText(trimmedMatchStart - 1) && insertMarkdown.startsWith("\n\n")) {
-    insertMarkdown = insertMarkdown.slice(1);
-  }
-  let writeOptions: MarkdownWriteOptions;
-  if (docRange.startsAfterParagraph) {
-    insertMarkdown = "\n" + insertMarkdown;
-    writeOptions = { resetParagraphs: true, preserveLeadingParagraph: true };
-  } else {
-    writeOptions = {
-      sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
-    };
-  }
-  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
 
   let requests: any[] = [];
   if (docRange.start < docRange.end) {
@@ -2333,6 +2305,39 @@ export function computeReplaceOperations(
   return { requests, trimmedOld, trimmedNew };
 }
 
+function newlineRun(text: string, index: number, step: 1 | -1): number {
+  let count = 0;
+  while (text[index + count * step] === "\n") count++;
+  return count;
+}
+
+/**
+ * Resize the newline runs at a fragment's edges so that, joined with the newlines around the edit,
+ * each side holds as many paragraph breaks as its whole run renders. After a paragraph, the edit
+ * lands before that paragraph's own break, so every existing break follows it.
+ */
+function fragmentInsertMarkdown(
+  markdown: string,
+  start: number,
+  end: number,
+  fragment: string,
+  startsAfterParagraph = false,
+): string {
+  let breaks = (run: number) => Math.ceil(run / 2);
+  let before = newlineRun(markdown, start - 1, -1);
+  let after = newlineRun(markdown, end, 1);
+  let existing = breaks(before + after);
+  let lead = newlineRun(fragment, 0, 1);
+  if (lead === fragment.length) return "\n".repeat(breaks(before + lead + after) - existing);
+  let trail = newlineRun(fragment, fragment.length - 1, -1);
+  let [precedingBreaks, followingBreaks] = startsAfterParagraph
+    ? [0, existing]
+    : [breaks(before), breaks(after)];
+  return "\n".repeat(breaks(before + lead) - precedingBreaks) +
+    fragment.slice(lead, fragment.length - trail) +
+    "\n".repeat(Math.max(0, breaks(trail + after) - followingBreaks));
+}
+
 /**
  * Rewrite whole source blocks paragraph by paragraph, so each kept paragraph keeps its own list and
  * style. Requests run from the end of the range backwards, so earlier indices stay valid.
@@ -2346,11 +2351,16 @@ function rewriteBlocks(
 ): any[] {
   let requests: any[] = [];
   let links = sourceLinks(sources);
-  let write = (blocks: ParsedBlock[], at: number, container: BlockMapping,
+  // Bullets are created once the whole range is laid out: Google joins a new list only to the list
+  // before it, and pairs are written last to first.
+  let bulleted = new Set<number>();
+  let keptLengths = new Map<number, number>();
+  let write = (blocks: ParsedBlock[], first: number, at: number, container: BlockMapping,
     options: MarkdownWriteOptions = {}, pairedIndex?: number) => blocksToDocRequests(blocks, at,
     tabId, {
       ...options, resetParagraphs: true,
       source: { blocks: sources, links, markdown, container, pairedIndex },
+      bulleted: index => bulleted.add(first + index),
     }, requests);
   let remove = (startIndex: number, endIndex: number) =>
     addRequest(requests, { deleteContentRange: { range: { startIndex, endIndex, tabId } } });
@@ -2392,19 +2402,29 @@ function rewriteBlocks(
     let before = index === 0 ? targets.slice(0, t) : [];
     let after = targets.slice(t + 1, nextTarget);
     if (isUnchangedBlock(source, targets[t], markdown)) {
+      keptLengths.set(t, source.docEnd - source.docStart);
       if (after.length > 0) {
-        write([parseLine(""), ...after], source.docEnd - 1, source,
+        write([parseLine(""), ...after], t, source.docEnd - 1, source,
           { preserveLeadingParagraph: true });
       }
       if (before.length > 0) {
-        write(before, source.docStart, source, { preserveTrailingNewline: true });
+        write(before, 0, source.docStart, source, { preserveTrailingNewline: true });
       }
     } else {
       if (source.docStart < source.docEnd - 1) remove(source.docStart, source.docEnd - 1);
-      write([...before, targets[t], ...after], source.docStart, source, {}, before.length);
+      write([...before, targets[t], ...after], t - before.length, source.docStart, source, {},
+        before.length);
     }
   }
   if (pairs[0][0] > 0) remove(sources[0].docStart, sources[pairs[0][0]].docStart);
+  let offset = sources[0].docStart;
+  addBulletRequests(requests, targets.flatMap((target, index) => {
+    let startIndex = offset;
+    let isNew = bulleted.has(index);
+    offset += keptLengths.get(index) ??
+      (isNew ? target.nestingLevel : 0) + target.plainText.length + 1;
+    return isNew ? [{ listType: target.listType!, startIndex, endIndex: offset }] : [];
+  }), tabId);
   return requests;
 }
 

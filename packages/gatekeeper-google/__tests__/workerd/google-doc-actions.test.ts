@@ -456,8 +456,7 @@ class DocsModel {
     range: { startIndex: number; endIndex: number },
     preset?: string,
   ): void {
-    let lists = tab.paragraphLists;
-    if (!lists) return;
+    let lists = tab.paragraphLists ??= tab.text.split("\n").map(() => null);
     let indexes = paragraphsIn(tab.text, range);
     if (!preset) {
       for (let index of indexes) if (lists[index]) lists[index] = "indented";
@@ -900,6 +899,31 @@ describe("Google Doc list edits", () => {
     expect(await hooks().readContent("final")).toBe(preview);
   });
 
+  let paragraphs = (...texts: string[]) => (docs: DocsModel) => docs.setParagraphs(
+    MAIN_TAB, texts.map(text => ({ text, namedStyleType: "NORMAL_TEXT" })));
+  let bullets = (...texts: string[]) => (docs: DocsModel) => docs.setBulletedList(MAIN_TAB, texts);
+  it.each<[string, (docs: DocsModel) => void, string, string, string]>([
+    ["split-around-empties", paragraphs("ab"), "ab", "a\n\n\n\n\n\nb", "a\n\n\n\n\n\nb\n"],
+    ["merge", paragraphs("a", "b"), "a\n\nb", "ab", "ab\n"],
+    ["drop-empty", paragraphs("a", "", "b"), "a\n\n\n\nb", "a\n\nb", "a\n\nb\n"],
+    ["expand", paragraphs("a", "b", "c"), "b", "x\n\n\n\ny", "a\n\nx\n\n\n\ny\n\nc\n"],
+    ["empty-list-gap", bullets("a", "b"), "- a\n- b", "- a\n\n\n\n- b", "- a\n\n\n\n- b\n"],
+    ["end-list", bullets("a", "b"), "- a\n- b", "- a\n\nb", "- a\n\nb\n"],
+    ["split-list-item", bullets("ab"), "- ab", "- a\n\nb", "- a\n\nb\n"],
+    ["split-heading", docs => docs.setParagraphs(MAIN_TAB, [{ text: "Hx", namedStyleType: "HEADING_1" }]),
+      "# Hx", "# H\n\nx", "# H\n\nx\n"],
+    ["make-list", paragraphs("a", "b", "c"), "a\n\nb\n\nc", "- a\n- b\n- c", "- a\n- b\n- c\n"],
+  ])("applies the %s paragraph structure it previews", async (facet, setup, from, to, expected) => {
+    let docs = new DocsModel();
+    setup(docs);
+    docs.install();
+    let actionId = await hooks().submitReplace(facet, from, to);
+
+    expect(await hooks().readContent(facet)).toBe(expected);
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe(expected);
+  });
+
   it("replays a dependent edit after appending adjacent mixed lists", async () => {
     let docs = new DocsModel();
     docs.setNumberedList(MAIN_TAB, ["base"]);
@@ -1022,6 +1046,22 @@ describe("Google Doc write receipts", () => {
     expect(docs.text()).toBe("A\nX\nB");
     expect(await hooks().applyAction(facet, secondId)).toBeNull();
     expect(await hooks().readContent(facet)).toBe("A\n\nY\n\nB\n");
+  });
+
+  it("replays an edit after splitting a paragraph with an odd separator", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [{ text: "AB", namedStyleType: "NORMAL_TEXT" }]);
+    docs.install();
+    let facet = "odd-separator-replay";
+    let firstId = await hooks().submitReplace(facet, "AB", "A\n\n\nB");
+    let preview = await hooks().readContent(facet);
+    let secondId = await hooks().submitReplace(facet, preview.trimEnd(), "updated");
+
+    expect(preview).toBe("A\n\n\n\nB\n");
+    expect(await hooks().applyAction(facet, firstId)).toBeNull();
+    expect(docs.text()).toBe("A\n\nB");
+    expect(await hooks().applyAction(facet, secondId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("updated\n");
   });
 
   it("queues a dependent edit with canonical replacement formatting", async () => {
