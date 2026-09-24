@@ -10,7 +10,7 @@ import type {
   GmailSession,
 } from "../../src/types";
 import type {
-  GoogleChatListMessagesOptions, GoogleChatMessageInfo, GoogleChatSpace,
+  ChatListMessagesOptions, ChatMessageInfo, ChatSpace,
 } from "../../src/chat-types";
 
 export { default } from "../../src/google";
@@ -118,6 +118,14 @@ class TestApprovalQueue extends RpcTarget {
 
   read() {
     return {submissions: [...this.#submissions], observations: [...this.#observations]};
+  }
+
+  async bindHook(): Promise<never> {
+    throw new Error("Hooks are not used by these tests.");
+  }
+
+  async getGitCache() {
+    return new TestGitCache();
   }
 
   pauseObservation(title: string): void {
@@ -334,6 +342,21 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     } finally {
       queueStub[Symbol.dispose]();
     }
+  }
+
+  async openChatSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<ChatSpace> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSpace;
+  }
+
+  async chatRejectAction(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
+  ): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]> {
+    return this.#chat(facetName, id, props).rejectAction(actionId);
   }
 
   async chatApplyAction(
@@ -674,12 +697,12 @@ testChatPrototype.runChatTestOperation = async function(
     queue: unknown, operation: string, args: unknown[],
 ): Promise<unknown> {
   // These tests always bind a single conversation, so the session is the space capability.
-  const space = await this.startSession(queue as never) as GoogleChatSpace;
+  const space = await this.startSession(queue as never) as ChatSpace;
   const [first] = args;
   try {
     switch (operation) {
-      case "space.sendMessage": {
-        const message = await space.sendMessage(first as string);
+      case "space.post": {
+        const message = await space.post(first as string);
         try {
           return await message.getMetadata();
         } finally {
@@ -687,8 +710,8 @@ testChatPrototype.runChatTestOperation = async function(
         }
       }
       case "space.listMessages": {
-        const cursor = await space.listMessages(first as GoogleChatListMessagesOptions);
-        const pages: GoogleChatMessageInfo[][] = [];
+        const cursor = await space.listMessages(first as ChatListMessagesOptions);
+        const pages: ChatMessageInfo[][] = [];
         try {
           for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
             const entries = await cursor.next();
@@ -703,7 +726,7 @@ testChatPrototype.runChatTestOperation = async function(
       }
       case "space.listMessagesRetry": {
         // First page denied, then retried: the pager must re-offer the same page.
-        const cursor = await space.listMessages(first as GoogleChatListMessagesOptions);
+        const cursor = await space.listMessages(first as ChatListMessagesOptions);
         try {
           let firstError = "";
           try {

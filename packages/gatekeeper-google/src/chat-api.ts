@@ -13,10 +13,9 @@
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import type {
-  GoogleChatAttachmentInfo, GoogleChatListMessagesOptions,
-  GoogleChatMembership, GoogleChatMessageInfo, GoogleChatMessageSearch, GoogleChatReaction,
-  GoogleChatSpaceInfo, GoogleChatSpaceType,
-  GoogleChatUser,
+  ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
+  ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatReaction,
+  ChatSpaceInfo, ChatSpaceType, ChatUser, ChatWindow,
 } from "./chat-types";
 
 const CHAT_API_BASE = "https://chat.googleapis.com/v1";
@@ -171,6 +170,7 @@ export type ChatSpaceRaw = {
   name?: string;
   displayName?: string;
   spaceType?: string;
+  spaceThreadingState?: string;
   spaceUri?: string;
   spaceDetails?: { description?: string };
   createTime?: string;
@@ -235,40 +235,43 @@ function chatTime(value: string | undefined): Date | undefined {
   return Number.isNaN(parsed.valueOf()) ? undefined : parsed;
 }
 
-const SPACE_TYPES: Record<string, GoogleChatSpaceType> = {
+const SPACE_TYPES: Record<string, ChatSpaceType> = {
   SPACE: "space",
   GROUP_CHAT: "groupChat",
   DIRECT_MESSAGE: "directMessage",
 };
 
-const SPACE_TYPE_ENUMS: Record<GoogleChatSpaceType, string> = {
+const SPACE_TYPE_ENUMS: Record<ChatSpaceType, string> = {
   space: "SPACE",
   groupChat: "GROUP_CHAT",
   directMessage: "DIRECT_MESSAGE",
 };
 
-export function chatUserFromRaw(raw: ChatUserRaw | undefined): GoogleChatUser | undefined {
+export function chatUserFromRaw(raw: ChatUserRaw | undefined): ChatUser | undefined {
   if (!raw?.name) return undefined;
   return {
-    name: raw.name,
-    ...(raw.displayName ? { displayName: raw.displayName } : {}),
+    id: raw.name,
+    ...(raw.displayName ? { name: raw.displayName } : {}),
     type: raw.type === "BOT" ? "app" : "human",
   };
 }
 
-export function chatSpaceInfoFromRaw(raw: ChatSpaceRaw): GoogleChatSpaceInfo {
+export function chatSpaceInfoFromRaw(raw: ChatSpaceRaw): ChatSpaceInfo {
   if (!raw.name) throw new Error("Google Chat returned a space with no resource name.");
   const createTime = chatTime(raw.createTime);
   const lastActiveTime = chatTime(raw.lastActiveTime);
   const memberCount = raw.membershipCount?.joinedDirectHumanUserCount;
   return {
-    name: raw.name,
-    ...(raw.displayName ? { displayName: raw.displayName } : {}),
+    id: raw.name,
+    ...(raw.displayName ? { name: raw.displayName } : {}),
     ...(raw.spaceUri ? { url: raw.spaceUri } : {}),
     type: SPACE_TYPES[raw.spaceType ?? ""] ?? "space",
+    supportsThreads: raw.spaceType === "SPACE" &&
+      (raw.spaceThreadingState === "THREADED_MESSAGES" ||
+        raw.spaceThreadingState === "GROUPED_MESSAGES"),
     ...(raw.spaceDetails?.description ? { description: raw.spaceDetails.description } : {}),
-    ...(createTime ? { createTime } : {}),
-    ...(lastActiveTime ? { lastActiveTime } : {}),
+    ...(createTime ? { createdAt: createTime } : {}),
+    ...(lastActiveTime ? { lastActiveAt: lastActiveTime } : {}),
     ...(typeof memberCount === "number" ? { memberCount } : {}),
   };
 }
@@ -281,11 +284,11 @@ function chatEmojiFromRaw(raw: ChatEmojiRaw | undefined): string {
   return "";
 }
 
-export function chatAttachmentInfoFromRaw(raw: ChatAttachmentRaw): GoogleChatAttachmentInfo {
+export function chatAttachmentInfoFromRaw(raw: ChatAttachmentRaw): ChatAttachmentInfo {
   const source = raw.source === "DRIVE_FILE" ? "drive" as const : "uploaded" as const;
   const resourceName = raw.attachmentDataRef?.resourceName;
   return {
-    name: raw.name ?? "",
+    id: raw.name ?? "",
     filename: raw.contentName ?? "",
     mimeType: raw.contentType ?? "application/octet-stream",
     source,
@@ -299,7 +302,7 @@ export function chatAttachmentMediaName(raw: ChatAttachmentRaw): string | undefi
   return raw.source === "DRIVE_FILE" ? undefined : raw.attachmentDataRef?.resourceName;
 }
 
-export function chatMessageInfoFromRaw(raw: ChatMessageRaw): GoogleChatMessageInfo {
+export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   // App-authored private messages have a message-level ACL narrower than their containing space.
   // This user-authenticated integration deliberately omits them everywhere rather than exposing
   // owner-only content through a shareable space capability.
@@ -310,15 +313,15 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): GoogleChatMessageIn
   const lastUpdateTime = chatTime(raw.lastUpdateTime);
   const sender = chatUserFromRaw(raw.sender);
   return {
-    name: raw.name,
-    spaceName: raw.space?.name ?? `spaces/${spaceId}`,
-    ...(raw.thread?.name ? { threadName: raw.thread.name } : {}),
+    id: raw.name,
+    spaceId: `spaces/${spaceId}`,
+    ...(raw.thread?.name ? { threadId: raw.thread.name } : {}),
     ...(sender ? { sender } : {}),
     text: raw.text ?? "",
     ...(raw.formattedText ? { formattedText: raw.formattedText } : {}),
-    createTime: createTime ?? new Date(0),
-    ...(lastUpdateTime ? { lastUpdateTime } : {}),
-    threadReply: raw.threadReply === true,
+    createdAt: createTime ?? new Date(0),
+    ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
+    isReply: raw.threadReply === true,
     deleted: raw.deleteTime !== undefined || raw.deletionMetadata !== undefined,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
@@ -328,26 +331,26 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): GoogleChatMessageIn
   };
 }
 
-export function chatMembershipFromRaw(raw: ChatMembershipRaw): GoogleChatMembership {
+export function chatMembershipFromRaw(raw: ChatMembershipRaw): ChatMembership {
   if (!raw.name) throw new Error("Google Chat returned a membership with no resource name.");
   const member = chatUserFromRaw(raw.member);
   const state = raw.state === "INVITED"
     ? "invited" as const
     : raw.state === "NOT_A_MEMBER" ? "notMember" as const : "joined" as const;
   return {
-    name: raw.name,
+    id: raw.name,
     ...(member ? { member } : {}),
-    ...(raw.groupMember?.name ? { groupName: raw.groupMember.name } : {}),
+    ...(raw.groupMember?.name ? { groupId: raw.groupMember.name } : {}),
     state,
     role: raw.role === "ROLE_MANAGER" ? "manager" : "member",
   };
 }
 
-export function chatReactionFromRaw(raw: ChatReactionRaw): GoogleChatReaction {
+export function chatReactionFromRaw(raw: ChatReactionRaw): ChatReaction {
   if (!raw.name) throw new Error("Google Chat returned a reaction with no resource name.");
   const user = chatUserFromRaw(raw.user);
   return {
-    name: raw.name,
+    id: raw.name,
     emoji: chatEmojiFromRaw(raw.emoji),
     ...(user ? { user } : {}),
   };
@@ -376,7 +379,7 @@ function chatTimestamp(value: Date, label: string): string {
 }
 
 /** Build the `filter` for `spaces.list`. */
-export function chatSpacesListFilter(types: GoogleChatSpaceType[] | undefined): string | undefined {
+export function chatSpacesListFilter(types: ChatSpaceType[] | undefined): string | undefined {
   if (!types || types.length === 0) return undefined;
   const unique = [...new Set(types)];
   return unique.map(type => `spaceType = "${SPACE_TYPE_ENUMS[type]}"`).join(" OR ");
@@ -389,14 +392,30 @@ export function chatSpacesSearchQuery(displayName: string): string {
   return `spaceType = "SPACE" AND displayName:${quoteChatString(trimmed)}`;
 }
 
-/** Build the `filter` for `messages.list`. */
-export function chatMessagesListFilter(options: GoogleChatListMessagesOptions): string | undefined {
-  const terms: string[] = [];
-  if (options.createdAfter) {
-    terms.push(`createTime > ${chatTimestamp(options.createdAfter, "createdAfter")}`);
+/** Validate the public half-open window before any provider or simulated read. */
+export function validateChatWindow(window: ChatWindow): void {
+  if (window.since) chatTimestamp(window.since, "since");
+  if (window.before) chatTimestamp(window.before, "before");
+  if (window.since && window.before && window.since >= window.before) {
+    throw new Error("since must be earlier than before.");
   }
-  if (options.createdBefore) {
-    terms.push(`createTime < ${chatTimestamp(options.createdBefore, "createdBefore")}`);
+}
+
+/** Apply the public time boundary after widening the provider's exclusive lower bound. */
+export function chatTimeInWindow(time: Date, window: ChatWindow): boolean {
+  return (!window.since || time >= window.since) && (!window.before || time < window.before);
+}
+
+/** Build the `filter` for `messages.list`. */
+export function chatMessagesListFilter(options: ChatListMessagesRequest): string | undefined {
+  validateChatWindow(options);
+  const terms: string[] = [];
+  if (options.since) {
+    // Google documents only strict >/< here. Re-filter after decoding to honor [since, before).
+    terms.push(`createTime > ${chatTimestamp(new Date(options.since.valueOf() - 1), "since")}`);
+  }
+  if (options.before) {
+    terms.push(`createTime < ${chatTimestamp(options.before, "before")}`);
   }
   if (options.threadName !== undefined) {
     const { spaceId, threadId } = chatThreadParts(options.threadName);
@@ -406,16 +425,17 @@ export function chatMessagesListFilter(options: GoogleChatListMessagesOptions): 
 }
 
 /** Build the `filter` for `messages.search`. */
-export function chatMessagesSearchFilter(query: GoogleChatMessageSearch): string {
+export function chatMessagesSearchFilter(query: ChatMessageSearch): string {
+  validateChatWindow(query);
   const terms: string[] = [];
   if (query.text !== undefined && query.text.trim()) terms.push(quoteChatString(query.text.trim()));
-  if (query.spaceNames && query.spaceNames.length > 0) {
-    terms.push(`(${query.spaceNames
+  if (query.spaceIds && query.spaceIds.length > 0) {
+    terms.push(`(${query.spaceIds
       .map(name => `space.name = "spaces/${chatSpaceId(name)}"`)
       .join(" OR ")})`);
   }
-  if (query.spaceDisplayNameContains !== undefined && query.spaceDisplayNameContains.trim()) {
-    terms.push(`space.display_name:${quoteChatString(query.spaceDisplayNameContains.trim())}`);
+  if (query.spaceNameContains !== undefined && query.spaceNameContains.trim()) {
+    terms.push(`space.display_name:${quoteChatString(query.spaceNameContains.trim())}`);
   }
   if (query.spaceTypes && query.spaceTypes.length > 0) {
     terms.push(`(${[...new Set(query.spaceTypes)]
@@ -432,11 +452,11 @@ export function chatMessagesSearchFilter(query: GoogleChatMessageSearch): string
       .map(user => `annotations.user_mentions.user.name:"${chatUserName(user)}"`)
       .join(" OR ")})`);
   }
-  if (query.createdAfter) {
-    terms.push(`createTime >= ${chatTimestamp(query.createdAfter, "createdAfter")}`);
+  if (query.since) {
+    terms.push(`createTime >= ${chatTimestamp(query.since, "since")}`);
   }
-  if (query.createdBefore) {
-    terms.push(`createTime < ${chatTimestamp(query.createdBefore, "createdBefore")}`);
+  if (query.before) {
+    terms.push(`createTime < ${chatTimestamp(query.before, "before")}`);
   }
   if (query.unreadOnly) terms.push("is_unread()");
   if (query.hasAttachment) terms.push("attachment:*");
@@ -449,13 +469,14 @@ export function chatMessagesSearchFilter(query: GoogleChatMessageSearch): string
 
 // ── Client ──────────────────────────────────────────────────────────
 
-export type ChatListSpacesOptions = {
-  types?: GoogleChatSpaceType[];
+export type ChatListSpacesRequest = ChatListSpacesOptions & {
   pageToken?: string;
   pageSize?: number;
 };
 
-export type ChatListMessagesRequest = GoogleChatListMessagesOptions & {
+export type ChatListMessagesRequest = ChatListMessagesOptions & {
+  /** Bound by the thread capability, never supplied by its caller. */
+  threadName?: string;
   pageToken?: string;
   pageSize?: number;
 };
@@ -497,7 +518,7 @@ export class ChatApi {
 
   // ── Spaces ────────────────────────────────────────────────────────
 
-  async listSpaces(options: ChatListSpacesOptions = {}): Promise<ChatPage<GoogleChatSpaceInfo>> {
+  async listSpaces(options: ChatListSpacesRequest = {}): Promise<ChatPage<ChatSpaceInfo>> {
     const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 100) });
     const filter = chatSpacesListFilter(options.types);
     if (filter) params.set("filter", filter);
@@ -519,7 +540,7 @@ export class ChatApi {
   async searchSpaces(
     displayName: string,
     options: { pageToken?: string; pageSize?: number } = {},
-  ): Promise<ChatPage<GoogleChatSpaceInfo>> {
+  ): Promise<ChatPage<ChatSpaceInfo>> {
     const params = new URLSearchParams({
       query: chatSpacesSearchQuery(displayName),
       pageSize: String(options.pageSize ?? 100),
@@ -539,14 +560,14 @@ export class ChatApi {
     };
   }
 
-  async getSpace(spaceName: string): Promise<GoogleChatSpaceInfo> {
+  async getSpace(spaceName: string): Promise<ChatSpaceInfo> {
     const spaceId = chatSpaceId(spaceName);
     return chatSpaceInfoFromRaw(
       await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`));
   }
 
   /** Returns null when the connected user has no direct message with `user`. */
-  async findDirectMessage(user: string): Promise<GoogleChatSpaceInfo | null> {
+  async findDirectMessage(user: string): Promise<ChatSpaceInfo | null> {
     const params = new URLSearchParams({ name: chatUserName(user) });
     try {
       return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
@@ -566,20 +587,25 @@ export class ChatApi {
   async listMessages(
     spaceName: string,
     options: ChatListMessagesRequest = {},
-  ): Promise<ChatPage<GoogleChatMessageInfo>> {
+  ): Promise<ChatPage<ChatMessageInfo>> {
     const spaceId = chatSpaceId(spaceName);
+    if (options.threadName && chatThreadParts(options.threadName).spaceId !== spaceId) {
+      throw new Error("That thread belongs to a different conversation.");
+    }
     const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 50) });
     const filter = chatMessagesListFilter(options);
     if (filter) params.set("filter", filter);
     params.set("orderBy", options.order === "newestFirst" ? "createTime DESC" : "createTime ASC");
-    if (options.includeDeleted) params.set("showDeleted", "true");
     if (options.pageToken) params.set("pageToken", options.pageToken);
     const body = await this.#request<{ messages?: ChatMessageRaw[]; nextPageToken?: string }>(
       "messages.list", `/spaces/${spaceId}/messages?${params}`);
     return {
       items: (body.messages ?? [])
         .filter(message => message.privateMessageViewer === undefined)
-        .map(chatMessageInfoFromRaw),
+        .map(chatMessageInfoFromRaw)
+        .filter(message => !message.deleted && message.spaceId === spaceName &&
+          (!options.threadName || message.threadId === options.threadName) &&
+          chatTimeInWindow(message.createdAt, options)),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -588,7 +614,7 @@ export class ChatApi {
   async searchMessages(
     parent: string,
     request: ChatSearchMessagesRequest,
-  ): Promise<ChatPage<GoogleChatMessageInfo>> {
+  ): Promise<ChatPage<ChatMessageInfo>> {
     const parentPath = parent === "spaces/-" ? "spaces/-" : `spaces/${chatSpaceId(parent)}`;
     const body = await this.#request<{
       results?: { message?: ChatMessageRaw }[];
@@ -614,7 +640,7 @@ export class ChatApi {
     };
   }
 
-  async getMessage(messageName: string): Promise<GoogleChatMessageInfo> {
+  async getMessage(messageName: string): Promise<ChatMessageInfo> {
     return chatMessageInfoFromRaw(await this.getRawMessage(messageName));
   }
 
@@ -637,7 +663,7 @@ export class ChatApi {
     spaceName: string,
     message: { text: string; threadName?: string },
     options: { requestId?: string } = {},
-  ): Promise<GoogleChatMessageInfo> {
+  ): Promise<ChatMessageInfo> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams();
     if (options.requestId) params.set("requestId", options.requestId);
@@ -659,7 +685,7 @@ export class ChatApi {
       { method: "POST", body: JSON.stringify(body) }));
   }
 
-  async updateMessageText(messageName: string, text: string): Promise<GoogleChatMessageInfo> {
+  async updateMessageText(messageName: string, text: string): Promise<ChatMessageInfo> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
       "messages.patch",
@@ -678,7 +704,7 @@ export class ChatApi {
   async listMembers(
     spaceName: string,
     options: { pageToken?: string; pageSize?: number } = {},
-  ): Promise<ChatPage<GoogleChatMembership>> {
+  ): Promise<ChatPage<ChatMembership>> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams({
       pageSize: String(options.pageSize ?? 100),
@@ -697,7 +723,7 @@ export class ChatApi {
   }
 
   /** Returns null when the named user is not a member of the space or does not exist. */
-  async getMembership(spaceName: string, user: string): Promise<GoogleChatMembership | null> {
+  async getMembership(spaceName: string, user: string): Promise<ChatMembership | null> {
     const spaceId = chatSpaceId(spaceName);
     const member = chatUserName(user).slice("users/".length);
     try {
@@ -718,7 +744,7 @@ export class ChatApi {
   async listReactions(
     messageName: string,
     options: { pageToken?: string; pageSize?: number; filter?: string } = {},
-  ): Promise<ChatPage<GoogleChatReaction>> {
+  ): Promise<ChatPage<ChatReaction>> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 100) });
     if (options.filter) params.set("filter", options.filter);
@@ -731,7 +757,7 @@ export class ChatApi {
     };
   }
 
-  async createReaction(messageName: string, emoji: string): Promise<GoogleChatReaction> {
+  async createReaction(messageName: string, emoji: string): Promise<ChatReaction> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     return chatReactionFromRaw(await this.#request<ChatReactionRaw>(
       "reactions.create",
@@ -752,7 +778,7 @@ export class ChatApi {
     messageName: string,
     emoji: string,
     selfName: string,
-  ): Promise<GoogleChatReaction | undefined> {
+  ): Promise<ChatReaction | undefined> {
     const filter =
       `emoji.unicode = "${validateChatEmoji(emoji)}" AND user.name = "${chatUserName(selfName)}"`;
     const page = await this.listReactions(messageName, { filter, pageSize: 10 });

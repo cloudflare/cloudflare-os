@@ -13,8 +13,9 @@
 // Durable Object and keeps a page's result independent of what earlier pages returned.
 
 import type {
-  GoogleChatListMessagesOptions, GoogleChatMessageInfo, GoogleChatReaction, GoogleChatUser,
+  ChatListMessagesOptions, ChatMessageInfo, ChatReaction, ChatUser,
 } from "./chat-types";
+import { chatTimeInWindow } from "./chat-api";
 
 type ChatActionBase = { submittedAt: number };
 
@@ -24,6 +25,8 @@ export type ChatSendMessageAction = ChatActionBase & {
   text: string;
   /** Set when the message is a threaded reply. */
   threadName?: string;
+  /** A top-level send in a conversation that supports threading. */
+  startsThread?: boolean;
   /** Makes the eventual create idempotent across a retried apply. */
   requestId: string;
 };
@@ -31,6 +34,8 @@ export type ChatSendMessageAction = ChatActionBase & {
 export type ChatUpdateMessageAction = ChatActionBase & {
   type: "updateMessage";
   messageName: string;
+  /** Needed to scope an edit whose target still has a temporary message ID. */
+  spaceName?: string;
   text: string;
 };
 
@@ -50,6 +55,7 @@ export type PendingChatAction = { id: number; action: ChatAction };
 
 /** Prefix of the temporary name a submitted-but-uncommitted message carries. */
 const PENDING_MESSAGE_PREFIX = "pending:send:";
+const PENDING_THREAD_PREFIX = "pending:thread:";
 
 export function pendingMessageName(actionId: number): string {
   return `${PENDING_MESSAGE_PREFIX}${actionId}`;
@@ -57,32 +63,47 @@ export function pendingMessageName(actionId: number): string {
 
 /** The action id inside a pending message name, or undefined when it is not one. */
 export function pendingMessageActionId(name: string): number | undefined {
-  if (!name.startsWith(PENDING_MESSAGE_PREFIX)) return undefined;
-  const id = Number(name.slice(PENDING_MESSAGE_PREFIX.length));
+  return pendingActionId(name, PENDING_MESSAGE_PREFIX);
+}
+
+/** The temporary thread name anchored to a queued root message. */
+export function pendingThreadName(actionId: number): string {
+  return `${PENDING_THREAD_PREFIX}${actionId}`;
+}
+
+/** The root send action id inside a temporary thread name. */
+export function pendingThreadActionId(name: string): number | undefined {
+  return pendingActionId(name, PENDING_THREAD_PREFIX);
+}
+
+function pendingActionId(name: string, prefix: string): number | undefined {
+  if (!name.startsWith(prefix)) return undefined;
+  const id = Number(name.slice(prefix.length));
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 
 /** The space an action affects, used to keep one space's overlay out of another's reads. */
 export function chatActionSpaceName(action: ChatAction): string {
-  return action.type === "sendMessage"
-    ? action.spaceName
-    : action.messageName.slice(0, action.messageName.indexOf("/messages/"));
+  if (action.type === "sendMessage") return action.spaceName;
+  if (action.type === "updateMessage" && action.spaceName) return action.spaceName;
+  return action.messageName.slice(0, action.messageName.indexOf("/messages/"));
 }
 
 /** How a queued message looks while it waits to be committed. */
 export function pendingMessageInfo(
   id: number,
   action: ChatSendMessageAction,
-  self: GoogleChatUser,
-): GoogleChatMessageInfo {
+  self: ChatUser,
+): ChatMessageInfo {
+  const threadName = action.threadName ?? (action.startsThread ? pendingThreadName(id) : undefined);
   return {
-    name: pendingMessageName(id),
-    spaceName: action.spaceName,
-    ...(action.threadName !== undefined ? { threadName: action.threadName } : {}),
+    id: pendingMessageName(id),
+    spaceId: action.spaceName,
+    ...(threadName !== undefined ? { threadId: threadName } : {}),
     sender: self,
     text: action.text,
-    createTime: new Date(action.submittedAt),
-    threadReply: action.threadName !== undefined,
+    createdAt: new Date(action.submittedAt),
+    isReply: action.threadName !== undefined,
     deleted: false,
     attachments: [],
     reactions: [],
@@ -91,20 +112,20 @@ export function pendingMessageInfo(
 }
 
 /**
- * Apply every pending edit that targets one already-committed message.
+ * Apply every pending edit that targets a message, whether or not its post has completed.
  *
  * Whenever the overlay changes the body, `formattedText` is dropped rather than left stale: the
  * overlay cannot recompute Chat's formatting markup.
  */
 export function overlayMessage(
-  info: GoogleChatMessageInfo,
+  info: ChatMessageInfo,
   pending: readonly PendingChatAction[],
-): GoogleChatMessageInfo {
+): ChatMessageInfo {
   let result = info;
   for (const { action } of pending) {
     // Edited text must not resurface on a record the provider has deleted.
-    if (action.type === "updateMessage" && action.messageName === info.name && !result.deleted) {
-      result = { ...result, text: action.text, lastUpdateTime: new Date(action.submittedAt) };
+    if (action.type === "updateMessage" && action.messageName === info.id && !result.deleted) {
+      result = { ...result, text: action.text, editedAt: new Date(action.submittedAt) };
       delete result.formattedText;
     }
   }
@@ -113,15 +134,16 @@ export function overlayMessage(
 
 /** Whether a queued message belongs in a listing with these filters. */
 function pendingSendMatches(
+  id: number,
   action: ChatSendMessageAction,
   spaceName: string,
-  options: GoogleChatListMessagesOptions,
+  options: ChatListMessagesOptions,
+  threadName?: string,
 ): boolean {
   if (action.spaceName !== spaceName) return false;
-  if (options.threadName !== undefined && action.threadName !== options.threadName) return false;
-  if (options.createdAfter && action.submittedAt <= options.createdAfter.valueOf()) return false;
-  if (options.createdBefore && action.submittedAt >= options.createdBefore.valueOf()) return false;
-  return true;
+  const target = action.threadName ?? (action.startsThread ? pendingThreadName(id) : undefined);
+  return (threadName === undefined || target === threadName) &&
+    chatTimeInWindow(new Date(action.submittedAt), options);
 }
 
 /**
@@ -131,27 +153,29 @@ function pendingSendMatches(
  * the first page when paging newest-first.
  */
 export function overlayMessageList(
-  messages: readonly GoogleChatMessageInfo[],
+  messages: readonly ChatMessageInfo[],
   pending: readonly PendingChatAction[],
   context: {
     spaceName: string;
-    self: GoogleChatUser;
-    options: GoogleChatListMessagesOptions;
+    self: ChatUser;
+    options: ChatListMessagesOptions;
+    threadName?: string;
     /** Whether this is the first provider page. */
     first: boolean;
     /** Whether the provider has no page after this one. */
     exhausted: boolean;
   },
-): GoogleChatMessageInfo[] {
+): ChatMessageInfo[] {
   const result = messages
     .map(message => overlayMessage(message, pending))
-    .filter(message => context.options.includeDeleted || !message.deleted);
+    .filter(message => !message.deleted);
   const newestFirst = context.options.order === "newestFirst";
   if (newestFirst ? !context.first : !context.exhausted) return result;
 
   const queued = pending.flatMap(({ id, action }) =>
-    action.type === "sendMessage" && pendingSendMatches(action, context.spaceName, context.options)
-      ? [pendingMessageInfo(id, action, context.self)]
+    action.type === "sendMessage" &&
+      pendingSendMatches(id, action, context.spaceName, context.options, context.threadName)
+      ? [overlayMessage(pendingMessageInfo(id, action, context.self), pending)]
       : []);
   return newestFirst ? [...queued.toReversed(), ...result] : [...result, ...queued];
 }
@@ -165,10 +189,10 @@ export function overlayMessageList(
  * of the others: no page needs to know whether an earlier one already showed that reaction.
  */
 export function overlayReactions(
-  reactions: readonly GoogleChatReaction[],
+  reactions: readonly ChatReaction[],
   pending: readonly PendingChatAction[],
-  context: { messageName: string; self: GoogleChatUser; exhausted: boolean },
-): GoogleChatReaction[] {
+  context: { messageName: string; self: ChatUser; exhausted: boolean },
+): ChatReaction[] {
   const desired = new Map<string, { present: boolean; actionId: number }>();
   for (const { id, action } of pending) {
     if ((action.type === "addReaction" || action.type === "removeReaction") &&
@@ -177,12 +201,12 @@ export function overlayReactions(
     }
   }
   const result = reactions.filter(reaction =>
-    reaction.user?.name !== context.self.name || !desired.has(reaction.emoji));
+    reaction.user?.id !== context.self.id || !desired.has(reaction.emoji));
   if (!context.exhausted) return result;
   for (const [emoji, change] of desired) {
     if (change.present) {
       result.push({
-        name: `${context.messageName}/reactions/pending-${change.actionId}`,
+        id: `${context.messageName}/reactions/pending-${change.actionId}`,
         emoji,
         user: context.self,
       });
