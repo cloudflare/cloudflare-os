@@ -22,7 +22,7 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
+  AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
   GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -258,13 +258,14 @@ export class TestAccount
   }
 
   /**
-   * Mint a NEW test thing (createExternalResource): a provisional resource URL and a gatekeeper
-   * class that simulates the thing until the creation action is approved.
+   * Mint a NEW test thing (createExternalResource): a provisional resource URL, the creation
+   * action, and a gatekeeper class that simulates the thing until that action is approved.
    */
   async createResource(resourceUrlPattern: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resource: SupportedResource;
     resourceUrl: string;
+    action: ActionDescription;
   }> {
     if (resourceUrlPattern !== SUPPORTED_RESOURCES[0].urlPattern) {
       throw new Error(
@@ -279,6 +280,12 @@ export class TestAccount
       }),
       resource: SUPPORTED_RESOURCES[0],
       resourceUrl,
+      action: {
+        title: `Create test thing "${title}"`,
+        description: `Create a new test thing titled **${title}**.`,
+        implementsRevert: false,
+        actionKind: { tag: "create-thing", label: "Create thing" },
+      },
     };
   }
 
@@ -408,15 +415,11 @@ export class TestGatekeeper
     }
     const creation = this.ctx.props.creation;
     if (creation) {
-      // Answered locally in both states: a created thing has no provider to describe from, and
-      // before approval there is nothing at the provider at all.
-      const createdUrl = this.ctx.storage.kv.get<string>("createdUrl");
+      // Answered locally: before approval there is nothing at the provider at all.
       return {
-        url: createdUrl ?? this.ctx.props.resourceUrl,
+        url: this.ctx.props.resourceUrl,
         title: creation.title,
-        snippet: createdUrl
-          ? `The created test resource ${creation.title}.`
-          : `Test thing (pending creation): ${creation.title}.`,
+        snippet: `Test thing (pending creation): ${creation.title}.`,
         suggestedBindingName: "TEST_THING",
         tsType: "TestThing",
       };
@@ -441,10 +444,6 @@ export class TestGatekeeper
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    if (this.ctx.storage.kv.get<boolean>("creationRejected")) {
-      throw new Error(
-          "The user rejected creating this test thing; the binding is dead.");
-    }
     return new TestSessionTarget(
         approvalQueue, control(this.ctx.exports), this.ctx.props.label);
   }
@@ -454,35 +453,25 @@ export class TestGatekeeper
     return null;
   }
 
-  /** Queue the creation of this test thing (createExternalResource). Idempotent. */
-  async submitCreationAction(approvalQueue: RpcStub<ApprovalQueue>): Promise<void> {
-    const creation = this.ctx.props.creation;
-    if (!creation) {
+  /**
+   * Create this test thing (createExternalResource approval). The thing lives in no provider, so
+   * creating it only names it: a pure function of the props, hence trivially idempotent.
+   */
+  async applyCreation(): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resourceUrl: string;
+  }> {
+    if (!this.ctx.props.creation) {
       throw new Error("This test gatekeeper was not minted by createResource().");
     }
-    // Test knob: a contract-breaking vendor that returns without queueing its creation.
-    if (creation.title === "never-queues") return;
-    if (this.ctx.storage.kv.get<number>("creationActionId") !== undefined) return;
-    const id = await control(this.ctx.exports).stageAction(this.ctx.props.label, 0);
-    this.ctx.storage.kv.put("creationActionId", id);
-    try {
-      await approvalQueue.submitAction(id, {
-        title: `Create test thing "${creation.title}"`,
-        description: `Create a new test thing titled **${creation.title}**.`,
-        implementsRevert: false,
-        actionKind: { tag: "create-thing", label: "Create thing" },
-      });
-    } catch (error) {
-      this.ctx.storage.kv.delete("creationActionId");
-      await control(this.ctx.exports).discardAction(this.ctx.props.label, id);
-      throw error;
-    }
-    // Test knob: this title makes the call reject only after the action was durably queued,
-    // modeling a vendor that fails post-queue (the overseer must settle the orphaned action).
-    if (creation.title === "fail-after-queue") {
-      throw new Error("Simulated post-queue failure.");
-    }
+    const resourceUrl =
+        this.ctx.props.resourceUrl.replace("/things/provisional-", "/things/created-");
+    return {
+      class: this.ctx.exports.TestGatekeeper({ props: { label: this.ctx.props.label, resourceUrl } }),
+      resourceUrl,
+    };
   }
+
   /**
    * Admit an observer, or refuse on the test's instruction.
    *
@@ -510,29 +499,11 @@ export class TestGatekeeper
   }
 
   async applyAction(action: number): Promise<void> {
-    // The in-order guard the submitCreationAction contract requires: manual approval can target
-    // any pending action, so the gatekeeper itself must refuse to apply anything that depends on
-    // the thing existing until the creation has been applied.
-    const creationActionId = this.ctx.storage.kv.get<number>("creationActionId");
-    if (creationActionId !== undefined && action !== creationActionId &&
-        this.ctx.storage.kv.get<string>("createdUrl") === undefined) {
-      throw new Error(
-          "The test thing does not exist yet: approve its creation action before this one.");
-    }
     await control(this.ctx.exports).applyAction(this.ctx.props.label, action);
-    if (action === this.ctx.storage.kv.get<number>("creationActionId")) {
-      // The thing now "exists": describe() flips from the provisional URL to the real one.
-      this.ctx.storage.kv.put(
-          "createdUrl",
-          this.ctx.props.resourceUrl.replace("/things/provisional-", "/things/created-"));
-    }
   }
 
   async rejectAction(action: number): Promise<void> {
     await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
-    if (action === this.ctx.storage.kv.get<number>("creationActionId")) {
-      this.ctx.storage.kv.put("creationRejected", true);
-    }
   }
 
   async revertAction(_action: number): Promise<void> {

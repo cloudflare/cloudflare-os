@@ -1288,10 +1288,10 @@ describe("reconcilePendingGadgets", () => {
     addChat(impl, 1);
     impl.storage.gatekeepers.put({
       id: 500, class: { type: "vendor", vendorId: "test", accountId: 1 },
-      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 7 },
+      pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 7 },
     });
     impl.storage.actions.put({
-      id: 7, gatekeeperId: 500, caller: { from: "agent", chatId: 1 }, action: 1,
+      id: 7, gatekeeperId: 500, caller: { from: "agent", chatId: 1 },
       createdAt: new Date(), state: "pending", type: "action",
       description: { title: "Create thing" },
     });
@@ -1306,16 +1306,16 @@ describe("reconcilePendingGadgets", () => {
     addChat(impl, 1);
     impl.storage.gatekeepers.put({
       id: 501, class: { type: "vendor", vendorId: "test", accountId: 1 },
-      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 8 },
+      pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 8 },
     });
     impl.storage.actions.put({
-      id: 8, gatekeeperId: 501, caller: { from: "agent", chatId: 1 }, action: 1,
+      id: 8, gatekeeperId: 501, caller: { from: "agent", chatId: 1 },
       createdAt: new Date(), state: "approved", appliedAt: new Date(), type: "action",
       description: { title: "Create thing" },
     });
 
-    // The approved creation is proof the resource may exist at the provider: keep the
-    // gatekeeper, clear only the crash marker.
+    // The approved creation is proof the resource exists at the provider: keep the gatekeeper,
+    // clear only the crash marker.
     await impl.reconcilePendingGadgets(1);
     let record = impl.storage.gatekeepers.get(501)!;
     expect(record.pending).toBeUndefined();
@@ -1327,10 +1327,10 @@ describe("reconcilePendingGadgets", () => {
     addChat(impl, 1);
     impl.storage.gatekeepers.put({
       id: 502, class: { type: "vendor", vendorId: "test", accountId: 1 },
-      provisional: true, pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 9 },
+      pending: { chatId: 1 }, creation: { bindingName: "THING", actionId: 9 },
     });
     impl.storage.actions.put({
-      id: 9, gatekeeperId: 502, caller: { from: "agent", chatId: 1 }, action: 1,
+      id: 9, gatekeeperId: 502, caller: { from: "agent", chatId: 1 },
       createdAt: new Date(), state: "approved", appliedAt: new Date(), type: "action",
       resolvedBy: { type: "user", id: "u", name: "User" },
       description: { title: "Create thing" },

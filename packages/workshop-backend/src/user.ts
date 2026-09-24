@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1959,7 +1959,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async createResourceGatekeeper(
       vendorId: string, accountId: number | undefined, resourceUrlPattern: string, title: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
-                  typeUrlPattern: string, resourceUrl: string}> {
+                  typeUrlPattern: string, resourceUrl: string, action: ActionDescription}> {
     let account: ConnectedAccountRecord;
     if (accountId !== undefined) {
       let record = this.storage.connectedAccounts.get(accountId);
@@ -1994,14 +1994,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // stub through the Required<Pick<...>> shape. The caller gates on SupportedResource.creatable;
     // a vendor that advertised it without implementing createResource() surfaces here as an RPC
     // error, which the overseer relays to the agent.
-    let {class: cls, resource, resourceUrl} =
+    let {class: cls, resource, resourceUrl, action} =
         await (account.account as unknown as ResourceCreatorStub)
             .createResource(resourceUrlPattern, title);
 
     // Check the admin disable-set against the pattern the vendor actually resolved, after the
     // RPC, exactly like getGatekeeperClassFor -- the vendor is the authority on which resource
     // type a request maps to. (createResource mints only the class and a provisional URL; the
-    // provider-side creation is a separate pending action, so nothing external happened yet.)
+    // provider-side creation waits for the user to approve `action`, so nothing external happened.)
     // A dormant auto-provisioning vendor (ambient mode "disabled") blocks here too: existing
     // accounts stay unusable, matching startHook's use-time check.
     let config = await readAdminConfig(this.env);
@@ -2017,7 +2017,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern,
-            resourceUrl};
+            resourceUrl, action};
   }
 
   /**

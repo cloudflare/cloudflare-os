@@ -46,7 +46,6 @@ describe("chat deletion and undecided creations", () => {
       id: GATEKEEPER_ID,
       resourceTitle: "Provisional Doc",
       class: {},
-      provisional: true,
       creationSpec: {
         type: "gatekeeper",
         vendorId: "testvendor",
@@ -63,7 +62,6 @@ describe("chat deletion and undecided creations", () => {
       caller: { from: "agent", chatId: CHAT_ID },
       resourceTitle: "Provisional Doc",
       createdAt: new Date(0),
-      action: {},
       description: { title: "Create", description: "Create it", implementsRevert: false },
     });
     // A permanent (merged) edge from another chat's gadget.

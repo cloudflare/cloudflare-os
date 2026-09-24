@@ -60,7 +60,6 @@ function putCreation(impl: TestImpl, state: "pending" | "rejected"): void {
     caller: { from: "agent", chatId: 1 },
     resourceTitle: "Provisional Doc",
     createdAt: new Date(0),
-    action: {},
     description: { title: "Create", description: "Create it", implementsRevert: false },
   });
 }

@@ -1,7 +1,7 @@
 // createExternalResource end to end against the fixture gatekeeper: tool → binding → action card
-// → out-of-order refusal → in-order approval → describe refresh, plus the rejection path, replay
-// across turns, and a vendor that fails after queueing its creation action. (Provider depth is
-// covered by per-vendor suites, e.g. gatekeeper-google's workerd tests.)
+// → out-of-order refusal → in-order approval → class swap, plus the rejection path and replay
+// across turns. (Provider depth is covered by per-vendor suites, e.g. gatekeeper-google's workerd
+// tests.)
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -226,7 +226,7 @@ it("creates a resource the agent can use before the user approves it", async () 
   // Queue-time snapshot: the resource was still provisional when the write was queued.
   expect(write.resourceUrl).toContain("/things/provisional-");
 
-  // Approving the dependent write before the creation is refused (the gatekeeper's in-order
+  // Approving the dependent write before the creation is refused (the platform's in-order
   // guard) and the write stays pending.
   await expect(workspace.approveAction(write.id)).rejects.toThrow(/does not exist yet/);
   expect((await workspace.listActions({ filter: "pending" })).entries
@@ -239,13 +239,19 @@ it("creates a resource the agent can use before the user approves it", async () 
   await workspace.approveAction(write.id);
   await waitForAgentSays(workspace, chatId, "The value is now 9.");
 
-  // Both actions settled, and the post-apply describe refresh retired the provisional URL:
-  // the resumed read's observation snapshots the created resource.
+  // Both actions settled, and applyCreation's URL replaced the provisional one: the resumed
+  // read's observation snapshots the created resource.
   const all = (await workspace.listActions({ filter: "all" })).entries;
   expect(all.find(action => action.id === pending.id)?.state).toBe("approved");
   expect(all.find(action => action.id === write.id)?.state).toBe("approved");
   expect(all.some(action =>
     action.type === "observation" && action.resourceUrl?.includes("/things/created-"))).toBe(true);
+
+  // The facet restarted on the class applyCreation returned: describe() answers from the
+  // created thing's props rather than the provisional ones.
+  if (pending.gatekeeperId === undefined) throw new Error("Creation action has no gatekeeper");
+  using created = await workspace.getGatekeeperById(pending.gatekeeperId);
+  expect((await created.describe()).url).toContain("/things/created-");
 
   // actionLog hydrates at read time: the same card now carries the decision, and the creation
   // card's link was refreshed off the dead provisional URL.
@@ -254,22 +260,20 @@ it("creates a resource the agent can use before the user approves it", async () 
     resourceUrl: expect.stringContaining("/things/created-"),
   });
 
-  // Vendor-side proof the applies really landed: the creation staged value 0, the write 9.
+  // Vendor-side proof the write really landed. The fixture's creation touches no provider
+  // state, so the write is the only apply.
   const account = (await listConnectedAccounts(authenticated))
       .find(entry => entry.vendorId === TEST_VENDOR_ID);
   if (!account) throw new Error("No connected test account");
   expect(await actionState(accountLabel(account)))
-      .toMatchObject({ pending: [], value: 9, applyCount: 2 });
+      .toMatchObject({ pending: [], value: 9, applyCount: 1 });
 
-  // The decision reached the model as a durable nudge — the recorded tool result permanently
-  // says the resource doesn't exist yet, so without this the model's context never learns it
-  // now does. The verdict lands before the describe refresh (so it carries no URL); the
-  // refresh then delivers the real URL as a follow-up, or the model would only ever hold the
-  // dead provisional one.
+  // The decision reached the model as a durable nudge carrying the real URL — the recorded tool
+  // result permanently says the resource doesn't exist yet, so without this the model's context
+  // never learns it now does, or where.
   expect(userMessagesShownToModel().some(message =>
-    message.includes("The user approved the creation of env.NEW_THING"))).toBe(true);
-  expect(userMessagesShownToModel().some(message =>
-    /env\.NEW_THING now exists at .*\/things\/created-/.test(message))).toBe(true);
+    /The user approved the creation of env\.NEW_THING\. The resource now exists at .*\/things\/created-/
+        .test(message))).toBe(true);
   expect(model.remainingSteps()).toBe(0);
 });
 
@@ -336,7 +340,7 @@ it("kills the binding and cascades to queued edits when the user rejects the cre
   expect(all.filter(action => action.type === "action" && action.state === "rejected"))
       .toHaveLength(2);
 
-  // The next turn's use of the binding fails with the gatekeeper's dead-binding explanation
+  // The next turn's use of the binding fails with the platform's rejected-creation refusal
   // rather than silently simulating against nothing.
   await workspace.sendChatMessage(chatId, "Read the doomed thing.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "The doomed thing is gone.");
@@ -346,73 +350,6 @@ it("kills the binding and cascades to queued edits when the user rejects the cre
   // The rejection nudge reached the model.
   expect(userMessagesShownToModel().some(message =>
     message.includes("The user rejected the creation of env.DOOMED"))).toBe(true);
-  expect(model.remainingSteps()).toBe(0);
-});
-
-it("settles the queued action when the vendor fails after queueing it", async () => {
-  model = scriptedChatCompletions([
-    // The vendor fails after durably queueing its creation action; the overseer must settle
-    // the orphan instead of leaving it pending against a removed gatekeeper.
-    {
-      toolCall: {
-        id: "create-orphan",
-        name: "createExternalResource",
-        arguments: {
-          vendorId: TEST_VENDOR_ID,
-          resourceUrlPattern: RESOURCE_URL_PATTERN,
-          title: "fail-after-queue",
-          bindingName: "ORPHAN",
-        },
-      },
-    },
-    { text: "The creation failed." },
-  ]);
-  using publicApi = connect(harness.url);
-  using authenticated = await signUpScriptedUser(publicApi, "createfail");
-  using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a failing test thing.", SCRIPTED_MODEL_ID);
-  await waitForAgentSays(workspace, chatId, "The creation failed.");
-
-  // The tool failed with the vendor's error...
-  expect(toolResultShownToModel("create-orphan")).toContain("Simulated post-queue failure");
-
-  // ...and the action the vendor had already queued was settled with the removed gatekeeper,
-  // not left pending forever (approve/reject would both fail on the missing facet).
-  const actions = (await workspace.listActions({ filter: "all" })).entries;
-  expect(actions.filter(action => action.state === "pending")).toEqual([]);
-  const settled = actions.find(action =>
-    action.type === "action" && action.state === "rejected");
-  if (settled?.gatekeeperId === undefined) throw new Error("No settled creation action found");
-  await expect(workspace.getGatekeeperById(settled.gatekeeperId)).rejects.toThrow();
-  expect(model.remainingSteps()).toBe(0);
-});
-
-it("fails closed when the vendor never queues its creation action", async () => {
-  model = scriptedChatCompletions([
-    // A contract-breaking vendor returns from submitCreationAction without queueing; the
-    // overseer must surface the bug instead of leaving a permanently provisional binding.
-    {
-      toolCall: {
-        id: "create-unqueued",
-        name: "createExternalResource",
-        arguments: {
-          vendorId: TEST_VENDOR_ID,
-          resourceUrlPattern: RESOURCE_URL_PATTERN,
-          title: "never-queues",
-          bindingName: "UNQUEUED",
-        },
-      },
-    },
-    { text: "The creation failed." },
-  ]);
-  using publicApi = connect(harness.url);
-  using authenticated = await signUpScriptedUser(publicApi, "createnoop");
-  using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a never-queued test thing.", SCRIPTED_MODEL_ID);
-  await waitForAgentSays(workspace, chatId, "The creation failed.");
-
-  expect(toolResultShownToModel("create-unqueued")).toMatch(/vendor bug/);
-  expect((await workspace.listActions({ filter: "all" })).entries).toEqual([]);
   expect(model.remainingSteps()).toBe(0);
 });
 
