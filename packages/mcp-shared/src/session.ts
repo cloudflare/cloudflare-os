@@ -50,9 +50,9 @@ export type StoredAction = {
   claimedAt?: number;
   /**
    * Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
-   * written before this field existed. False marks a failure that left the outcome unknown: the
+   * written before this field existed. False marks a failure that left the outcome unknown -- the
    * request may already have been carried out, so another attempt could duplicate a write that MCP
-   * gives no way to undo. See `ActionStore.apply`.
+   * gives no way to undo -- or one the user discarded. See `ActionStore.apply` and `reject`.
    */
   retryable?: boolean;
   /** Populated once applied; delivered to the Gadget as an observation. */
