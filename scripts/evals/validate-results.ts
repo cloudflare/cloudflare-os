@@ -1,9 +1,9 @@
-// Reject a Workshop eval result file that cannot be stored as the main baseline:
+// Reject a Workshop eval result file that cannot be stored for reuse:
 //   node scripts/evals/validate-results.ts <results.json> <trials>
 // This file runs under Node's native TypeScript stripping, so imports name real .ts files and only
 // erasable syntax may appear here.
 import { readFile } from "node:fs/promises";
-import { validateEvalResults } from "../../packages/workshop-evals/src/comparison.ts";
+import { validateEvalResults } from "../../packages/workshop-evals/src/results.ts";
 
 const USAGE = "Usage: node scripts/evals/validate-results.ts <results.json> <trials>";
 
@@ -31,7 +31,7 @@ async function main(argv: string[]): Promise<void> {
     throw new Error(`cannot read results at ${resultsPath}: ${errorMessage(error)}`, { cause: error });
   }
   validateEvalResults(text, trials);
-  console.log(`${resultsPath} is a complete ${trials}-trial baseline.`);
+  console.log(`${resultsPath} is a complete ${trials}-trial result.`);
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {

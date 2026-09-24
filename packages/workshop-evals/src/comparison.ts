@@ -1,5 +1,7 @@
 import { basename } from "node:path";
-import { parseResults, trials, type Assertion } from "./results.ts";
+import {
+  group, hasInfrastructureFailure, parseResults, trials, type Assertion, type Cohort,
+} from "./results.ts";
 
 export type EvalStats = {
   trials: number;
@@ -32,62 +34,32 @@ export type EvalComparisonRow = { taskId: string; model: string } & (
 
 /**
  * `regressed` when any comparable task's pass rate fell significantly (p < 0.05), `improved` when
- * some rose and none fell, `unchanged` when none moved beyond noise, `inconclusive` when nothing
- * could be compared.
+ * some rose and none fell, `unchanged` when none moved beyond noise or no task's inputs changed,
+ * `inconclusive` when nothing could be compared.
  */
 export type EvalVerdict = "improved" | "regressed" | "unchanged" | "inconclusive";
 
 export type EvalComparison = {
+  /**
+   * The pull request's base and head. A task's result may come from another commit with the same
+   * eval key.
+   */
   baselineSha: string;
   candidateSha: string;
   verdict: EvalVerdict;
-  /** Files the pull request changes that the evals exercise. */
+  /** Files the evals run whose content differs between base and head. */
   changedFiles: string[];
   rows: EvalComparisonRow[];
 };
 
+/**
+ * The reason for a task whose two sides are one result: nothing its run executes differs between
+ * base and head. Two separate runs never produce identical results.
+ */
+const SAME_INPUTS = "same inputs";
+
 /** The significance a pass-rate change must reach to count as improved or regressed. */
 const SIGNIFICANCE = 0.05;
-
-type Cohort = {
-  taskId: string;
-  model: string;
-  taskVersion: string;
-  assertions: Assertion[];
-};
-
-function cohortKey(taskId: string, model: string): string {
-  return JSON.stringify([taskId, model]);
-}
-
-function group(assertions: Assertion[]): Map<string, Cohort> {
-  const cohorts = new Map<string, Cohort>();
-  for (const assertion of assertions) {
-    const run = assertion.meta.harness.run;
-    const { taskId, taskVersion } = run.session.metadata;
-    const { model } = run.usage;
-    const key = cohortKey(taskId, model);
-    const cohort = cohorts.get(key);
-    if (cohort === undefined) {
-      cohorts.set(key, { taskId, model, taskVersion, assertions: [assertion] });
-    } else {
-      if (cohort.taskVersion !== taskVersion) {
-        throw new Error(`${taskId} has inconsistent task versions`);
-      }
-      cohort.assertions.push(assertion);
-    }
-  }
-  return cohorts;
-}
-
-function singleCommit(name: string, assertions: Assertion[]): string {
-  const commits = new Set(assertions.map(
-      assertion => assertion.meta.harness.run.session.metadata.gitCommit));
-  if (commits.size !== 1) throw new Error(`${name} results have inconsistent commits`);
-  const commit = commits.values().next().value;
-  if (commit === undefined) throw new Error(`${name} results have no commit`);
-  return commit;
-}
 
 function mean(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -143,48 +115,15 @@ function stats({ assertions }: Cohort): EvalStats {
   };
 }
 
-function hasInfrastructureFailure(assertion: Assertion): boolean {
-  const run = assertion.meta.harness.run;
-  if (run.output.turns.some(turn =>
-    turn.outcome.status === "error" || turn.outcome.status === "cancelled")) return true;
-  const names = new Set(run.errors.map(error => error.name));
-  if (names.has("EvalCleanupError")) return true;
-  const hasAgentOutcome = names.has("AgentError") || names.has("AgentTimeout");
-  return names.has("EvalRunError") && !hasAgentOutcome;
-}
-
-/**
- * Reject a report that cannot serve as a shared baseline: every eval file must have run, every
- * task/model cohort must hold exactly `expectedTrials` trials, and no trial may have failed for
- * infrastructure reasons. Agent failures are legitimate baseline data and pass.
- */
-export function validateEvalResults(text: string, expectedTrials: number): void {
-  const files = parseResults("baseline", text);
-  for (const file of files) {
-    if (file.assertionResults.length === 0) {
-      throw new Error(`${basename(file.name)} ran no trials${file.message ? `: ${file.message}` : ""}`);
-    }
-  }
-  const assertions = trials(files);
-  singleCommit("baseline", assertions);
-  for (const cohort of group(assertions).values()) {
-    if (cohort.assertions.length !== expectedTrials) {
-      throw new Error(
-        `${cohort.taskId} on ${cohort.model} has ${cohort.assertions.length} trials, ` +
-        `expected ${expectedTrials}`);
-    }
-    if (cohort.assertions.some(hasInfrastructureFailure)) {
-      throw new Error(`${cohort.taskId} on ${cohort.model} has infrastructure failures`);
-    }
-  }
-}
-
-/** Questions about the two commits that only the caller, holding the repository, can answer. */
-export type CommitQuestions = {
-  /** Whether the code that defines or scores a trial differs; if so, no cohort is comparable. */
-  definitionsChanged?: (baselineSha: string, candidateSha: string) => boolean;
-  /** The files the pull request changes that the evals exercise. */
-  changedFiles?: (baselineSha: string, candidateSha: string) => string[];
+/** The commits compared, and what only the caller, holding their eval keys, can tell about them. */
+export type CompareOptions = {
+  /** The pull request's base and head. */
+  baselineSha: string;
+  candidateSha: string;
+  /** Whether the code that defines or scores a task's trials differs between base and head. */
+  definitionsChanged?: (taskId: string) => boolean;
+  /** Files the evals run whose content differs between base and head. */
+  changedFiles?: string[];
 };
 
 /** The natural log of `count` choose `chosen`, as a sum of logs so large counts don't overflow. */
@@ -215,7 +154,13 @@ function fisherExact(baseline: EvalStats, candidate: EvalStats): number {
   return Math.min(1, total);
 }
 
+/** Whether every task's two sides are one reused result, so nothing the evals run changed. */
+function allReused(rows: readonly EvalComparisonRow[]): boolean {
+  return rows.length > 0 && rows.every(row => row.reason === SAME_INPUTS);
+}
+
 function verdictOf(rows: EvalComparisonRow[]): EvalVerdict {
+  if (allReused(rows)) return "unchanged";
   const compared = rows.flatMap(row => row.reason === null ? [row] : []);
   if (compared.length === 0) return "inconclusive";
   const moved = compared.filter(row => row.pValue < SIGNIFICANCE);
@@ -226,15 +171,10 @@ function verdictOf(rows: EvalComparisonRow[]): EvalVerdict {
 /** Compare baseline and candidate Vitest eval reports. */
 export function compareEvalResults(
     baselineText: string, candidateText: string,
-    { definitionsChanged = () => false, changedFiles = () => [] }: CommitQuestions = {},
+    { baselineSha, candidateSha, definitionsChanged = () => false, changedFiles = [] }: CompareOptions,
 ): EvalComparison {
-  const baselineAssertions = trials(parseResults("baseline", baselineText));
-  const candidateAssertions = trials(parseResults("candidate", candidateText));
-  const baselineSha = singleCommit("baseline", baselineAssertions);
-  const candidateSha = singleCommit("candidate", candidateAssertions);
-  const changed = definitionsChanged(baselineSha, candidateSha);
-  const baseline = group(baselineAssertions);
-  const candidate = group(candidateAssertions);
+  const baseline = group(trials(parseResults("baseline", baselineText)));
+  const candidate = group(trials(parseResults("candidate", candidateText)));
   // Either side's cohort carries the identity; both do when the key is shared.
   const rows = [...new Map([...baseline, ...candidate])].map(([key, cohort]): EvalComparisonRow => {
     const identity = { taskId: cohort.taskId, model: cohort.model };
@@ -246,11 +186,13 @@ export function compareEvalResults(
     if (next === undefined) {
       return { ...identity, reason: "only in baseline", baseline: stats(base), candidate: null };
     }
-    const reason = changed ? "eval definition changed"
+    // Sameness comes last: one result both sides share can still have failed to run.
+    const reason = definitionsChanged(cohort.taskId) ? "eval definition changed"
       : base.taskVersion !== next.taskVersion ? "task version changed"
       : base.assertions.length !== next.assertions.length ? "run counts differ"
       : base.assertions.some(hasInfrastructureFailure) ? "baseline run errors"
       : next.assertions.some(hasInfrastructureFailure) ? "candidate run errors"
+      : JSON.stringify(base.assertions) === JSON.stringify(next.assertions) ? SAME_INPUTS
       : null;
     const [baselineStats, candidateStats] = [stats(base), stats(next)];
     if (reason !== null) {
@@ -260,10 +202,7 @@ export function compareEvalResults(
       pValue: fisherExact(baselineStats, candidateStats) };
   }).toSorted((left, right) =>
     left.taskId.localeCompare(right.taskId) || left.model.localeCompare(right.model));
-  return {
-    baselineSha, candidateSha, verdict: verdictOf(rows),
-    changedFiles: changedFiles(baselineSha, candidateSha), rows,
-  };
+  return { baselineSha, candidateSha, verdict: verdictOf(rows), changedFiles, rows };
 }
 
 function passRate(stats: EvalStats): number {
@@ -318,9 +257,9 @@ function passChange(row: ComparedRow): string {
 }
 
 /**
- * Render the comparison for a pull request comment: the verdict and the changed files the evals
- * exercise, one table of every task's scores and deltas, then what failed and why, for the human
- * who has to fix it. Whatever every row shares (the model, the trial count) is said once.
+ * Render the comparison for a pull request comment: the verdict and the files the evals run that
+ * differ from base, one table of every task's scores and deltas, then what failed and why, for the
+ * human who has to fix it. Whatever every row shares (the model, the trial count) is said once.
  */
 export function renderEvalComparison(comparison: EvalComparison): string {
   const { rows } = comparison;
@@ -337,6 +276,7 @@ export function renderEvalComparison(comparison: EvalComparison): string {
   const rises = moved.filter(row => passRate(row.candidate) > passRate(row.baseline));
   const why = comparison.verdict === "inconclusive"
     ? `No task can be compared: ${[...new Set(rows.flatMap(row => row.reason ?? []))].join(", ")}.`
+    : allReused(rows) ? "Nothing the evals run changed, so every result is reused."
     : comparison.verdict === "unchanged"
       ? `No task moved beyond what ${trials ?? "these"} runs can tell apart from noise.`
       : [falls.length > 0 ? `Fell: ${falls.map(change).join(", ")}.` : "",
@@ -346,8 +286,8 @@ export function renderEvalComparison(comparison: EvalComparison): string {
   const lines = [
     "# Eval results", "",
     `**Verdict: ${VERDICT[comparison.verdict]}.** ${why}`, "",
-    files.length === 0 ? "**Evals exercise no file this change touches.**"
-      : `**Evals exercise these changed files:** ${files.slice(0, 8).map(file =>
+    files.length === 0 ? "**No file the evals run differs from base.**"
+      : `**Files the evals run that differ from base:** ${files.slice(0, 8).map(file =>
           `\`${basename(file)}\``).join(", ")}` + (files.length > 8 ? `, and ${files.length - 8} more` : ""),
     "",
     [`Baseline \`${comparison.baselineSha.slice(0, 8)}\` (PR base) vs candidate ` +
@@ -371,7 +311,8 @@ export function renderEvalComparison(comparison: EvalComparison): string {
 
   for (const row of rows) {
     const { candidate, baseline } = row;
-    if (candidate === null) continue;
+    // A result both sides share shows nothing about this change.
+    if (candidate === null || row.reason === SAME_INPUTS) continue;
     const failed = candidate.trials - candidate.passed;
     if (failed === 0 && candidate.toolErrors.length === 0) continue;
     lines.push(`### ${name(row)}: ${failed === 0 ? `all ${candidate.trials} candidate runs passed`

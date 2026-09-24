@@ -1,9 +1,11 @@
 import { expect, it } from "vitest";
-import { compareEvalResults, renderEvalComparison, validateEvalResults } from "./comparison.js";
+import { compareEvalResults, renderEvalComparison } from "./comparison.js";
+import { validateEvalResults } from "./results.js";
 
 const MODEL = "@cf/deepseek-ai/deepseek-v4-pro-0813";
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
+const SHAS = { baselineSha: BASE_SHA, candidateSha: HEAD_SHA };
 const VERSION = "c".repeat(64);
 
 type TrialOptions = {
@@ -60,11 +62,16 @@ function trial(options: TrialOptions = {}) {
   };
 }
 
+/** A report as `pnpm evals` writes it: one file per task, named after the task. */
 function report(
     assertions: ReturnType<typeof trial>[],
     ...emptyFiles: { name: string; message: string }[]): string {
+  const taskOf = (assertion: ReturnType<typeof trial>) => assertion.meta.harness.run.session.metadata.taskId;
   return JSON.stringify({ testResults: [
-    { name: "/evals/project-doc.eval.ts", assertionResults: assertions },
+    ...[...new Set(assertions.map(taskOf))].map(task => ({
+      name: `/evals/${task}.eval.ts`,
+      assertionResults: assertions.filter(assertion => taskOf(assertion) === task),
+    })),
     ...emptyFiles.map(file => ({ ...file, assertionResults: [] })),
   ] });
 }
@@ -81,7 +88,7 @@ it("compares three-trial task cohorts", () => {
     trial({ gitCommit: HEAD_SHA, duration: 400, cost: 0.4 }),
   ]);
 
-  const comparison = compareEvalResults(baseline, candidate);
+  const comparison = compareEvalResults(baseline, candidate, SHAS);
 
   expect(comparison.baselineSha).toBe(BASE_SHA);
   expect(comparison.candidateSha).toBe(HEAD_SHA);
@@ -125,11 +132,11 @@ it("compares three-trial task cohorts", () => {
 it("calls a significant fall a regression and a small one noise", () => {
   const passes = (passed: number, gitCommit: string) => report(Array.from({ length: 10 }, (_, index) =>
     trial({ gitCommit, status: index < passed ? "passed" : "failed" })));
-  const fell = compareEvalResults(passes(9, BASE_SHA), passes(3, HEAD_SHA));
+  const fell = compareEvalResults(passes(9, BASE_SHA), passes(3, HEAD_SHA), SHAS);
   expect(fell.verdict).toBe("regressed");
   expect(renderEvalComparison(fell)).toContain("\u{1F534} \u221260 pp (p = 0.02)");
-  expect(compareEvalResults(passes(9, BASE_SHA), passes(7, HEAD_SHA)).verdict).toBe("unchanged");
-  expect(compareEvalResults(passes(3, BASE_SHA), passes(9, HEAD_SHA)).verdict).toBe("improved");
+  expect(compareEvalResults(passes(9, BASE_SHA), passes(7, HEAD_SHA), SHAS).verdict).toBe("unchanged");
+  expect(compareEvalResults(passes(3, BASE_SHA), passes(9, HEAD_SHA), SHAS).verdict).toBe("improved");
 });
 
 it("reports what failed, quoting trial text so it cannot inject markup", () => {
@@ -142,8 +149,7 @@ it("reports what failed, quoting trial text so it cannot inject markup", () => {
         error: { name: "Error", message: "Key `@here` is empty\nat kv.get" } },
     ],
   });
-  const comparison = compareEvalResults(report([trial(), trial()]),
-    report([failed("`@here` shown $40M"), failed("again")]));
+  const comparison = compareEvalResults(report([trial(), trial()]), report([failed("`@here` shown $40M"), failed("again")]), SHAS);
   const { candidate } = comparison.rows[0];
   expect(candidate?.failedChecks).toEqual([
     { check: "t1 shows-the-target", trials: 2, evidence: JSON.stringify("`@here` shown $40M") },
@@ -163,7 +169,7 @@ it("does not compare costs from different trial populations", () => {
     trial({ gitCommit: HEAD_SHA, cost: 0.4 }),
   ]);
 
-  const row = compareEvalResults(baseline, candidate).rows[0];
+  const row = compareEvalResults(baseline, candidate, SHAS).rows[0];
   expect(row.baseline?.meanCostUsd).toBeNull();
   expect(row.candidate?.meanCostUsd).toBeCloseTo(0.3);
 });
@@ -194,11 +200,11 @@ it("separates infrastructure errors from failed agent outcomes", () => {
     trial({ gitCommit: HEAD_SHA }),
   ]);
 
-  expect(compareEvalResults(baselineError, candidateAgentFailure).rows[0].reason)
+  expect(compareEvalResults(baselineError, candidateAgentFailure, SHAS).rows[0].reason)
     .toBe("baseline run errors");
-  expect(compareEvalResults(baseline, candidateInfrastructure).rows[0].reason)
+  expect(compareEvalResults(baseline, candidateInfrastructure, SHAS).rows[0].reason)
     .toBe("candidate run errors");
-  expect(compareEvalResults(baseline, candidateAgentFailure).rows[0]).toMatchObject({
+  expect(compareEvalResults(baseline, candidateAgentFailure, SHAS).rows[0]).toMatchObject({
     reason: null,
     candidate: { trials: 3, passed: 1 },
   });
@@ -216,16 +222,42 @@ it("does not compare changed tasks or unequal trial counts", () => {
     trial({ gitCommit: HEAD_SHA }),
   ]);
 
-  expect(compareEvalResults(baseline, changed).rows[0].reason).toBe("task version changed");
-  const asked: string[][] = [];
-  expect(compareEvalResults(baseline, changed, {
-    definitionsChanged: (...shas) => {
-      asked.push(shas);
-      return true;
-    },
-  }).rows[0].reason).toBe("eval definition changed");
-  expect(asked).toEqual([[BASE_SHA, HEAD_SHA]]);
-  expect(compareEvalResults(baseline, shorter).rows[0].reason).toBe("run counts differ");
+  expect(compareEvalResults(baseline, changed, SHAS).rows[0].reason).toBe("task version changed");
+  expect(compareEvalResults(baseline, shorter, SHAS).rows[0].reason).toBe("run counts differ");
+});
+
+it("does not compare a task whose definition changed, and only that task", () => {
+  const both = (gitCommit: string) =>
+    report([trial({ gitCommit }), trial({ gitCommit, taskId: "expense-ledger" })]);
+
+  const { rows } = compareEvalResults(both(BASE_SHA), both(HEAD_SHA), {
+    ...SHAS,
+    definitionsChanged: taskId => taskId === "expense-ledger",
+  });
+
+  expect(rows.map(row => [row.taskId, row.reason])).toEqual(
+    [["expense-ledger", "eval definition changed"], ["project-doc", null]]);
+});
+
+it("reports a result both sides share as unchanged, without its failures, unless it failed to run", () => {
+  const shared = report([trial(), trial({ status: "failed", checks: [{ id: "shows-it", pass: false }] })]);
+
+  const comparison = compareEvalResults(shared, shared, SHAS);
+
+  expect(comparison.rows[0].reason).toBe("same inputs");
+  expect(comparison.verdict).toBe("unchanged");
+  const markdown = renderEvalComparison(comparison);
+  expect(markdown).toContain("Nothing the evals run changed, so every result is reused.");
+  expect(markdown).not.toContain("shows-it");
+
+  const crashed = report([
+    trial(),
+    trial({ status: "failed", errors: [{ name: "EvalCleanupError", message: "Cleanup failed." }] }),
+  ]);
+  const errored = compareEvalResults(crashed, crashed, SHAS);
+  expect(errored.rows[0].reason).toBe("baseline run errors");
+  expect(errored.verdict).toBe("inconclusive");
+  expect(renderEvalComparison(errored)).toContain("Cleanup failed.");
 });
 
 it("accepts a complete baseline with agent failures but not infrastructure failures", () => {
@@ -253,9 +285,18 @@ it("accepts a complete baseline with agent failures but not infrastructure failu
     .toThrow("appointment-desk.eval.ts ran no trials: Cannot find module");
 });
 
+it("rejects a task whose id is not its file name, since results are stored per file", () => {
+  const misnamed = JSON.stringify({ testResults: [
+    { name: "/evals/project-doc.eval.ts", assertionResults: [trial({ taskId: "doc" })] },
+  ] });
+
+  expect(() => validateEvalResults(misnamed, 1)).toThrow("its id must be project-doc");
+  expect(() => compareEvalResults(misnamed, misnamed, SHAS)).toThrow("its id must be project-doc");
+});
+
 it("rejects malformed reports", () => {
-  expect(() => compareEvalResults("not json", report([trial()])))
+  expect(() => compareEvalResults("not json", report([trial()]), SHAS))
     .toThrow("baseline results are not valid JSON");
-  expect(() => compareEvalResults("{}", report([trial()])))
+  expect(() => compareEvalResults("{}", report([trial()]), SHAS))
     .toThrow("baseline results are invalid");
 });

@@ -44,7 +44,6 @@
     "jsonc-parser": "^3.3.1",
     "typescript6": "npm:typescript@6.0.3",
     "vite": "catalog:",
-    "yaml": "^2.9.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

@@ -1,0 +1,114 @@
+// Cache keys for Workshop eval results, read from git trees so no checkout is needed:
+//   node scripts/evals/eval-keys.ts --config <digest> --report-config <digest> <sha>...
+// prints {"report": <key>, "changed": [<path>...],
+//         "commits": [{"sha": <sha>, "tasks": {<task>: {"key": <key>, "definition": <digest>}}}...]}.
+//
+// A task's key covers every tracked file its run executes or that decides whether its result is
+// stored: the Worker (WORKER_INPUTS, the one table of what decides it), the harness packages, the
+// shared eval helpers, the task's own file, and the workflow settings in --config. Equal keys mean
+// the same run, so its result can be reused. A task's definition is the part of its key that
+// defines or scores its trials rather than builds the product under test: two sides whose
+// definitions differ cannot be compared. The report key covers what turns results into the PR
+// comments, plus every task key: equal report keys mean the posted comments are still current.
+// `changed` lists the files a run executes that differ between the first commit and the last.
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { parseArgs } from "node:util";
+import { isWorkerInputPath } from "../../packages/integration-tests/src/worker-inputs.ts";
+
+const EVALS = "packages/workshop-evals/";
+const TASKS = `${EVALS}evals/`;
+const TASK_SUFFIX = ".eval.ts";
+const REPORT_MODULES = new Set(
+  ["comparison.ts", "trajectory-markdown.ts"].map(file => `${EVALS}src/${file}`));
+const USAGE = "usage: eval-keys.ts --config <digest> --report-config <digest> <sha>...";
+
+/**
+ * Files every eval run executes or that decide whether its result is stored, apart from the tasks
+ * themselves. Test files never are: no eval run executes them and no Worker imports them, though
+ * WORKER_INPUTS names whole packages.
+ */
+function isHarnessPath(path: string): boolean {
+  if (path.includes("/__tests__/") || /\.test\.[^/]+$/.test(path)) return false;
+  return isWorkerInputPath(path) || path === "package.json" || path === "pnpm-workspace.yaml" ||
+    path === "scripts/evals/validate-results.ts" || path.startsWith("packages/integration-tests/") ||
+    (path.startsWith(EVALS) && !path.startsWith(TASKS) && !REPORT_MODULES.has(path));
+}
+
+/** Harness files that define or score a trial, as opposed to the product under test. */
+function isDefinitionPath(path: string): boolean {
+  return path.startsWith(EVALS) || path.startsWith("packages/integration-tests/");
+}
+
+function isReportPath(path: string): boolean {
+  return REPORT_MODULES.has(path) || path.startsWith("scripts/evals/");
+}
+
+type TreeEntry = { path: string; line: string };
+type Task = { key: string; definition: string };
+
+function treeOf(sha: string): TreeEntry[] {
+  const listing = execFileSync("git", ["ls-tree", "-r", "-z", "--full-tree", sha], {
+    encoding: "utf8",
+    maxBuffer: 1 << 28,
+  });
+  return listing.split("\0").filter(Boolean).map(line => ({ path: line.slice(line.indexOf("\t") + 1), line }));
+}
+
+/** What a run executes: the harness and everything under the tasks directory. */
+function runInputs(tree: readonly TreeEntry[]): TreeEntry[] {
+  return tree.filter(entry => isHarnessPath(entry.path) || entry.path.startsWith(TASKS));
+}
+
+function digest(parts: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const part of parts) hash.update(`${part}\n`);
+  return hash.digest("hex").slice(0, 20);
+}
+
+function tasksOf(tree: readonly TreeEntry[], config: string): Record<string, Task> {
+  const harness = tree.filter(entry => isHarnessPath(entry.path));
+  const inTasks = tree.filter(entry => entry.path.startsWith(TASKS));
+  const helpers = inTasks.filter(entry => !entry.path.endsWith(TASK_SUFFIX)).map(entry => entry.line);
+  const key = digest(["workshop-evals v1", config, ...harness.map(entry => entry.line), ...helpers]);
+  const definition = digest([config,
+    ...harness.filter(entry => isDefinitionPath(entry.path)).map(entry => entry.line), ...helpers]);
+  return Object.fromEntries(inTasks.filter(entry => entry.path.endsWith(TASK_SUFFIX)).map(entry => [
+    entry.path.slice(TASKS.length, -TASK_SUFFIX.length),
+    { key: digest([key, entry.line]), definition: digest([definition, entry.line]) },
+  ]));
+}
+
+/** Files a run executes that were edited, added or removed between two trees. */
+function changedPaths(from: readonly TreeEntry[], to: readonly TreeEntry[]): string[] {
+  const [before, after] = [runInputs(from), runInputs(to)];
+  const [beforeLines, afterLines] = [before, after].map(entries => new Set(entries.map(entry => entry.line)));
+  const moved = [...before.filter(entry => !afterLines.has(entry.line)),
+    ...after.filter(entry => !beforeLines.has(entry.line))];
+  return [...new Set(moved.map(entry => entry.path))].toSorted();
+}
+
+const { values, positionals: shas } = parseArgs({
+  options: { config: { type: "string" }, "report-config": { type: "string" } },
+  allowPositionals: true,
+});
+const config = values.config;
+const reportConfig = values["report-config"];
+if (config === undefined || reportConfig === undefined) throw new Error(USAGE);
+const commits = shas.map(sha => {
+  const tree = treeOf(sha);
+  return { sha, tree, tasks: tasksOf(tree, config) };
+});
+const [first] = commits;
+const last = commits.at(-1);
+if (first === undefined || last === undefined) throw new Error(USAGE);
+// Keyed by position (base, head), not commit id: a new commit that changes nothing keeps the key.
+const report = digest([reportConfig, ...commits.flatMap(({ tree, tasks }, side) => [
+  ...Object.entries(tasks).map(([task, { key }]) => `${side} ${task} ${key}`),
+  ...tree.filter(entry => isReportPath(entry.path)).map(entry => `${side} ${entry.line}`),
+])]);
+console.log(JSON.stringify({
+  report,
+  changed: changedPaths(first.tree, last.tree),
+  commits: commits.map(({ sha, tasks }) => ({ sha, tasks })),
+}));

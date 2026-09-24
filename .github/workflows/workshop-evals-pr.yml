@@ -28,9 +28,9 @@ on:
       - packages/workshop-backend/src/web-fetch.ts
       # Output formats the prompt steers toward
       - packages/bundled-blueprints/**
-  # A merge measures its own commit right away and caches it under the same commit key, so the
-  # first pull request on that base runs one arm instead of two, and every relevant main commit
-  # gets a score. The two path lists must stay identical: GitHub Actions has no YAML anchors.
+  # A merge measures right away whatever its commit changed and stores it, so pull requests on that
+  # base reuse it instead of measuring their base. The two path lists must stay identical: GitHub
+  # Actions has no YAML anchors.
   push:
     branches: [main]
     paths:
@@ -48,9 +48,11 @@ on:
 
 permissions: {}
 
+# Every finished task is stored and reused, so a newer push waits for the run in progress instead
+# of throwing its inference away. Only closing the pull request cancels it.
 concurrency:
   group: workshop-evals-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action == 'closed' }}
 
 env:
   NODE_VERSION: "24.19.0"
@@ -82,12 +84,11 @@ jobs:
             exit 1
           fi
 
-  # Decides what to measure: every eval file of every revision that needs measuring gets its own
-  # runner, so a run takes as long as its slowest task and each runner hosts one file's trials.
-  # A Workshop needs about 340 MB: all four files on one 16 GB runner (40 Workshops) ran it out of
-  # memory in under two minutes.
-  # A push measures its own commit; a pull request measures its head, and its base unless that is
-  # already cached. Only file names are read from the checkouts; no repository code runs here.
+  # Decides what runs. Each task's result is stored under a key of everything its run executes or
+  # that decides whether it is stored (scripts/evals/eval-keys.ts), so a task is measured again only
+  # when one of those files or this workflow's eval settings changed, whichever run measured it.
+  # Keys and settings come from the commit whose workflow is running, a pull request's merge
+  # commit; the base and head are read only as git trees, and none of their code runs here.
   plan:
     name: Plan eval runs
     needs: trust
@@ -96,94 +97,130 @@ jobs:
       ${{ !cancelled() && (needs.trust.result == 'success' ||
       (github.event_name == 'push' && github.repository_owner == 'cloudflare')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       actions: read
       contents: read
+      pull-requests: read
     outputs:
-      run: ${{ steps.plan.outputs.run }}
-      assemble: ${{ steps.plan.outputs.assemble }}
-      cached-baseline: ${{ steps.stored.outputs.artifact-id }}
-    env:
-      BASELINE_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.base.sha }}
+      keys: ${{ steps.plan.outputs.keys }}
+      sources: ${{ steps.plan.outputs.sources }}
+      legs: ${{ steps.plan.outputs.legs }}
+      store: ${{ steps.plan.outputs.store }}
+      report: ${{ steps.plan.outputs.report }}
     steps:
-      # Baselines are cached per base commit, so a PR can only ever reuse a baseline measured at its
-      # own base. Any trusted PR run may fill the cache; the same maintainer trust that lets it run
-      # candidate code with the gateway token lets it store a result for its base. A push always
-      # measures its own commit.
-      - name: Find cached baseline
+      - name: Check out the running workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          run-install: false
+
+      - name: Fetch the base and head trees
         if: github.event_name == 'pull_request'
-        id: stored
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          # The trial count and the one-file-per-runner layout come from this workflow file, so
-          # they are part of what a baseline is.
-          ARTIFACT_NAME: workshop-evals-baseline-${{ github.event.pull_request.base.sha }}-${{ env.EVAL_TRIALS }}-per-task
-        run: |
-          artifact_id=$(gh api "repos/$GH_REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
-            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // ""')
-          echo "artifact-id=$artifact_id" >> "$GITHUB_OUTPUT"
-
-      - name: Check out baseline eval files
-        if: steps.stored.outputs.artifact-id == ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.BASELINE_SHA }}
-          path: baseline
-          sparse-checkout: packages/workshop-evals/evals
-          persist-credentials: false
-
-      - name: Check out candidate eval files
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: candidate
-          sparse-checkout: packages/workshop-evals/evals
-          persist-credentials: false
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags --depth=1 --filter=blob:none origin "$BASE_SHA" "$HEAD_SHA"
 
       - name: Plan the runs
         id: plan
         env:
-          CACHED: ${{ steps.stored.outputs.artifact-id != '' }}
-          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          # Baseline first. A push measures its own commit, as the baseline later pull requests use.
+          SHAS: >-
+            ${{ github.event_name == 'push' && github.sha ||
+            format('{0} {1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) }}
         run: |
-          # One target per revision: {revision, sha, files, cached}. Files are relative to
-          # packages/workshop-evals, matching vitest.eval.config.ts's include.
-          target() {
-            local files='[]'
-            if [[ "$3" == false ]]; then
-              files=$(cd "$1/packages/workshop-evals" && find evals -name '*.eval.ts' | sort |
-                jq -Rnc '[inputs]')
-            fi
-            jq -nc --arg revision "$1" --arg sha "$2" --argjson files "$files" --argjson cached "$3" \
-              '{revision: $revision, sha: $sha, files: $files, cached: $cached}'
-          }
-          targets=$(target baseline "$BASELINE_SHA" "$CACHED")
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            targets="$targets $(target candidate "$CANDIDATE_SHA" false)"
-          fi
-          targets=$(jq -sc . <<<"$targets")
-          # A task's artifact is named after its path, e.g. evals/chess.eval.ts -> chess.
-          echo "run=$(jq -c '{include: [.[] | . as $t | .files[] |
-            {revision: $t.revision, sha: $t.sha, file: .,
-             task: (sub("^evals/"; "") | sub("\\.eval\\.ts$"; "") | gsub("/"; "-"))}]}' \
-            <<<"$targets")" >> "$GITHUB_OUTPUT"
-          echo "assemble=$(jq -c '{include: .}' <<<"$targets")" >> "$GITHUB_OUTPUT"
+          set -o pipefail
+          workflow=.github/workflows/workshop-evals-pr.yml
+          # Sorted, so a change in yq's output format between runner images keeps every digest.
+          digest() { yq -o=json "$1" "$workflow" | jq -cS . | sha256sum | cut -d' ' -f1; }
+          # Assigned first: bash -e ignores a failed command substitution inside an argument.
+          config=$(digest '[.env, .jobs.evals, .jobs.store]')
+          report_config=$(digest '[.jobs.compare, .jobs["trajectory-review"]]')
+          read -ra shas <<<"$SHAS"
+          keys=$(node scripts/evals/eval-keys.ts --config "$config" --report-config "$report_config" "${shas[@]}")
 
+          # A stored result counts only if it outlives this run, so compare can still download it,
+          # and only if this repository's own run stored it: a fork's run can upload any name.
+          stored='{}'
+          for name in $(jq -r '[.commits[].tasks | to_entries[] | "\(.key)-\(.value.key)"] | unique[]' <<<"$keys"); do
+            id=$(gh api "repos/$GH_REPO/actions/artifacts?name=workshop-evals-$name&per_page=100" --jq '
+              [.artifacts[] | select(.expired == false and
+                .workflow_run.head_repository_id == .workflow_run.repository_id and
+                (.expires_at | fromdateiso8601) > now + 4 * 3600)] | max_by(.created_at) | .id // empty')
+            if [[ -n "$id" ]]; then
+              stored=$(jq -c --arg name "$name" --argjson id "$id" '.[$name] = $id' <<<"$stored")
+            fi
+          done
+
+          # Each revision's tasks come from a stored result or from one leg of this run. A key both
+          # revisions share is measured once, by the candidate: equal keys are the same run.
+          plan=$(jq -c --argjson stored "$stored" '
+            [.commits | to_entries[] | ["baseline", "candidate"][.key] as $revision |
+              .value.sha as $sha | .value.tasks | to_entries[] |
+              {revision: $revision, sha: $sha, task: .key, name: "\(.key)-\(.value.key)"}] |
+            [.[] | select(.revision == "candidate") | .name] as $candidate |
+            map(.name as $name | . + if $stored[$name] != null then {artifact: $stored[$name]}
+              else {run: (if .revision == "candidate" or any($candidate[]; . == $name)
+                then "candidate" else "baseline" end)} end) |
+            . as $sources | map(select(.run == .revision)) as $measured |
+            {sources: $sources, store: ($measured | map({revision, task, name})),
+              legs: ($measured | group_by(.revision) |
+                map({revision: .[0].revision, sha: .[0].sha, tasks: map(.task)}))}' <<<"$keys")
+          measured=$(jq '.store | length' <<<"$plan")
+
+          # The posted comments are current when they report these exact inputs, every result they
+          # show is stored, Bonk reviewed them afterwards, and nobody asked for a re-run.
+          report=false
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            report=true
+            marker="<!-- workshop-evals-comparison report=$(jq -r .report <<<"$keys") -->"
+            if [[ "$RUN_ATTEMPT" == 1 && "$measured" == 0 ]] &&
+              gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --jq '.[]' |
+                jq -se --arg marker "$marker" '
+                  (map(select(.user.login == "github-actions[bot]" and
+                    (.body | startswith("<!-- workshop-evals-comparison")))) | max_by(.created_at)) as $posted |
+                  $posted != null and ($posted.body | startswith($marker)) and
+                  any(.[]; .user.login == "ask-bonk[bot]" and .created_at > $posted.created_at and
+                    (.body | test("^## (🔬 )?(Eval runs review|Why the evals failed)")))' >/dev/null; then
+              report=false
+            fi
+          fi
+
+          {
+            echo "keys=$keys"
+            echo "sources=$(jq -c .sources <<<"$plan")"
+            echo "report=$report"
+            # Left empty when nothing is measured: a matrix with no entries fails the run.
+            if [[ "$measured" != 0 ]]; then
+              echo "legs=$(jq -c '{include: .legs}' <<<"$plan")"
+              echo "store=$(jq -c '{include: .store}' <<<"$plan")"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+  # Measures one revision's tasks that no stored result covers, on one runner: each eval file's
+  # trials share one Workshop, and every file runs at once (see vitest.eval.config.ts).
   evals:
-    name: Eval ${{ matrix.revision }} ${{ matrix.task }}
+    name: Eval ${{ matrix.revision }}
     needs: plan
     # Explicit, or a push would skip this too: the implicit success() also covers the skipped trust.
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.legs != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.run) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.legs) }}
     steps:
       - name: Check out ${{ matrix.revision }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,7 +238,7 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Run ${{ matrix.task }}
+      - name: Run ${{ join(matrix.tasks, ', ') }}
         continue-on-error: true
         # The same AI Gateway and token the manual eval workflow and Bonk already use.
         env:
@@ -210,140 +247,114 @@ jobs:
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
           WORKSHOP_EVAL_COMMIT: ${{ matrix.sha }}
-          EVAL_FILE: ${{ matrix.file }}
-        run: pnpm evals "$EVAL_FILE"
+          TASKS: ${{ join(matrix.tasks, ' ') }}
+        run: |
+          files=()
+          for task in $TASKS; do files+=("evals/$task.eval.ts"); done
+          pnpm evals "${files[@]}"
 
-      - name: Upload ${{ matrix.task }} results
+      # One file per task, and the list of tasks complete and infrastructure-clean enough to store.
+      - name: Split the results per task
+        if: ${{ !cancelled() }}
+        env:
+          REVISION: ${{ matrix.revision }}
+          TASKS: ${{ join(matrix.tasks, ' ') }}
+        run: |
+          # Under the revision's own directory, so compare can merge both legs' artifacts.
+          dir="$RUNNER_TEMP/run/$REVISION"
+          mkdir -p "$dir"
+          clean=()
+          for task in $TASKS; do
+            file="$dir/$task.json"
+            # Exactly the task's own file: one that never ran would otherwise read as removed.
+            if ! jq -e --arg path "/packages/workshop-evals/evals/$task.eval.ts" \
+              '{testResults: [.testResults[] | select(.name | endswith($path))]} |
+                select(.testResults | length == 1)' \
+              packages/workshop-evals/.wrangler/evals/results.json > "$file"; then
+              echo "::error::No results for $task"
+              rm -f "$file"
+            elif node scripts/evals/validate-results.ts "$file" "$EVAL_TRIALS"; then
+              clean+=("$task")
+            fi
+          done
+          jq -nc '$ARGS.positional' --args "${clean[@]}" > "$dir/clean.json"
+
+      - name: Upload ${{ matrix.revision }} results
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: workshop-evals-${{ matrix.revision }}-task-${{ matrix.task }}
-          path: packages/workshop-evals/.wrangler/evals/results.json
-          include-hidden-files: true
+          name: workshop-evals-run-${{ matrix.revision }}
+          path: ${{ runner.temp }}/run
           if-no-files-found: error
           overwrite: true
-          # "Re-run failed jobs" keeps the passing legs, so their reports must outlive the re-run window.
+          # "Re-run failed jobs" keeps the passing legs, so their results must outlive the re-run window.
           retention-days: 30
 
-  # Joins one revision's per-task reports into the single results.json compare and review read.
-  # Runs per revision even when the other one failed, so a complete baseline is still cached.
-  assemble:
-    name: Assemble ${{ matrix.revision }}
+  # Stores each measured task under its key, when its result is complete and clean, for any later
+  # run of main or of a pull request to reuse. Retention is the longest a result is reused: the
+  # model behind a model id can change without any file changing.
+  store:
+    name: Store ${{ matrix.revision }} ${{ matrix.task }}
     needs: [plan, evals]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.store != '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
+    timeout-minutes: 5
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.assemble) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.store) }}
     steps:
-      - name: Check out ${{ matrix.revision }}
-        if: matrix.revision == 'baseline' && !matrix.cached
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.sha }}
-          persist-credentials: false
-
-      - name: Enable Corepack
-        if: matrix.revision == 'baseline' && !matrix.cached
-        run: corepack enable
-
-      - name: Set up Vite+, Node.js and dependencies
-        if: matrix.revision == 'baseline' && !matrix.cached
-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: true
-          run-install: true
-
-      - name: Restore cached baseline
-        if: matrix.cached
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          ARTIFACT_ID: ${{ needs.plan.outputs.cached-baseline }}
-        run: |
-          mkdir -p artifacts
-          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > /tmp/workshop-evals-baseline.zip
-          unzip -q /tmp/workshop-evals-baseline.zip -d artifacts
-
-      - name: Download per-task results
-        if: ${{ !matrix.cached }}
+      - name: Download ${{ matrix.revision }} results
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          pattern: workshop-evals-${{ matrix.revision }}-task-*
-          path: artifacts/tasks
+          name: workshop-evals-run-${{ matrix.revision }}
+          path: run
 
-      # Exactly the planned files, each once: a missing task would otherwise read as removed, and a
-      # baseline missing one would be cached that way.
-      - name: Join per-task results
-        if: ${{ !matrix.cached }}
+      # A pull request still compares against an unclean result, and the next run measures it
+      # again. On main the job fails, so a flaky main is visible rather than silently unstored.
+      - name: Check ${{ matrix.task }} can be stored
+        id: clean
         env:
-          FILES: ${{ toJSON(matrix.files) }}
+          REVISION: ${{ matrix.revision }}
+          TASK: ${{ matrix.task }}
         run: |
-          mapfile -t reports < <(find artifacts/tasks -name results.json | sort)
-          if [[ ${#reports[@]} -ne $(jq length <<<"$FILES") ]]; then
-            echo "::error::Expected $(jq length <<<"$FILES") task reports, found ${#reports[@]}"
+          if jq -e --arg task "$TASK" 'any(.[]; . == $task)' "run/$REVISION/clean.json" >/dev/null; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            echo "::error::$TASK has missing trials or infrastructure failures, so it is not stored"
             exit 1
-          fi
-          jq -s '{testResults: map(.testResults[])}' "${reports[@]}" > artifacts/results.json
-          expected=$(jq -c 'sort' <<<"$FILES")
-          actual=$(jq -c '[.testResults[].name | sub("^.*/packages/workshop-evals/"; "")] | sort' \
-            artifacts/results.json)
-          if [[ "$actual" != "$expected" ]]; then
-            echo "::error::Expected eval files $expected, got $actual"
-            exit 1
+          else
+            echo "::notice::$TASK has missing trials or infrastructure failures, so it is not stored"
           fi
 
-      # Only a complete, infrastructure-clean baseline is worth sharing. On a pull request a broken
-      # one is still compared against (its cohorts read "baseline run errors") but the next PR on
-      # this base measures it again; on main the job fails, so a flaky main is visible rather than
-      # silently uncached.
-      - name: Check whether the baseline is complete
-        if: matrix.revision == 'baseline' && !matrix.cached
-        id: complete
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
-        run: node scripts/evals/validate-results.ts artifacts/results.json "$EVAL_TRIALS"
-
-      - name: Cache the baseline for pull requests on this commit
-        if: steps.complete.outcome == 'success'
+      - name: Store ${{ matrix.task }}
+        if: steps.clean.outputs.clean == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: workshop-evals-baseline-${{ matrix.sha }}-${{ env.EVAL_TRIALS }}-per-task
-          path: artifacts/results.json
+          name: workshop-evals-${{ matrix.name }}
+          path: run/${{ matrix.revision }}/${{ matrix.task }}.json
           if-no-files-found: error
           overwrite: true
-          retention-days: 90
-
-      - name: Upload current-run ${{ matrix.revision }} trajectories
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: workshop-evals-${{ matrix.revision }}
-          path: artifacts/results.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 30
+          retention-days: 7
 
   compare:
     name: Compare evals
-    needs: [trust, assemble]
+    needs: [plan, evals]
+    # evals is skipped when every result is stored, and fails only when a leg could not run.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.report == 'true' &&
+      contains(fromJSON('["success", "skipped"]'), needs.evals.result) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       actions: read
       pull-requests: write
       contents: read
     steps:
-      - name: Check out candidate
+      # The merge commit, as in plan: its compare-results.ts reads the keys its eval-keys.ts wrote.
+      - name: Check out the running workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-          fetch-depth: 0
-
 
       - name: Enable Corepack
         run: corepack enable
@@ -355,30 +366,84 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Download baseline trajectories
+      # Each leg's files sit under its revision, so merging gives one layout for one leg or two.
+      - name: Download this run's results
+        if: needs.plan.outputs.legs != ''
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: workshop-evals-run-*
+          path: runs
+          merge-multiple: true
+
+      # Exactly the planned tasks, each once, from this run or from a stored result: a missing
+      # task would otherwise read as removed.
+      - name: Join each revision's results
+        id: join
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCES: ${{ needs.plan.outputs.sources }}
+        run: |
+          mkdir -p stored
+          complete=true
+          for revision in baseline candidate; do
+            files=()
+            while read -r task artifact run; do
+              if [[ "$artifact" != - ]]; then
+                if [[ ! -d "stored/$artifact" ]]; then
+                  gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/stored.zip"
+                  unzip -q "$RUNNER_TEMP/stored.zip" -d "stored/$artifact"
+                fi
+                file="stored/$artifact/$task.json"
+              else
+                file="runs/$run/$task.json"
+                # Not stored, so a comment built on it must not count as current.
+                jq -e --arg task "$task" 'any(.[]; . == $task)' "runs/$run/clean.json" >/dev/null ||
+                  complete=false
+              fi
+              if [[ ! -f "$file" ]]; then
+                echo "::error::No $revision result for $task"
+                exit 1
+              fi
+              files+=("$file")
+            done < <(jq -r --arg revision "$revision" '.[] | select(.revision == $revision) |
+              "\(.task) \(.artifact // "-") \(.run // "-")"' <<<"$SOURCES")
+            mkdir -p "artifacts/$revision"
+            jq -s '{testResults: map(.testResults[])}' "${files[@]}" > "artifacts/$revision/results.json"
+          done
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+
+      - name: Upload baseline trajectories
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: workshop-evals-baseline
-          path: artifacts/baseline
+          path: artifacts/baseline/results.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
 
-      - name: Download candidate trajectories
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+      - name: Upload candidate trajectories
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: workshop-evals-candidate
-          path: artifacts/candidate
+          path: artifacts/candidate/results.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
 
-      # Cohorts are non-comparable when the eval or harness code itself changed between the two
-      # commits: a scorer change moves the goalposts without touching the product under test. The
-      # changed files the evals exercise come from this workflow's own trigger paths.
+      # A task is not compared when the code that defines or scores it differs between base and
+      # head: a scorer change moves the goalposts without touching the product under test. That,
+      # and the files the evals run that differ, come from the plan's keys.
       - name: Compare eval results
+        env:
+          KEYS: ${{ needs.plan.outputs.keys }}
         run: |
-          node scripts/evals/compare-results.ts \
+          printf '%s\n' "$KEYS" > "$RUNNER_TEMP/keys.json"
+          node scripts/evals/compare-results.ts "$RUNNER_TEMP/keys.json" \
             artifacts/baseline/results.json \
             artifacts/candidate/results.json \
             artifacts/comparison/comparison.json \
-            artifacts/comparison/comparison.md \
-            .github/workflows/workshop-evals-pr.yml \
-            packages/integration-tests packages/workshop-evals
+            artifacts/comparison/comparison.md
           cat artifacts/comparison/comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload comparison
@@ -390,36 +455,46 @@ jobs:
           overwrite: true
           retention-days: 30
 
-      # Posted fresh at the end of the conversation, with every earlier results comment and eval
-      # review deleted first, so the latest pair is the only one and it sits where readers look.
+      # Posted fresh at the end of the conversation, then every earlier results comment and eval
+      # review is deleted, so the latest pair is the only one and it sits where readers look.
       # Bonk's review follows this comment. Only this workflow's comments and Bonk's eval reviews,
       # recognised by their headings, are deleted: Bonk's code reviews and anything a person wrote
-      # stay.
+      # stay. The marker carries the report key only when every result shown is stored, so the
+      # next run can tell whether this comment is still current.
       - name: Post the comparison on the pull request
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          KEYS: ${{ needs.plan.outputs.keys }}
+          COMPLETE: ${{ steps.join.outputs.complete }}
         run: |
-          export MARKER='<!-- workshop-evals-comparison -->'
+          key=""
+          if [[ "$COMPLETE" == true ]]; then key=" report=$(jq -r .report <<<"$KEYS")"; fi
           {
-            echo "$MARKER"
+            echo "<!-- workshop-evals-comparison$key -->"
             cat artifacts/comparison/comparison.md
             echo
             echo "[Run]($RUN_URL) · [trajectories and raw results](${RUN_URL}#artifacts)"
           } > /tmp/comment.md
-          gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq '.[] | select((.user.login == "github-actions[bot]" and (.body | startswith(env.MARKER))) or
-              (.user.login == "ask-bonk[bot]" and (.body | test("^## (🔬 )?(Eval runs review|Why the evals failed)")))) | .id' |
-            while read -r comment_id; do
-              gh api --method DELETE "repos/$GH_REPO/issues/comments/$comment_id"
-            done
+          # Collected before any deletion, which would shift the pages still to be read.
+          earlier=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '.[] | select((.user.login == "github-actions[bot]" and
+              (.body | startswith("<!-- workshop-evals-comparison"))) or
+              (.user.login == "ask-bonk[bot]" and (.body | test("^## (🔬 )?(Eval runs review|Why the evals failed)")))) | .id')
           gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@/tmp/comment.md >/dev/null
+          for comment_id in $earlier; do
+            # Someone may have deleted it already.
+            gh api --method DELETE "repos/$GH_REPO/issues/comments/$comment_id" >/dev/null || true
+          done
 
   trajectory-review:
     name: Review eval trajectories
     needs: compare
+    # Explicit: evals is skipped when every result is stored, and the implicit success() would skip
+    # this with it.
+    if: ${{ !cancelled() && needs.compare.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -528,9 +603,11 @@ jobs:
             comparable.
 
             One bullet per task with a failed candidate run, most failures first; none when every
-            run passed. Explain the failure that recurs most in that task from the candidate
-            trajectories, not the check name, which the results comment already shows. <cause> is
-            exactly one of these, and must be backed by what the trajectory shows:
+            run passed. Skip a task whose comparison reason is "same inputs": both sides are one
+            result, so its failures say nothing about this pull request. Explain the failure that
+            recurs most in that task from the candidate trajectories, not the check name, which the
+            results comment already shows. <cause> is exactly one of these, and must be backed by
+            what the trajectory shows:
             - system prompt: the prompt omits, contradicts or misleads about what the task needed.
             - tool design: a tool's description, parameters or error message led the agent wrong,
               for example it retried an error that did not say how to recover.
