@@ -186,3 +186,19 @@ describe('incomplete description notice', () => {
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 })
+
+describe('action fields', () => {
+  const body = 'LGTM ```but``` <script>alert(1)</script>'
+  const fields = [{ label: 'Body', kind: 'text', value: body, syntax: 'markdown' }]
+
+  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
+    it(`shows a ${name} action's fields as literal text after the description`, async () => {
+      await renderPendingCard(pendingLog({ ...over, fields }))
+
+      const pre = [...document.body.querySelectorAll('pre')].find(el => el.textContent === body)
+      expect(pre).toBeDefined()
+      expect(document.body.querySelector('script')).toBeNull()
+      expect(document.body.textContent).toContain('Send an email.')
+    })
+  }
+})

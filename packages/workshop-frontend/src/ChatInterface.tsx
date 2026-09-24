@@ -95,6 +95,7 @@ import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
 import { HookToggle } from "./components/HookToggle";
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./components/IncompleteDescriptionNotice";
+import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
@@ -1521,6 +1522,7 @@ const ObservationDetails = memo(function ObservationDetails(
           <div className="mt-1.5 text-[12px] leading-[18px] tracking-[-0.2px] text-kumo-subtle">
             <MarkdownMessage message={log.description.description} />
           </div>
+          <ActionFields fields={entryFields(log)} className="mt-2" />
         </div>
       </div>
     </div>
@@ -4905,6 +4907,7 @@ function ChatInterface({
           {open && (
             <div className="themed-surface-inset ml-8 mt-1 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] text-kumo-subtle">
               <MarkdownMessage message={log.description.description} />
+              <ActionFields fields={entryFields(log)} className="mt-2" />
             </div>
           )}
         </div>
@@ -5018,6 +5021,11 @@ function ChatInterface({
                 <div className={`chat-panel mt-1 max-h-[200px] overflow-y-auto pr-1 text-[13px] leading-[18px] text-kumo-subtle ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
+                {entryFields(log).length > 0 && (
+                  <div className="chat-panel mt-2 max-h-[360px] overflow-y-auto pr-1">
+                    <ActionFields fields={entryFields(log)} />
+                  </div>
+                )}
                 {isDescriptionIncomplete(log) && (
                   <IncompleteDescriptionNotice className="mt-2" />
                 )}
@@ -5081,6 +5089,11 @@ function ChatInterface({
             <div className={`chat-panel max-h-[200px] overflow-y-auto pr-1 ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
+            {entryFields(log).length > 0 && (
+              <div className="chat-panel max-h-[360px] overflow-y-auto pr-1">
+                <ActionFields fields={entryFields(log)} />
+              </div>
+            )}
             {isPending && isDescriptionIncomplete(log) && <IncompleteDescriptionNotice />}
             {resourceMeta}
           </div>
