@@ -1,8 +1,8 @@
-import {DurableObject, RpcStub, RpcTarget} from "cloudflare:workers";
+import {DurableObject, RpcStub} from "cloudflare:workers";
 import {skipRpcValidation, validateRpc} from "capnweb-validate";
 import type {
   ActionDescription, ActionKind, ApprovalQueue, Cursor, Gatekeeper, GatekeeperUserVerifier,
-  GitCache, ObservationDescription, ResourceDescription,
+  GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, decodeBase64UrlToBytes, enumerateGmailAttachments,
@@ -50,7 +50,8 @@ import {
   ActionDescriptionBuilder, buildDescription, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
-import {CursorPager, Pager} from "./cursor";
+import {CursorPager} from "./cursor";
+import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-approval-queue";
 import TYPES_CODE from "./types.txt";
 
 type Env = Cloudflare.Env;
@@ -1505,59 +1506,6 @@ type GmailContext = {
   providerLabels(): Promise<GmailLabelRaw[]>;
 };
 
-class SharedApprovalQueue {
-  #stub: RpcStub<ApprovalQueue>;
-  #references = 0;
-
-  constructor(stub: RpcStub<ApprovalQueue>) {
-    this.#stub = stub;
-  }
-
-  retain(): () => void {
-    this.#references++;
-    let retained = true;
-    return () => {
-      if (!retained) return;
-      retained = false;
-      if (--this.#references === 0) this.#stub[Symbol.dispose]();
-    };
-  }
-
-  authorizeObservation(description: ObservationDescription): Promise<void> {
-    return this.#stub.authorizeObservation(description);
-  }
-
-  submitAction(actionId: number, description: ActionDescription): Promise<void> {
-    return this.#stub.submitAction(actionId, description);
-  }
-}
-
-class GmailRpcTarget extends RpcTarget {
-  #releaseApprovalQueue: () => void;
-
-  constructor(approvalQueue: SharedApprovalQueue) {
-    super();
-    this.#releaseApprovalQueue = approvalQueue.retain();
-  }
-
-  [Symbol.dispose](): void {
-    this.#releaseApprovalQueue();
-  }
-}
-
-@validateRpc()
-class RpcCursor<Entry> extends GmailRpcTarget implements Cursor<Entry> {
-  #pager: Pager<Entry>;
-
-  constructor(pager: Pager<Entry>, approvalQueue: SharedApprovalQueue) {
-    super(approvalQueue);
-    this.#pager = pager;
-  }
-
-  @skipRpcValidation()
-  next(): Promise<Entry[] | null> { return this.#pager.next(); }
-}
-
 async function submitAction(
     ctx: GmailContext, action: GmailAction,
     description: {title: string; awaitDecision?: boolean} & RenderedDescription,
@@ -1897,7 +1845,7 @@ function listLabelIds(ctx: GmailContext, defaultInbox: boolean): string[] | unde
 }
 
 function disposeEntryTargets<Entry>(
-    entries: readonly Entry[], target: (entry: Entry) => GmailRpcTarget): void {
+    entries: readonly Entry[], target: (entry: Entry) => ApprovalQueueRpcTarget): void {
   for (const entry of entries) {
     try {
       target(entry)[Symbol.dispose]();
@@ -2115,7 +2063,7 @@ function gmailRestrictedThreadCursor(
 }
 
 @validateRpc()
-class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
+class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   #ctx: GmailContext;
 
   constructor(ctx: GmailContext) {
@@ -2420,7 +2368,7 @@ class GmailSessionImpl extends GmailRpcTarget implements GmailSession {
 }
 
 @validateRpc()
-class GmailScopedSessionImpl extends GmailRpcTarget implements GmailScopedSession {
+class GmailScopedSessionImpl extends ApprovalQueueRpcTarget implements GmailScopedSession {
   #mailbox: GmailSessionImpl;
 
   constructor(ctx: GmailContext) {
@@ -2549,7 +2497,7 @@ async function submitMutation(
 }
 
 @validateRpc()
-class GmailThreadStub extends GmailRpcTarget implements GmailThread {
+class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
   #ctx: GmailContext;
   #threadId: string;
   #scope: GmailCapabilityScope;
@@ -2718,7 +2666,7 @@ function describeMutationTarget(
 }
 
 @validateRpc()
-class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
+class GmailMessageStub extends ApprovalQueueRpcTarget implements GmailMessage {
   #ctx: GmailContext;
   #messageId: string;
   #threadId: string;
@@ -2981,7 +2929,7 @@ class GmailMessageStub extends GmailRpcTarget implements GmailMessage {
 }
 
 @validateRpc()
-class GmailAttachmentStub extends GmailRpcTarget implements GmailAttachment {
+class GmailAttachmentStub extends ApprovalQueueRpcTarget implements GmailAttachment {
   #ctx: GmailContext;
   #info: GmailAttachmentInfo;
   #read: () => Promise<ArrayBuffer>;
@@ -3270,7 +3218,7 @@ function restrictedDraftCursor(ctx: GmailContext): Cursor<GmailDraftEntry> {
 }
 
 @validateRpc()
-class GmailDraftStub extends GmailRpcTarget implements GmailDraft {
+class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
   #ctx: GmailContext;
   #logicalId: string;
 
