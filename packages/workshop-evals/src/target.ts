@@ -1,7 +1,7 @@
 import {
   openAgentSession, type AgentSessionOptions, type WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
-import { startHarness, type WorkerConfig } from "@gadgets/integration-tests/harness";
+import { startHarness, type Harness, type WorkerConfig } from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 import { HTTPS_ONLY_PROVIDERS, type AiModelProvider } from "@gadgets/workshop-shared/api";
 import type { EvalModel } from "./config.js";
@@ -45,9 +45,9 @@ const GATEWAY_ROUTES: Readonly<Partial<Record<AiModelProvider, string>>> = {
 
 export type LocalEvalTarget = AsyncDisposable & { session: WorkshopAgentSession };
 
-// Runtimes started and not yet confirmed stopped, whether still running, abandoned by a test
-// timeout, or refusing to shut down. Such a workerd may still run model-authored code whose requests
-// route through this process's fetch, so the egress filter must outlive it (see defineTaskEval).
+// Workshops started and not yet confirmed stopped, whether still running or refusing to shut down.
+// Such a workerd may still run model-authored code whose requests route through this process's
+// fetch, so the egress filter must outlive it (see defineTaskEval).
 let unconfirmedRuntimes = 0;
 
 /** How many eval runtimes this process has started and not confirmed stopped. */
@@ -199,18 +199,54 @@ export function evalNetworkInterceptor(
   });
 }
 
-/** Start an isolated local workerd Workshop and one fresh agent session. */
+// One Workshop per model per test process, shared by that eval file's concurrent trials; each trial
+// still signs up its own user with its own workspace. On one 16 GB runner, 40 trials on four
+// Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. Closing a trial's session
+// deletes its workspace, which aborts that workspace's DO with no client left: the pattern
+// settleRestart() says can crash local workerd. It has not here, in 40 concurrent trials or in the
+// integration suites that close sessions on one Workshop; if it did, the file's remaining trials
+// would fail as infrastructure errors, which are never stored.
+const workshops = new Map<string, Promise<Harness>>();
+
+function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harness> {
+  const key = `${model.provider}/${model.model}`;
+  let workshop = workshops.get(key);
+  if (workshop === undefined) {
+    unconfirmedRuntimes++;
+    workshop = startHarness({
+      gatekeepers: [],
+      enableGadgetExecution: true,
+      ...(access.kind === "gateway"
+        ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
+        : {}),
+    });
+    workshops.set(key, workshop);
+  }
+  return workshop;
+}
+
+/** Stop every Workshop this process started. Until this succeeds, the egress filter must stay. */
+export async function closeLocalEvalRuntimes(): Promise<void> {
+  const started = [...workshops.values()];
+  workshops.clear();
+  const failures: Error[] = [];
+  for (const workshop of started) {
+    try {
+      await (await workshop).server.close();
+      unconfirmedRuntimes--;
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  const first = failures.at(0);
+  if (failures.length === 1 && first !== undefined) throw first;
+  if (failures.length > 1) throw new AggregateError(failures, "Eval Workshop shutdown failed");
+}
+
+/** Open one fresh agent session, as its own user, on this process's Workshop for `model`. */
 export async function openLocalEvalTarget(
     access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number): Promise<LocalEvalTarget> {
-  unconfirmedRuntimes++;
-  const harness = await startHarness({
-    gatekeepers: [],
-    enableGadgetExecution: true,
-    ...(access.kind === "gateway"
-      ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
-      : {}),
-  });
-
+  const workshop = await workshopFor(access, model);
   const options: AgentSessionOptions = {
     modelId: model.model,
     turnTimeoutMs,
@@ -226,43 +262,6 @@ export async function openLocalEvalTarget(
       },
     },
   };
-
-  try {
-    const session = await openAgentSession(harness.url, options);
-    return {
-      session,
-      [Symbol.asyncDispose]: async () => {
-        const failures: Error[] = [];
-        try {
-          await session.close();
-        } catch (error) {
-          failures.push(error instanceof Error ? error : new Error(String(error)));
-        }
-        try {
-          await harness.server.close();
-          unconfirmedRuntimes--;
-        } catch (error) {
-          failures.push(error instanceof Error ? error : new Error(String(error)));
-        }
-        const first = failures.at(0);
-        if (failures.length === 1 && first !== undefined) throw first;
-        if (failures.length > 1) throw new AggregateError(failures, "Eval target cleanup failed");
-      },
-    };
-  } catch (error) {
-    const setupError = error instanceof Error ? error : new Error(String(error));
-    try {
-      await harness.server.close();
-      unconfirmedRuntimes--;
-    } catch (failure) {
-      const closeError = failure instanceof Error ? failure : new Error(String(failure));
-      const aggregate = new AggregateError(
-        [setupError, closeError],
-        "Eval session setup and cleanup failed",
-      );
-      aggregate.cause = failure;
-      throw aggregate;
-    }
-    throw setupError;
-  }
+  const session = await openAgentSession(workshop.url, options);
+  return { session, [Symbol.asyncDispose]: () => session.close() };
 }

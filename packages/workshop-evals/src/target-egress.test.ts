@@ -39,7 +39,9 @@ vi.mock("@gadgets/integration-tests/harness", () => ({
   }),
 }));
 
-import { evalNetworkInterceptor, openLocalEvalTarget } from "./target.js";
+import {
+  closeLocalEvalRuntimes, evalNetworkInterceptor, openLocalEvalTarget, runtimesStillRunning,
+} from "./target.js";
 
 const realFetch = globalThis.fetch;
 
@@ -51,7 +53,9 @@ beforeEach(() => {
   globalThis.fetch = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  fakes.server.close.mockImplementation(() => Promise.resolve());
+  await closeLocalEvalRuntimes();
   globalThis.fetch = realFetch;
   vi.clearAllMocks();
 });
@@ -170,24 +174,30 @@ it("leaves the Workshop config alone for direct access", async () => {
   expect(fakes.configs).toEqual([{}]);
 });
 
-it("preserves session and runtime cleanup failures", async () => {
-  fakes.session.close.mockImplementation(
-      () => Promise.reject(new Error("session refused to close")));
-  fakes.server.close.mockImplementation(
-      () => Promise.reject(new Error("workerd failed to terminate")));
+it("gives a model's concurrent trials one Workshop with a session each", async () => {
+  const first = { close: vi.fn(() => Promise.resolve()) };
+  const second = { close: vi.fn(() => Promise.resolve()) };
+  fakes.openSession.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
 
-  const opened = await openLocalEvalTarget(DIRECT, WORKERS_AI_MODEL, 25);
-  const failure = await opened[Symbol.asyncDispose]().then(() => undefined, error => error);
+  const [opened] = await Promise.all([
+    openLocalEvalTarget(DIRECT, WORKERS_AI_MODEL, 25),
+    openLocalEvalTarget(DIRECT, WORKERS_AI_MODEL, 25),
+  ]);
+  await opened[Symbol.asyncDispose]();
 
-  if (!(failure instanceof AggregateError)) throw new Error("Expected aggregate cleanup failure");
-  expect(failure.errors.map(error => error instanceof Error ? error.message : String(error)))
-    .toEqual(["session refused to close", "workerd failed to terminate"]);
+  expect(fakes.configs).toHaveLength(1);
+  expect(first.close).toHaveBeenCalledOnce();
+  expect(second.close).not.toHaveBeenCalled();
+  expect(fakes.server.close).not.toHaveBeenCalled();
+  await closeLocalEvalRuntimes();
+  expect(fakes.server.close).toHaveBeenCalledOnce();
 });
 
-it("reports a setup failure together with a failed runtime shutdown", async () => {
-  fakes.openSession.mockRejectedValueOnce(new Error("session setup failed"));
+it("keeps counting a Workshop that failed to stop", async () => {
+  const before = runtimesStillRunning();
+  await open(DIRECT);
   fakes.server.close.mockRejectedValueOnce(new Error("workerd failed to terminate"));
 
-  await expect(openLocalEvalTarget(DIRECT, WORKERS_AI_MODEL, 25))
-    .rejects.toThrow("Eval session setup and cleanup failed");
+  await expect(closeLocalEvalRuntimes()).rejects.toThrow("workerd failed to terminate");
+  expect(runtimesStillRunning()).toBe(before + 1);
 });

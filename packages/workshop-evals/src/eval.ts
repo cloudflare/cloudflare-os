@@ -4,7 +4,8 @@ import { evalMatrix, resolveEvalCommit, resolveEvalModel } from "./config.js";
 import { createWorkshopHarness } from "./harness.js";
 import { taskVersion, type EvalRunInput, type EvalRunOutput, type EvalTask } from "./task.js";
 import {
-  assertModelAccess, evalNetworkInterceptor, resolveModelAccess, runtimesStillRunning,
+  assertModelAccess, closeLocalEvalRuntimes, evalNetworkInterceptor, resolveModelAccess,
+  runtimesStillRunning,
 } from "./target.js";
 
 const gitCommit = resolveEvalCommit();
@@ -32,8 +33,8 @@ const FunctionalJudge = createJudge<EvalRunInput, EvalRunOutput>(
 );
 
 /**
- * Register one task as model-by-trial Vitest cases. Trials run concurrently: each boots its own
- * Workshop, so a file finishes in the time of its slowest trial rather than the sum.
+ * Register one task as model-by-trial Vitest cases. Trials run concurrently, each as its own user on
+ * the file's Workshop, so a file finishes in the time of its slowest trial rather than the sum.
  */
 export function defineTaskEval(task: EvalTask): void {
   const matrix = evalMatrix();
@@ -46,9 +47,10 @@ export function defineTaskEval(task: EvalTask): void {
 
   describeEval(task.id, { harness }, it => {
     beforeAll(() => network.install());
-    // Fail closed: a runtime that would not stop may still run model-authored code through this
+    // Fail closed: a Workshop that would not stop may still run model-authored code through this
     // process's fetch, so unrestricted network access is not restored while one may be alive.
-    afterAll(() => {
+    afterAll(async () => {
+      await closeLocalEvalRuntimes();
       if (runtimesStillRunning() === 0) network.uninstall();
     });
     for (const { model } of models) {
