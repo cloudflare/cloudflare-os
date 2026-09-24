@@ -1,8 +1,7 @@
 import { z } from "zod";
-import type { WorkpieceId } from "@gadgets/workshop-shared/api";
 import { defineTaskEval } from "../src/eval.js";
 import { defineEvalTask } from "../src/task.js";
-import { resolveGadget, type EvalVerifier } from "../src/verifier.js";
+import type { EvalVerifier } from "../src/verifier.js";
 
 // An on-call desk where several responders acknowledge the same page at the same instant. Durable
 // Object RPC calls interleave at every `await`, so a check-then-write acknowledge hands one incident
@@ -128,10 +127,11 @@ function asTurnOneLeftIt(incident: Incident): boolean {
 }
 
 /**
- * The board each trial's turn 1 left, by its Desk: trials share this module, and turn 2 must give
- * back every record exactly, down to who won each race and when.
+ * Every record a turn 1 left, as a later turn must give it back. Trials share this module and a
+ * Workpiece id is workspace-local, so the records are pooled, not filed by trial. Each one holds
+ * its own trial's timestamps and race winners, so a record that turn 2 changed matches no copy.
  */
-const turnOneBoards = new Map<WorkpieceId, Incident[]>();
+const keptByTurnOne = new Set<string>();
 
 /** Twenty responders acknowledge at once; exactly one may win and everyone must be told who. */
 async function race(api: DeskApi, id: string) {
@@ -279,7 +279,7 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
       });
 
       const board = await checkBoardOrder(verifier, "board-lists-by-severity-then-age");
-      if (board !== null) turnOneBoards.set(resolveGadget(verifier.workpieces, TITLE), board);
+      for (const incident of board ?? []) keptByTurnOne.add(asKept(incident));
     },
   }, {
     prompt: `Two additions. Escalation: escalate({ id }) raises the incident one severity level
@@ -293,13 +293,13 @@ null when there is nothing to average. Everything already on the board stays.`,
       await verifier.check("existing-incidents-survive-and-race-still-holds", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
         const board = BoardSchema.parse(await api.board()).incidents;
-        const turnOne = turnOneBoards.get(resolveGadget(verifier.workpieces, TITLE));
-        const changed = turnOne?.flatMap(old => {
-          const now = board.find(incident => incident.id === old.id);
-          return now !== undefined && asKept(now) === asKept(old) ? [] : [old.id];
-        }) ?? null;
-        const intact = board.length === Object.keys(TURN_ONE_BOARD).length &&
-          board.every(asTurnOneLeftIt) && changed?.length === 0;
+        const ids = Object.keys(TURN_ONE_BOARD);
+        const changed = ids.flatMap(id => {
+          const now = board.find(incident => incident.id === id);
+          return now !== undefined && keptByTurnOne.has(asKept(now)) ? [] : [id];
+        });
+        const intact = board.length === ids.length && board.every(asTurnOneLeftIt) &&
+          changed.length === 0;
         await mustOpen(api, "race-6", 2, "billing");
         const outcome = await race(api, "race-6");
         return { pass: intact && outcome.consistent, evidence: { changed, board, outcome } };
