@@ -735,12 +735,19 @@ type FormattingSpan = {
 
 const MAX_MARKDOWN_BLOCKS = 2_000;
 const MAX_MARKDOWN_FORMATTING_TOKENS = 5_000;
-// The most requests `markdownToDocRequests` can emit within those limits, which
-// `parseMarkdownForWrite` enforces on everything it writes, rebuilt blocks included: the insert
-// and the style reset; one bullet removal per run of blocks (runs are separated, so at most half
-// the blocks); one paragraph style per block; one subtitle override or bullet run per block
-// (subtitles are never list items); and one request per span.
-const MAX_GOOGLE_DOC_REQUESTS = 2 + Math.ceil(MAX_MARKDOWN_BLOCKS / 2) + 2 * MAX_MARKDOWN_BLOCKS +
+// The most requests one replacement can emit within those limits, which `parseMarkdownForWrite`
+// enforces on everything it writes.
+// A bullet removal, a paragraph style, and a subtitle override or bullet run (subtitles are never
+// list items).
+const REQUESTS_PER_BLOCK = 3;
+// A content deletion, the insert, the style reset, and a deletion of the removed paragraphs after
+// it. Each rewritten paragraph pairs with one block, so this is also bounded per block.
+const REQUESTS_PER_REWRITTEN_PARAGRAPH = 4;
+// A leading deletion, an insert and style reset before the first paragraph, and a bullet removal and
+// paragraph style repairing a paragraph merged into the tab's last.
+const REQUESTS_PER_REPLACEMENT = 5;
+const MAX_GOOGLE_DOC_REQUESTS = REQUESTS_PER_REPLACEMENT +
+  (REQUESTS_PER_BLOCK + REQUESTS_PER_REWRITTEN_PARAGRAPH) * MAX_MARKDOWN_BLOCKS +
   MAX_MARKDOWN_FORMATTING_TOKENS;
 
 /** Reject Markdown whose structure would consume excessive parser or Docs batch resources. */
@@ -1452,8 +1459,16 @@ export function canonicalizeMarkdownForWrite(markdown: string): string {
 }
 
 type MarkdownWriteOptions = {
-  /** The blocks being rewritten, and the rendering their mappings refer to. */
-  source?: { blocks: BlockMapping[]; markdown: string };
+  /**
+   * The paragraph written into, and the source blocks of the rewrite it belongs to. New paragraphs
+   * inherit `container`'s attributes; the block at `pairedIndex` replaces its content.
+   */
+  source?: {
+    blocks: BlockMapping[];
+    markdown: string;
+    container: BlockMapping;
+    pairedIndex?: number;
+  };
   /** Whether blocks with no source counterpart must be reset to a plain paragraph first. */
   resetParagraphs?: boolean;
   /** Style to apply across the insertion, for an edit that stays inside one text run. */
@@ -1539,57 +1554,30 @@ function canPreserveListItem(
         `${"  ".repeat(target.nestingLevel)}${target.listNumber}. `, source.mdStart));
 }
 
-function canPreserveRebuiltList(
-  sources: readonly (BlockMapping | undefined)[] | undefined,
-  targets: readonly ParsedBlock[],
-  markdown: string,
-): boolean {
-  if (!sources || sources.length !== targets.length) return false;
-  let first = sources[0];
-  if (!first?.listId) return false;
-  return sources.every((source, index) => source !== undefined &&
-    source.listId === first.listId && canPreserveListItem(source, targets[index], markdown));
+/** Whether a new paragraph, which inherits `container`'s list, can stay in it. */
+function continuesList(container: BlockMapping, target: ParsedBlock): boolean {
+  return container.listId !== undefined && target.listType !== null &&
+    container.listType === target.listType && container.listNestingLevel === target.nestingLevel;
 }
 
-function listPreservation(
-  sources: readonly (BlockMapping | undefined)[] | undefined,
-  targets: readonly ParsedBlock[],
-  rebuild: boolean,
-  markdown: string,
-): boolean[] {
-  if (rebuild) {
-    let preserve = canPreserveRebuiltList(sources, targets, markdown);
-    return targets.map(() => preserve);
-  }
-
-  let preserved = targets.map((target, index) => {
-    let source = sources?.[index];
-    return source !== undefined && canPreserveListItem(source, target, markdown);
-  });
-  for (let start = 0; start < targets.length;) {
-    let listType = targets[start].listType;
-    if (!listType) {
-      start++;
-      continue;
-    }
-    let end = start + 1;
-    while (end < targets.length && targets[end].listType === listType) end++;
-    if (!preserved[start] && preserved.slice(start + 1, end).some(Boolean)) {
-      preserved.fill(false, start, end);
-    }
-    start = end;
-  }
-  return preserved;
+/** Whether `target` renders exactly as `source` already does. */
+function isUnchangedBlock(source: BlockMapping, target: ParsedBlock, markdown: string): boolean {
+  return JSON.stringify(parseLine(markdown.slice(source.mdStart, source.mdEnd - 1))) ===
+    JSON.stringify(target);
 }
 
 /** Beyond this many block pairs, a rewrite's changed middle is treated as edited in place. */
 const MAX_ALIGNED_BLOCK_PAIRS = 250_000;
 
+/**
+ * Pair each source block with the target block that rewrites it. Unmatched sources are removed;
+ * unmatched targets are new paragraphs.
+ */
 function alignSourceBlocks(
   sources: BlockMapping[],
   targets: ParsedBlock[],
   markdown: string,
-): (BlockMapping | undefined)[] {
+): [number, number][] {
   let texts = sources.map(source => sourceBlockText(source, markdown));
   let match = (s: number, t: number) => blocksMatch(sources[s], texts[s], targets[t]);
 
@@ -1602,7 +1590,7 @@ function alignSourceBlocks(
     targetEnd--;
   }
 
-  let pairs = Array.from({ length: head }, (_, index): [number, number] => [index, index]);
+  let matches = Array.from({ length: head }, (_, index): [number, number] => [index, index]);
   let rows = sourceEnd - head;
   let columns = targetEnd - head;
   if (rows * columns <= MAX_ALIGNED_BLOCK_PAIRS) {
@@ -1618,36 +1606,59 @@ function alignSourceBlocks(
     for (let s = 0, t = 0; s < rows && t < columns;) {
       if (lengths[s][t] === lengths[s + 1][t]) s++;
       else if (lengths[s][t] === lengths[s][t + 1]) t++;
-      else pairs.push([head + s++, head + t++]);
+      else matches.push([head + s++, head + t++]);
     }
   }
   for (let offset = 0; sourceEnd + offset <= sources.length; offset++) {
-    pairs.push([sourceEnd + offset, targetEnd + offset]);
+    matches.push([sourceEnd + offset, targetEnd + offset]);
   }
 
-  let aligned = targets.map<BlockMapping | undefined>(() => undefined);
+  let pairs: [number, number][] = [];
   let gapSource = 0;
   let gapTarget = 0;
-  // An unmatched run of equal length on both sides is edited in place, so it pairs by position.
-  for (let [s, t] of pairs) {
-    if (s - gapSource === t - gapTarget) {
-      for (let offset = 0; gapSource + offset < s; offset++) {
-        aligned[gapTarget + offset] = sources[gapSource + offset];
-      }
-    }
-    if (s < sources.length) aligned[t] = sources[s];
+  for (let [s, t] of matches) {
+    pairs.push(...pairGap(sources, targets, gapSource, s, gapTarget, t));
+    if (s < sources.length) pairs.push([s, t]);
     gapSource = s + 1;
     gapTarget = t + 1;
   }
+  return pairs;
+}
 
-  if (sources.length !== targets.length &&
-      sources.some(source => !aligned.includes(source) && source.listType !== null) &&
-      targets.some((target, index) => !aligned[index] && target.listType !== null)) {
-    throw new Error(
-      "replaceText: cannot preserve list formatting when one edit changes the block count.",
-    );
+/**
+ * Pair the unmatched blocks between two matches, so edited paragraphs keep their own lists and
+ * styles. Pairs extend from each end while the blocks' shapes agree; any surplus sits where they
+ * first diverge, so a new list item lands beside the items it continues.
+ */
+function pairGap(
+  sources: BlockMapping[],
+  targets: ParsedBlock[],
+  sourceStart: number,
+  sourceEnd: number,
+  targetStart: number,
+  targetEnd: number,
+): [number, number][] {
+  let count = Math.min(sourceEnd - sourceStart, targetEnd - targetStart);
+  let sameShape = (s: number, t: number) => sources[s].listType === targets[t].listType &&
+    sources[s].listNestingLevel === targets[t].nestingLevel &&
+    sources[s].namedStyleType === targetNamedStyle(targets[t], sources[s]);
+  let front = 0;
+  while (front < count && sameShape(sourceStart + front, targetStart + front)) front++;
+  let back = 0;
+  while (front + back < count && sameShape(sourceEnd - 1 - back, targetEnd - 1 - back)) back++;
+  return [
+    ...Array.from({ length: count - back },
+      (_, index): [number, number] => [sourceStart + index, targetStart + index]),
+    ...Array.from({ length: back },
+      (_, index): [number, number] => [sourceEnd - back + index, targetEnd - back + index]),
+  ];
+}
+
+function addRequest(requests: any[], request: any): void {
+  if (requests.length >= MAX_GOOGLE_DOC_REQUESTS) {
+    throw new Error(`Google Doc action exceeds the ${MAX_GOOGLE_DOC_REQUESTS}-request batch limit.`);
   }
-  return aligned;
+  requests.push(request);
 }
 
 /**
@@ -1709,38 +1720,43 @@ export function markdownToDocRequests(
   tabId: string,
   options: MarkdownWriteOptions = {},
 ): any[] {
-  let blocks = parseMarkdownForWrite(markdown);
-  if (blocks.length === 0) return [];
+  return blocksToDocRequests(parseMarkdownForWrite(markdown), insertAt, tabId, options, []);
+}
 
-  let sourceBlockCount = options.source?.blocks.length ?? 0;
-  let rebuild = sourceBlockCount > 1;
-  let resetParagraphs = options.resetParagraphs || rebuild ||
-    options.source !== undefined && sourceBlockCount !== blocks.length;
-  let sourceBlocks: (BlockMapping | undefined)[] | undefined = options.source &&
-    alignSourceBlocks(options.source.blocks, blocks, options.source.markdown);
-  // A rebuilt list re-inherits its bullets, so only its positional shape must survive.
-  let preserveLists = listPreservation(
-    rebuild ? options.source?.blocks : sourceBlocks, blocks, rebuild,
-    options.source?.markdown ?? "");
-  if (rebuild && sourceBlocks?.some((source, index) =>
-    source?.listType && source.listType === blocks[index].listType && !preserveLists[index])) {
-    throw new Error(
-      "replaceText: cannot preserve list formatting across multiple paragraphs.",
-    );
+/** Append to `requests` the requests that insert `blocks` at `insertAt`. */
+function blocksToDocRequests(
+  blocks: ParsedBlock[],
+  insertAt: number,
+  tabId: string,
+  options: MarkdownWriteOptions,
+  requests: any[],
+): any[] {
+  if (blocks.length === 0) return requests;
+  let { source, resetParagraphs = false } = options;
+  let preserveLists = blocks.map((block, index) => source !== undefined &&
+    (index === source.pairedIndex
+      ? canPreserveListItem(source.container, block, source.markdown)
+      : continuesList(source.container, block)));
+  // A list run whose first item is rebuilt is rebuilt whole, so it stays one list.
+  for (let start = 0; start < blocks.length;) {
+    let end = start + 1;
+    while (end < blocks.length && blocks[end].listType === blocks[start].listType) end++;
+    if (blocks[start].listType && !preserveLists[start]) preserveLists.fill(false, start, end);
+    start = end;
   }
   // Positions are known from the text lengths alone, so lay every block out in one pass.
   let offset = insertAt;
   let positioned = blocks.map((block, index) => {
-    let source = sourceBlocks?.[index];
+    let paired = index === source?.pairedIndex ? source.container : undefined;
     let preserveList = preserveLists[index];
     let prefix = block.listType && !preserveList ? "\t".repeat(block.nestingLevel) : "";
     let paragraphStart = offset;
     offset += prefix.length + block.plainText.length + 1;
     return {
       block,
-      source,
+      paired,
       preserveList,
-      targetStyle: targetNamedStyle(block, source),
+      targetStyle: targetNamedStyle(block, paired),
       prefix,
       paragraphStart,
       textStart: paragraphStart + prefix.length,
@@ -1751,21 +1767,11 @@ export function markdownToDocRequests(
   let fullText = positioned.map(({ block, prefix }) => prefix + block.plainText).join("\n");
   if (options.preserveTrailingNewline) fullText += "\n";
 
-  let requests: any[] = [];
-  function addRequest(request: (typeof requests)[number]): void {
-    if (requests.length >= MAX_GOOGLE_DOC_REQUESTS) {
-      throw new Error(
-        `Google Doc action exceeds the ${MAX_GOOGLE_DOC_REQUESTS}-request batch limit.`,
-      );
-    }
-    requests.push(request);
-  }
   if (fullText.length > 0) {
-    addRequest({ insertText: { location: { index: insertAt, tabId }, text: fullText } });
+    addRequest(requests, { insertText: { location: { index: insertAt, tabId }, text: fullText } });
   }
 
-  let clearListIndent = options.source?.blocks.some(block => block.listId !== undefined) ?? false;
-  let paragraphChanges = positioned.map(({ source, preserveList, preserveStyle, targetStyle,
+  let paragraphChanges = positioned.map(({ paired, preserveList, preserveStyle, targetStyle,
     paragraphStart, paragraphEnd }) => {
     let change = {
       startIndex: paragraphStart,
@@ -1775,11 +1781,12 @@ export function markdownToDocRequests(
       clearIndent: false,
     };
     if (preserveStyle) return change;
+    // A rewrite's paragraphs can only have inherited their container's list.
     let resetList = !preserveList &&
-      (source ? rebuild || source.listId !== undefined : resetParagraphs);
+      (source ? source.container.listId !== undefined : resetParagraphs);
     change.deleteBullets = resetList;
-    change.clearIndent = resetList && (source !== undefined || clearListIndent);
-    if (source ? rebuild || source.namedStyleType !== targetStyle
+    change.clearIndent = resetList && source !== undefined;
+    if (paired ? paired.namedStyleType !== targetStyle
       : resetParagraphs || targetStyle !== "NORMAL_TEXT") {
       change.namedStyleType = targetStyle;
     }
@@ -1789,13 +1796,13 @@ export function markdownToDocRequests(
   // indent reset below undoes that.
   for (let { startIndex, endIndex } of coalesceRanges(
     paragraphChanges.filter(change => change.deleteBullets), () => true)) {
-    addRequest({ deleteParagraphBullets: { range: { startIndex, endIndex, tabId } } });
+    addRequest(requests, { deleteParagraphBullets: { range: { startIndex, endIndex, tabId } } });
   }
   for (let { startIndex, endIndex, namedStyleType, clearIndent } of coalesceRanges(
     paragraphChanges.filter(change => change.namedStyleType !== undefined || change.clearIndent),
     (previous, next) => previous.namedStyleType === next.namedStyleType &&
       previous.clearIndent === next.clearIndent)) {
-    addRequest(updateParagraphStyleRequest(
+    addRequest(requests, updateParagraphStyleRequest(
       { startIndex, endIndex, tabId }, namedStyleType, clearIndent));
   }
 
@@ -1806,7 +1813,7 @@ export function markdownToDocRequests(
   let firstText = textBlocks[0];
   let lastText = textBlocks.at(-1);
   if (firstText && lastText) {
-    addRequest({
+    addRequest(requests, {
       updateTextStyle: {
         range: {
           startIndex: firstText.textStart,
@@ -1820,7 +1827,7 @@ export function markdownToDocRequests(
   }
   for (let { block, targetStyle, textStart } of textBlocks) {
     if (targetStyle !== "SUBTITLE") continue;
-    addRequest({
+    addRequest(requests, {
       updateTextStyle: {
         range: { startIndex: textStart, endIndex: textStart + block.plainText.length, tabId },
         textStyle: { italic: false },
@@ -1845,7 +1852,7 @@ export function markdownToDocRequests(
         fields.push("link");
       }
       if (fields.length === 0) continue;
-      addRequest({
+      addRequest(requests, {
         updateTextStyle: {
           range: { startIndex, endIndex, tabId }, textStyle, fields: fields.join(","),
         },
@@ -1862,7 +1869,7 @@ export function markdownToDocRequests(
   );
   // Reversed: creating bullets strips each paragraph's leading tabs, shifting later indices.
   for (let { listType, startIndex, endIndex } of bulletGroups.toReversed()) {
-    addRequest({
+    addRequest(requests, {
       createParagraphBullets: {
         range: { startIndex, endIndex, tabId },
         bulletPreset: listType === "numbered"
@@ -2240,57 +2247,125 @@ export function computeReplaceOperations(
     trimmedMatchEnd,
     BLOCK_SYNTAX_LINE.test(trimmedNew),
   );
-  let docRange: DocRange | null;
-  let insertMarkdown = trimmedNew;
-  let writeOptions: MarkdownWriteOptions;
   if (blockRange) {
     assertMarkdownRangeEditable(
       sourceMap.protectedRanges, blockRange.mdStart, blockRange.mdEnd - 1,
     );
-    insertMarkdown = (
+    let blockMarkdown = (
       literalMarkdownSlice(sourceMap, markdown, blockRange.mdStart, trimmedMatchStart) +
-      insertMarkdown +
+      trimmedNew +
       literalMarkdownSlice(sourceMap, markdown, trimmedMatchEnd, blockRange.mdEnd)
     ).replace(/\n$/, "");
-    docRange = { start: blockRange.docStart, end: blockRange.docEnd };
-    writeOptions = {
-      source: { blocks: blockRange.blocks, markdown },
-      resetParagraphs: blockRange.blocks.some(block =>
-        BLOCK_SYNTAX_LINE.test(markdown.slice(block.mdStart, block.mdEnd))),
-    };
-  } else {
-    docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
-    if (docRange?.startsAfterParagraph) {
-      insertMarkdown = "\n" + insertMarkdown;
-      writeOptions = { resetParagraphs: true, preserveLeadingParagraph: true };
-    } else {
-      writeOptions = {
-        sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
-      };
-    }
+    let targets = parseMarkdownForWrite(blockMarkdown);
+    if (/[^\n]\n+$/.test(blockMarkdown)) targets.push(parseLine(""));
+    let requests = rewriteBlocks(sourceMap, markdown, blockRange.blocks, targets, tabId);
+    return { requests, trimmedOld, trimmedNew };
   }
-  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
 
+  let docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
   if (!docRange) {
     throw new Error(
       "replaceText: could not map the Markdown range to document indices. " +
       "The match may span unsupported content.");
   }
+  let insertMarkdown = trimmedNew;
+  let writeOptions: MarkdownWriteOptions;
+  if (docRange.startsAfterParagraph) {
+    insertMarkdown = "\n" + insertMarkdown;
+    writeOptions = { resetParagraphs: true, preserveLeadingParagraph: true };
+  } else {
+    writeOptions = {
+      sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
+    };
+  }
+  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
 
   let requests: any[] = [];
   if (docRange.start < docRange.end) {
-    requests.push({
+    addRequest(requests, {
       deleteContentRange: {
         range: { startIndex: docRange.start, endIndex: docRange.end, tabId },
       },
     });
   }
-
-  if (insertMarkdown.length > 0 || blockRange) {
-    requests.push(...markdownToDocRequests(insertMarkdown, docRange.start, tabId, writeOptions));
+  if (insertMarkdown.length > 0) {
+    blocksToDocRequests(
+      parseMarkdownForWrite(insertMarkdown), docRange.start, tabId, writeOptions, requests);
   }
-
   return { requests, trimmedOld, trimmedNew };
+}
+
+/**
+ * Rewrite whole source blocks paragraph by paragraph, so each kept paragraph keeps its own list and
+ * style. Requests run from the end of the range backwards, so earlier indices stay valid.
+ */
+function rewriteBlocks(
+  sourceMap: SourceMap,
+  markdown: string,
+  sources: BlockMapping[],
+  targets: ParsedBlock[],
+  tabId: string,
+): any[] {
+  let requests: any[] = [];
+  let write = (blocks: ParsedBlock[], at: number, container: BlockMapping,
+    options: MarkdownWriteOptions = {}, pairedIndex?: number) => blocksToDocRequests(blocks, at,
+    tabId, {
+      ...options, resetParagraphs: true,
+      source: { blocks: sources, markdown, container, pairedIndex },
+    }, requests);
+  let remove = (startIndex: number, endIndex: number) =>
+    addRequest(requests, { deleteContentRange: { range: { startIndex, endIndex, tabId } } });
+
+  let pairs = alignSourceBlocks(sources, targets, markdown);
+  for (let index = pairs.length - 1; index >= 0; index--) {
+    let [s, t] = pairs[index];
+    let [nextSource, nextTarget] = pairs[index + 1] ?? [sources.length, targets.length];
+    let source = sources[s];
+    let removed = sources.slice(s + 1, nextSource);
+    let last = removed.at(-1);
+    if (last && (nextSource < sources.length ||
+        sourceMap.blocks.some(block => block.docStart === last.docEnd))) {
+      remove(removed[0].docStart, last.docEnd);
+    } else if (last) {
+      // The paragraph break before a table or at the tab's end can't be deleted, so the kept
+      // paragraph merges into it and takes on formatting that must match or be repairable.
+      if (source.listId !== undefined && (source.listId !== last.listId ||
+          source.listNestingLevel !== last.listNestingLevel)) {
+        throw new Error(
+          "replaceText: cannot keep a list item while deleting the paragraphs that end its " +
+          "section. Delete them in an edit that leaves the list item alone.");
+      }
+      remove(source.docEnd - 1, last.docEnd - 1);
+      let clearList = source.listId === undefined && last.listId !== undefined;
+      if (clearList) {
+        addRequest(requests, { deleteParagraphBullets: {
+          range: { startIndex: source.docStart, endIndex: source.docEnd, tabId },
+        } });
+      }
+      if (clearList || source.namedStyleType !== last.namedStyleType) {
+        addRequest(requests, updateParagraphStyleRequest(
+          { startIndex: source.docStart, endIndex: source.docEnd, tabId },
+          source.namedStyleType, clearList));
+      }
+    }
+
+    let before = index === 0 ? targets.slice(0, t) : [];
+    let after = targets.slice(t + 1, nextTarget);
+    if (isUnchangedBlock(source, targets[t], markdown)) {
+      if (after.length > 0) {
+        write([parseLine(""), ...after], source.docEnd - 1, source,
+          { preserveLeadingParagraph: true });
+      }
+      if (before.length > 0) {
+        write(before, source.docStart, source, { preserveTrailingNewline: true });
+      }
+    } else {
+      if (source.docStart < source.docEnd - 1) remove(source.docStart, source.docEnd - 1);
+      write([...before, targets[t], ...after], source.docStart, source, {}, before.length);
+    }
+  }
+  if (pairs[0][0] > 0) remove(sources[0].docStart, sources[pairs[0][0]].docStart);
+  return requests;
 }
 
 /**

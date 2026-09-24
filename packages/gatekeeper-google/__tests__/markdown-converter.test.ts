@@ -1237,7 +1237,7 @@ describe("computeReplaceOperations", () => {
     );
 
     expect(requests[0]).toEqual({
-      deleteContentRange: { range: { startIndex: 3, endIndex: 9, tabId: TAB_ID } },
+      insertText: { location: { index: 3, tabId: TAB_ID }, text: "Intro\n" },
     });
   });
   it("rejects edits to the separator before structured content", () => {
@@ -1436,7 +1436,7 @@ describe("computeReplaceOperations", () => {
     }]);
   });
 
-  it("rejects rewrites across multiple existing list paragraphs", () => {
+  it("rewrites items of separate lists in place", () => {
     let listSnapshot = docTabToMarkdown(buildTab([
       { runs: ["First\n"], bullet: { listId: "L1" } },
       { runs: ["Second\n"], bullet: { listId: "L2" } },
@@ -1444,11 +1444,13 @@ describe("computeReplaceOperations", () => {
       L1: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } },
       L2: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } },
     }));
-
-    expect(() => computeReplaceOperations(
+    let requests = computeReplaceOperations(
       listSnapshot.sourceMap, listSnapshot.markdown, 0, listSnapshot.markdown.trimEnd().length,
       "1. Changed first\n1. Changed second", TAB_ID,
-    )).toThrow("cannot preserve list formatting across multiple paragraphs");
+    ).requests;
+
+    expect(requests.some(request =>
+      "createParagraphBullets" in request || "deleteParagraphBullets" in request)).toBe(false);
   });
 
   it("clears removed heading and list styles", () => {
@@ -1511,14 +1513,23 @@ describe("computeReplaceOperations", () => {
       "plain\n\nsecond", TAB_ID,
     ).requests;
 
-    // One request per change across both paragraphs, bullets removed before the indent reset.
     expect(requests.filter(request =>
       "updateParagraphStyle" in request || "deleteParagraphBullets" in request,
     )).toEqual([
       { deleteParagraphBullets: { range: { startIndex: 1, endIndex: 14, tabId: TAB_ID } } },
       {
         updateParagraphStyle: {
-          range: { startIndex: 1, endIndex: 14, tabId: TAB_ID },
+          range: { startIndex: 1, endIndex: 7, tabId: TAB_ID },
+          paragraphStyle: {
+            indentStart: { magnitude: 0, unit: "PT" },
+            indentFirstLine: { magnitude: 0, unit: "PT" },
+          },
+          fields: "indentStart,indentFirstLine",
+        },
+      },
+      {
+        updateParagraphStyle: {
+          range: { startIndex: 7, endIndex: 14, tabId: TAB_ID },
           paragraphStyle: {
             namedStyleType: "NORMAL_TEXT",
             indentStart: { magnitude: 0, unit: "PT" },
@@ -1530,15 +1541,17 @@ describe("computeReplaceOperations", () => {
     ]);
   });
 
-  it("refuses list edits whose block count cannot preserve formatting", () => {
+  it("keeps a custom list when an edit adds an item", () => {
     let list = docTabToMarkdown(buildTab([{
       runs: ["Task\n"], bullet: { listId: "check" },
     }], CHECK_LIST));
-
-    expect(() => computeReplaceOperations(
+    let requests = computeReplaceOperations(
       list.sourceMap, list.markdown, 0, list.markdown.trimEnd().length,
       "- One\n- Two", TAB_ID,
-    )).toThrow("cannot preserve list formatting");
+    ).requests;
+
+    expect(requests.some(request =>
+      "createParagraphBullets" in request || "deleteParagraphBullets" in request)).toBe(false);
   });
 
   it("preserves an unchanged custom list when inserting an adjacent block", () => {
@@ -1564,11 +1577,11 @@ describe("computeReplaceOperations", () => {
       sourceMap, markdown, 0, markdown.trimEnd().length, replacement, TAB_ID,
     ).requests;
 
-    // "A\nKept\nB" puts the unchanged paragraph at 3–8.
-    expect(requests.filter(request => {
+    // B lands at 6–8 while Kept still sits at 1–6, then A at 1–3.
+    expect(new Set(requests.flatMap(request => {
       let range = (request.updateParagraphStyle ?? request.deleteParagraphBullets)?.range;
-      return range && range.startIndex < 8 && range.endIndex > 3;
-    })).toEqual([]);
+      return range ? [`${range.startIndex}-${range.endIndex}`] : [];
+    }))).toEqual(new Set(["6-8", "1-3"]));
   });
 
   it.each([
@@ -1585,7 +1598,7 @@ describe("computeReplaceOperations", () => {
 
     expect(requests.flatMap(request => request.updateParagraphStyle
       ? [request.updateParagraphStyle.paragraphStyle.namedStyleType] : [])).toEqual([
-      addedStyle, "TITLE",
+      "TITLE", addedStyle,
     ]);
   });
 
@@ -1614,10 +1627,8 @@ describe("computeReplaceOperations", () => {
       sourceMap, markdown, 0, markdown.trimEnd().length, replacement, TAB_ID,
     ).requests;
 
-    expect(requests.flatMap(request => request.updateParagraphStyle
-      ? [request.updateParagraphStyle.paragraphStyle.namedStyleType] : [])).toEqual([
-      "TITLE", "NORMAL_TEXT",
-    ]);
+    expect(requests.filter(request => "deleteContentRange" in request)).toHaveLength(1_000);
+    expect(requests.some(request => "updateParagraphStyle" in request)).toBe(false);
   });
 
   it("preserves title and custom list styles during inline edits", () => {

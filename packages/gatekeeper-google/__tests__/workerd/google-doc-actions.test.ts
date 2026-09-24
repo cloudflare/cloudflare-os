@@ -851,17 +851,53 @@ describe("Google Doc list edits", () => {
     expect(await hooks().readContent("restart-list")).toBe(preview);
   });
 
-  it("rejects an unapplyable list-plus-prose rewrite before requesting approval", async () => {
+  it("rewrites a list item and the prose after it", async () => {
     let docs = new DocsModel();
     docs.setNumberedList(MAIN_TAB, ["First", "Body"]);
     docs.interruptList(MAIN_TAB, 1);
     docs.install();
-
-    await expect(Promise.resolve(hooks().submitReplace(
+    let actionId = await hooks().submitReplace(
       "list-prose", "1. First\n\nBody", "1. Changed\n\nUpdated",
-    ))).rejects.toThrow("cannot preserve list formatting across multiple paragraphs");
-    expect(await hooks().lastActionDescription).toBe("");
-    expect(await hooks().readContent("list-prose")).toBe("1. First\n\nBody\n");
+    );
+    let preview = await hooks().readContent("list-prose");
+
+    expect(preview).toBe("1. Changed\n\nUpdated\n");
+    expect(await hooks().applyAction("list-prose", actionId)).toBeNull();
+    expect(docs.renderedText()).toBe("1. Changed\nUpdated");
+    expect(await hooks().readContent("list-prose")).toBe(preview);
+  });
+
+  it("keeps one list while rewriting the section around it", async () => {
+    let docs = new DocsModel();
+    docs.setBulletedList(MAIN_TAB, ["Intro", "Ship", "Docs", "Owner"]);
+    docs.interruptList(MAIN_TAB, 0);
+    docs.interruptList(MAIN_TAB, 3);
+    docs.install();
+    let actionId = await hooks().submitReplace(
+      "section", "Intro\n\n- Ship\n- Docs\n\nOwner",
+      "Intro edited\n\n- Ship now\n- Docs\n- Launch\n\nOwner: Bob",
+    );
+    let preview = await hooks().readContent("section");
+
+    expect(preview).toBe("Intro edited\n\n- Ship now\n- Docs\n- Launch\n\nOwner: Bob\n");
+    expect(await hooks().applyAction("section", actionId)).toBeNull();
+    expect(docs.renderedText()).toBe("Intro edited\n1. Ship now\n2. Docs\n3. Launch\nOwner: Bob");
+    expect(await hooks().readContent("section")).toBe(preview);
+  });
+
+  it("restores a kept paragraph's style after deleting the final paragraph", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [
+      { text: "Kept", namedStyleType: "TITLE" },
+      { text: "Removed", namedStyleType: "NORMAL_TEXT" },
+    ]);
+    docs.install();
+    let actionId = await hooks().submitReplace("final", "# Kept\n\nRemoved", "# Added\n\n# Kept");
+    let preview = await hooks().readContent("final");
+
+    expect(preview).toBe("# Added\n\n# Kept\n");
+    expect(await hooks().applyAction("final", actionId)).toBeNull();
+    expect(await hooks().readContent("final")).toBe(preview);
   });
 
   it("replays a dependent edit after appending adjacent mixed lists", async () => {
@@ -1113,18 +1149,18 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent("heading-whitespace")).toBe("   \n");
   });
 
-  it("resets subtitle style when expanding into plain paragraphs", async () => {
+  it("resets subtitle style on paragraphs split from a subtitle", async () => {
     let docs = new DocsModel();
     docs.setParagraphs(MAIN_TAB, [{ text: "Subtitle", namedStyleType: "SUBTITLE" }]);
     docs.install();
     let actionId = await hooks().submitReplace(
-      "subtitle-expansion", "*Subtitle*", "first\n\nsecond",
+      "subtitle-expansion", "*Subtitle*", "*first*\n\nsecond",
     );
 
-    expect(await hooks().readContent("subtitle-expansion")).toBe("first\n\nsecond\n");
+    expect(await hooks().readContent("subtitle-expansion")).toBe("*first*\n\nsecond\n");
     await hooks().applyAction("subtitle-expansion", actionId);
 
-    expect(await hooks().readContent("subtitle-expansion")).toBe("first\n\nsecond\n");
+    expect(await hooks().readContent("subtitle-expansion")).toBe("*first*\n\nsecond\n");
   });
 
   it("commits the same escaped replacement it simulates", async () => {
