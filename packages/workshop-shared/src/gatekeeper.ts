@@ -622,15 +622,6 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
 }
 
 /**
- * Vendor-specific creation parameters for GatekeeperUser.createResource(), authored by the agent
- * and untrusted like `title`. Flat bounded scalars only (e.g. a parent folder id). The resource's
- * `creatable.description` documents the accepted keys; the vendor MUST reject unknown or invalid
- * entries with an agent-readable message, and MUST reflect consequential entries (e.g. placement)
- * in the creation action's description so the user approves what will actually happen.
- */
-export type ResourceCreationOptions = Record<string, string | number | boolean>;
-
-/**
  * RPC interface to an Adapter. This is a privileged interface exposed to the Gadget Workshop UI
  * itself, not to Gadgets nor AI agents.
  *
@@ -668,11 +659,11 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   }>;
 
   /**
-   * Create a NEW resource of the type identified by `resourceUrlPattern` (a urlPattern from
-   * getSupportedResources() whose `creatable` is set). Mints a provisional identity for the
-   * resource — no provider API call, no user interaction — and returns a gatekeeper class imbued
-   * with it (via `ctx.props`), exactly as getGatekeeperClassFor() does for existing resources,
-   * plus the provisional `resourceUrl` that names the resource until it really exists.
+   * Get a gatekeeper class for a NEW resource of the type identified by `resourceUrlPattern` (a
+   * urlPattern from getSupportedResources() whose `creatable` is set). This creates nothing and has
+   * no side effects: like getGatekeeperClassFor(), it only returns a class, imbued (via
+   * `ctx.props`) with a provisional identity that `resourceUrl` names until the resource really
+   * exists. Nothing happens until methods are called on the facet.
    *
    * The returned class MUST implement Gatekeeper.submitCreationAction(). The provider-side
    * creation happens only when the user approves that action; until then the gatekeeper simulates
@@ -682,11 +673,9 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * state's own policy.
    *
    * Throws with an agent-readable message when the account cannot create this resource type
-   * (e.g. its authorization does not cover the needed scopes) or when `input.options` carries
-   * unknown or invalid entries (see ResourceCreationOptions); callers surface the message.
+   * (e.g. its authorization does not cover the needed scopes); callers surface the message.
    */
-  createResource?(resourceUrlPattern: string,
-                  input: {title: string, options?: ResourceCreationOptions}): Promise<{
+  createResource?(resourceUrlPattern: string, title: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
     /** Provisional URL of the new resource; replaced by the real URL once created. */

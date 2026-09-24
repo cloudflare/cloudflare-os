@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, type CreatedResourceOutput, isCreatedResourceSuccess, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, actionChangeTime } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionState, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, type CreatedResourceOutput, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, actionChangeTime } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -3962,8 +3962,7 @@ class OverseerImpl implements AgentHooks {
         for (let msg of msgs) {
           if (msg.type !== "message") continue;
           for (let call of msg.toolCalls ?? []) {
-            if (call.toolName === "createExternalResource" &&
-                isCreatedResourceSuccess(call.output) &&
+            if (call.toolName === "createExternalResource" && call.output !== undefined &&
                 this.#gatekeepersPendingRestart.has(call.output.gatekeeperId)) {
               this.scheduleAccessRestart("Gadget restarted because a new connection was added.");
             }
@@ -7910,8 +7909,7 @@ class OverseerImpl implements AgentHooks {
           if ((call.toolName === "createGadget" || call.toolName === "createWorktree") &&
               call.input.bindingName !== undefined) {
             taken.add(call.input.bindingName);
-          } else if (call.toolName === "createExternalResource" &&
-                     isCreatedResourceSuccess(call.output)) {
+          } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
             // Success-only, matching runAgent's replay: a rejected creation binds nothing,
             // and claiming its name would desync the PARAMS_<n> simulation from the
             // authoritative allocation (see agent.ts).
@@ -8130,8 +8128,7 @@ class OverseerImpl implements AgentHooks {
             if (call.output && !nameByTarget.has(call.output.worktreeId)) {
               nameByTarget.set(call.output.worktreeId, call.input.bindingName);
             }
-          } else if (call.toolName === "createExternalResource" &&
-                     isCreatedResourceSuccess(call.output)) {
+          } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
             // Success-only, like chatScopeNames: a rejected creation binds nothing in replay.
             taken.add(call.input.bindingName);
             if (!nameByTarget.has(call.output.gatekeeperId)) {
@@ -8815,8 +8812,7 @@ class OverseerImpl implements AgentHooks {
       // A rejected creation left no gatekeeper to unstamp.
       if (msg.type === "message") {
         for (let call of msg.toolCalls ?? []) {
-          if (call.toolName === "createExternalResource" &&
-              isCreatedResourceSuccess(call.output)) {
+          if (call.toolName === "createExternalResource" && call.output !== undefined) {
             let gatekeeper = this.storage.gatekeepers.get(call.output.gatekeeperId);
             if (gatekeeper?.pending?.chatId === chatId) {
               delete gatekeeper.pending;
@@ -9210,26 +9206,25 @@ class OverseerImpl implements AgentHooks {
   // Create a brand-new external resource (createExternalResource tool). Unlike requestConnection,
   // no user action gates the binding: the gatekeeper simulates the resource locally, and the
   // provider-side creation is an ordinary pending action (captured for this chat, so its card
-  // lands in the transcript at the step barrier). `created: false` is a fixable rejection — the
-  // agent should adjust and retry in the same turn.
+  // lands in the transcript at the step barrier).
   async createExternalResource(chatId: number, input: CreateExternalResourceInput,
-      initiator: AiChatAuthorInfo): Promise<CreatedResourceOutput | string> {
+      initiator: AiChatAuthorInfo): Promise<CreatedResourceOutput> {
     let vendors = await this.#listGatekeeperVendorsCached();
     let vendor = vendors.find(v => v.id === input.vendorId);
     if (!vendor) {
-      return `Cannot create a resource: unknown vendor "${input.vendorId}". ` +
-          `Available vendors: ${vendors.map(v => v.id).join(", ") || "(none)"}.`;
+      throw new Error(`Cannot create a resource: unknown vendor "${input.vendorId}". ` +
+          `Available vendors: ${vendors.map(v => v.id).join(", ") || "(none)"}.`);
     }
 
     let resource = vendor.supportedResources.find(
         r => r.urlPattern === input.resourceUrlPattern);
     if (!resource?.creatable) {
       let creatable = vendor.supportedResources.filter(r => r.creatable);
-      return creatable.length === 0
+      throw new Error(creatable.length === 0
           ? `"${vendor.description.displayName}" does not support creating new resources.`
           : `Cannot create a resource of type "${input.resourceUrlPattern}". ` +
             `"${vendor.description.displayName}" can create: ` +
-            creatable.map(r => `${r.title} (${r.urlPattern})`).join(", ") + `.`;
+            creatable.map(r => `${r.title} (${r.urlPattern})`).join(", ") + `.`);
     }
 
     // Mint the provisional gatekeeper class through the *initiator's* user DO (the admin-check
@@ -9237,16 +9232,10 @@ class OverseerImpl implements AgentHooks {
     // resource under (and enumerates) the collaborator's accounts, not the owner's. The same
     // initiator.id resolution as listAvailableBlueprints. Its failures are agent-readable by
     // contract: no usable account, ambiguous accounts, missing authorization.
-    let minted;
-    try {
-      let userStub = wrapDoStubForTelemetry(
-          this.users.get(this.users.idFromName(initiator.id)), this.logger);
-      minted = await userStub.createResourceGatekeeper(
-          input.vendorId, input.accountId, input.resourceUrlPattern,
-          {title: input.title, options: input.options});
-    } catch (error) {
-      return `Cannot create the resource: ${stringifyError(error)}`;
-    }
+    let userStub = wrapDoStubForTelemetry(
+        this.users.get(this.users.idFromName(initiator.id)), this.logger);
+    let minted = await userStub.createResourceGatekeeper(
+        input.vendorId, input.accountId, input.resourceUrlPattern, input.title);
 
     let client = await this.addGatekeeper(minted.class, {
       type: "gatekeeper",
@@ -9283,7 +9272,7 @@ class OverseerImpl implements AgentHooks {
         // #maybeResumeAfterActionDecision).
         captured.actions.length = capturedCountBefore;
       }
-      return `Cannot create the resource: ${stringifyError(error)}`;
+      throw error;
     }
 
     // Fail closed on the vendor contract: submitCreationAction must queue the creation, which
@@ -9291,8 +9280,8 @@ class OverseerImpl implements AgentHooks {
     // otherwise leave a permanently provisional binding with no approval card and no error.
     if (this.storage.gatekeepers.get(gatekeeperId)?.creation?.actionId === undefined) {
       this.removeGatekeeper(gatekeeperId);
-      return `Cannot create the resource: the "${input.vendorId}" gatekeeper returned without ` +
-          `submitting its creation action. This is a vendor bug; do not retry.`;
+      throw new Error(`The "${input.vendorId}" gatekeeper returned without submitting its ` +
+          `creation action. This is a vendor bug; do not retry.`);
     }
 
     return { gatekeeperId, resourceUrl: minted.resourceUrl, message:

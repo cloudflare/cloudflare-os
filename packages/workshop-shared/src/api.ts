@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, ResourceCreationOptions, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -3523,36 +3523,18 @@ export type AiToolCall = {
 
     /** Which connected account creates the resource; required only when several match. */
     accountId?: number;
-
-    /**
-     * Vendor-specific creation parameters (flat scalars), as documented by the creatable
-     * type's description; see ResourceCreationOptions.
-     */
-    options?: ResourceCreationOptions;
   };
 
   /**
-   * On success, the full tool result: the created gatekeeper workpiece, its provisional
-   * resourceUrl, and the message shown to the model — replay re-binds and re-renders from it
-   * instead of re-creating, like createGadget. A string output is a fixable rejection returned
-   * to the model (no binding was made), like requestConnection's output.
+   * The created gatekeeper workpiece, its provisional resourceUrl, and the message shown to the
+   * model, recorded when the resource was minted: replay re-binds and re-renders from it instead
+   * of re-creating, like createGadget.
    */
-  output?: CreatedResourceOutput | string;
+  output?: CreatedResourceOutput;
 });
 
 /** Success output of a createExternalResource call (see the AiToolCall member). */
 export type CreatedResourceOutput = {gatekeeperId: WorkpieceId, resourceUrl: string, message: string};
-
-/**
- * True iff a createExternalResource output is the structured success shape — the only shape under
- * which a binding was made. A string output is a fixable rejection; it is not an error (no
- * `error` is set on the call), so error-based filters do not catch it. Every consumer that scans
- * recorded tool calls must gate on this, not on `output !== undefined`.
- */
-export function isCreatedResourceSuccess(output: CreatedResourceOutput | string | undefined)
-    : output is CreatedResourceOutput {
-  return typeof output === "object";
-}
 
 // TODO: Extend AiToolCall for code-mode tool calls.
 // - Includes inline audit logs from the action.

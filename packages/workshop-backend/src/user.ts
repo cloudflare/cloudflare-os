@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, ResourceCreationOptions, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1954,11 +1954,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * the same admin disable-set checks as getGatekeeperClassFor(). When `accountId` is omitted and
    * exactly one usable account is connected for the vendor, that account is used; otherwise the
    * error enumerates the candidates so the agent can retry with an accountId or ask the user.
-   * Every thrown message here is agent-readable: the overseer surfaces it as a fixable tool result.
+   * Every thrown message here is agent-readable: the overseer surfaces it as the tool call's error.
    */
   async createResourceGatekeeper(
-      vendorId: string, accountId: number | undefined, resourceUrlPattern: string,
-      input: {title: string, options?: ResourceCreationOptions})
+      vendorId: string, accountId: number | undefined, resourceUrlPattern: string, title: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
                   typeUrlPattern: string, resourceUrl: string}> {
     let account: ConnectedAccountRecord;
@@ -1997,7 +1996,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // error, which the overseer relays to the agent.
     let {class: cls, resource, resourceUrl} =
         await (account.account as unknown as ResourceCreatorStub)
-            .createResource(resourceUrlPattern, input);
+            .createResource(resourceUrlPattern, title);
 
     // Check the admin disable-set against the pattern the vendor actually resolved, after the
     // RPC, exactly like getGatekeeperClassFor -- the vendor is the authority on which resource

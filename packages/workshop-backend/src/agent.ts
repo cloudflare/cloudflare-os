@@ -1,8 +1,8 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, type CreatedResourceOutput, isCreatedResourceSuccess, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, type CreatedResourceOutput, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { AgentCatalog, ObservationDescription, type ResourceCreationOptions } from '@gadgets/workshop-shared/gatekeeper';
+import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
 import { Type, toToolDeclaration } from "@earendil-works/pi-ai";
 import type {
@@ -416,7 +416,6 @@ export type CreateExternalResourceInput = {
   title: string;
   bindingName: string;
   accountId?: number;
-  options?: ResourceCreationOptions;
 };
 
 /**
@@ -705,14 +704,13 @@ export interface AgentHooks {
    * addGatekeeper), and submits the creation action attributed to this chat (its card is spliced
    * via consumeCapturedActions like any action). Unlike requestConnection, no user action gates
    * the binding — the gatekeeper simulates the resource until the creation is approved — so the
-   * turn does NOT end. A string result is a fixable rejection (unknown vendor, type not
-   * creatable, no usable account, missing authorization); the agent retries in-turn. Either
-   * shape is recorded verbatim as the tool call's output (see isCreatedResourceSuccess).
+   * turn does NOT end. Throws an agent-readable message on a fixable rejection (unknown vendor,
+   * type not creatable, no usable account, missing authorization); the agent retries in-turn.
    * `initiator` names whose connected accounts create the resource -- the turn's initiator, not
    * the workspace owner, so a collaborator-driven turn uses (and enumerates) their own accounts.
    */
   createExternalResource(chatId: number, input: CreateExternalResourceInput,
-      initiator: AiChatAuthorInfo): Promise<CreatedResourceOutput | string>;
+      initiator: AiChatAuthorInfo): Promise<CreatedResourceOutput>;
 
   /**
    * Blueprint hooks for the agent.
@@ -2187,13 +2185,9 @@ async function runAgentPass(
                     throw new Error(
                         "createExternalResource tool call in log is missing its result");
                   }
-                  if (isCreatedResourceSuccess(toolCall.output)) {
-                    chatBindings.set(toolCall.input.bindingName,
-                        {type: "workpiece", id: toolCall.output.gatekeeperId});
-                    toolOutput = {text: jsonToolResultText(toolCall.output)};
-                  } else {
-                    toolOutput = {text: toolCall.output};
-                  }
+                  chatBindings.set(toolCall.input.bindingName,
+                      {type: "workpiece", id: toolCall.output.gatekeeperId});
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
                 }
                 default:
@@ -3600,41 +3594,19 @@ async function runAgentPass(
               "Which connected account creates the resource. Only needed when several accounts " +
               "of the vendor are connected (a rejection will list the candidate ids).",
         })),
-        options: Type.Optional(Type.Record(
-            Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()]), {
-          description:
-              "Vendor-specific creation parameters (flat scalars), e.g. a parent folder id. " +
-              "The creatable type's description lists the accepted keys; omit unless it names " +
-              "some. Unknown keys are rejected with guidance.",
-        })),
       }),
       execute: async (toolCallId, input) => {
         try {
-          // Validate the chosen name before creating anything; like requestConnection, a bad
-          // name is a fixable message (not an error) so the agent retries within the same turn.
-          let nameProblem: string | undefined;
-          try {
-            validateBindingName(input.bindingName);
-          } catch (err) {
-            nameProblem = `${err instanceof Error ? err.message : err}`;
+          validateBindingName(input.bindingName);
+          if (isNameInScope(input.bindingName)) {
+            throw new Error(`There is already a binding named "${input.bindingName}" in your ` +
+                `env. Choose a different name.`);
           }
-          if (nameProblem === undefined && isNameInScope(input.bindingName)) {
-            nameProblem = `There is already a binding named "${input.bindingName}" in your ` +
-                `env. Choose a different name.`;
-          }
-          if (nameProblem === undefined && input.title.trim().length === 0) {
-            nameProblem = `A resource requires a non-empty title.`;
-          }
-          if (nameProblem !== undefined) {
-            let message = `Cannot create the resource: ${nameProblem}`;
-            return toolResult(message, { output: message });
+          if (input.title.trim().length === 0) {
+            throw new Error("A resource requires a non-empty title.");
           }
 
           let output = await hooks.createExternalResource(chatId, input, initiator);
-          if (!isCreatedResourceSuccess(output)) {
-            // Fixable rejection: recorded as the string output, no binding was made.
-            return toolResult(output, { output });
-          }
 
           // The binding is live immediately — no user gate (contrast requestConnection). The
           // creation action's card rides the step's captured actions like any other action.

@@ -373,7 +373,7 @@ it("settles the queued action when the vendor fails after queueing it", async ()
   const chatId = await workspace.newChat("Create a failing test thing.", SCRIPTED_MODEL_ID);
   await waitForAgentSays(workspace, chatId, "The creation failed.");
 
-  // The tool reported a fixable rejection carrying the vendor's error...
+  // The tool failed with the vendor's error...
   expect(toolResultShownToModel("create-orphan")).toContain("Simulated post-queue failure");
 
   // ...and the action the vendor had already queued was settled with the removed gatekeeper,
@@ -447,50 +447,5 @@ it("settles an undecided creation when its chat is deleted", async () => {
   const all = (await workspace.listActions({ filter: "all" })).entries;
   expect(all.find(action => action.id === pending.id)?.state).toBe("rejected");
   await expect(workspace.getGatekeeperById(pending.gatekeeperId)).rejects.toThrow();
-  expect(model.remainingSteps()).toBe(0);
-});
-
-it("threads creation options to the vendor and its approval card", async () => {
-  model = scriptedChatCompletions([
-    // An unknown option is an agent-fixable vendor rejection; the retry with the documented
-    // key succeeds and the approval card reflects the placement.
-    {
-      toolCall: {
-        id: "create-bad-option",
-        name: "createExternalResource",
-        arguments: {
-          vendorId: TEST_VENDOR_ID,
-          resourceUrlPattern: RESOURCE_URL_PATTERN,
-          title: "Shelved Thing",
-          bindingName: "SHELVED",
-          options: { bogus: true },
-        },
-      },
-    },
-    {
-      toolCall: {
-        id: "create-shelved",
-        name: "createExternalResource",
-        arguments: {
-          vendorId: TEST_VENDOR_ID,
-          resourceUrlPattern: RESOURCE_URL_PATTERN,
-          title: "Shelved Thing",
-          bindingName: "SHELVED",
-          options: { shelf: "top" },
-        },
-      },
-    },
-    { text: "Created the shelved thing." },
-  ]);
-  using publicApi = connect(harness.url);
-  using authenticated = await signUpScriptedUser(publicApi, "createopts");
-  using workspace = await authenticated.newGadget();
-  const chatId = await workspace.newChat("Create a thing on the top shelf.", SCRIPTED_MODEL_ID);
-  await waitForAgentSays(workspace, chatId, "Created the shelved thing.");
-
-  expect(toolResultShownToModel("create-bad-option")).toContain('accept only "shelf"');
-  const pending = await onlyPendingAction(workspace, "the creation action to be pending");
-  if (pending.type !== "action") throw new Error("Expected an action record");
-  expect(pending.description.description).toContain("on shelf top");
   expect(model.remainingSteps()).toBe(0);
 });

@@ -1,5 +1,4 @@
-import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, isCreatedResourceSuccess, type AiChatMessage,
-        type AiModelConfig}
+import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
   from "@gadgets/workshop-shared/api";
 import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
@@ -397,9 +396,7 @@ export function buildCompactionState(
         } else if (call.toolName === "createWorktree" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.worktreeId});
-        } else if (call.toolName === "createExternalResource" &&
-                   isCreatedResourceSuccess(call.output)) {
-          // Mirrors replay's re-establishment of the binding from the recorded output.
+        } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.gatekeeperId});
         }

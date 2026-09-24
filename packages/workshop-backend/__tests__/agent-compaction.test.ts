@@ -407,23 +407,6 @@ describe("compaction checkpoint state", () => {
     expect(state.chatBindings).toContainEqual(["NOTES", {type: "workpiece", id: 5}]);
   });
 
-  // A rejection is recorded as a string output with no `error` set; no binding was made, so none
-  // may be folded.
-  it("does not bind a rejected external-resource creation", () => {
-    let state = buildState([
-      {
-        ...message(0, agent, "Creating"),
-        toolCalls: [{
-          toolCallId: "call_1", toolName: "createExternalResource",
-          input: {vendorId: "docs", resourceUrlPattern: "https://example.com/*",
-                  title: "Notes", bindingName: "NOTES"},
-          output: "Cannot create the resource: no connected account.",
-        }],
-      },
-    ], 1);
-
-    expect(state.chatBindings.map(([name]) => name)).not.toContain("NOTES");
-  });
   it("carries a previous checkpoint's proposed state forward", () => {
     let previous = {
       chatId: 1, compactedTo: 3, summary: "earlier",
