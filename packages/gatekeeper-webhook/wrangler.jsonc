@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-webhook",
+  "main": ".wrangler/validate/src/webhook.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": false }],
+  "migrations": [{
+    "tag": "v1",
+    "new_sqlite_classes": ["UserAccount", "WebhookGatekeeper", "WebhookReceiver"]
+  }, {
+    "tag": "v2",
+    "new_sqlite_classes": ["WebhookEndpointRegistry"]
+  }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  }
+}

@@ -891,7 +891,7 @@ To construct a persistent stub, you must use the \`ctx.restore(params)\` API, wh
 Here is an example Gadget implementing the restore pattern:
 
 \`\`\`
-import { DurableObject, Greeter, restore } from "cloudflare:workers";
+import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
 
 export class Gadget extends DurableObject {
   constructor(ctx, env) {
@@ -922,6 +922,9 @@ class Greeter extends RpcTarget {
 \`\`\`
 
 Notice that the restore method is named using a symbol. This allows the system to access it, without making the method directly available over RPC.
+
+The restored object is separate from the Gadget and does not inherit its \`ctx\`. If a callback
+needs Gadget storage or another dependency, pass it to the callback constructor from \`[restore]()\`.
 
 Within a Gadget class with a restore method, you can call \`this.ctx.restore(params)\`. The given \`params\` (which must be serializable) will be passed back to the Gadget's restore method, and the resulting persistent RpcStub will be returned. This can then be passed to an API that requires persistent stubs, e.g.:
 
