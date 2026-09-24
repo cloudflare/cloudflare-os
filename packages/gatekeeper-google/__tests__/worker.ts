@@ -1,6 +1,6 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
+  ActionDescription, ActionField, ApprovalQueue, GitCache, HookController, HookDescription,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
@@ -28,6 +28,7 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionId?: number;
   actionDescription?: string;
+  actionFields: ActionField[] = [];
   readonly observations: string[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
@@ -41,6 +42,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
     this.actionId = actionId;
     this.actionDescription = description.description;
+    this.actionFields = description.fields ?? [];
   }
 
   async bindHook<Hook extends RpcTarget>(
@@ -54,11 +56,17 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
 export class TestHooks extends DurableObject<Env> {
   #lastActionDescription = "";
+  #lastActionFields: ActionField[] = [];
   #lastObservations: string[] = [];
 
   /** The approval description of the edit most recently submitted through these hooks. */
   get lastActionDescription(): string {
     return this.#lastActionDescription;
+  }
+
+  /** The structured fields of that approval description. */
+  get lastActionFields(): ActionField[] {
+    return this.#lastActionFields;
   }
 
   /** Observation descriptions authorized by the most recent session, successful or not. */
@@ -89,6 +97,7 @@ export class TestHooks extends DurableObject<Env> {
       return await body(session, queue);
     } finally {
       this.#lastActionDescription = queue.actionDescription ?? "";
+      this.#lastActionFields = queue.actionFields;
       this.#lastObservations = queue.observations;
     }
   }

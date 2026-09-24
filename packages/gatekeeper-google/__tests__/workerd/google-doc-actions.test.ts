@@ -649,6 +649,10 @@ function hooks() {
   return env.TEST_HOOKS.getByName("hooks");
 }
 
+function markdownField(label: string, value: string) {
+  return { label, kind: "text", value, syntax: "markdown" };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -838,10 +842,11 @@ describe("Google Doc list edits", () => {
     let actionId = await hooks().submitReplace(
       "restart-list", "2. Second", "3. Second",
     );
-    expect(await hooks().lastActionDescription)
-      .toContain("**New:**\n\n```markdown\n1. Second\n```");
-    expect(await hooks().lastActionDescription)
-      .toContain("**Requested New:**\n\n```markdown\n3. Second\n```");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "2. Second"),
+      markdownField("Requested New", "3. Second"),
+      markdownField("New", "1. Second"),
+    ]);
     let preview = await hooks().readContent("restart-list");
 
     expect(preview).toBe("1. First\n\nprose\n\n1. Second\n");
@@ -1208,11 +1213,12 @@ describe("Google Doc write receipts", () => {
     docs.install();
     let facet = "literal-markdown-approval";
     let actionId = await hooks().submitReplace(facet, "*x*", String.raw`\*x\*`);
-    let description = await hooks().lastActionDescription;
 
-    expect(description).toContain("**Old:**\n\n```markdown\n*x*\n```");
-    expect(description).toContain("**Requested New:**\n\n```markdown\n" + String.raw`\*x\*` + "\n```");
-    expect(description).toContain("**New:**\n\n```markdown\n*x*\n```");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Old", "*x*"),
+      markdownField("Requested New", String.raw`\*x\*`),
+      markdownField("New", "*x*"),
+    ]);
     expect(await hooks().applyAction(facet, actionId)).toBeNull();
     expect(docs.text()).toBe("x");
   });
@@ -1400,9 +1406,10 @@ describe("Google Doc write receipts", () => {
     docs.install();
     await hooks().submitAppend("literal-append-approval", String.raw`\# title`);
 
-    let description = await hooks().lastActionDescription;
-    expect(description).toContain("**Requested:**\n\n```markdown\n" + String.raw`\# title` + "\n```");
-    expect(description).toContain("**Resulting:**\n\n```markdown\n# title\n```");
+    expect(await hooks().lastActionFields).toEqual([
+      markdownField("Requested", String.raw`\# title`),
+      markdownField("Resulting", "# title"),
+    ]);
   });
 
   it.each([
