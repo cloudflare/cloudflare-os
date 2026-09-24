@@ -10,6 +10,13 @@ const view = makeTestRoot()
 
 afterEach(() => view.cleanup())
 
+// jsdom applies no stylesheet, so this checks for the class that stops the browser collapsing
+// whitespace, then returns the text as sent.
+function exact(el: Element) {
+  expect(el.classList).toContain('whitespace-pre-wrap')
+  return el.textContent
+}
+
 async function render(fields: ActionField[]) {
   await view.render(<ActionFields fields={fields} />)
   return document.body.querySelector('dl')!
@@ -74,6 +81,22 @@ describe('ActionFields', () => {
     expect(body!.textContent).toContain('Showing 3 of 9000 bytes')
     expect(comment!.textContent).toBe('Omitted: description limit reached')
     expect([...list.querySelectorAll('dt')].map(dt => dt.textContent)).toEqual(['Body', 'Comment'])
+  })
+
+  it('keeps the spaces and tabs of list items and file names', async () => {
+    const recipient = '"Ada  Lovelace" <ada@example.com>'
+    const list = await render([
+      { label: 'Title', kind: 'inline', value: 'a b' },
+      { label: 'To', kind: 'list', items: [recipient, ' edge\t'] },
+      { label: 'File', kind: 'file', name: 'q3  report\t.pdf', mediaType: 'text/plain;  x', size: 1, origin: 'provider' },
+    ])
+
+    const [title, to, file] = [...list.querySelectorAll('dd')]
+    expect(exact(title!.querySelector('code')!)).toBe('a b')
+    expect([...to!.querySelectorAll('code')].map(exact)).toEqual([recipient, ' edge\t'])
+    const [name, details] = [...file!.querySelectorAll('p')]
+    expect(exact(name!)).toBe('q3  report\t.pdf')
+    expect(exact(details!.querySelector('span')!)).toBe('text/plain;  x')
   })
 
   it('names empty values rather than showing nothing', async () => {

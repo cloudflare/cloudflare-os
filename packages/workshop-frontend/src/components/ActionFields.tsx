@@ -15,7 +15,10 @@ export function fieldCountLabel(count: number): string {
 const SYNTAX_LABELS = { markdown: 'Markdown', html: 'HTML', sql: 'SQL' } as const
 
 const captionClass = 'text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive'
-const codeClass = 'rounded bg-kumo-tint px-1 py-0.5 font-mono text-[12px] leading-[18px] text-kumo-default break-all'
+// Values keep every space and tab as sent: the kit marks a list item or file name complete with
+// runs of spaces, tabs or edge whitespace in it, which HTML's default white-space would collapse.
+const exactClass = 'whitespace-pre-wrap break-all'
+const codeClass = `rounded bg-kumo-tint px-1 py-0.5 font-mono text-[12px] leading-[18px] text-kumo-default ${exactClass}`
 const blockClass = 'm-0 max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-default whitespace-pre-wrap break-words'
 
 const Placeholder = ({ children }: { children: string }) => (
@@ -65,9 +68,11 @@ const FieldValue = ({ field }: { field: ActionField }) => {
     case 'file':
       return (
         <div className="rounded-xl border border-kumo-line/70 bg-kumo-base px-3 py-2">
-          <p className="m-0 break-all text-[13px] font-medium leading-[18px] text-kumo-default">{field.name}</p>
+          <p className={`m-0 text-[13px] font-medium leading-[18px] text-kumo-default ${exactClass}`}>
+            {field.name}
+          </p>
           <p className={`m-0 mt-0.5 break-all ${captionClass}`}>
-            {field.mediaType} · {formatSize(field.size)}
+            <span className={exactClass}>{field.mediaType}</span> · {formatSize(field.size)}
           </p>
           {field.sha256 && (
             <p className={`m-0 mt-0.5 break-all font-mono ${captionClass}`}>SHA-256 {field.sha256}</p>
