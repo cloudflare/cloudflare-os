@@ -186,14 +186,13 @@ be named by size and digest. Absent means incomplete: a summary, a truncated fie
 opaque bytes.
 
 Gatekeepers build descriptions with `ActionDescriptionBuilder` from
-`@gadgets/gatekeeper-kit/action-description`. Content fields render as fenced code blocks
-whose fence is one backtick longer than any run in the content, so the bytes inside are
-exact and nothing in them renders as Markdown (no images, no links). The builder tracks
-one 96 KiB UTF-8 budget across all fields: the overseer stores each action record as a
+`@gadgets/gatekeeper-kit/action-description`. Content travels as typed
+`ActionDescription.fields` that approval surfaces show as literal text, never as Markdown,
+leaving `description` the gatekeeper's own prose. The builder tracks one 96 KiB UTF-8
+budget across the prose and all fields: the overseer stores each action record as a
 single Durable Object value, which is limited to 128 KiB after serialization, and the
 remaining room covers the record's other fields and the storage wrapper. An oversize
-field is truncated with a note, later fields are omitted, and `finish()` then leaves the
-flag unset. An incomplete description is still submitted, and every approval surface
+field is truncated, later fields are omitted, and `finish()` then leaves the flag unset. An incomplete description is still submitted, and every approval surface
 tells the approver that part of what the action will send isn't shown.
 
 Two kinds of action are never complete: a git push (`pushedCommits`), whose commits

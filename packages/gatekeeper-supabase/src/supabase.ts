@@ -940,7 +940,7 @@ class SupabaseSessionContext {
     try {
       await this.approvalQueue.submitAction(actionId, {
         title: "Run SQL on Supabase",
-        // The builder's fence cannot be closed by the statement, unlike a literal ``` block.
+        // A field shows the statement literally, so nothing in it can escape into the prose.
         ...buildDescription(`Execute a mutating SQL statement against Supabase project ${codeSpan(ref)}.`)
           .verbatim("SQL", sql, "sql")
           .json("Parameters", params ?? [])

@@ -395,9 +395,9 @@ function onContent(intro: string, contentId: string, label = "Content ID"): Acti
 }
 
 // The approver's text, built so every value the agent supplied (bodies, comments, titles, labels)
-// is shown in full inside a fenced block, and the completeness claim is the builder's. An uploaded
-// attachment is agent-supplied bytes the approver cannot read as text, so it is named by size and
-// digest and never claims completeness.
+// is shown in full in a field, and the completeness claim is the builder's. An uploaded attachment
+// is agent-supplied bytes the approver cannot read as text, so it is named by size and digest and
+// never claims completeness.
 function describeAction(action: ConfluenceAction): ActionDescription {
   switch (action.type) {
     case "createContent": {
@@ -468,22 +468,23 @@ function describeAction(action: ConfluenceAction): ActionDescription {
         implementsRevert: true,
         actionKind: kind("label", "Add/remove label"),
       };
-    case "uploadAttachment": {
-      const { description } = onContent("Upload a file as an attachment.", action.contentId)
-        .inline("Filename", action.filename)
-        .inline("Media type", action.mediaType)
-        .inline("Size", `${action.file.size} bytes`)
-        .inline("SHA-256", action.file.digest)
-        .verbatim("Comment", action.comment ?? "")
-        .finish();
+    case "uploadAttachment":
       return {
         title: "Upload attachment to Confluence",
-        // The bytes themselves are not shown, so no completeness claim.
-        description,
+        // The bytes themselves are not shown, so the builder makes no completeness claim.
+        ...onContent("Upload a file as an attachment.", action.contentId)
+          .file("File", {
+            name: action.filename,
+            mediaType: action.mediaType,
+            size: action.file.size,
+            sha256: action.file.digest,
+            origin: "agent",
+          })
+          .verbatim("Comment", action.comment ?? "")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("uploadAttachment", "Upload attachment"),
       };
-    }
     case "trash":
       return {
         title: "Move Confluence content to trash",

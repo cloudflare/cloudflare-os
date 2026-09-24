@@ -867,6 +867,28 @@ describe("defineActions", () => {
     expect(Object.hasOwn(pushSpy.mock.calls[0]![1], "descriptionIsComplete")).toBe(false);
   });
 
+  it("forwards the description's fields, and puts no key on the wire when there are none", async () => {
+    const fields = [{ label: "SQL", kind: "text" as const, value: "one", syntax: "sql" as const }];
+    const withFields = bind({ describe: () => ({ ...presentation, fields }) });
+    const submitAction = submitSpy();
+
+    const id = await withFields.actions.submit(fakeQueue(submitAction), "execute", { sql: "one" });
+
+    expect(submitAction).toHaveBeenCalledWith(id, {
+      ...presentation,
+      fields,
+      actionKind: { tag: "sql", label: "Run SQL" },
+      autoApprovable: true,
+    });
+
+    for (const describe of [() => presentation, () => ({ ...presentation, fields: [] })]) {
+      const { actions } = bind({ describe });
+      const spy = submitSpy();
+      await actions.submit(fakeQueue(spy), "execute", { sql: "one" });
+      expect(Object.hasOwn(spy.mock.calls[0]![1], "fields")).toBe(false);
+    }
+  });
+
   it("puts no pushedCommits key on the wire when the description declares none", async () => {
     // Absent, not `undefined`: the overseer reads presence as "this action pushes".
     const { actions } = bind();
