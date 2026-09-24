@@ -2,7 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
-/** Workerd coverage for Google resource configurators, Gmail sessions, and the Gmail Durable Object. */
+/** Workerd coverage for Google resource configurators and the Gmail and Chat Durable Objects. */
 export default defineConfig({
   plugins: [
     capnwebValidate(),
@@ -14,6 +14,7 @@ export default defineConfig({
         bindings: {CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret"},
         durableObjects: {
           GmailGatekeeperImpl: {className: "GmailGatekeeperImpl", useSQLite: true},
+          GoogleChatGatekeeperImpl: {className: "GoogleChatGatekeeperImpl", useSQLite: true},
           TestHooks: {className: "TestHooks", useSQLite: true},
           UserAccount: {className: "UserAccount", useSQLite: true},
         },
@@ -22,6 +23,7 @@ export default defineConfig({
   ],
   test: {
     include: [
+      "__tests__/workerd/chat-actions.test.ts",
       "__tests__/workerd/configurators.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
