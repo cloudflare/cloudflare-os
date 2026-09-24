@@ -873,9 +873,17 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
         stopError = error instanceof Error ? error : new Error(String(error));
       }
       try {
+        // Deleting the workspace schedules an abort of its DO (scheduleAccessRestart), and that
+        // abort drops this session. Dispose only after the drop: an abort that finds no client left
+        // can crash local workerd, and with it every other session on the same Workshop.
+        const dropped = Promise.withResolvers<void>();
+        this.#publicApi.onRpcBroken(() => dropped.resolve());
         await this.#beforeCancellationDeadline(
             () => this.#workspace.deleteSelf(), Date.now() + CANCELLATION_TIMEOUT_MS,
             "Workspace deletion timed out");
+        await this.#beforeCancellationDeadline(
+            () => dropped.promise, Date.now() + CANCELLATION_TIMEOUT_MS,
+            "The Workshop kept the session open after deleting its workspace");
       } catch (error) {
         deleteError = error instanceof Error ? error : new Error(String(error));
       }

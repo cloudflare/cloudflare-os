@@ -201,11 +201,11 @@ export function evalNetworkInterceptor(
 
 // One Workshop per model per test process, shared by that eval file's concurrent trials; each trial
 // still signs up its own user with its own workspace. On one 16 GB runner, 40 trials on four
-// Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. Closing a trial's session
-// deletes its workspace, which aborts that workspace's DO with no client left: the pattern
-// settleRestart() says can crash local workerd. It has not here, in 40 concurrent trials or in the
-// integration suites that close sessions on one Workshop; if it did, the file's remaining trials
-// would fail as infrastructure errors, which are never stored.
+// Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. The price is that a workerd
+// crash drops every trial's socket on the Workshop: turns reconnect, but a check in flight fails
+// and counts as the agent's failure. Deleting a workspace that ran a Gadget can crash local workerd
+// if no client is left when its DO aborts, so WorkshopAgentSession.close() stays connected until
+// that abort.
 const workshops = new Map<string, Promise<Harness>>();
 
 function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harness> {
