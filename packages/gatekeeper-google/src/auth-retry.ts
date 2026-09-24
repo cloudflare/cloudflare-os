@@ -103,10 +103,12 @@ export async function fetchWithAuthRetry(
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
   let idempotent = method === "GET" || opts.idempotent === true;
-  // A request can only be replayed if its body can be sent again. A string body (what every call
-  // site uses today) re-serializes fine; a stream is consumed by the first attempt, so retrying it
-  // would send an empty or errored body. Nothing to replay is likewise fine.
-  let replayable = init.body === undefined || init.body === null || typeof init.body === "string";
+  // A request can only be replayed if its body can be sent again. A string or byte-array body
+  // (what the call sites use today) re-serializes fine; a stream is consumed by the first
+  // attempt, so retrying it would send an empty or errored body. Nothing to replay is likewise
+  // fine.
+  let replayable = init.body === undefined || init.body === null ||
+    typeof init.body === "string" || init.body instanceof Uint8Array;
 
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;

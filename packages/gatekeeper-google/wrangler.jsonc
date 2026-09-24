@@ -30,6 +30,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": [ "GoogleDriveGatekeeperImpl", "GoogleDocGatekeeperImpl" ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [ "GoogleChatGatekeeperImpl" ]
     }
   ],
   "observability": {
