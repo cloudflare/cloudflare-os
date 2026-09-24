@@ -1573,7 +1573,7 @@ function materializeGoogleDocAction(
           tab.markdown,
           matchStart,
           matchStart + action.oldMarkdown.length,
-          action.newMarkdown,
+          canonicalizeMarkdownReplacement(action.oldMarkdown, action.newMarkdown),
           tab.tabId);
       return { tab, requests };
     }
@@ -2094,7 +2094,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       // With no earlier edit to this tab, approval will build exactly these requests.
       if (selected.markdown === selected.tab.markdown) {
         computeReplaceOperations(selected.tab.sourceMap, selected.markdown, start,
-          start + oldMarkdown.length, newMarkdown, selected.tab.tabId);
+          start + oldMarkdown.length, renderedNewMarkdown, selected.tab.tabId);
       }
     } catch (error) {
       // The error says whether that tab, or that text, exists.

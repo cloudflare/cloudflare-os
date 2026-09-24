@@ -2299,6 +2299,14 @@ export function computeReplaceOperations(
       "The match may span unsupported content.");
   }
   let insertMarkdown = trimmedNew;
+  // A blank-line separator beside paragraph text is a single paragraph break.
+  let besideText = (index: number) => markdown[index] !== undefined && markdown[index] !== "\n";
+  if (besideText(trimmedMatchEnd) && insertMarkdown.endsWith("\n\n")) {
+    insertMarkdown = insertMarkdown.slice(0, -1);
+  }
+  if (besideText(trimmedMatchStart - 1) && insertMarkdown.startsWith("\n\n")) {
+    insertMarkdown = insertMarkdown.slice(1);
+  }
   let writeOptions: MarkdownWriteOptions;
   if (docRange.startsAfterParagraph) {
     insertMarkdown = "\n" + insertMarkdown;
@@ -2308,9 +2316,7 @@ export function computeReplaceOperations(
       sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
     };
   }
-  // Before paragraph text, a trailing blank line already parses as the break.
-  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown) &&
-    (markdown[trimmedMatchEnd] === "\n" || !insertMarkdown.endsWith("\n\n"));
+  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
 
   let requests: any[] = [];
   if (docRange.start < docRange.end) {

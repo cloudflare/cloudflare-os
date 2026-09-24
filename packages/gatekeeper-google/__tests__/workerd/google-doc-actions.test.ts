@@ -1140,19 +1140,21 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent("literal-backslash")).toBe("Path files\n");
   });
 
-  it("shows literal Markdown escapes in the replacement approval", async () => {
+  it("applies the replacement its approval shows for literal escapes", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([{ runs: [
       { text: "x", style: { italic: true } }, "\n",
     ] }]).body);
     docs.install();
     let facet = "literal-markdown-approval";
-    await hooks().submitReplace(facet, "*x*", String.raw`\*x\*`);
+    let actionId = await hooks().submitReplace(facet, "*x*", String.raw`\*x\*`);
     let description = await hooks().lastActionDescription;
 
     expect(description).toContain("**Old:**\n\n```markdown\n*x*\n```");
     expect(description).toContain("**Requested New:**\n\n```markdown\n" + String.raw`\*x\*` + "\n```");
     expect(description).toContain("**New:**\n\n```markdown\n*x*\n```");
+    expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    expect(docs.text()).toBe("x");
   });
 
   it("commits whitespace when replacing a heading", async () => {
