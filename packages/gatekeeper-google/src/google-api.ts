@@ -198,14 +198,15 @@ export async function getAccessToken(
   };
 }
 
-type GoogleAccountProfile = {
+export type GoogleAccountProfile = {
+  /** The stable Google account ID; also the `{user}` in Chat's `users/{user}` names. */
   sub: string;
   email?: string;
   name?: string;
   picture?: string;
 };
 
-async function getGoogleAccountProfile(accessToken: string): Promise<GoogleAccountProfile> {
+export async function getGoogleAccountProfile(accessToken: string): Promise<GoogleAccountProfile> {
   const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: {

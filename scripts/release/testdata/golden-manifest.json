@@ -388,6 +388,12 @@
             "GoogleDocGatekeeperImpl"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "GoogleChatGatekeeperImpl"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [

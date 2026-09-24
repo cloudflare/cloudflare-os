@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { AccessTokenCache, type AccessTokenRequest } from "../src/auth-retry";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
 
 /** A stub authority recording every request, answering with whatever token it currently holds. */
 function authority(initial: string) {
@@ -45,5 +45,37 @@ describe("AccessTokenCache", () => {
 
     expect(await account.cache.get()).toBe("widened");
     expect(account.requests).toHaveLength(2);
+  });
+});
+
+describe("fetchWithAuthRetry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Chat's attachment upload sends its multipart body as a Uint8Array. Unlike a stream, a byte
+  // array survives being sent, so a 401 must still buy the one-shot refreshed retry — otherwise a
+  // token Google invalidated early permanently fails every upload until its recorded expiry.
+  it("replays a byte-array body once after a 401 refresh", async () => {
+    let bodies: string[] = [];
+    let tokens: (string | null)[] = [];
+    let status = 401;
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      bodies.push(new TextDecoder().decode(init.body as Uint8Array));
+      tokens.push(new Headers(init.headers).get("Authorization"));
+      let current = status;
+      status = 200;
+      return new Response("{}", { status: current });
+    });
+    let minted = 0;
+    let response = await fetchWithAuthRetry(
+      "https://chat.googleapis.com/upload/v1/spaces/AAAA/attachments:upload",
+      { method: "POST", body: new TextEncoder().encode("payload") },
+      async () => `token-${++minted}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(bodies).toEqual(["payload", "payload"]);
+    expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 });
