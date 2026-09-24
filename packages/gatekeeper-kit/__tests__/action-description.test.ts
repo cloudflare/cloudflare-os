@@ -4,6 +4,7 @@ import {
   buildDescription,
   codeSpan,
   defuseFences,
+  type FileDescription,
   plainInline,
   quoteUntrusted,
   sanitizeTitle,
@@ -279,6 +280,16 @@ describe("ActionDescriptionBuilder", () => {
     const agent = buildDescription().file("File", { ...file, origin: "agent" }).finish();
     expect(agent.fields).toEqual([{ label: "File", kind: "file", ...file, origin: "agent" }]);
     expect(Object.hasOwn(agent, "descriptionIsComplete")).toBe(false);
+  });
+
+  it("takes only a file's own members, whatever else the caller's object carries", () => {
+    const stray = {
+      label: "Forged", kind: "inline", truncated: { shownBytes: 0, totalBytes: 1 },
+      name: "a.txt", mediaType: "text/plain", size: 1, origin: "provider",
+    } as unknown as FileDescription;
+    expect(buildDescription().file("File", stray).finish().fields).toEqual([
+      { label: "File", kind: "file", name: "a.txt", mediaType: "text/plain", size: 1, origin: "provider" },
+    ]);
   });
 
   it("adds an exact name field for a file name with invisible characters", () => {

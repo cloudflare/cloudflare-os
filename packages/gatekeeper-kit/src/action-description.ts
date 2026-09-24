@@ -306,7 +306,12 @@ export class ActionDescriptionBuilder {
     }
     const undisplayable = (text: string) => /[\r\n]/.test(text) || INVISIBLE.test(text);
     if (file.origin === "agent" || undisplayable(file.mediaType)) this.#complete = false;
-    this.#push({ label, kind: "file", ...file }, bytes);
+    // Built from its known members, so nothing else a caller's object carries (a `label`, `kind`
+    // or `truncated` the type does not admit) reaches the field.
+    const { name, mediaType, size, sha256, origin } = file;
+    this.#push({
+      label, kind: "file", name, mediaType, size, ...(sha256 !== undefined ? { sha256 } : {}), origin,
+    }, bytes);
     if (undisplayable(file.name)) this.json(`${label} name`, file.name);
     return this;
   }
