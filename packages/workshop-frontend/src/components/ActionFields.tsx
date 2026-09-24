@@ -28,6 +28,27 @@ const Placeholder = ({ children }: { children: string }) => (
 const Captions = ({ captions }: { captions: string[] }) =>
   captions.length > 0 && <p className={`m-0 mt-1 ${captionClass}`}>{captions.join(' · ')}</p>
 
+// Characters that render as nothing, or reorder the text around them: controls, and default-
+// ignorables such as zero-width spaces and bidi overrides, which can make `invoice\u202Efdp.exe`
+// read as `invoiceexe.pdf`.
+// oxlint-disable-next-line no-control-regex -- matching exactly these characters is the point
+const UNDISPLAYABLE = /[\u0000-\u001F\u007F-\u009F\p{Default_Ignorable_Code_Point}]/u
+// oxlint-disable-next-line no-control-regex -- as above
+const UNDISPLAYABLE_GLOBAL = /[\u0000-\u001F\u007F-\u009F\p{Default_Ignorable_Code_Point}]/gu
+
+/**
+ * A file name or media type exactly as sent. The kit shows such a value as data rather than
+ * rerouting it, so one with an undisplayable character is shown as an escaped JSON string instead.
+ */
+const ExactName = ({ text, className = '' }: { text: string, className?: string }) => {
+  if (!UNDISPLAYABLE.test(text)) return <span className={`${className} ${exactClass}`}>{text}</span>
+  // `JSON.stringify` escapes C0 controls but not C1 or the default-ignorables; an astral match
+  // (a tag character) is escaped as its surrogate pair.
+  const escaped = JSON.stringify(text).replace(UNDISPLAYABLE_GLOBAL, c =>
+    Array.from({ length: c.length }, (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, '0')}`).join(''))
+  return <span className={`${className} ${exactClass} font-mono`}>{escaped}</span>
+}
+
 const formatSize = (size: number) => {
   const bytes = `${size} byte${size === 1 ? '' : 's'}`
   return size < 1024 ? bytes : `${formatAttachmentSize(size)} (${bytes})`
@@ -68,12 +89,15 @@ const FieldValue = ({ field }: { field: ActionField }) => {
     case 'file':
       return (
         <div className="rounded-xl border border-kumo-line/70 bg-kumo-base px-3 py-2">
-          <p className={`m-0 text-[13px] font-medium leading-[18px] text-kumo-default ${exactClass}`}>
-            {field.name}
+          <p className="m-0">
+            <ExactName text={field.name} className="text-[13px] font-medium leading-[18px] text-kumo-default" />
           </p>
           <p className={`m-0 mt-0.5 break-all ${captionClass}`}>
-            <span className={exactClass}>{field.mediaType}</span> · {formatSize(field.size)}
+            <ExactName text={field.mediaType} /> · {formatSize(field.size)}
           </p>
+          {(UNDISPLAYABLE.test(field.name) || UNDISPLAYABLE.test(field.mediaType)) && (
+            <p className={`m-0 mt-0.5 ${captionClass}`}>Shown escaped: contains invisible characters</p>
+          )}
           {field.sha256 && (
             <p className={`m-0 mt-0.5 break-all font-mono ${captionClass}`}>SHA-256 {field.sha256}</p>
           )}

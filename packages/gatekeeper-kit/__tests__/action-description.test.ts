@@ -292,13 +292,13 @@ describe("ActionDescriptionBuilder", () => {
     ]);
   });
 
-  it("adds an exact name field for a file name with invisible characters", () => {
-    const { fields, descriptionIsComplete } = buildDescription()
-      .file("File",
-        { name: "invoice\u202Efdp.exe", mediaType: "application/pdf", size: 1, origin: "provider" })
-      .finish();
-    expect(descriptionIsComplete).toBe(true);
-    expect(fields![1]).toEqual({ label: "File name", kind: "json", value: '"invoice\\u202efdp.exe"' });
+  it("keeps a file name with invisible characters in the file field, for surfaces to escape", () => {
+    const file = { name: "invoice\u202Efdp.exe", mediaType: "application/pdf", size: 1 };
+    expect(buildDescription().file("File", { ...file, origin: "provider" }).finish()).toEqual({
+      description: "",
+      fields: [{ label: "File", kind: "file", ...file, origin: "provider" }],
+      descriptionIsComplete: true,
+    });
   });
 
   it("counts prose against the budget without cutting it", () => {

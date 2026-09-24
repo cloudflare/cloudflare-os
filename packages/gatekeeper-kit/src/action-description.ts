@@ -293,9 +293,8 @@ export class ActionDescriptionBuilder {
    * Adds bytes named rather than shown: a file's name, media type, size and digest. Bytes the
    * gatekeeper re-sends unchanged from the same provider (`origin: "provider"`) count as shown;
    * bytes from this workspace (`origin: "agent"`) leave the description incomplete, since the
-   * approver cannot read them. A name with a line break or an invisible character is also added
-   * as a `json` field, so it is shown exactly; a media type with one leaves the description
-   * incomplete. Kept whole or omitted.
+   * approver cannot read them. Approval surfaces show a name or media type with control or
+   * invisible characters escaped, so it is exact either way. Kept whole or omitted.
    */
   file(label: string, file: FileDescription): this {
     const bytes = byteLength(file.name) + byteLength(file.mediaType) +
@@ -304,15 +303,13 @@ export class ActionDescriptionBuilder {
       this.#omit(label, bytes);
       return this;
     }
-    const undisplayable = (text: string) => /[\r\n]/.test(text) || INVISIBLE.test(text);
-    if (file.origin === "agent" || undisplayable(file.mediaType)) this.#complete = false;
+    if (file.origin === "agent") this.#complete = false;
     // Built from its known members, so nothing else a caller's object carries (a `label`, `kind`
     // or `truncated` the type does not admit) reaches the field.
     const { name, mediaType, size, sha256, origin } = file;
     this.#push({
       label, kind: "file", name, mediaType, size, ...(sha256 !== undefined ? { sha256 } : {}), origin,
     }, bytes);
-    if (undisplayable(file.name)) this.json(`${label} name`, file.name);
     return this;
   }
 

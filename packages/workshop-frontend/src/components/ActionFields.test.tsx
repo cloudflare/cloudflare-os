@@ -88,15 +88,39 @@ describe('ActionFields', () => {
     const list = await render([
       { label: 'Title', kind: 'inline', value: 'a b' },
       { label: 'To', kind: 'list', items: [recipient, ' edge\t'] },
-      { label: 'File', kind: 'file', name: 'q3  report\t.pdf', mediaType: 'text/plain;  x', size: 1, origin: 'provider' },
+      { label: 'File', kind: 'file', name: ' q3  report.pdf', mediaType: 'text/plain;  x', size: 1, origin: 'provider' },
     ])
 
     const [title, to, file] = [...list.querySelectorAll('dd')]
     expect(exact(title!.querySelector('code')!)).toBe('a b')
     expect([...to!.querySelectorAll('code')].map(exact)).toEqual([recipient, ' edge\t'])
-    const [name, details] = [...file!.querySelectorAll('p')]
-    expect(exact(name!)).toBe('q3  report\t.pdf')
-    expect(exact(details!.querySelector('span')!)).toBe('text/plain;  x')
+    const [name, mediaType] = [...file!.querySelectorAll('span')]
+    expect(exact(name!)).toBe(' q3  report.pdf')
+    expect(exact(mediaType!)).toBe('text/plain;  x')
+  })
+
+  it('shows a file name or media type with invisible characters escaped, never raw', async () => {
+    const list = await render([{
+      label: 'Attachment 1', kind: 'file', name: 'invoice\u202Efdp.exe',
+      mediaType: 'text/plain\u200B', size: 1, origin: 'provider',
+    }])
+
+    const card = list.querySelector('dd')!
+    expect(card.textContent).not.toMatch(/[\u202E\u200B]/)
+    expect(card.textContent).toContain('"invoice\\u202efdp.exe"')
+    expect(card.textContent).toContain('"text/plain\\u200b"')
+    expect(card.textContent).toContain('Shown escaped: contains invisible characters')
+    expect(JSON.parse('"invoice\\u202efdp.exe"')).toBe('invoice\u202Efdp.exe')
+  })
+
+  it('shows a plain file name as itself, with no escape note', async () => {
+    const list = await render([
+      { label: 'File', kind: 'file', name: 'report.pdf', mediaType: 'application/pdf', size: 1, origin: 'provider' },
+    ])
+
+    expect(list.textContent).toContain('report.pdf')
+    expect(list.textContent).not.toContain('"report.pdf"')
+    expect(list.textContent).not.toContain('Shown escaped')
   })
 
   it('names empty values rather than showing nothing', async () => {
