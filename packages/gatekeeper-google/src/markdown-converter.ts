@@ -380,12 +380,16 @@ function tableCellToHtml(
   return `    <td${attributes}>\n${indentHtml(content, 6)}\n    </td>`;
 }
 
-/** Render the list starting at `startIndex`, which `items` must classify as a list item. */
+/**
+ * Render the list starting at `startIndex`, which `items` must classify as a list item. Levels
+ * between `level` and the list's own are filled with markerless items so its depth survives.
+ */
 function tableListToHtml(
   elements: StructuralElement[],
   items: readonly (ParagraphListItem | undefined)[],
   startIndex: number,
   listNumbers: Map<string, number[]>,
+  level = 0,
 ): { html: string; nextIndex: number } {
   let first = items[startIndex]!;
   let tag = first.listType === "numbered" ? "ol" : "ul";
@@ -410,14 +414,19 @@ function tableListToHtml(
       let nested = items[index];
       if (!nested || nested.listId !== first.listId ||
           nested.nestingLevel <= first.nestingLevel) break;
-      let child = tableListToHtml(elements, items, index, listNumbers);
+      let child = tableListToHtml(elements, items, index, listNumbers, first.nestingLevel + 1);
       html += child.html;
       index = child.nextIndex;
     }
     html += "</li>";
   }
 
-  return { html: `${html}</${tag}>`, nextIndex: index };
+  let skipped = first.nestingLevel - level;
+  return {
+    html: `${MARKERLESS_LIST}<li>`.repeat(skipped) + `${html}</${tag}>` +
+      "</li></ul>".repeat(skipped),
+    nextIndex: index,
+  };
 }
 
 function tableCellElementToHtml(
@@ -487,11 +496,12 @@ function htmlOrderedListType(glyphType: string): string | undefined {
   }
 }
 
+/** A list with hidden markers, for items whose glyph is written inline or absent. */
+const MARKERLESS_LIST = '<ul style="list-style-type: none">';
+
 function htmlListOpeningTag(item: ParagraphListItem, listNumber: number | undefined): string {
-  if (item.listType === null) return '<ul style="list-style-type: none">';
-  if (item.glyphType === undefined) {
-    return `<ul${item.glyphSymbol ? ' style="list-style-type: none"' : ""}>`;
-  }
+  if (item.listType === null) return MARKERLESS_LIST;
+  if (item.glyphType === undefined) return item.glyphSymbol ? MARKERLESS_LIST : "<ul>";
 
   let type = htmlOrderedListType(item.glyphType);
   let typeAttribute = type ? ` type="${type}"` : "";
@@ -1577,28 +1587,41 @@ function alignSourceBlocks(
   targets: ParsedBlock[],
   markdown: string,
 ): (BlockMapping | undefined)[] {
-  if (sources.length === targets.length) return sources;
+  let lengths = Array.from({ length: sources.length + 1 },
+    () => Array.from({ length: targets.length + 1 }, () => 0));
+  for (let s = sources.length - 1; s >= 0; s--) {
+    for (let t = targets.length - 1; t >= 0; t--) {
+      lengths[s][t] = blocksMatch(sources[s], targets[t], markdown)
+        ? lengths[s + 1][t + 1] + 1
+        : Math.max(lengths[s + 1][t], lengths[s][t + 1]);
+    }
+  }
 
   let aligned = targets.map<BlockMapping | undefined>(() => undefined);
-  let prefix = 0;
-  while (prefix < sources.length && prefix < targets.length &&
-      blocksMatch(sources[prefix], targets[prefix], markdown)) {
-    aligned[prefix] = sources[prefix];
-    prefix++;
+  let gapSource = 0;
+  let gapTarget = 0;
+  // An unmatched run of equal length on both sides is edited in place, so it pairs by position.
+  let pairGap = (s: number, t: number) => {
+    if (s - gapSource !== t - gapTarget) return;
+    for (let offset = 0; gapSource + offset < s; offset++) {
+      aligned[gapTarget + offset] = sources[gapSource + offset];
+    }
+  };
+  for (let s = 0, t = 0; s < sources.length && t < targets.length;) {
+    if (lengths[s][t] === lengths[s + 1][t]) s++;
+    else if (lengths[s][t] === lengths[s][t + 1]) t++;
+    else {
+      pairGap(s, t);
+      aligned[t] = sources[s];
+      gapSource = ++s;
+      gapTarget = ++t;
+    }
   }
+  pairGap(sources.length, targets.length);
 
-  let sourceEnd = sources.length - 1;
-  let targetEnd = targets.length - 1;
-  while (sourceEnd >= prefix && targetEnd >= prefix &&
-      blocksMatch(sources[sourceEnd], targets[targetEnd], markdown)) {
-    aligned[targetEnd--] = sources[sourceEnd--];
-  }
-
-  let sourceListChanged = sources.some((source, index) =>
-    index >= prefix && index <= sourceEnd && source.listType !== null);
-  let targetListChanged = targets.some((target, index) =>
-    index >= prefix && index <= targetEnd && target.listType !== null);
-  if (sourceListChanged && targetListChanged) {
+  if (sources.length !== targets.length &&
+      sources.some(source => !aligned.includes(source) && source.listType !== null) &&
+      targets.some((target, index) => !aligned[index] && target.listType !== null)) {
     throw new Error(
       "replaceText: cannot preserve list formatting when one edit changes the block count.",
     );
@@ -1674,8 +1697,10 @@ export function markdownToDocRequests(
     options.source !== undefined && sourceBlockCount !== blocks.length;
   let sourceBlocks: (BlockMapping | undefined)[] | undefined = options.source &&
     alignSourceBlocks(options.source.blocks, blocks, options.source.markdown);
+  // A rebuilt list re-inherits its bullets, so only its positional shape must survive.
   let preserveLists = listPreservation(
-    sourceBlocks, blocks, rebuild, options.source?.markdown ?? "");
+    rebuild ? options.source?.blocks : sourceBlocks, blocks, rebuild,
+    options.source?.markdown ?? "");
   if (rebuild && sourceBlocks?.some((source, index) =>
     source?.listType && source.listType === blocks[index].listType && !preserveLists[index])) {
     throw new Error(
@@ -1729,15 +1754,12 @@ export function markdownToDocRequests(
       clearIndent: false,
     };
     if (preserveStyle) return change;
-    if (source) {
-      let resetList = !preserveList && (rebuild || source.listId !== undefined);
-      change.deleteBullets = change.clearIndent = resetList;
-      if (rebuild || source.namedStyleType !== targetStyle) change.namedStyleType = targetStyle;
-    } else if (resetParagraphs) {
-      change.deleteBullets = true;
-      change.clearIndent = clearListIndent;
-      change.namedStyleType = targetStyle;
-    } else if (targetStyle !== "NORMAL_TEXT") {
+    let resetList = !preserveList &&
+      (source ? rebuild || source.listId !== undefined : resetParagraphs);
+    change.deleteBullets = resetList;
+    change.clearIndent = resetList && (source !== undefined || clearListIndent);
+    if (source ? rebuild || source.namedStyleType !== targetStyle
+      : resetParagraphs || targetStyle !== "NORMAL_TEXT") {
       change.namedStyleType = targetStyle;
     }
     return change;

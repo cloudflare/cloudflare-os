@@ -2094,6 +2094,11 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       );
       renderedNewMarkdown = canonicalizeMarkdownReplacement(oldMarkdown, newMarkdown);
       applyMarkdownEdit(selected, start, start + oldMarkdown.length, renderedNewMarkdown);
+      // With no earlier edit to this tab, approval will build exactly these requests.
+      if (selected.markdown === selected.tab.markdown) {
+        computeReplaceOperations(selected.tab.sourceMap, selected.markdown, start,
+          start + oldMarkdown.length, newMarkdown, selected.tab.tabId);
+      }
     } catch (error) {
       // The error says whether that tab, or that text, exists.
       await this.#approvalQueue.authorizeObservation({

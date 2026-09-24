@@ -625,6 +625,24 @@ describe("Google Docs tables", () => {
     );
   });
 
+  it("keeps skipped nesting levels", () => {
+    let lists = { L1: { listProperties: { nestingLevels: [
+      { glyphType: "DECIMAL" }, { glyphType: "DECIMAL" }, { glyphType: "DECIMAL" },
+    ] } } };
+    let skipped = cellTab([
+      { runs: ["Top\n"], bullet: { listId: "L1" } },
+      { runs: ["Deep\n"], bullet: { listId: "L1", nestingLevel: 2 } },
+    ], lists);
+    let indented = cellTab([{ runs: ["Start\n"], bullet: { listId: "L1", nestingLevel: 1 } }], lists);
+
+    expect(docTabToMarkdown(skipped).markdown).toContain(
+      '<ol><li>Top<ul style="list-style-type: none"><li><ol><li>Deep</li></ol></li></ul></li></ol>',
+    );
+    expect(docTabToMarkdown(indented).markdown).toContain(
+      '<td><ul style="list-style-type: none"><li><ol><li>Start</li></ol></li></ul></td>',
+    );
+  });
+
   it("continues an interrupted ordered list in a table cell", () => {
     let tab = cellTab([
       { runs: ["First\n"], bullet: { listId: "L1" } },
@@ -1533,6 +1551,55 @@ describe("computeReplaceOperations", () => {
     ).requests;
 
     expect(requests.some(request => "createParagraphBullets" in request)).toBe(false);
+  });
+
+  it.each([
+    ["title", buildTab([{ runs: ["Kept\n"], namedStyleType: "TITLE" }]), "# A\n\n# Kept\n\n# B"],
+    ["markerless list item", buildTab([{ runs: ["Kept\n"], bullet: { listId: "none" } }], {
+      none: { listProperties: { nestingLevels: [{ glyphType: "NONE" }] } },
+    }), "# A\n\nKept\n\n# B"],
+  ])("leaves an unchanged %s between inserted blocks alone", (_, tab, replacement) => {
+    let { sourceMap, markdown } = docTabToMarkdown(tab);
+    let requests = computeReplaceOperations(
+      sourceMap, markdown, 0, markdown.trimEnd().length, replacement, TAB_ID,
+    ).requests;
+
+    // "A\nKept\nB" puts the unchanged paragraph at 3–8.
+    expect(requests.filter(request => {
+      let range = (request.updateParagraphStyle ?? request.deleteParagraphBullets)?.range;
+      return range && range.startIndex < 8 && range.endIndex > 3;
+    })).toEqual([]);
+  });
+
+  it.each([
+    ["# Added\n\n# Kept", "HEADING_1"],
+    ["Intro\n\n# Kept", "NORMAL_TEXT"],
+  ])("keeps the title on its own paragraph in %j", (replacement, addedStyle) => {
+    let { sourceMap, markdown } = docTabToMarkdown(buildTab([
+      { runs: ["Kept\n"], namedStyleType: "TITLE" },
+      { runs: ["Removed\n"] },
+    ]));
+    let requests = computeReplaceOperations(
+      sourceMap, markdown, 0, markdown.trimEnd().length, replacement, TAB_ID,
+    ).requests;
+
+    expect(requests.flatMap(request => request.updateParagraphStyle
+      ? [request.updateParagraphStyle.paragraphStyle.namedStyleType] : [])).toEqual([
+      addedStyle, "TITLE",
+    ]);
+  });
+
+  it("keeps a numbered list whose items shift within one rewrite", () => {
+    let { sourceMap, markdown } = docTabToMarkdown(buildTab([
+      { runs: ["a\n"], bullet: { listId: "L1" } },
+      { runs: ["b\n"], bullet: { listId: "L1" } },
+    ], { L1: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }] } } }));
+    let requests = computeReplaceOperations(
+      sourceMap, markdown, 0, markdown.trimEnd().length, "1. b\n1. c", TAB_ID,
+    ).requests;
+
+    expect(requests.some(request =>
+      "createParagraphBullets" in request || "deleteParagraphBullets" in request)).toBe(false);
   });
 
   it("preserves title and custom list styles during inline edits", () => {

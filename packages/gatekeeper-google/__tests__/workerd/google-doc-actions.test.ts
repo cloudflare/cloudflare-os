@@ -16,6 +16,7 @@ type BatchRequest = {
   updateParagraphStyle?: {
     range: DocCoordinate & { startIndex: number; endIndex: number };
     paragraphStyle: { namedStyleType?: string };
+    fields: string;
   };
   createParagraphBullets?: {
     range: DocCoordinate & { startIndex: number; endIndex: number };
@@ -32,6 +33,12 @@ type BatchRequest = {
 };
 
 type ModelListItem = { id: string; preset: string };
+/** `"indented"` is the indent Google leaves on a paragraph whose bullet was removed. */
+type ModelListSlot = ModelListItem | "indented" | null;
+
+function isListItem(slot: ModelListSlot | undefined): slot is ModelListItem {
+  return typeof slot === "object" && slot !== null;
+}
 
 /** One tab of the model document: its own text, and its place in the tab tree. */
 type ModelTab = {
@@ -43,7 +50,7 @@ type ModelTab = {
   body?: GoogleDocsTab["body"];
   links: { start: number; end: number; url: string }[];
   paragraphStyles?: string[];
-  paragraphLists?: (ModelListItem | null)[];
+  paragraphLists?: ModelListSlot[];
 };
 type BodyElement = GoogleDocsTab["body"]["content"][number];
 
@@ -60,6 +67,17 @@ function withoutDeletedParagraphs<T>(
     paragraph++;
   }
   return kept;
+}
+
+/** Indexes of the plain-text paragraphs `range` touches. */
+function paragraphsIn(text: string, range: { startIndex: number; endIndex: number }): number[] {
+  let startIndex = 1;
+  return text.split("\n").flatMap((paragraph, index) => {
+    let endIndex = startIndex + paragraph.length + 1;
+    let overlaps = range.startIndex < endIndex && range.endIndex > startIndex;
+    startIndex = endIndex;
+    return overlaps ? [index] : [];
+  });
 }
 
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
@@ -170,6 +188,7 @@ class DocsModel {
     let counts = new Map<string, number>();
     return tab.text.split("\n").map((text, index) => {
       let list = tab.paragraphLists?.[index];
+      if (list === "indented") return `\t${text}`;
       if (!list) return text;
       let number = (counts.get(list.id) ?? 0) + 1;
       counts.set(list.id, number);
@@ -279,11 +298,12 @@ class DocsModel {
       } else if (request.deleteContentRange) {
         let { startIndex, endIndex } = request.deleteContentRange.range;
         this.#deleteText(tab, startIndex, endIndex);
-      } else if (request.updateParagraphStyle?.paragraphStyle.namedStyleType) {
-        this.#setParagraphStyle(
-          tab, request.updateParagraphStyle.range,
-          request.updateParagraphStyle.paragraphStyle.namedStyleType,
-        );
+      } else if (request.updateParagraphStyle) {
+        let { range, paragraphStyle, fields } = request.updateParagraphStyle;
+        if (paragraphStyle.namedStyleType) {
+          this.#setParagraphStyle(tab, range, paragraphStyle.namedStyleType);
+        }
+        if (fields.split(",").includes("indentStart")) this.#clearIndent(tab, range);
       } else if (request.deleteParagraphBullets) {
         this.#setBullets(tab, request.deleteParagraphBullets.range);
       } else if (request.createParagraphBullets) {
@@ -438,24 +458,24 @@ class DocsModel {
   ): void {
     let lists = tab.paragraphLists;
     if (!lists) return;
-    let start = range.startIndex - 1;
-    let end = range.endIndex - 1;
-    let offset = 0;
-    let indexes = tab.text.split("\n").flatMap((text, index) => {
-      let paragraphEnd = offset + text.length + 1;
-      let overlaps = offset < end && paragraphEnd > start;
-      offset = paragraphEnd;
-      return overlaps ? [index] : [];
-    });
+    let indexes = paragraphsIn(tab.text, range);
     if (!preset) {
-      for (let index of indexes) lists[index] = null;
+      for (let index of indexes) if (lists[index]) lists[index] = "indented";
       return;
     }
     let first = indexes[0];
     if (first === undefined) return;
     let preceding = lists[first - 1];
-    let id = preceding?.preset === preset ? preceding.id : `list-${this.#nextListId++}`;
+    let id = isListItem(preceding) && preceding.preset === preset
+      ? preceding.id : `list-${this.#nextListId++}`;
     for (let index of indexes) lists[index] = { id, preset };
+  }
+
+  #clearIndent(tab: ModelTab, range: { startIndex: number; endIndex: number }): void {
+    let lists = tab.paragraphLists;
+    for (let index of paragraphsIn(tab.text, range)) {
+      if (lists?.[index] === "indented") lists[index] = null;
+    }
   }
 
   #setLink(tab: ModelTab, start: number, end: number, url?: string): void {
@@ -502,14 +522,7 @@ class DocsModel {
     }
     let styles = tab.paragraphStyles ??=
       tab.text.split("\n").map(() => "NORMAL_TEXT");
-    let startIndex = 1;
-    for (let [index, paragraph] of tab.text.split("\n").entries()) {
-      let endIndex = startIndex + paragraph.length + 1;
-      if (range.startIndex < endIndex && range.endIndex > startIndex) {
-        styles[index] = namedStyleType;
-      }
-      startIndex = endIndex;
-    }
+    for (let index of paragraphsIn(tab.text, range)) styles[index] = namedStyleType;
   }
 
   #replaceTableText(
@@ -583,15 +596,18 @@ class DocsModel {
     let paragraphLists = tab.paragraphLists;
     let paragraphStyles = tab.paragraphStyles;
     // One paragraph per line, carrying whichever of the per-paragraph attributes this tab has.
-    let paragraphBody = () => buildTab(tab.text.split("\n").map((paragraphText, index) => ({
-      runs: [`${paragraphText}\n`],
-      namedStyleType: paragraphStyles?.[index],
-      ...paragraphLists?.[index] ? { bullet: { listId: paragraphLists[index]!.id } } : {},
-    })), lists).body;
+    let paragraphBody = () => buildTab(tab.text.split("\n").map((paragraphText, index) => {
+      let list = paragraphLists?.[index];
+      return {
+        runs: [`${paragraphText}\n`],
+        namedStyleType: paragraphStyles?.[index],
+        ...isListItem(list) ? { bullet: { listId: list.id } } : {},
+      };
+    }), lists).body;
 
     if (!body && paragraphLists) {
       for (let item of paragraphLists) {
-        if (!item) continue;
+        if (!isListItem(item)) continue;
         let level = item.preset.startsWith("BULLET_")
           ? { glyphSymbol: "●" } : { glyphType: "DECIMAL" };
         lists[item.id] ??= { listProperties: { nestingLevels: [level] } };
@@ -835,6 +851,19 @@ describe("Google Doc list edits", () => {
     expect(await hooks().readContent("restart-list")).toBe(preview);
   });
 
+  it("rejects an unapplyable list-plus-prose rewrite before requesting approval", async () => {
+    let docs = new DocsModel();
+    docs.setNumberedList(MAIN_TAB, ["First", "Body"]);
+    docs.interruptList(MAIN_TAB, 1);
+    docs.install();
+
+    await expect(Promise.resolve(hooks().submitReplace(
+      "list-prose", "1. First\n\nBody", "1. Changed\n\nUpdated",
+    ))).rejects.toThrow("cannot preserve list formatting across multiple paragraphs");
+    expect(await hooks().lastActionDescription).toBe("");
+    expect(await hooks().readContent("list-prose")).toBe("1. First\n\nBody\n");
+  });
+
   it("replays a dependent edit after appending adjacent mixed lists", async () => {
     let docs = new DocsModel();
     docs.setNumberedList(MAIN_TAB, ["base"]);
@@ -877,6 +906,7 @@ describe("Google Doc list edits", () => {
 
     expect(preview).toBe("1. First\n\nSecond\n");
     expect(await hooks().applyAction("leave-list", actionId)).toBeNull();
+    expect(docs.renderedText()).toBe("1. First\nSecond");
     expect(await hooks().readContent("leave-list")).toBe(preview);
   });
 
@@ -994,6 +1024,7 @@ describe("Google Doc write receipts", () => {
     let preview = await hooks().readContent(facet);
     let secondId = await hooks().submitReplace(facet, preview.trimEnd(), "updated");
 
+    expect(preview).toBe("A\n\nX\n\nB\n");
     expect(await hooks().applyAction(facet, firstId)).toBeNull();
     expect(await hooks().applyAction(facet, secondId)).toBeNull();
     expect(await hooks().readContent(facet)).toBe("updated\n");
