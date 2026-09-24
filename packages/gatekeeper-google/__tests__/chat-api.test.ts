@@ -63,11 +63,11 @@ describe("Chat filter construction", () => {
 
   it("builds a message list filter from the time window and thread", () => {
     expect(chatMessagesListFilter({
-      createdAfter: new Date("2024-01-01T00:00:00Z"),
-      createdBefore: new Date("2024-02-01T00:00:00Z"),
+      since: new Date("2024-01-01T00:00:00Z"),
+      before: new Date("2024-02-01T00:00:00Z"),
       threadName: "spaces/AAAA/threads/TTT",
     })).toBe(
-      'createTime > "2024-01-01T00:00:00.000Z" AND createTime < "2024-02-01T00:00:00.000Z" AND ' +
+      'createTime > "2023-12-31T23:59:59.999Z" AND createTime < "2024-02-01T00:00:00.000Z" AND ' +
       "thread.name = spaces/AAAA/threads/TTT");
     expect(chatMessagesListFilter({})).toBeUndefined();
   });
@@ -75,10 +75,10 @@ describe("Chat filter construction", () => {
   it("combines every message search field with AND", () => {
     expect(chatMessagesSearchFilter({
       text: "quarterly report",
-      spaceNames: ["spaces/AAAA", "spaces/BBBB"],
+      spaceIds: ["spaces/AAAA", "spaces/BBBB"],
       senders: ["users/123", "person@example.com"],
       mentions: ["users/456"],
-      createdAfter: new Date("2024-03-01T00:00:00Z"),
+      since: new Date("2024-03-01T00:00:00Z"),
       unreadOnly: true,
       hasAttachment: true,
       hasLink: true,
@@ -107,17 +107,19 @@ describe("Chat response mapping", () => {
       name: "spaces/AAAA",
       displayName: "Project",
       spaceType: "SPACE",
+      spaceThreadingState: "THREADED_MESSAGES",
       spaceUri: "https://chat.google.com/room/AAAA",
       spaceDetails: { description: "Planning" },
       createTime: "2024-01-01T00:00:00Z",
       membershipCount: { joinedDirectHumanUserCount: 7 },
     })).toEqual({
-      name: "spaces/AAAA",
-      displayName: "Project",
+      id: "spaces/AAAA",
+      name: "Project",
       url: "https://chat.google.com/room/AAAA",
       type: "space",
+      supportsThreads: true,
       description: "Planning",
-      createTime: new Date("2024-01-01T00:00:00Z"),
+      createdAt: new Date("2024-01-01T00:00:00Z"),
       memberCount: 7,
     });
   });
@@ -141,22 +143,34 @@ describe("Chat response mapping", () => {
       emojiReactionSummaries: [{ emoji: { unicode: "🎉" }, reactionCount: 2 }],
     });
     expect(info).toMatchObject({
-      name: "spaces/AAAA/messages/BBB",
-      spaceName: "spaces/AAAA",
-      threadName: "spaces/AAAA/threads/TTT",
-      sender: { name: "users/123", displayName: "Ada", type: "human" },
+      id: "spaces/AAAA/messages/BBB",
+      spaceId: "spaces/AAAA",
+      threadId: "spaces/AAAA/threads/TTT",
+      sender: { id: "users/123", name: "Ada", type: "human" },
       text: "hello",
-      threadReply: true,
+      isReply: true,
       deleted: false,
       reactions: [{ emoji: "🎉", count: 2 }],
     });
     expect(info.attachments).toEqual([{
-      name: "spaces/AAAA/messages/BBB/attachments/CCC",
+      id: "spaces/AAAA/messages/BBB/attachments/CCC",
       filename: "notes.pdf",
       mimeType: "application/pdf",
       source: "uploaded",
       readable: true,
     }]);
+  });
+
+  it.each([
+    ["SPACE", "THREADED_MESSAGES", true],
+    ["SPACE", "GROUPED_MESSAGES", true],
+    ["SPACE", "UNTHREADED_MESSAGES", false],
+    ["SPACE", undefined, false],
+    ["DIRECT_MESSAGE", "THREADED_MESSAGES", false],
+    ["GROUP_CHAT", "THREADED_MESSAGES", false],
+  ])("reports API thread support for %s / %s", (spaceType, spaceThreadingState, supported) => {
+    expect(chatSpaceInfoFromRaw({name: "spaces/AAAA", spaceType, spaceThreadingState})
+      .supportsThreads).toBe(supported);
   });
 
   // A Drive-backed attachment has no Chat media reference, so it must never be advertised as
@@ -214,6 +228,27 @@ describe("Chat provider error handling", () => {
       new Response(JSON.stringify(body), { status }));
     return new ChatApi(async () => "token");
   }
+
+  it("enforces half-open windows and thread scope even if the provider ignores its filters", async () => {
+    const since = new Date("2024-01-01T00:00:00Z");
+    const before = new Date("2024-01-02T00:00:00Z");
+    const threadName = "spaces/AAAA/threads/TTT";
+    const messages = [
+      {name: "spaces/AAAA/messages/early", createTime: new Date(+since - 1).toISOString()},
+      {name: "spaces/AAAA/messages/start", createTime: since.toISOString()},
+      {name: "spaces/AAAA/messages/end", createTime: before.toISOString()},
+      {name: "spaces/AAAA/messages/sibling", createTime: since.toISOString(), thread: {name: "spaces/AAAA/threads/OTHER"}},
+      {name: "spaces/OTHER/messages/foreign", createTime: since.toISOString()},
+    ].map(message => ({thread: {name: threadName}, ...message}));
+    const api = stubResponse(200, {messages, nextPageToken: "next"});
+    const page = await api.listMessages("spaces/AAAA", {since, before, threadName});
+    expect(page.items.map(message => message.id)).toEqual(["spaces/AAAA/messages/start"]);
+    expect(page.nextPageToken).toBe("next");
+    await expect(api.listMessages("spaces/AAAA", {since: before, before: since}))
+      .rejects.toThrow(/since must be earlier/);
+    await expect(api.listMessages("spaces/AAAA", {threadName: "spaces/OTHER/threads/TTT"}))
+      .rejects.toThrow(/different conversation/);
+  });
 
   // Google answers a lookup that names no real account with 400, not 404. Both are the same
   // negative answer to "is there a DM / membership for X?", so both must map to null — a caller

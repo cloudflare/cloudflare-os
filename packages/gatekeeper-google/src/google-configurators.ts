@@ -289,15 +289,15 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
       const page = await api.listSpaces({ pageSize: 200, ...(pageToken ? { pageToken } : {}) });
       options.push(...page.items
         .map(space => {
-          const id = space.name.slice("spaces/".length);
+          const id = space.id.slice("spaces/".length);
           const kind = space.type === "directMessage"
             ? "Direct message"
             : space.type === "groupChat" ? "Group chat" : "Space";
           return {
             value: id,
-            title: space.displayName ?? kind,
-            subtitle: space.lastActiveTime
-              ? `${kind} · Active ${space.lastActiveTime.toLocaleDateString()}`
+            title: space.name ?? kind,
+            subtitle: space.lastActiveAt
+              ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}`
               : kind,
             meta: idTail(id),
           };

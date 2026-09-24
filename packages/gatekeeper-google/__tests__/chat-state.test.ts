@@ -7,28 +7,28 @@ import {
   ChatAction, PendingChatAction, overlayMessage, overlayMessageList, overlayReactions,
   pendingMessageActionId, pendingMessageName,
 } from "../src/chat-state";
-import type { GoogleChatMessageInfo, GoogleChatUser } from "../src/chat-types";
+import type { ChatMessageInfo, ChatUser } from "../src/chat-types";
 
 const SPACE = "spaces/AAAA";
-const SELF: GoogleChatUser = { name: "users/me", displayName: "Ada", type: "human" };
-const OTHER: GoogleChatUser = { name: "users/other", type: "human" };
+const SELF: ChatUser = { id: "users/me", name: "Ada", type: "human" };
+const OTHER: ChatUser = { id: "users/other", type: "human" };
 
 function pending(...actions: ChatAction[]): PendingChatAction[] {
   return actions.map((action, index) => ({ id: index + 1, action }));
 }
 
-function message(name: string, text: string, extra: Partial<GoogleChatMessageInfo> = {}) {
+function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {}) {
   return {
-    name: `${SPACE}/messages/${name}`,
-    spaceName: SPACE,
+    id: `${SPACE}/messages/${name}`,
+    spaceId: SPACE,
     text,
-    createTime: new Date("2024-01-01T00:00:00Z"),
-    threadReply: false,
+    createdAt: new Date("2024-01-01T00:00:00Z"),
+    isReply: false,
     deleted: false,
     attachments: [],
     reactions: [],
     ...extra,
-  } satisfies GoogleChatMessageInfo;
+  } satisfies ChatMessageInfo;
 }
 
 const send: ChatAction = {
@@ -62,7 +62,7 @@ describe("message list overlay", () => {
       ...oldestFirst, first: false, exhausted: true,
     });
     expect(complete.map(info => info.text)).toEqual(["first", "queued hello"]);
-    expect(complete[1]).toMatchObject({ name: pendingMessageName(1), pending: true, sender: SELF });
+    expect(complete[1]).toMatchObject({ id: pendingMessageName(1), pending: true, sender: SELF });
   });
 
   it("puts a queued message on only the first page when newest comes first", () => {
@@ -86,11 +86,11 @@ describe("message list overlay", () => {
   it("respects the thread and time filters the caller listed with", () => {
     const threaded: ChatAction = { ...send, threadName: `${SPACE}/threads/TTT` };
     expect(overlayMessageList([], pending(threaded), {
-      ...oldestFirst, options: { threadName: `${SPACE}/threads/OTHER` },
+      ...oldestFirst, threadName: `${SPACE}/threads/OTHER`,
       first: true, exhausted: true,
     })).toEqual([]);
     expect(overlayMessageList([], pending(send), {
-      ...oldestFirst, options: { createdAfter: new Date("2024-03-01T00:00:00Z") },
+      ...oldestFirst, options: { since: new Date("2024-03-01T00:00:00Z") },
       first: true, exhausted: true,
     })).toEqual([]);
   });
@@ -109,15 +109,11 @@ describe("message list overlay", () => {
     expect(result.map(info => info.text)).toEqual(["edited", "second"]);
   });
 
-  it("only includes provider-deleted messages when requested", () => {
+  it("omits provider-deleted messages", () => {
     const deleted = message("1", "", { deleted: true });
     expect(overlayMessageList([deleted], [], {
       ...oldestFirst, first: true, exhausted: true,
     })).toEqual([]);
-    const [only] = overlayMessageList([deleted], [], {
-      ...oldestFirst, options: { includeDeleted: true }, first: true, exhausted: true,
-    });
-    expect(only).toMatchObject({ deleted: true, text: "" });
   });
 
   // The overlay cannot recompute Chat's formatting markup, so a stale formatted body must not
@@ -125,7 +121,7 @@ describe("message list overlay", () => {
   it("drops formatted text whenever the overlay changes the body", () => {
     const formatted = message("1", "first", { formattedText: "*first*" });
     const edit: ChatAction = {
-      type: "updateMessage", messageName: formatted.name, text: "edited", submittedAt: Date.now(),
+      type: "updateMessage", messageName: formatted.id, text: "edited", submittedAt: Date.now(),
     };
     const edited = overlayMessage(formatted, pending(edit));
     expect(edited.text).toBe("edited");
@@ -152,10 +148,10 @@ describe("reaction overlay", () => {
   const remove: ChatAction = {
     type: "removeReaction", messageName: target, emoji: "👍", submittedAt: Date.now(),
   };
-  const ownThumb = { name: `${target}/reactions/x`, emoji: "👍", user: SELF };
-  const otherThumb = { name: `${target}/reactions/y`, emoji: "👍", user: OTHER };
-  const emojis = (reactions: { emoji: string; user?: GoogleChatUser }[]) =>
-    reactions.map(reaction => [reaction.emoji, reaction.user?.name]);
+  const ownThumb = { id: `${target}/reactions/x`, emoji: "👍", user: SELF };
+  const otherThumb = { id: `${target}/reactions/y`, emoji: "👍", user: OTHER };
+  const emojis = (reactions: { emoji: string; user?: ChatUser }[]) =>
+    reactions.map(reaction => [reaction.emoji, reaction.user?.id]);
 
   it("leaves aggregate counts provider-backed rather than guessing the user's presence", () => {
     const info = overlayMessage(
@@ -184,7 +180,7 @@ describe("reaction overlay", () => {
   // page drops the provider's copy and the final page adds exactly one, so the reaction shows
   // once regardless of which page the provider put it on.
   it("shows a queued reaction once even when the provider already has it", () => {
-    const ownParty = { name: `${target}/reactions/z`, emoji: "🎉", user: SELF };
+    const ownParty = { id: `${target}/reactions/z`, emoji: "🎉", user: SELF };
     const context = { messageName: target, self: SELF };
     expect(overlayReactions([ownParty], pending(add), { ...context, exhausted: false }))
       .toEqual([]);
