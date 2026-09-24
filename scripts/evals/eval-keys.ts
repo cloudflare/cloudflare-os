@@ -3,14 +3,16 @@
 // prints {"report": <key>, "changed": [<path>...],
 //         "commits": [{"sha": <sha>, "tasks": {<task>: {"key": <key>, "definition": <digest>}}}...]}.
 //
-// A task's key covers every tracked file its run executes or that decides whether its result is
+// A task's key covers every tracked file that can change its result or decides whether it is
 // stored: the Worker (WORKER_INPUTS, the one table of what decides it), the harness packages, the
-// shared eval helpers, the task's own file, and the workflow settings in --config. Equal keys mean
-// the same run, so its result can be reused. A task's definition is the part of its key that
-// defines or scores its trials rather than builds the product under test: two sides whose
-// definitions differ cannot be compared. The report key covers what turns results into the PR
-// comments, plus every task key: equal report keys mean the posted comments are still current.
-// `changed` lists the files a run executes that differ between the first commit and the last.
+// shared eval helpers, the task's own file, and the workflow settings in --config. Tooling that
+// only supervises a run, such as scripts/with-timeout.ts, is left out: it can stop a run, and a
+// stopped run is never stored. Equal keys mean the same run, so its result can be reused. A task's
+// definition is the part of its key that defines or scores its trials rather than builds the
+// product under test: two sides whose definitions differ cannot be compared. The report key covers
+// what turns results into the PR comments, plus every task key: equal report keys mean the posted
+// comments are still current. `changed` lists the run inputs that differ between the first commit
+// and the last.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -24,12 +26,19 @@ const REPORT_MODULES = new Set(
 const USAGE = "usage: eval-keys.ts --config <digest> --report-config <digest> <sha>...";
 
 /**
- * Files every eval run executes or that decide whether its result is stored, apart from the tasks
- * themselves. Test files never are: no eval run executes them and no Worker imports them, though
- * WORKER_INPUTS names whole packages.
+ * Test files change no result and no comment: no eval run executes them and no Worker imports
+ * them, though WORKER_INPUTS names whole packages.
+ */
+function isTestPath(path: string): boolean {
+  return path.includes("/__tests__/") || /\.test\.[^/]+$/.test(path);
+}
+
+/**
+ * Files that can change any eval run's result or decide whether it is stored, apart from the
+ * tasks themselves.
  */
 function isHarnessPath(path: string): boolean {
-  if (path.includes("/__tests__/") || /\.test\.[^/]+$/.test(path)) return false;
+  if (isTestPath(path)) return false;
   return isWorkerInputPath(path) || path === "package.json" || path === "pnpm-workspace.yaml" ||
     path === "scripts/evals/validate-results.ts" || path.startsWith("packages/integration-tests/") ||
     (path.startsWith(EVALS) && !path.startsWith(TASKS) && !REPORT_MODULES.has(path));
@@ -41,7 +50,7 @@ function isDefinitionPath(path: string): boolean {
 }
 
 function isReportPath(path: string): boolean {
-  return REPORT_MODULES.has(path) || path.startsWith("scripts/evals/");
+  return !isTestPath(path) && (REPORT_MODULES.has(path) || path.startsWith("scripts/evals/"));
 }
 
 type TreeEntry = { path: string; line: string };
@@ -55,7 +64,7 @@ function treeOf(sha: string): TreeEntry[] {
   return listing.split("\0").filter(Boolean).map(line => ({ path: line.slice(line.indexOf("\t") + 1), line }));
 }
 
-/** What a run executes: the harness and everything under the tasks directory. */
+/** A run's inputs: the harness and everything under the tasks directory. */
 function runInputs(tree: readonly TreeEntry[]): TreeEntry[] {
   return tree.filter(entry => isHarnessPath(entry.path) || entry.path.startsWith(TASKS));
 }
@@ -79,7 +88,7 @@ function tasksOf(tree: readonly TreeEntry[], config: string): Record<string, Tas
   ]));
 }
 
-/** Files a run executes that were edited, added or removed between two trees. */
+/** Run inputs that were edited, added or removed between two trees. */
 function changedPaths(from: readonly TreeEntry[], to: readonly TreeEntry[]): string[] {
   const [before, after] = [runInputs(from), runInputs(to)];
   const [beforeLines, afterLines] = [before, after].map(entries => new Set(entries.map(entry => entry.line)));

@@ -74,6 +74,7 @@ test("a commit that touches nothing a run executes, tests included, keeps every 
     "README.md": "edited",
     "packages/workshop-evals/src/harness.test.ts": "t",
     "packages/workshop-backend/__tests__/agent.test.ts": "t",
+    "scripts/evals/eval-keys.test.ts": "t",
   });
   assert.deepEqual(keys(next), keys(base));
   base = next;

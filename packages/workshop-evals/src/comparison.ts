@@ -293,7 +293,8 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     [`Baseline \`${comparison.baselineSha.slice(0, 8)}\` (PR base) vs candidate ` +
         `\`${comparison.candidateSha.slice(0, 8)}\` (PR head)`,
       ...(model === null ? [] : [model]),
-      ...(trials === null ? [] : [`each task run ${trials} times per commit`])].join(" \u00b7 ") + ".",
+      ...(trials === null ? [] : [`each task run ${trials} times, ` +
+          "reused while nothing it runs changes"])].join(" \u00b7 ") + ".",
     "",
     "| Task | Baseline | Candidate | \u0394 pass | \u0394 duration | \u0394 tool errors | \u0394 cost |",
     "| --- | --- | --- | --- | --- | --- | --- |",
