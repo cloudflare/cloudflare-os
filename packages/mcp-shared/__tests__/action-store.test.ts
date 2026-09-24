@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import { ActionStore } from "../src/action-store.js";
-import { McpProtocolError, McpSessionExpiredError } from "../src/client.js";
+import { McpCallNotDispatchedError, McpProtocolError, McpSessionExpiredError }
+  from "../src/client.js";
 
 type TestSql = ConstructorParameters<typeof ActionStore>[0];
 
@@ -234,6 +235,25 @@ describe("ActionStore", () => {
     release();
     await applying;
     expect(store.get(staged.id)?.state).toBe("applied");
+  });
+
+  it("lets a failed call be rejected, without hiding that it may have run", async () => {
+    // The Workshop keeps an action pending when applying it fails and offers both choices again, so
+    // refusing the rejection wedged the chat for as long as the connection stayed broken.
+    const store = new ActionStore(fakeSql());
+    const unsent = store.stage("send", {});
+    const unknown = store.stage("send", {});
+    const offline = async (): Promise<never> => { throw new McpCallNotDispatchedError("offline"); };
+    const dropped = async (): Promise<never> => { throw new McpProtocolError("dropped"); };
+    await expect(store.apply(unsent.id, offline, log)).rejects.toThrow("offline");
+    await expect(store.apply(unknown.id, dropped, log)).rejects.toThrow(/may or may not/);
+
+    store.reject(unsent.id);
+    store.reject(unknown.id);
+    expect(store.get(unsent.id)?.state).toBe("rejected");
+    await expect(store.apply(unsent.id, offline, log)).rejects.toThrow(/already rejected/);
+    // Recording this one as rejected would tell the Gadget that the call never happened.
+    expect(store.get(unknown.id)).toMatchObject({ state: "failed", retryable: false });
   });
 
   it("closes a claim whose Durable Object died mid-apply, without re-sending the call", async () => {

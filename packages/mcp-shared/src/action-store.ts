@@ -201,7 +201,10 @@ export class ActionStore {
   reject(id: number): void {
     const stored = this.get(id);
     if (!stored || stored.state === "rejected") return;
-    if (stored.state !== "pending") {
+    // A failed apply leaves the Workshop's action pending, so it can still be rejected. A call that
+    // may have run stays failed, since recording it as rejected would hide that from the Gadget.
+    if (stored.state === "failed" && stored.retryable === false) return;
+    if (stored.state !== "pending" && stored.state !== "failed") {
       throw new Error(stored.state === "applying"
         ? `MCP action ${id} is already being applied.`
         : `MCP action ${id} is already ${stored.state}.`);
