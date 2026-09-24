@@ -4342,11 +4342,6 @@ function ChatInterface({
       actionKind: ActionKind; actionLabel: string } | null
   >(null);
 
-  // The workspace latched: the affordance is gone and confirming could only error.
-  useEffect(() => {
-    if (restricted) setAutoApproveConfirm(null);
-  }, [restricted]);
-
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
   // server applies the now-eligible pending action(s) via its drain, and the action state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
@@ -6494,7 +6489,8 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {autoApproveConfirm && (
+      {/* The workspace latched: the affordance is gone and confirming could only error. */}
+      {!restricted && autoApproveConfirm && (
         <AutoApproveConfirmDialog
           open
           actionLabel={autoApproveConfirm.actionLabel}

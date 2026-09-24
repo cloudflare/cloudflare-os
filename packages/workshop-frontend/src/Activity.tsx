@@ -178,10 +178,6 @@ export default function Activity({
     actionLabel: string
   } | null>(null)
 
-  // The workspace latched: the affordance is gone and confirming could only error.
-  useEffect(() => {
-    if (restricted) setConfirmAutoApprove(null)
-  }, [restricted])
   const toasts = useKumoToastManager()
 
   const history = useActionHistory(overseer, historyFilter, view === 'history')
@@ -453,7 +449,8 @@ export default function Activity({
     <div className="flex h-full flex-col bg-kumo-base">
       {renderActivityContent()}
 
-      {confirmAutoApprove && (
+      {/* The workspace latched: the affordance is gone and confirming could only error. */}
+      {!restricted && confirmAutoApprove && (
         <AutoApproveConfirmDialog
           open
           actionLabel={confirmAutoApprove.actionLabel}
