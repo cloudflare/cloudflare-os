@@ -225,9 +225,9 @@ type ComparedRow = Extract<EvalComparisonRow, { reason: null }>;
  */
 const NBSP = "\u00a0";
 
-/** Pass counts, as passed/trials. */
+/** The pass rate, as a whole percentage. */
 function score(side: EvalStats): string {
-  return `${side.passed}/${side.trials}`;
+  return `${Math.round(passRate(side) * 100)}%`;
 }
 
 /** The pass-rate change, in percentage points. */

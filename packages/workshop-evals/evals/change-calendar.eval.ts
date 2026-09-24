@@ -300,10 +300,10 @@ nothing scheduled that week.`,
         const listsOtherWeeks = bullets.some(bullet => otherWeeks.some(window =>
           bullet.toLowerCase().includes(window.reason.toLowerCase())));
         return {
-          pass: headings.length === expected.length &&
+          pass: document.title === PLAN && headings.length === expected.length &&
             expected.every((service, index) => headings[index]?.includes(service)) && bulletsMatch &&
             !listsOtherWeeks,
-          evidence: { sections, expected },
+          evidence: { title: document.title, sections, expected },
         };
       });
     },

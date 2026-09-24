@@ -1,7 +1,8 @@
 import { z } from "zod";
+import type { WorkpieceId } from "@gadgets/workshop-shared/api";
 import { defineTaskEval } from "../src/eval.js";
 import { defineEvalTask } from "../src/task.js";
-import type { EvalVerifier } from "../src/verifier.js";
+import { resolveGadget, type EvalVerifier } from "../src/verifier.js";
 
 // An on-call desk where several responders acknowledge the same page at the same instant. Durable
 // Object RPC calls interleave at every `await`, so a check-then-write acknowledge hands one incident
@@ -80,6 +81,11 @@ function escalatedOnce(before: Incident, after: Incident): boolean {
       JSON.stringify(before);
 }
 
+/** A record as a later turn must give it back: that turn may add the escalation count, at 0. */
+function asKept(incident: Incident): string {
+  return JSON.stringify({ ...incident, escalations: incident.escalations ?? 0 });
+}
+
 /**
  * What turn 1 leaves on the board, by id, as far as it is known before the races run: who won a
  * race and when is decided at run time, so owners are checked against the responder set and
@@ -120,6 +126,12 @@ function asTurnOneLeftIt(incident: Incident): boolean {
     (resolvedAt === null || acknowledgedAt === null || resolvedAt >= acknowledgedAt) &&
     (incident.escalations ?? 0) === 0;
 }
+
+/**
+ * The board each trial's turn 1 left, by its Desk: trials share this module, and turn 2 must give
+ * back every record exactly, down to who won each race and when.
+ */
+const turnOneBoards = new Map<WorkpieceId, Incident[]>();
 
 /** Twenty responders acknowledge at once; exactly one may win and everyone must be told who. */
 async function race(api: DeskApi, id: string) {
@@ -162,10 +174,13 @@ function closeEnough(actual: number | null, expected: number | null): boolean {
   return Math.abs(actual - expected) <= 1;
 }
 
-async function checkBoardOrder(verifier: EvalVerifier, id: string): Promise<void> {
+/** Check the board's order; return what it listed, or null when the check could not read it. */
+async function checkBoardOrder(verifier: EvalVerifier, id: string): Promise<Incident[] | null> {
+  let listed: Incident[] | null = null;
   await verifier.check(id, async () => {
     using api = await verifier.connect<DeskApi>(TITLE);
     const board = BoardSchema.parse(await api.board()).incidents;
+    listed = board;
     const ordered = board.every((incident, index) => {
       const previous = board[index - 1];
       return previous === undefined || previous.severity < incident.severity ||
@@ -175,6 +190,7 @@ async function checkBoardOrder(verifier: EvalVerifier, id: string): Promise<void
     return { pass: board.length > 0 && ordered, evidence: { board: board.map(incident =>
       ({ id: incident.id, severity: incident.severity, openedAt: incident.openedAt })) } };
   });
+  return listed;
 }
 
 const task = defineEvalTask({
@@ -262,7 +278,8 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         };
       });
 
-      await checkBoardOrder(verifier, "board-lists-by-severity-then-age");
+      const board = await checkBoardOrder(verifier, "board-lists-by-severity-then-age");
+      if (board !== null) turnOneBoards.set(resolveGadget(verifier.workpieces, TITLE), board);
     },
   }, {
     prompt: `Two additions. Escalation: escalate({ id }) raises the incident one severity level
@@ -276,11 +293,16 @@ null when there is nothing to average. Everything already on the board stays.`,
       await verifier.check("existing-incidents-survive-and-race-still-holds", async () => {
         using api = await verifier.connect<DeskApi>(TITLE);
         const board = BoardSchema.parse(await api.board()).incidents;
+        const turnOne = turnOneBoards.get(resolveGadget(verifier.workpieces, TITLE));
+        const changed = turnOne?.flatMap(old => {
+          const now = board.find(incident => incident.id === old.id);
+          return now !== undefined && asKept(now) === asKept(old) ? [] : [old.id];
+        }) ?? null;
         const intact = board.length === Object.keys(TURN_ONE_BOARD).length &&
-          board.every(asTurnOneLeftIt);
+          board.every(asTurnOneLeftIt) && changed?.length === 0;
         await mustOpen(api, "race-6", 2, "billing");
         const outcome = await race(api, "race-6");
-        return { pass: intact && outcome.consistent, evidence: { board, outcome } };
+        return { pass: intact && outcome.consistent, evidence: { changed, board, outcome } };
       });
 
       await verifier.check("escalation-moves-toward-severity-one-and-stops", async () => {

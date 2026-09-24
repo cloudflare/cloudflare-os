@@ -131,7 +131,7 @@ it("compares three-trial task cohorts", () => {
   const markdown = rendered(comparison);
   expect(markdown).toContain("**Verdict: \u26AA Unchanged.**");
   // A 33 pp rise over three trials is noise, so it is not marked significant.
-  expect(markdown).toContain("| project-doc | 2/3 \u2192 3/3 | +33 pp | p = 1.00 | " +
+  expect(markdown).toContain("| project-doc | 67% \u2192 100% | +33 pp | p = 1.00 | " +
     "2.0 \u2192 3.0 | 0.200 \u2192 0.300 | 2.0 \u2192 2.0 |");
 });
 
@@ -141,10 +141,10 @@ it("calls a significant fall a regression and a small one noise", () => {
   const fell = compareEvalResults(passes(9, BASE_SHA), passes(3, HEAD_SHA), SHAS);
   expect(fell.verdict).toBe("regressed");
   expect(rendered(fell)).toContain(
-    "| 9/10 \u2192 3/10 | \u221260 pp | **p = 0.02**<br>significant |");
+    "| 90% \u2192 30% | \u221260 pp | **p = 0.02**<br>significant |");
   const collapsed = compareEvalResults(passes(10, BASE_SHA), passes(0, HEAD_SHA), SHAS);
   expect(rendered(collapsed)).toContain(
-    "| 10/10 \u2192 0/10 | \u2212100 pp | **p < 0.01**<br>significant |");
+    "| 100% \u2192 0% | \u2212100 pp | **p < 0.01**<br>significant |");
   expect(compareEvalResults(passes(9, BASE_SHA), passes(7, HEAD_SHA), SHAS).verdict).toBe("unchanged");
   expect(compareEvalResults(passes(3, BASE_SHA), passes(9, HEAD_SHA), SHAS).verdict).toBe("improved");
 });
