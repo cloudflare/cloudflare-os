@@ -1005,6 +1005,25 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent("escaped-replay")).toBe("updated\n");
   });
 
+  it("replays an edit after inserting a paragraph between separators", async () => {
+    let docs = new DocsModel();
+    docs.setParagraphs(MAIN_TAB, [
+      { text: "A", namedStyleType: "NORMAL_TEXT" },
+      { text: "B", namedStyleType: "NORMAL_TEXT" },
+    ]);
+    docs.install();
+    let facet = "separator-insert-replay";
+    let firstId = await hooks().submitReplace(facet, "A\n\nB", "A\n\nX\n\nB");
+    let preview = await hooks().readContent(facet);
+    let secondId = await hooks().submitReplace(facet, "X\n\nB", "Y\n\nB");
+
+    expect(preview).toBe("A\n\nX\n\nB\n");
+    expect(await hooks().applyAction(facet, firstId)).toBeNull();
+    expect(docs.text()).toBe("A\nX\nB");
+    expect(await hooks().applyAction(facet, secondId)).toBeNull();
+    expect(await hooks().readContent(facet)).toBe("A\n\nY\n\nB\n");
+  });
+
   it("queues a dependent edit with canonical replacement formatting", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "target");

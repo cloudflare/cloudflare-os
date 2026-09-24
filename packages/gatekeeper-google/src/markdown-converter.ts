@@ -440,8 +440,8 @@ function tableCellElementToHtml(
   if (element.table) return tableToHtml(element.table, lists, listNumbers);
   if (!element.paragraph) return undefined;
   let paragraph = element.paragraph;
-  if (paragraph.elements.some(part => part.horizontalRule)) return "<hr>";
   let content = tableParagraphContentToHtml(paragraph);
+  if (content === "<hr>") return content;
   let headingLevel = paragraphHeadingLevel(paragraph);
   let tag = headingLevel ? `h${headingLevel}` : "p";
   return `<${tag}>${content}</${tag}>`;
@@ -453,6 +453,11 @@ function tableParagraphContentToHtml(paragraph: Paragraph): string {
   let content = "";
   let italic = false;
   for (let part of paragraph.elements) {
+    if (part.horizontalRule) {
+      content += italic ? "</em><hr>" : "<hr>";
+      italic = false;
+      continue;
+    }
     let visible = paragraphRun(part, part === lastElement);
     if (!visible) continue;
     let nextItalic = inheritedItalic && (visible.style.italic ?? true);
@@ -1545,7 +1550,7 @@ function isUnchangedBlock(source: BlockMapping, target: ParsedBlock, markdown: s
     JSON.stringify(target);
 }
 
-/** Beyond this many block pairs, a rewrite's changed middle is treated as edited in place. */
+/** Beyond this many block pairs, a rewrite's changed middle is anchored only by unique blocks. */
 const MAX_ALIGNED_BLOCK_PAIRS = 250_000;
 
 /**
@@ -1590,6 +1595,17 @@ function alignSourceBlocks(
       else if (lengths[cell] === lengths[cell + 1]) t++;
       else matches.push([head + s++, head + t++]);
     }
+  } else {
+    let key = (text: string, listType: ListType | null, nestingLevel: number) =>
+      JSON.stringify([text, listType, nestingLevel]);
+    let anchors = uniqueAnchors(
+      sources.slice(head, sourceEnd).map((source, index) =>
+        key(texts[head + index], source.listType, source.listNestingLevel)),
+      targets.slice(head, targetEnd).map(target =>
+        key(target.plainText, target.listType, target.nestingLevel)),
+      (s, t) => match(head + s, head + t),
+    );
+    matches.push(...anchors.map(([s, t]): [number, number] => [head + s, head + t]));
   }
   for (let offset = 0; sourceEnd + offset <= sources.length; offset++) {
     matches.push([sourceEnd + offset, targetEnd + offset]);
@@ -1605,6 +1621,43 @@ function alignSourceBlocks(
     gapTarget = t + 1;
   }
   return pairs;
+}
+
+/** Pairs of keys unique on both sides, reduced to the longest run ordered on both. */
+function uniqueAnchors(
+  sourceKeys: string[],
+  targetKeys: string[],
+  match: (s: number, t: number) => boolean,
+): [number, number][] {
+  let uniqueIndices = (keys: string[]) => {
+    let indices = new Map<string, number>();
+    keys.forEach((key, index) => indices.set(key, indices.has(key) ? -1 : index));
+    return indices;
+  };
+  let targetIndices = uniqueIndices(targetKeys);
+  let candidates = [...uniqueIndices(sourceKeys)].flatMap(([key, s]): [number, number][] => {
+    let t = targetIndices.get(key) ?? -1;
+    return s >= 0 && t >= 0 && match(s, t) ? [[s, t]] : [];
+  });
+
+  let tails: number[] = [];
+  let previous: number[] = [];
+  candidates.forEach(([, t], index) => {
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      let middle = (low + high) >> 1;
+      if (candidates[tails[middle]][1] < t) low = middle + 1;
+      else high = middle;
+    }
+    previous[index] = low > 0 ? tails[low - 1] : -1;
+    tails[low] = index;
+  });
+  let anchors: [number, number][] = [];
+  for (let index = tails.at(-1) ?? -1; index >= 0; index = previous[index]) {
+    anchors.push(candidates[index]);
+  }
+  return anchors.toReversed();
 }
 
 /**
@@ -2255,7 +2308,9 @@ export function computeReplaceOperations(
       sourceTextStyle: mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd),
     };
   }
-  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
+  // Before paragraph text, a trailing blank line already parses as the break.
+  writeOptions.preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown) &&
+    (markdown[trimmedMatchEnd] === "\n" || !insertMarkdown.endsWith("\n\n"));
 
   let requests: any[] = [];
   if (docRange.start < docRange.end) {

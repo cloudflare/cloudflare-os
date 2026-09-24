@@ -803,6 +803,12 @@ describe("Google Docs tables", () => {
     );
   });
 
+  it("keeps text beside a horizontal rule within a cell", () => {
+    let tab = cellTab([{ runs: ["Before ", { horizontalRule: true }, " after\n"] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain("<td><p>Before <hr> after</p></td>");
+  });
+
   it("preserves headings, lists, and blank paragraphs within a cell", () => {
     let tab = cellTab([
       { runs: ["Heading\n"], namedStyleType: "HEADING_2" },
@@ -1629,6 +1635,26 @@ describe("computeReplaceOperations", () => {
 
     expect(requests.filter(request => "deleteContentRange" in request)).toHaveLength(1_000);
     expect(requests.some(request => "updateParagraphStyle" in request)).toBe(false);
+  });
+
+  it("keeps an unchanged title beyond the alignment limit", () => {
+    let { sourceMap, markdown } = docTabToMarkdown(buildTab(Array.from({ length: 501 },
+      (_, index) => index === 250
+        ? { runs: ["Title\n"], namedStyleType: "TITLE" }
+        : { runs: [`p${index}\n`] })));
+    let lines = markdown.trimEnd().split("\n\n");
+    lines[0] = "p0 edited";
+    lines[500] = "p500 edited";
+    lines.splice(400, 0, "added after");
+    lines.splice(100, 0, "added before");
+    let requests = computeReplaceOperations(
+      sourceMap, markdown, 0, markdown.trimEnd().length, lines.join("\n\n"), TAB_ID,
+    ).requests;
+
+    expect(requests.flatMap(request => request.updateParagraphStyle
+      ? [request.updateParagraphStyle.paragraphStyle.namedStyleType] : [])).toEqual([
+      "NORMAL_TEXT", "NORMAL_TEXT",
+    ]);
   });
 
   it("preserves title and custom list styles during inline edits", () => {
