@@ -19,5 +19,5 @@ function GatekeeperApp() {
   const { appId } = Route.useParams()
   const app = useGatekeeperApps().find((a) => a.id === appId)
   useDocumentTitle(app?.title ?? 'App')
-  return <GatekeeperAppPage appId={appId} />
+  return <GatekeeperAppPage key={appId} appId={appId} />
 }
