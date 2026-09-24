@@ -1050,26 +1050,39 @@ function describeMessage(intro: string, message: DescribedMessage): ActionDescri
   return builder;
 }
 
-// One attachment's MIME part headers, named by size and digest: the bytes are copied from a
-// message this mailbox already holds. The MIME builder writes an inline disposition only for
-// `inline`, and `attachment` otherwise.
-function attachmentLines(
-    filename: string | null, contentType: string, size: number, digest: string | undefined,
-    disposition: string | null | undefined, contentId: string | undefined): string {
-  return `${filename || "(unnamed)"} (${contentType})\n` +
-    `${size} bytes${digest ? `, SHA-256 ${digest}` : ""}\n` +
-    `Disposition: ${disposition === "inline" ? "inline" : "attachment"}` +
-    (contentId ? `\nContent-ID: ${asSent(contentId, normalizeContentId)}` : "");
+// One attachment, named by size and digest: the bytes are copied from a message this mailbox
+// already holds. Its MIME part headers are sent as written, so they are shown too. The MIME builder
+// writes an inline disposition only for `inline`, and `attachment` otherwise.
+function describeAttachment(
+    builder: ActionDescriptionBuilder, label: string, attachment: {
+      filename: string | null; contentType: string; size: number; digest: string | undefined;
+      disposition: string | null | undefined; contentId: string | undefined;
+    }): void {
+  builder.file(label, {
+    name: attachment.filename || "(unnamed)",
+    mediaType: attachment.contentType,
+    size: attachment.size,
+    ...(attachment.digest ? {sha256: attachment.digest} : {}),
+    origin: "provider",
+  });
+  builder.inline(`${label} disposition`,
+    attachment.disposition === "inline" ? "inline" : "attachment");
+  if (attachment.contentId) {
+    builder.inline(`${label} Content-ID`, asSent(attachment.contentId, normalizeContentId));
+  }
 }
 
 async function describeOutboundAttachments(
     builder: ActionDescriptionBuilder, attachments: GmailOutboundAttachment[]): Promise<void> {
   for (const [index, attachment] of attachments.entries()) {
-    const encoded = attachment.data.replace(/\s/g, "");
-    builder.verbatim(`Attachment ${index + 1}`,
-      `${attachmentLines(attachment.filename, attachment.contentType, atob(encoded).length,
-        await attachmentDigest(attachment), attachment.disposition, attachment.contentId)}\n` +
-      attachment.description);
+    describeAttachment(builder, `Attachment ${index + 1}`, {
+      filename: attachment.filename,
+      contentType: attachment.contentType,
+      size: atob(attachment.data.replace(/\s/g, "")).length,
+      digest: await attachmentDigest(attachment),
+      disposition: attachment.disposition,
+      contentId: attachment.contentId,
+    });
   }
 }
 
@@ -3023,9 +3036,14 @@ async function describeDraftAction(
     await describeOutboundAttachments(builder, message.attachments);
   } else {
     for (const [index, attachment] of state.attachments.entries()) {
-      builder.verbatim(`Attachment ${index + 1}`, attachmentLines(
-        attachment.info.filename, attachment.info.mimeType, attachment.info.size,
-        attachment.contentDigest, attachment.info.disposition, attachment.info.contentId));
+      describeAttachment(builder, `Attachment ${index + 1}`, {
+        filename: attachment.info.filename,
+        contentType: attachment.info.mimeType,
+        size: attachment.info.size,
+        digest: attachment.contentDigest,
+        disposition: attachment.info.disposition,
+        contentId: attachment.info.contentId,
+      });
     }
   }
   if (state.source) {

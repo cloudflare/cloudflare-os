@@ -5,6 +5,7 @@ import type { RpcStub } from 'capnweb'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
+import { entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import {
   formatRelativeTime,
@@ -101,6 +102,12 @@ export default function ActivityNotifications({
                       <span className="mt-1.5 block line-clamp-2 text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle">
                         {action.description.description}
                       </span>
+                      {entryFields(action).length > 0 && (
+                        // Full review happens in Activity or chat; this only says there is more.
+                        <span className="mt-1 block text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
+                          {fieldCountLabel(entryFields(action).length)}
+                        </span>
+                      )}
                     </button>
                     <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
                       <ResolveButton

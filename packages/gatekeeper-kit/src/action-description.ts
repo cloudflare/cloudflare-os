@@ -2,21 +2,23 @@
  * Approver-facing action descriptions that reproduce their content verbatim.
  *
  * An approver deciding whether an action may leave the workspace can only vouch for text they can
- * read. `ActionDescriptionBuilder` renders each content-bearing field of an action into a fenced
- * block whose bytes are exactly the field's value, tracks one byte budget across every field, and
- * sets `descriptionIsComplete` on the result only when nothing was dropped. The sanitizers below
- * are for untrusted text that has to sit in the description's own prose, such as a provider-chosen
- * name inside a sentence; they trade fidelity for safety and are never used for content the
- * approver is asked to review.
+ * read. `ActionDescriptionBuilder` collects each content-bearing value of an action as an
+ * `ActionField`, which approval surfaces show literally rather than as Markdown, tracks one byte
+ * budget across the prose and every field, and sets `descriptionIsComplete` on the result only when
+ * nothing was dropped. The sanitizers below are for untrusted text that has to sit in the
+ * description's own prose, such as a provider-chosen name inside a sentence; they trade fidelity
+ * for safety and are never used for content the approver is asked to review.
  */
 
-import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription, ActionField, ActionFieldSyntax,
+} from "@gadgets/workshop-shared/gatekeeper";
 
 /**
- * Longest description the builder renders, in UTF-8 bytes. The overseer stores each action record
- * (title, description, caller, timestamps, kind) as one Durable Object value, and such values are
- * limited to 128 KiB after serialization. Staying below 96 KiB leaves room for the record's other
- * fields and for the storage wrapper.
+ * Longest description the builder renders, in UTF-8 bytes of prose and fields together. The
+ * overseer stores each action record (title, description, caller, timestamps, kind) as one Durable
+ * Object value, and such values are limited to 128 KiB after serialization. Staying below 96 KiB
+ * leaves room for the record's other fields, the fields' structure, and the storage wrapper.
  */
 export const MAX_ACTION_DESCRIPTION_BYTES = 96 * 1024;
 
@@ -28,32 +30,35 @@ export const MAX_TITLE_LENGTH = 200;
 
 /** The description fields of an `ActionDescription`, ready to spread into one. */
 export type RenderedDescription =
-  Pick<ActionDescription, "description"> & { descriptionIsComplete?: true };
+  Pick<ActionDescription, "description" | "fields"> & { descriptionIsComplete?: true };
 
-// Bytes reserved beside each field for its truncation note, so the note itself fits the budget.
-const TRUNCATION_NOTE_RESERVE = 80;
+/** What `ActionDescriptionBuilder.file` shows of bytes the approver cannot read as text. */
+export type FileDescription = Omit<Extract<ActionField, { kind: "file" }>, "label" | "kind" | "truncated">;
 
-// Characters a fenced block cannot show: CommonMark replaces NUL with U+FFFD, and the other C0 and
-// C1 controls render as nothing at all. Tab and line feed display as themselves; carriage return
-// is a line ending to CommonMark, and `lineEndingNote` handles it. Default-ignorable code points
-// (zero-width spaces, word joiners, the byte order mark, the bidirectional formatting characters
-// and the like) render as nothing too, so `admin\u200B@x.com` reads as `admin@x.com`, and the bidi
-// controls can reorder the text around them so it reads as something else.
+// Bytes charged to each field beyond its label and value, for the keys and punctuation of its
+// serialized form, and to each list item for its quotes and separator.
+const FIELD_OVERHEAD = 128;
+const ITEM_OVERHEAD = 3;
+
+// Characters a surface cannot show: NUL and the other C0 and C1 controls render as nothing or as a
+// replacement glyph, except tab and line feed, which display as themselves. Default-ignorable code
+// points (zero-width spaces, word joiners, the byte order mark, the bidirectional formatting
+// characters and the like) render as nothing too, so `admin\u200B@x.com` reads as `admin@x.com`,
+// and the bidi controls can reorder the text around them so it reads as something else.
 const CONTROL_CHARS = "\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F";
 const INVISIBLE_CHARS = `${CONTROL_CHARS}\\p{Default_Ignorable_Code_Point}`;
-// Short values (`inline`, `list`) and JSON strings escape or reroute every invisible character, so
-// an identifier or address shows its exact code points.
+// Short values (`inline`, `list`, file names) and JSON strings escape or reroute every invisible
+// character, so an identifier or address shows its exact code points.
 const INVISIBLE = new RegExp(`[${INVISIBLE_CHARS}]`, "u");
 const INVISIBLE_GLOBAL = new RegExp(`[${INVISIBLE_CHARS}]`, "gu");
-// Prose in a fenced block keeps only the invisibles that belong to an emoji, since those render as
-// part of a visible glyph: a zero-width joiner between two emoji, a presentation selector right
-// after one, a keycap's selector, and the tag characters of the three RGI subdivision flags
-// (England, Scotland, Wales). Every other invisible character flags the block, because each can
-// hide data in text the approver reads as whole: tag characters spell out ASCII, variation
-// selectors carry a byte apiece, and joiners between letters or soft hyphens encode bits. Persian
-// and Indic text that uses the joiners therefore gets the note; `json` shows it exactly. A
-// presentation selector after an emoji can still carry one bit per emoji, a channel as small as
-// the visible emoji count.
+// Text keeps only the invisibles that belong to an emoji, since those render as part of a visible
+// glyph: a zero-width joiner between two emoji, a presentation selector right after one, a keycap's
+// selector, and the tag characters of the three RGI subdivision flags (England, Scotland, Wales).
+// Every other invisible character reroutes the text to JSON, because each can hide data in text the
+// approver reads as whole: tag characters spell out ASCII, variation selectors carry a byte apiece,
+// and joiners between letters or soft hyphens encode bits. Persian and Indic text that uses the
+// joiners is therefore shown as JSON. A presentation selector after an emoji can still carry one
+// bit per emoji, a channel as small as the visible emoji count.
 const EMOJI_INVISIBLES = new RegExp([
   "(?<=\\p{Extended_Pictographic}[\\uFE0F\\u{1F3FB}-\\u{1F3FF}]?)\\u200D(?=\\p{Extended_Pictographic})",
   "(?<=\\p{Extended_Pictographic})[\\uFE0E\\uFE0F]",
@@ -67,20 +72,11 @@ function hasUndisplayable(text: string): boolean {
   return INVISIBLE.test(text.replace(EMOJI_INVISIBLES, ""));
 }
 
-const CONTROL_NOTE = "_Contains invisible or control characters that cannot be displayed._";
-
-const CRLF_NOTE = "_Line breaks are CRLF (carriage return + line feed), shown as plain line breaks._";
-
-const CR_NOTE = "_Contains carriage returns that cannot be displayed exactly._";
-
-// CommonMark reads CR, LF and CRLF alike as a line ending, even inside a fenced block, so each
-// displays as the same line break. Text whose every line break is CRLF is still exact once a note
-// says so; any other text with a carriage return is not. Text without one needs no note.
-function lineEndingNote(text: string): { note: string; exact: boolean } | undefined {
-  if (!text.includes("\r")) return undefined;
-  return /\r(?!\n)|(?<!\r)\n/.test(text)
-    ? { note: CR_NOTE, exact: false }
-    : { note: CRLF_NOTE, exact: true };
+// A carriage return displays as part of a line break at best. Text whose every line break is CRLF
+// is still exact once the surface says so (it notes CRLF from the value itself); a bare CR, or a
+// mix of CRLF and LF, is not.
+function hasInexactLineBreaks(text: string): boolean {
+  return text.includes("\r") && /\r(?!\n)|(?<!\r)\n/.test(text);
 }
 
 const encoder = new TextEncoder();
@@ -104,36 +100,41 @@ export function truncateToBytes(text: string, maxBytes: number):
   return { text: decoder.decode(bytes.subarray(0, cut)), truncated: true };
 }
 
-// The shortest backtick fence that `text` cannot close: one longer than its longest run, and at
-// least the three CommonMark requires. The bytes inside then need no escaping at all.
-function fenceFor(text: string): string {
-  let longest = 0;
-  for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
-  return "`".repeat(Math.max(3, longest + 1));
+// JSON text for `value`, with every invisible character escaped so the text displays and decodes
+// to exactly the value, or `undefined` for a value JSON cannot represent. `JSON.stringify` escapes
+// C0 controls but not DEL, C1 or the default-ignorables; those can only occur inside strings, where
+// a `\u` escape decodes to the same character. An astral match (a tag character) is escaped as its
+// surrogate pair.
+function toJson(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, null, 2)?.replace(INVISIBLE_GLOBAL, c =>
+      Array.from({ length: c.length }, (_, i) =>
+        `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`).join(""));
+  } catch {
+    return undefined;
+  }
 }
 
-// A value a code span reproduces exactly: no backtick, no line break, no edge whitespace CommonMark
-// would strip, no tab or run of spaces the Workshop's code spans would collapse, and short enough
-// to read on one line.
+// A value shown on one line reproduces exactly: no line break, no edge whitespace or tab or run of
+// spaces a reader would miss, and short enough to read at a glance.
 function fitsInline(value: string): boolean {
-  return value.length <= MAX_INLINE_TEXT && !/[`\r\n\t]| {2}/.test(value) &&
-    value.trim() === value;
+  return value.length <= MAX_INLINE_TEXT && !/[\r\n\t]| {2}/.test(value) && value.trim() === value;
 }
 
 /**
- * Accumulates the Markdown an approver reads before deciding, one field at a time, under a single
- * byte budget. Labels and prose are the gatekeeper's own words; values are whatever the action
- * will send, and appear only in fields.
+ * Accumulates what an approver reads before deciding, under a single byte budget: the gatekeeper's
+ * own prose, and one `ActionField` per value the action will send. Labels and prose are the
+ * gatekeeper's words; values appear only in fields, which approval surfaces show literally.
  *
- * Content fields (`verbatim`, `json`, `list`, and `inline` when the value needs a block) render
- * inside a fenced code block, so the approver sees exact bytes and nothing in them renders as
- * Markdown, images or links included. A field that does not fit is truncated with a note, or
- * omitted once the budget is spent, and either case leaves `descriptionIsComplete` unset on the
- * result of `finish()`.
+ * A value a field cannot show exactly as its kind (an invisible character, a carriage return that
+ * is not part of a CRLF line break) is rerouted to a `json` field, which escapes it. A field that
+ * does not fit is truncated, or omitted once the budget is spent, and either case leaves
+ * `descriptionIsComplete` unset on the result of `finish()`.
  */
 export class ActionDescriptionBuilder {
   readonly #maxBytes: number;
-  readonly #parts: string[] = [];
+  readonly #prose: string[] = [];
+  readonly #fields: ActionField[] = [];
   #bytes = 0;
   #complete = true;
   #omittedOne = false;
@@ -149,33 +150,46 @@ export class ActionDescriptionBuilder {
     if (intro !== undefined) this.prose(intro);
   }
 
-  #push(part: string): void {
-    // Parts are joined with a blank line; count the separator with the part it precedes.
-    this.#bytes += byteLength(part) + (this.#parts.length ? 2 : 0);
-    this.#parts.push(part);
+  // Budget left for a field's value once its label and structure are charged.
+  #room(label: string): number {
+    return this.#maxBytes - this.#bytes - FIELD_OVERHEAD - byteLength(label);
   }
 
-  // Records a field dropped for lack of room. The first is named in a placeholder; later ones are
-  // only counted, and `finish()` reports the count on one line.
-  #omit(label: string): void {
+  #push(field: ActionField, valueBytes: number): void {
+    this.#bytes += FIELD_OVERHEAD + byteLength(field.label) + valueBytes;
+    this.#fields.push(field);
+  }
+
+  // Records a field dropped for lack of room. The first is kept as an empty stub naming it; later
+  // ones are only counted, and `finish()` reports the count in one line of prose, since some field
+  // counts are chosen by the agent. Neither is budgeted: the gap between the default budget and the
+  // storage limit absorbs one stub and one line.
+  #omit(label: string, totalBytes: number): void {
     this.#complete = false;
     if (this.#omittedOne) {
       this.#omittedAfterFirst++;
       return;
     }
     this.#omittedOne = true;
-    this.#push(`**${label}:** _(omitted: description limit reached)_`);
+    this.#fields.push({ label, kind: "inline", value: "", truncated: { shownBytes: 0, totalBytes } });
   }
 
-  // A whole field, or its placeholder when even that no longer fits. Placeholders are not
-  // themselves budgeted, but there are at most two short lines of them however many fields are
-  // dropped, which the gap between the default budget and the storage limit absorbs.
-  #field(label: string, part: string): void {
-    if (this.#bytes + byteLength(part) + 2 > this.#maxBytes) {
-      this.#omit(label);
+  // A text-like value, cut to the room left when it does not fit.
+  #text(label: string, value: string, field: (value: string) => ActionField): void {
+    const totalBytes = byteLength(value);
+    const room = this.#room(label);
+    if (totalBytes <= room) {
+      this.#push(field(value), totalBytes);
       return;
     }
-    this.#push(part);
+    const { text: shown } = truncateToBytes(value, room);
+    if (shown === "") {
+      this.#omit(label, totalBytes);
+      return;
+    }
+    const shownBytes = byteLength(shown);
+    this.#complete = false;
+    this.#push({ ...field(shown), truncated: { shownBytes, totalBytes } }, shownBytes);
   }
 
   /**
@@ -184,136 +198,138 @@ export class ActionDescriptionBuilder {
    * overflowing it leaves the description incomplete.
    *
    * Prose is for the gatekeeper's own words only. Agent- or provider-supplied text interpolated
-   * here could open an HTML block the chat renderer hides, taking the fields after it along, so
-   * such a value goes in a field (`inline`, `verbatim`, `json`, `list`), or through `codeSpan` or
-   * `plainInline` when it is only a label the approver does not need exactly.
+   * here could open an HTML block the chat renderer hides, so such a value goes in a field
+   * (`inline`, `verbatim`, `json`, `list`), or through `codeSpan` or `plainInline` when it is only
+   * a label the approver does not need exactly.
    */
   prose(markdown: string): this {
-    if (this.#bytes + byteLength(markdown) + (this.#parts.length ? 2 : 0) > this.#maxBytes) {
-      this.#complete = false;
-    }
-    this.#push(markdown);
+    const bytes = byteLength(markdown) + (this.#prose.length ? 2 : 0);
+    if (this.#bytes + bytes > this.#maxBytes) this.#complete = false;
+    this.#bytes += bytes;
+    this.#prose.push(markdown);
     return this;
   }
 
   /**
-   * Adds a short value on the label's line, as a code span. A value a code span cannot reproduce
-   * exactly (backticks, line breaks, edge whitespace, tabs or runs of spaces, or too long for one
-   * line) is rendered as a fenced block instead, and one with control or invisible characters, or
-   * with carriage returns a block cannot show exactly, as a JSON string, so the field stays complete either way.
+   * Adds a short value, such as an ID or an address. A value one line cannot show exactly (line
+   * breaks, edge whitespace, tabs or runs of spaces, or too long to read at a glance) becomes a
+   * `text` field instead, and one with control or invisible characters, or with carriage returns
+   * that are not CRLF line breaks, a `json` string, so the field stays complete either way. Kept
+   * whole or omitted, never cut.
    */
   inline(label: string, value: string): this {
-    if (value === "") {
-      this.#field(label, `**${label}:** _(empty)_`);
-    } else if (INVISIBLE.test(value) || lineEndingNote(value)?.exact === false) {
-      this.json(label, value);
-    } else if (fitsInline(value)) {
-      this.#field(label, `**${label}:** \`${value}\``);
-    } else {
-      this.verbatim(label, value);
-    }
+    if (INVISIBLE.test(value) || hasInexactLineBreaks(value)) return this.json(label, value);
+    if (!fitsInline(value)) return this.verbatim(label, value);
+    const bytes = byteLength(value);
+    if (bytes > this.#room(label)) this.#omit(label, bytes);
+    else this.#push({ label, kind: "inline", value }, bytes);
     return this;
   }
 
   /**
-   * Adds a field whose value the approver must read in full, as a fenced block containing exactly
-   * `text`. The fence is chosen so the text cannot close it. Text whose every line break is CRLF
-   * gets a note saying so, since the block shows each as a plain line break. Text with control
-   * or invisible characters a block cannot show, or any other text with a carriage return, is rendered all the
-   * same, with a note, and leaves the description incomplete; use `json` for such a value to show
-   * it exactly.
-   * @param lang Optional info string for syntax highlighting, such as `"json"` or `"sql"`.
+   * Adds text the approver must read in full, line breaks included. Text with control or invisible
+   * characters other than those inside emoji, or with carriage returns that are not CRLF line
+   * breaks, becomes a `json` string instead, so it is shown exactly.
+   * @param syntax The language the text is written in, when it has one.
    */
-  verbatim(label: string, text: string, lang = ""): this {
-    if (text === "") {
-      this.#field(label, `**${label}:** _(empty)_`);
-      return this;
-    }
-    const heading = `**${label}:**\n\n`;
-    const fence = fenceFor(text);
-    const framing = byteLength(heading) + byteLength(fence) * 2 + byteLength(lang) + 2 + 2;
-    const controls = hasUndisplayable(text);
-    const lineEndings = lineEndingNote(text);
-    const reserve = TRUNCATION_NOTE_RESERVE + (controls ? byteLength(CONTROL_NOTE) + 2 : 0) +
-      (lineEndings ? byteLength(lineEndings.note) + 2 : 0);
-    const room = this.#maxBytes - this.#bytes - framing - reserve;
-    if (room <= 0) {
-      this.#omit(label);
-      return this;
-    }
-    const total = byteLength(text);
-    const { text: shown, truncated } = truncateToBytes(text, room);
-    let block = `${heading}${fence}${lang}\n${shown}\n${fence}`;
-    if (truncated) {
-      block += `\n\n_Truncated: showing ${byteLength(shown)} of ${total} bytes._`;
-      this.#complete = false;
-    }
-    if (controls) {
-      block += `\n\n${CONTROL_NOTE}`;
-      this.#complete = false;
-    }
-    if (lineEndings) {
-      block += `\n\n${lineEndings.note}`;
-      if (!lineEndings.exact) this.#complete = false;
-    }
-    this.#push(block);
+  verbatim(label: string, text: string, syntax?: ActionFieldSyntax): this {
+    if (hasUndisplayable(text) || hasInexactLineBreaks(text)) return this.json(label, text);
+    this.#text(label, text, value =>
+      syntax ? { label, kind: "text", value, syntax } : { label, kind: "text", value });
     return this;
   }
 
   /**
-   * Adds a value as pretty-printed JSON in a fenced block. Control and invisible characters are escaped, so
-   * the block always displays and decodes to exactly the value. A value JSON cannot represent (a cycle,
-   * a bigint, `undefined`) is reported as undisplayable and leaves the description incomplete.
+   * Adds a value as pretty-printed JSON. Control and invisible characters are escaped, so the text
+   * always displays and decodes to exactly the value. A value JSON cannot represent (a cycle, a
+   * bigint, `undefined`) is named in the prose as undisplayable and leaves the description
+   * incomplete.
    */
   json(label: string, value: unknown): this {
-    let text: string | undefined;
-    try {
-      // `JSON.stringify` escapes C0 controls but not DEL, C1 or the default-ignorables; those can
-      // only occur inside strings, where a `\u` escape decodes to the same character. An astral
-      // match (a tag character) is escaped as its surrogate pair.
-      text = JSON.stringify(value, null, 2)?.replace(INVISIBLE_GLOBAL, c =>
-        Array.from({ length: c.length }, (_, i) =>
-          `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`).join(""));
-    } catch {
-      text = undefined;
-    }
+    const text = toJson(value);
     if (text === undefined) {
-      this.#field(label, `**${label}:** _(could not be displayed)_`);
       this.#complete = false;
-      return this;
+      return this.prose(`**${label}:** _(could not be displayed)_`);
     }
-    return this.verbatim(label, text, "json");
+    this.#text(label, text, json => ({ label, kind: "json", value: json }));
+    return this;
   }
 
   /**
-   * Adds a list of short values, one per line in a fenced block. An item containing a line break
-   * would read as two, and one with control or invisible characters would not display
-   * exactly, so such a list is rendered as JSON instead.
+   * Adds a list of short values, one per row. An item containing a line break would read as two,
+   * and one with control or invisible characters would not display exactly, so such a list is
+   * rendered as JSON instead. A list that does not fit keeps as many whole items as do.
    */
   list(label: string, items: readonly string[]): this {
-    if (items.length === 0) {
-      this.#field(label, `**${label}:** _(none)_`);
-      return this;
-    }
     if (items.some(item => /[\r\n]/.test(item) || INVISIBLE.test(item))) {
       return this.json(label, items);
     }
-    return this.verbatim(label, items.join("\n"));
+    const room = this.#room(label);
+    const shown: string[] = [];
+    let shownBytes = 0;
+    let charged = 0;
+    for (const item of items) {
+      const bytes = byteLength(item);
+      if (charged + bytes + ITEM_OVERHEAD > room) break;
+      shown.push(item);
+      shownBytes += bytes;
+      charged += bytes + ITEM_OVERHEAD;
+    }
+    if (shown.length === items.length) {
+      this.#push({ label, kind: "list", items: shown }, charged);
+      return this;
+    }
+    const totalBytes = items.reduce((sum, item) => sum + byteLength(item), 0);
+    if (shown.length === 0) {
+      this.#omit(label, totalBytes);
+      return this;
+    }
+    this.#complete = false;
+    this.#push({ label, kind: "list", items: shown, truncated: { shownBytes, totalBytes } }, charged);
+    return this;
+  }
+
+  /**
+   * Adds bytes named rather than shown: a file's name, media type, size and digest. Bytes the
+   * gatekeeper re-sends unchanged from the same provider (`origin: "provider"`) count as shown;
+   * bytes from this workspace (`origin: "agent"`) leave the description incomplete, since the
+   * approver cannot read them. Approval surfaces show a name or media type with control or
+   * invisible characters escaped, so it is exact either way. Kept whole or omitted.
+   */
+  file(label: string, file: FileDescription): this {
+    const bytes = byteLength(file.name) + byteLength(file.mediaType) +
+      byteLength(file.sha256 ?? "") + String(file.size).length;
+    if (bytes > this.#room(label)) {
+      this.#omit(label, bytes);
+      return this;
+    }
+    if (file.origin === "agent") this.#complete = false;
+    // Built from its known members, so nothing else a caller's object carries (a `label`, `kind`
+    // or `truncated` the type does not admit) reaches the field.
+    const { name, mediaType, size, sha256, origin } = file;
+    this.#push({
+      label, kind: "file", name, mediaType, size, ...(sha256 !== undefined ? { sha256 } : {}), origin,
+    }, bytes);
+    return this;
   }
 
   /**
    * Renders the description. `descriptionIsComplete` is present, and `true`, only when every
    * field was shown in full; the key is absent otherwise, so spreading the result into an
-   * `ActionDescription` puts nothing on the wire for an incomplete one.
+   * `ActionDescription` puts nothing on the wire for an incomplete one. So is `fields` when there
+   * are none.
    */
   finish(): RenderedDescription {
     const n = this.#omittedAfterFirst;
-    const parts = n > 0
-      ? [...this.#parts,
+    const prose = n > 0
+      ? [...this.#prose,
         `_(${n} more field${n === 1 ? "" : "s"} omitted: description limit reached)_`]
-      : this.#parts;
-    const description = parts.join("\n\n");
-    return this.#complete ? { description, descriptionIsComplete: true } : { description };
+      : this.#prose;
+    return {
+      description: prose.join("\n\n"),
+      ...(this.#fields.length ? { fields: [...this.#fields] } : {}),
+      ...(this.#complete ? { descriptionIsComplete: true as const } : {}),
+    };
   }
 }
 
@@ -325,8 +341,7 @@ export function buildDescription(intro?: string): ActionDescriptionBuilder {
 /**
  * Neutralizes Markdown fences in untrusted text about to be placed inside one, or quoted in prose.
  * Without it a value can close the fence and continue in the description's own voice. Content the
- * approver reviews goes through `ActionDescriptionBuilder.verbatim` instead, which needs no
- * escaping.
+ * approver reviews goes in an `ActionDescriptionBuilder` field instead, which needs no escaping.
  */
 export function defuseFences(text: string): string {
   return text.replace(/`{3,}/g, "'''");

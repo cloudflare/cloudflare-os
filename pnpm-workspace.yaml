@@ -51,6 +51,12 @@ minimumReleaseAgeExclude:
   - capnweb-validate
   - workerd
   - "@cloudflare/workerd-*"
+  # One-time exception for pi's 0.87.1 model catalog and its co-released dependencies. Pin the
+  # exemption to exact versions so future releases remain subject to the 24-hour gate.
+  - "@earendil-works/chord@0.87.1"
+  - "@earendil-works/pi-agent-core@0.87.1"
+  - "@earendil-works/pi-ai@0.87.1"
+  - "@earendil-works/pi-telemetry@0.87.1"
 
 allowBuilds:
   '@google/genai': true

@@ -182,7 +182,7 @@ const MAX_DESCRIPTION = 600;
 // such as search queries.
 export { codeSpan, plainInline };
 
-/** Renders a tool call as the Markdown an approver reads before deciding. */
+/** Renders a tool call as the prose and fields an approver reads before deciding. */
 export function describeCall(args: {
   serverName: string;
   endpoint: string;
@@ -200,8 +200,8 @@ export function describeCall(args: {
       "sent yet.";
 
   // The arguments are the agent's text, and the agent is who this prompt protects the user from.
-  // They are also the whole payload of the call, so the approver must see every byte: the builder
-  // fences them so nothing in them renders or escapes, and it declares the description complete
+  // They are also the whole payload of the call, so the approver must see every byte: they go in
+  // a field, which is shown literally, and the builder declares the description complete
   // only when they fit. The heading flattens and caps the names, so it is only a label: the server,
   // tool and endpoint the call goes to are reproduced exactly in their own fields.
   const rendered = buildDescription([

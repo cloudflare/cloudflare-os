@@ -545,15 +545,17 @@ what makes a retry safe in the first place.
 
 Write `describe` with `buildDescription` from `@gadgets/gatekeeper-kit/action-description`. The
 approver vouches for the text they read, so every piece of content the action will send that came
-from the workspace — a body, a field value, an identifier, serialized arguments — goes through
-`verbatim`, `json`, or `list`, which render it in a fenced block containing exactly those bytes.
-Nothing inside renders as Markdown. Prose is for the gatekeeper's own summary: never interpolate
-agent- or provider-supplied text into it, since such text can open an HTML block the chat hides and
-take the fields after it along. Put the value in a field, or pass a mere label through `codeSpan` or
-`plainInline`. Spread `finish()` into the presentation and never set `descriptionIsComplete` by
-hand: the builder sets it only when every field was shown in full under its 96 KiB budget, and
-leaves the key off after truncating or omitting one, or when prose alone overflows it. An incomplete
-description is still submitted, and the approver is told part of the action isn't shown.
+from the workspace — a body, a field value, an identifier, serialized arguments — goes in a field
+(`inline`, `verbatim`, `json`, `list`, or `file`). Fields travel as `ActionDescription.fields`,
+which approval surfaces show as literal text, so nothing in a value renders as Markdown. A value a
+field cannot show exactly, such as one with invisible characters, is shown as escaped JSON instead.
+Prose is for the gatekeeper's own summary: never interpolate agent- or provider-supplied text into
+it, since such text can open an HTML block the chat hides. Put the value in a field, or pass a mere
+label through `codeSpan` or `plainInline`. Spread `finish()` into the presentation and never set
+`descriptionIsComplete` by hand: the builder sets it only when every field was shown in full under
+its 96 KiB budget, and leaves the key off after truncating or omitting one, or when prose alone
+overflows it. An incomplete description is still submitted, and the approver is told part of the
+action isn't shown.
 
 ```ts
 describe: payload => ({
@@ -567,8 +569,9 @@ describe: payload => ({
 ```
 
 Bytes the approver cannot read as text — an agent-supplied file, git objects — cannot be complete.
-Name them by size and digest and leave the flag off. Bytes re-sent unchanged from the same provider,
-such as a forwarded attachment, may be named that way with the flag on.
+Name a file with `file(label, {name, mediaType, size, sha256, origin})`: `origin: "agent"` leaves
+the flag off, while `origin: "provider"`, for bytes re-sent unchanged from the same provider such as
+a forwarded attachment, keeps it on.
 
 Store action file bytes with `ActionFileStore`. Put only the bounded `ActionFileReference` in the
 action payload. Journal records must stay small, and approval text must describe the same bytes that

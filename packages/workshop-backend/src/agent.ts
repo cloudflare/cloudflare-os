@@ -4,7 +4,7 @@ import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type Code
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, toToolDeclaration } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, TSchema, TextContent, ThinkingContent, ToolCall,
 } from "@earendil-works/pi-ai";
@@ -1206,7 +1206,7 @@ export function rehydrateStoredAssistantMessage(
       });
       return undefined;
     }
-    content.push({...block, arguments: record.input as Record<string, unknown>});
+    content.push({...block, arguments: record.input as ToolCall["arguments"]});
   }
   return {...stored, content};
 }
@@ -2473,14 +2473,14 @@ async function runAgentPass(
       error instanceof Error ? error.message : String(error);
 
   // Set to true once the agent has successfully created a connection request this turn. Used by
-  // shouldStopAfterTurn to end the turn (the agent must wait for the user to accept/deny). A
+  // finishTurn to end the turn (the agent must wait for the user to accept/deny). A
   // *rejected* requestConnection call leaves this false so the agent can fix the request and retry
   // without the turn ending (which would strand it, since there'd be no card to accept/deny and
   // thus no resume).
   let connectionRequested = false;
 
-  // Latched by the turn_end barrier when this step submitted an awaitDecision action.
-  // shouldStopAfterTurn reads it afterwards to end the turn until approval resumes it.
+  // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
+  // barrier persists the action before the loop ends and waits for approval to resume it.
   let awaitingActionDecision = false;
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
@@ -2568,8 +2568,8 @@ async function runAgentPass(
 
   // The two system prompt slots: the non-project-specific parts, followed by the
   // project-specific parts. Kept as a two-part construction (static slot first) so the shared
-  // prefix stays byte-stable for prompt caching; they are concatenated into pi's single
-  // Context.systemPrompt string below.
+  // prefix stays byte-stable for prompt caching; they are concatenated into the leading system
+  // message in pi's transcript below.
   let systemPromptSlots: [string, string];
 
   if (agentContext.spawnerConfig) {
@@ -3502,8 +3502,7 @@ async function runAgentPass(
 
           let result = await hooks.requestConnection(chatId, input);
           // Only end the turn if a request was actually created; a rejected request must let the
-          // agent retry within the same turn (see the connectionRequested flag /
-          // shouldStopAfterTurn).
+          // agent retry within the same turn (see the connectionRequested flag / finishTurn).
           if (result.requested) {
             connectionRequested = true;
             // The name is claimed in the chat's scope from request time (released only by
@@ -3536,9 +3535,14 @@ async function runAgentPass(
   // failed turn is persisted.
   let turnFailure: {message: string} | undefined;
 
-  // Set after the persistence barrier when another provider request would cross the preferred
-  // compaction budget. The caller reloads durable history before doing any more model work.
+  // Set when the next provider request would cross the preferred compaction budget. The
+  // turn_end barrier persists this step before the caller reloads durable history.
   let reloadForCompaction = false;
+
+  // pi 0.87 calls finishTurn before turn_end. Capture actions there so the stop decision can
+  // see them; the awaited turn_end barrier then persists this same snapshot before another
+  // model request is allowed to start.
+  let capturedActionsForStep: ReturnType<AgentHooks["consumeCapturedActions"]>;
 
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
@@ -3620,8 +3624,7 @@ async function runAgentPass(
         // actions/connection requests land with their records here (effects iff record, the
         // invariant this barrier exists for), rather than evaporating out from under side
         // effects the next turn would mis-consume. Tool calls the abort kept from running are
-        // recorded as errors below, and shouldStopAfterTurn ends the loop right after this
-        // barrier.
+        // recorded as errors below, and finishTurn ends the loop right after this barrier.
 
         let msgs: AiChatMessageBodyWithModelData[] = [];
 
@@ -3681,16 +3684,14 @@ async function runAgentPass(
           msgs.push(msg);
         }
 
-        let capturedActions = hooks.consumeCapturedActions(chatId);
+        let capturedActions = capturedActionsForStep;
+        capturedActionsForStep = undefined;
         if (capturedActions) {
           for (let actionId of capturedActions.actions) {
             msgs.push({type: "action", actionId});
           }
           if (capturedActions.accessedGadget) {
             msgs.push({type: "useGadget"});
-          }
-          if (capturedActions.awaitDecision) {
-            awaitingActionDecision = true;
           }
         }
 
@@ -3745,23 +3746,29 @@ async function runAgentPass(
   }
 
   let context: AgentContext = {
-    systemPrompt,
-    messages: modelMessages,
+    messages: [{
+      role: "system", content: systemPrompt, toolsAdded: toolList.map(toToolDeclaration),
+      timestamp: 0,
+    }, ...modelMessages],
     tools: toolList,
   };
 
   await runAgentLoopContinue(context, {
     model: handle.model,
-    // Replay already produces LLM-shaped messages; no custom message types exist.
+    // Replay already produces LLM-shaped messages; no custom message types exist. The system
+    // prompt and tool declarations now ride the leading system message in pi's transcript.
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
     maxTokens: maxOutputTokens,
-    shouldStopAfterTurn: ({message, toolResults}) => {
+    finishTurn: ({message, toolResults}) => {
+      if (message.stopReason === "error" || message.stopReason === "aborted") return;
+      capturedActionsForStep = hooks.consumeCapturedActions(chatId);
+      if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (
-          // Cancelled during tool execution: the completed turn was persisted by the turn_end
-          // barrier just above; don't start another (doomed) model request.
+          // Cancelled during tool execution: turn_end will persist the completed turn before
+          // this decision ends the loop; don't start another (doomed) model request.
           abortSignal.aborted ||
           // End the turn once the agent has successfully requested a connection: it must wait
           // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
@@ -3771,10 +3778,10 @@ async function runAgentPass(
           connectionRequested ||
           // Wait for approval before continuing against state that may not reflect the action.
           awaitingActionDecision) {
-        return true;
+        return {action: "end"};
       }
       // The model stopped on its own; there is no next request to make room for.
-      if (toolResults.length === 0) return false;
+      if (toolResults.length === 0) return;
       // Otherwise the next request is this step's measured prompt plus the tool results just
       // produced, weighed as the model will see them (pi's `details` can carry a second copy of a
       // large output). Without usage there is nothing to measure against, so reload: the
@@ -3787,9 +3794,8 @@ async function runAgentPass(
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,
         // as a non-edit tool start would, so it doesn't outlive the run on the client.
         codePreviewManager.clearActiveFile();
-        return true;
+        return {action: "end"};
       }
-      return false;
     },
   }, emit, abortSignal, handle.stream);
 

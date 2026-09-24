@@ -4,6 +4,7 @@ import {
   buildDescription,
   codeSpan,
   defuseFences,
+  type FileDescription,
   plainInline,
   quoteUntrusted,
   sanitizeTitle,
@@ -12,203 +13,212 @@ import {
 
 const encoder = new TextEncoder();
 
+const bytes = (list: string[]) => list.reduce((sum, item) => sum + encoder.encode(item).byteLength, 0);
+
 describe("ActionDescriptionBuilder", () => {
-  it("renders content inside a fence the content cannot close", () => {
-    const payload = "before\n```\nescaped\n```\nafter ````";
-    const { description, descriptionIsComplete } =
-      buildDescription("Posts a comment.").verbatim("Body", payload).finish();
+  it("carries values as fields and keeps the description to prose", () => {
+    const payload = "LGTM ```but``` <script>alert(1)</script>";
+    const result = buildDescription("Posts a comment.")
+      .verbatim("Body", payload, "markdown")
+      .prose("Nothing is sent until approval.")
+      .finish();
 
-    expect(descriptionIsComplete).toBe(true);
-    // Five backticks: one more than the longest run in the payload.
-    expect(description).toBe(`Posts a comment.\n\n**Body:**\n\n\`\`\`\`\`\n${payload}\n\`\`\`\`\``);
-    // The bytes between the fences are exactly the payload.
-    expect(description.split("`````")[1]).toBe(`\n${payload}\n`);
+    expect(result).toEqual({
+      description: "Posts a comment.\n\nNothing is sent until approval.",
+      fields: [{ label: "Body", kind: "text", value: payload, syntax: "markdown" }],
+      descriptionIsComplete: true,
+    });
   });
 
-  it("puts the info string on the opening fence", () => {
-    const { description } = buildDescription().verbatim("SQL", "select 1", "sql").finish();
-    expect(description).toBe("**SQL:**\n\n```sql\nselect 1\n```");
+  it("omits the syntax key when none is given", () => {
+    expect(buildDescription().verbatim("SQL", "select 1", "sql").finish().fields)
+      .toEqual([{ label: "SQL", kind: "text", value: "select 1", syntax: "sql" }]);
+    expect(buildDescription().verbatim("Body", "x").finish().fields)
+      .toEqual([{ label: "Body", kind: "text", value: "x" }]);
   });
 
-  it("keeps a short value inline and moves an unrepresentable one into a block", () => {
-    const { description, descriptionIsComplete } = buildDescription()
+  it("keeps a short value inline and moves one a line cannot show into text", () => {
+    const { fields, descriptionIsComplete } = buildDescription()
       .inline("Title", "Fix the build")
-      .inline("Note", "has `ticks`")
+      .inline("Ticks", "has `ticks`")
       .inline("Multi", "two\nlines")
       .inline("Padded", " edge ")
+      .inline("Spaces", "a  b")
+      .inline("Tab", "a\tb")
       .inline("Long", "x".repeat(121))
       .finish();
 
     expect(descriptionIsComplete).toBe(true);
-    expect(description).toContain("**Title:** `Fix the build`");
-    expect(description).toContain("**Note:**\n\n```\nhas `ticks`\n```");
-    expect(description).toContain("**Multi:**\n\n```\ntwo\nlines\n```");
-    expect(description).toContain("**Padded:**\n\n```\n edge \n```");
-    expect(description).toContain(`**Long:**\n\n\`\`\`\n${"x".repeat(121)}\n\`\`\``);
+    expect(fields).toEqual([
+      { label: "Title", kind: "inline", value: "Fix the build" },
+      { label: "Ticks", kind: "inline", value: "has `ticks`" },
+      { label: "Multi", kind: "text", value: "two\nlines" },
+      { label: "Padded", kind: "text", value: " edge " },
+      { label: "Spaces", kind: "text", value: "a  b" },
+      { label: "Tab", kind: "text", value: "a\tb" },
+      { label: "Long", kind: "text", value: "x".repeat(121) },
+    ]);
   });
 
-  it("names empty content instead of rendering an empty block", () => {
-    const { description, descriptionIsComplete } = buildDescription()
+  it("carries empty values as empty fields", () => {
+    const { description, fields, descriptionIsComplete } = buildDescription()
       .verbatim("Body", "")
       .inline("Title", "")
       .list("Labels", [])
       .finish();
 
     expect(descriptionIsComplete).toBe(true);
-    expect(description).toBe("**Body:** _(empty)_\n\n**Title:** _(empty)_\n\n**Labels:** _(none)_");
+    expect(description).toBe("");
+    expect(fields).toEqual([
+      { label: "Body", kind: "text", value: "" },
+      { label: "Title", kind: "inline", value: "" },
+      { label: "Labels", kind: "list", items: [] },
+    ]);
   });
 
-  it("renders a list one item per line, or as JSON when an item has a line break", () => {
-    expect(buildDescription().list("Labels", ["bug", "help wanted"]).finish().description)
-      .toBe("**Labels:**\n\n```\nbug\nhelp wanted\n```");
-    expect(buildDescription().list("Labels", ["a\nb", "c"]).finish().description)
-      .toBe('**Labels:**\n\n```json\n[\n  "a\\nb",\n  "c"\n]\n```');
+  it("carries a list as items, or as JSON when an item has a line break", () => {
+    expect(buildDescription().list("Labels", ["bug", "help wanted"]).finish().fields)
+      .toEqual([{ label: "Labels", kind: "list", items: ["bug", "help wanted"] }]);
+    expect(buildDescription().list("Labels", ["a\nb", "c"]).finish().fields)
+      .toEqual([{ label: "Labels", kind: "json", value: '[\n  "a\\nb",\n  "c"\n]' }]);
   });
 
   it("pretty-prints JSON and marks an unserializable value incomplete", () => {
-    const complete = buildDescription().json("Arguments", { a: 1, b: ["x"] }).finish();
-    expect(complete).toEqual({
-      description: '**Arguments:**\n\n```json\n{\n  "a": 1,\n  "b": [\n    "x"\n  ]\n}\n```',
+    expect(buildDescription().json("Arguments", { a: 1, b: ["x"] }).finish()).toEqual({
+      description: "",
+      fields: [{ label: "Arguments", kind: "json", value: '{\n  "a": 1,\n  "b": [\n    "x"\n  ]\n}' }],
       descriptionIsComplete: true,
     });
 
     const cyclic: Record<string, unknown> = {};
     cyclic["self"] = cyclic;
     const incomplete = buildDescription().json("Arguments", cyclic).finish();
-    expect(incomplete.description).toBe("**Arguments:** _(could not be displayed)_");
-    expect(Object.hasOwn(incomplete, "descriptionIsComplete")).toBe(false);
+    expect(incomplete).toEqual({ description: "**Arguments:** _(could not be displayed)_" });
 
     // `undefined` has no JSON form at all.
     expect(buildDescription().json("Value", undefined).finish().description)
       .toBe("**Value:** _(could not be displayed)_");
   });
 
-  it("truncates an oversize field on a UTF-8 boundary, notes it, and drops the flag", () => {
+  it("truncates an oversize field on a UTF-8 boundary and drops the flag", () => {
     const builder = new ActionDescriptionBuilder(undefined, { maxBytes: 400 });
     // Three-byte code points, so an arbitrary byte cut would land mid-character.
-    const body = "€".repeat(1000);
-    const { description, descriptionIsComplete } = builder.verbatim("Body", body).finish();
+    const { fields, descriptionIsComplete } = builder.verbatim("Body", "€".repeat(1000)).finish();
 
     expect(descriptionIsComplete).toBeUndefined();
-    const shown = description.split("```")[1]!.slice(1, -1);
-    expect(shown).toMatch(/^€+$/);
-    expect(description).toContain(`_Truncated: showing ${shown.length * 3} of 3000 bytes._`);
-    expect(encoder.encode(description).byteLength).toBeLessThanOrEqual(400);
+    const [field] = fields!;
+    expect(field).toMatchObject({ label: "Body", kind: "text" });
+    const value = (field as { value: string }).value;
+    expect(value).toMatch(/^€+$/);
+    expect(field!.truncated).toEqual({ shownBytes: value.length * 3, totalBytes: 3000 });
+    expect(encoder.encode(value).byteLength).toBeLessThanOrEqual(400);
   });
 
-  it("omits later fields once the budget is spent", () => {
+  it("truncates a list by whole items", () => {
+    const items = Array.from({ length: 100 }, (_, i) => `recipient-${i}@example.com`);
+    const { fields, descriptionIsComplete } =
+      new ActionDescriptionBuilder(undefined, { maxBytes: 400 }).list("To", items).finish();
+
+    expect(descriptionIsComplete).toBeUndefined();
+    const field = fields![0] as { items: string[]; truncated?: object };
+    expect(field.items.length).toBeGreaterThan(0);
+    expect(field.items).toEqual(items.slice(0, field.items.length));
+    expect(field.truncated).toEqual({ shownBytes: bytes(field.items), totalBytes: bytes(items) });
+  });
+
+  it("stubs the first omitted field and counts the rest in prose", () => {
     const builder = new ActionDescriptionBuilder("Intro.", { maxBytes: 300 });
-    const { description, descriptionIsComplete } = builder
+    const { description, fields, descriptionIsComplete } = builder
       .verbatim("First", "a".repeat(1000))
       .verbatim("Second", "b")
       .inline("Third", "c")
       .finish();
 
     expect(descriptionIsComplete).toBeUndefined();
-    expect(description).toContain("_Truncated: showing");
-    expect(description).toContain("**Second:** _(omitted: description limit reached)_");
-    // Inline values take the same path, so nothing slips past the cap on the label's line; after
-    // the first placeholder, omitted fields are only counted.
-    expect(description).not.toContain("**Third:**");
-    expect(description.endsWith("_(1 more field omitted: description limit reached)_")).toBe(true);
-    // Only the placeholders sit past the budget.
-    const [shown] = description.split("\n\n**Second:**");
-    expect(encoder.encode(shown).byteLength).toBeLessThanOrEqual(300);
+    expect(fields).toHaveLength(2);
+    expect(fields![0]!.truncated?.shownBytes).toBeGreaterThan(0);
+    expect(fields![1]).toEqual(
+      { label: "Second", kind: "inline", value: "", truncated: { shownBytes: 0, totalBytes: 1 } });
+    // Inline values take the same path, so nothing slips past the cap; after the first stub,
+    // omitted fields are only counted.
+    expect(description).toBe("Intro.\n\n_(1 more field omitted: description limit reached)_");
   });
 
-  it("bounds the placeholders however many fields are omitted", () => {
+  it("bounds the stubs however many fields are omitted", () => {
     const builder = new ActionDescriptionBuilder("Intro.", { maxBytes: 300 });
     builder.verbatim("First", "a".repeat(1000));
     for (let i = 0; i < 1000; i++) builder.inline(`Field ${i}`, "x").verbatim(`Block ${i}`, "y");
-    const { description, descriptionIsComplete } = builder.finish();
+    const { description, fields, descriptionIsComplete } = builder.finish();
 
     expect(descriptionIsComplete).toBeUndefined();
-    // One labelled placeholder, then a count of the rest.
-    expect(description.match(/_\(omitted: description limit reached\)_/g)).toHaveLength(1);
+    expect(fields!.filter(field => field.truncated?.shownBytes === 0)).toHaveLength(1);
+    expect(fields).toHaveLength(2);
     expect(description).toMatch(/\n\n_\(\d{4} more fields omitted: description limit reached\)_$/);
-    expect(encoder.encode(description).byteLength).toBeLessThanOrEqual(300 + 200);
   });
 
-  it("fences a value whose whitespace a code span would collapse", () => {
-    const { description, descriptionIsComplete } = buildDescription()
-      .inline("Spaces", "a  b")
-      .inline("Tab", "a\tb")
-      .inline("Single", "a b")
-      .finish();
-
-    expect(descriptionIsComplete).toBe(true);
-    expect(description).toContain("**Spaces:**\n\n```\na  b\n```");
-    expect(description).toContain("**Tab:**\n\n```\na\tb\n```");
-    expect(description).toContain("**Single:** `a b`");
-  });
-
-  it("escapes control characters, or flags verbatim text that has them", () => {
+  it("reroutes values with control characters to JSON and stays complete", () => {
     const shown = buildDescription()
       .inline("Name", "a\u0000b")
       .list("Items", ["ok", "c\u0007d"])
       .json("Value", { s: "e\u0085f\u007F" })
+      .verbatim("Body", "a\u0000b")
       .finish();
     expect(shown.descriptionIsComplete).toBe(true);
-    expect(shown.description).toContain('**Name:**\n\n```json\n"a\\u0000b"\n```');
-    expect(shown.description).toContain('"c\\u0007d"');
-    expect(shown.description).toContain('"s": "e\\u0085f\\u007f"');
-    // oxlint-disable-next-line no-control-regex -- asserting none reach the description
-    expect(shown.description).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
-
-    const raw = buildDescription().verbatim("Body", "a\u0000b").finish();
-    expect(raw.descriptionIsComplete).toBeUndefined();
-    expect(raw.description)
-      .toBe("**Body:**\n\n```\na\u0000b\n```\n\n_Contains invisible or control characters that cannot be displayed._");
+    expect(shown.fields).toEqual([
+      { label: "Name", kind: "json", value: '"a\\u0000b"' },
+      { label: "Items", kind: "json", value: '[\n  "ok",\n  "c\\u0007d"\n]' },
+      { label: "Value", kind: "json", value: '{\n  "s": "e\\u0085f\\u007f"\n}' },
+      { label: "Body", kind: "json", value: '"a\\u0000b"' },
+    ]);
+    for (const field of shown.fields!) {
+      // oxlint-disable-next-line no-control-regex -- asserting none reach a value
+      expect((field as { value: string }).value).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+    }
   });
 
-  it("escapes bidi controls, or flags verbatim text that has them", () => {
+  it("reroutes values with bidi controls to JSON", () => {
     const shown = buildDescription()
       .inline("Name", "a\u202Eb")
       .list("Items", ["ok", "c\u2066d\u2069"])
       .json("Value", { s: "e\u200Ff\u061C" })
+      .verbatim("Body", "a\u202Eb")
       .finish();
     expect(shown.descriptionIsComplete).toBe(true);
-    expect(shown.description).toContain('**Name:**\n\n```json\n"a\\u202eb"\n```');
-    expect(shown.description).toContain('"c\\u2066d\\u2069"');
-    expect(shown.description).toContain('"s": "e\\u200ff\\u061c"');
-    expect(shown.description).not.toMatch(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/);
-
-    const raw = buildDescription().verbatim("Body", "a\u202Eb").finish();
-    expect(raw.descriptionIsComplete).toBeUndefined();
-    expect(raw.description)
-      .toBe("**Body:**\n\n```\na\u202Eb\n```\n\n_Contains invisible or control characters that cannot be displayed._");
+    expect(shown.fields).toEqual([
+      { label: "Name", kind: "json", value: '"a\\u202eb"' },
+      { label: "Items", kind: "json", value: '[\n  "ok",\n  "c\\u2066d\\u2069"\n]' },
+      { label: "Value", kind: "json", value: '{\n  "s": "e\\u200ff\\u061c"\n}' },
+      { label: "Body", kind: "json", value: '"a\\u202eb"' },
+    ]);
   });
 
-  it("escapes other invisible characters, or flags verbatim text that has them", () => {
+  it("reroutes values with other invisible characters to JSON", () => {
     const shown = buildDescription()
       .inline("Email", "admin\u200B@x.com")
       .list("Items", ["ok", "\uFEFFc"])
       .json("Value", { s: "co\u00ADop", t: "a\u{E0001}b" })
       .finish();
     expect(shown.descriptionIsComplete).toBe(true);
-    expect(shown.description).toContain('**Email:**\n\n```json\n"admin\\u200b@x.com"\n```');
-    expect(shown.description).toContain('"\\ufeffc"');
-    expect(shown.description).toContain('"s": "co\\u00adop"');
-    expect(shown.description).toContain('"t": "a\\udb40\\udc01b"');
+    expect(shown.fields).toEqual([
+      { label: "Email", kind: "json", value: '"admin\\u200b@x.com"' },
+      { label: "Items", kind: "json", value: '[\n  "ok",\n  "\\ufeffc"\n]' },
+      { label: "Value", kind: "json", value: '{\n  "s": "co\\u00adop",\n  "t": "a\\udb40\\udc01b"\n}' },
+    ]);
     expect(JSON.parse('"a\\udb40\\udc01b"')).toBe("a\u{E0001}b");
-    expect(shown.description).not.toMatch(/\p{Default_Ignorable_Code_Point}/u);
-
-    const raw = buildDescription().verbatim("Body", "admin\u200B@x.com").finish();
-    expect(raw.descriptionIsComplete).toBeUndefined();
-    expect(raw.description).toBe(
-      "**Body:**\n\n```\nadmin\u200B@x.com\n```\n\n_Contains invisible or control characters that cannot be displayed._");
   });
 
-  it("keeps verbatim prose whose only invisibles belong to emoji complete", () => {
+  it("keeps text whose only invisibles belong to emoji as text", () => {
     const text = "Thanks \u2764\uFE0F from \u{1F468}\u200D\u{1F469}\u200D\u{1F467}, " +
       "\u{1F44D}\u{1F3FD} \u{1F9D1}\u{1F3FD}\u200D\u{1F4BB}, press 1\uFE0F\u20E3 " +
       "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
-    const shown = buildDescription().verbatim("Body", text).finish();
-    expect(shown.descriptionIsComplete).toBe(true);
-    expect(shown.description).toBe(`**Body:**\n\n\`\`\`\n${text}\n\`\`\``);
+    expect(buildDescription().verbatim("Body", text).finish()).toEqual({
+      description: "",
+      fields: [{ label: "Body", kind: "text", value: text }],
+      descriptionIsComplete: true,
+    });
   });
 
-  it("flags verbatim prose with invisibles outside emoji, which can hide data", () => {
+  it("reroutes text with invisibles outside emoji to JSON, exact and complete", () => {
     const secretTags = [..."secret"].map(c => String.fromCodePoint(0xE0000 + c.charCodeAt(0))).join("");
     for (const text of [
       "pay\u200Dload",
@@ -218,81 +228,86 @@ describe("ActionDescriptionBuilder", () => {
       "co\u00ADop",
       "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
     ]) {
-      const shown = buildDescription().verbatim("Body", text).finish();
-      expect(shown.descriptionIsComplete, JSON.stringify(text)).toBeUndefined();
-      expect(shown.description).toBe(
-        `**Body:**\n\n\`\`\`\n${text}\n\`\`\`\n\n_Contains invisible or control characters that cannot be displayed._`);
+      const shown = buildDescription().verbatim("Body", text, "markdown").finish();
+      expect(shown.descriptionIsComplete, JSON.stringify(text)).toBe(true);
+      const [field] = shown.fields!;
+      expect(field).toMatchObject({ label: "Body", kind: "json" });
+      expect(JSON.parse((field as { value: string }).value)).toBe(text);
+      expect((field as { value: string }).value).not.toMatch(/\p{Default_Ignorable_Code_Point}/u);
     }
   });
 
-  it("notes CRLF line breaks and keeps the field complete", () => {
+  it("keeps CRLF-only text as text, complete", () => {
     const crlf = "one\r\ntwo\r\n";
-    const shown = buildDescription().verbatim("Body", crlf).finish();
+    expect(buildDescription().verbatim("Body", crlf).finish()).toEqual({
+      description: "",
+      fields: [{ label: "Body", kind: "text", value: crlf }],
+      descriptionIsComplete: true,
+    });
 
-    expect(shown.descriptionIsComplete).toBe(true);
-    expect(shown.description).toBe(`**Body:**\n\n\`\`\`\n${crlf}\n\`\`\`\n\n` +
-      "_Line breaks are CRLF (carriage return + line feed), shown as plain line breaks._");
-
-    // `inline` takes the same block for such a value.
-    const inline = buildDescription().inline("Name", "a\r\nb").finish();
-    expect(inline.descriptionIsComplete).toBe(true);
-    expect(inline.description).toContain("_Line breaks are CRLF");
+    // `inline` takes the same path for such a value.
+    expect(buildDescription().inline("Name", "a\r\nb").finish().fields)
+      .toEqual([{ label: "Name", kind: "text", value: "a\r\nb" }]);
   });
 
-  it("flags carriage returns a block cannot show exactly, and leaves the field incomplete", () => {
+  it("reroutes carriage returns that are not CRLF line breaks to JSON", () => {
     for (const text of ["a\rb", "a\r\nb\nc", "a\nb\r\n", "a\r\r\nb"]) {
-      const { description, descriptionIsComplete } =
-        buildDescription().verbatim("Body", text).finish();
-      expect(descriptionIsComplete).toBeUndefined();
-      expect(description).toBe(`**Body:**\n\n\`\`\`\n${text}\n\`\`\`\n\n` +
-        "_Contains carriage returns that cannot be displayed exactly._");
+      const shown = buildDescription().verbatim("Body", text).finish();
+      expect(shown.descriptionIsComplete).toBe(true);
+      expect(shown.fields).toEqual([{ label: "Body", kind: "json", value: JSON.stringify(text) }]);
     }
 
-    // `inline`, `list` and `json` escape the carriage return instead, so they stay complete, and
-    // none puts a raw one in the description.
     const escaped = buildDescription()
       .inline("Name", "a\rb")
       .list("Items", ["c\r\nd", "e"])
-      .json("Value", { s: "f\rg" })
       .finish();
     expect(escaped.descriptionIsComplete).toBe(true);
-    expect(escaped.description).toContain('**Name:**\n\n```json\n"a\\rb"\n```');
-    expect(escaped.description).toContain('"c\\r\\nd"');
-    expect(escaped.description).toContain('"s": "f\\rg"');
-    expect(escaped.description).not.toContain("\r");
+    expect(escaped.fields).toEqual([
+      { label: "Name", kind: "json", value: '"a\\rb"' },
+      { label: "Items", kind: "json", value: '[\n  "c\\r\\nd",\n  "e"\n]' },
+    ]);
   });
 
-  it("adds no line-ending note to text without carriage returns", () => {
-    expect(buildDescription().verbatim("Body", "one\ntwo\n").finish()).toEqual({
-      description: "**Body:**\n\n```\none\ntwo\n\n```",
+  it("names provider bytes as a complete file and agent bytes as an incomplete one", () => {
+    const file = { name: "report.pdf", mediaType: "application/pdf", size: 1234, sha256: "ab".repeat(32) };
+    expect(buildDescription().file("Attachment 1", { ...file, origin: "provider" }).finish())
+      .toEqual({
+        description: "",
+        fields: [{ label: "Attachment 1", kind: "file", ...file, origin: "provider" }],
+        descriptionIsComplete: true,
+      });
+
+    const agent = buildDescription().file("File", { ...file, origin: "agent" }).finish();
+    expect(agent.fields).toEqual([{ label: "File", kind: "file", ...file, origin: "agent" }]);
+    expect(Object.hasOwn(agent, "descriptionIsComplete")).toBe(false);
+  });
+
+  it("takes only a file's own members, whatever else the caller's object carries", () => {
+    const stray = {
+      label: "Forged", kind: "inline", truncated: { shownBytes: 0, totalBytes: 1 },
+      name: "a.txt", mediaType: "text/plain", size: 1, origin: "provider",
+    } as unknown as FileDescription;
+    expect(buildDescription().file("File", stray).finish().fields).toEqual([
+      { label: "File", kind: "file", name: "a.txt", mediaType: "text/plain", size: 1, origin: "provider" },
+    ]);
+  });
+
+  it("keeps a file name with invisible characters in the file field, for surfaces to escape", () => {
+    const file = { name: "invoice\u202Efdp.exe", mediaType: "application/pdf", size: 1 };
+    expect(buildDescription().file("File", { ...file, origin: "provider" }).finish()).toEqual({
+      description: "",
+      fields: [{ label: "File", kind: "file", ...file, origin: "provider" }],
       descriptionIsComplete: true,
     });
   });
 
-  it("keeps the line-ending note within the budget", () => {
-    const maxBytes = 400;
-    // The largest text shown in full: the budget less the intro, the field's framing, the room
-    // reserved for a truncation note, and the line-ending note after its blank line.
-    const note = "_Line breaks are CRLF (carriage return + line feed), shown as plain line breaks._";
-    const framing = encoder.encode("Intro.\n\n**Body:**\n\n```\n\n```").byteLength;
-    const fits = maxBytes - framing - 80 - encoder.encode(note).byteLength - 2;
-    for (const size of [fits - 1, fits, fits + 1, fits + 50]) {
-      const text = "ab\r\n".repeat(Math.floor(size / 4)) + "x".repeat(size % 4);
-      const { description, descriptionIsComplete } =
-        new ActionDescriptionBuilder("Intro.", { maxBytes }).verbatim("Body", text).finish();
-
-      expect(description).toContain(note);
-      expect(descriptionIsComplete).toBe(size <= fits ? true : undefined);
-      expect(encoder.encode(description).byteLength).toBeLessThanOrEqual(maxBytes);
-    }
-  });
-
   it("counts prose against the budget without cutting it", () => {
     const builder = new ActionDescriptionBuilder("p".repeat(500), { maxBytes: 300 });
-    const { description, descriptionIsComplete } = builder.verbatim("Body", "b").finish();
+    const { description, fields, descriptionIsComplete } = builder.verbatim("Body", "b").finish();
 
-    expect(description.startsWith("p".repeat(500))).toBe(true);
-    expect(description).toContain("**Body:** _(omitted: description limit reached)_");
+    expect(description).toBe("p".repeat(500));
+    expect(fields).toEqual(
+      [{ label: "Body", kind: "inline", value: "", truncated: { shownBytes: 0, totalBytes: 1 } }]);
     expect(descriptionIsComplete).toBeUndefined();
   });
 
@@ -310,12 +325,26 @@ describe("ActionDescriptionBuilder", () => {
     expect(later.descriptionIsComplete).toBeUndefined();
   });
 
-  it("puts the completeness key on the result only when set", () => {
-    expect(Object.hasOwn(buildDescription("Prose only.").finish(), "descriptionIsComplete"))
-      .toBe(true);
-    const incomplete = new ActionDescriptionBuilder(undefined, { maxBytes: 10 })
-      .verbatim("Body", "long enough to be cut").finish();
+  it("puts the completeness and fields keys on the result only when set", () => {
+    const proseOnly = buildDescription("Prose only.").finish();
+    expect(Object.hasOwn(proseOnly, "descriptionIsComplete")).toBe(true);
+    expect(Object.hasOwn(proseOnly, "fields")).toBe(false);
+    const incomplete = new ActionDescriptionBuilder(undefined, { maxBytes: 200 })
+      .verbatim("Body", "long enough to be cut ".repeat(20)).finish();
     expect(Object.hasOwn(incomplete, "descriptionIsComplete")).toBe(false);
+  });
+
+  it("keeps a description at the full budget within the storage limit once serialized", () => {
+    const builder = buildDescription("Intro.");
+    for (let i = 0; i < 50; i++) builder.inline(`Field ${i}`, `value ${i}`);
+    builder.list("To", Array.from({ length: 500 }, (_, i) => `r${i}@example.com`));
+    builder.json("Arguments", { body: "j".repeat(20_000) });
+    builder.verbatim("Body", "b".repeat(200_000), "markdown");
+    for (let i = 0; i < 100; i++) builder.verbatim(`Extra ${i}`, "e".repeat(1000));
+    const result = builder.finish();
+
+    expect(result.descriptionIsComplete).toBeUndefined();
+    expect(encoder.encode(JSON.stringify(result)).byteLength).toBeLessThan(128 * 1024);
   });
 });
 

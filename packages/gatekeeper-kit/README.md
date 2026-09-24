@@ -81,7 +81,7 @@ import {
 | `./cursors` | Array, page-number, offset, and continuation-token cursors. | A session returns more rows than one RPC reply should carry. |
 | `./actions` | Action declaration, approval, application, retention, and journaling. | An operation has an externally visible side effect. |
 | `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
-| `./action-description` | Approval-text builder: exact fenced fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |
+| `./action-description` | Approval-text builder: prose plus exact typed fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |
 | `./simulation` | Pending-action replay and provisional-ID mapping. | An action continues with simulation and later reads must include its projected effect. |
 | `./observers` | Observer admission strategies and per-read authorization. | A gatekeeper implements its required observer methods. |
 | `./oauth-client` | OAuth 2.0 token-endpoint client, PKCE, and refresh adapter. | A gatekeeper exchanges, refreshes, or revokes OAuth 2.0 tokens. |

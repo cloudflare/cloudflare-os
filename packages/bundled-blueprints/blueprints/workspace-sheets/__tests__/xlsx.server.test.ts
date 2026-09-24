@@ -518,20 +518,44 @@ describe("Workspace Sheets XLSX", () => {
   });
 
   it("batches worksheet XML while exporting the maximum stored cell count", async () => {
+    const NativeCompressionStream = CompressionStream;
+    let compressorWrites = 0;
+    vi.stubGlobal("CompressionStream", class {
+      readonly readable: ReadableStream<Uint8Array>;
+      readonly writable: WritableStream<Uint8Array>;
+      constructor(format: ConstructorParameters<typeof CompressionStream>[0]) {
+        const compressor = new NativeCompressionStream(format);
+        const counter = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            ++compressorWrites;
+            controller.enqueue(chunk);
+          },
+        });
+        void counter.readable.pipeTo(compressor.writable);
+        this.readable = compressor.readable;
+        this.writable = counter.writable;
+      }
+    });
     const cells: Record<string, ReturnType<typeof cell>> = {};
     for (let index = 0; index < 200000; ++index) {
       cells[String.fromCharCode(65 + index % 4) + (Math.floor(index / 4) + 1)] = cell("1");
     }
-    const {entries} = await readZip(exportXlsx({
-      sheetOrder: ["dense"],
-      sheets: {dense: sheet("Dense", {rows: 50000, cols: 4})},
-      cells: {dense: cells},
-    }));
-    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    try {
+      const {entries} = await readZip(exportXlsx({
+        sheetOrder: ["dense"],
+        sheets: {dense: sheet("Dense", {rows: 50000, cols: 4})},
+        cells: {dense: cells},
+      }));
+      const worksheet = text(entries, "xl/worksheets/sheet1.xml");
 
-    expect(worksheet).toContain('<dimension ref="A1:D50000"/>');
-    expect(cellXml(worksheet, "D50000")).toContain("<v>1</v>");
-  });
+      expect(worksheet).toContain('<dimension ref="A1:D50000"/>');
+      expect(cellXml(worksheet, "D50000")).toContain("<v>1</v>");
+      // ~5 MB of worksheet XML in 64 KiB batches; per-cell chunks would be ~200,000 writes.
+      expect(compressorWrites).toBeLessThan(1000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
 
   it("deduplicates styles while supporting every format field and number-format category", async () => {
     const formats = {

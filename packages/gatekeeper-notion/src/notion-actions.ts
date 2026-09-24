@@ -691,7 +691,7 @@ function onPage(intro: string, pageId: string, label = "Page ID"): ActionDescrip
 
 /**
  * The approver's text, built so every value the agent supplied (page bodies, comments, titles,
- * property values, icons) is shown in full inside a fenced block, and the completeness claim is
+ * property values, icons) is shown in full in a field, and the completeness claim is
  * the builder's.
  */
 export function describeAction(action: NotionAction): ActionDescription {

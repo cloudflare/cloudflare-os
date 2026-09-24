@@ -99,12 +99,16 @@ describe("compaction trigger", () => {
 
     // Anthropic publishes an input-only window, so withholding anything would waste it.
     expect(getModelTokenLimits({
-      provider: "anthropic", model: "claude-opus-5", apiToken: "",
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "",
     })).toEqual({inputBudget: 1_000_000, maxOutputTokens: undefined});
   });
 
-  it("sizes GPT-5.6 compaction against its cheaper input tier, not its window", () => {
+  it("uses the suggested 272K compaction budget for GPT-5.6 and GPT-6", () => {
     for (let model of ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+      expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
+          .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
+    }
+    for (let model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
           .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
     }
