@@ -1520,8 +1520,8 @@ function sourceBlockText(source: BlockMapping, markdown: string): string {
   return text;
 }
 
-function blocksMatch(source: BlockMapping, target: ParsedBlock, markdown: string): boolean {
-  return sourceBlockText(source, markdown) === target.plainText &&
+function blocksMatch(source: BlockMapping, sourceText: string, target: ParsedBlock): boolean {
+  return sourceText === target.plainText &&
     source.listType === target.listType && source.listNestingLevel === target.nestingLevel &&
     source.namedStyleType === targetNamedStyle(target, source);
 }
@@ -1582,42 +1582,63 @@ function listPreservation(
   return preserved;
 }
 
+/** Beyond this many block pairs, a rewrite's changed middle is treated as edited in place. */
+const MAX_ALIGNED_BLOCK_PAIRS = 250_000;
+
 function alignSourceBlocks(
   sources: BlockMapping[],
   targets: ParsedBlock[],
   markdown: string,
 ): (BlockMapping | undefined)[] {
-  let lengths = Array.from({ length: sources.length + 1 },
-    () => Array.from({ length: targets.length + 1 }, () => 0));
-  for (let s = sources.length - 1; s >= 0; s--) {
-    for (let t = targets.length - 1; t >= 0; t--) {
-      lengths[s][t] = blocksMatch(sources[s], targets[t], markdown)
-        ? lengths[s + 1][t + 1] + 1
-        : Math.max(lengths[s + 1][t], lengths[s][t + 1]);
+  let texts = sources.map(source => sourceBlockText(source, markdown));
+  let match = (s: number, t: number) => blocksMatch(sources[s], texts[s], targets[t]);
+
+  let head = 0;
+  while (head < sources.length && head < targets.length && match(head, head)) head++;
+  let sourceEnd = sources.length;
+  let targetEnd = targets.length;
+  while (sourceEnd > head && targetEnd > head && match(sourceEnd - 1, targetEnd - 1)) {
+    sourceEnd--;
+    targetEnd--;
+  }
+
+  let pairs = Array.from({ length: head }, (_, index): [number, number] => [index, index]);
+  let rows = sourceEnd - head;
+  let columns = targetEnd - head;
+  if (rows * columns <= MAX_ALIGNED_BLOCK_PAIRS) {
+    let lengths = Array.from({ length: rows + 1 },
+      () => Array.from({ length: columns + 1 }, () => 0));
+    for (let s = rows - 1; s >= 0; s--) {
+      for (let t = columns - 1; t >= 0; t--) {
+        lengths[s][t] = match(head + s, head + t)
+          ? lengths[s + 1][t + 1] + 1
+          : Math.max(lengths[s + 1][t], lengths[s][t + 1]);
+      }
     }
+    for (let s = 0, t = 0; s < rows && t < columns;) {
+      if (lengths[s][t] === lengths[s + 1][t]) s++;
+      else if (lengths[s][t] === lengths[s][t + 1]) t++;
+      else pairs.push([head + s++, head + t++]);
+    }
+  }
+  for (let offset = 0; sourceEnd + offset <= sources.length; offset++) {
+    pairs.push([sourceEnd + offset, targetEnd + offset]);
   }
 
   let aligned = targets.map<BlockMapping | undefined>(() => undefined);
   let gapSource = 0;
   let gapTarget = 0;
   // An unmatched run of equal length on both sides is edited in place, so it pairs by position.
-  let pairGap = (s: number, t: number) => {
-    if (s - gapSource !== t - gapTarget) return;
-    for (let offset = 0; gapSource + offset < s; offset++) {
-      aligned[gapTarget + offset] = sources[gapSource + offset];
+  for (let [s, t] of pairs) {
+    if (s - gapSource === t - gapTarget) {
+      for (let offset = 0; gapSource + offset < s; offset++) {
+        aligned[gapTarget + offset] = sources[gapSource + offset];
+      }
     }
-  };
-  for (let s = 0, t = 0; s < sources.length && t < targets.length;) {
-    if (lengths[s][t] === lengths[s + 1][t]) s++;
-    else if (lengths[s][t] === lengths[s][t + 1]) t++;
-    else {
-      pairGap(s, t);
-      aligned[t] = sources[s];
-      gapSource = ++s;
-      gapTarget = ++t;
-    }
+    if (s < sources.length) aligned[t] = sources[s];
+    gapSource = s + 1;
+    gapTarget = t + 1;
   }
-  pairGap(sources.length, targets.length);
 
   if (sources.length !== targets.length &&
       sources.some(source => !aligned.includes(source) && source.listType !== null) &&

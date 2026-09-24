@@ -1602,6 +1602,24 @@ describe("computeReplaceOperations", () => {
       "createParagraphBullets" in request || "deleteParagraphBullets" in request)).toBe(false);
   });
 
+  it("pairs an equal-count rewrite at the block limit in place", () => {
+    let paragraphs = Array.from({ length: 999 }, (_, index) => `paragraph ${index}`);
+    let { sourceMap, markdown } = docTabToMarkdown(buildTab([
+      { runs: ["Old title\n"], namedStyleType: "TITLE" },
+      ...paragraphs.map(paragraph => ({ runs: [`${paragraph}\n`] })),
+    ]));
+    let replacement = ["# New title", ...paragraphs.map(paragraph => `${paragraph} edited`)]
+      .join("\n\n");
+    let requests = computeReplaceOperations(
+      sourceMap, markdown, 0, markdown.trimEnd().length, replacement, TAB_ID,
+    ).requests;
+
+    expect(requests.flatMap(request => request.updateParagraphStyle
+      ? [request.updateParagraphStyle.paragraphStyle.namedStyleType] : [])).toEqual([
+      "TITLE", "NORMAL_TEXT",
+    ]);
+  });
+
   it("preserves title and custom list styles during inline edits", () => {
     let title = docTabToMarkdown(buildTab([{
       runs: [{ text: "Title", style: { bold: true } }, "\n"], namedStyleType: "TITLE",
