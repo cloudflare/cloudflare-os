@@ -191,7 +191,7 @@ jobs:
                     (.body | startswith("<!-- workshop-evals-comparison")))) | max_by(.created_at)) as $posted |
                   $posted != null and ($posted.body | startswith($marker)) and
                   any(.[]; .user.login == "ask-bonk[bot]" and .created_at > $posted.created_at and
-                    (.body | test("^## (🔬 )?(Eval runs review|Why the evals failed)")))' >/dev/null; then
+                    (.body | test("^## (🔬 )?Eval runs review")))' >/dev/null; then
               report=false
             fi
           fi
@@ -432,8 +432,8 @@ jobs:
           retention-days: 30
 
       # A task is not compared when the code that defines or scores it differs between base and
-      # head: a scorer change moves the goalposts without touching the product under test. That,
-      # and the files the evals run that differ, come from the plan's keys.
+      # head: a scorer change moves the goalposts without touching the product under test. The
+      # plan's keys decide which tasks those are.
       - name: Compare eval results
         env:
           KEYS: ${{ needs.plan.outputs.keys }}
@@ -482,7 +482,7 @@ jobs:
           earlier=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
             --jq '.[] | select((.user.login == "github-actions[bot]" and
               (.body | startswith("<!-- workshop-evals-comparison"))) or
-              (.user.login == "ask-bonk[bot]" and (.body | test("^## (🔬 )?(Eval runs review|Why the evals failed)")))) | .id')
+              (.user.login == "ask-bonk[bot]" and (.body | test("^## (🔬 )?Eval runs review")))) | .id')
           gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@/tmp/comment.md >/dev/null
           for comment_id in $earlier; do
             # Someone may have deleted it already.
@@ -577,7 +577,7 @@ jobs:
           token_permissions: NO_PUSH
           opencode_version: 1.18.24
           prompt: |
-            This is an advisory diagnosis of why eval runs failed, not a code review. Read
+            This is an advisory review of the eval runs, not a code review. Read
             artifacts/baseline/trajectories.md, artifacts/candidate/trajectories.md,
             artifacts/comparison/comparison.json and artifacts/pull-request.diff. To judge a
             cause you may also read the agent's system prompt and tool definitions in
@@ -592,22 +592,30 @@ jobs:
 
             Reply in exactly this shape and nothing else:
 
-            ## 🔬 Why the evals failed
-            **Verdict.** <🟢 improved | 🔴 regressed | ⚪ unchanged | 🟡 inconclusive> — <one clause>
+            ## 🔬 Eval runs review
 
-            - **<task>** · <failed>/<runs> candidate runs failed · <cause> — <what the agent did
-              wrong, naming the turn and the tool call or reply> **Fix:** <one concrete change>
+            ### Performance
+            <two or three sentences: how the candidate did, from comparison.json's pass rates, and
+            which failure modes cost it the most runs>
 
-            Verdict: comparison.json's `verdict`, with its marker, then one clause that justifies
-            it from the comparable tasks' numbers; never add up or average tasks that are not
-            comparable.
+            ### Failure modes
+            - **<failure mode>** · <task> <failed>/<runs>[, <task> <failed>/<runs>] · <cause> —
+              <what went wrong and why, naming the turn and the tool call or reply>
 
-            One bullet per task with a failed candidate run, most failures first; none when every
-            run passed. Skip a task whose comparison reason is "same inputs": both sides are one
-            result, so its failures say nothing about this pull request. Explain the failure that
-            recurs most in that task from the candidate trajectories, not the check name, which the
-            results comment already shows. <cause> is exactly one of these, and must be backed by
-            what the trajectory shows:
+            ### Caused by this PR?
+            - **<failure mode>** · <yes | no | unclear> — <why>
+
+            ### What to do
+            - <one action for the PR author>
+
+            ## <🔴 | 🟡 | 🟢 | ⚪> VERDICT: <REGRESSION FROM THIS PR | INCONCLUSIVE | IMPROVEMENT FROM THIS PR | NO REGRESSION FROM THIS PR>
+            <one sentence that justifies it>
+
+            Failure modes group the candidate's failed runs by what went wrong, across tasks, most
+            runs first. Read them from the trajectories, not the check names. Skip a task whose
+            comparison reason is "same inputs": both sides are one result, so its failures say
+            nothing about this pull request. <cause> is exactly one of these, and must be backed
+            by what the trajectory shows:
             - system prompt: the prompt omits, contradicts or misleads about what the task needed.
             - tool design: a tool's description, parameters or error message led the agent wrong,
               for example it retried an error that did not say how to recover.
@@ -616,6 +624,24 @@ jobs:
               check rejects it.
             - model error: the prompt and tools gave the agent what it needed, and it still got
               it wrong.
-            Fix names the file and the change, for example a sentence to add to a tool
-            description; for a model error, write "none in this repo". Plain sentences; no other
-            headings, tables or code blocks.
+
+            Caused by this PR: yes when the code at fault (the system prompt, a tool, the harness,
+            or the task's prompt or checks) is changed by the diff and the failure follows from
+            that change; no when the diff leaves that code alone, the baseline fails the same way,
+            or the cause is a model error; otherwise unclear. A task being new in this PR does not
+            by itself make its failures this PR's.
+
+            What to do: one bullet per action, most important first, naming the file and the
+            change, for example a sentence to add to a tool description. For a failure this PR
+            did not cause, say the action is optional, or that there is nothing to do in this repo.
+
+            Verdict, decided in this order: 🔴 REGRESSION FROM THIS PR if comparison.json's
+            `verdict` is `regressed` and a failure mode caused by this PR explains a task that
+            fell; 🟡 INCONCLUSIVE if the `verdict` is `regressed` or `inconclusive`, or any failure
+            mode is caused by this PR; 🟢 IMPROVEMENT FROM THIS PR if it is `improved`; otherwise
+            ⚪ NO REGRESSION FROM THIS PR. Justify it from the comparable tasks' numbers and the
+            failure modes; never add up or average tasks that are not comparable.
+
+            When no failed candidate run is left once same-inputs tasks are skipped, write only
+            the heading, Performance and the verdict. Plain sentences; no other headings, tables
+            or code blocks.

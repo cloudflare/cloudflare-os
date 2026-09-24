@@ -4,7 +4,7 @@
 // <keys.json> is scripts/evals/eval-keys.ts's output for the pull request's base and head. Besides
 // naming the two commits, it decides which tasks cannot be compared: those whose definition
 // differs between them, since a change to the eval code moves the goalposts without touching the
-// product under test. It also lists the files the evals run that differ between them.
+// product under test.
 // This file runs under Node's native TypeScript stripping, so imports name real .ts files and only
 // erasable syntax may appear here.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -23,7 +23,6 @@ const CommitSchema = z.object({
 });
 
 const KeysSchema = z.object({
-  changed: z.array(z.string()),
   commits: z.tuple([CommitSchema, CommitSchema]),
 });
 
@@ -48,7 +47,7 @@ async function main(argv: string[]): Promise<void> {
     throw new Error(`expected 5 arguments but received ${argv.length}\n${USAGE}`);
   }
   const [keysPath, baselinePath, candidatePath, jsonPath, markdownPath] = argv;
-  const { changed, commits: [baseline, candidate] } =
+  const { commits: [baseline, candidate] } =
     KeysSchema.parse(JSON.parse(await readInput("eval keys", keysPath)));
   const report = compareEvalResults(
     await readInput("baseline results", baselinePath),
@@ -59,7 +58,6 @@ async function main(argv: string[]): Promise<void> {
       // Both sides have a key for every compared task: results name each task after its file.
       definitionsChanged: taskId =>
         baseline.tasks[taskId]?.definition !== candidate.tasks[taskId]?.definition,
-      changedFiles: changed,
     });
   const markdown = renderEvalComparison(report);
   await mkdir(dirname(resolve(jsonPath)), { recursive: true });

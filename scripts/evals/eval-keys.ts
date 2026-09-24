@@ -1,6 +1,6 @@
 // Cache keys for Workshop eval results, read from git trees so no checkout is needed:
 //   node scripts/evals/eval-keys.ts --config <digest> --report-config <digest> <sha>...
-// prints {"report": <key>, "changed": [<path>...],
+// prints {"report": <key>,
 //         "commits": [{"sha": <sha>, "tasks": {<task>: {"key": <key>, "definition": <digest>}}}...]}.
 //
 // A task's key covers every tracked file that can change its result or decides whether it is
@@ -11,8 +11,7 @@
 // definition is the part of its key that defines or scores its trials rather than builds the
 // product under test: two sides whose definitions differ cannot be compared. The report key covers
 // what turns results into the PR comments, plus every task key: equal report keys mean the posted
-// comments are still current. `changed` lists the run inputs that differ between the first commit
-// and the last.
+// comments are still current.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -64,11 +63,6 @@ function treeOf(sha: string): TreeEntry[] {
   return listing.split("\0").filter(Boolean).map(line => ({ path: line.slice(line.indexOf("\t") + 1), line }));
 }
 
-/** A run's inputs: the harness and everything under the tasks directory. */
-function runInputs(tree: readonly TreeEntry[]): TreeEntry[] {
-  return tree.filter(entry => isHarnessPath(entry.path) || entry.path.startsWith(TASKS));
-}
-
 function digest(parts: readonly string[]): string {
   const hash = createHash("sha256");
   for (const part of parts) hash.update(`${part}\n`);
@@ -88,29 +82,17 @@ function tasksOf(tree: readonly TreeEntry[], config: string): Record<string, Tas
   ]));
 }
 
-/** Run inputs that were edited, added or removed between two trees. */
-function changedPaths(from: readonly TreeEntry[], to: readonly TreeEntry[]): string[] {
-  const [before, after] = [runInputs(from), runInputs(to)];
-  const [beforeLines, afterLines] = [before, after].map(entries => new Set(entries.map(entry => entry.line)));
-  const moved = [...before.filter(entry => !afterLines.has(entry.line)),
-    ...after.filter(entry => !beforeLines.has(entry.line))];
-  return [...new Set(moved.map(entry => entry.path))].toSorted();
-}
-
 const { values, positionals: shas } = parseArgs({
   options: { config: { type: "string" }, "report-config": { type: "string" } },
   allowPositionals: true,
 });
 const config = values.config;
 const reportConfig = values["report-config"];
-if (config === undefined || reportConfig === undefined) throw new Error(USAGE);
+if (config === undefined || reportConfig === undefined || shas.length === 0) throw new Error(USAGE);
 const commits = shas.map(sha => {
   const tree = treeOf(sha);
   return { sha, tree, tasks: tasksOf(tree, config) };
 });
-const [first] = commits;
-const last = commits.at(-1);
-if (first === undefined || last === undefined) throw new Error(USAGE);
 // Keyed by position (base, head), not commit id: a new commit that changes nothing keeps the key.
 const report = digest([reportConfig, ...commits.flatMap(({ tree, tasks }, side) => [
   ...Object.entries(tasks).map(([task, { key }]) => `${side} ${task} ${key}`),
@@ -118,6 +100,5 @@ const report = digest([reportConfig, ...commits.flatMap(({ tree, tasks }, side) 
 ])]);
 console.log(JSON.stringify({
   report,
-  changed: changedPaths(first.tree, last.tree),
   commits: commits.map(({ sha, tasks }) => ({ sha, tasks })),
 }));

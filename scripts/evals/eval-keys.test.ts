@@ -10,7 +10,6 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "eval-keys.ts");
 
 type Output = {
   report: string;
-  changed: string[];
   commits: { sha: string; tasks: Record<string, { key: string; definition: string }> }[];
 };
 
@@ -111,16 +110,6 @@ test("only eval code changes a task's definition, not the product under test", (
   const harness = commit({ "packages/workshop-evals/src/harness.ts": "harness 3" });
   assert.notDeepEqual(definitions(harness), definitions(product));
   base = harness;
-});
-
-test("changed lists only what a run executes that differs between the first commit and the last", () => {
-  const next = commit({
-    "README.md": "readme 3",
-    "packages/workshop-evals/src/comparison.ts": "comparison 3",
-    "packages/workshop-evals/evals/chess.eval.ts": "chess 3",
-  });
-  assert.deepEqual(run([base, next]).changed, ["packages/workshop-evals/evals/chess.eval.ts"]);
-  base = next;
 });
 
 test("a report change keeps every task key and changes the report key", () => {

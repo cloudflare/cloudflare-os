@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import {
   group, hasInfrastructureFailure, parseResults, trials, type Assertion, type Cohort,
 } from "./results.ts";
@@ -47,8 +46,6 @@ export type EvalComparison = {
   baselineSha: string;
   candidateSha: string;
   verdict: EvalVerdict;
-  /** Files the evals run whose content differs between base and head. */
-  changedFiles: string[];
   rows: EvalComparisonRow[];
 };
 
@@ -122,8 +119,6 @@ export type CompareOptions = {
   candidateSha: string;
   /** Whether the code that defines or scores a task's trials differs between base and head. */
   definitionsChanged?: (taskId: string) => boolean;
-  /** Files the evals run whose content differs between base and head. */
-  changedFiles?: string[];
 };
 
 /** The natural log of `count` choose `chosen`, as a sum of logs so large counts don't overflow. */
@@ -171,7 +166,7 @@ function verdictOf(rows: EvalComparisonRow[]): EvalVerdict {
 /** Compare baseline and candidate Vitest eval reports. */
 export function compareEvalResults(
     baselineText: string, candidateText: string,
-    { baselineSha, candidateSha, definitionsChanged = () => false, changedFiles = [] }: CompareOptions,
+    { baselineSha, candidateSha, definitionsChanged = () => false }: CompareOptions,
 ): EvalComparison {
   const baseline = group(trials(parseResults("baseline", baselineText)));
   const candidate = group(trials(parseResults("candidate", candidateText)));
@@ -202,22 +197,11 @@ export function compareEvalResults(
       pValue: fisherExact(baselineStats, candidateStats) };
   }).toSorted((left, right) =>
     left.taskId.localeCompare(right.taskId) || left.model.localeCompare(right.model));
-  return { baselineSha, candidateSha, verdict: verdictOf(rows), changedFiles, rows };
+  return { baselineSha, candidateSha, verdict: verdictOf(rows), rows };
 }
 
 function passRate(stats: EvalStats): number {
   return stats.passed / stats.trials;
-}
-
-function signed(value: number, digits: number, unit = ""): string {
-  const sign = value > 0 ? "+" : value < 0 ? "\u2212" : "";
-  return `${sign}${Math.abs(value).toFixed(digits)}${unit}`;
-}
-
-function costDelta(baseline: EvalStats, candidate: EvalStats): string {
-  if (baseline.meanCostUsd === null || candidate.meanCostUsd === null) return "\u2014";
-  const delta = candidate.meanCostUsd - baseline.meanCostUsd;
-  return `${delta > 0 ? "+" : delta < 0 ? "\u2212" : ""}$${Math.abs(delta).toFixed(3)}`;
 }
 
 /** The one value every row shares, or null when they differ and must be shown per row. */
@@ -235,31 +219,40 @@ const VERDICT: Record<EvalVerdict, string> = {
 
 type ComparedRow = Extract<EvalComparisonRow, { reason: null }>;
 
-/** Text that came from a trial, as inline code: it is untrusted and may contain markup. */
-function quoted(text: string, limit = 160): string {
-  const flat = text.replace(/\s+/g, " ").replaceAll("`", "'").trim();
-  return `\`${flat.length > limit ? `${flat.slice(0, limit - 1)}\u2026` : flat}\``;
+/**
+ * Joins a value's words so it stays on one line: GitHub fits a wide table to a comment by wrapping
+ * cells at spaces, and should wrap names and headers rather than numbers.
+ */
+const NBSP = "\u00a0";
+
+/** Pass counts, as passed/trials. */
+function score(side: EvalStats): string {
+  return `${side.passed}/${side.trials}`;
 }
 
-/** Ten cells whatever the trial count, so bars line up down the table: green passed, red failed. */
-function bar(side: EvalStats | null): string {
-  if (side === null) return "\u2014";
-  const passed = Math.round(passRate(side) * 10);
-  return `${"\u{1F7E9}".repeat(passed)}${"\u{1F7E5}".repeat(10 - passed)} ${side.passed}/${side.trials}`;
-}
-
-/** A pass-rate change is coloured only when it is significant; otherwise it is noise. */
+/** The pass-rate change, in percentage points. */
 function passChange(row: ComparedRow): string {
   const delta = (passRate(row.candidate) - passRate(row.baseline)) * 100;
-  const significant = row.pValue < SIGNIFICANCE;
-  const marker = !significant ? "\u26AA" : delta > 0 ? "\u{1F7E2}" : "\u{1F534}";
-  return `${marker} ${signed(delta, 0, " pp")}${significant ? ` (p = ${row.pValue.toFixed(2)})` : ""}`;
+  const sign = delta > 0 ? "+" : delta < 0 ? "\u2212" : "";
+  return `${sign}${Math.abs(delta).toFixed(0)}${NBSP}pp`;
+}
+
+/** A p-value to two decimals, or a bound where two decimals would round it to zero. */
+function pValueText(pValue: number): string {
+  return pValue < 0.01 ? `p${NBSP}<${NBSP}0.01` : `p${NBSP}=${NBSP}${pValue.toFixed(2)}`;
+}
+
+/** One value for each side, baseline first, with a dash for a side that lacks it. */
+function sides(row: EvalComparisonRow, value: (side: EvalStats) => string | null): string {
+  const cell = (side: EvalStats | null) => (side === null ? null : value(side)) ?? "\u2014";
+  return `${cell(row.baseline)}${NBSP}\u2192${NBSP}${cell(row.candidate)}`;
 }
 
 /**
- * Render the comparison for a pull request comment: the verdict and the files the evals run that
- * differ from base, one table of every task's scores and deltas, then what failed and why, for the
- * human who has to fix it. Whatever every row shares (the model, the trial count) is said once.
+ * Render the comparison for a pull request comment: the verdict, then one table with each task's
+ * score on both sides, its change and Fisher test, and each side's average minutes, cost and
+ * steps per run. Headers are short so the table fits a comment's width unwrapped. Bonk's review
+ * explains the failures.
  */
 export function renderEvalComparison(comparison: EvalComparison): string {
   const { rows } = comparison;
@@ -270,8 +263,7 @@ export function renderEvalComparison(comparison: EvalComparison): string {
     model === null ? `${row.taskId} (${row.model})` : row.taskId;
   const moved = rows.flatMap(row => row.reason === null && row.pValue < SIGNIFICANCE ? [row] : []);
   const change = (row: ComparedRow) =>
-    `${name(row)} ${row.baseline.passed}/${row.baseline.trials} \u2192 ` +
-    `${row.candidate.passed}/${row.candidate.trials} (p = ${row.pValue.toFixed(2)})`;
+    `${name(row)} ${sides(row, score)} (${pValueText(row.pValue)})`;
   const falls = moved.filter(row => passRate(row.candidate) < passRate(row.baseline));
   const rises = moved.filter(row => passRate(row.candidate) > passRate(row.baseline));
   const why = comparison.verdict === "inconclusive"
@@ -282,62 +274,24 @@ export function renderEvalComparison(comparison: EvalComparison): string {
       : [falls.length > 0 ? `Fell: ${falls.map(change).join(", ")}.` : "",
         rises.length > 0 ? `Rose: ${rises.map(change).join(", ")}.` : ""].join(" ").trim();
 
-  const files = comparison.changedFiles;
   const lines = [
     "# Eval results", "",
     `**Verdict: ${VERDICT[comparison.verdict]}.** ${why}`, "",
-    files.length === 0 ? "**No file the evals run differs from base.**"
-      : `**Files the evals run that differ from base:** ${files.slice(0, 8).map(file =>
-          `\`${basename(file)}\``).join(", ")}` + (files.length > 8 ? `, and ${files.length - 8} more` : ""),
-    "",
-    [`Baseline \`${comparison.baselineSha.slice(0, 8)}\` (PR base) vs candidate ` +
-        `\`${comparison.candidateSha.slice(0, 8)}\` (PR head)`,
-      ...(model === null ? [] : [model]),
-      ...(trials === null ? [] : [`each task run ${trials} times, ` +
-          "reused while nothing it runs changes"])].join(" \u00b7 ") + ".",
-    "",
-    "| Task | Baseline | Candidate | \u0394 pass | \u0394 duration | \u0394 tool errors | \u0394 cost |",
+    "| Task | Score | \u0394 score | Fisher test | Avg min | Avg $ | Avg steps |",
     "| --- | --- | --- | --- | --- | --- | --- |",
   ];
   for (const row of rows) {
-    const deltas = row.reason !== null ? [`_not compared: ${row.reason}_`, "\u2014", "\u2014", "\u2014"] : [
-      passChange(row),
-      signed((row.candidate.meanDurationMs - row.baseline.meanDurationMs) / 1000, 1, " s"),
-      signed(row.candidate.meanToolErrors - row.baseline.meanToolErrors, 1),
-      costDelta(row.baseline, row.candidate),
-    ];
-    lines.push(`| ${[name(row), bar(row.baseline), bar(row.candidate), ...deltas].join(" | ")} |`);
+    const fisher = row.reason !== null ? "\u2014"
+      : row.pValue < SIGNIFICANCE ? `**${pValueText(row.pValue)}**<br>significant`
+      : pValueText(row.pValue);
+    lines.push(`| ${[
+      name(row), sides(row, score),
+      row.reason === null ? passChange(row) : `_${row.reason}_`, fisher,
+      sides(row, side => (side.meanDurationMs / 60_000).toFixed(1)),
+      sides(row, side => side.meanCostUsd?.toFixed(3) ?? null),
+      sides(row, side => side.meanModelTurns.toFixed(1)),
+    ].join(" | ")} |`);
   }
   lines.push("");
-
-  for (const row of rows) {
-    const { candidate, baseline } = row;
-    // A result both sides share shows nothing about this change.
-    if (candidate === null || row.reason === SAME_INPUTS) continue;
-    const failed = candidate.trials - candidate.passed;
-    if (failed === 0 && candidate.toolErrors.length === 0) continue;
-    lines.push(`### ${name(row)}: ${failed === 0 ? `all ${candidate.trials} candidate runs passed`
-      : `${failed} of ${candidate.trials} candidate runs failed`}`, "");
-    if (candidate.failedChecks.length > 0) {
-      lines.push("| Check | Baseline failed | Candidate failed |", "| --- | --- | --- |");
-      for (const { check, trials: count } of candidate.failedChecks.slice(0, 8)) {
-        const before = baseline?.failedChecks.find(failure => failure.check === check)?.trials ?? 0;
-        lines.push(`| \`${check}\` | ${baseline === null ? "\u2014" : before} | ${count} |`);
-      }
-      const hidden = candidate.failedChecks.length - 8;
-      if (hidden > 0) lines.push(`| _${hidden} more checks_ | | |`);
-      lines.push("");
-    }
-    const [top] = candidate.toolErrors;
-    if (top !== undefined) {
-      const others = candidate.toolErrors.length - 1;
-      lines.push(`Most common tool error: \`${top.tool}\` ${quoted(top.message, 100)} \u00d7${top.count}` +
-        (others > 0 ? `, and ${others} other kind${others === 1 ? "" : "s"}` : ""), "");
-    }
-    if (candidate.infrastructureErrors.length > 0) {
-      lines.push(`Infrastructure errors, not the agent's work: ${candidate.infrastructureErrors.map(error =>
-        `${quoted(error.message, 100)} \u00d7${error.trials}`).join(" \u00b7 ")}`, "");
-    }
-  }
   return lines.join("\n");
 }

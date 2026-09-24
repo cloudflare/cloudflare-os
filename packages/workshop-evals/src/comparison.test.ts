@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { compareEvalResults, renderEvalComparison } from "./comparison.js";
+import { compareEvalResults, renderEvalComparison, type EvalComparison } from "./comparison.js";
 import { validateEvalResults } from "./results.js";
 
 const MODEL = "@cf/deepseek-ai/deepseek-v4-pro-0813";
@@ -62,11 +62,19 @@ function trial(options: TrialOptions = {}) {
   };
 }
 
+function taskOf(assertion: ReturnType<typeof trial>) {
+  return assertion.meta.harness.run.session.metadata.taskId;
+}
+
+/** The rendered comment, reading the non-breaking spaces inside values as spaces. */
+function rendered(comparison: EvalComparison): string {
+  return renderEvalComparison(comparison).replaceAll("\u00a0", " ");
+}
+
 /** A report as `pnpm evals` writes it: one file per task, named after the task. */
 function report(
     assertions: ReturnType<typeof trial>[],
     ...emptyFiles: { name: string; message: string }[]): string {
-  const taskOf = (assertion: ReturnType<typeof trial>) => assertion.meta.harness.run.session.metadata.taskId;
   return JSON.stringify({ testResults: [
     ...[...new Set(assertions.map(taskOf))].map(task => ({
       name: `/evals/${task}.eval.ts`,
@@ -78,14 +86,14 @@ function report(
 
 it("compares three-trial task cohorts", () => {
   const baseline = report([
-    trial({ status: "passed", duration: 100, cost: 0.1 }),
-    trial({ status: "failed", duration: 200, toolErrors: 1, cost: 0.2 }),
-    trial({ status: "passed", duration: 300, cost: 0.3 }),
+    trial({ status: "passed", duration: 60_000, cost: 0.1 }),
+    trial({ status: "failed", duration: 120_000, toolErrors: 1, cost: 0.2 }),
+    trial({ status: "passed", duration: 180_000, cost: 0.3 }),
   ]);
   const candidate = report([
-    trial({ gitCommit: HEAD_SHA, duration: 200, cost: 0.2 }),
-    trial({ gitCommit: HEAD_SHA, duration: 300, cost: 0.3 }),
-    trial({ gitCommit: HEAD_SHA, duration: 400, cost: 0.4 }),
+    trial({ gitCommit: HEAD_SHA, duration: 120_000, cost: 0.2 }),
+    trial({ gitCommit: HEAD_SHA, duration: 180_000, cost: 0.3 }),
+    trial({ gitCommit: HEAD_SHA, duration: 240_000, cost: 0.4 }),
   ]);
 
   const comparison = compareEvalResults(baseline, candidate, SHAS);
@@ -102,7 +110,7 @@ it("compares three-trial task cohorts", () => {
     baseline: {
       trials: 3,
       passed: 2,
-      meanDurationMs: 200,
+      meanDurationMs: 120_000,
       meanModelTurns: 2,
       meanToolCalls: 3,
       meanToolErrors: 1 / 3,
@@ -112,7 +120,7 @@ it("compares three-trial task cohorts", () => {
     candidate: {
       trials: 3,
       passed: 3,
-      meanDurationMs: 300,
+      meanDurationMs: 180_000,
       meanModelTurns: 2,
       meanToolCalls: 3,
       meanToolErrors: 0,
@@ -120,13 +128,11 @@ it("compares three-trial task cohorts", () => {
       ...noFailures,
     },
   }]);
-  const markdown = renderEvalComparison(comparison);
+  const markdown = rendered(comparison);
   expect(markdown).toContain("**Verdict: \u26AA Unchanged.**");
-  // Two of three trials is two thirds, which rounds to seven of ten cells. A 33 pp rise over three
-  // trials is noise, so it gets no colour.
-  expect(markdown).toContain(
-    `| project-doc | ${"\u{1F7E9}".repeat(7)}${"\u{1F7E5}".repeat(3)} 2/3 | ${"\u{1F7E9}".repeat(10)} 3/3 | ` +
-    "\u26AA +33 pp | +0.1 s | \u22120.3 | +$0.100 |");
+  // A 33 pp rise over three trials is noise, so it is not marked significant.
+  expect(markdown).toContain("| project-doc | 2/3 \u2192 3/3 | +33 pp | p = 1.00 | " +
+    "2.0 \u2192 3.0 | 0.200 \u2192 0.300 | 2.0 \u2192 2.0 |");
 });
 
 it("calls a significant fall a regression and a small one noise", () => {
@@ -134,12 +140,16 @@ it("calls a significant fall a regression and a small one noise", () => {
     trial({ gitCommit, status: index < passed ? "passed" : "failed" })));
   const fell = compareEvalResults(passes(9, BASE_SHA), passes(3, HEAD_SHA), SHAS);
   expect(fell.verdict).toBe("regressed");
-  expect(renderEvalComparison(fell)).toContain("\u{1F534} \u221260 pp (p = 0.02)");
+  expect(rendered(fell)).toContain(
+    "| 9/10 \u2192 3/10 | \u221260 pp | **p = 0.02**<br>significant |");
+  const collapsed = compareEvalResults(passes(10, BASE_SHA), passes(0, HEAD_SHA), SHAS);
+  expect(rendered(collapsed)).toContain(
+    "| 10/10 \u2192 0/10 | \u2212100 pp | **p < 0.01**<br>significant |");
   expect(compareEvalResults(passes(9, BASE_SHA), passes(7, HEAD_SHA), SHAS).verdict).toBe("unchanged");
   expect(compareEvalResults(passes(3, BASE_SHA), passes(9, HEAD_SHA), SHAS).verdict).toBe("improved");
 });
 
-it("reports what failed, quoting trial text so it cannot inject markup", () => {
+it("reports each failing check and tool error once, with how many trials hit it", () => {
   const failed = (evidence: string) => trial({
     gitCommit: HEAD_SHA, status: "failed",
     checks: [{ id: "shows-the-target", pass: false, evidence }, { id: "builds", pass: true }],
@@ -156,9 +166,6 @@ it("reports what failed, quoting trial text so it cannot inject markup", () => {
   ]);
   expect(candidate?.toolErrors).toEqual(
     [{ tool: "createGadget", message: "Key `@here` is empty", count: 2 }]);
-  const markdown = renderEvalComparison(comparison);
-  expect(markdown).toContain("| `t1 shows-the-target` | 0 | 2 |");
-  expect(markdown).toContain("`createGadget` `Key '@here' is empty` \u00d72");
 });
 
 it("does not compare costs from different trial populations", () => {
@@ -169,9 +176,11 @@ it("does not compare costs from different trial populations", () => {
     trial({ gitCommit: HEAD_SHA, cost: 0.4 }),
   ]);
 
-  const row = compareEvalResults(baseline, candidate, SHAS).rows[0];
+  const comparison = compareEvalResults(baseline, candidate, SHAS);
+  const row = comparison.rows[0];
   expect(row.baseline?.meanCostUsd).toBeNull();
   expect(row.candidate?.meanCostUsd).toBeCloseTo(0.3);
+  expect(rendered(comparison)).toContain("| \u2014 \u2192 0.300 |");
 });
 
 it("separates infrastructure errors from failed agent outcomes", () => {
@@ -239,16 +248,15 @@ it("does not compare a task whose definition changed, and only that task", () =>
     [["expense-ledger", "eval definition changed"], ["project-doc", null]]);
 });
 
-it("reports a result both sides share as unchanged, without its failures, unless it failed to run", () => {
+it("reports a result both sides share as unchanged, unless it failed to run", () => {
   const shared = report([trial(), trial({ status: "failed", checks: [{ id: "shows-it", pass: false }] })]);
 
   const comparison = compareEvalResults(shared, shared, SHAS);
 
   expect(comparison.rows[0].reason).toBe("same inputs");
   expect(comparison.verdict).toBe("unchanged");
-  const markdown = renderEvalComparison(comparison);
+  const markdown = rendered(comparison);
   expect(markdown).toContain("Nothing the evals run changed, so every result is reused.");
-  expect(markdown).not.toContain("shows-it");
 
   const crashed = report([
     trial(),
@@ -257,7 +265,7 @@ it("reports a result both sides share as unchanged, without its failures, unless
   const errored = compareEvalResults(crashed, crashed, SHAS);
   expect(errored.rows[0].reason).toBe("baseline run errors");
   expect(errored.verdict).toBe("inconclusive");
-  expect(renderEvalComparison(errored)).toContain("Cleanup failed.");
+  expect(errored.rows[0].baseline?.infrastructureErrors).toEqual([{ message: "Cleanup failed.", trials: 1 }]);
 });
 
 it("accepts a complete baseline with agent failures but not infrastructure failures", () => {
