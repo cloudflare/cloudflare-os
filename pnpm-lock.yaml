@@ -1040,8 +1040,8 @@ importers:
         specifier: 'catalog:'
         version: 8.0.4
       diff3:
-        specifier: ^0.0.4
-        version: 0.0.4
+        specifier: 0.0.3
+        version: 0.0.3
       isomorphic-git:
         specifier: ^1.41.9
         version: 1.41.9
@@ -3870,9 +3870,6 @@ packages:
 
   diff3@0.0.3:
     resolution: {integrity: sha512-iSq8ngPOt0K53A6eVr4d5Kn6GNrM2nQZtC740pzIriHtn4pOQ2lyzEXQMBeVcWERN0ye7fhBsk9PbLLQOnUx/g==}
-
-  diff3@0.0.4:
-    resolution: {integrity: sha512-f1rQ7jXDn/3i37hdwRk9ohqcvLRH3+gEIgmA6qEM280WUOh7cOr3GXV8Jm5sPwUs46Nzl48SE8YNLGJoaLuodg==}
 
   diff@8.0.4:
     resolution: {integrity: sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==}
@@ -7993,8 +7990,6 @@ snapshots:
   devtools-protocol@0.0.1299070: {}
 
   diff3@0.0.3: {}
-
-  diff3@0.0.4: {}
 
   diff@8.0.4: {}
 
