@@ -15,6 +15,8 @@ catalog:
   diff: ^8.0.4
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
+  # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
+  miniflare: 5.20260921.1-alpha
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the "typescript6" npm alias instead, declared by @gadgets/scripts; capnweb-validate
@@ -29,7 +31,7 @@ catalog:
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
-  '@cloudflare/vitest-pool-workers>miniflare': 5.20260921.1-alpha
+  '@cloudflare/vitest-pool-workers>miniflare': "catalog:"
   '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace

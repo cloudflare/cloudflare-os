@@ -21,6 +21,9 @@ catalogs:
     diff:
       specifier: ^8.0.4
       version: 8.0.4
+    miniflare:
+      specifier: 5.20260921.1-alpha
+      version: 5.20260921.1-alpha
     typescript:
       specifier: 7.0.2
       version: 7.0.2
@@ -166,7 +169,7 @@ importers:
         specifier: workspace:*
         version: link:../../scripts
       miniflare:
-        specifier: 5.20260921.1-alpha
+        specifier: 'catalog:'
         version: 5.20260921.1-alpha(@types/node@26.1.0)
       typescript:
         specifier: 'catalog:'
@@ -450,7 +453,7 @@ importers:
         specifier: workspace:*
         version: link:../../scripts
       miniflare:
-        specifier: 5.20260921.1-alpha
+        specifier: 'catalog:'
         version: 5.20260921.1-alpha(@types/node@26.1.0)
       typescript:
         specifier: 'catalog:'
@@ -703,7 +706,7 @@ importers:
         specifier: ^26.1.0
         version: 26.1.0(supports-color@10.2.2)
       miniflare:
-        specifier: 5.20260921.1-alpha
+        specifier: 'catalog:'
         version: 5.20260921.1-alpha(@types/node@26.1.0)
       react:
         specifier: ^19.2.8
