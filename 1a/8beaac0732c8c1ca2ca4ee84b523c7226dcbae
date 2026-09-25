@@ -1,0 +1,31 @@
+packages/workshop-backend/__tests__/analytics.test.ts
+  s_14974c138d0272::t_c5ea935dc4ddd8 34
+packages/workshop-backend/src/analytics.ts
+  s_14974c138d0272::t_c5ea935dc4ddd8 80
+docs/observers.md
+  s_14974c138d0272::t_8a6ba111430bfb 496,575
+  s_14974c138d0272::t_42b5f25fe40fb2 500
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_14974c138d0272::t_42b5f25fe40fb2 422
+packages/workshop-backend/src/overseer.ts
+  s_14974c138d0272::t_1d1772fb23026a 5473,6364-6365,13031-13032
+  s_14974c138d0272::t_c5ea935dc4ddd8 10984-10987,12884,12889,12904
+  s_14974c138d0272::t_b14a2b0acaad82 6366-6367
+  s_14974c138d0272::t_14e4f30f129cf4 5475-5476,5527,5593-5594,6363,6375-6385,6422,7566-7567,7611-7612,11042,11068-11069,11097,11147,12609,12938
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a8beaac0732c8c1ca2ca4ee84b523c7226dcbae",
+  "prompts": {},
+  "sessions": {
+    "s_14974c138d0272": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed3e9286-3286-4a67-837c-b344fe3625aa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
