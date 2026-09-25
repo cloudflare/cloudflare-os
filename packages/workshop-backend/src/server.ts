@@ -19,9 +19,10 @@ import { LanguageModelGatekeeper } from "./ai-models";
 import { getAiGatewayConfig } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput, listFeaturedBlueprintsFromKv, parseBlueprintArchive, randomBlueprintId, readBlueprintContent, readBlueprintKvRecord } from "./blueprint-archive.js";
-import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
+import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID, ProvidedAccountInfo } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
+import { GatekeeperUserProfileImpl } from "./gatekeeper-user-profile.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
@@ -67,6 +68,9 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
+
+// Re-export entrypoint type from gatekeeper-user-profile.ts.
+export { GatekeeperUserProfileImpl };
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -603,15 +607,30 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
         }));
   }
 
-  async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
+  // The user's UI-providing account for a gatekeeper, if one exists.
+  async #uiAccount(user: DurableObjectStub<UserDurableObject>, vendorId: string)
+      : Promise<ProvidedAccountInfo | undefined> {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
-    let user = this.#user;  // one stub for both calls
     let accounts = await user.listProvidedAccounts();
-    let app = accounts.find((account: (typeof accounts)[number]) => account.vendorId === id && account.description.providesUi);
+    return accounts.find(account => account.vendorId === vendorId && account.description.providesUi);
+  }
+
+  async getGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame | null> {
+    let user = this.#user;
+    let app = await this.#uiAccount(user, vendorId);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
     return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
+  }
+
+  async selectGatekeeperUser(
+      vendorId: string, selectedUserId: string, target: string,
+  ): Promise<boolean> {
+    let selector = this.#user;
+    let app = await this.#uiAccount(selector, vendorId);
+    if (!app) throw new Error("No such app.");
+    return selector.deliverSelectedUser(app.accountId, selectedUserId, target);
   }
 
   // --- Deployment admin ---

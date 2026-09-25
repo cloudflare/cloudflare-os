@@ -2,12 +2,17 @@
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
 import { DurableObject, WorkerEntrypoint, restore } from "cloudflare:workers";
-import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  AccountDescription,
+  GatekeeperUserProfile,
+  GatekeeperUserVerifier,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
 
 export * from "../src/server.js";
+export { GatekeeperUserProfileImpl } from "../src/gatekeeper-user-profile.js";
 export { default } from "../src/server.js";
 
 /**
@@ -51,6 +56,18 @@ export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
 
+/**
+ * Test identity capability returned by a fake connected account. `identify` stands in for the
+ * vendor-private method real verifiers expose to their own gatekeeper.
+ */
+export class FakeGatekeeperVerifier
+    extends WorkerEntrypoint<Cloudflare.Env, { name: string }>
+    implements GatekeeperUserVerifier {
+  identify(): string {
+    return this.ctx.props.name;
+  }
+}
+
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
 
@@ -59,8 +76,9 @@ const accountCalls = new Map<string, string[]>();
  * Records calls by `props.name` so a test can ask any instance what happened (`calls()`); with
  * `failRevoke` / `failDescribe`, that method rejects after being recorded.
  */
-export class FakeGatekeeperAccount
-    extends WorkerEntrypoint<unknown, { name: string; failRevoke?: boolean; failDescribe?: boolean }> {
+export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
+  name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+}> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
     calls.push(call);
@@ -70,7 +88,11 @@ export class FakeGatekeeperAccount
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
-    return { displayName: this.ctx.props.name, uniqueName: this.ctx.props.name };
+    return {
+      displayName: this.ctx.props.name,
+      uniqueName: this.ctx.props.name,
+      ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
+    };
   }
 
   async revoke(): Promise<void> {
@@ -97,7 +119,67 @@ export class FakeGatekeeperAccount
     return { url: `https://gk.example/expand/${this.ctx.props.name}` };
   }
 
+  async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
+    return this.ctx.exports.FakeGatekeeperVerifier({ props: { name: this.ctx.props.name } });
+  }
+
+  /** Records who was delivered, proving the verifier is the selected account's and the profile is live. */
+  async receiveSelectedUser(
+      target: string, user: Fetcher<GatekeeperUserVerifier>, profile: Fetcher<GatekeeperUserProfile>,
+  ): Promise<void> {
+    const selected = user as unknown as Fetcher<FakeGatekeeperVerifier>;
+    this.#record(`receiveSelectedUser(${target}, ${await selected.identify()}, ${await profile.getDisplayName()})`);
+    if (target === "reject") throw new Error("Collection not found.");
+  }
+
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
+  }
+}
+
+/** Test-only bridge to Workshop entrypoints that are otherwise reached through authenticated RPC. */
+export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env> {
+  async createUser(userId: string, displayName: string): Promise<void> {
+    const user = this.ctx.exports.UserDurableObject.getByName(userId);
+    await user.authenticateFromCfAccess(userId, true);
+    await user.setOwnDisplayName(displayName);
+  }
+
+  async renameUser(userId: string, displayName: string): Promise<void> {
+    await this.ctx.exports.UserDurableObject.getByName(userId).setOwnDisplayName(displayName);
+  }
+
+  async addAccount(
+      userId: string, vendorId: string, accountName: string,
+      options: { expired?: boolean; providesUi?: boolean } = {},
+  ): Promise<number> {
+    const user = this.ctx.exports.UserDurableObject.getByName(userId);
+    const account = this.ctx.exports.FakeGatekeeperAccount({
+      props: { name: accountName, providesUi: options.providesUi },
+    });
+    const accountId = await user.linkConnectedAccountFromLogin(account, vendorId);
+    if (options.expired) await user.markCredentialsExpired(accountId);
+    return accountId;
+  }
+
+  /**
+   * What `viewerId`'s account does when its UI selects `selectedUserId`
+   * (UserDurableObject.deliverSelectedUser).
+   * A rejection is returned as `{ error }` rather than rethrown, which the pool would otherwise report
+   * as an unhandled rejection inside the Durable Object even though the test awaits it.
+   */
+  async pick(
+      viewerId: string, accountId: number, target: string, selectedUserId: string,
+  ): Promise<boolean | { error: string }> {
+    try {
+      return await this.ctx.exports.UserDurableObject.getByName(viewerId)
+        .deliverSelectedUser(accountId, selectedUserId, target);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async accountCalls(accountName: string): Promise<string[]> {
+    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
   }
 }

@@ -78,7 +78,9 @@ export type ProvidedAccountInfo = {
 // shape keeps the methods' declared return types (e.g. createAccount's Fetcher<GatekeeperUser>)
 // usable directly, the way the runtime stub actually behaves.
 type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
-type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
+type SingletonAccountStub = Required<Pick<
+  GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi" | "receiveSelectedUser"
+>>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -1431,6 +1433,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return (record.account as unknown as SingletonAccountStub).startAppUi(context);
   }
 
+  /**
+   * Delivers a user selected with the Workshop's user picker to the gatekeeper
+   * that opened the user picker. The gatekeeper receives the corresponding
+   * `GatekeeperUserVerifier` for the selected user, along with a profile
+   * capability for reading display metadata about the selected user.
+   *
+   * Returns false if `selectedUserId` is this user or has no single active
+   * account with the vendor. The vendor's own errors propagate to the caller.
+   */
+  async deliverSelectedUser(
+      accountId: number, selectedUserId: string, target: string,
+  ): Promise<boolean> {
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record?.description.providesUi) throw new Error("No such app.");
+    if (selectedUserId === this.ctx.id.name) return false;
+    let selectedUser = await this.ctx.exports.UserDurableObject.getByName(selectedUserId)
+        .getUniqueGatekeeperUserVerifier(record.vendorId);
+    if (!selectedUser) return false;
+    let profile = this.ctx.exports.GatekeeperUserProfileImpl({ props: { userId: selectedUserId } });
+    await (record.account as unknown as SingletonAccountStub)
+        .receiveSelectedUser(target, selectedUser, profile);
+    return true;
+  }
+
   async ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
       : Promise<ConnectFlowStart | null> {
     let record = this.storage.connectedAccounts.get(accountId);
@@ -1969,6 +1995,27 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("Invalid account selection for this service.");
     }
     return await account.account.getVerifier();
+  }
+
+  /**
+   * Returns the identity capability for this user's single active account with
+   * `vendorId`, or null if there is none or more than one.
+   */
+  async getUniqueGatekeeperUserVerifier(vendorId: string)
+      : Promise<Fetcher<GatekeeperUserVerifier> | null> {
+    if (!this.storage.created.get()) return null;
+    vendorId = vendorId.toLowerCase();
+
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(vendorId)) return null;
+
+    await this.#ensureAutoProvisionedAccounts();
+
+    let matches = [...this.#connectedAccountRecords()].filter((record) =>
+      record.vendorId === vendorId && areCredentialsValid(record) &&
+      (!record.autoProvisioned || ambientGatekeeperMode(config, vendorId) !== "disabled")
+    );
+    return matches.length === 1 ? await matches[0].account.getVerifier() : null;
   }
 
   /**
