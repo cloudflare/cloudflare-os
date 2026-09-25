@@ -149,6 +149,38 @@ export function scriptedChatCompletions(script: readonly ChatCompletionStep[])
   };
 }
 
+const WORKERS_AI_CHAT_COMPLETIONS = /\/accounts\/([^/]+)\/ai\/v1\/chat\/completions$/;
+let routedAccountSeq = 0;
+
+/** One test's script, answering only requests made with its `userModel`. */
+export type RoutedScriptedModel = Omit<ScriptedChatCompletions, "handler"> & {
+  userModel: { profile: AiChatAuthorInfo; config: AiModelConfig };
+};
+
+/**
+ * Routes model requests to per-test scripts by Workers AI account id, so concurrent tests sharing
+ * one NetworkInterceptor each consume only their own queue. Unknown accounts are declined.
+ */
+export function scriptedModelRouter(): {
+  handler: Handler;
+  script(steps: readonly ChatCompletionStep[]): RoutedScriptedModel;
+} {
+  const routes = new Map<string, Handler>();
+  return {
+    handler: (url, ...rest) =>
+      routes.get(WORKERS_AI_CHAT_COMPLETIONS.exec(url.pathname)?.[1] ?? "")?.(url, ...rest) ?? null,
+    script(steps) {
+      const accountId = `scripted-account-${++routedAccountSeq}`;
+      const { handler, ...model } = scriptedChatCompletions(steps);
+      routes.set(accountId, handler);
+      return {
+        ...model,
+        userModel: { profile: SCRIPTED_MODEL_PROFILE, config: { ...SCRIPTED_MODEL_CONFIG, accountId } },
+      };
+    },
+  };
+}
+
 /** Answer an OpenAI-compatible streaming chat request with one fixed text response. */
 export function mockChatCompletion(text: string): Handler {
   return (url, method) => method === "POST" && url.pathname.endsWith(CHAT_COMPLETIONS_SUFFIX)
