@@ -101,7 +101,7 @@ To test changes:
 - `build:app:dev` is the same build with `minify: false`, run by the `pnpm dev-server` pre-flight so its `app.txt` matches what the watcher's un-skippable initial build will write — otherwise `emitAppText` rewrites the file and Wrangler restarts the worker mid-startup. It captures only `app.txt`, since `dist-app/` has no reader outside `vite.app.config.ts`. `build` and `deploy` still use `build:app`, so nothing unminified ships, and `build-app.ts` always sets `GATEKEEPER_APP_UNMINIFIED` explicitly — an inherited value would otherwise make a production build unminified and get it cached that way.
 
   Two structural constraints explain the file layout. Vite+ reads per-package settings only from `vite.config.*`, which the SPA's own build config occupied, so that moved to `vite.app.config.ts` (referenced by `build-app.ts -c`, `tsconfig.vite.json` and gatekeeper-context's `__tests__/vite-config.test.ts`). And a task may not share a name with a package.json script, so the `build:app` script is gone and `build` calls `vp run --cache build:app` instead, `deploy` the same with `--no-cache`. Don't define the task in the workspace-root config: it gets created for *every* package, including the root, which then fails.
-- The packages whose tests run in workerd (`router`, `typed-storage`, `backend-utils`, `workshop-backend`, `gatekeeper-scheduler`, `gatekeeper-cloudflare`, `gatekeeper-kit`) load `scripts/assert-workerd.ts` as a `setupFiles` entry. It throws unless `navigator.userAgent` is `Cloudflare-Workers`, so a `@cloudflare/vitest-pool-workers` pool that fails to start fails the suite instead of silently falling back to Node — which otherwise looks like a pass in the packages that import no `cloudflare:*` module. Don't remove it to make a suite green.
+- The packages whose tests run in workerd (`router`, `typed-storage`, `observability`, `workshop-backend`, `gatekeeper-scheduler`, `gatekeeper-cloudflare`, `gatekeeper-kit`) load `scripts/assert-workerd.ts` as a `setupFiles` entry. It throws unless `navigator.userAgent` is `Cloudflare-Workers`, so a `@cloudflare/vitest-pool-workers` pool that fails to start fails the suite instead of silently falling back to Node — which otherwise looks like a pass in the packages that import no `cloudflare:*` module. Don't remove it to make a suite green.
 
 Linting (oxlint, via Vite+):
 - `pnpm lint` runs what CI enforces: `lint:check` (oxlint), `types:scripts` and `types:check`. Run this before pushing.
@@ -124,7 +124,7 @@ IMPORTANT: RPC stubs must be disposed to prevent resource leaks on the server si
 
 IMPORTANT: All RPC interface implementations should use the annotation `@validateRpc()` to apply capnweb-validate, which installs auto-generated runtime type validation matching the interface's TypeScript signatures. Do not write redundant validation code that duplicates the checks capnweb-validate already covers.
 
-IMPORTANT: Server-side logging uses `@gadgets/backend-utils/logger` (frontend browser `console.*` is out of scope):
+IMPORTANT: Server-side logging uses `@gadgets/observability/logger` (frontend browser `console.*` is out of scope):
 - Define a package-owned field type and module-scoped logger with a stable dot-separated `component`
   and, for gatekeepers, `vendorId`:
   `const logger = createLogger<GitHubLogFields>({ component: "gatekeeper.github", vendorId: VENDOR_ID });`.
@@ -135,7 +135,7 @@ IMPORTANT: Server-side logging uses `@gadgets/backend-utils/logger` (frontend br
   over logger parameters, and do not replace a shallow child logger with ambient context just to
   remove a local variable.
 - For bounded operation context needed by deep helpers, independent loggers, or other observability
-  consumers, use `createObservabilityContext` from `@gadgets/backend-utils/observability-context`.
+  consumers, use `createObservabilityContext` from `@gadgets/observability/observability-context`.
   Re-establish it per operation;
   it does not cross RPC, hibernation, or restart, and requires `nodejs_als` or `nodejs_compat`.
 - Pass caught values as `error`. The helper stringifies `Error` instances and primitives, uses an
@@ -146,12 +146,15 @@ IMPORTANT: Server-side logging uses `@gadgets/backend-utils/logger` (frontend br
   tokens, or request/response bodies.
 - To also dispatch a failure to the optional external issue Reporter (in addition to logging it),
   call `reportIssue(failureSite, caught, options?)` from
-  `@gadgets/backend-utils/error-reporting`. Attach ambient fields from the package's observability
+  `@gadgets/observability/error-reporting`. Attach ambient fields from the package's observability
   context and augment them with capture-site fields:
   `reportIssue("overseer.catalog-fallback", err, { handled: true, attributes: { ...obsContext.get(), gatekeeperId } });`.
   It is a no-op when the `ERROR_REPORTER` binding is absent (local dev / deployments without an issue
   destination). Only bounded scalars are retained as attributes; reported context obeys the same
   no-secrets rules as log fields.
+- Usage metrics go to the optional `METRICS` Analytics Engine dataset through
+  `@gadgets/observability/metrics`, whose column layout (`metrics-schema.ts`) is also what
+  dashboards query; Workshop product events reach it through `recordAnalytics`.
 
 IMPORTANT: Frontend error reporting is a separate, opt-in path:
 - `@gadgets/error-reporting` owns the vendor-neutral browser/Worker event contract and tolerant,

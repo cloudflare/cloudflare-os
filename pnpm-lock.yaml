@@ -73,25 +73,6 @@ importers:
         specifier: 'catalog:'
         version: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
 
-  packages/backend-utils:
-    dependencies:
-      '@gadgets/error-reporting':
-        specifier: workspace:*
-        version: link:../error-reporting
-    devDependencies:
-      '@cloudflare/vitest-pool-workers':
-        specifier: 'catalog:'
-        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.10)(@vitest/snapshot@4.1.10)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
-      '@cloudflare/workers-types':
-        specifier: 'catalog:'
-        version: 5.20260903.1
-      '@gadgets/scripts':
-        specifier: workspace:*
-        version: link:../../scripts
-      vitest:
-        specifier: 'catalog:'
-        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
-
   packages/bundled-blueprints:
     dependencies:
       yjs:
@@ -149,15 +130,15 @@ importers:
 
   packages/gatekeeper-cloudflare:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -223,12 +204,12 @@ importers:
 
   packages/gatekeeper-context:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/typed-storage':
         specifier: workspace:*
         version: link:../typed-storage
@@ -353,15 +334,15 @@ importers:
 
   packages/gatekeeper-email:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -387,15 +368,15 @@ importers:
 
   packages/gatekeeper-github:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -427,15 +408,15 @@ importers:
 
   packages/gatekeeper-google:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -504,9 +485,9 @@ importers:
 
   packages/gatekeeper-kit:
     dependencies:
-      '@gadgets/backend-utils':
+      '@gadgets/observability':
         specifier: workspace:*
-        version: link:../backend-utils
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -532,15 +513,15 @@ importers:
 
   packages/gatekeeper-linear:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -563,15 +544,15 @@ importers:
 
   packages/gatekeeper-mcp:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/mcp-shared':
         specifier: workspace:*
         version: link:../mcp-shared
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -597,15 +578,15 @@ importers:
 
   packages/gatekeeper-mcp-portal:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/mcp-shared':
         specifier: workspace:*
         version: link:../mcp-shared
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -662,12 +643,12 @@ importers:
 
   packages/gatekeeper-scheduler:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -806,15 +787,15 @@ importers:
 
   packages/gatekeeper-supabase:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -902,12 +883,12 @@ importers:
 
   packages/mcp-shared:
     dependencies:
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -927,6 +908,25 @@ importers:
       typescript6:
         specifier: 'catalog:'
         version: typescript@6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+
+  packages/observability:
+    dependencies:
+      '@gadgets/error-reporting':
+        specifier: workspace:*
+        version: link:../error-reporting
+    devDependencies:
+      '@cloudflare/vitest-pool-workers':
+        specifier: 'catalog:'
+        version: 0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 5.20260903.1
+      '@gadgets/scripts':
+        specifier: workspace:*
+        version: link:../../scripts
       vitest:
         specifier: 'catalog:'
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
@@ -1018,12 +1018,12 @@ importers:
       '@earendil-works/pi-ai':
         specifier: 0.87.1
         version: 0.87.1(supports-color@10.2.2)(ws@8.21.3)(zod@4.5.4)
-      '@gadgets/backend-utils':
-        specifier: workspace:*
-        version: link:../backend-utils
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/typed-storage':
         specifier: workspace:*
         version: link:../typed-storage
@@ -6054,6 +6054,22 @@ snapshots:
     dependencies:
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
+      cjs-module-lexer: 1.2.3
+      esbuild: 0.28.1
+      miniflare: 5.20260921.1-alpha(@types/node@26.1.0)
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+      wrangler: 4.138.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@cloudflare/workers-types'
+      - '@types/node'
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/vitest-pool-workers@0.22.0(@cloudflare/workers-types@5.20260903.1)(@types/node@26.1.0)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.1.0)(@vitest/browser-preview@4.1.10(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))(vitest@4.1.10))(jsdom@26.1.0(supports-color@10.2.2))(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0)))':
+    dependencies:
+      '@vitest/runner': 4.1.11
+      '@vitest/snapshot': 4.1.11
       cjs-module-lexer: 1.2.3
       esbuild: 0.28.1
       miniflare: 5.20260921.1-alpha(@types/node@26.1.0)

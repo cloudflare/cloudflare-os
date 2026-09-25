@@ -1,6 +1,6 @@
 "backend/utils":
   - changed-files:
-      - any-glob-to-any-file: "packages/backend-utils/**"
+      - any-glob-to-any-file: "packages/observability/**"
 
 "kernel":
   - changed-files:

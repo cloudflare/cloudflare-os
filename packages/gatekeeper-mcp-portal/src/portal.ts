@@ -7,7 +7,7 @@
 // shared via `@gadgets/mcp-shared`. See the README.
 import { RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import {
   matchesResourceUrlPattern,
   stripTrailingSlashes,

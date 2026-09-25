@@ -1,6 +1,6 @@
 /** Account-side credential storage and consumer-side RPC access. */
 
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import { ACCESS_TOKEN_SAFETY_MS, generateNonce } from "./connect-nonce";
 import { clearCredentialExpiryLatch } from "./credential-expiry";
 import type { KvMutable } from "./kv";

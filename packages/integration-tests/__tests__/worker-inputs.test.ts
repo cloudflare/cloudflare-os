@@ -54,7 +54,7 @@ it("watches a root covering every entry in the table", () => {
     "packages/workshop-backend",
     "packages/workshop-backend/src",
     "packages/workshop-shared",
-    "packages/backend-utils",
+    "packages/observability",
     "packages/error-reporting",
     "packages/typed-storage",
     "packages/bundled-blueprints",

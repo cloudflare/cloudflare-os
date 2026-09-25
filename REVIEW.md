@@ -44,7 +44,7 @@ through logs and errors, then everything else.
 
 ## Logging, errors and secrets
 
-- Server code logs through `@gadgets/backend-utils/logger` with a module-scoped logger and a stable
+- Server code logs through `@gadgets/observability/logger` with a module-scoped logger and a stable
   dot-separated `component` (plus `vendorId` for gatekeepers). Caught values are passed as `error`.
 - Never log or report secrets, prompts, headers, tokens, or request/response bodies. Exception
   messages and stacks reach the external Reporter, so the same rule applies to anything thrown or

@@ -12,8 +12,8 @@
     "test:run": "vitest run && vitest run -c vitest.node.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",

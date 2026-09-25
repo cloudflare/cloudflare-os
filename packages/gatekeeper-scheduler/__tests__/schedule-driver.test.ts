@@ -7,12 +7,12 @@ import {
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
-import { reportIssue } from "@gadgets/backend-utils/error-reporting";
+import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ScheduledTaskHook } from "../src/types.js";
 import { ScheduleDriver } from "../src/schedule-driver.js";
 import type { ScheduleActivation, StoredSchedule } from "../src/schedule-driver.js";
 
-vi.mock("@gadgets/backend-utils/error-reporting", () => ({ reportIssue: vi.fn() }));
+vi.mock("@gadgets/observability/error-reporting", () => ({ reportIssue: vi.fn() }));
 
 type ScheduleHookTarget = RpcTarget & ScheduledTaskHook;
 

@@ -5,6 +5,7 @@ import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisionin
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
+import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
 import { getAiGatewayConfig } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
@@ -482,7 +483,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         name: email.split("@")[0],
         id: email,
       });
+      recordAnalytics(this.ctx, this.env, {
+        event_name: "account_created",
+        user_id: this.ctx.id.toString(),
+        source: "gatekeeper",
+      });
     }
+    recordAnalytics(this.ctx, this.env, {
+      event_name: "user_authenticated",
+      user_id: this.ctx.id.toString(),
+      source: "gatekeeper",
+    });
     return this.#newSessionToken();
   }
 

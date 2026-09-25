@@ -1,5 +1,5 @@
 {
-  "name": "@gadgets/backend-utils",
+  "name": "@gadgets/observability",
   "version": "1.0.0",
   "description": "Shared Worker-side libraries; not a standalone deployable Worker.",
   "type": "module",
@@ -19,6 +19,14 @@
     "./error-reporting": {
       "types": "./src/error-reporting.ts",
       "import": "./src/error-reporting.ts"
+    },
+    "./metrics": {
+      "types": "./src/metrics.ts",
+      "import": "./src/metrics.ts"
+    },
+    "./metrics-schema": {
+      "types": "./src/metrics-schema.ts",
+      "import": "./src/metrics-schema.ts"
     }
   },
   "scripts": {

@@ -1,6 +1,6 @@
 /** Approval-backed resource action declaration, submission, and resolution. */
 
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import type { RpcStub } from "cloudflare:workers";
 import type {
   ActionDescription,
