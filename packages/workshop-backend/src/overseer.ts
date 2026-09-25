@@ -10393,9 +10393,23 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
 
     return new Proxy(session, {
       get(target, prop, receiver) {
-        // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
-        //   we'll get an illegal invocation, as `receiver` points to our Proxy.
-        return Reflect.get(target, prop, target);
+        // Symbols and `then` are used internally by Workers RPC and Promise resolution; pass through.
+        if (typeof prop === "symbol" || prop === "then") return Reflect.get(target, prop, target);
+        // Return a real function rather than `Reflect.get(target, prop, target)`.
+        //
+        // For method names NOT in workerd's statically-known RPC surface for this stub
+        // (e.g. MCP tool methods like `kiwixSearchArticles` that are installed dynamically
+        // by `installToolMethods` at runtime), `Reflect.get(rpcStub, prop)` returns a
+        // pipeline property sub-stub. Calling that sub-stub as a function dispatches RPC
+        // method "apply" on the remote rather than the named method, causing:
+        //   TypeError: The RPC receiver does not implement the method "apply"
+        //
+        // Returning a real function that calls `target[prop](...args)` directly makes
+        // workerd treat it as a method call, which the remote session handles correctly
+        // (the method is on the prototype chain even if not in the static TS surface).
+        return function(this: unknown, ...args: unknown[]) {
+          return (target as Record<string, (...a: unknown[]) => unknown>)[prop as string](...args);
+        };
       },
       getPrototypeOf(target) {
         return WorkerEntrypoint.prototype;
