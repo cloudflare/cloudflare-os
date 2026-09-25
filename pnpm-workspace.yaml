@@ -19,15 +19,18 @@ catalog:
   miniflare: 5.20260921.1-alpha
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
-  # use the "typescript6" npm alias instead, declared by @gadgets/scripts; capnweb-validate
+  # use the "typescript6" npm alias below instead; capnweb-validate
   # ships its own JS-based compiler dependency since 0.2.4.
   typescript: 7.0.2
+  # Exact: the JS compiler API ("typescript" 7 no longer ships it), aliased so it can sit beside tsgo.
+  typescript6: npm:typescript@6.0.3
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.11
   wrangler: ^4.138.0
+  zod: ^4.5.4
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.

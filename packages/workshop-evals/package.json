@@ -15,7 +15,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "vitest-evals": "0.16.1",
-    "zod": "^4.5.4"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",

@@ -29,7 +29,7 @@
     "jose": "^6.2.12",
     "pako": "^2.1.0",
     "yjs": "^13.6.32",
-    "zod": "^4.5.4"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
