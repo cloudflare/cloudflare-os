@@ -720,10 +720,12 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             description,
             implementsRevert,
             // Spread, so an action with no fields, no git, no kind, no awaited decision, or no claim
-            // of completeness puts no key on the wire at all. A push is never complete, whatever the
-            // hook claims: the approver sees commit ids, not the bytes they carry.
+            // of completeness puts no key on the wire at all. An empty list is "no git" too: the
+            // overseer reads presence as a push, and `[]` is a push of nothing it refuses to build a
+            // pack for. A push is never complete, whatever the hook claims: the approver sees commit
+            // ids, not the bytes they carry.
             ...(fields?.length ? { fields } : {}),
-            ...(pushedCommits ? { pushedCommits } : {}),
+            ...(pushedCommits?.length ? { pushedCommits } : {}),
             ...(descriptionIsComplete === true && !pushedCommits?.length
               ? { descriptionIsComplete: true }
               : {}),

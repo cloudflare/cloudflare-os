@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
+import { actionStatusLabel, autoApproveTargetOf, type AutoApproveTarget } from './features/actions/actionStatus'
 import {
   Dialog,
   DropdownMenu,
@@ -82,14 +83,15 @@ import {
   WorkpieceId,
   BlueprintOutput,
   MessageFormatRef,
+  actionChangeTime,
 } from "@gadgets/workshop-shared/api";
 import { composeCodeChange, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow } from "./features/code/otClient";
-import { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
 import GatekeeperModal from "./GatekeeperModal";
+import { ActionFailureNote } from "./ActionFailureNote";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
@@ -3819,16 +3821,17 @@ function ChatInterface({
   });
   // On a resumed reconnect the subscription replays the gap, so the entries above cover cached
   // cards. Otherwise (cold open, or the prior session never settled) re-fetch cached action
-  // cards whose log can still change: blank or pending cards (a resolution may have landed
-  // while we were away), and bindHook cards, which stay mutable after resolution (`enabled`
-  // toggles). Runs after useActionEntries, whose effect creates the store and its resumed flag.
+  // cards whose log can still change: blank cards, any not approved (a resolution may have landed
+  // while we were away, or a staged veto the gatekeeper refused flipped to applied), and bindHook
+  // cards, which stay mutable after resolution (`enabled` toggles). Runs after
+  // useActionEntries, whose effect creates the store and its resumed flag.
   useEffect(() => {
     if (actionLogResumed(overseer)) return;
     let cancelled = false;
     const targets = [...cacheRef.current.actionMessages.values()].flatMap((locations) => {
       const location = locations.values().next().value;
       const msg = location && getCachedActionMessage(location)?.msg;
-      return msg && (!msg.actionLog || msg.actionLog.state === "pending" ||
+      return msg && (!msg.actionLog || msg.actionLog.state !== "approved" ||
           msg.actionLog.type === "bindHook") ? [location] : [];
     });
 
@@ -3836,11 +3839,13 @@ function ChatInterface({
       try {
         const fetched = await overseer.getChatMessage(location.chatId, location.sequence);
         if (cancelled || fetched?.type !== "action" || !fetched.actionLog) return;
-        // Resolution is monotonic: never regress a card another channel already resolved.
-        const current = getCachedActionMessage(location)?.msg;
-        if (fetched.actionLog.state === "pending" &&
-            current?.actionLog && current.actionLog.state !== "pending") return;
-        if (applyActionLogUpdateToCachedMessages(fetched.actionLog)) scheduleUpdate();
+        // Never regress a card a faster channel already advanced: it may have resolved it, or
+        // stamped a newer change this read predates (recording a stop stamps appliedAt).
+        const log = fetched.actionLog;
+        const current = getCachedActionMessage(location)?.msg.actionLog;
+        if (current && ((log.state === "pending" && current.state !== "pending") ||
+            actionChangeTime(log) < actionChangeTime(current))) return;
+        if (applyActionLogUpdateToCachedMessages(log)) scheduleUpdate();
       } catch (err) {
         console.error("Failed to refresh action card:", err);
       }
@@ -4281,9 +4286,13 @@ function ChatInterface({
       }
 
       const nextMessages = [...cached.messages];
+      const log = cached.msg.actionLog;
       nextMessages[location.sequence] = {
         ...cached.msg,
-        actionLog: { ...cached.msg.actionLog, state, appliedAt: new Date() },
+        // Approval clears the recorded failure, as the server does; a rejection retains it.
+        actionLog: log.type === "action" && state === "approved"
+            ? { ...log, state, appliedAt: new Date(), failure: undefined }
+            : { ...log, state, appliedAt: new Date() },
       };
       cacheRef.current.messages.set(location.chatId, nextMessages);
       changed = true;
@@ -4337,13 +4346,10 @@ function ChatInterface({
   }, [overseer, selectedChatId, toasts]);
 
   // Pending "always approve this type" confirmation, opened from a pending action card.
-  const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
-  >(null);
+  const [autoApproveConfirm, setAutoApproveConfirm] = useState<AutoApproveTarget | null>(null);
 
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
+  // server applies the now-eligible pending action(s) in an apply pass, and the state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
@@ -4920,7 +4926,6 @@ function ChatInterface({
     }
 
     const isPending = state === "pending";
-    const isApproved = state === "approved";
     const isRejected = state === "rejected";
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
@@ -4930,31 +4935,11 @@ function ChatInterface({
     // decision. Resolved actions are history, and collapse so a long thread stays scannable.
     const showDescription = isPending || open;
     const metadata = log.resourceTitle;
-    const stateLabel = isApproved
-      ? "Approved"
-      : isRejected
-        ? "Denied"
-        : null;
+    const stateLabel = isPending ? null : actionStatusLabel(log);
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
-    // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.) Not offered while
-    // restricted.
-    const autoApproveTarget =
-      !restricted &&
-      log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
-        ? {
-            actionId: msg.actionId,
-            gatekeeperId: log.gatekeeperId,
-            resourceTitle: log.resourceTitle,
-            actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
-          }
-        : undefined;
+    const autoApproveTarget = autoApproveTargetOf(log, restricted);
 
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
@@ -5056,6 +5041,7 @@ function ChatInterface({
                   </div>
                 )}
                 {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {log.failure && <ActionFailureNote failure={log.failure} />}
               </div>
               <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
                 {actionControls}
@@ -5123,6 +5109,7 @@ function ChatInterface({
               </div>
             )}
             {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+            {log.failure && <ActionFailureNote failure={log.failure} />}
             {resourceMeta}
           </div>
         )}

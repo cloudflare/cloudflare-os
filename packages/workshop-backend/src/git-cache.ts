@@ -39,7 +39,12 @@ import type {
   GitCache,
   GitObjectType,
   GitOid,
+  GitPackBuilder,
   GitPullHints,
+} from "@gadgets/workshop-shared/gatekeeper";
+import {
+  createGitPackError,
+  GIT_PACK_ERROR_CODES,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   READ_FILES_RESPONSE_BUDGET,
@@ -48,6 +53,7 @@ import {
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { GitObjectRecord } from "./git-store";
+import type { GatekeeperActionRecord, OverseerStorage } from "./overseer.js";
 import {
   buildPackBytes,
   concatBytes,
@@ -1267,6 +1273,71 @@ export class WorkspaceGitCache {
 
 // =======================================================================================
 // The RPC stub
+
+/**
+ * Native-RPC pack capability scoped to the declared pushes authorized for one apply-through call.
+ */
+@validateRpc()
+export class GitPackBuilderImpl extends RpcTarget implements GitPackBuilder, Disposable {
+  #active = true;
+  #workspaceActionByLocalId = new Map<number, number>();
+
+  constructor(
+    private cache: WorkspaceGitCache,
+    private storage: Pick<OverseerStorage, "actions" | "gatekeepers">,
+    private gatekeeperId: WorkpieceId,
+    pendingPlan: readonly GatekeeperActionRecord[],
+  ) {
+    super();
+    for (const record of pendingPlan) {
+      if (record.description.pushedCommits?.length) {
+        this.#workspaceActionByLocalId.set(record.action, record.id);
+      }
+    }
+  }
+
+  #requireAction(action: number): GatekeeperActionRecord {
+    if (!this.#active) {
+      throw createGitPackError(GIT_PACK_ERROR_CODES.builderExpired);
+    }
+    const workspaceId = this.#workspaceActionByLocalId.get(action);
+    if (workspaceId === undefined) {
+      throw createGitPackError(GIT_PACK_ERROR_CODES.actionNotAuthorized);
+    }
+    const record = this.storage.actions.get(workspaceId);
+    if (record?.type !== "action" || record.state !== "pending" ||
+        this.storage.gatekeepers.get(this.gatekeeperId) === undefined) {
+      throw createGitPackError(GIT_PACK_ERROR_CODES.actionUnavailable);
+    }
+    return record;
+  }
+
+  async buildPack(action: number): Promise<ReadableStream<Uint8Array>> {
+    const record = this.#requireAction(action);
+    // An invalidation during the build can surface as the pull's own failure, so recheck on both
+    // exits: the coded lifetime error is the cause, and the one the contract promises.
+    let stream: ReadableStream<Uint8Array>;
+    try {
+      stream = await this.cache.buildPackForAction(this.gatekeeperId, record.id);
+    } catch (error) {
+      this.#requireAction(action);
+      throw error;
+    }
+    try {
+      this.#requireAction(action);
+    } catch (error) {
+      try {
+        await stream.cancel();
+      } catch {}
+      throw error;
+    }
+    return stream;
+  }
+
+  [Symbol.dispose](): void {
+    this.#active = false;
+  }
+}
 
 /**
  * The `GitCache` stub handed to gatekeepers (see workshop-shared/gatekeeper.ts for the

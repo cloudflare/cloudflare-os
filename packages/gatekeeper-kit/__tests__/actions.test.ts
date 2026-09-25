@@ -889,9 +889,13 @@ describe("defineActions", () => {
     }
   });
 
-  it("puts no pushedCommits key on the wire when the description declares none", async () => {
-    // Absent, not `undefined`: the overseer reads presence as "this action pushes".
-    const { actions } = bind();
+  it.each([
+    { declared: "no key", present: undefined },
+    { declared: "an empty list", present: () => ({ ...presentation, pushedCommits: [] }) },
+  ])("puts no pushedCommits key on the wire when the description declares $declared",
+      async ({ present }) => {
+    // Absent, not `undefined` or `[]`: the overseer reads presence as "this action pushes".
+    const { actions } = bind({ describe: present });
     const submitAction = submitSpy();
 
     await actions.submit(fakeQueue(submitAction), "execute", { sql: "one" });

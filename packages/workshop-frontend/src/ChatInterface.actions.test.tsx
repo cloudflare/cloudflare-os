@@ -44,7 +44,7 @@ vi.mock('./AuthContext', () => {
   }
 })
 
-import { entry, makeOverseer, makeTestRoot } from './action-test-harness'
+import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
 import ChatInterface from './ChatInterface'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
@@ -114,41 +114,141 @@ const actionMessage = {
   actionLog: entry(1),
 } as AiChatMessage
 
-const resolvedMessage =
-  { ...actionMessage, actionLog: entry(1, { state: 'approved' }) } as AiChatMessage
+// Renders action 1's card in a live chat, which is where its status label and notes are derived.
+// `entries` is the pending page the session settles with; `linkKey` links the stub so a later
+// session can resume (unlinked sessions never park a watermark).
+async function renderCard(
+  over: Record<string, unknown> = {},
+  { entries, linkKey }: { entries?: ActionLogEntry[]; linkKey?: string } = {},
+) {
+  const log = entry(1, over)
+  const server = makeOverseer()
+  const chat = withChatApi(server)
+  if (linkKey !== undefined) linkActionLog(server.overseer, linkKey)
+  await renderChat(server.overseer, { selectedChatId: 1 })
+  await server.resolveSubscription()
+  await server.resolvePendingQuery({ entries: entries ?? [log] })
+  chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+  flushFrames()
+}
 
-// Renders a first session that caches a pending action card, then settles it so a linked swap
-// can resume. Pass a key to link the stub; unlinked sessions never park a watermark.
-async function cachePendingCard(key?: string) {
-  const first = makeOverseer()
-  const firstChat = withChatApi(first)
-  if (key !== undefined) linkActionLog(first.overseer, key)
-  await renderChat(first.overseer)
-  await first.resolveSubscription()
-  await first.resolvePendingQuery({ entries: [entry(1)] })
-  firstChat.emitMessage(actionMessage)
+// A first session that caches a pending card, with a second pending action behind it.
+function cachePendingCard(linkKey?: string) {
+  return renderCard({}, { entries: [entry(1), entry(2)], linkKey })
 }
 
 describe('ChatInterface action refresh', () => {
-  it('refetches cached mutable cards when an unlinked stub swaps', async () => {
+  it('shows a missed failure on a cached card after a stub swap', async () => {
     await cachePendingCard()
 
+    const failed = entry(1, { failure: 'page was deleted while disconnected' })
     const second = makeOverseer()
-    const secondChat = withChatApi(second, vi.fn(async () => resolvedMessage))
-    await renderChat(second.overseer)
+    const secondChat = withChatApi(second, vi.fn(async () =>
+      ({ ...actionMessage, actionLog: failed }) as AiChatMessage))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [failed, entry(2)] })
     await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('page was deleted while disconnected')
   })
 
-  it('skips the cached-card refetch on a resumed linked stub swap', async () => {
+  it('shows a veto refused while disconnected as already applied', async () => {
+    const vetoed = { state: 'rejected', appliedAt: new Date(1700005000000) }
+    await renderCard(vetoed, { entries: [] })
+
+    const refused = entry(1, {
+      state: 'approved', vetoRefused: true, appliedAt: new Date(1700006000000),
+    })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(async () =>
+      ({ ...actionMessage, actionLog: refused }) as AiChatMessage))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [] })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('Already applied')
+    expect(document.body.textContent).not.toContain('Denied')
+  })
+
+  it('lets a resumed reconnect replay the gap instead of refetching', async () => {
     await cachePendingCard('ws-chat-resume')
 
+    const failed = entry(1, {
+      failure: 'page was deleted while disconnected',
+      appliedAt: new Date(1700005000000),
+    })
     const second = makeOverseer()
-    const secondChat = withChatApi(second, vi.fn(async () => resolvedMessage))
+    const secondChat = withChatApi(second)
     linkActionLog(second.overseer, 'ws-chat-resume')
-    await renderChat(second.overseer)
+    await renderChat(second.overseer, { selectedChatId: 1 })
     await second.resolveSubscription()
-    await second.resolvePendingQuery({ entries: [entry(1)] })
+    await second.resolvePendingQuery({ entries: [failed, entry(2)] })
+    await second.emit(failed)
+    flushFrames()
+
     expect(secondChat.getChatMessage).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('page was deleted while disconnected')
+  })
+
+  it('does not let a stale refresh regress a card resolved by the new subscription', async () => {
+    await cachePendingCard()
+
+    let resolveFetch!: (message: AiChatMessage | null) => void
+    const fetched = new Promise<AiChatMessage | null>(resolve => { resolveFetch = resolve })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(() => fetched))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [entry(1), entry(2)] })
+    await second.emit(entry(1, { state: 'approved' }))
+    flushFrames()
+
+    await act(async () => resolveFetch({
+      ...actionMessage,
+      actionLog: entry(1, { failure: 'stale failure' }),
+    } as AiChatMessage))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('Approved')
+    expect(document.body.textContent).not.toContain('stale failure')
+  })
+
+  it('does not let a stale refresh drop a failure recorded while it was in flight', async () => {
+    await cachePendingCard()
+
+    let resolveFetch!: (message: AiChatMessage | null) => void
+    const fetched = new Promise<AiChatMessage | null>(resolve => { resolveFetch = resolve })
+    const second = makeOverseer()
+    const secondChat = withChatApi(second, vi.fn(() => fetched))
+    await renderChat(second.overseer, { selectedChatId: 1 })
+    await vi.waitFor(() => expect(secondChat.getChatMessage).toHaveBeenCalledWith(1, 0))
+    await second.resolveSubscription()
+    await second.resolvePendingQuery({ entries: [entry(1), entry(2)] })
+    // An apply stops while the refresh is in flight: the card stays pending, so resolution
+    // monotonicity says nothing -- only the stop's own stamp distinguishes the two reads.
+    await second.emit(entry(1, {
+      failure: 'page was deleted upstream',
+      appliedAt: new Date(1700005000000),
+    }))
+    flushFrames()
+
+    await act(async () => resolveFetch(actionMessage))
+    flushFrames()
+
+    expect(document.body.textContent).toContain('page was deleted upstream')
+  })
+})
+
+describe('ChatInterface action failure note', () => {
+  it("shows the gatekeeper's reason on a pending action card", async () => {
+    await renderCard({ failure: 'page was deleted upstream' })
+
+    expect(document.body.textContent).toContain('page was deleted upstream')
   })
 })
 
@@ -288,4 +388,66 @@ describe('action fields', () => {
       expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
     })
   }
+})
+
+// A pending card a rule would actually apply: gatekeeper-bound, tagged, auto-approvable.
+const ruleEligible = {
+  gatekeeperId: 1,
+  description: {
+    title: 'Action 1',
+    description: '',
+    implementsRevert: false,
+    actionKind: { tag: 'edit', label: 'Edits' },
+    autoApprovable: true,
+  },
+}
+
+describe('ChatInterface always-approve offer', () => {
+  it('offers it on a card a rule would apply', async () => {
+    await renderCard(ruleEligible)
+
+    expect(document.body.textContent).toContain('Always approve')
+  })
+
+  it('withholds it once the card carries a failure', async () => {
+    await renderCard({ ...ruleEligible, failure: 'page was deleted upstream' })
+
+    // A stop disqualifies the action from the rule path, so enabling one here would promise an
+    // application that never happens and leave an awaiting agent turn suspended.
+    expect(document.body.textContent).toContain('page was deleted upstream')
+    expect(document.body.textContent).not.toContain('Always approve')
+  })
+
+  it('withholds it while the workspace is restricted', async () => {
+    await renderPendingCard(entry(1, ruleEligible), { restricted: true })
+
+    // No rule fires once the workspace has read restricted data, so enabling one here would
+    // promise an application that never happens.
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(document.body.textContent).not.toContain('Always approve')
+  })
+})
+
+describe('ChatInterface action status', () => {
+  it('presents a cascade invalidation as invalidated rather than denied', async () => {
+    await renderCard({ state: 'rejected', cascadedFrom: 2 })
+
+    expect(document.body.textContent).toContain('Invalidated')
+    expect(document.body.textContent).not.toContain('Denied')
+  })
+
+  it('presents a direct rejection as denied', async () => {
+    await renderCard({ state: 'rejected' })
+
+    expect(document.body.textContent).toContain('Denied')
+    expect(document.body.textContent).not.toContain('Invalidated')
+  })
+
+  it('presents a refused veto as already applied rather than approved', async () => {
+    await renderCard({ state: 'approved', vetoRefused: true })
+
+    // The user asked for the opposite, so the bare state would read as a verdict they never gave.
+    expect(document.body.textContent).toContain('Already applied')
+    expect(document.body.textContent).not.toContain('Approved')
+  })
 })
