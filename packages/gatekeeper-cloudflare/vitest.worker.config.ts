@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
+import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
 
 /**
@@ -18,8 +19,12 @@ export default defineConfig({
         compatibilityDate: "2026-09-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
         // `UserAccount` refuses to refresh without client credentials; the provider itself is stubbed.
-        bindings: { CLIENT_ID: "client", CLIENT_SECRET: "secret" },
+        bindings: { CLIENT_ID: "client", CLIENT_SECRET: "secret",
+          NOTIFICATIONS_WEBHOOK_BASE_URL: "https://hooks.example/notifications" },
+        serviceBindings: { NOTIFICATION_TEST_HOOKS: { name: kCurrentWorker, entrypoint: "NotificationTestHooks" } },
         durableObjects: {
+          NOTIFICATION_REGISTRY: { className: "CloudflareNotificationRegistry", useSQLite: true },
+          NOTIFICATION_RECEIVER: { className: "CloudflareNotificationReceiver", useSQLite: true },
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           OBSERVABILITY_GATEKEEPER: {
             className: "CloudflareObservabilityGatekeeper",

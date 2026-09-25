@@ -1,3 +1,5 @@
+import type { RpcStub } from "cloudflare:workers";
+
 // Workers Observability provides read-only telemetry for either one Cloudflare account or one
 // Worker, depending on the binding the user granted. The binding enforces that boundary; callers do
 // not pass account IDs or Worker names, and a Worker binding never returns another Worker's events.
@@ -511,4 +513,74 @@ export interface CloudflareObservabilitySession {
    */
   calculate(query: CloudflareObservabilityCalculationQuery):
     Promise<CloudflareObservabilityCalculationResult>;
+}
+
+/** A notification from the bound Cloudflare account, across any alert type. */
+export interface CloudflareNotification {
+  /** Retry identifier. Use it to make your handler idempotent; delivery is at least once. */
+  id: string;
+  /** The account selected for this binding. */
+  accountId: string;
+  /** Cloudflare alert type, when the provider includes one. */
+  alertType?: string;
+  /** Generation time as an ISO 8601 timestamp. */
+  timestamp: string;
+  /** Notification policy identifier, when provided. */
+  policyId?: string;
+  /** Human-readable policy name, when provided. */
+  policyName?: string;
+  /** Human-readable notification name. */
+  name?: string;
+  /** Human-readable notification message. */
+  text?: string;
+  /** Groups related alerts; this is not a unique delivery identifier. */
+  correlationId?: string;
+  /** Event state, for example ALERT_STATE_EVENT_START or ALERT_STATE_EVENT_END. */
+  event?: string;
+  /** Product-specific evidence; its shape depends on the alert type. */
+  data: unknown;
+}
+
+/** The Cloudflare alert type for the policy created when this hook is enabled. */
+export interface CloudflareNotificationSubscription {
+  /** Use an alert type available to the connected Cloudflare account. Alert types that require
+   * policy filters (for example, specific zones or health checks) are not supported yet. */
+  alertType: string;
+}
+
+/** Persistent notification callback implemented by a workspace or Gadget. */
+export interface CloudflareNotificationHook {
+  /** Accept an event promptly and idempotently. Throw to return HTTP 500 so ANS can retry.
+   * Start long-running work separately; ordering and exactly-once execution are not guaranteed. */
+  onNotification(notification: CloudflareNotification): Promise<void>;
+}
+
+/** Delivery health and setup identifiers for this connection. */
+export interface CloudflareNotificationStatus {
+  /** Whether webhook setup has completed. */
+  installed: boolean;
+  /** Whether delivery has been stopped during disconnect. */
+  suspended: boolean;
+  /** Webhook destination shared by this connection's policies. */
+  webhookId?: string;
+  /** Policies created for enabled alert types. Hooks for one type share a policy. */
+  policies: { alertType: string; policyId: string }[];
+  /** Enabled hooks for this Cloudflare account across all of the owner's workspaces (limit 100). */
+  subscribers: number;
+  /** Time the last authenticated webhook test succeeded. */
+  lastTestAt?: string;
+  /** Time the last notification was accepted. */
+  lastReceivedAt?: string;
+}
+
+/** Notification access scoped to one Cloudflare account. */
+export interface CloudflareNotificationsSession {
+  /**
+   * Subscribe a persistent callback created with ctx.restore(). Choose one Cloudflare alert type;
+   * enabling the hook creates or shares its policy; the last disable removes it. A regular
+   * session-bound RpcStub cannot receive notifications after its session ends.
+   */
+  subscribe(callback: RpcStub<CloudflareNotificationHook>, subscription: CloudflareNotificationSubscription): Promise<void>;
+  /** Inspect setup and delivery health without exposing credentials or event content. */
+  getStatus(): Promise<CloudflareNotificationStatus>;
 }

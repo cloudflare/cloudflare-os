@@ -6,6 +6,7 @@ import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import type {
   CloudflareAccountConfiguratorRpc,
   CloudflareWorkerConfiguratorRpc,
+  CloudflareNotificationsSetupStatus,
 } from "./configurator/cloudflare-configurator-types.js";
 
 const OPTION_LIMIT = 100;
@@ -55,5 +56,19 @@ export class CloudflareWorkerConfiguratorUI extends CloudflareAccountConfigurato
         typeof value.value === "string" && (!needle || value.value.toLowerCase().includes(needle)))
       .slice(0, OPTION_LIMIT)
       .map(value => ({ value: value.value, title: value.value }));
+  }
+}
+
+/** Read-only human setup status; no account management capability is exposed to the iframe. */
+@validateRpc()
+export class CloudflareNotificationsConfiguratorUI extends CloudflareAccountConfiguratorUI {
+  #status: (accountId: string) => Promise<CloudflareNotificationsSetupStatus>;
+  constructor(getToken: () => Promise<string | null>,
+              status: (accountId: string) => Promise<CloudflareNotificationsSetupStatus>) {
+    super(getToken);
+    this.#status = status;
+  }
+  async getSetupStatus(accountId: string): Promise<CloudflareNotificationsSetupStatus> {
+    return this.#status(accountId);
   }
 }

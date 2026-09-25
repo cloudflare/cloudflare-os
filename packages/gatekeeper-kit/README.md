@@ -89,10 +89,11 @@ import {
 | `./endpoint` | User-supplied provider endpoint normalization. | A user enters a self-hosted provider URL. |
 | `./http-errors` | HTTP access-error classification and ACL probes. | A verifier distinguishes no access from provider failure. |
 | `./response-body` | Strict byte-capped response decoding. | A gatekeeper reads any provider response body. |
+| `./serial-queue` | FIFO serialization of asynchronous mutations. | A gatekeeper must prevent overlapping updates to one resource. |
 
 ## Internal modules
 
-The package does not export `kv`, `positive-int`, `per-storage`, `serial-queue`, `single-flight`,
+The package does not export `kv`, `positive-int`, `per-storage`, `single-flight`,
 `action-journal`, or `observer-tracker`. The last two are re-exported through `./actions` and
 `./observers`.
 
