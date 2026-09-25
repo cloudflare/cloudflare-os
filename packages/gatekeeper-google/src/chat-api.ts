@@ -312,17 +312,19 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   const createTime = chatTime(raw.createTime);
   const lastUpdateTime = chatTime(raw.lastUpdateTime);
   const sender = chatUserFromRaw(raw.sender);
+  const deleted = raw.deleteTime !== undefined || raw.deletionMetadata !== undefined;
   return {
     id: raw.name,
     spaceId: `spaces/${spaceId}`,
     ...(raw.thread?.name ? { threadId: raw.thread.name } : {}),
     ...(sender ? { sender } : {}),
-    text: raw.text ?? "",
-    ...(raw.formattedText ? { formattedText: raw.formattedText } : {}),
+    // A tombstone promises no text, whatever the provider left on it.
+    text: deleted ? "" : raw.text ?? "",
+    ...(!deleted && raw.formattedText ? { formattedText: raw.formattedText } : {}),
     createdAt: createTime ?? new Date(0),
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,
-    deleted: raw.deleteTime !== undefined || raw.deletionMetadata !== undefined,
+    deleted,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
@@ -488,7 +490,40 @@ export type ChatSearchMessagesRequest = {
 };
 
 export class ChatApi {
+  /** Whether each space threads, looked up once per client: Chat fixes it at creation. */
+  #threaded = new Map<string, Promise<boolean>>();
+
   constructor(private getAccessToken: AccessTokenProvider) {}
+
+  #remember(info: ChatSpaceInfo): ChatSpaceInfo {
+    this.#threaded.set(info.id, Promise.resolve(info.supportsThreads));
+    return info;
+  }
+
+  #supportsThreads(spaceName: string): Promise<boolean> {
+    let known = this.#threaded.get(spaceName);
+    if (!known) {
+      known = this.getSpace(spaceName).then(info => info.supportsThreads);
+      known.catch(() => this.#threaded.delete(spaceName));
+      this.#threaded.set(spaceName, known);
+    }
+    return known;
+  }
+
+  /** Chat threads every message; the ID only means something where the space supports threads. */
+  async #withThreading(messages: ChatMessageInfo[]): Promise<ChatMessageInfo[]> {
+    const result: ChatMessageInfo[] = [];
+    for (const message of messages) {
+      if (message.threadId !== undefined && !(await this.#supportsThreads(message.spaceId))) {
+        const flat = { ...message };
+        delete flat.threadId;
+        result.push(flat);
+      } else {
+        result.push(message);
+      }
+    }
+    return result;
+  }
 
   async #request<T>(
     operation: string,
@@ -527,7 +562,7 @@ export class ChatApi {
     const body = await this.#request<{ spaces?: ChatSpaceRaw[]; nextPageToken?: string }>(
       "spaces.list", `/spaces?${params}`);
     return {
-      items: (body.spaces ?? []).map(chatSpaceInfoFromRaw),
+      items: (body.spaces ?? []).map(raw => this.#remember(chatSpaceInfoFromRaw(raw))),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -556,23 +591,23 @@ export class ChatApi {
       ? body.results.map(result => result.space).filter((s): s is ChatSpaceRaw => s !== undefined)
       : body.spaces ?? [];
     return {
-      items: spaces.map(chatSpaceInfoFromRaw),
+      items: spaces.map(raw => this.#remember(chatSpaceInfoFromRaw(raw))),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
 
   async getSpace(spaceName: string): Promise<ChatSpaceInfo> {
     const spaceId = chatSpaceId(spaceName);
-    return chatSpaceInfoFromRaw(
-      await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`));
+    return this.#remember(chatSpaceInfoFromRaw(
+      await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`)));
   }
 
   /** Returns null when the connected user has no direct message with `user`. */
   async findDirectMessage(user: string): Promise<ChatSpaceInfo | null> {
     const params = new URLSearchParams({ name: chatUserName(user) });
     try {
-      return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
-        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`));
+      return this.#remember(chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
+        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`)));
     } catch (error) {
       // 404 is "no direct message". The reference's shape was validated before sending, so a 400
       // can only mean it names no real account — the same negative answer, not a caller error.
@@ -601,26 +636,22 @@ export class ChatApi {
     const body = await this.#request<{ messages?: ChatMessageRaw[]; nextPageToken?: string }>(
       "messages.list", `/spaces/${spaceId}/messages?${params}`);
     return {
-      items: (body.messages ?? [])
+      items: await this.#withThreading((body.messages ?? [])
         .filter(message => message.privateMessageViewer === undefined)
         .map(chatMessageInfoFromRaw)
         .filter(message => !message.deleted && message.spaceId === spaceName &&
           (!options.threadName || message.threadId === options.threadName) &&
-          chatTimeInWindow(message.createdAt, options)),
+          chatTimeInWindow(message.createdAt, options))),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
 
-  /** `parent` is `spaces/-` to search everything the user can reach, or one space. */
-  async searchMessages(
-    parent: string,
-    request: ChatSearchMessagesRequest,
-  ): Promise<ChatPage<ChatMessageInfo>> {
-    const parentPath = parent === "spaces/-" ? "spaces/-" : `spaces/${chatSpaceId(parent)}`;
+  /** Google only searches `spaces/-`; the filter's `space.name` terms narrow it to a space. */
+  async searchMessages(request: ChatSearchMessagesRequest): Promise<ChatPage<ChatMessageInfo>> {
     const body = await this.#request<{
       results?: { message?: ChatMessageRaw }[];
       nextPageToken?: string;
-    }>("messages.search", `/${parentPath}/messages:search`, {
+    }>("messages.search", "/spaces/-/messages:search", {
       method: "POST",
       // A search is a read; opting in lets a 429 or 5xx be retried like a GET.
       idempotent: true,
@@ -632,17 +663,18 @@ export class ChatApi {
       }),
     });
     return {
-      items: (body.results ?? [])
+      items: await this.#withThreading((body.results ?? [])
         .map(result => result.message)
         .filter((message): message is ChatMessageRaw =>
           message !== undefined && message.privateMessageViewer === undefined)
-        .map(chatMessageInfoFromRaw),
+        .map(chatMessageInfoFromRaw)),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
 
   async getMessage(messageName: string): Promise<ChatMessageInfo> {
-    return chatMessageInfoFromRaw(await this.getRawMessage(messageName));
+    const [info] = await this.#withThreading([chatMessageInfoFromRaw(await this.getRawMessage(messageName))]);
+    return info;
   }
 
   /** The raw message, needed where attachment data references matter. */
@@ -680,18 +712,20 @@ export class ChatApi {
       }
       body.thread = { name: `spaces/${threadSpaceId}/threads/${threadId}` };
     }
-    return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
-      "messages.create",
-      `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
-      { method: "POST", body: JSON.stringify(body) }));
+    const [created] = await this.#withThreading([chatMessageInfoFromRaw(
+      await this.#request<ChatMessageRaw>(
+        "messages.create",
+        `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
+        { method: "POST", body: JSON.stringify(body) }))]);
+    return created;
   }
 
-  async updateMessageText(messageName: string, text: string): Promise<ChatMessageInfo> {
+  async updateMessageText(messageName: string, text: string): Promise<void> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
+    await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
-      { method: "PATCH", body: JSON.stringify({ text }) }));
+      { method: "PATCH", body: JSON.stringify({ text }) });
   }
 
   async deleteMessage(messageName: string): Promise<void> {

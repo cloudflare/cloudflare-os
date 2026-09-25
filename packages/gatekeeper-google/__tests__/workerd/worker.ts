@@ -730,12 +730,9 @@ testChatPrototype.runChatTestOperation = async function(
   try {
     switch (operation) {
       case "space.post": {
-        const message = await space.post(first as string);
-        try {
-          return await message.getMetadata();
-        } finally {
-          disposeRpc(message);
-        }
+        const {info, message} = await space.post(first as string);
+        disposeRpc(message);
+        return info;
       }
       case "space.listMessages": {
         const cursor = await space.listMessages(first as ChatListMessagesOptions);

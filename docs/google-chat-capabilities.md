@@ -26,11 +26,15 @@ Messages produced by a thread retain its immutable thread restriction through ro
 history, posts, replies, reactions, and attachments. Fresh reads recheck membership in that
 thread; queued writes and undo records retain the same restriction across approval and restart.
 
-Known resources use `getSpace(id)`, `getThread(id)`, and `getMessage(id)`: each returns a
-capability or throws if the resource is unavailable. `list…` enumerates resources; `find…`
-performs an optional lookup and returns null when absent. IDs are opaque strings (normally
-Google's canonical paths), while `name` is the human-readable label. Data uses `spaceId`,
-`threadId`, `createdAt`, `editedAt`, and `isReply` consistently.
+Known resources use `getSpace(id)`, `getThread(id)`, and `getMessage(id)`: each returns the
+same `{ info, <capability> }` entry the listings use, or throws if the resource is unavailable,
+so a lookup never has to be followed by a second read. `list…` enumerates resources; `find…`
+performs an optional lookup and returns null when absent. Writes (`post`, `reply`,
+`startThread`) return entries too, describing the queued message or thread under its temporary
+ID. IDs are opaque strings (normally Google's canonical paths), while `name` is the
+human-readable label. Data uses `spaceId`, `threadId`, `createdAt`, `editedAt`, and `isReply`
+consistently; `threadId` is present only where `supportsThreads` is true, since Chat threads
+every message internally and the ID would otherwise invite replies that must fail.
 
 Google's ACL boundary remains the space. Narrower capabilities restrict delegated authority;
 they do not establish separate Google ACLs or make an account-derived capability into an
@@ -82,7 +86,7 @@ disclosures and when joining/reopening the workspace.
 ## Discover and operate on threads
 
 ```ts
-using space = await env.GOOGLE_CHAT.getSpace("spaces/AAAA");
+using space = (await env.GOOGLE_CHAT.getSpace("spaces/AAAA")).space;
 using threads = await space.listThreads({
   since: new Date("2026-09-23T00:00:00Z"),
   before: new Date("2026-09-24T00:00:00Z"),
@@ -113,14 +117,16 @@ the observation is authorized, so a denied page can be retried. A cursor returns
 threads, then throws with a request to use a narrower window. As elsewhere in the Google
 gatekeeper, `[]` means more work remains; only `null` means exhaustion.
 
-Known threads can be retrieved with `space.getThread(id)`. The thread exposes:
+`space.listThreads()`, `getThread()`, and `startThread()` all throw in a conversation whose
+`supportsThreads` is false; use `listMessages()` there. Known threads can be retrieved with
+`space.getThread(id)`, which returns a `ChatThreadEntry`. The thread exposes:
 
 ```ts
 interface ChatThread extends RpcTarget {
   getMetadata(): Promise<ChatThreadInfo>;
-  getRootMessage(): Promise<ChatMessage | null>;
+  getRootMessage(): Promise<ChatMessageEntry | null>;
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
-  post(text: string): Promise<ChatMessage>;
+  post(text: string): Promise<ChatMessageEntry>;
 }
 ```
 
@@ -148,31 +154,35 @@ message identity: creation-time history is not an exactly-once change feed.
 Account discovery offers `listSpaces`, `searchSpaces`, `findDirectMessage`, `getSpace`, and
 `getCurrentUser`. Account-wide `searchMessages` retains its structured filters, including
 `unreadOnly`, with the same `since`/`before` names. Google's search index can lag and omits some
-message categories; use history for complete recent-message scans.
-`searchMessages()` is available only on `GoogleChatSession`, not on space or thread capabilities.
+message categories; use history for complete recent-message scans. A `ChatSpace` — the only
+binding that can be shared — offers `getCurrentUser` and a `searchMessages` limited to that
+conversation: Google's search only accepts `spaces/-`, so the gatekeeper adds the `space.name`
+filter itself and rejects any result outside the space. Thread capabilities have no search.
 
 ## Writing and newly created threads
 
 Writes use `space.post(text)`, `thread.post(text)`, `message.reply(text)`, and
-`message.edit(text)`. Memberships, users, and reactions are plain records. Attachments
-can be listed with `message.listAttachments()` and read through their content capabilities.
-Event history, explicit message deletion, outgoing uploads, and generic drafts/patches are
-absent. Undo-send remains supported internally.
+`message.edit(text)`. Memberships, users, and reactions are plain records. A message's
+metadata already lists its attachments; `message.getAttachment(id)` returns the capability that
+reads one. Event history, explicit message deletion, outgoing uploads, and generic
+drafts/patches are absent. Undo-send remains supported internally.
 
-`space.startThread(text)` posts a root and returns a thread directly. It fails without posting
-in an unthreaded conversation. The new thread is ready for further posts and edits immediately:
+`space.startThread(text)` posts a root and returns its thread entry directly. It fails without
+posting in an unthreaded conversation. The new thread is ready for further posts and edits
+immediately:
 
 ```ts
-using thread = await space.startThread("Deployment investigation");
-using status = await thread.post("Gathering the relevant logs.");
+using thread = (await space.startThread("Deployment investigation")).thread;
+using status = (await thread.post("Gathering the relevant logs.")).message;
 await status.edit("Resolved: the deployment is healthy.");
 ```
 
 Each post and edit has its own approval action. Simulated reads reflect pending edits without
 altering the text of the original post action. Reply actions require their root post first,
-and edit actions require their target post first. Rejection rewinds the corresponding overlay;
-an edit targeting a rejected post cannot be applied. Undoing an applied edit restores the
-previous provider text.
+and edit actions require their target post first and apply in submission order, since manual
+approval can otherwise run them out of order and an older edit would overwrite a newer one.
+Rejection rewinds the corresponding overlay; an edit targeting a rejected post cannot be
+applied. Undoing an applied edit restores the previous provider text.
 
 Undo intent is saved before sending edits and reaction writes. A lost response can be retried
 without replacing the original undo state; an uncertain write must finish applying before it
@@ -197,8 +207,8 @@ reacquire a fixed resource from a fresh binding session:
 ```ts
 // Inside the gadget's DurableObject; restore is imported from cloudflare:workers.
 async [restore]({ spaceId, threadId }) {
-  using space = await this.env.GOOGLE_CHAT.getSpace(spaceId);
-  return await space.getThread(threadId);
+  using space = (await this.env.GOOGLE_CHAT.getSpace(spaceId)).space;
+  return (await space.getThread(threadId)).thread;
 }
 
 using source = await this.ctx.restore({ spaceId, threadId });
