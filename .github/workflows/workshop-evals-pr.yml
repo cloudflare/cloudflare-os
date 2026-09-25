@@ -130,82 +130,13 @@ jobs:
       - name: Plan the runs
         id: plan
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
           # Baseline first. A push measures its own commit, as the baseline later pull requests use.
           SHAS: >-
             ${{ github.event_name == 'push' && github.sha ||
             format('{0} {1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) }}
-        run: |
-          set -o pipefail
-          workflow=.github/workflows/workshop-evals-pr.yml
-          # Sorted, so a change in yq's output format between runner images keeps every digest.
-          digest() { yq -o=json "$1" "$workflow" | jq -cS . | sha256sum | cut -d' ' -f1; }
-          # Assigned first: bash -e ignores a failed command substitution inside an argument.
-          config=$(digest '[.env, .jobs.evals, .jobs.store]')
-          report_config=$(digest '[.jobs.compare, .jobs["trajectory-review"]]')
-          read -ra shas <<<"$SHAS"
-          keys=$(node scripts/evals/eval-keys.ts --config "$config" --report-config "$report_config" "${shas[@]}")
-
-          # A stored result counts only if it outlives this run, so compare can still download it,
-          # and only if this repository's own run stored it: a fork's run can upload any name.
-          stored='{}'
-          for name in $(jq -r '[.commits[].tasks | to_entries[] | "\(.key)-\(.value.key)"] | unique[]' <<<"$keys"); do
-            id=$(gh api "repos/$GH_REPO/actions/artifacts?name=workshop-evals-$name&per_page=100" --jq '
-              [.artifacts[] | select(.expired == false and
-                .workflow_run.head_repository_id == .workflow_run.repository_id and
-                (.expires_at | fromdateiso8601) > now + 4 * 3600)] | max_by(.created_at) | .id // empty')
-            if [[ -n "$id" ]]; then
-              stored=$(jq -c --arg name "$name" --argjson id "$id" '.[$name] = $id' <<<"$stored")
-            fi
-          done
-
-          # Each revision's tasks come from a stored result or from one leg of this run. A key both
-          # revisions share is measured once, by the candidate: equal keys are the same run.
-          plan=$(jq -c --argjson stored "$stored" '
-            [.commits | to_entries[] | ["baseline", "candidate"][.key] as $revision |
-              .value.sha as $sha | .value.tasks | to_entries[] |
-              {revision: $revision, sha: $sha, task: .key, name: "\(.key)-\(.value.key)"}] |
-            [.[] | select(.revision == "candidate") | .name] as $candidate |
-            map(.name as $name | . + if $stored[$name] != null then {artifact: $stored[$name]}
-              else {run: (if .revision == "candidate" or any($candidate[]; . == $name)
-                then "candidate" else "baseline" end)} end) |
-            . as $sources | map(select(.run == .revision)) as $measured |
-            {sources: $sources, store: ($measured | map({revision, task, name})),
-              legs: ($measured | group_by(.revision) |
-                map({revision: .[0].revision, sha: .[0].sha, tasks: map(.task)}))}' <<<"$keys")
-          measured=$(jq '.store | length' <<<"$plan")
-
-          # The posted comments are current when they report these exact inputs, every result they
-          # show is stored, Bonk reviewed them afterwards, and nobody asked for a re-run.
-          report=false
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            report=true
-            marker="<!-- workshop-evals-comparison report=$(jq -r .report <<<"$keys") -->"
-            if [[ "$RUN_ATTEMPT" == 1 && "$measured" == 0 ]] &&
-              gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --jq '.[]' |
-                jq -se --arg marker "$marker" '
-                  (map(select(.user.login == "github-actions[bot]" and
-                    (.body | startswith("<!-- workshop-evals-comparison")))) | max_by(.created_at)) as $posted |
-                  $posted != null and ($posted.body | startswith($marker)) and
-                  any(.[]; .user.login == "ask-bonk[bot]" and .created_at > $posted.created_at and
-                    (.body | test("^## (🔬 )?Eval runs review")))' >/dev/null; then
-              report=false
-            fi
-          fi
-
-          {
-            echo "keys=$keys"
-            echo "sources=$(jq -c .sources <<<"$plan")"
-            echo "report=$report"
-            # Left empty when nothing is measured: a matrix with no entries fails the run.
-            if [[ "$measured" != 0 ]]; then
-              echo "legs=$(jq -c '{include: .legs}' <<<"$plan")"
-              echo "store=$(jq -c '{include: .store}' <<<"$plan")"
-            fi
-          } >> "$GITHUB_OUTPUT"
+        run: node scripts/evals/workflow.ts plan $SHAS
 
   # Measures one revision's tasks that no stored result covers, on one runner: each eval file's
   # trials share one Workshop, and every file runs at once (see vitest.eval.config.ts).
@@ -380,38 +311,9 @@ jobs:
       - name: Join each revision's results
         id: join
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
           SOURCES: ${{ needs.plan.outputs.sources }}
-        run: |
-          mkdir -p stored
-          complete=true
-          for revision in baseline candidate; do
-            files=()
-            while read -r task artifact run; do
-              if [[ "$artifact" != - ]]; then
-                if [[ ! -d "stored/$artifact" ]]; then
-                  gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/stored.zip"
-                  unzip -q "$RUNNER_TEMP/stored.zip" -d "stored/$artifact"
-                fi
-                file="stored/$artifact/$task.json"
-              else
-                file="runs/$run/$task.json"
-                # Not stored, so a comment built on it must not count as current.
-                jq -e --arg task "$task" 'any(.[]; . == $task)' "runs/$run/clean.json" >/dev/null ||
-                  complete=false
-              fi
-              if [[ ! -f "$file" ]]; then
-                echo "::error::No $revision result for $task"
-                exit 1
-              fi
-              files+=("$file")
-            done < <(jq -r --arg revision "$revision" '.[] | select(.revision == $revision) |
-              "\(.task) \(.artifact // "-") \(.run // "-")"' <<<"$SOURCES")
-            mkdir -p "artifacts/$revision"
-            jq -s '{testResults: map(.testResults[])}' "${files[@]}" > "artifacts/$revision/results.json"
-          done
-          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+        run: node scripts/evals/workflow.ts join runs artifacts
 
       - name: Upload baseline trajectories
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -455,39 +357,13 @@ jobs:
           overwrite: true
           retention-days: 30
 
-      # Posted fresh at the end of the conversation, then every earlier results comment and eval
-      # review is deleted, so the latest pair is the only one and it sits where readers look.
-      # Bonk's review follows this comment. Only this workflow's comments and Bonk's eval reviews,
-      # recognised by their headings, are deleted: Bonk's code reviews and anything a person wrote
-      # stay. The marker carries the report key only when every result shown is stored, so the
-      # next run can tell whether this comment is still current.
       - name: Post the comparison on the pull request
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          KEYS: ${{ needs.plan.outputs.keys }}
+          REPORT_KEY: ${{ fromJSON(needs.plan.outputs.keys).report }}
           COMPLETE: ${{ steps.join.outputs.complete }}
-        run: |
-          key=""
-          if [[ "$COMPLETE" == true ]]; then key=" report=$(jq -r .report <<<"$KEYS")"; fi
-          {
-            echo "<!-- workshop-evals-comparison$key -->"
-            cat artifacts/comparison/comparison.md
-            echo
-            echo "[Run]($RUN_URL) · [trajectories and raw results](${RUN_URL}#artifacts)"
-          } > /tmp/comment.md
-          # Collected before any deletion, which would shift the pages still to be read.
-          earlier=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq '.[] | select((.user.login == "github-actions[bot]" and
-              (.body | startswith("<!-- workshop-evals-comparison"))) or
-              (.user.login == "ask-bonk[bot]" and (.body | test("^## (🔬 )?Eval runs review")))) | .id')
-          gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -F body=@/tmp/comment.md >/dev/null
-          for comment_id in $earlier; do
-            # Someone may have deleted it already.
-            gh api --method DELETE "repos/$GH_REPO/issues/comments/$comment_id" >/dev/null || true
-          done
+        run: node scripts/evals/workflow.ts post artifacts/comparison/comparison.md
 
   trajectory-review:
     name: Review eval trajectories

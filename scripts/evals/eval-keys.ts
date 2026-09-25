@@ -1,4 +1,5 @@
-// Cache keys for Workshop eval results, read from git trees so no checkout is needed:
+// Cache keys for Workshop eval results, read from git trees so no checkout is needed. The eval
+// workflow's plan step calls evalKeys(); from the command line,
 //   node scripts/evals/eval-keys.ts --config <digest> --report-config <digest> <sha>...
 // prints {"report": <key>,
 //         "commits": [{"sha": <sha>, "tasks": {<task>: {"key": <key>, "definition": <digest>}}}...]}.
@@ -14,6 +15,7 @@
 // comments are still current.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { isWorkerInputPath } from "../../packages/integration-tests/src/worker-inputs.ts";
 
@@ -55,6 +57,9 @@ function isReportPath(path: string): boolean {
 type TreeEntry = { path: string; line: string };
 type Task = { key: string; definition: string };
 
+/** Each commit's task keys and definitions, and the report key over all of them. */
+export type EvalKeys = { report: string; commits: { sha: string; tasks: Record<string, Task> }[] };
+
 function treeOf(sha: string): TreeEntry[] {
   const listing = execFileSync("git", ["ls-tree", "-r", "-z", "--full-tree", sha], {
     encoding: "utf8",
@@ -82,23 +87,26 @@ function tasksOf(tree: readonly TreeEntry[], config: string): Record<string, Tas
   ]));
 }
 
-const { values, positionals: shas } = parseArgs({
-  options: { config: { type: "string" }, "report-config": { type: "string" } },
-  allowPositionals: true,
-});
-const config = values.config;
-const reportConfig = values["report-config"];
-if (config === undefined || reportConfig === undefined || shas.length === 0) throw new Error(USAGE);
-const commits = shas.map(sha => {
-  const tree = treeOf(sha);
-  return { sha, tree, tasks: tasksOf(tree, config) };
-});
-// Keyed by position (base, head), not commit id: a new commit that changes nothing keeps the key.
-const report = digest([reportConfig, ...commits.flatMap(({ tree, tasks }, side) => [
-  ...Object.entries(tasks).map(([task, { key }]) => `${side} ${task} ${key}`),
-  ...tree.filter(entry => isReportPath(entry.path)).map(entry => `${side} ${entry.line}`),
-])]);
-console.log(JSON.stringify({
-  report,
-  commits: commits.map(({ sha, tasks }) => ({ sha, tasks })),
-}));
+export function evalKeys(config: string, reportConfig: string, shas: readonly string[]): EvalKeys {
+  const commits = shas.map(sha => {
+    const tree = treeOf(sha);
+    return { sha, tree, tasks: tasksOf(tree, config) };
+  });
+  // Keyed by position (base, head), not commit id: a new commit that changes nothing keeps the key.
+  const report = digest([reportConfig, ...commits.flatMap(({ tree, tasks }, side) => [
+    ...Object.entries(tasks).map(([task, { key }]) => `${side} ${task} ${key}`),
+    ...tree.filter(entry => isReportPath(entry.path)).map(entry => `${side} ${entry.line}`),
+  ])]);
+  return { report, commits: commits.map(({ sha, tasks }) => ({ sha, tasks })) };
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const { values, positionals: shas } = parseArgs({
+    options: { config: { type: "string" }, "report-config": { type: "string" } },
+    allowPositionals: true,
+  });
+  const config = values.config;
+  const reportConfig = values["report-config"];
+  if (config === undefined || reportConfig === undefined || shas.length === 0) throw new Error(USAGE);
+  console.log(JSON.stringify(evalKeys(config, reportConfig, shas)));
+}
