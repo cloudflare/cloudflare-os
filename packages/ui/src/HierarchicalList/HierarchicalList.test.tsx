@@ -145,6 +145,49 @@ describe("HierarchicalList", () => {
     expect(rowFor("Empty collection")?.textContent).toContain("Empty collection0");
   });
 
+  it("rejects prohibited parents without showing a drop target", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    const collectionItems: HierarchicalListItem[] = [
+      {
+        id: "collection-a",
+        name: "Collection A",
+        droppable: true,
+        children: [{ id: "source", name: "Source", draggable: true }],
+      },
+      {
+        id: "collection-b",
+        name: "Collection B",
+        droppable: true,
+        children: [],
+      },
+    ];
+    render(
+      <HierarchicalList
+        items={collectionItems}
+        label="Skills"
+        expandAll
+        dragAndDrop={{
+          canMoveTo: (_item, parent) => parent?.id === "collection-a",
+          onMove,
+        }}
+      />,
+    );
+    const source = rowFor("Source")!;
+    const prohibitedCollection = rowFor("Collection B")!;
+    setRect(source, { top: 0, height: 60 });
+    setRect(prohibitedCollection, { top: 60, height: 60 });
+    const transfer = dataTransfer();
+
+    dispatchDrag(source, "dragstart", transfer);
+    dispatchDrag(prohibitedCollection, "dragover", transfer, 90);
+    expect(transfer.dropEffect).toBe("none");
+    expect(prohibitedCollection.getAttribute("data-drop-target")).toBeNull();
+    dispatchDrag(prohibitedCollection, "drop", transfer, 90);
+    expect(onMove).not.toHaveBeenCalled();
+  });
   it("scrolls from draggable rows and reorders from their touch handles", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true,
@@ -419,7 +462,7 @@ describe("HierarchicalList", () => {
     const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
     expect(menu.parentElement?.className).toContain("overflow-y-auto");
     const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
-    expect(label?.textContent).toBe("Review code");
+    expect(label?.textContent).toBe("Review code actions");
     const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
     act(() => menuItem.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Escape",
@@ -516,5 +559,86 @@ describe("HierarchicalList", () => {
 
     expect(onItemClick).toHaveBeenCalledWith(item);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("renders inline rename as a non-draggable, labeled editing row", () => {
+    let finishRename: (() => void) | undefined;
+    const Harness = () => {
+      const [renaming, setRenaming] = React.useState(true);
+      finishRename = () => setRenaming(false);
+      return (
+        <HierarchicalList
+          items={[{ id: "skill", name: "Review code", draggable: true }]}
+          label="Skills"
+          dragAndDrop={{ onMove: vi.fn() }}
+          renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
+          rename={{
+            isRenaming: (item) => renaming && item.id === "skill",
+            renderInput: () => <input aria-label="Rename skill" />,
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const input = container?.querySelector<HTMLInputElement>('input[aria-label="Rename skill"]');
+    const row = input?.closest<HTMLElement>("[data-hierarchical-list-row]");
+    expect(input?.closest("button")).toBeNull();
+    expect(row?.tagName).toBe("DIV");
+    expect(row?.draggable).toBe(false);
+
+    act(() => row?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    expect(document.body.textContent).not.toContain("Delete");
+
+    act(() => finishRename?.());
+    expect(document.activeElement).toBe(buttonFor("Review code"));
+  });
+
+  it("waits for context-menu focus restoration before rendering inline rename", () => {
+    vi.useFakeTimers();
+    const Harness = () => {
+      const [renaming, setRenaming] = React.useState(false);
+      return (
+        <HierarchicalList
+          items={[{ id: "skill", name: "Review code" }]}
+          label="Skills"
+          renderContextMenu={() => (
+            <DropdownMenu.Item onClick={() => setRenaming(true)}>Rename</DropdownMenu.Item>
+          )}
+          rename={{
+            isRenaming: (item) => renaming && item.id === "skill",
+            renderInput: () => <input aria-label="Rename skill" />,
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const trigger = rowFor("Review code")!;
+    act(() => trigger.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const rename = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent === "Rename")!;
+    act(() => rename.click());
+
+    expect(trigger.isConnected).toBe(true);
+    expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
+
+    act(() => vi.runAllTimers());
+    expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+
+  it("renders an inline item description next to its name", () => {
+    render(
+      <HierarchicalList
+        items={[{ id: "skill", name: "Incident Response", description: "Handle incidents" }]}
+        label="Skills"
+      />,
+    );
+
+    expect(buttonFor("Incident Response")?.textContent)
+      .toContain("Incident ResponseHandle incidents");
   });
 });

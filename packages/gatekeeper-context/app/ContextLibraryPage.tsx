@@ -2,21 +2,16 @@ import { Button, Dialog, DropdownMenu, Input, InputArea, useKumoToastManager } f
 import {
   BookOpen,
   Buildings,
-  Clock,
-  GitBranch,
   Folder,
   FileText,
   Plus,
   Trash,
   PencilSimple,
-  MagnifyingGlass,
   CaretLeft,
   CaretRight,
   CaretDown,
-  Check,
   Code,
   Eye,
-  Lock,
   DotsThree,
   Key,
   Image as ImageIcon,
@@ -29,21 +24,16 @@ import {
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
-import { createPortal } from "react-dom";
 import type {
-  ContextCollectionContent,
   ContextCollectionMetadata,
-  ContextCollectionVisibility,
   ContextDocumentSummary,
   ContextGitTokenCreateResult,
   ContextGitTokenInfo,
-  EnabledCollectionInfo,
 } from "../src/context-types";
 import {
   DEFAULT_GIT_BRANCH,
@@ -52,8 +42,6 @@ import {
   isMarkdownContentType,
   isTextContentType,
 } from "../src/context-types";
-import emojiData from "@emoji-mart/data";
-import { Picker as EmojiMartPicker } from "emoji-mart";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, lineNumbers } from "@codemirror/view";
 import {
@@ -70,9 +58,14 @@ import { yaml } from "@codemirror/lang-yaml";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
 import { useContextApi, usePresentWhileOpen, useResolvedThemeMode } from "./bridge";
+import {
+  CollectionIconPicker,
+  DEFAULT_COLLECTION_ICON,
+} from "./components/CollectionIconPicker";
 import { extractDescription } from "../src/description-extractors";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
 
 function baseName(path: string): string {
   const i = path.lastIndexOf("/");
@@ -157,168 +150,9 @@ function dataUri(contentType: string, base64Body: string): string {
   return `data:${contentType};base64,${base64Body}`;
 }
 
-const DEFAULT_COLLECTION_ICON = "📚";
-
-function IconPickerButton({
-  value,
-  onChange,
-  size = 32,
-  variant = "boxed",
-}: {
-  value?: string;
-  onChange: (emoji: string) => void;
-  size?: number;
-  // "boxed": standalone bordered tile (settings modal). "inline": borderless tile that sits inside a
-  // shared input pill.
-  variant?: "boxed" | "inline";
-}) {
-  const themeMode = useResolvedThemeMode();
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const pickerHostRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        wrapRef.current?.contains(target) ||
-        pickerHostRef.current?.contains(target)
-      )
-        return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  // Fixed-position layer anchored to the trigger so the form can't clip it. Opens above the trigger
-  // by default, flips below when there's no room, and stays glued to the button on scroll/resize.
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
-    const PICKER_W = 352;
-    const PICKER_H = 435;
-    const GAP = 6;
-    const place = () => {
-      const btn = btnRef.current;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const roomAbove = rect.top;
-      const roomBelow = window.innerHeight - rect.bottom;
-      const openAbove = roomAbove >= PICKER_H + GAP || roomAbove >= roomBelow;
-      const top = openAbove
-        ? Math.max(GAP, rect.top - GAP - PICKER_H)
-        : Math.min(window.innerHeight - PICKER_H - GAP, rect.bottom + GAP);
-      const left = Math.min(
-        Math.max(GAP, rect.left),
-        window.innerWidth - PICKER_W - GAP,
-      );
-      setPos({ left, top });
-    };
-    place();
-    window.addEventListener("resize", place);
-    window.addEventListener("scroll", place, true);
-    return () => {
-      window.removeEventListener("resize", place);
-      window.removeEventListener("scroll", place, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !pickerHostRef.current) return;
-    const host = pickerHostRef.current;
-    const picker = new (EmojiMartPicker as any)({
-      data: emojiData,
-      theme: themeMode,
-      previewPosition: "none",
-      skinTonePosition: "none",
-      // Hide the "Frequently used" category.
-      maxFrequentRows: 0,
-      onEmojiSelect: (e: { native: string }) => {
-        onChange(e.native);
-        setOpen(false);
-      },
-    });
-    host.appendChild(picker as unknown as Node);
-    return () => {
-      host.replaceChildren();
-    };
-  }, [open, onChange, themeMode]);
-
-  const inline = variant === "inline";
-  return (
-    <div ref={wrapRef} className="relative inline-block">
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        title="Choose an icon"
-        className={
-          inline
-            ? "grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-kumo-tint text-[18px] leading-none text-kumo-subtle transition-colors hover:bg-kumo-fill"
-            : "grid place-items-center rounded-xl border border-kumo-line bg-kumo-base hover:border-kumo-brand transition-colors"
-        }
-        style={
-          inline
-            ? undefined
-            : {
-                width: size + 12,
-                height: size + 12,
-                fontSize: size * 0.66,
-                lineHeight: 1,
-              }
-        }
-      >
-        <span>{value || DEFAULT_COLLECTION_ICON}</span>
-      </button>
-      {open &&
-        // Portaled to <body> so a transformed ancestor (e.g. .ctx-rise's fill-both transform) can't
-        // become the containing block for `fixed` and offset the coordinates.
-        createPortal(
-          <div
-            ref={pickerHostRef}
-            className="z-[2000]"
-            style={{
-              position: "fixed",
-              left: pos?.left ?? 0,
-              top: pos?.top ?? 0,
-              // Hidden until measured so it never flashes at (0,0).
-              visibility: pos ? "visible" : "hidden",
-            }}
-          />,
-          document.body,
-        )}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Layout primitives
 // ---------------------------------------------------------------------------
-
-// Provenance for a row, framed as authorship: public collections are admin-published (and always
-// on), the rest are ones the user created.
-function CollectionProvenance({ source }: { source: EnabledCollectionInfo["source"] }) {
-  const isPublic = source === "public";
-  return (
-    <span
-      className="flex w-52 items-center gap-1 whitespace-nowrap"
-      title={
-        isPublic
-          ? "Provided by your organization for everyone"
-          : "A collection you created"
-      }
-    >
-      {isPublic ? <Buildings size={11} /> : <User size={11} />}
-      {isPublic ? "Required by your organization" : "Created by you"}
-    </span>
-  );
-}
 
 // Tile dimensions + matching fallback-book glyph size, keyed together so they can't drift.
 const ICON_TILE_SIZES = {
@@ -353,68 +187,6 @@ function formatRelativeTime(date: Date): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function handleCardKeyDown(e: React.KeyboardEvent, onClick: () => void) {
-  if (e.currentTarget !== e.target) return;
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    onClick();
-  }
-}
-
-function CollectionRow({
-  collection,
-  onClick,
-}: {
-  collection: EnabledCollectionInfo;
-  onClick: () => void;
-}) {
-  const hasDescription = collection.description.trim().length > 0;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => handleCardKeyDown(e, onClick)}
-      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint"
-    >
-      <CollectionIconTile icon={collection.icon} size="sm" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default">
-          {collection.title}
-        </p>
-        <p
-          className={`mt-0.5 line-clamp-1 text-[12px] leading-4 tracking-[-0.2px] ${
-            hasDescription ? "text-kumo-subtle" : "italic text-kumo-inactive"
-          }`}
-        >
-          {hasDescription ? collection.description : "No description"}
-        </p>
-      </div>
-      {/* Fixed-width meta columns so rows line up like a table. */}
-      <div className="hidden shrink-0 items-center gap-6 text-xs text-kumo-inactive lg:flex">
-        <CollectionProvenance source={collection.source} />
-        <span className="flex w-16 items-center justify-end gap-1 whitespace-nowrap">
-          <Clock size={10} />
-          {formatRelativeTime(collection.lastUpdated)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function CollectionsSkeleton() {
-  return (
-    <div className="flex flex-col gap-0.5">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <div
-          key={i}
-          className="h-[58px] animate-pulse rounded-lg bg-kumo-elevated"
-        />
-      ))}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +345,7 @@ function CollectionNameField({
       <FieldLabel>Name</FieldLabel>
       {/* Icon tile + name share one focus-within pill so the emoji reads as part of the input. */}
       <div className="flex items-center gap-2 rounded-xl border-2 border-kumo-line bg-kumo-base p-1.5 transition-[border-color,box-shadow] duration-150 ease-out focus-within:border-kumo-ring focus-within:ring-1 focus-within:ring-kumo-ring/15">
-        <IconPickerButton value={icon} onChange={onIconChange} variant="inline" />
+        <CollectionIconPicker value={icon} onChange={onIconChange} variant="inline" />
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -666,269 +438,11 @@ function DeletePermanentlyDescription({
   );
 }
 
-// Visibility choices (admins only — non-admins can only make private collections).
-const VISIBILITY_OPTIONS = [
-  {
-    value: "private" as const,
-    Icon: Lock,
-    title: "Only me",
-    description: "Private to your account. Only you can view and edit it.",
-  },
-  {
-    value: "public" as const,
-    Icon: Buildings,
-    title: "Everyone",
-    description: "Shared across your organization and turned on for all users.",
-  },
-];
-
-const CONTENT_SOURCE_OPTIONS = [
-  {
-    value: "web" as const,
-    Icon: PencilSimple,
-    title: "Editable documents",
-    description: "Create, edit, and delete files through the Cloudflare OS UI.",
-  },
-  {
-    value: "git" as const,
-    Icon: GitBranch,
-    title: "Git mirror",
-    description: "Push content from git using repository mirroring. All changes must be made through git.",
-  },
-];
-
-// Full-pane "create collection" destination (not a modal): you name it, then land inside it to add
-// documents. Quick edit / delete stay as modals.
-function CreateCollectionView({
-  onCancel,
-  onCreated,
-}: {
-  onCancel: () => void;
-  onCreated: (collectionId: string) => void;
-}) {
-  const context = useContextApi();
-  const toasts = useKumoToastManager();
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<ContextCollectionVisibility>("private");
-  const [source, setSource] = useState<ContextCollectionContent["source"]>("web");
-  const [icon, setIcon] = useState(DEFAULT_COLLECTION_ICON);
-  const [creating, setCreating] = useState(false);
-  // Only admins may create public collections.
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [supportsGitCollections, setSupportsGitCollections] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    context
-      .getViewerInfo()
-      .then((info) => {
-        if (!cancelled) {
-          setIsAdmin(info.isAdmin);
-          setSupportsGitCollections(info.supportsGitCollections);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setIsAdmin(false);
-          setSupportsGitCollections(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [context]);
-
-  const handleCreate = async () => {
-    if (!title.trim() || creating) return;
-    setCreating(true);
-    try {
-      const metadata = await context.createContextCollection(
-        title.trim(),
-        description.trim(),
-        visibility,
-        icon,
-        source,
-      );
-      toasts.add({ title: "Collection created", variant: "success" });
-      onCreated(metadata.id);
-    } catch {
-      toasts.add({ title: "Failed to create collection", variant: "error" });
-      setCreating(false);
-    }
-  };
-
-  return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-6 sm:px-10">
-      <header className="ctx-rise px-3 pb-3 pt-10">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="press mb-3 -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[13px] font-medium tracking-[-0.25px] text-kumo-subtle transition-colors hover:text-kumo-default"
-        >
-          <CaretLeft size={14} />
-          Context &amp; Skills
-        </button>
-        <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-          New collection
-        </h1>
-        <p className="mt-1 max-w-2xl text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-          A collection of documents, skills, and other files your agents can use.
-        </p>
-      </header>
-
-      <div className="ctx-scroll min-h-0 flex-1 overflow-y-auto pb-8 pt-1">
-        <div className="max-w-xl px-3">
-          <div className="space-y-5">
-            <div className="ctx-rise" style={{ animationDelay: "60ms" }}>
-              <CollectionNameField
-                icon={icon}
-                onIconChange={setIcon}
-                value={title}
-                onChange={setTitle}
-                onEnter={handleCreate}
-                autoFocus
-              />
-            </div>
-            <div className="ctx-rise" style={{ animationDelay: "120ms" }}>
-              <CollectionDescriptionField value={description} onChange={setDescription} />
-            </div>
-            {supportsGitCollections && (
-              <div className="ctx-rise" style={{ animationDelay: "160ms" }}>
-                <FieldLabel>Type</FieldLabel>
-                <div role="radiogroup" aria-label="Collection type" className="grid gap-2">
-                  {CONTENT_SOURCE_OPTIONS.map(({
-                    value,
-                    Icon,
-                    title: optionTitle,
-                    description: optionDescription,
-                  }) => {
-                    const selected = source === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        onClick={() => setSource(value)}
-                        className={`press flex items-start gap-3 rounded-xl border-2 px-3 py-2.5 text-left transition-[border-color,background-color] duration-150 ease-out ${
-                          selected
-                            ? "border-kumo-brand/50 bg-kumo-brand/[0.05]"
-                            : "border-kumo-line bg-kumo-base hover:border-kumo-ring/60"
-                        }`}
-                      >
-                        <Icon
-                          size={16}
-                          weight={selected ? "fill" : "regular"}
-                          className={`mt-0.5 shrink-0 ${selected ? "text-kumo-brand" : "text-kumo-subtle"}`}
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                            {optionTitle}
-                          </span>
-                          <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-                            {optionDescription}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-                          {selected && (
-                            <Check size={13} weight="bold" className="text-kumo-brand" />
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {isAdmin && (
-              <div className="ctx-rise" style={{ animationDelay: "200ms" }}>
-                <FieldLabel>Visibility</FieldLabel>
-                <div role="radiogroup" aria-label="Visibility" className="grid gap-2">
-                  {VISIBILITY_OPTIONS.map(({
-                    value,
-                    Icon,
-                    title: optionTitle,
-                    description: optionDescription,
-                  }) => {
-                    const selected = visibility === value;
-                    return (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        onClick={() => setVisibility(value)}
-                        className={`press flex items-start gap-3 rounded-xl border-2 px-3 py-2.5 text-left transition-[border-color,background-color] duration-150 ease-out ${
-                          selected
-                            ? "border-kumo-brand/50 bg-kumo-brand/[0.05]"
-                            : "border-kumo-line bg-kumo-base hover:border-kumo-ring/60"
-                        }`}
-                      >
-                        <Icon
-                          size={16}
-                          weight={selected ? "fill" : "regular"}
-                          className={`mt-0.5 shrink-0 ${selected ? "text-kumo-brand" : "text-kumo-subtle"}`}
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                            {optionTitle}
-                          </span>
-                          <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-                            {optionDescription}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-                          {selected && (
-                            <Check size={13} weight="bold" className="text-kumo-brand" />
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div
-            className="ctx-rise mt-6 flex items-center justify-end gap-2"
-            style={{ animationDelay: "220ms" }}
-          >
-            {/* !h-9 matches the primary CTA so the footer pair aligns. */}
-            <WorkshopButton
-              tone="secondary"
-              onClick={onCancel}
-              disabled={creating}
-              className="!h-9"
-            >
-              Cancel
-            </WorkshopButton>
-            {/* Orange brand "create" button (page CTA, not a modal primary). The disabled overrides
-                keep the inactive state grey rather than faded orange. */}
-            <WorkshopButton
-              tone="primary"
-              onClick={handleCreate}
-              loading={creating}
-              disabled={!title.trim()}
-              className="press !bg-kumo-brand text-white enabled:hover:!bg-kumo-brand-hover disabled:!bg-kumo-fill disabled:!text-kumo-inactive disabled:!opacity-100"
-            >
-              Create collection
-            </WorkshopButton>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function ContextLibraryPage() {
-  const context = useContextApi();
-
   // Iframe-local selection state (no router/URL).
   const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
@@ -941,60 +455,6 @@ export default function ContextLibraryPage() {
     setSelectedDoc(path);
   }, []);
 
-  const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState(false);
-
-  const [enabled, setEnabled] = useState<EnabledCollectionInfo[]>([]);
-  const [enabledLoaded, setEnabledLoaded] = useState(false);
-
-  const loadAll = useCallback(async () => {
-    const enabledResult = await context
-      .listEnabledContextCollections()
-      .catch(() => null);
-    if (enabledResult) {
-      setEnabled(enabledResult);
-      setEnabledLoaded(true);
-    }
-  }, [context]);
-
-  useEffect(() => {
-    loadAll();
-  }, [loadAll]);
-
-  const searchLower = search.toLowerCase();
-  // One combined list: public (org) collections first, then your own, each alphabetical.
-  const filtered = useMemo(
-    () =>
-      enabled
-        .filter(
-          (c) =>
-            !searchLower ||
-            c.title.toLowerCase().includes(searchLower) ||
-            c.description.toLowerCase().includes(searchLower),
-        )
-        .sort((a, b) => {
-          if (a.source !== b.source) return a.source === "public" ? -1 : 1;
-          return a.title.localeCompare(b.title);
-        }),
-    [enabled, searchLower],
-  );
-
-  const initialLoading = !enabledLoaded && enabled.length === 0;
-
-  // On success, land inside the new collection rather than back on the list.
-  if (creating) {
-    return (
-      <CreateCollectionView
-        onCancel={() => setCreating(false)}
-        onCreated={(id) => {
-          setCreating(false);
-          goToCollection(id);
-          loadAll();
-        }}
-      />
-    );
-  }
-
   if (selectedCollection) {
     return (
       <div className="h-full bg-kumo-base">
@@ -1004,97 +464,16 @@ export default function ContextLibraryPage() {
           onSelectPath={goToDoc}
           onBack={() => {
             goToCollection(null);
-            loadAll();
           }}
         />
       </div>
     );
   }
 
-  return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-6 sm:px-10">
-      <header className="flex items-end justify-between gap-4 px-3 pb-3 pt-10">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">
-            Context &amp; Skills
-          </h1>
-          <p className="mt-1 max-w-2xl text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Collections of documents, skills, and other files your agents can use.
-          </p>
-        </div>
-        {enabled.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="press inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover"
-          >
-            <Plus size={14} weight="bold" />
-            New collection
-          </button>
-        )}
-      </header>
-
-      {enabled.length > 0 && (
-        <div className="mb-4 px-3">
-          <div className="relative">
-            <MagnifyingGlass
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive"
-            />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search collections…"
-              className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="ctx-scroll min-h-0 flex-1 overflow-y-auto pb-8 pt-1">
-        {initialLoading ? (
-          <CollectionsSkeleton />
-        ) : filtered.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 px-3 py-20 text-center">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-kumo-fill text-kumo-subtle">
-              <BookOpen size={18} />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-kumo-default">
-                {search ? "No collections match" : "No collections yet"}
-              </p>
-              <p className="mx-auto mt-1 max-w-sm text-[13px] leading-[18px] text-kumo-subtle">
-                {search
-                  ? "Try a different search term."
-                  : "Create a collection to give your agents context to work with."}
-              </p>
-            </div>
-            {!search && (
-              <button
-                type="button"
-                onClick={() => setCreating(true)}
-                className="press mt-1 inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover"
-              >
-                <Plus size={14} weight="bold" />
-                New collection
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            {filtered.map((c) => (
-              <CollectionRow
-                key={c.id}
-                collection={c}
-                onClick={() => goToCollection(c.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return <SkillsNavigatorPage onSelectSkill={(collectionId, manifestPath) => {
+    setSelectedCollection(collectionId);
+    setSelectedDoc(manifestPath);
+  }} />;
 }
 
 // ---------------------------------------------------------------------------
