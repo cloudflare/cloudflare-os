@@ -121,7 +121,10 @@ export type ChatMessageInfo = {
   id: string;
   /** ID of the containing conversation. */
   spaceId: string;
-  /** Containing thread ID. A newly posted root uses a temporary pending:thread:{n} ID. */
+  /**
+   * Containing thread ID, present only in conversations whose `supportsThreads` is true. A newly
+   * posted root uses a temporary pending:thread:{n} ID.
+   */
   threadId?: string;
   /** Who sent the message. */
   sender?: ChatUser;
@@ -173,7 +176,8 @@ export type ChatListMessagesOptions = ChatWindow & {
 };
 
 /**
- * Structured filters for searching messages. Every supplied field must match.
+ * Structured filters for searching messages within one conversation. Every supplied field must
+ * match.
  *
  * Google's message search omits some messages by design: private messages, messages posted by
  * Chat apps, messages in Chat app direct messages, messages from blocked users, and messages in
@@ -182,15 +186,9 @@ export type ChatListMessagesOptions = ChatWindow & {
  * minutes. Use `ChatSpace.listMessages()` when complete, current history for one known
  * conversation is required.
  */
-export type ChatMessageSearch = ChatWindow & {
+export type ChatSpaceMessageSearch = ChatWindow & {
   /** Words or quoted phrases the message must contain. */
   text?: string;
-  /** Limit results to these conversations, identified by `ChatSpaceInfo.id`. */
-  spaceIds?: string[];
-  /** Limit results to conversations whose display name contains this text. */
-  spaceNameContains?: string;
-  /** Limit results to these conversation types. */
-  spaceTypes?: ChatSpaceType[];
   /** Limit results to messages sent by these users, named `users/{user}` or by email address. */
   senders?: string[];
   /** Limit results to messages mentioning these users, named `users/{user}` or by email address. */
@@ -201,6 +199,16 @@ export type ChatMessageSearch = ChatWindow & {
   hasAttachment?: boolean;
   /** Only return messages whose text contains at least one link. */
   hasLink?: boolean;
+};
+
+/** Filters for searching across conversations, adding conversation selectors. */
+export type ChatMessageSearch = ChatSpaceMessageSearch & {
+  /** Limit results to these conversations, identified by `ChatSpaceInfo.id`. */
+  spaceIds?: string[];
+  /** Limit results to conversations whose display name contains this text. */
+  spaceNameContains?: string;
+  /** Limit results to these conversation types. */
+  spaceTypes?: ChatSpaceType[];
 };
 
 /** One person's reaction to a message. */
@@ -237,8 +245,6 @@ export type ChatThreadEntry = {
 };
 
 // ── Capability interfaces ───────────────────────────────────────────
-// These are RPC stubs — all methods are async. Capabilities can be passed across Worker
-// boundaries and retain their access rights.
 
 /**
  * Google Chat access for the connected account.
@@ -272,16 +278,16 @@ export interface GoogleChatSession extends RpcTarget {
   /**
    * Open the existing direct message between the connected user and `user`, named
    * `users/{user}` or by email address. Returns `null` when no direct message exists or the
-   * user cannot be found.
+   * user cannot be found. The entry's info omits the DM name; see {@link ChatSpaceEntry}.
    */
-  findDirectMessage(user: string): Promise<ChatSpace | null>;
+  findDirectMessage(user: string): Promise<ChatSpaceEntry | null>;
 
   /**
-   * Get a conversation by its opaque ID, such as `spaces/{space}`.
+   * Get a conversation by its opaque ID, such as `spaces/{space}`, with its current metadata.
    *
    * Throws when the connected user cannot access it.
    */
-  getSpace(id: string): Promise<ChatSpace>;
+  getSpace(id: string): Promise<ChatSpaceEntry>;
 
   /**
    * Search messages across the conversations available to the connected user.
@@ -300,28 +306,42 @@ export interface ChatSpace extends RpcTarget {
    */
   getMetadata(): Promise<ChatSpaceInfo>;
 
+  /** Return the connected account's own Chat identity, the sender of anything posted here. */
+  getCurrentUser(): Promise<ChatUser>;
+
   /** List messages in this conversation, oldest first unless `order` says otherwise. */
   listMessages(
     options?: ChatListMessagesOptions,
   ): Promise<Cursor<ChatMessageEntry>>;
 
   /**
+   * Search messages in this conversation, newest first.
+   *
+   * See {@link ChatSpaceMessageSearch} for the messages Google's search leaves out.
+   */
+  searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>>;
+
+  /**
    * List threads with messages posted within the window, newest matching message first.
    * Includes zero-reply roots and older threads with new replies; each thread appears once.
    * Pending sends appear ahead of committed history, with provisional timestamps.
-   * Edits and reactions do not count as new messages. Returns no threads when supportsThreads
-   * is false. At most 5,000 threads per cursor; use a narrower window if that limit is reached.
+   * Edits and reactions do not count as new messages. Throws when supportsThreads is false;
+   * use listMessages() there. At most 5,000 threads per cursor; use a narrower window if that
+   * limit is reached.
    */
   listThreads(window?: ChatWindow): Promise<Cursor<ChatThreadEntry>>;
 
   /**
-   * Get an accessible thread in this conversation by its canonical or temporary ID.
-   * Throws if the thread is unavailable or belongs to another conversation.
+   * Get an accessible thread in this conversation by its canonical or temporary ID, with its
+   * current metadata. Throws if the thread is unavailable or belongs to another conversation.
    */
-  getThread(id: string): Promise<ChatThread>;
+  getThread(id: string): Promise<ChatThreadEntry>;
 
-  /** Get a message by its ID. Throws if unavailable or outside this conversation. */
-  getMessage(id: string): Promise<ChatMessage>;
+  /**
+   * Get a message by its ID, with its current metadata. Throws if unavailable or outside this
+   * conversation.
+   */
+  getMessage(id: string): Promise<ChatMessageEntry>;
 
   /** List the people, Google Groups, and Chat apps in this conversation. */
   listMembers(): Promise<Cursor<ChatMembership>>;
@@ -336,15 +356,16 @@ export interface ChatSpace extends RpcTarget {
    * Post a top-level text message to this conversation as the connected user.
    *
    * Chat attributes the message to the user, not to an app. Formatting markup in `text` is
-   * rendered by Chat. The message must be at most 32,000 bytes of text.
+   * rendered by Chat. The message must be at most 32,000 bytes of text. The returned entry
+   * describes the new message, including its temporary ID until it is committed.
    */
-  post(text: string): Promise<ChatMessage>;
+  post(text: string): Promise<ChatMessageEntry>;
 
   /**
    * Post a root message and return its thread, ready for reading and further posts.
    * Throws without posting if this conversation does not support threads.
    */
-  startThread(text: string): Promise<ChatThread>;
+  startThread(text: string): Promise<ChatThreadEntry>;
 }
 
 /** Access to one thread's root and replies, including future replies, without the parent space. */
@@ -356,13 +377,13 @@ export interface ChatThread extends RpcTarget {
   getMetadata(): Promise<ChatThreadInfo>;
 
   /** Return the root message, or null if it is unavailable. Never substitutes a surviving reply. */
-  getRootMessage(): Promise<ChatMessage | null>;
+  getRootMessage(): Promise<ChatMessageEntry | null>;
 
   /** List only this thread's messages, oldest first unless order says otherwise. */
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
 
   /** Post in this thread as the connected user. Fails rather than starting a new thread. */
-  post(text: string): Promise<ChatMessage>;
+  post(text: string): Promise<ChatMessageEntry>;
 }
 
 /**
@@ -379,7 +400,7 @@ export interface ChatMessage extends RpcTarget {
    * Direct messages and group chats are not threaded, so replying there fails; send a new
    * message with `ChatSpace.post()` instead. This does not grant read access to siblings.
    */
-  reply(text: string): Promise<ChatMessage>;
+  reply(text: string): Promise<ChatMessageEntry>;
 
   /**
    * Replace the text of this message.
@@ -398,17 +419,12 @@ export interface ChatMessage extends RpcTarget {
   /** Remove the connected user's own reaction with this Unicode emoji. */
   removeReaction(emoji: string): Promise<void>;
 
-  /** List this message's attachments with capabilities for reading their content. */
-  listAttachments(): Promise<ChatAttachmentEntry[]>;
+  /**
+   * Get one of this message's attachments by its `ChatAttachmentInfo.id`, for reading its
+   * content. Throws if the message has no such attachment.
+   */
+  getAttachment(id: string): Promise<ChatAttachment>;
 }
-
-/** An attachment result: metadata plus a capability for reading its content. */
-export type ChatAttachmentEntry = {
-  /** Metadata for this attachment. */
-  info: ChatAttachmentInfo;
-  /** Capability for reading this attachment's content. */
-  attachment: ChatAttachment;
-};
 
 /** Read access to one file attached to a Chat message. */
 export interface ChatAttachment extends RpcTarget {

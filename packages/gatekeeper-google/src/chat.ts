@@ -32,13 +32,13 @@ import {
 import {
   ChatAction, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
   overlayMessage, overlayMessageList, overlayReactions, pendingMessageActionId,
-  pendingMessageInfo, pendingMessageName, pendingThreadActionId, pendingThreadName,
+  pendingMessageInfo, pendingThreadActionId,
 } from "./chat-state";
 import type {
-  Cursor, ChatAttachment, ChatAttachmentEntry, ChatAttachmentInfo,
+  Cursor, ChatAttachment, ChatAttachmentInfo,
   ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessage, ChatMessageEntry, ChatMessageInfo,
-  ChatMessageSearch, ChatReaction, GoogleChatSession,
+  ChatMessageSearch, ChatReaction, ChatSpaceMessageSearch, GoogleChatSession,
   ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatUser, ChatThread, ChatThreadEntry, ChatThreadInfo,
   ChatWindow,
 } from "./chat-types";
@@ -199,7 +199,7 @@ type ChatScope = Pick<ChatContext, "store" | "boundSpace" | "boundThread">;
 
 function requireInScope(ctx: Pick<ChatContext, "boundSpace">, spaceName: string): string {
   if (ctx.boundSpace !== undefined && spaceName !== ctx.boundSpace) {
-    throw new Error("This connection only covers one Google Chat conversation.");
+    throw new Error("This capability only covers one Google Chat conversation.");
   }
   return spaceName;
 }
@@ -278,6 +278,25 @@ function messageCursor(
       for (const entry of entries) (entry.message as ChatMessageImpl)[Symbol.dispose]();
     },
   });
+}
+
+/** Provider-backed search: overlaying pending edits after Google filtered would return non-matches. */
+function searchCursor(
+  ctx: ChatContext, filter: string, scope: string,
+): Cursor<ChatMessageEntry> {
+  return messageCursor(
+    ctx,
+    pageToken => ctx.api.searchMessages({ filter, ...(pageToken ? { pageToken } : {}) }),
+    "Search Google Chat messages",
+    count => `Read ${count} message(s) matching a search across ${scope}.`);
+}
+
+async function currentUser(ctx: ChatContext): Promise<ChatUser> {
+  await observe(
+    ctx,
+    "Read the connected Google Chat identity",
+    "Read the connected account's own Chat user name and display name.");
+  return ctx.self;
 }
 
 /** A cursor of conversations, each paired with a capability disposed if its page is refused. */
@@ -413,7 +432,7 @@ function validateMessageText(text: string): string {
 }
 
 /**
- * Queue one outgoing text message for approval.
+ * Queue one outgoing text message for approval and return how it reads while pending.
  *
  * Shared by space sends and thread/message replies; the only difference
  * between them is whether a thread is named.
@@ -423,7 +442,7 @@ async function queueChatMessage(
   spaceName: string,
   text: string,
   destination?: { threadName: string } | { startThread: true },
-): Promise<number> {
+): Promise<ChatMessageInfo> {
   const body = validateMessageText(text);
   const info = await ctx.api.getSpace(spaceName);
   if (destination && !info.supportsThreads) {
@@ -446,7 +465,7 @@ async function queueChatMessage(
     requestId: crypto.randomUUID(),
     submittedAt: Date.now(),
   };
-  return submitChatAction(ctx, action, {
+  const id = await submitChatAction(ctx, action, {
     title: `Send a Google Chat message to ${info.name ?? spaceName}`,
     description:
       `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(info)}` +
@@ -456,6 +475,13 @@ async function queueChatMessage(
     actionKind: SEND_MESSAGE_ACTION,
     autoApprovable: true,
   });
+  // The caller's own submission echoed back: nothing here was read from Google.
+  return pendingMessageInfo(id, action, ctx.self);
+}
+
+/** Pair a just-queued message with its capability. */
+function postedEntry(ctx: ChatContext, info: ChatMessageInfo): ChatMessageEntry {
+  return { info, message: new ChatMessageImpl(ctx, info.id) };
 }
 
 // ── Account session ─────────────────────────────────────────────────
@@ -463,11 +489,7 @@ async function queueChatMessage(
 @validateRpc()
 class GoogleChatSessionImpl extends ChatRpcTarget implements GoogleChatSession {
   async getCurrentUser(): Promise<ChatUser> {
-    await observe(
-      this.ctx,
-      "Read the connected Google Chat identity",
-      "Read the connected account's own Chat user name and display name.");
-    return this.ctx.self;
+    return currentUser(this.ctx);
   }
 
   async listSpaces(
@@ -489,7 +511,7 @@ class GoogleChatSessionImpl extends ChatRpcTarget implements GoogleChatSession {
       "Search Google Chat conversations");
   }
 
-  async findDirectMessage(user: string): Promise<ChatSpace | null> {
+  async findDirectMessage(user: string): Promise<ChatSpaceEntry | null> {
     const info = await this.ctx.api.findDirectMessage(user);
     await observe(
       this.ctx,
@@ -497,30 +519,21 @@ class GoogleChatSessionImpl extends ChatRpcTarget implements GoogleChatSession {
       info
         ? `Found the direct message with ${chatUserName(user)} (${info.id}).`
         : `No direct message exists with ${chatUserName(user)}.`);
-    return info ? new ChatSpaceImpl(this.ctx, info.id) : null;
+    return info ? { info, space: new ChatSpaceImpl(this.ctx, info.id) } : null;
   }
 
-  async getSpace(id: string): Promise<ChatSpace> {
+  async getSpace(id: string): Promise<ChatSpaceEntry> {
     const info = await this.ctx.api.getSpace(`spaces/${chatSpaceId(id)}`);
     await observe(
       this.ctx,
       "Open a Google Chat conversation",
-      `Confirm the connected account can open ${spaceLabel(info)}.`);
-    return new ChatSpaceImpl(this.ctx, info.id);
+      `Read the name, type, and description of ${spaceLabel(info)}.`);
+    return { info, space: new ChatSpaceImpl(this.ctx, info.id) };
   }
 
   async searchMessages(query: ChatMessageSearch): Promise<Cursor<ChatMessageEntry>> {
-    const filter = chatMessagesSearchFilter(query);
-    // Search is provider-backed rather than simulated: overlaying pending edits after Google has
-    // applied its filter can return non-matches and cannot discover newly matching messages.
-    return messageCursor(
-      this.ctx,
-      pageToken => this.ctx.api.searchMessages("spaces/-", {
-        filter, ...(pageToken ? { pageToken } : {}),
-      }),
-      "Search Google Chat messages",
-      count => `Read ${count} message(s) matching a search across the conversations this ` +
-        "account can see.");
+    return searchCursor(this.ctx, chatMessagesSearchFilter(query),
+      "the conversations this account can see");
   }
 }
 
@@ -532,7 +545,8 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
 
   constructor(ctx: ChatContext, spaceName: string) {
     spaceName = requireInScope(ctx, `spaces/${chatSpaceId(spaceName)}`);
-    super(ctx);
+    // Everything reached through this capability is checked against this one conversation.
+    super({ ...ctx, boundSpace: spaceName });
     this.#spaceName = spaceName;
   }
 
@@ -547,6 +561,10 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     return info;
   }
 
+  async getCurrentUser(): Promise<ChatUser> {
+    return currentUser(this.ctx);
+  }
+
   async listMessages(
     options: ChatListMessagesOptions = {},
   ): Promise<Cursor<ChatMessageEntry>> {
@@ -558,14 +576,20 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
         "attachments, and reactions.");
   }
 
+  async searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>> {
+    // The space filter is ours, not the caller's; results outside it fail the scope check.
+    const filter = chatMessagesSearchFilter({ ...query, spaceIds: [this.#spaceName] });
+    return searchCursor(this.ctx, filter, this.#spaceName);
+  }
+
   async listThreads(window: ChatWindow = {}): Promise<Cursor<ChatThreadEntry>> {
     const fetchPage = messagePages(this.ctx, this.#spaceName, {
       since: window.since, before: window.before, order: "newestFirst",
     });
-    const { supportsThreads } = await this.ctx.api.getSpace(this.#spaceName);
+    await this.#requireThreads();
     let seen = new Set<string>();
     return chatCursor(this.ctx, {
-      fetchPage: supportsThreads ? fetchPage : async () => ({ items: [] }),
+      fetchPage,
       buildEntries: async items => {
         // Previously disclosed pending roots may have gained their provider names since last page.
         seen = new Set([...seen].map(name => this.ctx.store.threadName(name)));
@@ -603,25 +627,35 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     });
   }
 
-  async getThread(id: string): Promise<ChatThread> {
+  async #requireThreads(): Promise<void> {
+    if (!(await this.ctx.api.getSpace(this.#spaceName)).supportsThreads) {
+      throw new Error("This conversation does not support threads. Use listMessages() instead.");
+    }
+  }
+
+  async getThread(id: string): Promise<ChatThreadEntry> {
     if (resolveThread(this.ctx, id).spaceName !== this.#spaceName) {
       throw new Error("That thread belongs to a different conversation.");
     }
-    if (!(await this.ctx.api.getSpace(this.#spaceName)).supportsThreads) {
-      throw new Error("This conversation does not support threaded replies.");
+    await this.#requireThreads();
+    const thread = new ChatThreadImpl(this.ctx, id);
+    try {
+      return { info: await thread.getMetadata(), thread };
+    } catch (error) {
+      thread[Symbol.dispose]();
+      throw error;
     }
-    if (!(await readThreadPage(this.ctx, id))) throw new Error("This thread is not available.");
-    return new ChatThreadImpl(this.ctx, id);
   }
 
-  async getMessage(id: string): Promise<ChatMessage> {
+  async getMessage(id: string): Promise<ChatMessageEntry> {
     if (messageSpaceName(this.ctx, id) !== this.#spaceName) {
       throw new Error("That message belongs to a different conversation.");
     }
     const message = new ChatMessageImpl(this.ctx, id);
     try {
-      if ((await message.getMetadata()).deleted) throw new Error("This message is no longer available.");
-      return message;
+      const info = await message.getMetadata();
+      if (info.deleted) throw new Error("This message is no longer available.");
+      return { info, message };
     } catch (error) {
       message[Symbol.dispose]();
       throw error;
@@ -652,14 +686,18 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     return membership;
   }
 
-  async post(text: string): Promise<ChatMessage> {
-    const id = await queueChatMessage(this.ctx, this.#spaceName, text);
-    return new ChatMessageImpl(this.ctx, pendingMessageName(id));
+  async post(text: string): Promise<ChatMessageEntry> {
+    return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
   }
 
-  async startThread(text: string): Promise<ChatThread> {
-    const id = await queueChatMessage(this.ctx, this.#spaceName, text, { startThread: true });
-    return new ChatThreadImpl(this.ctx, pendingThreadName(id));
+  async startThread(text: string): Promise<ChatThreadEntry> {
+    const root = await queueChatMessage(this.ctx, this.#spaceName, text, { startThread: true });
+    // A queued root always names its pending thread, which is that one message so far.
+    const id = root.threadId!;
+    return {
+      info: { id, spaceId: this.#spaceName, latestMessage: root, rootMessage: root },
+      thread: new ChatThreadImpl(this.ctx, id),
+    };
   }
 }
 
@@ -686,9 +724,11 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
     };
   }
 
-  async getRootMessage(): Promise<ChatMessage | null> {
+  async getRootMessage(): Promise<ChatMessageEntry | null> {
     const first = (await readThreadPage(this.ctx, this.#name))?.[0];
-    return first && !first.isReply ? new ChatMessageImpl(this.ctx, first.id) : null;
+    return first && !first.isReply
+      ? { info: first, message: new ChatMessageImpl(this.ctx, first.id) }
+      : null;
   }
 
   async listMessages(options: ChatListMessagesOptions = {}): Promise<Cursor<ChatMessageEntry>> {
@@ -697,10 +737,10 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
       "Read Google Chat thread messages", count => `Read ${count} message(s) in ${this.#name}.`);
   }
 
-  async post(text: string): Promise<ChatMessage> {
+  async post(text: string): Promise<ChatMessageEntry> {
     const thread = resolveThread(this.ctx, this.#name);
-    const id = await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name });
-    return new ChatMessageImpl(this.ctx, pendingMessageName(id));
+    return postedEntry(this.ctx,
+      await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name }));
   }
 }
 
@@ -749,14 +789,14 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     return info;
   }
 
-  async reply(text: string): Promise<ChatMessage> {
+  async reply(text: string): Promise<ChatMessageEntry> {
     const info = await this.#info();
     if (info.threadId === undefined) {
       throw new Error(
         "This conversation does not support threaded replies; send a new message instead.");
     }
-    const id = await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId });
-    return new ChatMessageImpl(this.ctx, pendingMessageName(id));
+    return postedEntry(this.ctx,
+      await queueChatMessage(this.ctx, info.spaceId, text, { threadName: info.threadId }));
   }
 
   async edit(text: string): Promise<void> {
@@ -838,27 +878,18 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     });
   }
 
-  async listAttachments(): Promise<ChatAttachmentEntry[]> {
-    if ("queued" in resolveMessage(this.ctx, this.#name)) {
-      await this.getMetadata();
-      return [];
-    }
+  async getAttachment(id: string): Promise<ChatAttachment> {
     const name = this.#committed("read for attachments");
     const raw = await this.ctx.api.getRawMessage(name);
     requireMessageInScope(this.ctx, chatMessageInfoFromRaw(raw));
-    const attachments = (raw.attachment ?? []).map(attachment => ({
-      info: chatAttachmentInfoFromRaw(attachment),
-      mediaName: chatAttachmentMediaName(attachment),
-    }));
+    if (!raw.attachment?.some(attachment => attachment.name === id)) {
+      throw new Error("This message has no such attachment.");
+    }
     await observe(
       this.ctx,
-      "List Google Chat message attachments",
-      `Read the filenames and media types of ${attachments.length} attachment(s) on message ` +
-      `${name}.`);
-    return attachments.map(({ info, mediaName }) => ({
-      info,
-      attachment: new ChatAttachmentImpl(this.ctx, name, info.id, mediaName),
-    }));
+      "Open a Google Chat attachment",
+      `Confirm attachment ${id} is still on message ${name}.`);
+    return new ChatAttachmentImpl(this.ctx, name, id);
   }
 }
 
@@ -868,18 +899,11 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 class ChatAttachmentImpl extends ChatRpcTarget implements ChatAttachment {
   #messageName: string;
   #attachmentId: string;
-  #mediaName: string | undefined;
 
-  constructor(
-    ctx: ChatContext,
-    messageName: string,
-    attachmentId: string,
-    mediaName: string | undefined,
-  ) {
+  constructor(ctx: ChatContext, messageName: string, attachmentId: string) {
     super(ctx);
     this.#messageName = messageName;
     this.#attachmentId = attachmentId;
-    this.#mediaName = mediaName;
   }
 
   async getMetadata(): Promise<ChatAttachmentInfo> {
@@ -892,14 +916,16 @@ class ChatAttachmentImpl extends ChatRpcTarget implements ChatAttachment {
   }
 
   async getContent(): Promise<ArrayBuffer> {
-    const info = chatAttachmentInfoFromRaw(await this.#current());
+    const current = await this.#current();
+    const info = chatAttachmentInfoFromRaw(current);
     if (info.source === "drive") {
       throw new Error(
         "This attachment is a Google Drive file. Read it through a Google Drive connection.");
     }
-    if (!this.#mediaName) throw new Error("This attachment's content is not available.");
+    const mediaName = chatAttachmentMediaName(current);
+    if (!mediaName) throw new Error("This attachment's content is not available.");
 
-    const content = await this.ctx.api.downloadAttachment(this.#mediaName);
+    const content = await this.ctx.api.downloadAttachment(mediaName);
     await observe(
       this.ctx,
       "Read a Google Chat attachment",
@@ -912,9 +938,7 @@ class ChatAttachmentImpl extends ChatRpcTarget implements ChatAttachment {
   async #current() {
     const message = await this.ctx.api.getRawMessage(this.#messageName);
     requireMessageInScope(this.ctx, chatMessageInfoFromRaw(message));
-    const current = (message.attachment ?? []).find(attachment =>
-      attachment.name === this.#attachmentId &&
-      chatAttachmentMediaName(attachment) === this.#mediaName);
+    const current = message.attachment?.find(attachment => attachment.name === this.#attachmentId);
     if (!current) throw new Error("This attachment is no longer available on its message.");
     return current;
   }
@@ -1091,6 +1115,10 @@ export class GoogleChatGatekeeperImpl
       case "updateMessage": {
         const target = resolveMessage({ store }, action.messageName);
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
+        // Manual approval can run out of order; an older edit applied later would overwrite this.
+        const edits = store.listForSpace(chatActionSpaceName(action)).filter(entry =>
+          entry.action.type === "updateMessage" && entry.action.messageName === target.committed);
+        if (edits[0]?.id !== actionId) throw new Error("Apply this message's earlier edits first.");
         const previous = await api.getMessage(target.committed);
         requireMessageInScope(scope, previous);
         const revert: ChatRevertInfo = {
