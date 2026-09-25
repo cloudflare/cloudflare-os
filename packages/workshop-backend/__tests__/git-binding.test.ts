@@ -282,6 +282,14 @@ describe("env.GIT readCommit", () => {
     expect(pulls).toEqual([{ oids: [COMMIT_2], hints: expect.objectContaining(
         { type: "commit", filterTreeDepth: 0 }) }]);
     expect(storedOids(impl)).toEqual([COMMIT_2]);
+
+    // A worktree rooted at the now-local commit can commit untouched without its tree: the new
+    // commit reuses the base's tree oid, so nothing is pulled.
+    pulls = [];
+    let worktree = await git.newWorktree(COMMIT_2);
+    let commit = await worktree.commit("untouched");
+    expect(await impl.gitStore.commitTree(commit)).toBe(await impl.gitStore.commitTree(COMMIT_2));
+    expect(pulls).toEqual([]);
   }));
 
   it("rejects commits the workspace doesn't know, and non-commits", () => withImpl(async impl => {
@@ -328,6 +336,51 @@ describe("env.GIT presence", () => {
     expect(() => impl.bindWorkpiece(100, "GIT", 1)).toThrow(/`GIT` is reserved/);
     expect(() => impl.renameBinding(100, "CONN", "GIT")).toThrow(/`GIT` is reserved/);
   }));
+
+  it("reserves the name in new chat seeds, renaming legacy entries",
+      () => withImpl(async impl => {
+    // A legacy gadget binding named GIT (in the default binding list), and an ambient resource
+    // whose gatekeeper suggests the name.
+    impl.storage.gatekeepers.put({ id: 1, resourceTitle: "Conn", class: {} as any });
+    impl.storage.gatekeepers.put({ id: 2, resourceTitle: "Ambient", class: {} as any,
+                                   creationSpec: { type: "ambient", vendorId: "v" } });
+    impl.getGatekeeperFacet = () => ({
+      describe: async () =>
+          ({ title: "T", url: "https://example.com", suggestedBindingName: "GIT" }),
+      getAgentCatalog: async () => null,
+    });
+    seedGadget(impl, 100, { GIT: { target: 1 } });
+    for (let id of [1, 2]) {
+      impl.storage.chatMeta.put(
+          { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+    }
+
+    await impl.prepareChatBindings(1, []);
+    expect(impl.getChatAgentContext(1).bindings).toEqual({ G100: 100, GIT_2: 1, GIT_3: 2 });
+    expect(impl.chatScopeNames(1)).toContain("GIT");
+
+    // A chat seeded before the reservation keeps its GIT binding.
+    impl.storage.chatContext.put({ chatId: 2, bindings: { GIT: 1 } });
+    await impl.prepareChatBindings(2, []);
+    expect(impl.getChatAgentContext(2).bindings).toMatchObject({ GIT: 1 });
+  }));
+
+  it("reserves the name in agent spawner envs", async () => {
+    let stub = env.TEST_OVERSEER.getByName(`git-binding-${++doCounter}`);
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: any }).impl;
+      let ownerId = impl.users.newUniqueId().toString();
+      impl.ownerId = ownerId;
+      impl.ensureAmbientCapsules = async () => {};
+      impl.markOutputsDirty = () => {};
+      let client = await instance.open(
+          ownerId, "owner-profile", new RpcStub<() => void>(() => {}));
+      seedGadget(impl, 100);
+      await expect(client.newAgentSpawnerGatekeeper(
+          { displayName: "Spawner", modelId: "m", env: { GIT: 100 } }))
+          .rejects.toThrow(/`GIT` is reserved/);
+    });
+  });
 
   it("describeBinding serves the Git and Worktree API", () => withImpl(async impl => {
     let description = impl.describeGitBinding("env.GIT");

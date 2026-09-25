@@ -7642,7 +7642,8 @@ class OverseerImpl implements AgentHooks {
   // prepareChatBindings) and the names recorded on log messages (pasted resources, live
   // connection requests, created gadgets, the arguments of delivered agent calls). Every name is
   // stamped on its message when it is claimed, so this is a plain scan. Callers that already
-  // hold the chat's messages may pass them to skip the listing.
+  // hold the chat's messages may pass them to skip the listing. Always includes the automatic
+  // env.GIT's name, so no new chat binding takes (and shadows) it.
   chatScopeNames(chatId: number, chatMessages?: Iterable<AiChatMessage>): Set<string> {
     let context = this.getChatAgentContext(chatId);
     let taken: Set<string>;
@@ -7660,6 +7661,7 @@ class OverseerImpl implements AgentHooks {
       // meaning "unrestricted"): the workspace default binding list.
       taken = new Set(Object.keys(this.defaultBindingList()));
     }
+    taken.add(GIT_BINDING_NAME);
     for (let msg of chatMessages ?? this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
       if (msg.type === "message") {
         for (let capsule of msg.capsules ?? []) {
@@ -7807,6 +7809,18 @@ class OverseerImpl implements AgentHooks {
         Object.assign(seed, this.defaultBindingList());
       }
 
+      // A new seed never takes the automatic env.GIT's name, which a chat binding would shadow
+      // (see getEnvForAgent). The name can still arrive from before it was reserved -- a legacy
+      // gadget binding in the default list, or an old spawner's frozen env -- so such an entry is
+      // renamed rather than dropped, keeping its target reachable. (A chat seeded before the
+      // reservation keeps its GIT binding: seeds are frozen.)
+      let isSeedNameTaken = (name: string) => name in seed || name === GIT_BINDING_NAME;
+      if (GIT_BINDING_NAME in seed) {
+        let target = seed[GIT_BINDING_NAME];
+        delete seed[GIT_BINDING_NAME];
+        seed[fallbackBindingName(GIT_BINDING_NAME, isSeedNameTaken)] = target;
+      }
+
       // Fold the ambient resources into the seed, each named by its gatekeeper's suggested
       // binding name (deduped); skip any whose target already has a name in the seed.
       let seededTargets = new Set(Object.values(seed));
@@ -7822,7 +7836,7 @@ class OverseerImpl implements AgentHooks {
             event: "chat.binding.ambient.describe.failed", gatekeeperId: id, error: err,
           });
         }
-        seed[fallbackBindingName(suggested || "RESOURCE", name => name in seed)] = id;
+        seed[fallbackBindingName(suggested || "RESOURCE", isSeedNameTaken)] = id;
       }
 
       context.bindings = seed;
@@ -7843,7 +7857,7 @@ class OverseerImpl implements AgentHooks {
     //   logic into one place. Ideally, there shouldn't be logic outside of agent.ts that is
     //   interpreting tool semantics at all (though making that true will require more refactoring
     //   than just this).
-    let taken = new Set(Object.keys(seedMap));
+    let taken = new Set([...Object.keys(seedMap), GIT_BINDING_NAME]);  // (see chatScopeNames)
     let nameByTarget = new Map<WorkpieceId, string>();
     for (let [name, target] of Object.entries(seedMap)) {
       if (!nameByTarget.has(target)) nameByTarget.set(target, name);
@@ -11074,6 +11088,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // deleted later; this just catches bad input.)
     for (let [name, target] of Object.entries(config.env)) {
       validateBindingName(name);
+      if (name === GIT_BINDING_NAME) {
+        // The spawned chat's env already has the automatic env.GIT, which this would shadow.
+        throw new Error(`Agent spawner env entry "${name}": the binding name \`${name}\` is ` +
+            `reserved.`);
+      }
       let gadget = this.impl.storage.gadgets.get(target);
       if (gadget) {
         if (gadget.type === "worktree") {

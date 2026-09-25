@@ -519,7 +519,7 @@ describe("durable agent calls", () => {
     // The names are in the chat's scope from now on, so a later drain keeps suffixing...
     expect(impl.chatScopeNames(CHAT_ID)).toEqual(new Set([
       "report_ARGS", "composeEmail_ARGS", "composeEmail_ARGS_2", "report_ARGS_2",
-      "CALL_ARGS", "CALL_ARGS_2",
+      "CALL_ARGS", "CALL_ARGS_2", "GIT",
     ]));
     await deliver(impl, "composeEmail", [], null);
     await waitFor(() => pendingCalls(impl).length === 0);
@@ -534,7 +534,8 @@ describe("durable agent calls", () => {
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "agentCallback", methodName: "legacy", argsSummary: "[0]: 1",
     });
-    expect(impl.chatScopeNames(CHAT_ID)).toEqual(new Set());
+    // (Only the automatic env.GIT's name, which every chat's scope holds.)
+    expect(impl.chatScopeNames(CHAT_ID)).toEqual(new Set(["GIT"]));
 
     // Nor does it take part in naming: a new call to the same method gets the unsuffixed name.
     await deliver(impl, "legacy", [2], null);

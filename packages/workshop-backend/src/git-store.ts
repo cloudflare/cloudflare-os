@@ -332,7 +332,13 @@ export class GitStore {
    */
   async writeChangedTree(
       treeBase: string, changes: ReadonlyMap<string, string | null>): Promise<string> {
-    return await this.#rebuildTree(await this.commitTree(treeBase), buildChangeNode(changes), "")
+    let baseTree = await this.commitTree(treeBase);
+    // No changes: the base's tree, by oid. Rebuilding reads each tree it descends into, and this
+    // store holds only what has been pulled -- a worktree committed untouched may never have
+    // needed its base's root tree locally (a commit object can arrive alone, e.g. via
+    // env.GIT.readCommit()).
+    if (changes.size === 0) return baseTree;
+    return await this.#rebuildTree(baseTree, buildChangeNode(changes), "")
         ?? await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: [] });
   }
 
