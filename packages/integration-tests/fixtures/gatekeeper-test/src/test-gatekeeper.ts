@@ -22,7 +22,7 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
+  AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
   GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -38,6 +38,9 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
+  creatable: {
+    description: "Creates a new test thing with the given title.",
+  },
 }];
 
 const TYPES_CODE = `
@@ -160,7 +163,12 @@ function control(exports: Cloudflare.Exports): DurableObjectStub<TestControl> {
 // Vendor
 
 type AccountProps = { label: string };
-type BindingProps = AccountProps & { resourceUrl: string; ambient?: true };
+type BindingProps = AccountProps & {
+  resourceUrl: string;
+  ambient?: true;
+  /** Present on bindings minted by createResource(): the thing to create once approved. */
+  creation?: { title: string };
+};
 
 @validateRpc()
 export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
@@ -246,6 +254,38 @@ export class TestAccount
         props: { label: this.ctx.props.label, resourceUrl: url },
       }),
       resource: SUPPORTED_RESOURCES[0],
+    };
+  }
+
+  /**
+   * Mint a NEW test thing (createExternalResource): a provisional resource URL, the creation
+   * action, and a gatekeeper class that simulates the thing until that action is approved.
+   */
+  async createResource(resourceUrlPattern: string, title: string): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resource: SupportedResource;
+    resourceUrl: string;
+    action: ActionDescription;
+  }> {
+    if (resourceUrlPattern !== SUPPORTED_RESOURCES[0].urlPattern) {
+      throw new Error(
+          `The test gatekeeper cannot create resources of type "${resourceUrlPattern}".`);
+    }
+    const resourceUrl = `https://${VENDOR_HOST}/things/provisional-${crypto.randomUUID()}`;
+    return {
+      class: this.ctx.exports.TestGatekeeper({
+        props: {
+          label: this.ctx.props.label, resourceUrl, creation: { title },
+        },
+      }),
+      resource: SUPPORTED_RESOURCES[0],
+      resourceUrl,
+      action: {
+        title: `Create test thing "${title}"`,
+        description: `Create a new test thing titled **${title}**.`,
+        implementsRevert: false,
+        actionKind: { tag: "create-thing", label: "Create thing" },
+      },
     };
   }
 
@@ -383,6 +423,17 @@ export class TestGatekeeper
         tsType: "TestThing",
       };
     }
+    const creation = this.ctx.props.creation;
+    if (creation) {
+      // Answered locally: before approval there is nothing at the provider at all.
+      return {
+        url: this.ctx.props.resourceUrl,
+        title: creation.title,
+        snippet: `Test thing (pending creation): ${creation.title}.`,
+        suggestedBindingName: "TEST_THING",
+        tsType: "TestThing",
+      };
+    }
     const name = decodeURIComponent(new URL(this.ctx.props.resourceUrl).pathname.split("/").pop()!);
     return {
       url: this.ctx.props.resourceUrl,
@@ -410,6 +461,25 @@ export class TestGatekeeper
   /** No discovery index: the ambient fixture is reached through its session alone. */
   async getAgentCatalog(): Promise<AgentCatalog | null> {
     return null;
+  }
+
+  /**
+   * Create this test thing (createExternalResource approval). The thing lives in no provider, so
+   * creating it only names it: a pure function of the props, hence trivially idempotent.
+   */
+  async applyCreation(): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resourceUrl: string;
+  }> {
+    if (!this.ctx.props.creation) {
+      throw new Error("This test gatekeeper was not minted by createResource().");
+    }
+    const resourceUrl =
+        this.ctx.props.resourceUrl.replace("/things/provisional-", "/things/created-");
+    return {
+      class: this.ctx.exports.TestGatekeeper({ props: { label: this.ctx.props.label, resourceUrl } }),
+      resourceUrl,
+    };
   }
 
   /**
