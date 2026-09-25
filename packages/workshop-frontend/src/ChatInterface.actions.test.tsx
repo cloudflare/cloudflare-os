@@ -233,6 +233,17 @@ describe('restricted approval', () => {
     expect(approveDescribedBy()).toContain('a@example.com')
   })
 
+  for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
+    it(`shows a ${name} card's long fields without a scroll cap while restricted`, async () => {
+      const fields = [{ label: 'Body', kind: 'text', value: 'Full body text' }]
+      await renderPendingCard(pendingLog({ ...over, fields }), { restricted: true })
+
+      const body = [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
+      expect(body?.className).not.toContain('max-h-56')
+      expect(document.querySelector('[class*="max-h-[360px]"]')).toBeNull()
+    })
+  }
+
   it('keeps the scrolling description and no notice when not restricted', async () => {
     await renderPendingCard(pendingLog())
 

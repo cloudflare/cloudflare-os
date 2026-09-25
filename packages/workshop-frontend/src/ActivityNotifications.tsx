@@ -151,7 +151,7 @@ export default function ActivityNotifications({
                   {fields.length > 0 && restricted && (
                     // Outside the preview button, which may hold only phrasing content.
                     <div id={fieldsId}>
-                      <ActionFields fields={fields} className="mt-2" />
+                      <ActionFields fields={fields} uncapped className="mt-2" />
                     </div>
                   )}
                   {incomplete && (

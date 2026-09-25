@@ -123,6 +123,8 @@ describe('ActivityNotifications action fields', () => {
     const described = approveDescribedBy()
     expect(described).toContain('a@example.com')
     expect(described).toContain('Full body text')
+    const body = [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
+    expect(body?.className).not.toContain('max-h-56')
   })
 
   it('shows no count for a request without fields', async () => {

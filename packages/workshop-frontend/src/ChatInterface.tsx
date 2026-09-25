@@ -5051,8 +5051,8 @@ function ChatInterface({
                   <MarkdownMessage message={log.description.description} />
                 </div>
                 {hasFields && (
-                  <div id={fieldsId} className="chat-panel mt-2 max-h-[360px] overflow-y-auto pr-1">
-                    <ActionFields fields={entryFields(log)} />
+                  <div id={fieldsId} className={`chat-panel mt-2 pr-1 ${restricted ? "" : "max-h-[360px] overflow-y-auto"}`}>
+                    <ActionFields fields={entryFields(log)} uncapped={restricted} />
                   </div>
                 )}
                 {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
@@ -5118,8 +5118,8 @@ function ChatInterface({
               <MarkdownMessage message={log.description.description} />
             </div>
             {hasFields && (
-              <div id={fieldsId} className="chat-panel max-h-[360px] overflow-y-auto pr-1">
-                <ActionFields fields={entryFields(log)} />
+              <div id={fieldsId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[360px] overflow-y-auto"}`}>
+                <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
               </div>
             )}
             {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}

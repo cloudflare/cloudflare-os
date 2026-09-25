@@ -19,7 +19,7 @@ const captionClass = 'text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inacti
 // runs of spaces, tabs or edge whitespace in it, which HTML's default white-space would collapse.
 const exactClass = 'whitespace-pre-wrap break-all'
 const codeClass = `rounded bg-kumo-tint px-1 py-0.5 font-mono text-[12px] leading-[18px] text-kumo-default ${exactClass}`
-const blockClass = 'm-0 max-h-56 overflow-auto rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-default whitespace-pre-wrap break-words'
+const blockClass = 'm-0 rounded-xl border border-kumo-line/70 bg-kumo-base p-3 font-mono text-[12px] leading-[18px] text-kumo-default whitespace-pre-wrap break-words'
 
 const Placeholder = ({ children }: { children: string }) => (
   <span className={`${captionClass} italic`}>{children}</span>
@@ -54,7 +54,7 @@ const formatSize = (size: number) => {
   return size < 1024 ? bytes : `${formatAttachmentSize(size)} (${bytes})`
 }
 
-const FieldValue = ({ field }: { field: ActionField }) => {
+const FieldValue = ({ field, uncapped }: { field: ActionField, uncapped?: boolean }) => {
   switch (field.kind) {
     case 'inline':
       return field.value === ''
@@ -66,7 +66,7 @@ const FieldValue = ({ field }: { field: ActionField }) => {
       const syntax = field.kind === 'json' ? 'JSON' : field.syntax && SYNTAX_LABELS[field.syntax]
       return (
         <>
-          <pre className={blockClass}>{field.value}</pre>
+          <pre className={`${blockClass} ${uncapped ? '' : 'max-h-56 overflow-auto'}`}>{field.value}</pre>
           <Captions
             captions={[
               ...(syntax ? [syntax] : []),
@@ -112,9 +112,12 @@ const FieldValue = ({ field }: { field: ActionField }) => {
 /**
  * The values an approver reviews, shown after the description's prose. Every value renders as
  * literal text, never as Markdown: the gatekeeper sends exactly what the action will write, and a
- * value's safety must not depend on how it would parse.
+ * value's safety must not depend on how it would parse. `uncapped` drops the height cap on long
+ * values, for approvals that must be read in full without scrolling an inner box.
  */
-export const ActionFields = ({ fields, className = '' }: { fields: ActionField[], className?: string }) => {
+export const ActionFields = ({ fields, uncapped, className = '' }: {
+  fields: ActionField[], uncapped?: boolean, className?: string,
+}) => {
   if (fields.length === 0) return null
   return (
     <dl className={`m-0 flex flex-col gap-2.5 ${className}`}>
@@ -126,7 +129,7 @@ export const ActionFields = ({ fields, className = '' }: { fields: ActionField[]
               <Placeholder>Omitted: description limit reached</Placeholder>
             ) : (
               <>
-                <FieldValue field={field} />
+                <FieldValue field={field} uncapped={uncapped} />
                 {field.truncated && (
                   <p className={`m-0 mt-1 ${captionClass}`}>
                     Showing {field.truncated.shownBytes} of {field.truncated.totalBytes} bytes

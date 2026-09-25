@@ -45,6 +45,10 @@ async function renderReview(restricted: boolean) {
   flushFrames()
 }
 
+// The box holding the Body field's value.
+const bodyBox = () =>
+  [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
+
 // The text a screen reader announces as the Approve button's description.
 function approveDescribedBy(): string | null {
   const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
@@ -68,9 +72,16 @@ describe('Activity review request fields', () => {
     expect(described).toContain('Full body text')
   })
 
+  it('offers no disclosure while restricted, since everything it would reveal is shown', async () => {
+    await renderReview(true)
+    expect(document.querySelector('[aria-expanded]')).toBeNull()
+    expect(bodyBox()?.className).not.toContain('max-h-56')
+  })
+
   it('collapses the fields to a count until expanded when not restricted', async () => {
     await renderReview(false)
     expect(document.body.textContent).toContain('2 fields')
     expect(document.body.textContent).not.toContain('Full body text')
+    expect(document.querySelector('[aria-expanded="false"]')).not.toBeNull()
   })
 })

@@ -617,6 +617,8 @@ function AutoApprovalPanel({
   )
 }
 
+const titleClass = 'm-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default'
+
 function ReviewRequest({
   record,
   restricted,
@@ -661,20 +663,23 @@ function ReviewRequest({
     <article className="border-b border-kumo-line px-5 py-3 transition-colors hover:bg-kumo-elevated/50">
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
         <div className="min-w-[8rem] flex-1">
-          <button
-            type="button"
-            onClick={onToggle}
-            aria-expanded={expanded}
-            className="flex max-w-full cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-          >
-            <h3 className="m-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-              {record.description.title}
-            </h3>
-            <CaretRight
-              size={12}
-              className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-            />
-          </button>
+          {restricted ? (
+            // Everything expanding would reveal is already shown, so there is no disclosure.
+            <h3 className={titleClass}>{record.description.title}</h3>
+          ) : (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-expanded={expanded}
+              className="flex max-w-full cursor-pointer items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+            >
+              <h3 className={titleClass}>{record.description.title}</h3>
+              <CaretRight
+                size={12}
+                className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+              />
+            </button>
+          )}
           <p className="mt-0.5 truncate text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
             {resourceUrl ? (
               <a
@@ -709,7 +714,7 @@ function ReviewRequest({
 
       {fields.length > 0 && (restricted || expanded ? (
         <div id={fieldsId}>
-          <ActionFields fields={fields} className="mt-2 max-w-2xl" />
+          <ActionFields fields={fields} uncapped={restricted} className="mt-2 max-w-2xl" />
         </div>
       ) : (
         <p className="m-0 mt-1 text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
