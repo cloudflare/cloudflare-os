@@ -71,7 +71,9 @@ function parkedQueue() {
  * resolveSubscription()/rejectSubscription(). listActions: each call parks — the shared store's
  * pending queries ({filter: 'pending'}) on their own queue drained by
  * resolvePendingQuery()/rejectPendingQuery(), every other filter on the history queue drained by
- * resolvePage()/rejectPage(). `ops` records the initiation order across all three surfaces.
+ * resolvePage()/rejectPage(). applyActionsThrough records its arguments and parks until
+ * resolveApply()/rejectApply(); it never echoes decisions, so only explicit emit() calls can
+ * resolve a row. `ops` records the initiation order across all three surfaces.
  */
 export function makeOverseer() {
   const ops: Array<'subscribe' | 'list' | 'listPending'> = []
@@ -81,6 +83,8 @@ export function makeOverseer() {
   const pendingQueue = parkedQueue()
   const subscriptionDispose = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
+  const applyQueue: Array<Parked<void>> = []
+  const applyCalls: Array<{ id: number; vetoes: number[] }> = []
   const overseer = {
     subscribeToActions: (...args: unknown[]) => {
       ops.push('subscribe')
@@ -97,6 +101,10 @@ export function makeOverseer() {
       ops.push('list')
       return historyQueue.park(options)
     },
+    applyActionsThrough: (id: number, vetoes: number[]) => {
+      applyCalls.push({ id, vetoes })
+      return new Promise<void>((resolve, reject) => applyQueue.push({ resolve, reject }))
+    },
     [Symbol.dispose]: () => {},
   } as unknown as RpcStub<Overseer>
   return {
@@ -105,6 +113,7 @@ export function makeOverseer() {
     subscribeCalls,
     listCalls: historyQueue.calls,
     pendingQueryCalls: pendingQueue.calls,
+    applyCalls,
     subscriptionDispose,
     async resolveSubscription() {
       await act(async () => {
@@ -119,6 +128,12 @@ export function makeOverseer() {
     rejectPage: historyQueue.rejectNext,
     resolvePendingQuery: pendingQueue.resolveNext,
     rejectPendingQuery: pendingQueue.rejectNext,
+    async resolveApply() {
+      await act(async () => { applyQueue.shift()!.resolve() })
+    },
+    async rejectApply(err: unknown) {
+      await act(async () => { applyQueue.shift()!.reject(err) })
+    },
     async emit(record: ActionLogEntry) {
       await act(async () => { subscriber!.entry(record) })
     },

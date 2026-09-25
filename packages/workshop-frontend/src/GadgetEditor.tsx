@@ -58,7 +58,8 @@ import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
-import { useActionEntries, useActions } from './useActions'
+import { useActionEntries } from './useActions'
+import { useActionReview } from './features/actions/useActionReview'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -516,6 +517,11 @@ export default function GadgetEditor() {
   const [workspaceTransitionEnabled, setWorkspaceTransitionEnabled] = useState(false)
   const activityReturnViewRef = useRef<WorkspaceView | null>(null)
   const [activityView, setActivityView] = useState<ActivityView>('history')
+  // Bumped on every explicit open of Review, so a repeat open re-focuses the same connection.
+  const [reviewTarget, setReviewTarget] = useState<{
+    gatekeeperId?: WorkpieceId
+    request: number
+  }>()
   const [activityClosing, setActivityClosing] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [blueprintModalOpen, setBlueprintModalOpen] = useState(false)
@@ -617,7 +623,6 @@ export default function GadgetEditor() {
 
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
-  const [autoApproveReloadTrigger, setAutoApproveReloadTrigger] = useState(0)
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
@@ -797,7 +802,11 @@ export default function GadgetEditor() {
       : undefined
 
   const overseerStub = overseer?.stub ?? null
-  const { pending: pendingActions } = useActions(overseerStub)
+  const review = useActionReview(overseerStub, {
+    workspaceId: id,
+    active: workspaceView?.mode === 'activity' && activityView === 'review',
+    connected: !showReconnecting,
+  })
   // Hook bindings change once in a while; fold the entry stream into a signature over just the
   // bindHook enable states, in state only when it changes, so the refetch below isn't driven at
   // animation rate. listHooks() is the authoritative initial source; entries only trigger
@@ -826,7 +835,7 @@ export default function GadgetEditor() {
     // Clear on teardown so a workspace switch never shows the previous workspace's indicators.
     return () => { cancelled = true; setHookedGadgetIds(NO_GADGETS) }
   }, [overseer, hookSignature, metadata !== null, isUseOnly])
-  const pendingActionCount = pendingActions.length
+  const pendingActionCount = review.pending.length
 
   // Whether the *selected* gadget has code. When none is selected, the code interface is either
   // unmounted or showing a worktree, whose code doesn't bear on the layout mode.
@@ -957,11 +966,14 @@ export default function GadgetEditor() {
     setWorkspaceVisibility('open', urlWorkpieceId)
   }, [workpiecesReady, urlWorkpieceId, visibleWorkpieces, setWorkspaceVisibility])
 
-  const openActivity = useCallback((initialView: ActivityView) => {
+  const openActivity = useCallback((initialView: ActivityView, gatekeeperId?: WorkpieceId) => {
     setWorkspaceTransitionEnabled(true)
     setActivityClosing(false)
     if (workspaceView?.mode !== 'activity') activityReturnViewRef.current = workspaceView
     setActivityView(initialView)
+    if (initialView === 'review') {
+      setReviewTarget(previous => ({ gatekeeperId, request: (previous?.request ?? 0) + 1 }))
+    }
     setWorkspaceView({ mode: 'activity' })
   }, [workspaceView])
 
@@ -1082,6 +1094,7 @@ export default function GadgetEditor() {
     setWorkspaceView(getStoredWorkspaceView(id))
     openedWorkpieceParamRef.current = null
     activityReturnViewRef.current = null
+    setReviewTarget(undefined)
     setActivityClosing(false)
     setWorkspaceTransitionEnabled(false)
     setWorkpieces(new Map())
@@ -1536,11 +1549,7 @@ export default function GadgetEditor() {
             </span>
           )}
 
-          <ActivityNotifications
-            overseer={overseer.stub}
-            onViewActivity={openActivity}
-            restricted={metadata?.containsRestrictedData === true}
-          />
+          <ActivityNotifications overseer={overseer.stub} onViewActivity={openActivity} />
 
           {showReconnecting && <ReconnectingChip />}
 
@@ -1743,7 +1752,6 @@ export default function GadgetEditor() {
                   key={id}
                   workspaceId={id}
                   overseer={overseer.stub}
-                  restricted={metadata?.containsRestrictedData === true}
                   selectedChatId={effectiveSelectedChatId}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
@@ -1766,7 +1774,7 @@ export default function GadgetEditor() {
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+                  onReviewActions={gatekeeperId => openActivity('review', gatekeeperId)}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
@@ -1910,8 +1918,8 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
-                  autoApproveReloadTrigger={autoApproveReloadTrigger}
+                  review={review}
+                  reviewTarget={reviewTarget}
                 />
               </div>
             )}

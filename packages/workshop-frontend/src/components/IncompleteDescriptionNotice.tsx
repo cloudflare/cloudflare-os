@@ -17,14 +17,13 @@ export function isDescriptionIncomplete(entry: ActionLogEntry): boolean {
 }
 
 /**
- * Shown below a pending action's description on every approve surface (Activity review pane,
- * chat card, notifications popover) when the description is not complete. The action is still
+ * Shown below a pending action's description wherever it is read (Activity review pane, chat
+ * card, notifications popover) when the description is not complete. The action is still
  * submitted and approvable; the notice only tells the approver what they are not seeing.
  */
-export function IncompleteDescriptionNotice({ id, className = '' }: { id?: string, className?: string }) {
+export function IncompleteDescriptionNotice({ className = '' }: { className?: string }) {
   return (
     <div
-      id={id}
       role="note"
       className={`flex items-start gap-2.5 rounded-2xl bg-kumo-tint px-3 py-2.5 ${className}`}
     >
