@@ -419,7 +419,7 @@ describe("restarting sessions when verification scope widens", () => {
 
     // A connection capability minted into a collaborator's session (joinAs "build") counts for
     // its own lifetime: the client can dispose the interface that minted it and retain this.
-    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, "build");
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER, "build");
     expect(restarts).toEqual([]);
 
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
