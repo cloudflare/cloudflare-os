@@ -91,8 +91,7 @@ The standard white content shell for every non-cover idea.
   line-height 1.6. The add-slide controls also provide exact-grid
   **2-column** (`x 36/609`, `w 553`) and **4-column**
   (`x 34/328/622/916`, `w 260`) compliant structures.
-- **Bottom brand bar** — full-width 12px Ruby → Tangerine → Mango
-  gradient (`BOTTOM_BAR_SVG`) at `y 663`, touching the bottom edge.
+- **Bottom brand bar** — full-width 12px Tangerine `shape` at `y 663`, touching the bottom edge.
 
 ### Creating slides in either format
 
@@ -373,5 +372,21 @@ need to touch styles when adding a new field type.
 
 ## Export formats
 
-The deck supports **HTML** and **PDF** exports. Both use the same print renderer, which emits every
-slide at its fixed 1200 x 675 aspect ratio without the editor sidebars or presentation controls.
+The deck supports **HTML**, **PDF**, and **PowerPoint (`.pptx`)** exports. HTML and PDF use the
+browser print renderer. PowerPoint export runs on the server and creates a conventional OPC /
+PresentationML package through the shared `@gadgets/bundled-blueprints/libraries/pptx/server`
+library.
+
+Text, cards, boxes, pills, basic shapes, dividers, arrows, and the two brand marks become editable
+native PowerPoint objects rather than a screenshot. Before calling the generic renderer,
+`normalizeDeckForPptx()` in `server.js` expands this blueprint's `logo` blocks into a text wordmark
+and ellipse accent dot. Another slides blueprint can import the same renderer and supply its own
+adapter. Source block order remains the shape z-order. The shape-based bottom brand bar and orange
+cover treatment export as native objects; SVG blocks and dot-grid backgrounds are omitted.
+
+The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x 6,858,000 EMU. The
+renderer asks consumers to grow auto-height blocks and shrink card text where PresentationML cannot
+match browser clipping. PNG and JPEG data URLs are embedded after signature, dimension, and resource
+limit checks. Remote raster images become visible placeholders. SVG image data URLs and `svg`
+blocks are omitted entirely.
+
