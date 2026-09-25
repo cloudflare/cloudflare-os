@@ -202,10 +202,10 @@ export function evalNetworkInterceptor(
 // One Workshop per model per test process, shared by that eval file's concurrent trials; each trial
 // still signs up its own user with its own workspace. On one 16 GB runner, 40 trials on four
 // Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. The price is that a workerd
-// crash drops every trial's socket on the Workshop: turns reconnect, but a check in flight fails
-// and counts as the agent's failure. Deleting a workspace that ran a Gadget can crash local workerd
-// if no client is left when its DO aborts, so WorkshopAgentSession.close() stays connected until
-// that abort.
+// crash drops every trial's socket on the Workshop: turns reconnect, and a check that fails in
+// flight makes the trial a run error (EvalVerifier.collect), which is never stored as the agent's
+// failure. Deleting a workspace that ran a Gadget can crash local workerd if no client is left
+// when its DO aborts, so WorkshopAgentSession.close() stays connected until that abort.
 const workshops = new Map<string, Promise<Harness>>();
 
 function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harness> {

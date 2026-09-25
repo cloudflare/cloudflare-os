@@ -5,6 +5,7 @@ import type { EvalCheck } from "./task.js";
 
 const unusedSession: VerifierSession = {
   openGadget: async () => { throw new Error("openGadget is not used by this test"); },
+  connectionDrops: 0,
 };
 
 function gadget(id: number, title: string): WorkpieceSummary {
@@ -105,5 +106,25 @@ describe("EvalVerifier", () => {
     });
     expect(checks.at(0)).toEqual({ id: "same", pass: true });
     expect(checks.at(1)?.evidence).toContain("Duplicate eval check ID");
+  });
+
+  it("fails verification when a check fails as the Workshop connection drops", async () => {
+    const session = { openGadget: unusedSession.openGadget, connectionDrops: 0 };
+    await expect(new EvalVerifier(session, []).collect(async verifier => {
+      await verifier.check("reads", async () => {
+        session.connectionDrops++;
+        throw new Error("Network connection lost.");
+      });
+    })).rejects.toThrow("The Workshop connection dropped during verification");
+  });
+
+  it("keeps a verification whose checks passed while the connection dropped", async () => {
+    const session = { openGadget: unusedSession.openGadget, connectionDrops: 0 };
+    expect(await new EvalVerifier(session, []).collect(async verifier => {
+      await verifier.check("reads", async () => {
+        session.connectionDrops++;
+        return { pass: true };
+      });
+    })).toEqual([{ id: "reads", pass: true }]);
   });
 });

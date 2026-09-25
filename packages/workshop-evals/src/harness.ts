@@ -117,7 +117,7 @@ export function createWorkshopHarness(
                 "Eval verification exceeded its time budget", signal);
           } catch (error) {
             checks = [...verifier.results(), {
-              id: "verifier.timeout",
+              id: "verifier.incomplete",
               pass: false,
               evidence: error instanceof Error ? error.message : String(error),
             }];
@@ -185,7 +185,7 @@ export function createWorkshopHarness(
                   "Post-accept verification exceeded its time budget", signal));
             } catch (error) {
               checks.push(...afterAccept.results(), {
-                id: "post-accept-verifier.timeout",
+                id: "post-accept-verifier.incomplete",
                 pass: false,
                 evidence: error instanceof Error ? error.message : String(error),
               });

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
 import type { WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
 import type {
@@ -8,7 +9,7 @@ import type { EvalCheck, EvalCheckOutcome } from "./task.js";
 const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
-export type VerifierSession = Pick<WorkshopAgentSession, "openGadget">;
+export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
 
 function truncate(value: string): string {
   return value.length > EVIDENCE_LIMIT ? `${value.slice(0, EVIDENCE_LIMIT)}...` : value;
@@ -81,13 +82,25 @@ export class EvalVerifier {
     }
   }
 
+  /**
+   * Runs `verify` and returns its checks. Throws instead when a check failed while the Workshop
+   * connection dropped, since that failure says nothing about the agent's work.
+   */
   async collect(verify: (verifier: EvalVerifier) => Promise<void>): Promise<EvalCheck[]> {
+    const drops = this.#session.connectionDrops;
     try {
       await verify(this);
     } catch (error) {
       this.#checks.push({ id: VERIFIER_THREW, pass: false, evidence: truncate(String(error)) });
     }
     await Promise.all(this.#pending);
+    if (this.#checks.some(check => !check.pass)) {
+      // A check can see its RPC fail before the session counts the drop behind it.
+      await delay(0);
+      if (this.#session.connectionDrops !== drops) {
+        throw new Error("The Workshop connection dropped during verification");
+      }
+    }
     return this.#checks;
   }
 
