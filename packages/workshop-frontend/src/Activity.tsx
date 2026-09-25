@@ -646,12 +646,14 @@ function ReviewRequest({
   const reviewId = useId()
   const noticeId = `${reviewId}-notice`
   const requestId = `${reviewId}-request`
+  const fieldsId = `${reviewId}-fields`
   const incompleteId = `${reviewId}-incomplete`
   const incomplete = isDescriptionIncomplete(record)
   const describedBy = restricted
     ? [
       noticeId,
       ...(record.description.description ? [requestId] : []),
+      ...(fields.length > 0 ? [fieldsId] : []),
       ...(incomplete ? [incompleteId] : []),
     ].join(' ')
     : undefined
@@ -705,8 +707,10 @@ function ReviewRequest({
         </p>
       )}
 
-      {fields.length > 0 && (expanded ? (
-        <ActionFields fields={fields} className="mt-2 max-w-2xl" />
+      {fields.length > 0 && (restricted || expanded ? (
+        <div id={fieldsId}>
+          <ActionFields fields={fields} className="mt-2 max-w-2xl" />
+        </div>
       ) : (
         <p className="m-0 mt-1 text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
           {fieldCountLabel(fields.length)}

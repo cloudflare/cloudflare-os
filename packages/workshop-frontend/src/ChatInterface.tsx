@@ -4962,10 +4962,17 @@ function ChatInterface({
     const restrictedReview = restricted && isPending;
     const noticeId = `action-${msg.actionId}-restricted-notice`;
     const requestId = `action-${msg.actionId}-request`;
+    const fieldsId = `action-${msg.actionId}-fields`;
     const incompleteId = `action-${msg.actionId}-incomplete-notice`;
+    const hasFields = entryFields(log).length > 0;
     const incomplete = isPending && isDescriptionIncomplete(log);
     const describedBy = restrictedReview
-      ? [noticeId, requestId, ...(incomplete ? [incompleteId] : [])].join(" ")
+      ? [
+        noticeId,
+        requestId,
+        ...(hasFields ? [fieldsId] : []),
+        ...(incomplete ? [incompleteId] : []),
+      ].join(" ")
       : undefined;
 
     const actionControls = isPending ? (
@@ -5043,8 +5050,8 @@ function ChatInterface({
                 <div id={requestId} className={`chat-panel mt-1 pr-1 text-[13px] leading-[18px] text-kumo-subtle ${restricted ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
                   <MarkdownMessage message={log.description.description} />
                 </div>
-                {entryFields(log).length > 0 && (
-                  <div className="chat-panel mt-2 max-h-[360px] overflow-y-auto pr-1">
+                {hasFields && (
+                  <div id={fieldsId} className="chat-panel mt-2 max-h-[360px] overflow-y-auto pr-1">
                     <ActionFields fields={entryFields(log)} />
                   </div>
                 )}
@@ -5110,8 +5117,8 @@ function ChatInterface({
             <div id={requestId} className={`chat-panel pr-1 ${restrictedReview ? "" : "max-h-[200px] overflow-y-auto"} ${styles.markdownContent}`}>
               <MarkdownMessage message={log.description.description} />
             </div>
-            {entryFields(log).length > 0 && (
-              <div className="chat-panel max-h-[360px] overflow-y-auto pr-1">
+            {hasFields && (
+              <div id={fieldsId} className="chat-panel max-h-[360px] overflow-y-auto pr-1">
                 <ActionFields fields={entryFields(log)} />
               </div>
             )}

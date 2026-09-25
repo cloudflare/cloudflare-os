@@ -5,7 +5,7 @@ import type { RpcStub } from 'capnweb'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
-import { entryFields, fieldCountLabel } from './components/ActionFields'
+import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
 import {
@@ -92,10 +92,17 @@ export default function ActivityNotifications({
             {pending.slice(0, PREVIEW_LIMIT).map((action, index) => {
               const isProcessing = processing.has(action.id)
               const requestId = `${noticeId}-request-${action.id}`
+              const fieldsId = `${noticeId}-fields-${action.id}`
               const incompleteId = `${noticeId}-incomplete-${action.id}`
+              const fields = entryFields(action)
               const incomplete = isDescriptionIncomplete(action)
               const describedBy = restricted
-                ? [noticeId, requestId, ...(incomplete ? [incompleteId] : [])].join(' ')
+                ? [
+                  noticeId,
+                  requestId,
+                  ...(fields.length > 0 ? [fieldsId] : []),
+                  ...(incomplete ? [incompleteId] : []),
+                ].join(' ')
                 : undefined
               return (
                 <div
@@ -119,10 +126,10 @@ export default function ActivityNotifications({
                       <span id={requestId} className={`mt-1.5 block whitespace-pre-wrap text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle ${restricted ? '' : 'line-clamp-2'}`}>
                         {action.description.description}
                       </span>
-                      {entryFields(action).length > 0 && (
+                      {fields.length > 0 && !restricted && (
                         // Full review happens in Activity or chat; this only says there is more.
                         <span className="mt-1 block text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
-                          {fieldCountLabel(entryFields(action).length)}
+                          {fieldCountLabel(fields.length)}
                         </span>
                       )}
                     </button>
@@ -141,6 +148,12 @@ export default function ActivityNotifications({
                       />
                     </div>
                   </div>
+                  {fields.length > 0 && restricted && (
+                    // Outside the preview button, which may hold only phrasing content.
+                    <div id={fieldsId}>
+                      <ActionFields fields={fields} className="mt-2" />
+                    </div>
+                  )}
                   {incomplete && (
                     <IncompleteDescriptionNotice id={incompleteId} className="mt-2 px-2.5 py-2" />
                   )}

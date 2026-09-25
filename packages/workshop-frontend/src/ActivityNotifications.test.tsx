@@ -112,6 +112,19 @@ describe('ActivityNotifications action fields', () => {
     expect(document.body.textContent).not.toContain('Full body text')
   })
 
+  it('shows the fields in full, named by the approve button, while restricted', async () => {
+    await renderPending(true, true, [
+      { label: 'To', kind: 'list', items: ['a@example.com'] },
+      { label: 'Body', kind: 'text', value: 'Full body text' },
+    ])
+    expect(document.body.textContent).toContain('a@example.com')
+    expect(document.body.textContent).toContain('Full body text')
+    expect(document.body.textContent).not.toContain('2 fields')
+    const described = approveDescribedBy()
+    expect(described).toContain('a@example.com')
+    expect(described).toContain('Full body text')
+  })
+
   it('shows no count for a request without fields', async () => {
     await renderPending(false, true)
     expect(document.body.textContent).not.toMatch(/\d+ fields?/)

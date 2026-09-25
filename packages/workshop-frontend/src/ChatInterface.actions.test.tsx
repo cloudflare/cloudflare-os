@@ -226,6 +226,13 @@ describe('restricted approval', () => {
     expect(described).toContain('Regards, the workspace.')
   })
 
+  it('names the fields as part of the request while restricted', async () => {
+    const fields = [{ label: 'To', kind: 'list', items: ['a@example.com'] }]
+    await renderPendingCard(pendingLog({ descriptionIsComplete: true, fields }), { restricted: true })
+
+    expect(approveDescribedBy()).toContain('a@example.com')
+  })
+
   it('keeps the scrolling description and no notice when not restricted', async () => {
     await renderPendingCard(pendingLog())
 
