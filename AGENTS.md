@@ -152,6 +152,9 @@ IMPORTANT: Server-side logging uses `@gadgets/observability/logger` (frontend br
   It is a no-op when the `ERROR_REPORTER` binding is absent (local dev / deployments without an issue
   destination). Only bounded scalars are retained as attributes; reported context obeys the same
   no-secrets rules as log fields.
+- Usage metrics go to the optional `METRICS` Analytics Engine dataset through
+  `@gadgets/observability/metrics`, whose column layout (`metrics-schema.ts`) is also what
+  dashboards query; Workshop product events reach it through `recordAnalytics`.
 
 IMPORTANT: Frontend error reporting is a separate, opt-in path:
 - `@gadgets/error-reporting` owns the vendor-neutral browser/Worker event contract and tolerant,
