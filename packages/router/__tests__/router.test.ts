@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from 'jsonc-parser';
-import router, { type Env } from '../src/index';
+import router, { type Env, RELEASE_VERSION_PATH } from '../src/index';
 // Imported as text so the config-integrity tests run inside workerd without filesystem access.
 import wranglerConfigText from '../wrangler.jsonc?raw';
 
@@ -24,6 +24,26 @@ async function route(env: Env, path: string): Promise<string> {
 }
 
 describe('router fetch', () => {
+  it('reports the deployed release without consulting assets or the backend', async () => {
+    const env = makeEnv({
+      ASSETS: stubFetcher('assets'),
+      CLOUDFLARE_OS_RELEASE_ID: 'r123-abcdef0',
+    });
+    const req = new Request(`https://example.com${RELEASE_VERSION_PATH}`);
+    const res = await router.fetch!(req, env, {} as ExecutionContext);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ releaseId: 'r123-abcdef0' });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('does not claim readiness when no release id was injected', async () => {
+    const req = new Request(`https://example.com${RELEASE_VERSION_PATH}`);
+    const res = await router.fetch!(req, makeEnv(), {} as ExecutionContext);
+
+    expect(res.status).toBe(503);
+  });
+
   it('routes /api and /blueprint-screenshot prefixes to the backend', async () => {
     const env = makeEnv({ ASSETS: stubFetcher('assets') });
     expect(await route(env, '/api')).toBe('backend');
@@ -112,6 +132,7 @@ describe('wrangler.jsonc contract', () => {
 
   it('runs the worker first for API, screenshot, and gatekeeper prefixes', () => {
     const first: string[] = config.assets.run_worker_first;
+    expect(first).toContain(RELEASE_VERSION_PATH);
     expect(first).toContain('/api');
     expect(first).toContain('/api/*');
     expect(first).toContain('/blueprint-screenshot');

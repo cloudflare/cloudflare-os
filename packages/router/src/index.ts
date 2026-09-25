@@ -16,14 +16,30 @@ export interface Env {
   WORKSHOP_BACKEND: Fetcher;
   /** Present in production (wrangler.jsonc assets stanza); absent in dev. */
   ASSETS?: Fetcher;
+  /** Injected by the deploy service so edge readiness can identify the target release. */
+  CLOUDFLARE_OS_RELEASE_ID?: string;
   /** Dormant until custom domains + Email Routing exist; the handler ships anyway. */
   GATEKEEPER_EMAIL?: Service<EmailEntrypoint>;
   [key: string]: unknown;
 }
 
+export const RELEASE_VERSION_PATH = "/.well-known/cloudflare-os/version";
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+
+    if (url.pathname === RELEASE_VERSION_PATH) {
+      if (env.CLOUDFLARE_OS_RELEASE_ID === undefined) {
+        return Response.json({ error: "release id unavailable" }, {
+          status: 503,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      return Response.json({ releaseId: env.CLOUDFLARE_OS_RELEASE_ID }, {
+        headers: { "cache-control": "no-store" },
+      });
+    }
 
     for (const key of Object.keys(env)) {
       if (!key.startsWith("GATEKEEPER_")) continue;

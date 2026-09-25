@@ -22,6 +22,7 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": [
+      "/.well-known/cloudflare-os/version",
       "/api",
       "/api/*",
       "/blueprint-screenshot",
