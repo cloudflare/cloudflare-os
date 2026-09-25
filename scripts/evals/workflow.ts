@@ -1,10 +1,8 @@
-// The steps of the Workshop eval workflow, .github/workflows/workshop-evals-pr.yml:
+// The plan, join and post steps of .github/workflows/workshop-evals-pr.yml:
 //   node scripts/evals/workflow.ts plan <baseline-sha> [<candidate-sha>]
 //   node scripts/evals/workflow.ts join <runs-dir> <out-dir>
 //   node scripts/evals/workflow.ts post <comparison.md>
-// GitHub is called with GITHUB_TOKEN; the repository, event, run and output file come from Actions'
-// own variables. Only Node built-ins are imported, so the plan job needs no install step, which
-// would delay every eval run by about 20 s.
+// Only Node built-ins are imported, so the plan job needs no install step.
 // This file runs under Node's native TypeScript stripping, so imports name real .ts files and only
 // erasable syntax may appear here.
 import { execFileSync } from "node:child_process";
@@ -16,8 +14,6 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { evalKeys, type EvalKeys } from "./eval-keys.ts";
 
-const USAGE = "Usage: node scripts/evals/workflow.ts " +
-  "plan <baseline-sha> [<candidate-sha>] | join <runs-dir> <out-dir> | post <comparison.md>";
 const WORKFLOW = ".github/workflows/workshop-evals-pr.yml";
 const RESULTS_MARKER = "<!-- workshop-evals-comparison";
 const PER_PAGE = 100;
@@ -31,7 +27,6 @@ const REVISIONS: readonly Revision[] = ["baseline", "candidate"];
 type TaskRun = { revision: Revision; sha: string; task: string; name: string };
 /** Where a revision's result for a task comes from: a stored artifact, or one leg of this run. */
 type Source = TaskRun & ({ artifact: number } | { run: Revision });
-
 type Plan = {
   sources: Source[];
   /** The results this run measures, each stored for later runs to reuse. */
@@ -39,10 +34,6 @@ type Plan = {
   /** One job per revision with anything to measure. */
   legs: { revision: Revision; sha: string; tasks: string[] }[];
 };
-
-/** A listed artifact, as far as choosing one to reuse needs. */
-type Artifact = { id: number; expired: boolean; createdAt: string; expiresAt: string; ownRun: boolean };
-
 /** An issue comment, as far as recognising results comments and eval reviews needs. */
 type Comment = { id: number; login: string | undefined; createdAt: string; body: string };
 
@@ -56,90 +47,23 @@ function env(name: string): string {
   return value;
 }
 
+/** Parsed JSON that is an object, so its fields can be checked one by one. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function resultName(task: string, key: string): string {
   return `${task}-${key}`;
 }
 
-/** A JSON object's own field; undefined when the value is not an object or lacks the field. */
-function field(value: unknown, key: string): unknown {
-  return typeof value === "object" && value !== null ? Object.getOwnPropertyDescriptor(value, key)?.value : undefined;
-}
-
-function stringField(value: unknown, key: string): string {
-  const found = field(value, key);
-  if (typeof found !== "string") throw new Error(`Expected a string ${key}`);
-  return found;
-}
-
-function numberField(value: unknown, key: string): number {
-  const found = field(value, key);
-  if (typeof found !== "number") throw new Error(`Expected a number ${key}`);
-  return found;
-}
-
-function listOf(value: unknown, what: string): unknown[] {
-  if (!Array.isArray(value)) throw new Error(`Expected ${what} to be a list`);
-  return value;
-}
-
-function revisionOf(value: unknown): Revision {
-  const revision = REVISIONS.find(known => known === value);
-  if (revision === undefined) throw new Error(`Unknown revision ${JSON.stringify(value)}`);
-  return revision;
-}
-
-function sourceOf(value: unknown): Source {
-  const run: TaskRun = {
-    revision: revisionOf(field(value, "revision")),
-    sha: stringField(value, "sha"),
-    task: stringField(value, "task"),
-    name: stringField(value, "name"),
-  };
-  const artifact = field(value, "artifact");
-  return typeof artifact === "number" ? { ...run, artifact } : { ...run, run: revisionOf(field(value, "run")) };
-}
-
-function artifactOf(value: unknown): Artifact {
-  const run = field(value, "workflow_run");
-  return {
-    id: numberField(value, "id"),
-    expired: field(value, "expired") !== false,
-    createdAt: stringField(value, "created_at"),
-    expiresAt: stringField(value, "expires_at"),
-    ownRun: run !== null && run !== undefined &&
-      numberField(run, "head_repository_id") === numberField(run, "repository_id"),
-  };
-}
-
-function commentsOf(listing: unknown): Comment[] {
-  return listOf(listing, "the comments").map(comment => {
-    const user = field(comment, "user");
-    const body = field(comment, "body");
-    return {
-      id: numberField(comment, "id"),
-      login: user === null || user === undefined ? undefined : stringField(user, "login"),
-      createdAt: stringField(comment, "created_at"),
-      body: typeof body === "string" ? body : "",
-    };
-  });
-}
-
-async function readJson(file: string, what: string): Promise<unknown> {
-  try {
-    return JSON.parse(await readFile(file, "utf8"));
-  } catch (error) {
-    throw new Error(`No readable ${what}: ${errorMessage(error)}`, { cause: error });
-  }
-}
-
-async function github(method: string, path: string, body?: Record<string, string>): Promise<Response> {
+async function github(method: string, path: string, body?: { body: string }): Promise<Response> {
   const response = await fetch(`https://api.github.com/${path}`, {
     method,
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${env("GITHUB_TOKEN")}`,
+      "Content-Type": "application/json",
       "User-Agent": "cloudflare-os-workshop-evals",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -154,7 +78,8 @@ async function github(method: string, path: string, body?: Record<string, string
 async function githubList(path: string): Promise<unknown[]> {
   const items: unknown[] = [];
   for (let page = 1; ; page++) {
-    const batch = listOf(await (await github("GET", `${path}?per_page=${PER_PAGE}&page=${page}`)).json(), path);
+    const batch: unknown = await (await github("GET", `${path}?per_page=${PER_PAGE}&page=${page}`)).json();
+    if (!Array.isArray(batch)) throw new Error(`GitHub API GET ${path} did not return a list`);
     items.push(...batch);
     if (batch.length < PER_PAGE) return items;
   }
@@ -168,16 +93,16 @@ function setOutputs(outputs: Record<string, string>): void {
 /** JSON with every object's keys sorted, so a digest does not depend on the order yq prints them in. */
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
+  if (isRecord(value)) {
     return `{${Object.keys(value).toSorted()
-      .map(key => `${JSON.stringify(key)}:${canonicalJson(field(value, key))}`).join(",")}}`;
+      .map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }
 
 function workflowDigest(sections: string): string {
-  const settings = JSON.parse(execFileSync("yq", ["-o=json", sections, WORKFLOW], { encoding: "utf8" }));
-  return createHash("sha256").update(`${canonicalJson(settings)}\n`).digest("hex");
+  const settings = execFileSync("yq", ["-o=json", sections, WORKFLOW], { encoding: "utf8" });
+  return createHash("sha256").update(`${canonicalJson(JSON.parse(settings))}\n`).digest("hex");
 }
 
 /**
@@ -185,11 +110,17 @@ function workflowDigest(sections: string): string {
  * and that this repository's own run stored, since a fork's run can upload any name.
  */
 export function reusableArtifact(listing: unknown, now: number): number | undefined {
+  const artifacts: unknown[] = isRecord(listing) && Array.isArray(listing.artifacts) ? listing.artifacts : [];
   let newest: { id: number; createdAt: string } | undefined;
-  for (const artifact of listOf(field(listing, "artifacts"), "the artifacts").map(artifactOf)) {
-    const { id, expired, createdAt, expiresAt, ownRun } = artifact;
-    const reusable = !expired && ownRun && Date.parse(expiresAt) > now + OUTLIVES_RUN_MS;
-    if (reusable && (newest === undefined || createdAt >= newest.createdAt)) newest = { id, createdAt };
+  for (const artifact of artifacts) {
+    if (!isRecord(artifact)) continue;
+    const { id, expired, created_at: createdAt, expires_at: expiresAt, workflow_run: run } = artifact;
+    if (typeof id === "number" && typeof createdAt === "string" && typeof expiresAt === "string" &&
+      expired === false && Date.parse(expiresAt) > now + OUTLIVES_RUN_MS &&
+      isRecord(run) && typeof run.repository_id === "number" && run.head_repository_id === run.repository_id &&
+      (newest === undefined || createdAt >= newest.createdAt)) {
+      newest = { id, createdAt };
+    }
   }
   return newest?.id;
 }
@@ -233,6 +164,16 @@ export function planOutputs(keys: EvalKeys, plan: Plan, report: boolean): Record
   };
 }
 
+function commentsIn(listing: readonly unknown[]): Comment[] {
+  return listing.flatMap(comment => {
+    if (!isRecord(comment)) return [];
+    const { id, user, created_at: createdAt, body } = comment;
+    return typeof id === "number" && typeof createdAt === "string" && typeof body === "string"
+      ? [{ id, login: isRecord(user) && typeof user.login === "string" ? user.login : undefined, createdAt, body }]
+      : [];
+  });
+}
+
 function isResultsComment({ login, body }: Comment): boolean {
   return login === "github-actions[bot]" && body.startsWith(RESULTS_MARKER);
 }
@@ -255,8 +196,8 @@ export function resultsComment(markdown: string, runUrl: string, report: string 
 }
 
 /** Whether the newest results comment reports these exact inputs and Bonk has reviewed it since. */
-export function commentsAreCurrent(listing: unknown, report: string): boolean {
-  const comments = commentsOf(listing);
+export function commentsAreCurrent(listing: readonly unknown[], report: string): boolean {
+  const comments = commentsIn(listing);
   const posted = comments.filter(isResultsComment).reduce<Comment | undefined>(
     (newest, comment) => newest === undefined || comment.createdAt >= newest.createdAt ? comment : newest,
     undefined);
@@ -265,8 +206,8 @@ export function commentsAreCurrent(listing: unknown, report: string): boolean {
 }
 
 /** The comments a new results comment replaces: every earlier results comment and Bonk eval review. */
-export function staleComments(listing: unknown): number[] {
-  return commentsOf(listing).filter(comment => isResultsComment(comment) || isEvalReview(comment))
+export function staleComments(listing: readonly unknown[]): number[] {
+  return commentsIn(listing).filter(comment => isResultsComment(comment) || isEvalReview(comment))
     .map(({ id }) => id);
 }
 
@@ -297,20 +238,12 @@ async function planStep(shas: readonly string[]): Promise<void> {
     Object.entries(tasks).map(([task, { key }]) => resultName(task, key))));
   const stored = new Map<string, number>();
   await Promise.all([...names].map(async name => {
-    const listing = await (await github("GET",
-      `repos/${repo}/actions/artifacts?name=workshop-evals-${name}&per_page=${PER_PAGE}`)).json();
-    const id = reusableArtifact(listing, now);
+    const listing = await github("GET", `repos/${repo}/actions/artifacts?name=workshop-evals-${name}&per_page=${PER_PAGE}`);
+    const id = reusableArtifact(await listing.json(), now);
     if (id !== undefined) stored.set(name, id);
   }));
   const plan = planRuns(keys, stored);
   setOutputs(planOutputs(keys, plan, await shouldReport(repo, keys.report, plan)));
-}
-
-async function download(repo: string, artifact: number, dir: string): Promise<void> {
-  const zip = `${dir}.zip`;
-  const response = await github("GET", `repos/${repo}/actions/artifacts/${artifact}/zip`);
-  await writeFile(zip, new Uint8Array(await response.arrayBuffer()));
-  execFileSync("unzip", ["-q", zip, "-d", dir]);
 }
 
 /**
@@ -319,34 +252,35 @@ async function download(repo: string, artifact: number, dir: string): Promise<vo
  * enough to store, so a comment built on it must not count as current.
  */
 async function joinStep(runsDir: string, outDir: string): Promise<void> {
-  const sources = listOf(JSON.parse(env("SOURCES")), "SOURCES").map(sourceOf);
+  const sources: unknown = JSON.parse(env("SOURCES"));
+  if (!Array.isArray(sources) || !sources.every(isRecord)) throw new Error("SOURCES is not a list of sources");
   const repo = env("GITHUB_REPOSITORY");
   const storedDir = await mkdtemp(join(tmpdir(), "workshop-evals-stored-"));
-  const downloaded = new Set<number>();
   let complete = true;
   for (const revision of REVISIONS) {
     const testResults: unknown[] = [];
-    for (const source of sources.filter(({ revision: of }) => of === revision)) {
+    for (const { task, artifact, run } of sources.filter(source => source.revision === revision)) {
+      if (typeof task !== "string") throw new Error("SOURCES names a source with no task");
       let file: string;
-      if ("artifact" in source) {
-        const dir = join(storedDir, String(source.artifact));
-        if (!downloaded.has(source.artifact)) {
-          await download(repo, source.artifact, dir);
-          downloaded.add(source.artifact);
+      if (typeof artifact === "number") {
+        const dir = join(storedDir, String(artifact));
+        if (!existsSync(dir)) {
+          const zip = await github("GET", `repos/${repo}/actions/artifacts/${artifact}/zip`);
+          await writeFile(`${dir}.zip`, new Uint8Array(await zip.arrayBuffer()));
+          execFileSync("unzip", ["-q", `${dir}.zip`, "-d", dir]);
         }
-        file = join(dir, `${source.task}.json`);
+        file = join(dir, `${task}.json`);
       } else {
-        const leg = join(runsDir, source.run);
-        file = join(leg, `${source.task}.json`);
+        if (run !== "baseline" && run !== "candidate") throw new Error(`SOURCES gives ${task} no artifact or run`);
+        file = join(runsDir, run, `${task}.json`);
         // A leg lists the tasks clean enough to store; one with no list stored none.
-        const clean = join(leg, "clean.json");
-        if (!existsSync(clean) ||
-          !listOf(await readJson(clean, `${source.run}'s clean list`), "the clean list").includes(source.task)) {
-          complete = false;
-        }
+        const clean = join(runsDir, run, "clean.json");
+        const listed: unknown = existsSync(clean) ? JSON.parse(await readFile(clean, "utf8")) : [];
+        if (!Array.isArray(listed) || !listed.includes(task)) complete = false;
       }
-      const what = `${revision} result for ${source.task}`;
-      testResults.push(...listOf(field(await readJson(file, what), "testResults"), `the ${what}'s testResults`));
+      const result: unknown = JSON.parse(await readFile(file, "utf8"));
+      if (!isRecord(result) || !Array.isArray(result.testResults)) throw new Error(`${file} holds no testResults`);
+      testResults.push(...result.testResults);
     }
     await mkdir(join(outDir, revision), { recursive: true });
     await writeFile(join(outDir, revision, "results.json"), `${JSON.stringify({ testResults }, null, 2)}\n`);
@@ -378,12 +312,12 @@ async function postStep(markdownPath: string): Promise<void> {
   }
 }
 
-async function main(argv: readonly string[]): Promise<void> {
-  const [command, ...args] = argv;
+async function main([command, ...args]: readonly string[]): Promise<void> {
   if (command === "plan" && args.length >= 1 && args.length <= REVISIONS.length) return planStep(args);
   if (command === "join" && args.length === 2) return joinStep(args[0], args[1]);
   if (command === "post" && args.length === 1) return postStep(args[0]);
-  throw new Error(USAGE);
+  throw new Error("Usage: node scripts/evals/workflow.ts plan <baseline-sha> [<candidate-sha>] | " +
+    "join <runs-dir> <out-dir> | post <comparison.md>");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
