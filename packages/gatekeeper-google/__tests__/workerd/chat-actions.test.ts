@@ -9,8 +9,9 @@ import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImpl, GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageInfo, ChatListMessagesOptions} from "../../src/chat-types";
-import type {ChatMessageRaw} from "../../src/chat-api";
+import type {ChatMessageRaw, ChatReactionRaw, ChatMembershipRaw} from "../../src/chat-api";
 import type {TestHooks as TestHooksImpl} from "./worker";
+import { ChatSpaceConfiguratorUI } from "../../src/google-configurators";
 
 type TestHooks = {
   chatStartSession(
@@ -61,12 +62,29 @@ const SPACE_NAME = `spaces/${SPACE_ID}`;
 function chatBackend() {
   const state = {
     spaceType: "SPACE",
+    spaceName: "Project",
     spaceThreadingState: "THREADED_MESSAGES",
     messages: [] as ChatMessageRaw[],
+    members: [] as ChatMembershipRaw[],
+    profileNames: new Map<string, string>(),
+    observerNames: new Map<string, string>(),
+    profileRequests: [] as string[],
+    memberRequests: 0,
+    spaceLists: 0,
     pageSize: 50,
     lists: [] as URL[],
+    gets: [] as string[],
+    downloads: [] as string[],
+    reactions: [] as ChatReactionRaw[],
+    reactionWrites: [] as Array<{method: string; id: string}>,
     deletes: [] as string[],
     edits: [] as Array<{name: string; text: string}>,
+    lostResponse: undefined as "send" | "edit" | "addReaction" | "removeReaction" | undefined,
+    getMessageStatus: 200,
+    editStatus: 200,
+    deleteAfterGet: false,
+    rejectedToken: undefined as string | undefined,
+    sentRequests: new Map<string, string>(),
     /** Message names Chat would refuse to delete without force: they have threaded replies. */
     repliesOn: new Set<string>(),
     creates: [] as Array<{
@@ -77,9 +95,41 @@ function chatBackend() {
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
-    if (url.pathname === `/v1/spaces/${SPACE_ID}`) {
-      return json({name: SPACE_NAME, displayName: "Project",
-        spaceType: state.spaceType, spaceThreadingState: state.spaceThreadingState});
+    if (state.rejectedToken && url.hostname === "chat.googleapis.com" &&
+        new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
+    const maybeLoseResponse = (kind: typeof state.lostResponse) => {
+      if (state.lostResponse === kind) {
+        state.lostResponse = undefined;
+        throw new Error("provider response lost");
+      }
+    };
+    if (url.hostname === "people.googleapis.com") {
+      const token = new Headers(init.headers).get("Authorization") ?? "";
+      state.profileRequests.push(token);
+      const names = token === "Bearer observer-token" ? state.observerNames : state.profileNames;
+      return json({ responses: url.searchParams.getAll("resourceNames").map(resource => {
+        const name = names.get(`users/${resource.slice("people/".length)}`);
+        return name ? { requestedResourceName: resource, person: {
+          resourceName: resource, names: [{ displayName: name, metadata: { primary: true } }],
+        } } : { requestedResourceName: resource, httpStatusCode: 404 };
+      }) });
+    }
+    if (url.pathname.startsWith("/v1/media/")) {
+      state.downloads.push(url.pathname);
+      return new Response("attachment bytes");
+    }
+    const space = {name: SPACE_NAME, displayName: state.spaceName,
+      spaceType: state.spaceType, spaceThreadingState: state.spaceThreadingState};
+    if (url.pathname === "/v1/spaces") { state.spaceLists++; return json({spaces: [space]}); }
+    if (url.pathname === `/v1/spaces/${SPACE_ID}`) return json(space);
+    if (url.pathname === `/v1/spaces/${SPACE_ID}/members`) {
+      state.memberRequests++;
+      return json({memberships: state.members});
+    }
+    if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
+      const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
+      const member = state.members.find(item => item.member?.name === `users/${id}`);
+      return member ? json(member) : json({}, 404);
     }
     if (url.pathname === `/v1/spaces/${SPACE_ID}/messages`) {
       if (method === "GET") {
@@ -100,6 +150,9 @@ function chatBackend() {
           ...(end < messages.length ? {nextPageToken: String(end)} : {})});
       }
       const body = JSON.parse(init.body as string) as {text: string; thread?: {name: string}};
+      const requestId = url.searchParams.get("requestId")!;
+      const prior = state.sentRequests.get(requestId);
+      if (prior) return json({name: prior, text: body.text});
       if (body.thread && !state.messages.some(message => message.thread?.name === body.thread!.name)) {
         return json({}, 404);
       }
@@ -114,17 +167,58 @@ function chatBackend() {
         threadReply: body.thread !== undefined,
       };
       state.messages.push(created);
+      state.sentRequests.set(requestId, created.name);
+      maybeLoseResponse("send");
       return json(created);
     }
     const name = url.pathname.slice("/v1/".length);
+    const reactionParent = /^(spaces\/[^/]+\/messages\/[^/]+)\/reactions$/.exec(name)?.[1];
+    if (reactionParent) {
+      if (method === "GET") {
+        const filter = url.searchParams.get("filter") ?? "";
+        const emoji = /emoji.unicode = "([^"]+)"/.exec(filter)?.[1];
+        const user = /user.name = "([^"]+)"/.exec(filter)?.[1];
+        const reactions = state.reactions.filter(reaction =>
+          reaction.name?.startsWith(`${reactionParent}/reactions/`) &&
+          (!emoji || reaction.emoji?.unicode === emoji) && (!user || reaction.user?.name === user));
+        const start = Number(url.searchParams.get("pageToken") ?? 0);
+        const end = start + state.pageSize;
+        return json({reactions: reactions.slice(start, end),
+          ...(end < reactions.length ? {nextPageToken: String(end)} : {})});
+      }
+      if (method === "POST") {
+        const {emoji} = JSON.parse(init.body as string) as {emoji: {unicode: string}};
+        const reaction = {name: `${reactionParent}/reactions/R${state.reactionWrites.length + 1}`,
+          emoji, user: {name: "users/subject-a", type: "HUMAN"}};
+        state.reactions.push(reaction);
+        state.reactionWrites.push({method, id: reaction.name});
+        maybeLoseResponse("addReaction");
+        return json(reaction);
+      }
+    }
+    const reactionIndex = state.reactions.findIndex(reaction => reaction.name === name);
+    if (reactionIndex !== -1 && method === "DELETE") {
+      state.reactions.splice(reactionIndex, 1);
+      state.reactionWrites.push({method, id: name});
+      maybeLoseResponse("removeReaction");
+      return json({});
+    }
     const index = state.messages.findIndex(message => message.name === name);
     if (index !== -1) {
-      if (method === "GET") return json(state.messages[index]);
+      if (method === "GET") {
+        state.gets.push(name);
+        if (state.getMessageStatus !== 200) return json({}, state.getMessageStatus);
+        const message = state.messages[index];
+        if (state.deleteAfterGet) { state.deleteAfterGet = false; state.messages.splice(index, 1); }
+        return json(message);
+      }
       if (method === "PATCH") {
+        if (state.editStatus !== 200) return json({}, state.editStatus);
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
         state.messages[index].text = text;
         state.messages[index].lastUpdateTime = new Date().toISOString();
+        maybeLoseResponse("edit");
         return json(state.messages[index]);
       }
       if (method === "DELETE") {
@@ -143,12 +237,13 @@ function chatBackend() {
 
 function chatHarness(
     backend: ReturnType<typeof chatBackend>,
-    userInfo: () => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
+    userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
+    accountBinding = false,
 ) {
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.hostname === "www.googleapis.com" && url.pathname === "/oauth2/v3/userinfo") {
-      return json(userInfo());
+      return json(userInfo(new Headers(init.headers).get("Authorization")));
     }
     return backend.fetch(url, init);
   });
@@ -158,7 +253,7 @@ function chatHarness(
   const facetName = `chat-${name}`;
   const props: GoogleChatGatekeeperImplProps = {
     userObjectId: testEnv.UserAccount.idFromName(name).toString(),
-    spaceId: SPACE_ID,
+    ...(accountBinding ? {} : {spaceId: SPACE_ID}),
   };
   const queueId = `queue-${crypto.randomUUID()}`;
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
@@ -170,8 +265,21 @@ function chatHarness(
     })
     .then(() => runHook(hook, instance =>
       instance.chatStartSession(facetName, id, props, queueId)));
+  const observerId = testEnv.UserAccount.idFromName(`${name}-observer`);
   return {
+    setToken: (token: string) => runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
+      state.storage.kv.put("accessToken", {token, expires: new Date(Date.now() + 3_600_000)});
+    }),
     session: () => ready.then(() => hook.openChatSession(facetName, id, props, queueId)),
+    account: () => ready.then(() => hook.openChatAccountSession(facetName, id, props, queueId)),
+    addObserver: async () => {
+      await ready;
+      await runInDurableObject(testEnv.UserAccount.get(observerId), (_instance: unknown, state: DurableObjectState) => {
+        state.storage.kv.put("refreshToken", "observer-refresh-token");
+        state.storage.kv.put("accessToken", {token: "observer-token", expires: new Date(Date.now() + 3_600_000)});
+      });
+      await hook.chatAddObserver(facetName, id, props, queueId, "viewer", observerId.toString());
+    },
     restart: async () => {
       await ready;
       await abortAllDurableObjects();
@@ -198,7 +306,243 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("Chat identities", () => {
+  const directMessage = () => {
+    const backend = chatBackend();
+    backend.state.spaceType = "DIRECT_MESSAGE";
+    backend.state.spaceName = "";
+    backend.state.members.push(
+      {name: `${SPACE_NAME}/members/subject-a`, member: {name: "users/subject-a", displayName: "Ada", type: "HUMAN"}},
+      {name: `${SPACE_NAME}/members/123`, member: {name: "users/123", type: "HUMAN"}},
+    );
+    backend.state.profileNames.set("users/123", "Alice Smith");
+    return backend;
+  };
+
+  it("keeps listings cheap and resolves a DM name only when metadata is requested", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend, undefined, true);
+    using account = await chat.account();
+    using cursor = await account.listSpaces();
+    await chat.failNextObservation("List Google Chat conversations");
+    await expect(Promise.resolve(cursor.next())).rejects.toThrow(/denied by the test/);
+    using page = await cursor.next();
+    expect(page![0].info).toMatchObject({id: SPACE_NAME, type: "directMessage"});
+    expect(page![0].info.name).toBeUndefined();
+    expect(backend.state.memberRequests).toBe(0);
+    expect(backend.state.profileRequests).toEqual([]);
+    expect(await page![0].space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    expect(await page![0].space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    expect(backend.state.memberRequests).toBe(1);
+    expect(backend.state.profileRequests).toEqual(["Bearer access-token"]);
+  });
+
+  it("does not resolve participant names during picker searches", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend);
+    using _session = await chat.session();
+    const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
+    expect(await picker.listChatSpaces("")).toEqual([
+      {value: SPACE_ID, title: "Direct message", subtitle: "Direct message", meta: SPACE_ID},
+    ]);
+    expect(await picker.listChatSpaces("Alice")).toEqual([]);
+    expect(backend.state.memberRequests).toBe(0);
+    expect(backend.state.profileRequests).toEqual([]);
+  });
+
+  it("opens an exact conversation reference without scanning the picker listing", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend);
+    using _session = await chat.session();
+    const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
+    expect(await picker.listChatSpaces(SPACE_NAME)).toEqual([
+      {value: SPACE_ID, title: "Direct message", subtitle: "Direct message", meta: SPACE_ID},
+    ]);
+    expect(await picker.listChatSpaces(`https://chat.google.com/dm/${SPACE_ID}`)).toHaveLength(1);
+    expect(backend.state.spaceLists).toBe(0);
+    expect(backend.state.profileRequests).toEqual([]);
+  });
+
+  it("checks a shared DM's People name before disclosure and rechecks denied reads", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend);
+    await chat.addObserver();
+    using space = await chat.session();
+    await expect(Promise.resolve(space.getMetadata())).rejects.toThrow(/active observer cannot see/);
+    expect((await chat.readQueue()).observations).toContainEqual(expect.objectContaining({excludeObservers: ["viewer"]}));
+    backend.state.observerNames.set("users/123", "Alice Smith");
+    expect(await space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    expect(backend.state.profileRequests.filter(token => token === "Bearer observer-token")).toHaveLength(2);
+  });
+
+  it("verifies a joining observer against previously disclosed DM names, including after restart", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    expect(await space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    await chat.restart();
+    await expect(chat.addObserver()).rejects.toThrow(/cannot access a profile name/);
+    backend.state.observerNames.set("users/123", "Alice Smith");
+    await chat.addObserver();
+    backend.state.observerNames.set("users/123", "Different name");
+    await expect(chat.addObserver()).rejects.toThrow(/cannot access a profile name/);
+  });
+
+  it("uses Chat-provided names across results without extra identity lookups", async () => {
+    const backend = chatBackend();
+    const alice = {name: "users/123", displayName: "Alice Smith", type: "HUMAN"};
+    const expected = {id: "users/123", name: "Alice Smith", type: "human"};
+    backend.state.messages.push(
+      {...threadMessage("root", "A", "2024-01-01T00:00:00Z"), sender: alice},
+      {...threadMessage("reply", "A", "2024-01-02T00:00:00Z", true), sender: alice},
+      {...threadMessage("app", "A", "2024-01-03T00:00:00Z", true), sender: {name: "users/456", type: "BOT"}},
+    );
+    backend.state.members.push({name: `${SPACE_NAME}/members/123`, member: alice});
+    backend.state.reactions.push({name: `${messageName("root")}/reactions/one`,
+      emoji: {unicode: "👍"}, user: alice});
+    const chat = chatHarness(backend);
+    using requests = vi.spyOn(globalThis, "fetch");
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info.sender).toEqual(expected);
+    expect(page![1].info.sender).toEqual(expected);
+    expect(page![2].info.sender).toEqual({id: "users/456", type: "app"});
+    expect((await page![0].message.getMetadata()).sender).toEqual(expected);
+    using threads = await space.listThreads();
+    using entries = await threads.next();
+    expect(entries![0].info.rootMessage?.sender).toEqual(expected);
+    expect((await entries![0].thread.getMetadata()).rootMessage?.sender).toEqual(expected);
+    using members = await space.listMembers();
+    using memberPage = await members.next();
+    expect(memberPage![0].member).toEqual(expected);
+    expect((await space.findMember("users/123"))?.member).toEqual(expected);
+    using reactions = await page![0].message.listReactions();
+    using reactionPage = await reactions.next();
+    expect(reactionPage![0].user).toEqual(expected);
+    const hosts = requests.mock.calls.map(([input]) =>
+      new URL(typeof input === "string" || input instanceof URL ? input : input.url).hostname);
+    expect(new Set(hosts)).toEqual(new Set(["www.googleapis.com", "chat.googleapis.com"]));
+  });
+});
+
 describe("Google Chat gatekeeper behaviors", () => {
+  it("preserves the original undo text after an edit response is lost and the worker restarts", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = await space.getMessage(messageName("root"));
+    await message.edit("updated");
+    backend.state.lostResponse = "edit";
+    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached/);
+    await chat.restart();
+    await chat.applyAction(1);
+    await chat.applyAction(1);
+    expect(backend.state.edits).toHaveLength(1);
+    await chat.revertAction(1);
+    expect(backend.state.messages[0].text).toBe("root");
+  });
+
+  it.each(["addReaction", "removeReaction"] as const)("preserves %s undo after a lost write response", async operation => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    if (operation === "removeReaction") backend.state.reactions.push({name: `${messageName("root")}/reactions/own`,
+      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = await space.getMessage(messageName("root"));
+    await message[operation]("👍");
+    backend.state.lostResponse = operation;
+    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
+    await chat.restart();
+    await chat.applyAction(1);
+    expect(backend.state.reactionWrites).toHaveLength(1);
+    await chat.revertAction(1);
+    expect(backend.state.reactions).toHaveLength(operation === "addReaction" ? 0 : 1);
+  });
+
+  it("recovers a thread ID from a partial idempotent send response", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.startThread("root");
+    using _reply = await thread.post("reply");
+    backend.state.lostResponse = "send";
+    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached/);
+    await chat.restart();
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    expect(backend.state.creates).toHaveLength(2);
+    expect(backend.state.creates[1].body.thread?.name).toBe(threadName("T1"));
+  });
+
+  it("allows rejecting an edit definitively refused on its first attempt", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = await space.getMessage(messageName("root"));
+    await message.edit("updated");
+    backend.state.editStatus = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+    await chat.rejectAction(1);
+    expect((await message.getMetadata()).text).toBe("root");
+  });
+
+  it("keeps a denied unsend retryable and handles disappearance between GET and DELETE", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    await chat.call("space.post", ["hello"]);
+    await chat.applyAction(1);
+    backend.state.getMessageStatus = 403;
+    await expect(chat.revertAction(1)).rejects.toThrow(/http=403/);
+    expect(backend.state.messages).toHaveLength(1);
+    backend.state.getMessageStatus = 200;
+    backend.state.deleteAfterGet = true;
+    await chat.revertAction(1);
+    expect(backend.state.messages).toEqual([]);
+  });
+
+  it("rechecks the authoritative account before delayed apply and undo", async () => {
+    const backend = chatBackend();
+    let sub = "subject-a";
+    const chat = chatHarness(backend, () => ({sub}));
+    await chat.call("space.post", ["hello"]);
+    sub = "subject-b";
+    await expect(chat.applyAction(1)).rejects.toThrow(/different Google account/);
+    expect(backend.state.creates).toEqual([]);
+    sub = "subject-a";
+    await chat.applyAction(1);
+    sub = "subject-b";
+    await expect(chat.revertAction(1)).rejects.toThrow(/different Google account/);
+    expect(backend.state.deletes).toEqual([]);
+  });
+
+  it("refuses a replacement account token when a live session reloads after a 403", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend, token => ({sub: token === "Bearer replacement" ? "subject-b" : "subject-a"}));
+    using space = await chat.session();
+    await chat.setToken("replacement");
+    backend.state.rejectedToken = "access-token";
+    await expect(Promise.resolve(space.getMetadata())).rejects.toThrow(/different Google account/);
+  });
+
+  it("hides replies to rejected pending roots across restart", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.startThread("root");
+    using reply = await thread.post("reply");
+    await chat.rejectAction(1);
+    await expect(Promise.resolve(reply.getMetadata())).rejects.toThrow(/root message was never created/);
+    await chat.restart();
+    expect(await chat.call("space.listMessages", [{}])).toEqual([]);
+    await expect(chat.applyAction(2)).rejects.toThrow(/root message was never created/);
+  });
+
   it.each([false, true])("gates sends and supports undo (already removed: %s)", async alreadyRemoved => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
@@ -395,6 +739,66 @@ function threadMessage(id: string, thread: string, createTime: string, reply = f
 }
 
 describe("Google Chat thread capabilities", () => {
+  it("enriches roots already in the discovery page without extra message lookups", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(
+      threadMessage("root", "A", "2024-01-01T00:00:00Z"),
+      threadMessage("reply", "A", "2024-01-02T00:00:00Z", true),
+      threadMessage("zero-replies", "B", "2024-01-03T00:00:00Z"),
+    );
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using cursor = await space.listThreads();
+    using page = await cursor.next();
+    expect(page!.map(({info}) => [info.id, info.latestMessage.text, info.rootMessage?.text]))
+      .toEqual([[threadName("B"), "zero-replies", "zero-replies"], [threadName("A"), "reply", "root"]]);
+    expect(backend.state.lists).toHaveLength(1);
+    expect(backend.state.gets).toEqual([]);
+  });
+
+  it("omits roots outside the current page rather than fetching them for discovery or metadata", async () => {
+    const backend = chatBackend();
+    backend.state.pageSize = 1;
+    backend.state.messages.push(
+      threadMessage("root", "A", "2024-01-01T00:00:00Z"),
+      threadMessage("reply", "A", "2024-01-02T00:00:00Z", true),
+    );
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using cursor = await space.listThreads({since: new Date("2024-01-02T00:00:00Z")});
+    using page = await cursor.next();
+    expect(page![0].info).not.toHaveProperty("rootMessage");
+    expect(backend.state.lists).toHaveLength(1);
+    const info = await page![0].thread.getMetadata();
+    expect(info).toMatchObject({id: threadName("A"), spaceId: SPACE_NAME,
+      latestMessage: {text: "reply"}});
+    expect(info).not.toHaveProperty("rootMessage");
+    expect(backend.state.lists).toHaveLength(2);
+    expect(backend.state.gets).toEqual([]);
+    using root = await page![0].thread.getRootMessage();
+    expect((await root!.getMetadata()).text).toBe("root");
+  });
+
+  it("refreshes authorized thread metadata including same-page roots and pending edits", async () => {
+    const backend = chatBackend();
+    const reply = threadMessage("reply", "A", "2024-01-02T00:00:00Z", true);
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"), reply);
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.getThread(threadName("A"));
+    using root = await thread.getRootMessage();
+    await root!.edit("revised root");
+    await chat.failNextObservation("Read Google Chat thread metadata");
+    await expect(Promise.resolve(thread.getMetadata())).rejects.toThrow(/denied by the test/);
+    reply.text = "new reply text";
+    expect(await thread.getMetadata()).toMatchObject({
+      id: threadName("A"), spaceId: SPACE_NAME,
+      rootMessage: {text: "revised root"}, latestMessage: {text: "new reply text"},
+    });
+    backend.state.messages.length = 0;
+    await expect(Promise.resolve(thread.getMetadata())).rejects.toThrow(/not available/);
+  });
+
   it("discovers zero-reply roots and recently replied-to old threads once across pages and retries", async () => {
     const backend = chatBackend();
     backend.state.pageSize = 1;
@@ -437,6 +841,10 @@ describe("Google Chat thread capabilities", () => {
     using cursor = await space.listThreads();
     using entries = await cursor.next();
     using thread = entries!.find(entry => entry.info.id === threadName("A"))!.thread.dup();
+    await expect(Promise.resolve(Reflect.get(space, "searchMessages")({text: "unrelated"})))
+      .rejects.toThrow(/does not implement the method "searchMessages"/);
+    await expect(Promise.resolve(Reflect.get(thread, "searchMessages")({text: "unrelated"})))
+      .rejects.toThrow(/does not implement the method "searchMessages"/);
     entries![Symbol.dispose]();
     cursor[Symbol.dispose]();
     space[Symbol.dispose]();
@@ -459,6 +867,130 @@ describe("Google Chat thread capabilities", () => {
     expect(backend.state.creates[0]).toMatchObject({
       replyOption: "REPLY_MESSAGE_OR_FAIL", body: {text: "acknowledged", thread: {name: threadName("A")}},
     });
+  });
+
+  it.each(["root", "history", "post", "reply"])(
+    "retains thread scope through %s messages, reactions, replies, and attachments", async source => {
+    const backend = chatBackend();
+    backend.state.pageSize = 1;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.getThread(threadName("A"));
+    using root = (await thread.getRootMessage())!;
+    using history = await thread.listMessages();
+    using page = await history.next();
+    using message = source === "root" ? root.dup() : source === "history" ? page![0].message.dup()
+      : source === "post" ? await thread.post("new message") : await root.reply("new message");
+    if (source === "post" || source === "reply") await chat.applyAction(1);
+    const id = (await message.getMetadata()).id;
+    const raw = backend.state.messages.find(item => item.name === id)!;
+    raw.attachment = [{name: `${id}/attachments/file`, contentName: "notes.txt", source: "UPLOADED_CONTENT",
+      contentType: "text/plain", attachmentDataRef: {resourceName: "media/notes"}}];
+    backend.state.reactions.push(
+      {name: `${id}/reactions/one`, emoji: {unicode: "👍"}, user: {name: "users/subject-a"}},
+      {name: `${id}/reactions/two`, emoji: {unicode: "🎉"}, user: {name: "users/other"}},
+    );
+    using attachments = await message.listAttachments();
+    using attachment = attachments[0].attachment.dup();
+    expect((await attachment.getMetadata()).filename).toBe("notes.txt");
+    expect(new TextDecoder().decode(await attachment.getContent())).toBe("attachment bytes");
+    using reactions = await message.listReactions();
+    using firstReactions = await reactions.next();
+    expect(firstReactions![0].emoji).toBe("👍");
+    const submissions = (await chat.readQueue()).submissions.length;
+
+    // A later lookup now describes the same ID in a sibling thread. The original thread grant
+    // must fail closed on every descendant surface, even though the space grant still permits it.
+    raw.thread = {name: threadName("B")};
+    const scopeError = /only covers one Google Chat thread/;
+    await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.edit("outside"))).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.reply("outside"))).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.addReaction("🎉"))).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.removeReaction("👍"))).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.listAttachments())).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(reactions.next())).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(attachment.getMetadata())).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(attachment.getContent())).rejects.toThrow(scopeError);
+    expect(backend.state.downloads).toHaveLength(1);
+    expect((await chat.readQueue()).submissions).toHaveLength(submissions);
+    expect(backend.state.edits).toEqual([]);
+    expect(backend.state.reactionWrites).toEqual([]);
+    using broad = await space.getMessage(id);
+    expect((await broad.getMetadata()).threadId).toBe(threadName("B"));
+    delete raw.thread;
+    await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(scopeError);
+  });
+
+  it.each(["edit", "addReaction", "removeReaction"])(
+    "retains the %s action's thread boundary across approval and restart", async operation => {
+    const backend = chatBackend();
+    const raw = threadMessage("root", "A", "2024-01-01T00:00:00Z");
+    backend.state.messages.push(raw);
+    backend.state.reactions.push({name: `${raw.name}/reactions/own`,
+      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.getThread(threadName("A"));
+    using message = (await thread.getRootMessage())!;
+    if (operation === "edit") await message.edit("edited");
+    else if (operation === "addReaction") await message.addReaction("🎉");
+    else await message.removeReaction("👍");
+
+    raw.thread = {name: threadName("B")};
+    await chat.restart();
+    await expect(chat.applyAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
+    expect(backend.state.edits).toEqual([]);
+    expect(backend.state.reactionWrites).toEqual([]);
+    raw.thread = {name: threadName("A")};
+    await chat.applyAction(1);
+    expect(backend.state.edits.length + backend.state.reactionWrites.length).toBe(1);
+  });
+
+  it.each(["edit", "addReaction", "removeReaction", "post"])(
+    "retains thread scope when undoing %s", async operation => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    backend.state.reactions.push({name: `${messageName("root")}/reactions/own`,
+      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.getThread(threadName("A"));
+    using root = (await thread.getRootMessage())!;
+    using posted = operation === "post" ? await thread.post("new message") : null;
+    if (operation === "edit") await root.edit("edited");
+    else if (operation === "addReaction") await root.addReaction("🎉");
+    else if (operation === "removeReaction") await root.removeReaction("👍");
+    await chat.applyAction(1);
+    const id = posted ? (await posted.getMetadata()).id : messageName("root");
+    const raw = backend.state.messages.find(message => message.name === id)!;
+    raw.thread = {name: threadName("B")};
+    const edits = backend.state.edits.length;
+    const reactions = backend.state.reactionWrites.length;
+    await expect(chat.revertAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
+    expect(backend.state.edits).toHaveLength(edits);
+    expect(backend.state.reactionWrites).toHaveLength(reactions);
+    expect(backend.state.deletes).toEqual([]);
+    raw.thread = {name: threadName("A")};
+    expect(await chat.revertAction(1)).toBeUndefined();
+  });
+
+  it("preserves a pending thread's boundary after its IDs resolve to Google IDs", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using thread = await space.startThread("new topic");
+    using message = await thread.post("new reply");
+    await message.edit("edited reply");
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    const raw = backend.state.messages.find(item => item.name === messageName("M2"))!;
+    raw.thread = {name: threadName("B")};
+    await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(/only covers one Google Chat thread/);
+    await chat.restart();
+    await expect(chat.applyAction(3)).rejects.toThrow(/only covers one Google Chat thread/);
+    expect(backend.state.edits).toEqual([]);
   });
 
   it("checks thread ownership and never substitutes a surviving reply for the root", async () => {
@@ -500,11 +1032,18 @@ describe("Google Chat thread capabilities", () => {
     const chat = chatHarness(backend);
     using space = await chat.session();
     using thread = await space.startThread("new topic");
+    expect(await thread.getMetadata()).toMatchObject({
+      id: "pending:thread:1", spaceId: SPACE_NAME,
+      rootMessage: {text: "new topic"}, latestMessage: {text: "new topic"},
+    });
     using root = (await thread.getRootMessage())!;
     const rootInfo = await root.getMetadata();
     expect(rootInfo.threadId).toBe("pending:thread:1");
     using response = await thread.post("first reply");
     using _second = await root.reply("second reply");
+    expect(await thread.getMetadata()).toMatchObject({
+      rootMessage: {text: "new topic"}, latestMessage: {text: "second reply"},
+    });
     using before = await thread.listMessages();
     using beforePage = await before.next();
     expect(beforePage!.map(entry => entry.info.text)).toEqual(["new topic", "first reply", "second reply"]);
@@ -513,6 +1052,9 @@ describe("Google Chat thread capabilities", () => {
 
     await chat.applyAction(1);
     using during = await thread.listMessages();
+    expect(await thread.getMetadata()).toMatchObject({
+      id: threadName("T1"), rootMessage: {id: messageName("M1")},
+    });
     using duringPage = await during.next();
     expect(duringPage!.map(entry => entry.info.text)).toEqual(["new topic", "first reply", "second reply"]);
     await chat.applyAction(2);

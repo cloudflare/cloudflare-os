@@ -11,7 +11,7 @@
 // domain-wide delegation, and no import mode. A caller can only ever reach what the connected
 // user could reach in the Chat UI.
 
-import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { AccessTokenProvider, fetchWithAuthRetry, type FetchWithAuthRetryOptions } from "./auth-retry";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatReaction,
@@ -494,6 +494,7 @@ export class ChatApi {
     operation: string,
     path: string,
     init?: RequestInit & { idempotent?: boolean },
+    retryOptions: FetchWithAuthRetryOptions = {},
   ): Promise<T> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -505,7 +506,7 @@ export class ChatApi {
       `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
       this.getAccessToken,
-      idempotent === undefined ? {} : { idempotent },
+      { ...retryOptions, ...(idempotent === undefined ? {} : { idempotent }) },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;
@@ -703,7 +704,7 @@ export class ChatApi {
 
   async listMembers(
     spaceName: string,
-    options: { pageToken?: string; pageSize?: number } = {},
+    options: { pageToken?: string; pageSize?: number; signal?: AbortSignal } = {},
   ): Promise<ChatPage<ChatMembership>> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams({
@@ -715,7 +716,8 @@ export class ChatApi {
     const body = await this.#request<{
       memberships?: ChatMembershipRaw[];
       nextPageToken?: string;
-    }>("members.list", `/spaces/${spaceId}/members?${params}`);
+    }>("members.list", `/spaces/${spaceId}/members?${params}`, { signal: options.signal },
+      options.signal ? { retries: 1 } : {});
     return {
       items: (body.memberships ?? []).map(chatMembershipFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),

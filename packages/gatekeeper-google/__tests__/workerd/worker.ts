@@ -2,7 +2,7 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
-import { UserAccount } from "../../src/google";
+import { UserAccount, GoogleVerifier } from "../../src/google";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
@@ -10,11 +10,11 @@ import type {
   GmailSession,
 } from "../../src/types";
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatSpace,
+  ChatListMessagesOptions, ChatMessageInfo, ChatSpace, GoogleChatSession,
 } from "../../src/chat-types";
 
 export { default } from "../../src/google";
-export { GmailGatekeeperImpl, GoogleChatGatekeeperImpl, UserAccount };
+export { GmailGatekeeperImpl, GoogleChatGatekeeperImpl, UserAccount, GoogleVerifier };
 
 type StorageOperation =
   | {kind: "put"; key: string; value: unknown}
@@ -73,6 +73,7 @@ class TestApprovalQueue extends RpcTarget {
   #releasePausedSubmission?: () => void;
 
   #failTitle?: string;
+  #activeObservers = new Set<string>();
 
   constructor(rejection?: string) {
     super();
@@ -86,6 +87,11 @@ class TestApprovalQueue extends RpcTarget {
 
   async authorizeObservation(description: unknown): Promise<void> {
     this.#observations.push(description);
+    if (typeof description === "object" && description !== null && "excludeObservers" in description &&
+        Array.isArray(description.excludeObservers) &&
+        description.excludeObservers.some(id => this.#activeObservers.has(id))) {
+      throw new Error("An active observer cannot see this observation.");
+    }
     if (this.#failTitle !== undefined && typeof description === "object" && description !== null &&
         "title" in description && description.title === this.#failTitle) {
       this.#failTitle = undefined;
@@ -126,6 +132,10 @@ class TestApprovalQueue extends RpcTarget {
 
   async getGitCache() {
     return new TestGitCache();
+  }
+
+  addObserver(id: string): void {
+    this.#activeObservers.add(id);
   }
 
   pauseObservation(title: string): void {
@@ -351,6 +361,24 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
     using queueStub = new RpcStub(queue);
     return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSpace;
+  }
+
+  async openChatAccountSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleChatSession> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#chat(facetName, id, props).startSession(queueStub) as GoogleChatSession;
+  }
+
+  async chatAddObserver(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#chat(facetName, id, props).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#queues.get(queueId)!.addObserver(observerId);
   }
 
   async chatRejectAction(

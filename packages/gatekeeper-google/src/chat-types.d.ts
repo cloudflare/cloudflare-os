@@ -15,11 +15,10 @@ export interface Cursor<T> extends RpcTarget {
 
 /** A person or Chat app visible to the connected Google account. */
 export type ChatUser = {
-  /** Opaque Chat user ID, such as `users/123456789`. */
+  /** Stable opaque identity for joins and API calls. Prefer name for display when available. */
   id: string;
   /**
-   * Display name, when Google makes it visible to the connected user. Google omits it for some
-   * users the connected account has no prior contact with.
+   * Display name supplied by Google Chat when visible to the connected account. May be omitted.
    */
   name?: string;
   /** Whether this identity is a person or a Chat app. */
@@ -33,7 +32,10 @@ export type ChatSpaceType = "space" | "groupChat" | "directMessage";
 export type ChatSpaceInfo = {
   /** Opaque conversation ID, such as `spaces/AAAA1234`. */
   id: string;
-  /** User-visible name. Direct messages and most group chats have none. */
+  /**
+   * Space name, or the other participant's name for a DM when available. Listings may omit DM
+   * names; call that entry's space.getMetadata() when you need a human-readable DM label.
+   */
   name?: string;
   /** Browser URL for opening the conversation, when Google returns one. */
   url?: string;
@@ -56,7 +58,7 @@ export type ChatSpaceInfo = {
 
 /** A listing result: space metadata plus a capability for that space. */
 export type ChatSpaceEntry = {
-  /** Metadata for this result. */
+  /** Metadata for this result. For an unnamed DM, space.getMetadata() can resolve its participant's name. */
   info: ChatSpaceInfo;
   /** Capability for reading and acting in this conversation. */
   space: ChatSpace;
@@ -211,14 +213,19 @@ export type ChatReaction = {
   user?: ChatUser;
 };
 
-/** A thread summary from discovery: a top-level message together with zero or more replies. */
+/** A thread snapshot: a top-level message together with zero or more replies. */
 export type ChatThreadInfo = {
   /** Canonical spaces/{space}/threads/{thread}, or pending:thread:{n} for a new root. */
   id: string;
   /** ID of the containing conversation; this alone confers no access to it. */
   spaceId: string;
-  /** Newest message within the listing's window, which may be a reply to an older root. */
+  /** Newest visible message; in discovery results, the newest within the listing's window. */
   latestMessage: ChatMessageInfo;
+  /**
+   * Root content when it was available in the page already read. Omission does not mean the
+   * root is missing; use getRootMessage() when it is needed explicitly.
+   */
+  rootMessage?: ChatMessageInfo;
 };
 
 /** A discovered thread, its newest matching message, and access to the full thread. */
@@ -247,6 +254,8 @@ export interface GoogleChatSession extends RpcTarget {
    * List conversations the connected user has joined.
    *
    * Group chats and direct messages appear only once they contain a message.
+   * DM participant names are not resolved by this listing. If info.type is "directMessage"
+   * and info.name is absent, call entry.space.getMetadata() when you need its display name.
    */
   listSpaces(options?: ChatListSpacesOptions): Promise<Cursor<ChatSpaceEntry>>;
 
@@ -284,7 +293,11 @@ export interface GoogleChatSession extends RpcTarget {
 
 /** Access to one Google Chat space, group chat, or direct message. */
 export interface ChatSpace extends RpcTarget {
-  /** Return current metadata about this conversation. */
+  /**
+   * Return current metadata. For an unnamed DM, resolve the other participant's display name
+   * on demand. Call this when a listing omits a DM name and you need a human-readable label.
+   * If the name is unavailable, name remains absent; use the conversation ID as a fallback.
+   */
   getMetadata(): Promise<ChatSpaceInfo>;
 
   /** List messages in this conversation, oldest first unless `order` says otherwise. */
@@ -336,6 +349,12 @@ export interface ChatSpace extends RpcTarget {
 
 /** Access to one thread's root and replies, including future replies, without the parent space. */
 export interface ChatThread extends RpcTarget {
+  /**
+   * Return current identity and latest-message metadata, with root content when cheaply
+   * available. Throws if no visible messages remain in the thread.
+   */
+  getMetadata(): Promise<ChatThreadInfo>;
+
   /** Return the root message, or null if it is unavailable. Never substitutes a surviving reply. */
   getRootMessage(): Promise<ChatMessage | null>;
 
@@ -346,7 +365,10 @@ export interface ChatThread extends RpcTarget {
   post(text: string): Promise<ChatMessage>;
 }
 
-/** Access to one message in a Google Chat conversation. */
+/**
+ * Access to one message in a Google Chat conversation. A capability obtained through a thread
+ * remains restricted to that thread, including its replies and attachment capabilities.
+ */
 export interface ChatMessage extends RpcTarget {
   /** Return the message's current sender, text, timestamps, attachments, and reaction counts. */
   getMetadata(): Promise<ChatMessageInfo>;

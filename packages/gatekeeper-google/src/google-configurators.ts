@@ -2,7 +2,8 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
-import { ChatApi } from "./chat-api";
+import { ChatApi, isChatNoAccessError } from "./chat-api";
+import type { ChatSpaceInfo } from "./chat-types";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
@@ -107,6 +108,18 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
  */
 function idTail(id: string): string {
   return id.length > 8 ? `…${id.slice(-8)}` : id;
+}
+
+function chatSpaceOption(space: ChatSpaceInfo): ConfiguratorOption {
+  const id = space.id.slice("spaces/".length);
+  const kind = space.type === "directMessage" ? "Direct message"
+    : space.type === "groupChat" ? "Group chat" : "Space";
+  return {
+    value: id,
+    title: space.name ?? kind,
+    subtitle: space.lastActiveAt ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}` : kind,
+    meta: idTail(id),
+  };
 }
 
 async function listDriveFiles(
@@ -284,24 +297,22 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
     const api = new ChatApi(googleTokenProvider(this));
     const options: ConfiguratorOption[] = [];
+    // Exact references bypass the bounded discovery scan, including conversations on later pages.
+    const exact = /^(?:spaces\/|https:\/\/chat\.google\.com\/(?:room|dm)\/)([A-Za-z0-9_-]{1,128})\/?$/.exec(query.trim());
+    if (exact) {
+      try {
+        const space = await api.getSpace(`spaces/${exact[1]}`);
+        return [chatSpaceOption(space)];
+      } catch (error) {
+        if (isChatNoAccessError(error)) return [];
+        throw error;
+      }
+    }
     let pageToken: string | undefined;
     for (let pageNumber = 0; pageNumber < 5 && options.length < 100; pageNumber++) {
-      const page = await api.listSpaces({ pageSize: 200, ...(pageToken ? { pageToken } : {}) });
+      const page = await api.listSpaces({ pageSize: query.trim() ? 200 : 100, ...(pageToken ? { pageToken } : {}) });
       options.push(...page.items
-        .map(space => {
-          const id = space.id.slice("spaces/".length);
-          const kind = space.type === "directMessage"
-            ? "Direct message"
-            : space.type === "groupChat" ? "Group chat" : "Space";
-          return {
-            value: id,
-            title: space.name ?? kind,
-            subtitle: space.lastActiveAt
-              ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}`
-              : kind,
-            meta: idTail(id),
-          };
-        })
+        .map(chatSpaceOption)
         .filter(option => optionMatches([option.title, option.subtitle, option.value], query)));
       pageToken = page.nextPageToken;
       if (!pageToken) break;

@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, Google Chat, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -50,6 +50,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 17. Go back to the Library, search for "BigQuery API"
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
+20. For Chat, enable **Google Chat API**. Also enable **People API** for participant-name fallback in unnamed DMs.
 
 The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
 

@@ -23,8 +23,12 @@ function spaceIdFrom(resourceUrl: string): string | undefined {
     if (bare) candidates.push(bare[1]);
   }
   for (const candidate of candidates) {
-    const decoded = decodeURIComponent(candidate);
-    if (/^[A-Za-z0-9_-]{1,128}$/.test(decoded)) return decoded;
+    try {
+      const decoded = decodeURIComponent(candidate);
+      if (/^[A-Za-z0-9_-]{1,128}$/.test(decoded)) return decoded;
+    } catch {
+      // Malformed pasted URL: leave the picker editable rather than failing initialization.
+    }
   }
   return undefined;
 }
@@ -50,7 +54,7 @@ export default {
         <Autocomplete
           name="spaceId"
           value={values.spaceId}
-          placeholder="Search your Google Chat conversations..."
+          placeholder="Search conversations or paste a Chat URL or spaces/ID..."
           loadOptions={query => ui.listChatSpaces(query)}
           onChange={spaceId => setValues({ spaceId })}
         />
