@@ -1487,7 +1487,11 @@ async function runAgentPass(
   // to anything yet. A denied request releases its name (log-derived, so replay agrees).
   let claimedNames = new Set<string>();
 
-  let isNameInScope = (name: string) => chatBindings.has(name) || claimedNames.has(name);
+  // Whether a name is unavailable for a new chat binding. GIT_BINDING_NAME counts as in scope
+  // because the automatic env.GIT occupies it; only new bindings are refused -- a chat binding
+  // that already took the name (from before env.GIT existed) keeps resolving as it did.
+  let isNameInScope = (name: string) =>
+      name === GIT_BINDING_NAME || chatBindings.has(name) || claimedNames.has(name);
 
   // Reverse lookup: the chat env name for a workpiece, if the agent holds one.
   let chatNameFor = (id: WorkpieceId): string | undefined => {

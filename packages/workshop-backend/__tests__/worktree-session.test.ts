@@ -759,21 +759,25 @@ describe("commit and diff", () => {
     let result = await session.structuredDiff();
     expect(result).toEqual({
       files: [
-        { path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [
+        { path: "a.txt", status: "modified", oldKind: "file", newKind: "file",
+          hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [
           { kind: "removed", text: "one", oldLineNumber: 1 },
           { kind: "added", text: "one!", newLineNumber: 1 },
           { kind: "context", text: "two", oldLineNumber: 2, newLineNumber: 2 },
         ] }] },
-        { path: "b.txt", status: "removed", hunks: [{ header: "@@ -1,1 +0,0 @@", lines: [
+        { path: "b.txt", status: "removed", oldKind: "file",
+          hunks: [{ header: "@@ -1,1 +0,0 @@", lines: [
           { kind: "removed", text: "bee", oldLineNumber: 1 },
         ] }] },
-        { path: "c.txt", status: "added", hunks: [{ header: "@@ -0,0 +1,1 @@", lines: [
+        { path: "c.txt", status: "added", newKind: "file",
+          hunks: [{ header: "@@ -0,0 +1,1 @@", lines: [
           { kind: "added", text: "sea", newLineNumber: 1 },
         ] }] },
         // An empty file has no lines to diff, but its addition still shows.
-        { path: "empty.txt", status: "added", hunks: [] },
+        { path: "empty.txt", status: "added", newKind: "file", hunks: [] },
         // Context is limited to 3 lines, so the hunk starts mid-file.
-        { path: "long.txt", status: "modified", hunks: [{ header: "@@ -2,6 +2,7 @@", lines: [
+        { path: "long.txt", status: "modified", oldKind: "file", newKind: "file",
+          hunks: [{ header: "@@ -2,6 +2,7 @@", lines: [
           { kind: "context", text: "2", oldLineNumber: 2, newLineNumber: 2 },
           { kind: "context", text: "3", oldLineNumber: 3, newLineNumber: 3 },
           { kind: "context", text: "4", oldLineNumber: 4, newLineNumber: 4 },
@@ -809,7 +813,8 @@ describe("commit and diff", () => {
     await session.writeFile("a.txt", "one\n");
 
     expect(await session.structuredDiff()).toEqual({
-      files: [{ path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
+      files: [{ path: "a.txt", status: "modified", oldKind: "file", newKind: "file",
+                hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
         { kind: "removed", text: "one", oldLineNumber: 1 },
         { kind: "context", text: "\\ No newline at end of file" },
         { kind: "added", text: "one", newLineNumber: 1 },
@@ -830,13 +835,90 @@ describe("commit and diff", () => {
       { file: "vendored", error: "vendored is a submodule (gitlink) pointing at commit " +
                                  "1111111111111111111111111111111111111111" },
     ]));
-    expect(result.files).toContainEqual({ path: "a.txt", status: "added", hunks: [
+    expect(result.files).toContainEqual({ path: "a.txt", status: "added", newKind: "file", hunks: [
       { header: "@@ -0,0 +1,1 @@", lines: [{ kind: "added", text: "one", newLineNumber: 1 }] },
     ] });
     expect(result.files.find(file => file.path === "README.md")?.status).toBe("removed");
     // Every path lands in exactly one of the two lists.
     let errorPaths = result.errors.map(error => error.file);
     expect(result.files.some(file => errorPaths.includes(file.path))).toBe(false);
+  }));
+
+  it("diffs report executable-bit changes, with or without content changes",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    // Two commits holding the same blobs, differing only in the files' modes.
+    let scriptOid = await impl.gitCache.putFromGatekeeper(
+        999, "blob", new TextEncoder().encode("#!/bin/sh\n"));
+    let toolOid = await impl.gitCache.putFromGatekeeper(
+        999, "blob", new TextEncoder().encode("tool\n"));
+    let commitWithModes = async (entries: { mode: string, name: string, oid: string }[]) => {
+      let tree = await impl.gitCache.putFromGatekeeper(999, "tree", treePayload(entries));
+      return await impl.gitCache.putFromGatekeeper(
+          999, "commit", commitPayload(tree, [], JSON.stringify(entries)));
+    };
+    let plain = await commitWithModes([
+      { mode: "100644", name: "script.sh", oid: scriptOid },
+      { mode: "100755", name: "tool", oid: toolOid },
+    ]);
+    let modesFlipped = await commitWithModes([
+      { mode: "100755", name: "script.sh", oid: scriptOid },
+      { mode: "100644", name: "tool", oid: toolOid },
+    ]);
+    let toolOnly = await commitWithModes([{ mode: "100644", name: "tool", oid: toolOid }]);
+    let { session } = await createWorktreeSession(impl, 1, modesFlipped);
+    // An edit keeps the base's mode, so this is a content change on top of the mode change.
+    await session.writeFile("tool", "tool v2\n");
+    let toolHunks = [{ header: "@@ -1,1 +1,1 @@", lines: [
+      { kind: "removed", text: "tool", oldLineNumber: 1 },
+      { kind: "added", text: "tool v2", newLineNumber: 1 },
+    ] }];
+    let toolDiff = formatUnifiedDiff("tool", "tool\n", "tool v2\n", true, true);
+
+    // Mode changes: a "modified" file whose kinds differ, with or without hunks.
+    expect(await session.structuredDiff(plain)).toEqual({
+      files: [
+        { path: "script.sh", status: "modified", oldKind: "file", newKind: "executable",
+          hunks: [] },
+        { path: "tool", status: "modified", oldKind: "executable", newKind: "file",
+          hunks: toolHunks },
+      ],
+      errors: [],
+    });
+    expect(await session.diff(plain)).toBe([
+      "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755",
+      "diff --git a/tool b/tool\nold mode 100755\nnew mode 100644",
+      toolDiff,
+    ].join("\n"));
+
+    // An added executable names its kind; an unchanged mode gets no mode lines.
+    let scriptHunks = [{ header: "@@ -0,0 +1,1 @@", lines: [
+      { kind: "added", text: "#!/bin/sh", newLineNumber: 1 },
+    ] }];
+    expect((await session.structuredDiff(toolOnly)).files).toEqual([
+      { path: "script.sh", status: "added", newKind: "executable", hunks: scriptHunks },
+      { path: "tool", status: "modified", oldKind: "file", newKind: "file", hunks: toolHunks },
+    ]);
+    expect(await session.diff(toolOnly)).toBe([
+      "diff --git a/script.sh b/script.sh\nnew file mode 100755",
+      formatUnifiedDiff("script.sh", "", "#!/bin/sh\n", false, true),
+      toolDiff,
+    ].join("\n"));
+
+    // So does a removed one.
+    await session.deleteFile("script.sh");
+    expect((await session.structuredDiff(modesFlipped)).files).toEqual([
+      { path: "script.sh", status: "removed", oldKind: "executable", hunks: [
+        { header: "@@ -1,1 +0,0 @@",
+          lines: [{ kind: "removed", text: "#!/bin/sh", oldLineNumber: 1 }] },
+      ] },
+      { path: "tool", status: "modified", oldKind: "file", newKind: "file", hunks: toolHunks },
+    ]);
+    expect(await session.diff(modesFlipped)).toBe([
+      "diff --git a/script.sh b/script.sh\ndeleted file mode 100755",
+      formatUnifiedDiff("script.sh", "#!/bin/sh\n", "", true, false),
+      toolDiff,
+    ].join("\n"));
   }));
 });
 

@@ -190,6 +190,24 @@ describe("spawned agent tools", () => {
     ]);
   }));
 
+  it("refuses a new binding named GIT, which would shadow env.GIT",
+      () => withImpl(async impl => {
+    let commit = await commitFiles(impl, { "README.md": "hello\n" });
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([
+        fauxToolCall("createWorktree", { title: "Repo", bindingName: "GIT", commitId: commit }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+
+    let [call] = toolCalls(impl, chatId);
+    expect(call.error).toMatch(/already a binding named "GIT"/);
+    expect([...impl.storage.gadgets.list()].filter((record: any) => record.type === "worktree"))
+        .toEqual([]);
+  }));
+
   it("attributes the spawned turn to the gadget, with the creator's commit email",
       () => withImpl(async impl => {
     let creator = { ...OWNER, commitEmail: "owner@commits.example" };

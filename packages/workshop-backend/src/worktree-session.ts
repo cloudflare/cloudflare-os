@@ -23,7 +23,7 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { structuredPatch } from "diff";
 import type {
-  DiffFile, DiffHunk, DiffLine, StructuredDiffResult, StructuredGrepResult, Worktree,
+  DiffFile, DiffFileKind, DiffHunk, DiffLine, StructuredDiffResult, StructuredGrepResult, Worktree,
   WorktreeFileEntry,
 } from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
@@ -271,6 +271,14 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
         parts.push(`(cannot diff ${file.path}: ${file.note})`);
         continue;
       }
+      // An executable's mode is spelled as git spells it, ahead of the content diff (if any): a
+      // mode change, or an added/removed executable. (Git also spells out the default 100644 of
+      // an added/removed regular file; that is left implied here, to keep the common case terse.)
+      let modeLines = gitModeLines(file);
+      if (modeLines.length > 0) {
+        parts.push([`diff --git a/${file.path} b/${file.path}`, ...modeLines].join("\n"));
+        if (file.oldText === file.newText) continue;  // only the mode changed
+      }
       let diff = formatUnifiedDiff(file.path, file.oldText ?? "", file.newText ?? "",
                                    file.oldText !== undefined, file.newText !== undefined);
       if (diff !== undefined) parts.push(diff);
@@ -287,8 +295,11 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       }
       let status: DiffFile["status"] = file.oldText === undefined ? "added"
           : file.newText === undefined ? "removed" : "modified";
-      result.files.push({ path: file.path, status,
-                          hunks: structuredHunks(file.oldText ?? "", file.newText ?? "") });
+      let entry: DiffFile = { path: file.path, status,
+                              hunks: structuredHunks(file.oldText ?? "", file.newText ?? "") };
+      if (file.oldKind !== undefined) entry.oldKind = file.oldKind;
+      if (file.newKind !== undefined) entry.newKind = file.newKind;
+      result.files.push(entry);
     }
     return result;
   }
@@ -315,8 +326,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     // first and the text read catches exactly UnreadableContentError, so an operational
     // failure (a pull outage, a corrupt object) still fails the diff rather than silently
     // rendering an incomplete one.
-    let readSide = async (commit: string, path: string)
-        : Promise<{ text?: string, note?: string }> => {
+    let readSide = async (commit: string, path: string): Promise<DiffSide> => {
       let entry = await this.host.gitCache.pathEntryAtCommit(commit, path);
       if (entry === undefined || entry.kind === "dir") return {};
       if (entry.kind === "submodule") {
@@ -325,7 +335,8 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       try {
         let text = await this.host.gitCache.readTextBlob(entry.oid, entry.referencedBy, path);
         // A symlink's blob is its target, so the note names it (the shape readFile throws).
-        return entry.kind === "symlink" ? { note: `${path} is a symlink to ${text}` } : { text };
+        return entry.kind === "symlink" ? { note: `${path} is a symlink to ${text}` }
+            : { text, kind: entry.kind };
       } catch (err) {
         if (err instanceof UnreadableContentError) return { note: err.message };
         throw err;
@@ -335,9 +346,13 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     let files: ChangedFile[] = [];
     for (let path of [...paths].toSorted()) {
       let oldSide = await readSide(target, path);
-      let newSide: { text?: string, note?: string };
+      let newSide: DiffSide;
       if (overlay.has(path)) {
-        newSide = { text: overlay.get(path) };
+        // An overlay file keeps its base entry's mode (the one a commit would write, see
+        // GitStore.writeChangedFilesAsCommit); a new one is a regular file.
+        let baseEntry = await this.host.gitCache.pathEntryAtCommit(base, path);
+        newSide = { text: overlay.get(path),
+                    kind: baseEntry?.kind === "executable" ? "executable" : "file" };
       } else if (removed.has(path)) {
         newSide = {};  // removed: no current text
       } else {
@@ -345,16 +360,44 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       }
       if (oldSide.note !== undefined || newSide.note !== undefined) {
         files.push({ path, note: oldSide.note ?? newSide.note });
-      } else if (oldSide.text !== newSide.text) {
-        files.push({ path, oldText: oldSide.text, newText: newSide.text });
+      } else if (oldSide.text !== newSide.text || oldSide.kind !== newSide.kind) {
+        files.push({ path, oldText: oldSide.text, newText: newSide.text,
+                     oldKind: oldSide.kind, newKind: newSide.kind });
       }
     }
     return files;
   }
 }
 
+/** One side of a path being diffed: its text and kind (absent where it doesn't exist), or a note. */
+type DiffSide = { text?: string, kind?: DiffFileKind, note?: string };
+
 /** One path found to differ by WorktreeSessionImpl's diff operations. */
-type ChangedFile = { path: string, oldText?: string, newText?: string, note?: string };
+type ChangedFile = {
+  path: string,
+  oldText?: string,
+  newText?: string,
+  oldKind?: DiffFileKind,
+  newKind?: DiffFileKind,
+  note?: string,
+};
+
+/** The git tree modes of the diffable kinds, as a diff's mode lines spell them. */
+const GIT_FILE_MODES: Record<DiffFileKind, string> = { file: "100644", executable: "100755" };
+
+/**
+ * The git-style mode lines diff() renders for a file: for a mode change, or for an added or
+ * removed executable. None otherwise.
+ */
+function gitModeLines({ oldKind, newKind }: ChangedFile): string[] {
+  if (oldKind !== undefined && newKind !== undefined) {
+    return oldKind === newKind ? []
+        : [`old mode ${GIT_FILE_MODES[oldKind]}`, `new mode ${GIT_FILE_MODES[newKind]}`];
+  }
+  if (newKind === "executable") return [`new file mode ${GIT_FILE_MODES[newKind]}`];
+  if (oldKind === "executable") return [`deleted file mode ${GIT_FILE_MODES[oldKind]}`];
+  return [];
+}
 
 /**
  * One file's before/after as structured hunks: the same jsdiff hunks (and options)

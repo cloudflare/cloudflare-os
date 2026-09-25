@@ -231,7 +231,10 @@ export type GrepMatch = {
 
 /** Result of `structuredDiff()`. */
 export type StructuredDiffResult = {
-  /** Every file that differs, ordered by path. */
+  /**
+   * Every file that differs, ordered by path. A path whose type changed appears twice: its
+   * removal, then its addition (see `DiffFile.status`).
+   */
   files: DiffFile[];
 
   /**
@@ -258,16 +261,34 @@ export type DiffFile = {
   /**
    * "added" if the file is absent from the commit diffed against, "removed" if it is absent from
    * the worktree, otherwise "modified". Renames are not detected: they appear as a removal plus
-   * an addition.
+   * an addition. Likewise a "modified" file never changes type -- only its content or its
+   * executable bit -- so a path whose type changes (e.g. a file replaced by a symlink) is
+   * reported as a removal followed by an addition, as `git diff` reports it.
    */
   status: "added" | "modified" | "removed";
 
   /**
+   * The file's kind (as `listFiles()` reports it) in the commit diffed against. Present unless
+   * `status` is "added".
+   */
+  oldKind?: DiffFileKind;
+
+  /** The file's kind in the worktree. Present unless `status` is "removed". */
+  newKind?: DiffFileKind;
+
+  /**
    * The changed regions, in file order, each with up to 3 lines of surrounding context. Empty
-   * when an empty file was added or removed.
+   * when an empty file was added or removed, or when only the executable bit changed (`oldKind`
+   * and `newKind` differ).
    */
   hunks: DiffHunk[];
 };
+
+/**
+ * The kind of a file reported by `structuredDiff()`: a regular file, with or without its
+ * executable bit. (Other kinds of entry are reported in `errors`, for now.)
+ */
+export type DiffFileKind = "file" | "executable";
 
 /** One hunk inside a changed file. */
 export type DiffHunk = {

@@ -137,7 +137,8 @@ describe("env.GIT worktrees", () => {
     expect(await worktree.structuredGrep(/two/)).toEqual(
         { matches: [{ file: "a.txt", line: 1, text: "two" }], errors: [] });
     expect(await worktree.structuredDiff(c1)).toEqual({
-      files: [{ path: "a.txt", status: "modified", hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
+      files: [{ path: "a.txt", status: "modified", oldKind: "file", newKind: "file",
+                hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
         { kind: "removed", text: "one", oldLineNumber: 1 },
         { kind: "added", text: "two", newLineNumber: 1 },
       ] }] }],
