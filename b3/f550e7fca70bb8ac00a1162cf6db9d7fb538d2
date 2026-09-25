@@ -1,0 +1,109 @@
+packages/gatekeeper-scheduler/src/schedule-driver.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/gatekeeper-supabase/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 14
+packages/gatekeeper-kit/tsconfig.json
+  s_1e5e46268c04cf::t_a356dd17ae6f71 10
+packages/gatekeeper-scheduler/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 16
+packages/mcp-shared/src/log.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 5
+packages/gatekeeper-kit/src/credentials.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/gatekeeper-cloudflare/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 15
+packages/gatekeeper-mcp/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 15
+packages/workshop-backend/src/env.d.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 44
+packages/gatekeeper-github/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/mcp-shared/tsconfig.json
+  s_1e5e46268c04cf::t_a356dd17ae6f71 10
+packages/gatekeeper-kit/src/credential-expiry.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/observability/README.md
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1-16
+packages/gatekeeper-scheduler/__tests__/schedule-driver.test.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 10,15
+packages/gatekeeper-kit/package.json
+  s_1e5e46268c04cf::t_a356dd17ae6f71 34
+packages/gatekeeper-scheduler/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/gatekeeper-cloudflare/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/gatekeeper-github/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 15
+packages/gatekeeper-linear/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/gatekeeper-kit/src/observer-tracker.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/integration-tests/src/worker-inputs.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 65
+packages/observability/src/error-reporting.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1-180
+packages/workshop-backend/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 21
+packages/observability/package.json
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1-39
+packages/gatekeeper-context/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 16
+packages/gatekeeper-email/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/gatekeeper-mcp-portal/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 15
+packages/gatekeeper-linear/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 14
+packages/gatekeeper-kit/src/actions.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+REVIEW.md
+  s_1e5e46268c04cf::t_a356dd17ae6f71 47
+packages/gatekeeper-email/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 14
+packages/gatekeeper-supabase/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+.github/labeler.yml
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/gatekeeper-mcp/src/mcp.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 11
+packages/workshop-backend/src/overseer.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 45
+AGENTS.md
+  s_1e5e46268c04cf::t_a356dd17ae6f71 104,127,138,149
+packages/gatekeeper-google/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 15
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 57
+packages/gatekeeper-google/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/workshop-backend/src/client-errors.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 5-6
+packages/gatekeeper-context/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1
+packages/workshop-backend/src/observability.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 1-2
+packages/mcp-shared/package.json
+  s_1e5e46268c04cf::t_4c96e6f3a91c79 34
+packages/workshop-backend/src/browser-export.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 3
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_1e5e46268c04cf::t_a356dd17ae6f71 10
+pnpm-lock.yaml
+  s_1e5e46268c04cf::t_dd6f06170727d9 139-141,210-212,343-345,377-379,417-419,488,490,522-524,553-555,587-589,649-651,796-798,889-891,915-922,924-933,1024-1026,6066-6068,6070-6074,6076,6078-6080
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b3f550e7fca70bb8ac00a1162cf6db9d7fb538d2",
+  "prompts": {},
+  "sessions": {
+    "s_1e5e46268c04cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "feafd312-78ab-469a-8dde-1b6ff8e38b0f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
