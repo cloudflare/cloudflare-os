@@ -1,16 +1,21 @@
+import { recordActivity, type ActivityMetricInput } from "@gadgets/observability/metrics";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.analytics");
 
 export type ProductAnalyticsConnectionType = "gatekeeper" | "ai_model" | "agent_spawner";
 
-// The record written to Pipelines stream.
+// The record written to Pipelines stream. Each event is also recorded as an `activity/v1` metric
+// (see toActivityMetric).
 //
 // Events:
 // - account_created: an account was created.
 // - user_authenticated: a user authenticated.
-// - gadget_created/opened/deleted: gadget lifecycle and open events.
+// - gadget_created/opened/deleted: workspace lifecycle and open events ("gadget" here means the
+//   workspace; `gadget_id` is its id).
 // - gadget_interaction: chat, UI connection, and code merge interactions.
+// - workpiece_created/committed: a gadget workpiece was created in a workspace, or its pending
+//   creation was accepted.
 // - connection_created/removed: gatekeeper, AI model, or agent spawner connections changed.
 // - blueprint_created/imported: blueprint lifecycle events.
 //
@@ -32,8 +37,8 @@ export type ProductAnalyticsGadgetInput =
       user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
-      /** Whether the gadget was created from empty chat or via blueprint. */
-      source: "blank" | "blueprint";
+      /** Whether the gadget was created from empty chat, via blueprint, or by external message. */
+      source: "blank" | "blueprint" | "external_message";
       blueprint_id?: string;
     }
   | {
@@ -72,6 +77,7 @@ export type ProductAnalyticsGadgetInput =
     }
   | {
       event_name: "connection_removed";
+      user_id: string;
       gadget_id?: string;
       gadget_owner_user_id?: string;
       gatekeeper_id: number;
@@ -84,18 +90,34 @@ export type ProductAnalyticsGadgetInput =
       gadget_id?: string;
       gadget_owner_user_id?: string;
       blueprint_id: string;
+    }
+  | {
+      event_name: "workpiece_created";
+      user_id?: string;
+      gadget_id?: string;
+      gadget_owner_user_id?: string;
+      workpiece_id: number;
+      /** Whether the gadget is provisional to a chat until its changes are accepted. */
+      pending: boolean;
+    }
+  | {
+      event_name: "workpiece_committed";
+      user_id?: string;
+      gadget_id?: string;
+      gadget_owner_user_id?: string;
+      workpiece_id: number;
     };
 
 export type ProductAnalyticsInput =
   | {
       event_name: "account_created";
       user_id: string;
-      source: "password" | "cf_access";
+      source: "password" | "cf_access" | "gatekeeper";
     }
   | {
       event_name: "user_authenticated";
       user_id: string;
-      source: "password" | "cf_access" | "session_token";
+      source: "password" | "cf_access" | "gatekeeper" | "session_token";
     }
   | {
       event_name: "blueprint_imported";
@@ -105,6 +127,14 @@ export type ProductAnalyticsInput =
   | ProductAnalyticsGadgetInput;
 
 export function recordAnalytics(
+    ctx: ExecutionContext | DurableObjectState,
+    env: Cloudflare.Env,
+    event: ProductAnalyticsInput): void {
+  sendProductAnalytics(ctx, env, event);
+  recordActivity(toActivityMetric(event));
+}
+
+function sendProductAnalytics(
     ctx: ExecutionContext | DurableObjectState,
     env: Cloudflare.Env,
     event: ProductAnalyticsInput): void {
@@ -138,4 +168,66 @@ export function recordAnalytics(
       event: "analytics.record.failed", eventName: event.event_name, error: err,
     });
   }
+}
+
+/** Maps a product analytics event to its `activity/v1` metric. */
+export function toActivityMetric(event: ProductAnalyticsInput): ActivityMetricInput {
+  switch (event.event_name) {
+    case "account_created":
+      return { eventType: "account.created", actorId: event.user_id, detail: event.source };
+    case "user_authenticated":
+      return { eventType: "user.authenticated", actorId: event.user_id, detail: event.source };
+    case "blueprint_imported":
+      return { eventType: "blueprint.imported", actorId: event.user_id };
+    case "gadget_created":
+      return {
+        ...workspaceIds(event),
+        // Whoever creates a workspace owns it, including callers that don't say so.
+        ownerId: event.gadget_owner_user_id ?? event.user_id,
+        eventType: "workspace.created",
+        detail: event.source,
+      };
+    case "gadget_opened":
+      return { ...workspaceIds(event), eventType: "workspace.opened", detail: event.source };
+    case "gadget_deleted":
+      return { ...workspaceIds(event), eventType: "workspace.deleted" };
+    case "gadget_interaction":
+      return {
+        ...workspaceIds(event), eventType: "workspace.interaction", detail: event.interaction_type,
+      };
+    case "connection_created":
+      return {
+        ...workspaceIds(event), eventType: "connection.created", detail: event.connection_type,
+      };
+    case "connection_removed":
+      return {
+        ...workspaceIds(event), eventType: "connection.removed", detail: event.connection_type,
+      };
+    case "blueprint_created":
+      return { ...workspaceIds(event), eventType: "blueprint.created" };
+    case "workpiece_created":
+      return {
+        ...workspaceIds(event),
+        eventType: "gadget.created",
+        gadgetId: event.workpiece_id,
+        gadgetState: event.pending ? "pending" : "permanent",
+      };
+    case "workpiece_committed":
+      return {
+        ...workspaceIds(event),
+        eventType: "gadget.committed",
+        gadgetId: event.workpiece_id,
+        gadgetState: "permanent",
+      };
+  }
+}
+
+function workspaceIds(
+    event: { user_id?: string; gadget_id?: string; gadget_owner_user_id?: string })
+    : Pick<ActivityMetricInput, "actorId" | "ownerId" | "workspaceId"> {
+  return {
+    actorId: event.user_id,
+    ownerId: event.gadget_owner_user_id,
+    workspaceId: event.gadget_id,
+  };
 }
