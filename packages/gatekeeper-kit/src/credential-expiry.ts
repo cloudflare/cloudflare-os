@@ -1,6 +1,6 @@
 /** Durable, deduplicated Workshop notification for expired credentials. */
 
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { generateNonce } from "./connect-nonce";
 import type { KvReadWrite } from "./kv";

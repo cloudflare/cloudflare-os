@@ -10,9 +10,9 @@
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",

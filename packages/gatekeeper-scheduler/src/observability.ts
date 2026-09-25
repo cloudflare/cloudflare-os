@@ -1,4 +1,4 @@
-import { createObservabilityContext } from "@gadgets/backend-utils/observability-context";
+import { createObservabilityContext } from "@gadgets/observability/observability-context";
 
 /** Bounded observability fields emitted by the Scheduler gatekeeper. */
 export type SchedulerObservabilityFields = {

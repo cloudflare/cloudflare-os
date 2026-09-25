@@ -1,5 +1,5 @@
-import { createObservabilityContext } from "@gadgets/backend-utils/observability-context";
-import { createTracer } from "@gadgets/backend-utils/tracing";
+import { createObservabilityContext } from "@gadgets/observability/observability-context";
+import { createTracer } from "@gadgets/observability/tracing";
 
 /** Observability fields emitted by the Workshop backend. */
 export type WorkshopObservabilityFields = {

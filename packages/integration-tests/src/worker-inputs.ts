@@ -62,7 +62,7 @@ const WORKER_INPUTS: WorkerInput[] = [
   { kind: "dir", path: "packages/workshop-backend", excludeDirs: [...BUILT, "src", ".wrangler"] },
   { kind: "dir", path: "packages/workshop-backend/src", excludeDirs: ["generated"] },
   { kind: "dir", path: "packages/workshop-shared", excludeDirs: BUILT },
-  { kind: "dir", path: "packages/backend-utils", excludeDirs: BUILT },
+  { kind: "dir", path: "packages/observability", excludeDirs: BUILT },
   { kind: "dir", path: "packages/error-reporting", excludeDirs: BUILT },
   // `typed-storage` is the one package that emits: wrangler loads its `dist/index.js`, so `dist` is
   // output here like anywhere else, and it is the package's config -- not just its source -- that

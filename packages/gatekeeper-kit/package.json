@@ -31,7 +31,7 @@
     "test:watch:workerd": "vitest -c vitest.worker.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "jose": "^6.2.12"
   },

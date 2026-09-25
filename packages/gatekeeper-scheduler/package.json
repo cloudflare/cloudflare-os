@@ -12,8 +12,8 @@
     "test:run": "vitest run && vitest run -c vitest.app.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/error-reporting": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",

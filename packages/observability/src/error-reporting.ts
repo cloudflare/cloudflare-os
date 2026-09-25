@@ -22,7 +22,7 @@ export {
 /** Log fields owned by this module. */
 type ErrorReportingLogFields = { failureSite?: string };
 
-const logger = createLogger<ErrorReportingLogFields>({ component: "backend-utils.error-reporting" });
+const logger = createLogger<ErrorReportingLogFields>({ component: "observability.error-reporting" });
 
 /** Native Workers RPC capability implemented by the private Reporter Worker. */
 export interface ErrorReporter extends WorkerEntrypoint<unknown, ErrorReporterProps> {

@@ -1,5 +1,5 @@
 {
-  "name": "@gadgets/backend-utils",
+  "name": "@gadgets/observability",
   "version": "1.0.0",
   "description": "Shared Worker-side libraries; not a standalone deployable Worker.",
   "type": "module",
