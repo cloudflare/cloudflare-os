@@ -542,6 +542,31 @@ describe('GadgetUI no-UI placeholder reporting', () => {
     expect(onNoUiChange).toHaveBeenLastCalledWith(false)
   })
 
+  it('retracts the placeholder as soon as a reload starts', async () => {
+    const gadget = fakeGadget('draft', 'document.body.textContent = "ui"')
+    gadget.getUiBundle.mockResolvedValueOnce(null)
+    const onNoUiChange = vi.fn<(showsNoUi: boolean) => void>()
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger}
+        onNoUiChange={onNoUiChange} />,
+    )
+
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(onNoUiChange).toHaveBeenLastCalledWith(true))
+
+    const reload = deferred<UiBundle | null>()
+    gadget.getUiBundle.mockReturnValueOnce(reload.promise)
+    await act(async () => render(1))
+    expect(onNoUiChange).toHaveBeenLastCalledWith(false)
+
+    await act(async () => {
+      reload.resolve({ jsCode: 'document.body.textContent = "ui v2"' })
+      await reload.promise
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    expect(onNoUiChange).toHaveBeenLastCalledWith(false)
+  })
+
   it('never reports the placeholder while an existing UI reloads', async () => {
     const gadget = fakeGadget('live', 'document.body.textContent = "ui"')
     const reload = deferred<UiBundle | null>()

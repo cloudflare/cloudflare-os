@@ -172,7 +172,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
 
-  const showsNoUi = hasLoaded && !error && !sandboxedHtml
+  // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
+  // result must not keep counting while the replacement load is pending.
+  const showsNoUi = hasLoaded && !isInvalidated && !loading && !error && !sandboxedHtml
   useEffect(() => {
     if (!showsNoUi) return
     onNoUiChangeRef.current?.(true)
