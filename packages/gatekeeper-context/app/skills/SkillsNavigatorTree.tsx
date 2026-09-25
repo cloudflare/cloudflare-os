@@ -9,6 +9,7 @@ import {
   ScrollIcon,
   TrashIcon,
   User,
+  UploadSimple,
 } from "@phosphor-icons/react";
 import {
   HierarchicalList,
@@ -37,6 +38,7 @@ import {
 } from "./skillNavigatorModel";
 import { humanizeSkillName, isValidSkillName } from "./skillName";
 import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
+import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
@@ -47,6 +49,7 @@ type SkillsNavigatorTreeProps = {
   expandAll: boolean;
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
   onAddSkill: (target: AddSkillTarget) => void;
+  onUploadSkills: (target: UploadSkillsTarget) => void;
   onEditCollection: (collection: ContextCollectionMetadata) => void;
   onDelete: (target: NavigatorDeleteTarget) => void;
   onChanged: () => void;
@@ -145,6 +148,7 @@ export const SkillsNavigatorTree = ({
   expandAll,
   onSelectSkill,
   onAddSkill,
+  onUploadSkills,
   onEditCollection,
   onDelete,
   onChanged,
@@ -336,16 +340,28 @@ export const SkillsNavigatorTree = ({
       return (
         <>
           {writable && (
-            <DropdownMenu.Item
-              icon={<PlusIcon size={13} className="mr-2" />}
-              onClick={() => onAddSkill({
-                collectionId,
-                directoryPath: "",
-                collectionEditable: false,
-              })}
-            >
-              Add skill
-            </DropdownMenu.Item>
+            <>
+              <DropdownMenu.Item
+                icon={<PlusIcon size={13} className="mr-2" />}
+                onClick={() => onAddSkill({
+                  collectionId,
+                  directoryPath: "",
+                  collectionEditable: false,
+                })}
+              >
+                Add skill
+              </DropdownMenu.Item>
+              <DropdownMenu.Item
+                icon={<UploadSimple size={13} className="mr-2" />}
+                onClick={() => onUploadSkills({
+                  collectionId,
+                  directoryPath: "",
+                  collectionEditable: false,
+                })}
+              >
+                Upload skills
+              </DropdownMenu.Item>
+            </>
           )}
           {refreshable && (
             <DropdownMenu.Item
@@ -426,6 +442,16 @@ export const SkillsNavigatorTree = ({
             })}
           >
             Add skill
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            icon={<UploadSimple size={13} className="mr-2" />}
+            onClick={() => onUploadSkills({
+              collectionId,
+              directoryPath: directory.path,
+              collectionEditable: false,
+            })}
+          >
+            Upload skills
           </DropdownMenu.Item>
           <DropdownMenu.Separator />
           <DropdownMenu.Item

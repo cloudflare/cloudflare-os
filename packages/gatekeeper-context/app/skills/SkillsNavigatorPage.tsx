@@ -11,6 +11,7 @@ import {
   FolderPlus,
   MagnifyingGlassIcon,
   PlusIcon,
+  UploadSimple,
 } from "@phosphor-icons/react";
 import { useDeferredValue, useMemo, useState } from "react";
 import type { ContextCollectionMetadata } from "../../src/context-types";
@@ -24,6 +25,7 @@ import {
 import { EditCollectionDialog } from "./EditCollectionDialog";
 import { buildSkillNavigator, filterSkillNavigator } from "./skillNavigatorModel";
 import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
+import { UploadSkillsDialog, type UploadSkillsTarget } from "./UploadSkillsDialog";
 import { useSkillsNavigatorData } from "./useSkillsNavigatorData";
 
 type SkillsNavigatorPageProps = {
@@ -47,6 +49,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
 
   const [pendingAdd, setPendingAdd] = useState<AddSkillTarget | null>(null);
   const [pendingAddCollection, setPendingAddCollection] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<UploadSkillsTarget | null>(null);
   const [pendingEditCollection, setPendingEditCollection] = useState<ContextCollectionMetadata | null>(null);
   const [pendingRemove, setPendingRemove] = useState<NavigatorDeleteTarget | null>(null);
 
@@ -130,6 +133,18 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               >
                 Add collection
               </DropdownMenu.Item>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item
+                icon={<UploadSimple size={13} className="mr-2" />}
+                disabled={writableCollections.length === 0}
+                onClick={() => setPendingUpload({
+                  collectionId: "",
+                  directoryPath: "",
+                  collectionEditable: true,
+                })}
+              >
+                Upload skills
+              </DropdownMenu.Item>
             </DropdownMenu.Content>
           </DropdownMenu>
         </div>
@@ -158,6 +173,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               expandAll={deferredQuery.trim().length > 0}
               onSelectSkill={onSelectSkill}
               onAddSkill={startAdd}
+              onUploadSkills={setPendingUpload}
               onEditCollection={setPendingEditCollection}
               onDelete={setPendingRemove}
               onChanged={reload}
@@ -187,6 +203,16 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           viewerInfo={viewerInfo}
           onCreated={reload}
           onClose={() => setPendingAddCollection(false)}
+        />
+      )}
+      {pendingUpload && (
+        <UploadSkillsDialog
+          target={pendingUpload}
+          collections={collections}
+          writableCollections={writableCollections}
+          documents={documents}
+          onUploaded={reload}
+          onClose={() => setPendingUpload(null)}
         />
       )}
       {pendingEditCollection && (
