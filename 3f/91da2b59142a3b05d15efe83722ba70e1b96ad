@@ -1,0 +1,21 @@
+AGENTS.md
+  s_1e5e46268c04cf::t_ec5a30967b3f73 156-157
+packages/observability/README.md
+  s_1e5e46268c04cf::t_ec5a30967b3f73 18-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3f91da2b59142a3b05d15efe83722ba70e1b96ad",
+  "prompts": {},
+  "sessions": {
+    "s_1e5e46268c04cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "feafd312-78ab-469a-8dde-1b6ff8e38b0f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
