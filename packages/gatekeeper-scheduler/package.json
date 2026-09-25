@@ -30,7 +30,7 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
-    "miniflare": "5.20260801.0-alpha",
+    "miniflare": "5.20260921.1-alpha",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",

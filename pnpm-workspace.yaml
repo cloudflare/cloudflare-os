@@ -25,11 +25,11 @@ catalog:
   vite: 7.3.6
   vite-plus: ^0.2.8
   vitest: ^4.1.11
-  wrangler: ^4.128.0
+  wrangler: ^4.138.0
 
 overrides:
   # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
-  '@cloudflare/vitest-pool-workers>miniflare': 5.20260831.0-alpha
+  '@cloudflare/vitest-pool-workers>miniflare': 5.20260921.1-alpha
   '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
