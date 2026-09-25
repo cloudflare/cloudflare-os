@@ -8,9 +8,8 @@
 // This lives in __tests__/ (the unit workerd config), not __integration__/: the TEST_OVERSEER
 // DO binding exists only in vitest.config.ts, and no public API path can create a legacy
 // workspace anymore (new workspaces are born at version 4), so seeding must reach into
-// impl.storage -- the same pattern as chat-changes.test.ts. The public DO surface (open() etc.)
-// is deliberately never called: #initializeNewWorkspace would stamp version 4 and shadow the
-// scenario.
+// impl.storage. The public DO surface (open() etc.) is deliberately never called:
+// #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
 // The version-3 action-index backfill and the version-4 workpiece-type stamp ride the same
 // constructor trigger, so their tests live here too.

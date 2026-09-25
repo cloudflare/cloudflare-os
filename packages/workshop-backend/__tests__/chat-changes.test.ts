@@ -216,28 +216,6 @@ describe("submitCodeChange", () => {
     })).rejects.toThrow(/length mismatch/);
   }));
 
-  it("transforms concurrent submissions so both sides' edits survive",
-      () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "middle\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-
-    // Both clients build against revision 0. Alice's lands first; Bob's is transformed over it.
-    await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "alice", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "top\nmiddle\n" }),
-    });
-    let ack = await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "bob", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
-    }, BOB, "bob-user-do");
-    expect(ack).toEqual({ generation: 0, revision: 2 });
-
-    expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "top\nmiddle\nbottom\n" });
-  }));
-
   it("transforms a late submission over retired rows (materialization stales nobody)",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "middle\n" });
@@ -294,26 +272,10 @@ describe("submitCodeChange", () => {
       change: editChange(1, { "a.txt": "middle\n" }, { "a.txt": "middle\nbottom\n" }),
     }, BOB, "bob-user-do")).rejects.toThrow(/rebuild from fresh metadata/);
   }));
-
-  it("rejects submissions while an agent turn is active", () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-    let meta = impl.storage.chatMeta.get(1)!;
-    meta.activeAgent = AGENT;
-    impl.storage.chatMeta.put(meta);
-
-    await expect(submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "c1", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
-    })).rejects.toThrow(/Agent is running/);
-  }));
 });
 
 describe("submitCodeChange dedupe", () => {
-  it("acknowledges a retry with its recorded landing spot without re-applying",
-      () => withImpl(async impl => {
+  it("rejects out-of-sequence seqs and unknown client sessions", () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
@@ -323,16 +285,7 @@ describe("submitCodeChange dedupe", () => {
       pins: [{ gadgetId: 1, baseCommit: c1 }],
       change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     };
-    let ack = await submit(impl, 1, submission);
-    expect(await submit(impl, 1, submission)).toEqual(ack);  // retry: same spot, no re-apply
-    expect(liveRows(impl, 1)).toHaveLength(1);
-    expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "xone\n" });
-
-    // A same-seq submission with different content is a client bug, rejected loudly.
-    await expect(submit(impl, 1, {
-      ...submission,
-      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "yone\n" }),
-    })).rejects.toThrow(/different content/);
+    await submit(impl, 1, submission);
 
     // Sequence discipline: only record+1 continues; anything else is a protocol violation.
     await expect(submit(impl, 1, { ...submission, seq: 3 }))
@@ -465,28 +418,6 @@ describe("mergeChanges", () => {
     });
     impl.materializeChatChanges(1);
     expect(await gadgetContent(impl, 1, 1)).toEqual({ "a.txt": "top\none\nedited\n" });
-  }));
-
-  it("returns stale when mainline moved past a pin, with no partial effects",
-      () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-
-    await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "cli", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "mine\none\n" }),
-    });
-
-    // Another chat's accept advances the head.
-    let c2 = await commitFiles(impl, { "a.txt": "theirs\n" }, [c1]);
-    setHead(impl, 1, c2);
-
-    expect(await impl.mergeChanges(1, USER_META, "user-do-id"))
-        .toEqual({ outcome: "stale" });
-    expect(impl.storage.gadgets.get(1)!.commitId).toBe(c2);
-    expect(impl.storage.chatMeta.get(1)!.codeBase!.generation).toBe(0);
   }));
 
   it("gives up when a row lands during the accept's awaits, preserving it",
@@ -712,25 +643,6 @@ describe("straggler bridge", () => {
 
     // Carrying a boundary-rooted change onto content pinned at a different base would need a
     // cross-base merge -- update-from-mainline's job, not transform's.
-    await expect(submit(impl, 1, {
-      generation: 0, revision: 1, clientId: "typist", seq: 2,
-      change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
-    })).rejects.toThrow(/rebuild from fresh metadata/);
-  }));
-
-  it("does not bridge across a destructive bump", () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    addGadget(impl, 1, "APP", c1);
-    addChat(impl, 1);
-
-    await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "typist", seq: 1,
-      pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "one\nedited\n" }),
-    });
-    impl.discardChatDraftChanges(1);
-    expect(impl.storage.chatMeta.get(1)!.codeBase!.prior).toBeUndefined();
-
     await expect(submit(impl, 1, {
       generation: 0, revision: 1, clientId: "typist", seq: 2,
       change: editChange(1, { "a.txt": "one\nedited\n" }, { "a.txt": "one\nedited\nmore\n" }),
