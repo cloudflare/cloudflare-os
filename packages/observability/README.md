@@ -14,3 +14,10 @@ The optional `@gadgets/observability/error-reporting` entry point dispatches bou
 a private Reporter bound as `ERROR_REPORTER`; `reportIssue(failureSite, caught, options?)` accepts
 ambient fields under `options.attributes`, so callers can spread the context's `.get()` result and
 augment it inline. Reporting is a no-op when the binding is absent.
+
+The optional `@gadgets/observability/metrics` entry point writes usage metrics to a Workers
+Analytics Engine dataset bound as `METRICS`, and is likewise a no-op without the binding. Each event
+is written once per scope it names (fleet, actor, owner, workspace), so per-entity queries read their
+own index and survive sampling. The column layout lives in the import-free `metrics-schema.ts` (also
+exported as `@gadgets/observability/metrics-schema`), so dashboards can name columns rather than
+`blobN`.

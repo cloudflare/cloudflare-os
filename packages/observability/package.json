@@ -19,6 +19,14 @@
     "./error-reporting": {
       "types": "./src/error-reporting.ts",
       "import": "./src/error-reporting.ts"
+    },
+    "./metrics": {
+      "types": "./src/metrics.ts",
+      "import": "./src/metrics.ts"
+    },
+    "./metrics-schema": {
+      "types": "./src/metrics-schema.ts",
+      "import": "./src/metrics-schema.ts"
     }
   },
   "scripts": {
