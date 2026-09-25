@@ -1,6 +1,9 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { UserDirectoryDurableObject } from "../src/user-directory.js";
+// Load the whole backend (the pool's `main`) up front. Otherwise the pool loads it on the first
+// RPC into the Durable Object, and that slow load counts against the first test's timeout.
+import "./test-worker.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -27,10 +30,7 @@ async function expectRejection(call: Promise<unknown>, message: string): Promise
   expect(String(caught)).toContain(message);
 }
 
-// The first RPC into the DO pays for instantiating the whole backend bundle in its isolate (~5s
-// on a dev machine when the pool is contended, as vitest.integration.config.ts also notes); the
-// remaining calls take milliseconds.
-describe("UserDirectoryDurableObject", { timeout: 30_000 }, () => {
+describe("UserDirectoryDurableObject", () => {
   it("upserts profiles, matches name or id case-insensitively, and excludes requested users", async () => {
     const stub = directory("upsert");
     await stub.syncUser(user("ada@example.com", "Ada Lovelace"), 0);
