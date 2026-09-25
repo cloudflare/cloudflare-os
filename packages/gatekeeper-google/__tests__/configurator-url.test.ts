@@ -187,6 +187,8 @@ describe("Google Chat configurator URLs", () => {
 
   it("prefills nothing from a URL that names no conversation", () => {
     expect(chatValues("https://chat.google.com/")).toEqual({});
+    expect(chatValues("https://chat.google.com/room/%ZZ")).toEqual({});
+    expect(chatValues("spaces/%E0%A4")).toEqual({});
   });
 
   it("explains that a conversation connection is shareable but an account one is not", () => {

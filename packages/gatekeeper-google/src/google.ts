@@ -49,6 +49,7 @@ import type {
 } from "./calendar-types";
 import TYPES_CODE from "./types.txt";
 import CHAT_TYPES_CODE from "./chat-types.txt";
+import { readChatProfileNames, type ChatProfileName } from "./chat-dm-names";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
@@ -952,9 +953,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasCalendarFreeBusyAccess covers foreign calendars read by an all-visible availability query.
 //   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
 //     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
-//   - Google Chat — strategies A/B: a whole-account binding always throws (it spans direct
-//     messages, so nobody can be verified against it), while a single-conversation binding uses
-//     hasChatSpaceAccess to confirm the observer's own token can open that one space.
+//   - Google Chat — strategies A/C: accounts stay private; a conversation checks its Chat ACL
+//     and the separate visibility of any People name used to label an unnamed DM.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results.
 
@@ -1060,6 +1060,13 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       if (isChatNoAccessError(error)) return false;
       throw error;
     }
+  }
+
+  async verifyChatNames(spaceName: string, profiles: ChatProfileName[]): Promise<ObserverBatchResult> {
+    const baselineAllowed = await this.hasChatSpaceAccess(spaceName);
+    if (!baselineAllowed) return { baselineAllowed, allowed: profiles.map(() => false) };
+    const names = await readChatProfileNames(profiles.map(profile => profile.id), opts => this.#getToken(opts));
+    return { baselineAllowed, allowed: profiles.map(profile => names.get(profile.id) === profile.name) };
   }
 
   async verifyDriveObservations(

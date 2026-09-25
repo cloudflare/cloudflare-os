@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
+import { getGoogleAccountProfile } from "../src/google-api";
 
 /** A stub authority recording every request, answering with whatever token it currently holds. */
 function authority(initial: string) {
@@ -53,9 +54,7 @@ describe("fetchWithAuthRetry", () => {
     vi.unstubAllGlobals();
   });
 
-  // Chat's attachment upload sends its multipart body as a Uint8Array. Unlike a stream, a byte
-  // array survives being sent, so a 401 must still buy the one-shot refreshed retry — otherwise a
-  // token Google invalidated early permanently fails every upload until its recorded expiry.
+  // Unlike a stream, a byte-array body survives being sent and can be replayed after a 401.
   it("replays a byte-array body once after a 401 refresh", async () => {
     let bodies: string[] = [];
     let tokens: (string | null)[] = [];
@@ -77,5 +76,14 @@ describe("fetchWithAuthRetry", () => {
     expect(response.status).toBe(200);
     expect(bodies).toEqual(["payload", "payload"]);
     expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
+  });
+
+  it("refreshes an invalidated profile token before checking the account subject", async () => {
+    const provider = vi.fn(async (opts?: AccessTokenRequest) => opts?.forceRefresh ? "fresh" : "stale");
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) =>
+      new Headers(init.headers).get("Authorization") === "Bearer fresh"
+        ? Response.json({sub: "original-account"}) : new Response(null, {status: 401}));
+    expect(await getGoogleAccountProfile(provider)).toEqual({sub: "original-account"});
+    expect(provider).toHaveBeenLastCalledWith({forceRefresh: true, staleToken: "stale"});
   });
 });

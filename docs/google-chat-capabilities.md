@@ -22,6 +22,9 @@ A thread grants access to its root, existing replies, and future replies. A mess
 access to that message and the ability to reply, edit its text where permitted, and manage
 the connected user's reactions. Neither can return a containing space capability; a message
 cannot return its containing thread capability. Resource IDs in metadata do not grant access.
+Messages produced by a thread retain its immutable thread restriction through root lookup,
+history, posts, replies, reactions, and attachments. Fresh reads recheck membership in that
+thread; queued writes and undo records retain the same restriction across approval and restart.
 
 Known resources use `getSpace(id)`, `getThread(id)`, and `getMessage(id)`: each returns a
 capability or throws if the resource is unavailable. `list…` enumerates resources; `find…`
@@ -31,8 +34,50 @@ Google's canonical paths), while `name` is the human-readable label. Data uses `
 
 Google's ACL boundary remains the space. Narrower capabilities restrict delegated authority;
 they do not establish separate Google ACLs or make an account-derived capability into an
-independently shareable Workshop connection. Account-private and single-space observer checks
-still apply.
+independently shareable Workshop connection. Account bindings remain private. A single-space
+binding checks its Chat ACL and any People-sourced name used to label a direct message.
+
+## Names and identities
+
+Message senders, thread previews, members, and reactions use the display names already included
+in Google's Chat responses:
+
+```ts
+{ id: "users/123", name: "Alice Smith", type: "human" }
+```
+
+Prefer `name` for human-facing output and keep `id` for joins, mentions, and API calls. Names are
+optional: fall back to the ID when Google omits one. The connected account's identity comes from
+the existing sign-in profile lookup. Methods that accept an email address as input still support it.
+
+Call **`space.getMetadata()`** to resolve an unnamed DM's other participant on demand. Account
+listings and the connection picker use only Chat's returned metadata, with no participant or
+People lookups. Agents receive this guidance in the API type comments. For example:
+
+```ts
+const info = entry.info.type === "directMessage" && !entry.info.name
+  ? await entry.space.getMetadata()
+  : entry.info;
+const label = info.name ?? info.id;
+```
+
+The resolver reads Chat membership data first. Only
+when the peer is human and Chat omits their name does it request that person's name from the
+People API. This requests names only and uses the existing OAuth grant; it does not enrich every
+message sender or fetch email addresses. The People API must be enabled in the OAuth client's
+Google Cloud project, and Google still controls which names are visible.
+
+DM labels are cached per binding for five minutes, with a short 30-second cache
+for unavailable labels. Membership lookups have bounded concurrency and pagination; missing
+profile names are batched. Name enrichment gets a three-second request budget; membership requests
+are aborted at their deadline without transient retry backoff. Overlapping metadata reads share
+work. An unavailable or ambiguous peer leaves the name unset; later reads can retry resolution.
+Existing space names and group chats require no additional lookup. Picker searches scan at most
+five pages; paste `spaces/ID` or a Chat room/DM URL to access an exact conversation beyond that scan.
+
+People-sourced names have a separate visibility check: shared bindings track the exact name
+disclosed and verify that collaborators can read it with their own credentials, both before new
+disclosures and when joining/reopening the workspace.
 
 ## Discover and operate on threads
 
@@ -68,10 +113,11 @@ the observation is authorized, so a denied page can be retried. A cursor returns
 threads, then throws with a request to use a narrower window. As elsewhere in the Google
 gatekeeper, `[]` means more work remains; only `null` means exhaustion.
 
-Known threads can be retrieved with `space.getThread(id)`. The thread itself has just:
+Known threads can be retrieved with `space.getThread(id)`. The thread exposes:
 
 ```ts
 interface ChatThread extends RpcTarget {
+  getMetadata(): Promise<ChatThreadInfo>;
   getRootMessage(): Promise<ChatMessage | null>;
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
   post(text: string): Promise<ChatMessage>;
@@ -80,6 +126,13 @@ interface ChatThread extends RpcTarget {
 
 `getRootMessage()` returns null if the root is unavailable; it never substitutes the oldest
 surviving reply. Replies fail rather than silently becoming new top-level messages.
+Thread getters use a bounded page scan and throw if it is exhausted before finding visible
+messages; a `listMessages()` cursor can continue through longer stretches of omitted messages.
+
+`getMetadata()` returns the current thread ID, space ID, and latest visible message. Both this
+snapshot and discovery's `info` include `rootMessage` when the root is already in the page being
+read, without additional per-thread lookups. An omitted `rootMessage` means it wasn't cheaply
+available, not that it doesn't exist; use `getRootMessage()` to request it explicitly.
 
 ## History and search
 
@@ -96,6 +149,7 @@ Account discovery offers `listSpaces`, `searchSpaces`, `findDirectMessage`, `get
 `getCurrentUser`. Account-wide `searchMessages` retains its structured filters, including
 `unreadOnly`, with the same `since`/`before` names. Google's search index can lag and omits some
 message categories; use history for complete recent-message scans.
+`searchMessages()` is available only on `GoogleChatSession`, not on space or thread capabilities.
 
 ## Writing and newly created threads
 
@@ -119,6 +173,13 @@ altering the text of the original post action. Reply actions require their root 
 and edit actions require their target post first. Rejection rewinds the corresponding overlay;
 an edit targeting a rejected post cannot be applied. Undoing an applied edit restores the
 previous provider text.
+
+Undo intent is saved before sending edits and reaction writes. A lost response can be retried
+without replacing the original undo state; an uncertain write must finish applying before it
+can be undone. Definitive first-attempt refusals remain rejectable. Send retries recover missing
+thread metadata from the committed message, and replies to rejected roots disappear from the
+simulation. Authentication and permission errors during unsend remain retryable rather than
+being counted as successful deletion.
 
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
 with the getters after a worker restart. Reactions to new messages require the post to complete.
@@ -152,7 +213,13 @@ persistent merely by storing them.
 
 Workerd behavior tests cover discovery across pages, authorization retries, zero-reply roots,
 old roots with new replies, private-message exclusion, parent/sibling authority boundaries,
-capability lifetime after discovery disposal, thread creation, pending posts/replies/edits,
-rejection, undo, and retrieving temporary IDs after restart. Pure tests cover provider thread
-support, time bounds, scope filtering, and overlays. Durable `spawnCallable` handoff uses the existing gadget
+capability lifetime after discovery disposal, authorized metadata and cheap root enrichment,
+thread creation, pending posts/replies/edits, rejection, undo, and retrieving temporary IDs after
+restart. Attenuation regressions cover every message creation path and its attachment/reaction
+descendants, as well as delayed actions and undo. Pure tests cover provider thread support, time
+bounds, scope filtering, and overlays. Durable `spawnCallable` handoff uses the existing gadget
 restoration mechanism; it is not exercised end-to-end by the Chat gatekeeper suite.
+An identity regression checks that Chat-provided names reach message, thread, member, and reaction
+results without extra identity lookups. DM tests cover on-demand resolution, lookup-free listings
+and picker searches, peer selection, pagination, batching, caching and expiry, unavailable profiles,
+denial retries, and shared-name access.
