@@ -77,7 +77,8 @@ function digest(parts: readonly string[]): string {
 function tasksOf(tree: readonly TreeEntry[], config: string): Record<string, Task> {
   const harness = tree.filter(entry => isHarnessPath(entry.path));
   const inTasks = tree.filter(entry => entry.path.startsWith(TASKS));
-  const helpers = inTasks.filter(entry => !entry.path.endsWith(TASK_SUFFIX)).map(entry => entry.line);
+  const helpers = inTasks.filter(entry => !entry.path.endsWith(TASK_SUFFIX) && !isTestPath(entry.path))
+    .map(entry => entry.line);
   const key = digest(["workshop-evals v1", config, ...harness.map(entry => entry.line), ...helpers]);
   const definition = digest([config,
     ...harness.filter(entry => isDefinitionPath(entry.path)).map(entry => entry.line), ...helpers]);
