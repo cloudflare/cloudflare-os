@@ -49,7 +49,6 @@ import type {
 } from "./calendar-types";
 import TYPES_CODE from "./types.txt";
 import CHAT_TYPES_CODE from "./chat-types.txt";
-import { readChatProfileNames, type ChatProfileName } from "./chat-dm-names";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
@@ -1060,13 +1059,6 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       if (isChatNoAccessError(error)) return false;
       throw error;
     }
-  }
-
-  async verifyChatNames(spaceName: string, profiles: ChatProfileName[]): Promise<ObserverBatchResult> {
-    const baselineAllowed = await this.hasChatSpaceAccess(spaceName);
-    if (!baselineAllowed) return { baselineAllowed, allowed: profiles.map(() => false) };
-    const names = await readChatProfileNames(profiles.map(profile => profile.id), opts => this.#getToken(opts));
-    return { baselineAllowed, allowed: profiles.map(profile => names.get(profile.id) === profile.name) };
   }
 
   async verifyDriveObservations(

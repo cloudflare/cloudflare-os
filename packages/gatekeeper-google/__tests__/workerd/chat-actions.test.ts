@@ -66,12 +66,8 @@ function chatBackend() {
     spaceThreadingState: "THREADED_MESSAGES",
     messages: [] as ChatMessageRaw[],
     members: [] as ChatMembershipRaw[],
-    profileNames: new Map<string, string>(),
-    observerNames: new Map<string, string>(),
-    profileRequests: [] as string[],
     memberRequests: 0,
     spaceLists: 0,
-    spaceGets: [] as string[],
     searches: [] as string[],
     pageSize: 50,
     lists: [] as URL[],
@@ -81,9 +77,9 @@ function chatBackend() {
     reactionWrites: [] as Array<{method: string; id: string}>,
     deletes: [] as string[],
     edits: [] as Array<{name: string; text: string}>,
-    lostResponse: undefined as "send" | "edit" | "addReaction" | "removeReaction" | undefined,
+    /** Answer creates the way Google replays an idempotent request: names only, no thread. */
+    echoCreates: false,
     getMessageStatus: 200,
-    editStatus: 200,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
     sentRequests: new Map<string, string>(),
@@ -99,23 +95,6 @@ function chatBackend() {
     const method = (init.method ?? "GET").toUpperCase();
     if (state.rejectedToken && url.hostname === "chat.googleapis.com" &&
         new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
-    const maybeLoseResponse = (kind: typeof state.lostResponse) => {
-      if (state.lostResponse === kind) {
-        state.lostResponse = undefined;
-        throw new Error("provider response lost");
-      }
-    };
-    if (url.hostname === "people.googleapis.com") {
-      const token = new Headers(init.headers).get("Authorization") ?? "";
-      state.profileRequests.push(token);
-      const names = token === "Bearer observer-token" ? state.observerNames : state.profileNames;
-      return json({ responses: url.searchParams.getAll("resourceNames").map(resource => {
-        const name = names.get(`users/${resource.slice("people/".length)}`);
-        return name ? { requestedResourceName: resource, person: {
-          resourceName: resource, names: [{ displayName: name, metadata: { primary: true } }],
-        } } : { requestedResourceName: resource, httpStatusCode: 404 };
-      }) });
-    }
     if (url.pathname.startsWith("/v1/media/")) {
       state.downloads.push(url.pathname);
       return new Response("attachment bytes");
@@ -124,7 +103,7 @@ function chatBackend() {
       spaceType: state.spaceType, spaceThreadingState: state.spaceThreadingState};
     if (url.pathname === "/v1/spaces") { state.spaceLists++; return json({spaces: [space]}); }
     const spaceGet = /^\/v1\/spaces\/([^/:]+)$/.exec(url.pathname)?.[1];
-    if (spaceGet) { state.spaceGets.push(spaceGet); return json({...space, name: `spaces/${spaceGet}`}); }
+    if (spaceGet) return json({...space, name: `spaces/${spaceGet}`});
     if (url.pathname === "/v1/spaces/-/messages:search") {
       // A provider that ignores the space filter: the capability must still refuse foreign results.
       const {filter} = JSON.parse(init.body as string) as {filter: string};
@@ -180,8 +159,7 @@ function chatBackend() {
       };
       state.messages.push(created);
       state.sentRequests.set(requestId, created.name);
-      maybeLoseResponse("send");
-      return json(created);
+      return json(state.echoCreates ? {name: created.name, text: created.text} : created);
     }
     const name = url.pathname.slice("/v1/".length);
     const reactionParent = /^(spaces\/[^/]+\/messages\/[^/]+)\/reactions$/.exec(name)?.[1];
@@ -204,7 +182,6 @@ function chatBackend() {
           emoji, user: {name: "users/subject-a", type: "HUMAN"}};
         state.reactions.push(reaction);
         state.reactionWrites.push({method, id: reaction.name});
-        maybeLoseResponse("addReaction");
         return json(reaction);
       }
     }
@@ -212,7 +189,6 @@ function chatBackend() {
     if (reactionIndex !== -1 && method === "DELETE") {
       state.reactions.splice(reactionIndex, 1);
       state.reactionWrites.push({method, id: name});
-      maybeLoseResponse("removeReaction");
       return json({});
     }
     const index = state.messages.findIndex(message => message.name === name);
@@ -225,12 +201,10 @@ function chatBackend() {
         return json(message);
       }
       if (method === "PATCH") {
-        if (state.editStatus !== 200) return json({}, state.editStatus);
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
         state.messages[index].text = text;
         state.messages[index].lastUpdateTime = new Date().toISOString();
-        maybeLoseResponse("edit");
         return json(state.messages[index]);
       }
       if (method === "DELETE") {
@@ -340,9 +314,8 @@ describe("Chat identities", () => {
     backend.state.spaceName = "";
     backend.state.members.push(
       {name: `${SPACE_NAME}/members/subject-a`, member: {name: "users/subject-a", displayName: "Ada", type: "HUMAN"}},
-      {name: `${SPACE_NAME}/members/123`, member: {name: "users/123", type: "HUMAN"}},
+      {name: `${SPACE_NAME}/members/123`, member: {name: "users/123", displayName: "Alice Smith", type: "HUMAN"}},
     );
-    backend.state.profileNames.set("users/123", "Alice Smith");
     return backend;
   };
 
@@ -357,11 +330,8 @@ describe("Chat identities", () => {
     expect(page![0].info).toMatchObject({id: SPACE_NAME, type: "directMessage"});
     expect(page![0].info.name).toBeUndefined();
     expect(backend.state.memberRequests).toBe(0);
-    expect(backend.state.profileRequests).toEqual([]);
-    expect(await page![0].space.getMetadata()).toMatchObject({name: "Alice Smith"});
     expect(await page![0].space.getMetadata()).toMatchObject({name: "Alice Smith"});
     expect(backend.state.memberRequests).toBe(1);
-    expect(backend.state.profileRequests).toEqual(["Bearer access-token"]);
   });
 
   it("does not resolve participant names during picker searches", async () => {
@@ -374,7 +344,6 @@ describe("Chat identities", () => {
     ]);
     expect(await picker.listChatSpaces("Alice")).toEqual([]);
     expect(backend.state.memberRequests).toBe(0);
-    expect(backend.state.profileRequests).toEqual([]);
   });
 
   it("opens an exact conversation reference without scanning the picker listing", async () => {
@@ -387,32 +356,17 @@ describe("Chat identities", () => {
     ]);
     expect(await picker.listChatSpaces(`https://chat.google.com/dm/${SPACE_ID}`)).toHaveLength(1);
     expect(backend.state.spaceLists).toBe(0);
-    expect(backend.state.profileRequests).toEqual([]);
   });
 
-  it("checks a shared DM's People name before disclosure and rechecks denied reads", async () => {
+  it("admits an observer only when their own account can open the conversation", async () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
+    backend.state.rejectedToken = "observer-token";
+    await expect(chat.addObserver()).rejects.toThrow(/cannot access the Google Chat conversation/);
+    backend.state.rejectedToken = undefined;
     await chat.addObserver();
     using space = await chat.session();
-    await expect(Promise.resolve(space.getMetadata())).rejects.toThrow(/active observer cannot see/);
-    expect((await chat.readQueue()).observations).toContainEqual(expect.objectContaining({excludeObservers: ["viewer"]}));
-    backend.state.observerNames.set("users/123", "Alice Smith");
     expect(await space.getMetadata()).toMatchObject({name: "Alice Smith"});
-    expect(backend.state.profileRequests.filter(token => token === "Bearer observer-token")).toHaveLength(2);
-  });
-
-  it("verifies a joining observer against previously disclosed DM names, including after restart", async () => {
-    const backend = directMessage();
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    expect(await space.getMetadata()).toMatchObject({name: "Alice Smith"});
-    await chat.restart();
-    await expect(chat.addObserver()).rejects.toThrow(/cannot access a profile name/);
-    backend.state.observerNames.set("users/123", "Alice Smith");
-    await chat.addObserver();
-    backend.state.observerNames.set("users/123", "Different name");
-    await expect(chat.addObserver()).rejects.toThrow(/cannot access a profile name/);
   });
 
   it("uses Chat-provided names across results without extra identity lookups", async () => {
@@ -454,52 +408,14 @@ describe("Chat identities", () => {
 });
 
 describe("Google Chat gatekeeper behaviors", () => {
-  it("preserves the original undo text after an edit response is lost and the worker restarts", async () => {
-    const backend = chatBackend();
-    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using message = (await space.getMessage(messageName("root"))).message;
-    await message.edit("updated");
-    backend.state.lostResponse = "edit";
-    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached/);
-    await chat.restart();
-    await chat.applyAction(1);
-    await chat.applyAction(1);
-    expect(backend.state.edits).toHaveLength(1);
-    await chat.revertAction(1);
-    expect(backend.state.messages[0].text).toBe("root");
-  });
-
-  it.each(["addReaction", "removeReaction"] as const)("preserves %s undo after a lost write response", async operation => {
-    const backend = chatBackend();
-    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
-    if (operation === "removeReaction") backend.state.reactions.push({name: `${messageName("root")}/reactions/own`,
-      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using message = (await space.getMessage(messageName("root"))).message;
-    await message[operation]("👍");
-    backend.state.lostResponse = operation;
-    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
-    await chat.restart();
-    await chat.applyAction(1);
-    expect(backend.state.reactionWrites).toHaveLength(1);
-    await chat.revertAction(1);
-    expect(backend.state.reactions).toHaveLength(operation === "addReaction" ? 0 : 1);
-  });
-
   it("recovers a thread ID from a partial idempotent send response", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
     using thread = (await space.startThread("root")).thread;
     using _reply = (await thread.post("reply")).message;
-    backend.state.lostResponse = "send";
-    await expect(chat.applyAction(1)).rejects.toThrow(/provider response lost/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached/);
-    await chat.restart();
+    // Google may answer a create with only the submitted fields plus the assigned name.
+    backend.state.echoCreates = true;
     await chat.applyAction(1);
     await chat.applyAction(2);
     expect(backend.state.creates).toHaveLength(2);
@@ -521,19 +437,6 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(applying).rejects.toThrow(/rejected before it was applied/);
     expect(backend.state.creates).toEqual([]);
     await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
-  });
-
-  it("allows rejecting an edit definitively refused on its first attempt", async () => {
-    const backend = chatBackend();
-    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using message = (await space.getMessage(messageName("root"))).message;
-    await message.edit("updated");
-    backend.state.editStatus = 403;
-    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
-    await chat.rejectAction(1);
-    expect((await message.getMetadata()).text).toBe("root");
   });
 
   it("keeps a denied unsend retryable and handles disappearance between GET and DELETE", async () => {
@@ -999,76 +902,6 @@ describe("Google Chat thread capabilities", () => {
     await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(scopeError);
   });
 
-  it.each(["edit", "addReaction", "removeReaction"])(
-    "retains the %s action's thread boundary across approval and restart", async operation => {
-    const backend = chatBackend();
-    const raw = threadMessage("root", "A", "2024-01-01T00:00:00Z");
-    backend.state.messages.push(raw);
-    backend.state.reactions.push({name: `${raw.name}/reactions/own`,
-      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using thread = (await space.getThread(threadName("A"))).thread;
-    using message = (await thread.getRootMessage())!.message;
-    if (operation === "edit") await message.edit("edited");
-    else if (operation === "addReaction") await message.addReaction("🎉");
-    else await message.removeReaction("👍");
-
-    raw.thread = {name: threadName("B")};
-    await chat.restart();
-    await expect(chat.applyAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
-    expect(backend.state.edits).toEqual([]);
-    expect(backend.state.reactionWrites).toEqual([]);
-    raw.thread = {name: threadName("A")};
-    await chat.applyAction(1);
-    expect(backend.state.edits.length + backend.state.reactionWrites.length).toBe(1);
-  });
-
-  it.each(["edit", "addReaction", "removeReaction", "post"])(
-    "retains thread scope when undoing %s", async operation => {
-    const backend = chatBackend();
-    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
-    backend.state.reactions.push({name: `${messageName("root")}/reactions/own`,
-      emoji: {unicode: "👍"}, user: {name: "users/subject-a"}});
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using thread = (await space.getThread(threadName("A"))).thread;
-    using root = (await thread.getRootMessage())!.message;
-    using posted = operation === "post" ? (await thread.post("new message")).message : null;
-    if (operation === "edit") await root.edit("edited");
-    else if (operation === "addReaction") await root.addReaction("🎉");
-    else if (operation === "removeReaction") await root.removeReaction("👍");
-    await chat.applyAction(1);
-    const id = posted ? (await posted.getMetadata()).id : messageName("root");
-    const raw = backend.state.messages.find(message => message.name === id)!;
-    raw.thread = {name: threadName("B")};
-    const edits = backend.state.edits.length;
-    const reactions = backend.state.reactionWrites.length;
-    await expect(chat.revertAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
-    expect(backend.state.edits).toHaveLength(edits);
-    expect(backend.state.reactionWrites).toHaveLength(reactions);
-    expect(backend.state.deletes).toEqual([]);
-    raw.thread = {name: threadName("A")};
-    expect(await chat.revertAction(1)).toBeUndefined();
-  });
-
-  it("preserves a pending thread's boundary after its IDs resolve to Google IDs", async () => {
-    const backend = chatBackend();
-    const chat = chatHarness(backend);
-    using space = await chat.session();
-    using thread = (await space.startThread("new topic")).thread;
-    using message = (await thread.post("new reply")).message;
-    await message.edit("edited reply");
-    await chat.applyAction(1);
-    await chat.applyAction(2);
-    const raw = backend.state.messages.find(item => item.name === messageName("M2"))!;
-    raw.thread = {name: threadName("B")};
-    await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(/only covers one Google Chat thread/);
-    await chat.restart();
-    await expect(chat.applyAction(3)).rejects.toThrow(/only covers one Google Chat thread/);
-    expect(backend.state.edits).toEqual([]);
-  });
-
   it("checks thread ownership and never substitutes a surviving reply for the root", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("reply", "A", "2024-01-02T00:00:00Z", true));
@@ -1097,10 +930,7 @@ describe("Google Chat thread capabilities", () => {
     expect(backend.state.lists).toEqual([]);
     await expect(Promise.resolve(space.getThread(threadName("A")))).rejects.toThrow(/does not support/);
     await expect(Promise.resolve(space.startThread("new topic"))).rejects.toThrow(/does not support/);
-    const {info, message} = await space.getMessage(messageName("root"));
-    using _message = message;
-    // Chat threads every message even here; the ID would only invite replies that must fail.
-    expect(info.threadId).toBeUndefined();
+    using message = (await space.getMessage(messageName("root"))).message;
     await expect(Promise.resolve(message.reply("hello"))).rejects.toThrow(/does not support/);
     expect((await chat.readQueue()).submissions).toEqual([]);
   });

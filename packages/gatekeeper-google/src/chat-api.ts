@@ -11,7 +11,7 @@
 // domain-wide delegation, and no import mode. A caller can only ever reach what the connected
 // user could reach in the Chat UI.
 
-import { AccessTokenProvider, fetchWithAuthRetry, type FetchWithAuthRetryOptions } from "./auth-retry";
+import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatReaction,
@@ -492,50 +492,12 @@ export type ChatSearchMessagesRequest = {
 };
 
 export class ChatApi {
-  /** Whether each space threads, looked up once per client: Chat fixes it at creation. */
-  #threaded = new Map<string, Promise<boolean>>();
-
   constructor(private getAccessToken: AccessTokenProvider) {}
-
-  #remember(info: ChatSpaceInfo): ChatSpaceInfo {
-    this.#threaded.set(info.id, Promise.resolve(info.supportsThreads));
-    return info;
-  }
-
-  #supportsThreads(spaceName: string): Promise<boolean> {
-    let known = this.#threaded.get(spaceName);
-    if (!known) {
-      known = this.getSpace(spaceName).then(info => info.supportsThreads);
-      known.catch(() => this.#threaded.delete(spaceName));
-      this.#threaded.set(spaceName, known);
-    }
-    return known;
-  }
-
-  /**
-   * Chat threads every message; the ID only means something where the space supports threads.
-   *
-   * A cross-space search page can name many spaces, so their lookups run together, and one that
-   * fails (a stale index entry for a space the user has left) costs that space its thread IDs
-   * rather than the whole page.
-   */
-  async #withThreading(messages: ChatMessageInfo[]): Promise<ChatMessageInfo[]> {
-    const spaces = [...new Set(messages.map(message => message.spaceId))];
-    const threaded = new Map(await Promise.all(spaces.map(async space =>
-      [space, await this.#supportsThreads(space).catch(() => false)] as const)));
-    return messages.map(message => {
-      if (message.threadId === undefined || threaded.get(message.spaceId)) return message;
-      const flat = { ...message };
-      delete flat.threadId;
-      return flat;
-    });
-  }
 
   async #request<T>(
     operation: string,
     path: string,
     init?: RequestInit & { idempotent?: boolean },
-    retryOptions: FetchWithAuthRetryOptions = {},
   ): Promise<T> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
@@ -547,7 +509,7 @@ export class ChatApi {
       `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
       this.getAccessToken,
-      { ...retryOptions, ...(idempotent === undefined ? {} : { idempotent }) },
+      idempotent === undefined ? {} : { idempotent },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;
@@ -568,7 +530,7 @@ export class ChatApi {
     const body = await this.#request<{ spaces?: ChatSpaceRaw[]; nextPageToken?: string }>(
       "spaces.list", `/spaces?${params}`);
     return {
-      items: (body.spaces ?? []).map(raw => this.#remember(chatSpaceInfoFromRaw(raw))),
+      items: (body.spaces ?? []).map(chatSpaceInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -597,23 +559,23 @@ export class ChatApi {
       ? body.results.map(result => result.space).filter((s): s is ChatSpaceRaw => s !== undefined)
       : body.spaces ?? [];
     return {
-      items: spaces.map(raw => this.#remember(chatSpaceInfoFromRaw(raw))),
+      items: spaces.map(chatSpaceInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
 
   async getSpace(spaceName: string): Promise<ChatSpaceInfo> {
     const spaceId = chatSpaceId(spaceName);
-    return this.#remember(chatSpaceInfoFromRaw(
-      await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`)));
+    return chatSpaceInfoFromRaw(
+      await this.#request<ChatSpaceRaw>("spaces.get", `/spaces/${spaceId}`));
   }
 
   /** Returns null when the connected user has no direct message with `user`. */
   async findDirectMessage(user: string): Promise<ChatSpaceInfo | null> {
     const params = new URLSearchParams({ name: chatUserName(user) });
     try {
-      return this.#remember(chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
-        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`)));
+      return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
+        "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`));
     } catch (error) {
       // 404 is "no direct message". The reference's shape was validated before sending, so a 400
       // can only mean it names no real account — the same negative answer, not a caller error.
@@ -642,12 +604,12 @@ export class ChatApi {
     const body = await this.#request<{ messages?: ChatMessageRaw[]; nextPageToken?: string }>(
       "messages.list", `/spaces/${spaceId}/messages?${params}`);
     return {
-      items: await this.#withThreading((body.messages ?? [])
+      items: (body.messages ?? [])
         .filter(message => message.privateMessageViewer === undefined)
         .map(chatMessageInfoFromRaw)
         .filter(message => !message.deleted && message.spaceId === spaceName &&
           (!options.threadName || message.threadId === options.threadName) &&
-          chatTimeInWindow(message.createdAt, options))),
+          chatTimeInWindow(message.createdAt, options)),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -669,18 +631,17 @@ export class ChatApi {
       }),
     });
     return {
-      items: await this.#withThreading((body.results ?? [])
+      items: (body.results ?? [])
         .map(result => result.message)
         .filter((message): message is ChatMessageRaw =>
           message !== undefined && message.privateMessageViewer === undefined)
-        .map(chatMessageInfoFromRaw)),
+        .map(chatMessageInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
 
   async getMessage(messageName: string): Promise<ChatMessageInfo> {
-    const [info] = await this.#withThreading([chatMessageInfoFromRaw(await this.getRawMessage(messageName))]);
-    return info;
+    return chatMessageInfoFromRaw(await this.getRawMessage(messageName));
   }
 
   /** The raw message, needed where attachment data references matter. */
@@ -718,8 +679,6 @@ export class ChatApi {
       }
       body.thread = { name: `spaces/${threadSpaceId}/threads/${threadId}` };
     }
-    // Not passed through #withThreading: the result stays inside applyAction, and a lookup
-    // failing after Google accepted the post must not read as a failed write.
     return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
       "messages.create",
       `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
@@ -744,7 +703,7 @@ export class ChatApi {
 
   async listMembers(
     spaceName: string,
-    options: { pageToken?: string; pageSize?: number; signal?: AbortSignal } = {},
+    options: { pageToken?: string; pageSize?: number } = {},
   ): Promise<ChatPage<ChatMembership>> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams({
@@ -756,8 +715,7 @@ export class ChatApi {
     const body = await this.#request<{
       memberships?: ChatMembershipRaw[];
       nextPageToken?: string;
-    }>("members.list", `/spaces/${spaceId}/members?${params}`, { signal: options.signal },
-      options.signal ? { retries: 1 } : {});
+    }>("members.list", `/spaces/${spaceId}/members?${params}`);
     return {
       items: (body.memberships ?? []).map(chatMembershipFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),

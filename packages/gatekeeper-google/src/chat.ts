@@ -6,8 +6,8 @@
 //     space capabilities. Observers: strategy A — a Chat account spans direct messages and
 //     unrelated conversations, so there is no baseline a collaborator could be verified against
 //     and addObserver() always throws.
-//   - One conversation (`ChatSpace`). Observers: strategy C — verify the space ACL plus any
-//     People-sourced participant name used to label an otherwise unnamed direct message.
+//   - One conversation (`ChatSpace`). Observers: strategy B — a collaborator may observe if
+//     their own account can open the space.
 //
 // Everything reachable here is a user-authenticated call. There is no Chat app identity, no
 // `chat.bot` scope, no administrator access, and no import mode; see chat-api.ts.
@@ -25,7 +25,7 @@ import type {
 import {
   ChatApi, ChatApiError, ChatPage, MAX_CHAT_MESSAGE_BYTES,
   chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
-  chatMessagesSearchFilter, chatReactionParts,
+  chatMessagesSearchFilter,
   chatSpaceId, chatThreadParts, chatUserName, validateChatEmoji,
   validateChatSpaceId, validateChatWindow,
 } from "./chat-api";
@@ -48,8 +48,7 @@ import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import CHAT_TYPES_CODE from "./chat-types.txt";
-import { ChatDmNames, type ChatProfileName } from "./chat-dm-names";
-import { chatNameObservers } from "./chat-name-observers";
+import { nameDirectMessage } from "./chat-dm-names";
 
 type Env = Cloudflare.Env;
 
@@ -69,14 +68,12 @@ const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
 ];
 
 /** What an applied action needs in order to be undone. */
-type ChatRevertInfo = (
+type ChatRevertInfo =
   | { type: "none" }
   | { type: "sentMessage"; messageName: string }
   | { type: "updatedMessage"; messageName: string; previousText: string }
   | { type: "addedReaction"; reactionName: string }
-  | { type: "addedReaction"; messageName: string; emoji: string }
-  | { type: "removedReaction"; messageName: string; emoji: string }
-) & { threadScope?: string };
+  | { type: "removedReaction"; messageName: string; emoji: string };
 
 function previewText(text: string, maxLength: number): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
@@ -187,8 +184,6 @@ type ChatContext = {
   queue: SharedApprovalQueue;
   store: ChatStore;
   self: ChatUser;
-  dmNames: ChatDmNames;
-  nameObservers?: ReturnType<typeof chatNameObservers>;
   /** Set for a single-conversation binding: the only space any capability may reach. */
   readonly boundSpace?: string;
   /** Immutable thread boundary inherited by every capability descended from a thread. */
@@ -216,12 +211,8 @@ function requireMessageInScope(ctx: ChatScope, info: ChatMessageInfo): void {
   requireThreadInScope(ctx, info.threadId);
 }
 
-async function observe(
-  ctx: ChatContext, title: string, description: string, profiles: ChatProfileName[] = [],
-): Promise<void> {
-  const check = await ctx.nameObservers?.prepareObservation(profiles);
-  await ctx.queue.authorizeObservation({ title, description, excludeObservers: check?.excludeObservers });
-  check?.commit();
+async function observe(ctx: ChatContext, title: string, description: string): Promise<void> {
+  await ctx.queue.authorizeObservation({ title, description });
 }
 
 /** Queue one action for approval, dropping the local record if the queue refuses it. */
@@ -230,7 +221,6 @@ async function submitChatAction(
   action: ChatAction,
   description: ActionDescription,
 ): Promise<number> {
-  if (ctx.boundThread !== undefined) action = { ...action, threadScope: ctx.boundThread };
   const actionId = ctx.store.submit(action);
   try {
     await ctx.queue.submitAction(actionId, description);
@@ -407,13 +397,9 @@ async function readThreadPage(
 }
 
 /** Undo a send, counting a message already removed in Google Chat as success. */
-async function deleteMessageIfPresent(
-  api: ChatApi, messageName: string, scope: ChatScope,
-): Promise<void> {
+async function deleteMessageIfPresent(api: ChatApi, messageName: string): Promise<void> {
   try {
-    const message = await api.getMessage(messageName);
-    requireMessageInScope(scope, message);
-    if (message.deleted) return;
+    if ((await api.getMessage(messageName)).deleted) return;
     await api.deleteMessage(messageName);
   } catch (error) {
     if (error instanceof ChatApiError && error.status === 404) return;
@@ -553,11 +539,11 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   async getMetadata(): Promise<ChatSpaceInfo> {
     const raw = await this.ctx.api.getSpace(this.#spaceName);
     requireInScope(this.ctx, raw.id);
-    const [{ info, profile }] = await this.ctx.dmNames.resolve([raw], async () => this.ctx.self.id);
+    const info = await nameDirectMessage(this.ctx.api, raw, this.ctx.self.id);
     await observe(
       this.ctx,
       "Read Google Chat conversation metadata",
-      `Read the name, type, and description of ${spaceLabel(info)}.`, profile ? [profile] : []);
+      `Read the name, type, and description of ${spaceLabel(info)}.`);
     return info;
   }
 
@@ -974,8 +960,6 @@ export class GoogleChatGatekeeperImpl
     return new ChatApi(opts => this.#tokens.get(opts));
   }
 
-  #dmNames = new ChatDmNames(this.#api(), opts => this.#tokens.get(opts));
-
   #boundSpaceName(): string | undefined {
     const spaceId = this.ctx.props.spaceId;
     return spaceId === undefined ? undefined : `spaces/${validateChatSpaceId(spaceId)}`;
@@ -1041,8 +1025,6 @@ export class GoogleChatGatekeeperImpl
       queue: new SharedApprovalQueue(approvalQueue.dup()),
       store: new ChatStore(this.ctx.storage),
       self,
-      dmNames: this.#dmNames,
-      ...(boundSpace ? { nameObservers: chatNameObservers(this.ctx.storage.kv, boundSpace) } : {}),
       ...(boundSpace !== undefined ? { boundSpace } : {}),
     };
     return boundSpace === undefined
@@ -1053,13 +1035,10 @@ export class GoogleChatGatekeeperImpl
   async applyAction(actionId: number): Promise<void> {
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
-    if (!action) {
-      if (store.getRevert(actionId)) return; // The completion response may have been lost.
-      throw new Error(`Unknown pending Google Chat action: ${actionId}`);
-    }
+    if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
     const self = await this.#getSelf();
     const revert = await this.#perform(store, actionId, action, self);
-    store.setRevert(actionId, { ...revert, threadScope: action.threadScope });
+    store.setRevert(actionId, revert);
     store.remove(actionId);
   }
 
@@ -1071,47 +1050,33 @@ export class GoogleChatGatekeeperImpl
     self: ChatUser,
   ): Promise<ChatRevertInfo> {
     const api = this.#api();
-    const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: action.threadScope };
-    // Persist undo intent before a write whose response can be lost. Retrying must not replace
-    // the original text/reaction state with the result of the first attempt.
-    const write = async <T>(info: ChatRevertInfo, perform: () => Promise<T>): Promise<T> => {
-      // The reads above yielded; a concurrent rejectAction may have removed the action meanwhile,
-      // and a write after that would land in Chat as something the queue records as rejected.
+    const scope = { store, boundSpace: this.#boundSpaceName() };
+    // The reads before each write yield, and the overseer lets a rejectAction land in that window;
+    // a write after it would reach Chat as something the queue records as rejected.
+    const stillPending = () => {
       if (!store.get(actionId)) throw new Error("This Google Chat action was rejected before it was applied.");
-      const saved = store.getRevert(actionId);
-      store.setRevert(actionId, saved ?? { ...info, threadScope: action.threadScope });
-      try {
-        return await perform();
-      } catch (error) {
-        // A definitive refusal on the first attempt is still rejectable. A later refusal cannot
-        // settle an earlier lost response, so retain that attempt's intent for reconciliation.
-        if (!saved && error instanceof ChatApiError && error.status >= 400 && error.status < 500) {
-          store.clearRevert(actionId);
-        }
-        throw error;
-      }
     };
     switch (action.type) {
       case "sendMessage": {
         const threadName = action.threadName === undefined
           ? undefined : resolveThread(scope, action.threadName).name;
         requireInScope(scope, action.spaceName);
-        requireThreadInScope(scope, threadName);
         if (threadName && pendingThreadActionId(threadName) !== undefined) {
           throw new Error("Send the thread's root message before its replies.");
         }
+        stillPending();
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
-        let created = await write({ type: "none" }, () => api.createMessage(action.spaceName, {
+        let created = await api.createMessage(action.spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
-        }, { requestId: action.requestId }));
+        }, { requestId: action.requestId });
         // Idempotent retries may echo only the submitted fields and assigned message ID.
         if (!created.threadId && (threadName || action.startsThread)) {
           created = await api.getMessage(created.id);
           if (!created.threadId) throw new Error("Google Chat did not return the created message's thread.");
         }
-        requireMessageInScope(scope, created);
+        requireInScope(scope, created.spaceId);
         store.setSentMessage(actionId, created);
         return { type: "sentMessage", messageName: created.id };
       }
@@ -1123,30 +1088,27 @@ export class GoogleChatGatekeeperImpl
           entry.action.type === "updateMessage" && entry.action.messageName === target.committed);
         if (edits[0]?.id !== actionId) throw new Error("Apply this message's earlier edits first.");
         const previous = await api.getMessage(target.committed);
-        requireMessageInScope(scope, previous);
-        const revert: ChatRevertInfo = {
-          type: "updatedMessage", messageName: target.committed, previousText: previous.text,
-        };
-        if (previous.text !== action.text) await write(revert, () => api.updateMessageText(target.committed, action.text));
-        return store.getRevert(actionId) ?? revert;
+        requireInScope(scope, previous.spaceId);
+        stillPending();
+        if (previous.text !== action.text) await api.updateMessageText(target.committed, action.text);
+        return { type: "updatedMessage", messageName: target.committed, previousText: previous.text };
       }
       case "addReaction": {
         // Re-fetching the message re-runs the private-message check at apply time.
-        requireMessageInScope(scope, await api.getMessage(action.messageName));
+        requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        if (existing) return store.getRevert(actionId) ?? { type: "none" };
-        const revert: ChatRevertInfo = { type: "addedReaction", messageName: action.messageName, emoji: action.emoji };
-        await write(revert, () => api.createReaction(action.messageName, action.emoji));
-        return store.getRevert(actionId)!;
+        stillPending();
+        const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
+        return existing ? { type: "none" } : { type: "addedReaction", reactionName: reaction.id };
       }
       case "removeReaction": {
-        requireMessageInScope(scope, await api.getMessage(action.messageName));
+        requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        if (!existing) return store.getRevert(actionId) ?? { type: "none" };
-        const revert: ChatRevertInfo = { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
-        await write(revert, () => api.deleteReaction(existing.id));
-        return store.getRevert(actionId)!;
+        if (!existing) return { type: "none" };
+        stillPending();
+        await api.deleteReaction(existing.id);
+        return { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
       }
       default:
         action satisfies never;
@@ -1159,9 +1121,6 @@ export class GoogleChatGatekeeperImpl
     const pending = store.list();
     const index = pending.findIndex(entry => entry.id === actionId);
     if (index === -1) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
-    if (store.getRevert(actionId)) {
-      throw new Error("This action may already have reached Google Chat. Retry applying it before undoing it.");
-    }
     store.remove(actionId);
     // Anything queued behind this action was written against a simulation that included it, so
     // the gadget has to start again rather than keep building on a world that will not exist.
@@ -1179,21 +1138,14 @@ export class GoogleChatGatekeeperImpl
           "This Google Chat action can no longer be undone automatically. Undo it in Google Chat.",
       };
     }
-    if (store.get(actionId)) throw new Error("Finish applying this Google Chat action before undoing it.");
     const self = await this.#getSelf();
     const api = this.#api();
-    const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: info.threadScope };
-    const checkThread = async (messageName: string) => {
-      if (info.threadScope !== undefined) {
-        requireMessageInScope(scope, await api.getMessage(messageName));
-      }
-    };
     switch (info.type) {
       case "none":
         break;
       case "sentMessage":
         try {
-          await deleteMessageIfPresent(api, info.messageName, scope);
+          await deleteMessageIfPresent(api, info.messageName);
         } catch (error) {
           // Chat refuses a non-force delete of a message with threaded replies, and force would
           // cascade into deleting other people's replies. Leave the revert record so a retry
@@ -1209,28 +1161,13 @@ export class GoogleChatGatekeeperImpl
         }
         break;
       case "updatedMessage":
-        await checkThread(info.messageName);
         await api.updateMessageText(info.messageName, info.previousText);
         break;
-      case "addedReaction": {
-        let reactionName: string | undefined;
-        if ("reactionName" in info) {
-          // Undo receipts written before reaction intent was staged by message + emoji.
-          const { spaceId, messageId } = chatReactionParts(info.reactionName);
-          await checkThread(`spaces/${spaceId}/messages/${messageId}`);
-          reactionName = info.reactionName;
-        } else {
-          await checkThread(info.messageName);
-          reactionName = (await api.findOwnReaction(info.messageName, info.emoji, self.id))?.id;
-        }
-        if (reactionName) {
-          try { await api.deleteReaction(reactionName); }
-          catch (error) { if (!(error instanceof ChatApiError && error.status === 404)) throw error; }
-        }
+      case "addedReaction":
+        try { await api.deleteReaction(info.reactionName); }
+        catch (error) { if (!(error instanceof ChatApiError && error.status === 404)) throw error; }
         break;
-      }
       case "removedReaction": {
-        await checkThread(info.messageName);
         const existing = await api.findOwnReaction(info.messageName, info.emoji, self.id);
         if (!existing) await api.createReaction(info.messageName, info.emoji);
         break;
@@ -1247,10 +1184,9 @@ export class GoogleChatGatekeeperImpl
    *
    * A whole-account binding reaches direct messages and every conversation the owner belongs to,
    * so there is nothing a collaborator could be verified against — strategy A, always refuse. A
-   * single-space binding verifies the space and any People-sourced names already disclosed. The
-   * tracker also checks existing observers before a new profile name is revealed.
+   * single-space binding is strategy B: the collaborator's own account must be able to open it.
    */
-  async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const boundSpace = this.#boundSpaceName();
     if (boundSpace === undefined) {
       throw new Error(
@@ -1258,12 +1194,11 @@ export class GoogleChatGatekeeperImpl
         "the owner belongs to, so it cannot be shared with collaborators. Connect a single " +
         "conversation instead.");
     }
-    await chatNameObservers(this.ctx.storage.kv, boundSpace)
-      .addObserver(id, user as unknown as Fetcher<GoogleVerifierApi>);
+    const verifier = user as unknown as Fetcher<GoogleVerifierApi>;
+    if (!(await verifier.hasChatSpaceAccess(boundSpace))) {
+      throw new Error("This collaborator cannot access the Google Chat conversation.");
+    }
   }
 
-  async removeObserver(id: string): Promise<void> {
-    const space = this.#boundSpaceName();
-    if (space) chatNameObservers(this.ctx.storage.kv, space).removeObserver(id);
-  }
+  async removeObserver(_id: string): Promise<void> {}
 }
