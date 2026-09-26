@@ -132,13 +132,13 @@ export class ChatDmNames {
         for (let offset = 0; offset < missing.length; offset += 4) {
           if (Date.now() >= memberDeadline) break;
           await Promise.all(missing.slice(offset, offset + 4).map(async space => {
-            peers.set(space, undefined);
             try {
               peers.set(space, await this.#peer(space, selfId, signal));
             } catch (error) {
-              if (!signal.aborted) {
-                logger.warn("Chat DM participant lookup unavailable", { event: "chat.dm.members.failed", error });
-              }
+              // A lookup our own deadline cut short is skipped work, not a missing name.
+              if (signal.aborted) return;
+              peers.set(space, undefined);
+              logger.warn("Chat DM participant lookup unavailable", { event: "chat.dm.members.failed", error });
             }
           }));
         }

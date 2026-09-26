@@ -252,9 +252,18 @@ function chatHarness(
     userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
     accountBinding = false,
 ) {
+  // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
+  // in the test context cannot be awaited there.
+  const gate = {hold: false, reached: false, released: false};
+  const tick = () => new Promise<void>(resolve => setTimeout(resolve, 5));
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.hostname === "www.googleapis.com" && url.pathname === "/oauth2/v3/userinfo") {
+      if (gate.hold) {
+        gate.hold = false;
+        gate.reached = true;
+        while (!gate.released) await tick();
+      }
       return json(userInfo(new Headers(init.headers).get("Authorization")));
     }
     return backend.fetch(url, init);
@@ -307,6 +316,12 @@ function chatHarness(
       runHook(hook, instance => instance.chatRevertAction(facetName, id, props, actionId))),
     rejectAction: (actionId: number) => ready.then(() =>
       runHook(hook, instance => instance.chatRejectAction(facetName, id, props, actionId))),
+    /** Hold the next account lookup; resolves once it is reached, returning its release. */
+    holdNextUserInfo: async (): Promise<() => void> => {
+      gate.hold = true;
+      while (!gate.reached) await tick();
+      return () => { gate.released = true; };
+    },
     failNextObservation: (title: string): Promise<void> => ready.then(() =>
       runHook(hook, instance => instance.failNextObservation(queueId, title))),
     readQueue: () => ready.then(() =>
@@ -489,6 +504,23 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(2);
     expect(backend.state.creates).toHaveLength(2);
     expect(backend.state.creates[1].body.thread?.name).toBe(threadName("T1"));
+  });
+
+  // approveAction and rejectAction both pass the overseer's "still pending" check before their own
+  // awaits, so a reject can land while an apply is resolving the account. The write must not
+  // reach Google once the queue has recorded the action as rejected.
+  it("does not send an action that was rejected while its apply was in flight", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    await chat.call("space.post", ["hello"]);
+    const held = chat.holdNextUserInfo();
+    const applying = chat.applyAction(1);
+    const release = await held;
+    await chat.rejectAction(1);
+    release();
+    await expect(applying).rejects.toThrow(/rejected before it was applied/);
+    expect(backend.state.creates).toEqual([]);
+    await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
   });
 
   it("allows rejecting an edit definitively refused on its first attempt", async () => {
