@@ -50,7 +50,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 17. Go back to the Library, search for "BigQuery API"
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
-20. For Chat, enable **Google Chat API**. Also enable **People API** for participant-name fallback in unnamed DMs.
+20. For Chat, enable **Google Chat API**.
 
 The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
 

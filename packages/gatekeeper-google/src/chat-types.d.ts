@@ -122,8 +122,9 @@ export type ChatMessageInfo = {
   /** ID of the containing conversation. */
   spaceId: string;
   /**
-   * Containing thread ID, present only in conversations whose `supportsThreads` is true. A newly
-   * posted root uses a temporary pending:thread:{n} ID.
+   * Containing thread ID. Chat assigns one to every message, but it only means something in a
+   * conversation whose `supportsThreads` is true; ignore it elsewhere. A newly posted root uses
+   * a temporary pending:thread:{n} ID.
    */
   threadId?: string;
   /** Who sent the message. */

@@ -17,11 +17,7 @@ import type {
 } from "./chat-types";
 import { chatTimeInWindow } from "./chat-api";
 
-type ChatActionBase = {
-  submittedAt: number;
-  /** Thread restriction inherited from the submitting capability, retained through approval. */
-  threadScope?: string;
-};
+type ChatActionBase = { submittedAt: number };
 
 export type ChatSendMessageAction = ChatActionBase & {
   type: "sendMessage";

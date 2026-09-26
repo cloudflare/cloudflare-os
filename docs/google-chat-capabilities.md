@@ -23,8 +23,8 @@ access to that message and the ability to reply, edit its text where permitted, 
 the connected user's reactions. Neither can return a containing space capability; a message
 cannot return its containing thread capability. Resource IDs in metadata do not grant access.
 Messages produced by a thread retain its immutable thread restriction through root lookup,
-history, posts, replies, reactions, and attachments. Fresh reads recheck membership in that
-thread; queued writes and undo records retain the same restriction across approval and restart.
+history, posts, replies, reactions, and attachments; fresh reads recheck membership in that
+thread. A write is scoped when it is queued; approval applies what was queued.
 
 Known resources use `getSpace(id)`, `getThread(id)`, and `getMessage(id)`: each returns the
 same `{ info, <capability> }` entry the listings use, or throws if the resource is unavailable,
@@ -33,13 +33,13 @@ performs an optional lookup and returns null when absent. Writes (`post`, `reply
 `startThread`) return entries too, describing the queued message or thread under its temporary
 ID. IDs are opaque strings (normally Google's canonical paths), while `name` is the
 human-readable label. Data uses `spaceId`, `threadId`, `createdAt`, `editedAt`, and `isReply`
-consistently; `threadId` is present only where `supportsThreads` is true, since Chat threads
-every message internally and the ID would otherwise invite replies that must fail.
+consistently. Chat assigns a `threadId` to every message, but it only means something where
+`supportsThreads` is true; ignore it elsewhere (replies there fail with a clear error).
 
 Google's ACL boundary remains the space. Narrower capabilities restrict delegated authority;
 they do not establish separate Google ACLs or make an account-derived capability into an
 independently shareable Workshop connection. Account bindings remain private. A single-space
-binding checks its Chat ACL and any People-sourced name used to label a direct message.
+binding is shareable with collaborators whose own account can open the space.
 
 ## Names and identities
 
@@ -55,8 +55,8 @@ optional: fall back to the ID when Google omits one. The connected account's ide
 the existing sign-in profile lookup. Methods that accept an email address as input still support it.
 
 Call **`space.getMetadata()`** to resolve an unnamed DM's other participant on demand. Account
-listings and the connection picker use only Chat's returned metadata, with no participant or
-People lookups. Agents receive this guidance in the API type comments. For example:
+listings and the connection picker use only Chat's returned metadata, with no membership
+lookups. Agents receive this guidance in the API type comments. For example:
 
 ```ts
 const info = entry.info.type === "directMessage" && !entry.info.name
@@ -65,23 +65,11 @@ const info = entry.info.type === "directMessage" && !entry.info.name
 const label = info.name ?? info.id;
 ```
 
-The resolver reads Chat membership data first. Only
-when the peer is human and Chat omits their name does it request that person's name from the
-People API. This requests names only and uses the existing OAuth grant; it does not enrich every
-message sender or fetch email addresses. The People API must be enabled in the OAuth client's
-Google Cloud project, and Google still controls which names are visible.
-
-DM labels are cached per binding for five minutes, with a short 30-second cache
-for unavailable labels. Membership lookups have bounded concurrency and pagination; missing
-profile names are batched. Name enrichment gets a three-second request budget; membership requests
-are aborted at their deadline without transient retry backoff. Overlapping metadata reads share
-work. An unavailable or ambiguous peer leaves the name unset; later reads can retry resolution.
-Existing space names and group chats require no additional lookup. Picker searches scan at most
-five pages; paste `spaces/ID` or a Chat room/DM URL to access an exact conversation beyond that scan.
-
-People-sourced names have a separate visibility check: shared bindings track the exact name
-disclosed and verify that collaborators can read it with their own credentials, both before new
-disclosures and when joining/reopening the workspace.
+The name comes from the DM's own membership list (`members.list`), which Chat populates for
+the people the account talks to; there is no second lookup. When Chat omits the name, or the
+membership is ambiguous, the DM stays unnamed and the ID is the fallback. Existing space names
+and group chats require no lookup. Picker searches scan at most five pages; paste `spaces/ID`
+or a Chat room/DM URL to access an exact conversation beyond that scan.
 
 ## Discover and operate on threads
 
@@ -184,12 +172,11 @@ approval can otherwise run them out of order and an older edit would overwrite a
 Rejection rewinds the corresponding overlay; an edit targeting a rejected post cannot be
 applied. Undoing an applied edit restores the previous provider text.
 
-Undo intent is saved before sending edits and reaction writes. A lost response can be retried
-without replacing the original undo state; an uncertain write must finish applying before it
-can be undone. Definitive first-attempt refusals remain rejectable. Send retries recover missing
-thread metadata from the committed message, and replies to rejected roots disappear from the
-simulation. Authentication and permission errors during unsend remain retryable rather than
-being counted as successful deletion.
+Sends are idempotent through Google's `requestId`, so a retried apply returns the message the
+first attempt created rather than posting again; a retry also recovers thread metadata from the
+committed message when Google echoes only the request. Reactions re-find their own state on
+retry. Replies to rejected roots disappear from the simulation. Authentication and permission
+errors during unsend remain retryable rather than being counted as successful deletion.
 
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
 with the getters after a worker restart. Reactions to new messages require the post to complete.
@@ -224,12 +211,11 @@ persistent merely by storing them.
 Workerd behavior tests cover discovery across pages, authorization retries, zero-reply roots,
 old roots with new replies, private-message exclusion, parent/sibling authority boundaries,
 capability lifetime after discovery disposal, authorized metadata and cheap root enrichment,
-thread creation, pending posts/replies/edits, rejection, undo, and retrieving temporary IDs after
-restart. Attenuation regressions cover every message creation path and its attachment/reaction
-descendants, as well as delayed actions and undo. Pure tests cover provider thread support, time
+thread creation, pending posts/replies/edits, rejection, undo, the apply/reject race, and
+retrieving temporary IDs after restart. Attenuation regressions cover every message creation path
+and its attachment/reaction descendants. Pure tests cover provider thread support, time
 bounds, scope filtering, and overlays. Durable `spawnCallable` handoff uses the existing gadget
 restoration mechanism; it is not exercised end-to-end by the Chat gatekeeper suite.
 An identity regression checks that Chat-provided names reach message, thread, member, and reaction
 results without extra identity lookups. DM tests cover on-demand resolution, lookup-free listings
-and picker searches, peer selection, pagination, batching, caching and expiry, unavailable profiles,
-denial retries, and shared-name access.
+and picker searches, peer selection, pagination, and observer admission by space access.

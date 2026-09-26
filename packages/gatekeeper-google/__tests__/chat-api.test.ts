@@ -239,32 +239,11 @@ describe("Chat provider error handling", () => {
     vi.unstubAllGlobals();
   });
 
-  const requests: string[] = [];
-
-  function stubResponse(status: number, body: unknown, threaded = true): ChatApi {
-    const space = { name: "spaces/AAAA", spaceType: "SPACE",
-      spaceThreadingState: threaded ? "THREADED_MESSAGES" : "UNTHREADED_MESSAGES" };
-    requests.length = 0;
-    vi.stubGlobal("fetch", async (url: string) => {
-      requests.push(url);
-      return new Response(JSON.stringify(url.endsWith("/spaces/AAAA") ? space : body), { status });
-    });
+  function stubResponse(status: number, body: unknown): ChatApi {
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify(body), { status }));
     return new ChatApi(async () => "token");
   }
-
-  it("omits thread IDs in a conversation that does not thread, looking the space up once", async () => {
-    const messages = [
-      {name: "spaces/AAAA/messages/one", createTime: "2024-01-01T00:00:00Z", thread: {name: "spaces/AAAA/threads/1"}},
-      {name: "spaces/AAAA/messages/two", createTime: "2024-01-02T00:00:00Z", thread: {name: "spaces/AAAA/threads/2"}},
-    ];
-    const api = stubResponse(200, {messages}, false);
-    const page = await api.listMessages("spaces/AAAA");
-    expect(page.items.map(message => message.threadId)).toEqual([undefined, undefined]);
-    await api.listMessages("spaces/AAAA");
-    expect(requests.filter(url => url.endsWith("/spaces/AAAA"))).toHaveLength(1);
-    expect((await stubResponse(200, {messages}).listMessages("spaces/AAAA")).items[0].threadId)
-      .toBe("spaces/AAAA/threads/1");
-  });
 
   it("enforces half-open windows and thread scope even if the provider ignores its filters", async () => {
     const since = new Date("2024-01-01T00:00:00Z");

@@ -11,7 +11,6 @@
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import type { ObserverBatchResult } from "./observers";
 import type { DriveObservation } from "./drive-observers";
-import type { ChatProfileName } from "./chat-dm-names";
 
 /**
  * Non-standard methods implemented by `GoogleVerifier`, each answered with the *observer's* own
@@ -26,7 +25,5 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
   /** Whether the observer's own account can open one Google Chat space. */
   hasChatSpaceAccess(spaceName: string): Promise<boolean>;
-  /** Verify the space ACL and exact People-sourced names used for DM labels. */
-  verifyChatNames(spaceName: string, profiles: ChatProfileName[]): Promise<ObserverBatchResult>;
   verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
 }
