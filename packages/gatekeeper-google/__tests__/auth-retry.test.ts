@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { AccessTokenCache, type AccessTokenRequest } from "../src/auth-retry";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AccessTokenCache, fetchWithAuthRetry, type AccessTokenRequest } from "../src/auth-retry";
+import { getGoogleAccountProfile } from "../src/google-api";
 
 /** A stub authority recording every request, answering with whatever token it currently holds. */
 function authority(initial: string) {
@@ -45,5 +46,44 @@ describe("AccessTokenCache", () => {
 
     expect(await account.cache.get()).toBe("widened");
     expect(account.requests).toHaveLength(2);
+  });
+});
+
+describe("fetchWithAuthRetry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Unlike a stream, a byte-array body survives being sent and can be replayed after a 401.
+  it("replays a byte-array body once after a 401 refresh", async () => {
+    let bodies: string[] = [];
+    let tokens: (string | null)[] = [];
+    let status = 401;
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit = {}) => {
+      bodies.push(new TextDecoder().decode(init.body as Uint8Array));
+      tokens.push(new Headers(init.headers).get("Authorization"));
+      let current = status;
+      status = 200;
+      return new Response("{}", { status: current });
+    });
+    let minted = 0;
+    let response = await fetchWithAuthRetry(
+      "https://chat.googleapis.com/upload/v1/spaces/AAAA/attachments:upload",
+      { method: "POST", body: new TextEncoder().encode("payload") },
+      async () => `token-${++minted}`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(bodies).toEqual(["payload", "payload"]);
+    expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
+  });
+
+  it("refreshes an invalidated profile token before checking the account subject", async () => {
+    const provider = vi.fn(async (opts?: AccessTokenRequest) => opts?.forceRefresh ? "fresh" : "stale");
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit) =>
+      new Headers(init.headers).get("Authorization") === "Bearer fresh"
+        ? Response.json({sub: "original-account"}) : new Response(null, {status: 401}));
+    expect(await getGoogleAccountProfile(provider)).toEqual({sub: "original-account"});
+    expect(provider).toHaveBeenLastCalledWith({forceRefresh: true, staleToken: "stale"});
   });
 });

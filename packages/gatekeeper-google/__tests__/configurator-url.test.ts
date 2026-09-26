@@ -24,9 +24,12 @@ import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
 import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
+import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
+import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
-  GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE, parseResourceUrl,
+  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -145,6 +148,54 @@ describe("Calendar configurator URLs", () => {
       calendarId: "person@example.com",
       availabilityMode: "allVisible",
     });
+  });
+});
+
+describe("Google Chat configurator URLs", () => {
+  const chatValues = (resourceUrl: string) =>
+    chatSpaceConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl, resourceUrlPattern: GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, ui: noUi,
+    });
+
+  it("mints the whole-account resource", () => {
+    const url = configurableUrl(chatAccountConfigurator, { scope: "account" });
+    expect(url).toBe(GOOGLE_CHAT_RESOURCE.urlPattern);
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatAccount" });
+  });
+
+  it("mints a conversation URL the server parses back", () => {
+    const url = configurableUrl(chatSpaceConfigurator, { spaceId: "AAAA1234" });
+    expect(url).toBe("https://chat.google.com/room/AAAA1234");
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatSpace", spaceId: "AAAA1234" });
+  });
+
+  it("round-trips its own URL back to the same values", () => {
+    const values = { spaceId: "AAAA1234" };
+    expect(chatValues(configurableUrl(chatSpaceConfigurator, values))).toEqual(values);
+  });
+
+  // The Chat UI writes several shapes for one conversation and people paste all of them. Each
+  // has to prefill the same capability the canonical URL would mint.
+  it.for([
+    ["a space URL", "https://chat.google.com/room/AAAA1234/xyz"],
+    ["a direct message URL", "https://chat.google.com/dm/AAAA1234"],
+    ["a Gmail Chat fragment", "https://mail.google.com/chat/u/0/#chat/space/AAAA1234"],
+    ["a bare resource name", "spaces/AAAA1234"],
+  ] as const)("prefills from %s", ([, pasted]) => {
+    expect(chatValues(pasted)).toEqual({ spaceId: "AAAA1234" });
+  });
+
+  it("prefills nothing from a URL that names no conversation", () => {
+    expect(chatValues("https://chat.google.com/")).toEqual({});
+    expect(chatValues("https://chat.google.com/room/%ZZ")).toEqual({});
+    expect(chatValues("spaces/%E0%A4")).toEqual({});
+  });
+
+  it("explains that a conversation connection is shareable but an account one is not", () => {
+    expect(renderedCopy(chatAccountConfigurator))
+      .toContain("cannot be shared with collaborators");
+    expect(renderedCopy(chatSpaceConfigurator))
+      .toContain("only if their own Google account can open it too");
   });
 });
 

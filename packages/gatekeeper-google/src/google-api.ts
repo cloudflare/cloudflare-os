@@ -198,24 +198,22 @@ export async function getAccessToken(
   };
 }
 
-type GoogleAccountProfile = {
+export type GoogleAccountProfile = {
+  /** The stable Google account ID; also the `{user}` in Chat's `users/{user}` names. */
   sub: string;
   email?: string;
   name?: string;
   picture?: string;
 };
 
-async function getGoogleAccountProfile(accessToken: string): Promise<GoogleAccountProfile> {
-  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
+  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-    },
-  });
+    headers: { 'Accept': 'application/json' },
+  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {
-    response.body?.cancel();
+    await response.body?.cancel();
     throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
   }
 

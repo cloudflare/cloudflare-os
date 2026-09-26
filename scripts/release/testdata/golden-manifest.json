@@ -341,7 +341,7 @@
           "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/google/oauth",
           "setupSteps": [
             "In the Google Cloud Console, create a project (or pick an existing one).",
-            "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Calendar, and BigQuery (APIs & Services > Library).",
+            "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Calendar, Google Chat, and BigQuery (APIs & Services > Library).",
             "Configure the OAuth consent screen (External) and add yourself as a test user while the app is unverified.",
             "Create an OAuth client ID of type \"Web application\" and add the redirect URI below.",
             "Copy the client ID and client secret here."
@@ -388,6 +388,12 @@
             "GoogleDocGatekeeperImpl"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "GoogleChatGatekeeperImpl"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [

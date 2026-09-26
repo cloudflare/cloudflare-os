@@ -1,16 +1,20 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
-import { UserAccount } from "../../src/google";
+import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
+import { UserAccount, GoogleVerifier } from "../../src/google";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
   GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailReplyOptions,
   GmailSession,
 } from "../../src/types";
+import type {
+  ChatListMessagesOptions, ChatMessageInfo, ChatSpace, GoogleChatSession,
+} from "../../src/chat-types";
 
 export { default } from "../../src/google";
-export { GmailGatekeeperImpl, UserAccount };
+export { GmailGatekeeperImpl, GoogleChatGatekeeperImpl, UserAccount, GoogleVerifier };
 
 type StorageOperation =
   | {kind: "put"; key: string; value: unknown}
@@ -68,13 +72,31 @@ class TestApprovalQueue extends RpcTarget {
   #releaseSubmission?: Promise<void>;
   #releasePausedSubmission?: () => void;
 
+  #failTitle?: string;
+  #activeObservers = new Set<string>();
+
   constructor(rejection?: string) {
     super();
     this.#rejection = rejection;
   }
 
+  /** Deny the next observation whose title matches, once. */
+  failNextObservation(title: string): void {
+    this.#failTitle = title;
+  }
+
   async authorizeObservation(description: unknown): Promise<void> {
     this.#observations.push(description);
+    if (typeof description === "object" && description !== null && "excludeObservers" in description &&
+        Array.isArray(description.excludeObservers) &&
+        description.excludeObservers.some(id => this.#activeObservers.has(id))) {
+      throw new Error("An active observer cannot see this observation.");
+    }
+    if (this.#failTitle !== undefined && typeof description === "object" && description !== null &&
+        "title" in description && description.title === this.#failTitle) {
+      this.#failTitle = undefined;
+      throw new Error("This observation was denied by the test.");
+    }
     if (this.#pausedTitle && typeof description === "object" && description !== null &&
         "title" in description && description.title === this.#pausedTitle) {
       this.#pausedTitle = undefined;
@@ -102,6 +124,18 @@ class TestApprovalQueue extends RpcTarget {
 
   read() {
     return {submissions: [...this.#submissions], observations: [...this.#observations]};
+  }
+
+  async bindHook(): Promise<never> {
+    throw new Error("Hooks are not used by these tests.");
+  }
+
+  async getGitCache() {
+    return new TestGitCache();
+  }
+
+  addObserver(id: string): void {
+    this.#activeObservers.add(id);
   }
 
   pauseObservation(title: string): void {
@@ -284,6 +318,101 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   ): Promise<unknown> {
     return (this.#gatekeeper(facetName, id, props) as unknown as TestGmail)
       .captureTestSnapshot(bytes);
+  }
+
+  // ── Google Chat ─────────────────────────────────────────────────────
+
+  #chat(facetName: string, id: string, props: GoogleChatGatekeeperImplProps) {
+    const exports = this.ctx.exports as unknown as {
+      GoogleChatGatekeeperImpl(options: {props: GoogleChatGatekeeperImplProps}):
+        DurableObjectClass<GoogleChatGatekeeperImpl>;
+    };
+    return this.ctx.facets.get<GoogleChatGatekeeperImpl>(facetName, () => ({
+      id, class: exports.GoogleChatGatekeeperImpl({props}),
+    }));
+  }
+
+  async chatStartSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<void> {
+    this.#queues.set(queueId, new TestApprovalQueue());
+    this.#chat(facetName, id, props);
+  }
+
+  async runChatOperation(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
+      queueId: string, operation: string, args: unknown[],
+  ): Promise<unknown> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    const queueStub = new RpcStub(queue);
+    try {
+      return await (this.#chat(facetName, id, props) as unknown as TestChat)
+        .runChatTestOperation(queueStub, operation, args);
+    } finally {
+      queueStub[Symbol.dispose]();
+    }
+  }
+
+  async openChatSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<ChatSpace> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSpace;
+  }
+
+  async openChatAccountSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<GoogleChatSession> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#chat(facetName, id, props).startSession(queueStub) as GoogleChatSession;
+  }
+
+  async chatAddObserver(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+      observerId: string, userObjectId: string,
+  ): Promise<void> {
+    await this.#chat(facetName, id, props).addObserver(observerId,
+      this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+    this.#queues.get(queueId)!.addObserver(observerId);
+  }
+
+  async chatRejectAction(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
+  ): ReturnType<GoogleChatGatekeeperImpl["rejectAction"]> {
+    return this.#chat(facetName, id, props).rejectAction(actionId);
+  }
+
+  async chatApplyAction(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
+  ): Promise<void> {
+    // As with Gmail above: the overseer passes an action-scoped git cache with every apply, and
+    // validation follows the Gatekeeper interface even though Chat's applyAction() omits the
+    // parameter, so the test passes a stand-in the same way.
+    const cache = new RpcStub(new TestGitCache());
+    try {
+      await (this.#chat(facetName, id, props) as unknown as {
+        applyAction(actionId: number, cache: RpcStub<TestGitCache>): Promise<void>;
+      }).applyAction(actionId, cache);
+    } finally {
+      cache[Symbol.dispose]();
+    }
+  }
+
+  async chatRevertAction(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, actionId: number,
+  ): ReturnType<GoogleChatGatekeeperImpl["revertAction"]> {
+    return this.#chat(facetName, id, props).revertAction(actionId);
+  }
+
+  failNextObservation(queueId: string, title: string): void {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    queue.failNextObservation(title);
   }
 }
 
@@ -577,5 +706,71 @@ testGmailPrototype.runTestOperation = async function(
     }
   } finally {
     disposeRpc(session);
+  }
+};
+
+// ── Google Chat test surface ──────────────────────────────────────────
+//
+// The minimal operation set the chat-actions behavior tests need. Each operation starts a real
+// production session against the test approval queue and disposes everything it created, exactly
+// as the Gmail helper above does.
+
+type TestChat = GoogleChatGatekeeperImpl & {
+  runChatTestOperation(queue: unknown, operation: string, args: unknown[]): Promise<unknown>;
+};
+
+const testChatPrototype = GoogleChatGatekeeperImpl.prototype as TestChat;
+
+testChatPrototype.runChatTestOperation = async function(
+    queue: unknown, operation: string, args: unknown[],
+): Promise<unknown> {
+  // These tests always bind a single conversation, so the session is the space capability.
+  const space = await this.startSession(queue as never) as ChatSpace;
+  const [first] = args;
+  try {
+    switch (operation) {
+      case "space.post": {
+        const {info, message} = await space.post(first as string);
+        disposeRpc(message);
+        return info;
+      }
+      case "space.listMessages": {
+        const cursor = await space.listMessages(first as ChatListMessagesOptions);
+        const pages: ChatMessageInfo[][] = [];
+        try {
+          for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+            const entries = await cursor.next();
+            if (!entries) return pages;
+            pages.push(entries.map(entry => entry.info));
+            for (const entry of entries) disposeRpc(entry.message);
+          }
+          throw new Error("Test chat cursor did not terminate.");
+        } finally {
+          disposeRpc(cursor);
+        }
+      }
+      case "space.listMessagesRetry": {
+        // First page denied, then retried: the pager must re-offer the same page.
+        const cursor = await space.listMessages(first as ChatListMessagesOptions);
+        try {
+          let firstError = "";
+          try {
+            await cursor.next();
+          } catch (error) {
+            firstError = error instanceof Error ? error.message : String(error);
+          }
+          const entries = await cursor.next();
+          const page = entries?.map(entry => entry.info) ?? null;
+          for (const entry of entries ?? []) disposeRpc(entry.message);
+          return {firstError, page};
+        } finally {
+          disposeRpc(cursor);
+        }
+      }
+      default:
+        throw new Error(`Unknown test Chat operation: ${operation}`);
+    }
+  } finally {
+    disposeRpc(space);
   }
 };

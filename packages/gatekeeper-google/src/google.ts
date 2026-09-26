@@ -35,6 +35,8 @@ import type {
   DriveEntry, DriveListOptions, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
+import { ChatApi, isChatNoAccessError } from "./chat-api";
+import type { GoogleVerifierApi } from "./google-verifier-types";
 import { BigQueryApi, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -50,6 +52,7 @@ import type {
   GoogleCalendarInfo, GoogleCalendarSession, PersonAvailability,
 } from "./calendar-types";
 import TYPES_CODE from "./types.txt";
+import CHAT_TYPES_CODE from "./chat-types.txt";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
@@ -59,6 +62,8 @@ import DRIVE_TYPES_CODE from "./drive-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
+  ChatAccountConfiguratorUI,
+  ChatSpaceConfiguratorUI,
   GmailConfiguratorUI,
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
@@ -68,6 +73,8 @@ import {
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
+import CHAT_ACCOUNT_CONFIGURATOR_HTML from "./generated/chat-account-configurator-ui.txt";
+import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
@@ -79,6 +86,7 @@ import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
@@ -122,9 +130,12 @@ function getGoogleDriveTypesCode(): string {
     DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, getDriveAgentTypesCode(),
   ].join("\n");
 }
+
 import type {GmailGatekeeperImplProps} from "./gmail";
+import type {GoogleChatGatekeeperImplProps} from "./chat";
 
 export { GmailGatekeeperImpl } from "./gmail";
+export { GoogleChatGatekeeperImpl } from "./chat";
 
 // Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased).
 const VENDOR_ID = "google";
@@ -329,12 +340,13 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://google.com",
       logo: { url: GOOGLE_LOGO_URL },
       color: "#e8f0fe",
-      tagline: "Draft replies, edit docs, read sheets, search Drive, manage calendars, and analyze data",
+      tagline: "Draft replies, edit docs, read sheets, search Drive, manage calendars, post to Chat, and analyze data",
       description:
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
-          "Sheets, Google Drive, Google Calendar, and BigQuery. Build agents that triage email, " +
-          "draft and edit documents, read spreadsheets, search Drive and read native Docs and " +
-          "Sheets, find focus time, schedule meetings, or run analytics queries on your data.",
+          "Sheets, Google Drive, Google Calendar, Google Chat, and BigQuery. Build agents that " +
+          "triage email, draft and edit documents, read spreadsheets, search Drive and read " +
+          "native Docs and Sheets, find focus time, schedule meetings, follow and post to Chat " +
+          "conversations, or run analytics queries on your data.",
       providesAuth: true,
     };
   }
@@ -370,7 +382,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   async getTypeScriptTypes(): Promise<string> {
     return [
       TYPES_CODE, getGoogleDocTypesCode(), SHEETS_TYPES_CODE, CALENDAR_TYPES_CODE,
-      BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(),
+      BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(), CHAT_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -777,6 +789,14 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
+      case "chatAccount":
+      case "chatSpace": {
+        let props: GoogleChatGatekeeperImplProps = {
+          userObjectId,
+          ...(target.kind === "chatSpace" ? { spaceId: target.spaceId } : {}),
+        };
+        return { class: this.ctx.exports.GoogleChatGatekeeperImpl({ props }), resource };
+      }
       case "driveAccount":
       case "driveFolder":
       case "driveFile": {
@@ -830,6 +850,20 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: GOOGLE_SHEETS_CONFIGURATOR_HTML,
         ui: new RpcStub(new GoogleSheetsConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_CHAT_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: CHAT_ACCOUNT_CONFIGURATOR_HTML,
+        ui: new RpcStub(new ChatAccountConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_CHAT_SPACE_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: CHAT_SPACE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new ChatSpaceConfiguratorUI(getToken)),
       };
     }
 
@@ -922,6 +956,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasCalendarFreeBusyAccess covers foreign calendars read by an all-visible availability query.
 //   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
 //     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
+//   - Google Chat — strategies A/C: accounts stay private; a conversation checks its Chat ACL
+//     and the separate visibility of any People name used to label an unnamed DM.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results.
 
@@ -946,15 +982,12 @@ function isNoAccessStatus(status: number | undefined): boolean {
 /**
  * The non-standard methods the Google gatekeepers call on their own verifier (see addObserver). Not
  * part of the generic GatekeeperUserVerifier contract.
+ *
+ * Declared in its own module so that a gatekeeper living outside this file (Chat) can name it
+ * without importing the module that implements it; re-exported here because this is where callers
+ * have always found it.
  */
-export interface GoogleVerifierApi extends GatekeeperUserVerifier {
-  hasDocAccess(documentId: string): Promise<boolean>;
-  hasSpreadsheetAccess(spreadsheetId: string): Promise<boolean>;
-  hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
-  hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
-  hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
-  verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
-}
+export type { GoogleVerifierApi } from "./google-verifier-types";
 
 @validateRpc()
 export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
@@ -1015,6 +1048,19 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       return true;
     } catch (error) {
       if (isNoAccessStatus(httpStatusFromError(error))) return false;
+      throw error;
+    }
+  }
+
+  async hasChatSpaceAccess(spaceName: string): Promise<boolean> {
+    let api = new ChatApi(opts => this.#getToken(opts));
+    try {
+      await api.getSpace(spaceName);
+      return true;
+    } catch (error) {
+      // Chat answers a space the observer is not a member of with 403 or 404, which
+      // isChatNoAccessError recognizes; anything else is transient and must fail the open loudly.
+      if (isChatNoAccessError(error)) return false;
       throw error;
     }
   }
