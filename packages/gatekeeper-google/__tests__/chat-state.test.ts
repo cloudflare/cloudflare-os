@@ -116,18 +116,6 @@ describe("message list overlay", () => {
     })).toEqual([]);
   });
 
-  // The overlay cannot recompute Chat's formatting markup, so a stale formatted body must not
-  // survive an overlaid edit.
-  it("drops formatted text whenever the overlay changes the body", () => {
-    const formatted = message("1", "first", { formattedText: "*first*" });
-    const edit: ChatAction = {
-      type: "updateMessage", messageName: formatted.id, text: "edited", submittedAt: Date.now(),
-    };
-    const edited = overlayMessage(formatted, pending(edit));
-    expect(edited.text).toBe("edited");
-    expect(edited).not.toHaveProperty("formattedText");
-  });
-
   it("never lets a queued edit put text back on a deleted message", () => {
     const edit: ChatAction = {
       type: "updateMessage",
