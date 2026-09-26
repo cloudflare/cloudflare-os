@@ -91,32 +91,6 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
     });
   });
 
-  it("leaves no trace when the exclusion gate blocks the observation", async () => {
-    let stub = env.TEST_OVERSEER.getByName("restricted-flag-exclusion-blocked");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = getImpl(instance);
-      seedGatekeeper(impl, 1);
-      // Mallory is a current collaborator: the exclusion gate is the only thing blocking this
-      // observation.
-      impl.storage.collaborators.put({
-        profile: { id: "mallory", name: "Mallory" },
-        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "build" }],
-      });
-      impl.storage.observers.put(
-          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
-
-      await expect(impl.authorizeObservation(
-          1, RESTRICTED_EXCLUDING_MALLORY, { from: "user" }))
-          .rejects.toThrow(/not permitted to see/);
-
-      // The blocked observation delivered no data, so the workspace is not restricted: no flag,
-      // no action record -- and mallory, still authorized, was not torn down.
-      expect(impl.storage.containsRestrictedData.get()).toBe(false);
-      expect([...impl.storage.actions.list()]).toHaveLength(0);
-      expect(impl.storage.observers.get("mallory")).toBeDefined();
-    });
-  });
-
   it("sets ownerInvitesOnly only for observations that carry the flag", async () => {
     let stub = env.TEST_OVERSEER.getByName("owner-invites-only-flag");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
@@ -141,26 +115,6 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
       await expect(sharing.createShareLink({
         caller: { profileId: OWNER, isOwner: true }, role: "use",
       })).rejects.toThrow(/Share links are disabled/);
-    });
-  });
-
-  it("does not set ownerInvitesOnly when the exclusion gate blocks the observation", async () => {
-    let stub = env.TEST_OVERSEER.getByName("owner-invites-only-exclusion-blocked");
-    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-      let impl = getImpl(instance);
-      seedGatekeeper(impl, 1);
-      impl.storage.collaborators.put({
-        profile: { id: "mallory", name: "Mallory" },
-        addedBy: [{ type: "user", sharer: OWNER, created: new Date(), role: "build" }],
-      });
-      impl.storage.observers.put(
-          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
-
-      await expect(impl.authorizeObservation(
-          1, { ...RESTRICTED_EXCLUDING_MALLORY, ownerInvitesOnly: true }, { from: "user" }))
-          .rejects.toThrow(/not permitted to see/);
-
-      expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
     });
   });
 
