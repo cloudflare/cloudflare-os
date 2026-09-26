@@ -148,6 +148,19 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     state.applyCount++;
     this.ctx.storage.kv.put(`actions:${label}`, state);
   }
+
+  failNextApply(label: string, reason: string): void {
+    this.ctx.storage.kv.put(`fail-next-apply:${label}`, reason);
+  }
+
+  /** Returns rather than throws, so consuming the failure commits. */
+  takeApplyFailure(label: string): string | null {
+    const key = `fail-next-apply:${label}`;
+    const reason = this.ctx.storage.kv.get<string>(key);
+    if (reason === undefined) return null;
+    this.ctx.storage.kv.delete(key);
+    return reason;
+  }
 }
 
 // ctx.exports is typed via the Cloudflare.GlobalProps declaration in env.d.ts, so loopback bindings
@@ -439,7 +452,10 @@ export class TestGatekeeper
   }
 
   async applyAction(action: number): Promise<void> {
-    await control(this.ctx.exports).applyAction(this.ctx.props.label, action);
+    const state = control(this.ctx.exports);
+    const failure = await state.takeApplyFailure(this.ctx.props.label);
+    if (failure !== null) throw new Error(failure);
+    await state.applyAction(this.ctx.props.label, action);
   }
 
   async rejectAction(action: number): Promise<void> {
@@ -543,6 +559,19 @@ export default {
         value: state.value,
         applyCount: state.applyCount,
       });
+    }
+
+    // One-shot: the next applyAction() for `label` throws `reason` without applying.
+    // Body: {"label": "...", "reason": "..."}
+    if (url.pathname === "/control/fail-next-apply" && req.method === "POST") {
+      const { label, reason } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      if (reason !== undefined && typeof reason !== "string") {
+        return badRequest("`reason` must be a string when present");
+      }
+      await control(ctx.exports).failNextApply(
+          label, reason ?? "The test gatekeeper failed to apply this action.");
+      return new Response(null, { status: 204 });
     }
 
     // Submit an external chat message through the Workshop's ExternalMessageGateway entrypoint,
