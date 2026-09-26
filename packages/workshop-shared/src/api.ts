@@ -469,14 +469,14 @@ export interface AuthenticatedApi extends RpcTarget {
   listModels(): Promise<AiChatAuthorInfo[]>;
 
   /**
-   * Adds a new model to the user's configured set. The ID must be unique among the user's
-   * configured models.
+   * Adds a new model to the user's configured set. The ID must not name a model the user already
+   * added; use `updateModel()` to replace one.
    *
    * `copySecretsFrom` names a hand-added model (see `getModelConfig()`) whose stored secrets fill
    * in the `null` secrets of `config`, which is how a model is cloned without the client ever
    * holding the secrets. The rules of `updateModel()` for keeping a secret apply to copying one.
-   * Without it, `config` must contain no `null` secrets. With it, `profile.id` must not name an
-   * existing model.
+   * Without it, `config` must contain no `null` secrets. With it, `profile.id` must also not name
+   * a model provided by the deployment's AI Gateway configuration.
    */
   addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
            copySecretsFrom?: string): Promise<void>;

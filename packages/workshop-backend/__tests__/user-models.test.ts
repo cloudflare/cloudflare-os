@@ -120,6 +120,13 @@ describe("UserDurableObject model editing", () => {
     await expect(user.addModel(clone, config, "nope")).rejects.toThrow("No such");
   });
 
+  it("refuses to add over an existing model", async () => {
+    const { user, stored } = await userWithModel();
+    await expect(user.addModel({ ...PROFILE, name: "Other" }, { ...CONFIG, apiToken: "sk-other" }))
+        .rejects.toThrow("already exists");
+    expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
+  });
+
   it("requires every secret when adding without a source", async () => {
     const { user } = await userWithModel();
     const clone = { type: "agent" as const, id: "clone", name: "Clone" };

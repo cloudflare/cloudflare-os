@@ -672,9 +672,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let source: AiModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
       source = this.#getHandAddedModel(copySecretsFrom).config;
-      if (this.storage.aiModels.get(profile.id) || getAiGatewayConfig(this.env)?.resolveModel(profile.id)) {
-        throw new Error(`A model with ID "${profile.id}" already exists.`);
-      }
+    }
+    if (this.storage.aiModels.get(profile.id) ||
+        (source && getAiGatewayConfig(this.env)?.resolveModel(profile.id))) {
+      throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
     this.#putModel(profile, resolveWithheldSecrets(config, source));
   }
