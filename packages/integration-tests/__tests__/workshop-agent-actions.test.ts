@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import { z } from "zod";
-import type { ActionState, AiChatMessage, Overseer } from "@gadgets/workshop-shared/api";
+import type {
+  ActionState, AiChatMessage, AiChatSubscriber, Overseer,
+} from "@gadgets/workshop-shared/api";
 import { openAgentSession, type WorkshopAgentSession } from "../src/agent-session.js";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -10,7 +12,9 @@ import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { accountLabel, connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
+import {
+  accountLabel, connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
+} from "../src/rpc-client.js";
 
 let harness: Harness;
 const models = scriptedModelRouter();
@@ -103,6 +107,25 @@ async function restartWorkspace(ws: RpcStub<Overseer>) {
 
 async function expectIdle(ws: RpcStub<Overseer>) {
   expect((await ws.listChats()).map(chat => chat.activeAgent)).toEqual([undefined]);
+}
+
+class GenerationRecorder extends RpcTarget implements AiChatSubscriber {
+  readonly #generation = Promise.withResolvers<number>();
+  readonly generation = this.#generation.promise;
+  streamGeneration(generation: number) { this.#generation.resolve(generation); }
+  metadata() {}
+  deleted() {}
+  message() {}
+  changeApplied() {}
+  stream() {}
+}
+
+/** The server-instance generation a fresh chat subscription is sent first. */
+async function streamGeneration(ws: RpcStub<Overseer>): Promise<number> {
+  const recorder = new GenerationRecorder();
+  using stub = stubFor(recorder);
+  using _subscription = await ws.subscribeToChat(stub);
+  return await recorder.generation;
 }
 
 async function waitForPendingActions(session: WorkshopAgentSession, count: number) {
@@ -245,4 +268,36 @@ it.concurrent("approving after a workspace restart applies and resumes once", as
   expect(model.requests).toHaveLength(2);
   expect(model.remainingSteps()).toBe(0);
   expect(agentSaid(resumed.history, "The restarted approval is applied.")).toBe(1);
+});
+
+it.concurrent("a turn interrupted by a workspace restart resumes and completes", async () => {
+  const model = models.script([
+    {
+      toolCall: {
+        id: "compute",
+        name: "executeCode",
+        arguments: { code: "export default async function() { return 6 * 7; }" },
+      },
+    },
+    { pending: true },
+    { text: "The answer is 42." },
+  ]);
+  await using session = await openSession(model, "agentrecovery");
+
+  const turning = session.runTurn("What is 6 times 7?");
+  await waitFor("the pending model request", async () => model.requests.length === 2 || null);
+  const before = await withOwnerWorkspace(session.username, async ws => {
+    const generation = await streamGeneration(ws);
+    await restartWorkspace(ws);
+    return generation;
+  });
+
+  expect((await turning).outcome).toEqual({ status: "completed" });
+  expect(model.requests).toHaveLength(3);
+  expect(model.remainingSteps()).toBe(0);
+  expect(model.requests[2]).toEqual(model.requests[1]);
+  await withOwnerWorkspace(session.username, async ws => {
+    await expectIdle(ws);
+    expect(await streamGeneration(ws)).not.toBe(before);
+  });
 });
