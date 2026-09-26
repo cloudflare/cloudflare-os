@@ -321,9 +321,11 @@ export class TestVerifier
 export interface TestSession {
   /**
    * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
-   * `ownerInvitesOnly`.
+   * `ownerInvitesOnly`. `excludeObservers` lists observer ids (from `/control/observer-events`)
+   * that must not see it.
    */
-  readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number>;
+  readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[])
+      : Promise<number>;
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
@@ -341,12 +343,15 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     this.approvalQueue = approvalQueue.dup();
   }
 
-  async readValue(restricted?: boolean, ownerInvitesOnly?: boolean): Promise<number> {
+  async readValue(
+      restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[])
+      : Promise<number> {
     await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
       ...(restricted ? { containsRestrictedData: true } : {}),
       ...(ownerInvitesOnly ? { ownerInvitesOnly: true } : {}),
+      ...(excludeObservers ? { excludeObservers } : {}),
     });
     return 42;
   }
