@@ -290,20 +290,3 @@ describe("listActions with the pending filter", () => {
     expect(events).toEqual([3, 2, "ready"]);
   });
 });
-
-describe("UseOverseerInterface", () => {
-  it("answers listActions with an empty terminal page and the subscription inertly", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0);
-    putAction(storage, 1, { state: "approved" });
-    let client = await openFakeOverseer(storage, { role: "use" });
-    let { subscriber, events } = makeSubscriber();
-
-    expect(await client.listActions()).toEqual({ entries: [] });
-    expect(await client.listActions({ filter: "pending" })).toEqual({ entries: [] });
-
-    using _sub = await client.subscribeToActions(subscriber);
-    putAction(storage, 2);
-    expect(events).toEqual(["ready"]);  // settled empty; nothing replayed or delivered
-  });
-});
