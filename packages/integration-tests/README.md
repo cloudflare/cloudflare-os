@@ -48,11 +48,8 @@ Adding a test hook to those workers was considered and rejected: a "mark observe
 very state the tracker maintains, and an injected dev credential for an OAuth gatekeeper would bypass
 exactly the flow that makes a real vendor worth testing.
 
-Two deliberate departures from a shipping gatekeeper, both to keep the fixture cheap:
+One deliberate departure from a shipping gatekeeper, to keep the fixture cheap:
 
-- No `capnweb-validate` build step; `main` points straight at source. `@validateRpc()` would require
-  the fixture to carry its own `wrangler types` output — half a megabyte of generated `.d.ts` for a
-  test double. The harness's handling of a generated `main` is covered anyway, by `workshop-backend`.
 - One control knob, `allow`. A settled denial and an expired credential reach the overseer identically
   — both as a thrown error, which it deliberately cannot tell apart because it treats every failure as
   repairable — so the reason string is what carries the difference. Tests cover both narratives by

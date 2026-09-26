@@ -6,8 +6,8 @@
 // against the new scope. So sensitive observations are not blocked by an unverified collaborator,
 // and sharing stays available. The observation also sets `containsRestrictedData`, putting the
 // workspace into a restricted mode: once it is set, every action pends for manual approval and is
-// never auto-approved, a git push is refused, and the workspace may not fetch from the web (which
-// has no client-reachable surface to assert here). An observation that also carries
+// never auto-approved, a git push is refused, and the workspace may not fetch from the web
+// (covered by workshop-restricted-web-fetch.test.ts). An observation that also carries
 // `ownerInvitesOnly` sets that flag too: from then on only direct grants from the owner count, so
 // share links stop admitting anyone and people who joined through one lose access.
 //

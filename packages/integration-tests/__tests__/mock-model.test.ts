@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
-import { scriptedChatCompletions } from "../src/mock-model.js";
+import {
+  scriptedChatCompletions, scriptedModelRouter, type RoutedScriptedModel,
+} from "../src/mock-model.js";
 
 it("returns scripted OpenAI tool and text responses while recording each request", async () => {
   const model = scriptedChatCompletions([
@@ -71,4 +73,36 @@ it("returns scripted OpenAI tool and text responses while recording each request
   expect(await second.text()).toContain('"content":"Value: 42"');
   expect(model.requests).toHaveLength(2);
   expect(model.remainingSteps()).toBe(0);
+});
+
+function endpoint({ userModel }: RoutedScriptedModel): string {
+  const { accountId } = userModel.config;
+  if (accountId === undefined) throw new Error("The routed model has no account id");
+  return `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/chat/completions`;
+}
+
+it("routes each request to the script registered under its Workers AI account", async () => {
+  const models = scriptedModelRouter();
+  const first = models.script([{ text: "first" }]);
+  const second = models.script([{ text: "second" }]);
+  const send = (url: string, content: string) => {
+    const request = new Request(url, {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content }] }),
+    });
+    return models.handler(new URL(request.url), request.method, request.headers, request);
+  };
+  expect(endpoint(first)).not.toBe(endpoint(second));
+
+  for (const [model, content] of [[second, "second"], [first, "first"]] as const) {
+    const response = await send(endpoint(model), content);
+    if (response === null) throw new Error(`The router declined the ${content} request`);
+    expect(await response.text()).toContain(`"content":"${content}"`);
+    expect(model.requests).toEqual([{ messages: [{ role: "user", content }] }]);
+    expect(model.remainingSteps()).toBe(0);
+  }
+
+  expect(await send(endpoint(first).replace(/scripted-account-\d+/, "unregistered"), "x"))
+    .toBeNull();
+  expect(await send("https://example.com/chat/completions", "x")).toBeNull();
 });
