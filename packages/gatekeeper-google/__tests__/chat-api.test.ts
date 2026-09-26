@@ -204,15 +204,8 @@ describe("Chat response mapping", () => {
       name: "spaces/AAAA/messages/BBB",
       createTime: "2024-01-02T03:04:05Z",
       text: "meeting at noon",
-      formattedText: "meeting at *noon*",
       deletionMetadata: { deletionType: "CREATOR" },
     })).toMatchObject({ deleted: true, text: "" });
-    expect(chatMessageInfoFromRaw({
-      name: "spaces/AAAA/messages/BBB",
-      createTime: "2024-01-02T03:04:05Z",
-      text: "gone",
-      deletionMetadata: { deletionType: "CREATOR" },
-    })).not.toHaveProperty("formattedText");
   });
 
   it("rejects app-authored private messages", () => {

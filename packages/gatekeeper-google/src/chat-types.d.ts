@@ -131,8 +131,6 @@ export type ChatMessageInfo = {
   sender?: ChatUser;
   /** Plain-text body. Empty for a message whose content is unavailable. */
   text: string;
-  /** Body with Chat's formatting markup, when Google returns it. */
-  formattedText?: string;
   /** When the message was created. */
   createdAt: Date;
   /** When the message was last edited, when Google returns it. */

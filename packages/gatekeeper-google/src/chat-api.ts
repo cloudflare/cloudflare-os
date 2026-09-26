@@ -201,7 +201,6 @@ export type ChatMessageRaw = {
   lastUpdateTime?: string;
   deleteTime?: string;
   text?: string;
-  formattedText?: string;
   thread?: { name?: string };
   space?: { name?: string };
   attachment?: ChatAttachmentRaw[];
@@ -322,7 +321,6 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     ...(sender ? { sender } : {}),
     // A tombstone promises no text, whatever the provider left on it.
     text: deleted ? "" : raw.text ?? "",
-    ...(!deleted && raw.formattedText ? { formattedText: raw.formattedText } : {}),
     createdAt: createTime ?? new Date(0),
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,

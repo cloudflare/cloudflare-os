@@ -111,12 +111,7 @@ export function pendingMessageInfo(
   };
 }
 
-/**
- * Apply every pending edit that targets a message, whether or not its post has completed.
- *
- * Whenever the overlay changes the body, `formattedText` is dropped rather than left stale: the
- * overlay cannot recompute Chat's formatting markup.
- */
+/** Apply every pending edit that targets a message, whether or not its post has completed. */
 export function overlayMessage(
   info: ChatMessageInfo,
   pending: readonly PendingChatAction[],
@@ -126,7 +121,6 @@ export function overlayMessage(
     // Edited text must not resurface on a record the provider has deleted.
     if (action.type === "updateMessage" && action.messageName === info.id && !result.deleted) {
       result = { ...result, text: action.text, editedAt: new Date(action.submittedAt) };
-      delete result.formattedText;
     }
   }
   return result;
