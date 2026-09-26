@@ -1075,6 +1075,9 @@ export class GoogleChatGatekeeperImpl
     // Persist undo intent before a write whose response can be lost. Retrying must not replace
     // the original text/reaction state with the result of the first attempt.
     const write = async <T>(info: ChatRevertInfo, perform: () => Promise<T>): Promise<T> => {
+      // The reads above yielded; a concurrent rejectAction may have removed the action meanwhile,
+      // and a write after that would land in Chat as something the queue records as rejected.
+      if (!store.get(actionId)) throw new Error("This Google Chat action was rejected before it was applied.");
       const saved = store.getRevert(actionId);
       store.setRevert(actionId, saved ?? { ...info, threadScope: action.threadScope });
       try {

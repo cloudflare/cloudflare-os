@@ -31,6 +31,14 @@ describe("Chat identifier validation", () => {
     expect(() => validateChatSpaceId("a b")).toThrow(/Invalid Google Chat space ID/);
   });
 
+  // `.` and `..` pass the documented character set but are collapsed out of the URL path by the
+  // fetch layer, so messages/.. would reach spaces.get instead of messages.get.
+  it.each([".", ".."])("rejects the dot segment %s as an id", dots => {
+    expect(() => chatMessageParts(`spaces/AAAA/messages/${dots}`)).toThrow(/Invalid Google Chat message ID/);
+    expect(() => chatThreadParts(`spaces/AAAA/threads/${dots}`)).toThrow(/Invalid Google Chat thread ID/);
+    expect(() => chatUserName(dots)).toThrow(/Invalid Google Chat user reference/);
+  });
+
   it("normalizes a user reference given either way", () => {
     expect(chatUserName("users/123")).toBe("users/123");
     expect(chatUserName("person@example.com")).toBe("users/person@example.com");

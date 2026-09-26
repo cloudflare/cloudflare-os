@@ -77,9 +77,11 @@ export function isChatNoAccessError(error: unknown): boolean {
 // against the shape Google documents before it goes anywhere near a URL.
 
 const SPACE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+// Dots are legal inside these ids, but a bare `.` or `..` would be collapsed out of the URL path
+// by the fetch layer and reach a different endpoint, so each id must contain something else.
 /** Message, thread, and reaction ids share one documented shape. */
-const ITEM_ID_RE = /^[A-Za-z0-9_.-]{1,256}$/;
-const USER_ID_RE = /^[A-Za-z0-9_.@+-]{1,320}$/;
+const ITEM_ID_RE = /^(?=.*[^.])[A-Za-z0-9_.-]{1,256}$/;
+const USER_ID_RE = /^(?=.*[^.])[A-Za-z0-9_.@+-]{1,320}$/;
 const MEDIA_RESOURCE_RE = /^[A-Za-z0-9_./=+-]{1,1024}$/;
 
 /** Validate a bare space id (the `AAAA1234` of `spaces/AAAA1234`). */
@@ -510,19 +512,23 @@ export class ChatApi {
     return known;
   }
 
-  /** Chat threads every message; the ID only means something where the space supports threads. */
+  /**
+   * Chat threads every message; the ID only means something where the space supports threads.
+   *
+   * A cross-space search page can name many spaces, so their lookups run together, and one that
+   * fails (a stale index entry for a space the user has left) costs that space its thread IDs
+   * rather than the whole page.
+   */
   async #withThreading(messages: ChatMessageInfo[]): Promise<ChatMessageInfo[]> {
-    const result: ChatMessageInfo[] = [];
-    for (const message of messages) {
-      if (message.threadId !== undefined && !(await this.#supportsThreads(message.spaceId))) {
-        const flat = { ...message };
-        delete flat.threadId;
-        result.push(flat);
-      } else {
-        result.push(message);
-      }
-    }
-    return result;
+    const spaces = [...new Set(messages.map(message => message.spaceId))];
+    const threaded = new Map(await Promise.all(spaces.map(async space =>
+      [space, await this.#supportsThreads(space).catch(() => false)] as const)));
+    return messages.map(message => {
+      if (message.threadId === undefined || threaded.get(message.spaceId)) return message;
+      const flat = { ...message };
+      delete flat.threadId;
+      return flat;
+    });
   }
 
   async #request<T>(
