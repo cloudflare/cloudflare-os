@@ -712,12 +712,12 @@ export class ChatApi {
       }
       body.thread = { name: `spaces/${threadSpaceId}/threads/${threadId}` };
     }
-    const [created] = await this.#withThreading([chatMessageInfoFromRaw(
-      await this.#request<ChatMessageRaw>(
-        "messages.create",
-        `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
-        { method: "POST", body: JSON.stringify(body) }))]);
-    return created;
+    // Not passed through #withThreading: the result stays inside applyAction, and a lookup
+    // failing after Google accepted the post must not read as a failed write.
+    return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
+      "messages.create",
+      `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
+      { method: "POST", body: JSON.stringify(body) }));
   }
 
   async updateMessageText(messageName: string, text: string): Promise<void> {
