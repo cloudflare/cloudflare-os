@@ -14,8 +14,10 @@ import {
   Lightning,
   MagnifyingGlass,
   DotsThreeVertical,
+  PencilSimple,
+  Copy,
 } from '@phosphor-icons/react'
-import AddModelModal from '../AddModelModal'
+import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
 
@@ -36,12 +38,16 @@ function ModelRow({
   model,
   isQuick,
   isBuiltIn,
+  onEdit,
+  onClone,
   onDelete,
   onSetQuick,
 }: {
   model: AiChatAuthorInfo
   isQuick: boolean
   isBuiltIn: boolean
+  onEdit: () => void
+  onClone: () => void
   onDelete: () => void
   onSetQuick: () => void
 }) {
@@ -106,10 +112,20 @@ function ModelRow({
               {isQuick ? 'Clear quick model' : 'Set as quick model'}
             </DropdownMenu.Item>
             {!isBuiltIn && (
-              <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
-                <Trash size={13} className="mr-2" />
-                Delete provider
-              </DropdownMenu.Item>
+              <>
+                <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
+                  <PencilSimple size={13} className="mr-2" />
+                  Edit provider
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onClick={onClone} className={MENU_ITEM}>
+                  <Copy size={13} className="mr-2" />
+                  Clone provider
+                </DropdownMenu.Item>
+                <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
+                  <Trash size={13} className="mr-2" />
+                  Delete provider
+                </DropdownMenu.Item>
+              </>
             )}
           </DropdownMenu.Content>
         </DropdownMenu>
@@ -143,6 +159,8 @@ function ProvidersPage() {
   const [loadError, setLoadError] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // The stored model being edited or cloned, once its configuration has loaded.
+  const [sourceMode, setSourceMode] = useState<Exclude<ModelModalMode, { type: 'add' }> | null>(null)
 
   const fetchAll = async () => {
     setLoadError(false)
@@ -171,6 +189,25 @@ function ProvidersPage() {
     if (!aiConfig?.enabled) return false
     const enabled = new Set((aiConfig as Extract<AiGatewayInfo, { enabled: true }>).enabledProviders)
     return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])
+  }
+
+  // Bumped whenever the user opens a dialog, so a configuration that finishes loading after a later
+  // click doesn't open its editor over the dialog the user chose.
+  const openRequest = useRef(0)
+  const openAdd = () => {
+    ++openRequest.current
+    setSheetOpen(true)
+  }
+  const openWithSource = async (type: 'edit' | 'clone', model: AiChatAuthorInfo) => {
+    const request = ++openRequest.current
+    try {
+      const source = await authenticatedApi.getModelConfig(model.id)
+      if (request === openRequest.current) setSourceMode({ type, source })
+    } catch (err) {
+      if (request !== openRequest.current) return
+      console.error('Failed to load model configuration:', err)
+      toasts.add({ title: 'Failed to load provider configuration', variant: 'error' })
+    }
   }
 
   const handleDelete = async (model: AiChatAuthorInfo) => {
@@ -221,7 +258,7 @@ function ProvidersPage() {
             Configure the AI models available to your workspaces.
           </p>
         </div>
-        <button type="button" onClick={() => setSheetOpen(true)} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
+        <button type="button" onClick={openAdd} className={`${PRIMARY_BTN} h-11 justify-center text-[14px] sm:h-9 sm:text-[13px]`}>
           <Plus size={14} weight="bold" />
           Add provider
         </button>
@@ -252,8 +289,8 @@ function ProvidersPage() {
                 <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
                 <span>
                   <strong className="font-medium text-kumo-default">AI Gateway mode:</strong> built-in
-                  models are managed by your deployment. You can still add custom models with your own
-                  API tokens.
+                  models are managed by your deployment. You can still add other models from the
+                  enabled providers.
                 </span>
               </Notice>
             )}
@@ -298,7 +335,7 @@ function ProvidersPage() {
                 Add a provider to start building workspaces with AI.
               </p>
             </div>
-            <button type="button" onClick={() => setSheetOpen(true)} className={PRIMARY_BTN}>
+            <button type="button" onClick={openAdd} className={PRIMARY_BTN}>
               <Plus size={14} weight="bold" />
               Add your first provider
             </button>
@@ -315,6 +352,8 @@ function ProvidersPage() {
                 model={model}
                 isQuick={quickModel === model.id}
                 isBuiltIn={isBuiltIn(model.id)}
+                onEdit={() => openWithSource('edit', model)}
+                onClone={() => openWithSource('clone', model)}
                 onDelete={() => handleDelete(model)}
                 onSetQuick={() => handleSetQuick(model.id)}
               />
@@ -334,6 +373,20 @@ function ProvidersPage() {
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
       />
+      {sourceMode && (
+        <AddModelModal
+          key={`${sourceMode.type}:${sourceMode.source.profile.id}`}
+          visible
+          mode={sourceMode}
+          onCancel={() => setSourceMode(null)}
+          onSuccess={() => {
+            setSourceMode(null)
+            fetchAll()
+          }}
+          authenticatedApi={authenticatedApi}
+          aiConfig={aiConfig}
+        />
+      )}
     </div>
   )
 }
