@@ -15,10 +15,14 @@ import type { RpcStub } from "capnweb";
 import type {
   ActionLogEntry, AuthenticatedApi, Overseer, PublicApi,
 } from "@gadgets/workshop-shared/api";
-import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
+import { z } from "zod";
+import {
+  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+} from "../src/harness.js";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
-  connect, listConnectedAccounts, nextUsernames, signUp, waitFor, type ConnectedAccount,
+  accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, waitFor,
+  type ConnectedAccount,
 } from "../src/rpc-client.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 
@@ -59,10 +63,27 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
   });
 }
 
+const TEST_ACTION_STATE = z.object({
+  pending: z.array(z.object({ id: z.number(), value: z.number() })),
+  value: z.number().optional(),
+  applyCount: z.number(),
+});
+
+async function actionState(label: string) {
+  const response = await harness.fetchWorker(
+      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
+      { method: "POST", body: JSON.stringify({ label }) });
+  if (response.status !== 200) {
+    throw new Error(`Reading test action state failed with ${response.status}: ${await response.text()}`);
+  }
+  return TEST_ACTION_STATE.parse(await response.json());
+}
+
 type Workspace = {
   overseer: RpcStub<Overseer>;
   session: RpcStub<TestSession>;
   gatekeeperId: number;
+  label: string;
 };
 
 async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): Promise<Workspace> {
@@ -77,6 +98,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
     overseer,
     session: await gatekeeper.openSession() as RpcStub<TestSession>,
     gatekeeperId: await gatekeeper.getId(),
+    label: accountLabel(account),
   };
 }
 
@@ -145,6 +167,40 @@ describe("auto-approval policy", () => {
       const [approved] = await listWrites(ws);
       expect(approved.state).toBe("approved");
       expect(approved.autoApproved).toBeFalsy();
+    });
+  });
+
+  it.concurrent("removing an auto-approval rule returns eligible writes to manual approval",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "auto-off");
+      await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
+      await ws.session.writeValue(1, { autoApprovable: true });
+      await waitFor("the first write to be applied", async () =>
+        (await actionState(ws.label)).applyCount === 1 || null);
+      await expect(actionState(ws.label)).resolves.toEqual({ pending: [], value: 1, applyCount: 1 });
+      const [first] = await listWrites(ws);
+      expect(first).toMatchObject({ state: "approved", autoApproved: true });
+
+      await ws.overseer.removeAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE.tag);
+      await expect(ws.overseer.listAutoApprovedActionKinds()).resolves.toEqual([]);
+
+      const write = ws.session.writeValue(2, { autoApprovable: true });
+      await waitFor("the second write to be submitted", async () =>
+        (await listWrites(ws)).length === 2 || null);
+      await settle(ws);
+      const [, held] = await listWrites(ws);
+      expect(held.state).toBe("pending");
+      expect(held.autoApproved).toBeFalsy();
+      await expect(actionState(ws.label)).resolves.toEqual(
+          { pending: [{ id: 2, value: 2 }], value: 1, applyCount: 1 });
+
+      await ws.overseer.approveAction(held.id);
+      await expect(write).resolves.toBe(2);
+      const [, approved] = await listWrites(ws);
+      expect(approved.state).toBe("approved");
+      expect(approved.autoApproved).toBeFalsy();
+      await expect(actionState(ws.label)).resolves.toEqual({ pending: [], value: 2, applyCount: 2 });
     });
   });
 });
