@@ -84,15 +84,10 @@ export function createWorkshopHarness(
             unrecordedPrompt = undefined;
           }
           if (result.history.length > 0) history = result.history;
-          const cumulativeCost = result.usage.observedCumulativeChatCostUsd ??
-            usage.observedCumulativeChatCostUsd;
-          usage = {};
-          if (result.usage.lastStepTokens !== undefined) {
-            usage.lastStepTokens = result.usage.lastStepTokens;
-          }
-          if (cumulativeCost !== undefined) {
-            usage.observedCumulativeChatCostUsd = cumulativeCost;
-          }
+          // Cost and prompt tokens are running totals for the chat, so a turn that reports none
+          // keeps the last ones. The last step's tokens are the turn's own.
+          const { lastStepTokens: _, ...totals } = usage;
+          usage = { ...totals, ...result.usage };
           const verificationStartedAt = Date.now();
           const verificationDeadline = verificationStartedAt + verificationBudget;
           if (result.outcome.status !== "completed" || signal?.aborted) {
@@ -226,9 +221,8 @@ export function createWorkshopHarness(
         turns.every(turn => turn.outcome.status === "completed") &&
         checks.length > 0 && checks.every(check => check.pass);
       const usageMetadata: Record<string, JsonValue> = {};
-      if (usage.lastStepTokens !== undefined) usageMetadata.lastStepTokens = usage.lastStepTokens;
-      if (usage.observedCumulativeChatCostUsd !== undefined) {
-        usageMetadata.observedCumulativeChatCostUsd = usage.observedCumulativeChatCostUsd;
+      for (const [key, value] of Object.entries(usage)) {
+        if (value !== undefined) usageMetadata[key] = value;
       }
       const events: TranscriptEvent[] = toTranscriptEvents(history);
       if (unrecordedPrompt !== undefined) {

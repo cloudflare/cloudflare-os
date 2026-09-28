@@ -12,8 +12,11 @@ export type EvalStats = {
   meanModelTurns: number;
   meanToolCalls: number;
   meanToolErrors: number;
-  /** Null when any trial lacks a cost: a mean over a subset would not compare across sides. */
-  meanCostUsd: number | null;
+  /**
+   * The share of all the trials' prompt tokens that the provider's prompt cache served. Null when
+   * any trial lacks the counts, as one that never finished a model step does.
+   */
+  cacheHitRate: number | null;
   /**
    * Each check that failed in some trial, by turn, with how many trials failed it and the evidence
    * of the first. A turn the agent did not complete fails as `agent.<outcome>`. Leaves out
@@ -99,10 +102,13 @@ function infrastructureMessage(assertion: Assertion): string {
 }
 
 function stats({ assertions }: Cohort): EvalStats {
-  const costs = assertions.flatMap(assertion => {
-    const cost = assertion.meta.harness.run.usage.metadata.observedCumulativeChatCostUsd;
-    return cost === undefined ? [] : [cost];
+  const tokens = assertions.flatMap(assertion => {
+    const { cumulativePromptTokens: prompt, cumulativeCachedPromptTokens: cached } =
+      assertion.meta.harness.run.usage.metadata;
+    return prompt === undefined || cached === undefined ? [] : [{ prompt, cached }];
   });
+  const promptTokens = tokens.reduce((total, trial) => total + trial.prompt, 0);
+  const cachedTokens = tokens.reduce((total, trial) => total + trial.cached, 0);
   const runs = assertions.map(assertion => assertion.meta.harness.run);
   const metrics = runs.map(run => run.output.metrics);
   // A crash's check results say nothing about the agent's work.
@@ -127,7 +133,8 @@ function stats({ assertions }: Cohort): EvalStats {
     meanModelTurns: mean(metrics.map(value => value.modelTurns)),
     meanToolCalls: mean(metrics.map(value => value.toolCalls)),
     meanToolErrors: mean(metrics.map(value => value.toolErrors)),
-    meanCostUsd: costs.length === assertions.length ? mean(costs) : null,
+    cacheHitRate: tokens.length === assertions.length && promptTokens > 0
+      ? cachedTokens / promptTokens : null,
     failedChecks: failedChecks.map(({ item, count }) => ({ ...item, trials: count })),
     turnsReached: Array.from({ length: Math.max(0, ...turns.map(trial => trial.length)) },
       (_, index) => turns.filter(trial => trial.length > index).length),
@@ -259,11 +266,36 @@ function score(side: EvalStats): string {
   return count === 0 ? percent : `${percent}${NBSP}(${errors})`;
 }
 
-/** The pass-rate change, in percentage points. */
-function passChange(row: ComparedRow): string {
-  const delta = (passRate(row.candidate) - passRate(row.baseline)) * 100;
+/** A change in percentage points. */
+function points(delta: number): string {
   const sign = delta > 0 ? "+" : delta < 0 ? "\u2212" : "";
   return `${sign}${Math.abs(delta).toFixed(0)}${NBSP}pp`;
+}
+
+/** The pass-rate change, in percentage points. */
+function passChange(row: ComparedRow): string {
+  return points((passRate(row.candidate) - passRate(row.baseline)) * 100);
+}
+
+/** A side's prompt cache hit rate, as a whole percentage. */
+function cachePercent(side: EvalStats): number | null {
+  return side.cacheHitRate === null ? null : Math.round(side.cacheHitRate * 100);
+}
+
+/**
+ * Each side's prompt cache hit rate and, when both sides have one and the task compares, its
+ * change on a second line.
+ */
+function cacheHits(row: EvalComparisonRow): string {
+  const rates = sides(row, side => {
+    const value = cachePercent(side);
+    return value === null ? null : `${value}%`;
+  });
+  if (row.reason !== null) return rates;
+  const baseline = cachePercent(row.baseline);
+  const candidate = cachePercent(row.candidate);
+  return baseline === null || candidate === null
+    ? rates : `${rates}<br>${points(candidate - baseline)}`;
 }
 
 /** A p-value to two decimals, or a bound where two decimals would round it to zero. */
@@ -303,10 +335,9 @@ function failedCheckRows(row: EvalComparisonRow, task: string): string[] {
 
 /**
  * Render the comparison for a pull request comment: the verdict, then one table with each task's
- * score on both sides, its change and Fisher test, and each side's average minutes, cost and
- * steps per run. Headers are short so the table fits a comment's width unwrapped. A collapsed
- * table lists each check that failed on either side of a task whose inputs changed; Bonk's review
- * explains the failures.
+ * score on both sides, its change and Fisher test, its prompt cache hit rate and that change, and
+ * each side's average minutes and steps per run. A collapsed table lists each check that failed on
+ * either side of a task whose inputs changed; Bonk's review explains the failures.
  */
 export function renderEvalComparison(comparison: EvalComparison): string {
   const { rows } = comparison;
@@ -331,7 +362,7 @@ export function renderEvalComparison(comparison: EvalComparison): string {
   const lines = [
     "# Eval results", "",
     `**Verdict: ${VERDICT[comparison.verdict]}.** ${why}`, "",
-    "| Task | Score | \u0394 score | Fisher test | Avg min | Avg $ | Avg steps |",
+    "| Task | Score | \u0394 score | Fisher test | Cache hits | Avg min | Avg steps |",
     "| --- | --- | --- | --- | --- | --- | --- |",
   ];
   for (const row of rows) {
@@ -340,9 +371,8 @@ export function renderEvalComparison(comparison: EvalComparison): string {
       : pValueText(row.pValue);
     lines.push(`| ${[
       name(row), sides(row, score),
-      row.reason === null ? passChange(row) : `_${row.reason}_`, fisher,
+      row.reason === null ? passChange(row) : `_${row.reason}_`, fisher, cacheHits(row),
       sides(row, side => (side.meanDurationMs / 60_000).toFixed(1)),
-      sides(row, side => side.meanCostUsd?.toFixed(3) ?? null),
       sides(row, side => side.meanModelTurns.toFixed(1)),
     ].join(" | ")} |`);
   }

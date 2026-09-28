@@ -22,7 +22,7 @@ type TrialOptions = {
   modelTurns?: number;
   toolCalls?: number;
   toolErrors?: number;
-  cost?: number;
+  tokens?: { prompt: number; cached: number };
   errors?: { name: string; message: string }[];
   outcomeStatus?: "completed" | "error" | "timedOut" | "cancelled";
   checks?: { id: string; pass: boolean; evidence?: string }[];
@@ -41,7 +41,7 @@ function trial(options: TrialOptions = {}) {
     modelTurns = 2,
     toolCalls = 3,
     toolErrors = 0,
-    cost,
+    tokens,
     errors = [],
     outcomeStatus = "completed",
     checks = [],
@@ -57,7 +57,9 @@ function trial(options: TrialOptions = {}) {
           session: { metadata: { taskId, taskVersion, gitCommit }, events },
           usage: {
             model: MODEL,
-            metadata: cost === undefined ? {} : { observedCumulativeChatCostUsd: cost },
+            metadata: tokens === undefined ? {} : {
+              cumulativePromptTokens: tokens.prompt, cumulativeCachedPromptTokens: tokens.cached,
+            },
           },
           output: {
             metrics: { modelTurns, toolCalls, toolErrors },
@@ -98,15 +100,19 @@ function report(
 }
 
 it("compares three-trial task cohorts", () => {
+  // The cached share is over all prompt tokens: the baseline's per-trial shares average 37%.
+  const cold = { prompt: 1000, cached: 100 };
+  const long = { prompt: 2000, cached: 1800 };
   const baseline = report([
-    trial({ status: "passed", duration: 60_000, cost: 0.1 }),
-    trial({ status: "failed", duration: 120_000, toolErrors: 1, cost: 0.2 }),
-    trial({ status: "passed", duration: 180_000, cost: 0.3 }),
+    trial({ status: "passed", duration: 60_000, tokens: cold }),
+    trial({ status: "failed", duration: 120_000, toolErrors: 1, tokens: cold }),
+    trial({ status: "passed", duration: 180_000, tokens: long }),
   ]);
+  const warm = { prompt: 1000, cached: 700 };
   const candidate = report([
-    trial({ gitCommit: HEAD_SHA, duration: 120_000, cost: 0.2 }),
-    trial({ gitCommit: HEAD_SHA, duration: 180_000, cost: 0.3 }),
-    trial({ gitCommit: HEAD_SHA, duration: 240_000, cost: 0.4 }),
+    trial({ gitCommit: HEAD_SHA, duration: 120_000, tokens: warm }),
+    trial({ gitCommit: HEAD_SHA, duration: 180_000, tokens: warm }),
+    trial({ gitCommit: HEAD_SHA, duration: 240_000, tokens: warm }),
   ]);
 
   const comparison = compareEvalResults(baseline, candidate, SHAS);
@@ -129,7 +135,7 @@ it("compares three-trial task cohorts", () => {
       meanModelTurns: 2,
       meanToolCalls: 3,
       meanToolErrors: 1 / 3,
-      meanCostUsd: (0.1 + 0.2 + 0.3) / 3,
+      cacheHitRate: 0.5,
       ...noFailures,
     },
     candidate: {
@@ -139,7 +145,7 @@ it("compares three-trial task cohorts", () => {
       meanModelTurns: 2,
       meanToolCalls: 3,
       meanToolErrors: 0,
-      meanCostUsd: (0.2 + 0.3 + 0.4) / 3,
+      cacheHitRate: 0.7,
       ...noFailures,
     },
   }]);
@@ -147,7 +153,7 @@ it("compares three-trial task cohorts", () => {
   expect(markdown).toContain("**Verdict: \u26AA Unchanged.**");
   // A 33 pp rise over three trials is noise, so it is not marked significant.
   expect(markdown).toContain("| project-doc | 67% \u2192 100% | +33 pp | p = 1.00 | " +
-    "2.0 \u2192 3.0 | 0.200 \u2192 0.300 | 2.0 |");
+    "50% \u2192 70%<br>+20 pp | 2.0 \u2192 3.0 | 2.0 |");
 });
 
 it("calls a significant fall a regression and a small one noise", () => {
@@ -183,19 +189,20 @@ it("reports each failing check and tool error once, with how many trials hit it"
     [{ tool: "createGadget", message: "Key `@here` is empty", count: 2 }]);
 });
 
-it("does not compare costs from different trial populations", () => {
-  const baseline = report([trial({ cost: 0.1 }), trial(), trial({ cost: 0.3 })]);
+it("does not compare cache hit rates from different trial populations", () => {
+  const tokens = { prompt: 1000, cached: 500 };
+  const baseline = report([trial({ tokens }), trial(), trial({ tokens })]);
   const candidate = report([
-    trial({ gitCommit: HEAD_SHA, cost: 0.2 }),
-    trial({ gitCommit: HEAD_SHA, cost: 0.3 }),
-    trial({ gitCommit: HEAD_SHA, cost: 0.4 }),
+    trial({ gitCommit: HEAD_SHA, tokens }),
+    trial({ gitCommit: HEAD_SHA, tokens }),
+    trial({ gitCommit: HEAD_SHA, tokens }),
   ]);
 
   const comparison = compareEvalResults(baseline, candidate, SHAS);
   const row = comparison.rows[0];
-  expect(row.baseline?.meanCostUsd).toBeNull();
-  expect(row.candidate?.meanCostUsd).toBeCloseTo(0.3);
-  expect(rendered(comparison)).toContain("| \u2014 \u2192 0.300 |");
+  expect(row.baseline?.cacheHitRate).toBeNull();
+  expect(row.candidate?.cacheHitRate).toBe(0.5);
+  expect(rendered(comparison)).toContain("| \u2014 \u2192 50% |");
 });
 
 it("separates infrastructure errors from failed agent outcomes", () => {
@@ -304,7 +311,8 @@ it("reports a result both sides share as unchanged, unless it failed to run", ()
   expect(comparison.verdict).toBe("unchanged");
   const markdown = rendered(comparison);
   expect(markdown).toContain("Nothing the evals run changed, so every result is reused.");
-  expect(markdown).toContain("| project-doc | 50% | _same inputs_ | \u2014 | 0.0 | \u2014 | 2.0 |");
+  expect(markdown).toContain(
+    "| project-doc | 50% | _same inputs_ | \u2014 | \u2014 | 0.0 | 2.0 |");
   expect(markdown).not.toContain("Failed checks");
 
   const crashed = report([

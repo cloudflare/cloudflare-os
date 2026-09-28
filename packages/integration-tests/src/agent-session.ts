@@ -50,6 +50,10 @@ export type AgentTurnResult = {
   usage: {
     lastStepTokens?: number;
     observedCumulativeChatCostUsd?: number;
+    /** The chat's running prompt-token total, cache hits included. */
+    cumulativePromptTokens?: number;
+    /** How many of those the prompt cache served. */
+    cumulativeCachedPromptTokens?: number;
   };
 };
 
@@ -819,6 +823,10 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     if (metadata.totalTokens !== undefined) usage.lastStepTokens = metadata.totalTokens;
     if (metadata.totalCost !== undefined) {
       usage.observedCumulativeChatCostUsd = metadata.totalCost;
+    }
+    if (metadata.promptTokens !== undefined) usage.cumulativePromptTokens = metadata.promptTokens;
+    if (metadata.cachedPromptTokens !== undefined) {
+      usage.cumulativeCachedPromptTokens = metadata.cachedPromptTokens;
     }
     this.#lastHistory = history;
     this.#lastWorkpieces = workpieces;

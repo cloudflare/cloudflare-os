@@ -54,6 +54,8 @@ export const AssertionSchema = z.object({
           model: z.string().min(1),
           metadata: z.object({
             observedCumulativeChatCostUsd: z.number().nonnegative().optional(),
+            cumulativePromptTokens: z.number().nonnegative().optional(),
+            cumulativeCachedPromptTokens: z.number().nonnegative().optional(),
           }).loose(),
         }).loose(),
         output: z.object({
