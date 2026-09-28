@@ -438,7 +438,7 @@ jobs:
 
       - name: Review trajectory changes
         continue-on-error: true
-        uses: ask-bonk/ask-bonk/github@5d4fe8f4a557afb1b73ec8c0ffcf60359a28865f
+        uses: Cloudflare-Studio/ask-bonk/github@45777ce774209af96f27cbb5718234cf7fc93474 # v0.5.0
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}

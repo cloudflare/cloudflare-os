@@ -51,12 +51,13 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@5d4fe8f4a557afb1b73ec8c0ffcf60359a28865f
+        uses: Cloudflare-Studio/ask-bonk/github@45777ce774209af96f27cbb5718234cf7fc93474 # v0.5.0
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
-          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-6-sol":{}}}}}'
+          # Paths outside the checkout are denied, not prompted: nobody can answer a prompt in CI.
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-6-sol":{}}}}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/openai/gpt-6-sol"
