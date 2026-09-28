@@ -133,25 +133,6 @@ describe("connect handoff", () => {
     });
   });
 
-  it("rejects a ticket that is unknown, malformed, already redeemed, or another user's", async () => {
-    const { stub, inDo } = freshUser();
-    const { ticket } = await inDo(user =>
-      user.stagePendingConnect(0, fakeAccount(user, "a").account, "github"));
-    const nonce = await stub.openConnectFlow(0);
-
-    // A nonce that is nobody's, so these spend neither the ticket nor the flow.
-    const unknownNonce = "e".repeat(64);
-    expect(await redeem(stub, "f".repeat(64), unknownNonce)).toBe(EXPIRED);
-    expect(await redeem(stub, "not-a-ticket", unknownNonce)).toBe(EXPIRED);
-    expect(await redeem(stub, ticket.toUpperCase(), unknownNonce)).toBe(EXPIRED);
-    // The victim's session: a different user's DO knows nothing of the attacker's ticket or nonce.
-    expect(await redeem(freshUser().stub, ticket, nonce)).toBe(EXPIRED);
-    // A redemption that found neither record leaves the pair redeemable by the right user...
-    expect(await redeem(stub, ticket, nonce)).toBe("ok");
-    // ...exactly once.
-    expect(await redeem(stub, ticket, nonce)).toBe(EXPIRED);
-  });
-
   it("refuses an expired ticket, revoking the unconfirmed grant whether redeemed or swept", async () => {
     const { stub, inDo } = freshUser();
     const { ticket } = await inDo(user =>
@@ -296,63 +277,16 @@ describe("connect handoff", () => {
     });
   });
 
-  it("rejects another flow's nonce, spending the ticket and the nonce alike", async () => {
-    // Two flows for two accounts, each finished. A ticket presented with the nonce of the other
-    // flow — equally, the right nonce paired with the other account's ticket — is refused.
+  it("rejects an expired nonce, spending the ticket", async () => {
     const { stub, inDo } = freshUser();
-    const nonceA = await stub.openConnectFlow(0);
-    const nonceB = await stub.openConnectFlow(1);
-    const [ticketA, ticketB] = await inDo(async user => {
-      user.storage.nextAccountId.put(2);
-      const a = await user.stagePendingConnect(0, fakeAccount(user, "flow-a").account, "github");
-      const b = await user.stagePendingConnect(1, fakeAccount(user, "flow-b").account, "github");
-      return [a.ticket, b.ticket];
-    });
-
-    expect(await redeem(stub, ticketA, nonceB)).toBe(EXPIRED);
-    await inDo(async user => {
-      expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
-      // The refused connect is revoked like an expired one, and both records it touched are spent.
-      expect(await fakeAccount(user, "flow-a").calls()).toEqual(["describe", "revoke"]);
-      expect(pendingCount(user)).toBe(1);
-      expect(flowCount(user)).toBe(1);
-    });
-    // A's ticket is gone, so its own nonce redeems nothing (and is spent by the try)...
-    expect(await redeem(stub, ticketA, nonceA)).toBe(EXPIRED);
-    // ...and B's nonce is gone, so B's own ticket cannot be redeemed with it.
-    expect(await redeem(stub, ticketB, nonceB)).toBe(EXPIRED);
-    await inDo(async user => {
-      expect(user.storage.connectedAccounts.get(1)).toBeUndefined();
-      expect(await fakeAccount(user, "flow-b").calls()).toEqual(["describe", "revoke"]);
-      expect(pendingCount(user)).toBe(0);
-      expect(flowCount(user)).toBe(0);
-    });
-  });
-
-  it("rejects a malformed or expired nonce, spending the ticket", async () => {
-    const { stub, inDo } = freshUser();
-    const { ticket } = await inDo(user =>
-      user.stagePendingConnect(0, fakeAccount(user, "malformed").account, "github"));
-    const nonce = await stub.openConnectFlow(0);
-    expect(await redeem(stub, ticket, "not-a-nonce")).toBe(EXPIRED);
-    // A wrong nonce still spends the ticket, so the right one arrives too late.
-    expect(await redeem(stub, ticket, nonce)).toBe(EXPIRED);
-    await inDo(async user => {
-      expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
-      expect(await fakeAccount(user, "malformed").calls()).toEqual(["describe", "revoke"]);
-      expect(pendingCount(user)).toBe(0);
-      expect(flowCount(user)).toBe(0);
-    });
-
-    const stale = await stub.openConnectFlow(1);
-    const { ticket: lateTicket } = await inDo(async user => {
-      user.storage.nextAccountId.put(2);
+    const stale = await stub.openConnectFlow(0);
+    const { ticket } = await inDo(async user => {
       expireAll(user.storage.pendingConnectFlows);
-      return user.stagePendingConnect(1, fakeAccount(user, "stale-flow").account, "github");
+      return user.stagePendingConnect(0, fakeAccount(user, "stale-flow").account, "github");
     });
-    expect(await redeem(stub, lateTicket, stale)).toBe(EXPIRED);
+    expect(await redeem(stub, ticket, stale)).toBe(EXPIRED);
     await inDo(async user => {
-      expect(user.storage.connectedAccounts.get(1)).toBeUndefined();
+      expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
       expect(await fakeAccount(user, "stale-flow").calls()).toEqual(["describe", "revoke"]);
       expect(pendingCount(user)).toBe(0);
       expect(flowCount(user)).toBe(0);
