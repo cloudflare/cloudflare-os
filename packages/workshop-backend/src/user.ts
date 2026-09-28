@@ -2028,10 +2028,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Block whole gatekeepers + disabled resources at this single core-side chokepoint where a
     // resourceUrl becomes a capability (reached only via the user/UI-facing Overseer.newGatekeeper
-    // and blueprint instantiation — never from gadget or agent code).
+    // and blueprint instantiation — never from gadget or agent code). An ambient gatekeeper an admin
+    // set to "disabled" is blocked here too.
     let config = await readAdminConfig(this.env);
     let vendorId = account.vendorId.toLowerCase();
-    if (config.disabledGatekeepers.includes(vendorId)) {
+    if (config.disabledGatekeepers.includes(vendorId) ||
+        ambientGatekeeperMode(config, vendorId) === "disabled") {
       throw new Error(
           `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
     }
