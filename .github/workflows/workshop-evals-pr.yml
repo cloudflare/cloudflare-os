@@ -88,7 +88,9 @@ jobs:
   # that decides whether it is stored (scripts/evals/eval-keys.ts), so a task is measured again only
   # when one of those files or this workflow's eval settings changed, whichever run measured it.
   # Keys and settings come from the commit whose workflow is running, a pull request's merge
-  # commit; the base and head are read only as git trees, and none of their code runs here.
+  # commit, which is also the candidate. The baseline is its first parent, the main it merges into,
+  # read only as a git tree. The head alone lacks what main gained after it branched, and
+  # pull_request.base.sha can be older than that parent.
   plan:
     name: Plan eval runs
     needs: trust
@@ -113,6 +115,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Brings the merge commit's first parent, the baseline.
+          fetch-depth: 2
 
       - name: Set up Node.js
         uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0
@@ -120,23 +124,18 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           run-install: false
 
-      - name: Fetch the base and head trees
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git fetch --no-tags --depth=1 --filter=blob:none origin "$BASE_SHA" "$HEAD_SHA"
-
       - name: Plan the runs
         id: plan
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # Baseline first. A push measures its own commit, as the baseline later pull requests use.
-          SHAS: >-
-            ${{ github.event_name == 'push' && github.sha ||
-            format('{0} {1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) }}
-        run: node scripts/evals/workflow.ts plan $SHAS
+        # Baseline first. A push measures its own commit, as the baseline later pull requests use.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            node scripts/evals/workflow.ts plan "$(git rev-parse HEAD^1)" "$GITHUB_SHA"
+          else
+            node scripts/evals/workflow.ts plan "$GITHUB_SHA"
+          fi
 
   # Measures one revision's tasks that no stored result covers, on one runner: each eval file's
   # trials share one Workshop, and every file runs at once (see vitest.eval.config.ts).
@@ -387,6 +386,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # The main the evals measured, the merge commit's first parent: pull_request.base.sha can be
+      # older. The merge commit is only fetched for the diff; none of its code runs here.
+      - name: Move to the main the evals measured
+        run: |
+          git fetch --no-tags -q origin "$GITHUB_SHA"
+          git checkout -q --detach "$GITHUB_SHA^1"
+
       - name: Keep downloaded reports out of the working tree
         run: echo /artifacts/ >> .git/info/exclude
 
@@ -428,13 +434,7 @@ jobs:
             artifacts/candidate/results.json artifacts/candidate/trajectories.md
 
       - name: Prepare the read-only pull request diff
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          BASELINE_SHA=$(jq -er '.baselineSha' artifacts/comparison/comparison.json)
-          git cat-file -e "$BASELINE_SHA^{commit}" 2>/dev/null ||
-            git fetch --no-tags --depth=1 origin "$BASELINE_SHA"
-          git diff --no-ext-diff --unified=80 "$BASELINE_SHA" "$HEAD_SHA" > artifacts/pull-request.diff
+        run: git diff --no-ext-diff --unified=80 "$GITHUB_SHA^1" "$GITHUB_SHA" > artifacts/pull-request.diff
 
       - name: Review trajectory changes
         continue-on-error: true

@@ -40,8 +40,8 @@ export type EvalVerdict = "improved" | "regressed" | "unchanged" | "inconclusive
 
 export type EvalComparison = {
   /**
-   * The pull request's base and head. A task's result may come from another commit with the same
-   * eval key.
+   * The main the pull request merges into, and its merge commit. A task's result may come from
+   * another commit with the same eval key.
    */
   baselineSha: string;
   candidateSha: string;
@@ -51,7 +51,7 @@ export type EvalComparison = {
 
 /**
  * The reason for a task whose two sides are one result: nothing its run executes differs between
- * base and head. Two separate runs never produce identical results.
+ * the two commits. Two separate runs never produce identical results.
  */
 const SAME_INPUTS = "same inputs";
 
@@ -114,10 +114,10 @@ function stats({ assertions }: Cohort): EvalStats {
 
 /** The commits compared, and what only the caller, holding their eval keys, can tell about them. */
 export type CompareOptions = {
-  /** The pull request's base and head. */
+  /** The main the pull request merges into, and its merge commit. */
   baselineSha: string;
   candidateSha: string;
-  /** Whether the code that defines or scores a task's trials differs between base and head. */
+  /** Whether the code that defines or scores a task's trials differs between the two commits. */
   definitionsChanged?: (taskId: string) => boolean;
 };
 

@@ -1,10 +1,10 @@
 // Compare two Workshop eval result files and write the comparison JSON and Markdown:
 //   node scripts/evals/compare-results.ts <keys.json> \
 //     <baseline-results.json> <candidate-results.json> <comparison.json> <comparison.md>
-// <keys.json> is scripts/evals/eval-keys.ts's output for the pull request's base and head. Besides
-// naming the two commits, it decides which tasks cannot be compared: those whose definition
-// differs between them, since a change to the eval code moves the goalposts without touching the
-// product under test.
+// <keys.json> is scripts/evals/eval-keys.ts's output for the main a pull request merges into and
+// its merge commit. Besides naming the two commits, it decides which tasks cannot be compared:
+// those whose definition differs between them, since a change to the eval code moves the
+// goalposts without touching the product under test.
 // This file runs under Node's native TypeScript stripping, so imports name real .ts files and only
 // erasable syntax may appear here.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
