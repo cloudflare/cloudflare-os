@@ -159,11 +159,62 @@ const preferJsdoc: Rule = {
   },
 };
 
+/** Modules the agent's own environment resolves, so agent-facing declarations may import them. */
+const agentProvidedModules = ["cloudflare:workers"];
+
+const selfContainedAgentTypes: Rule = {
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Forbid module references in declarations delivered to agents as verbatim text",
+    },
+    messages: {
+      moduleReference: "The agent receives this file as verbatim text and nothing resolves " +
+        "`{{source}}` for it. Copy the referenced definitions into this file instead.",
+    },
+    schema: [{
+      type: "object",
+      properties: {
+        allow: { type: "array", items: { type: "string" } },
+      },
+      additionalProperties: false,
+    }],
+  },
+  create(context) {
+    const options = context.options[0] as { allow?: string[] } | undefined;
+    const allowed = new Set([...agentProvidedModules, ...(options?.allow ?? [])]);
+
+    function check(source: ESTree.StringLiteral) {
+      if (allowed.has(source.value)) return;
+      context.report({ node: source, messageId: "moduleReference", data: { source: source.value } });
+    }
+
+    return {
+      Program() {
+        for (const comment of context.sourceCode.getAllComments()) {
+          if (comment.type !== "Line") continue;
+          const reference = /^\/\s*<reference\s+(?:path|types)\s*=\s*(["'])(.*?)\1/.exec(comment.value);
+          if (!reference || allowed.has(reference[2])) continue;
+          context.report({ loc: comment.loc, messageId: "moduleReference", data: { source: reference[2] } });
+        }
+      },
+      ImportDeclaration: (node) => check(node.source),
+      ExportAllDeclaration: (node) => check(node.source),
+      ExportNamedDeclaration(node) {
+        if (node.source) check(node.source);
+      },
+      TSImportType: (node) => check(node.source),
+      TSExternalModuleReference: (node) => check(node.expression),
+    };
+  },
+};
+
 export default {
   meta: {
     name: "gadgets",
   },
   rules: {
     "prefer-jsdoc": preferJsdoc,
+    "self-contained-agent-types": selfContainedAgentTypes,
   },
 } satisfies Plugin;

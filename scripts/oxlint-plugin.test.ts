@@ -123,3 +123,52 @@ ruleTester.run("prefer-jsdoc", plugin.rules["prefer-jsdoc"], {
     },
   ],
 });
+
+ruleTester.run("self-contained-agent-types", plugin.rules["self-contained-agent-types"], {
+  valid: [
+    "export interface Cursor<T> {\n  next(): Promise<T[] | null>;\n}",
+    "interface Cursor<T> {}\nexport type { Cursor };",
+    "import type { RpcTarget } from \"cloudflare:workers\";\nexport interface Session extends RpcTarget {}",
+    "/// <reference lib=\"es2024\" />\nexport interface Session {}",
+    "/**\n * import { Helper } from \"./helper\";\n */\nexport interface Session {}",
+    {
+      code: "import type { ReadSession } from \"./read-types\";\nexport interface Session extends ReadSession {}",
+      options: [{ allow: ["./read-types"] }],
+    },
+  ],
+  invalid: [
+    {
+      code: "import { Cursor } from \"@gadgets/workshop-shared/gatekeeper\";\nexport type { Cursor };",
+      errors: [{ messageId: "moduleReference", data: { source: "@gadgets/workshop-shared/gatekeeper" } }],
+    },
+    {
+      code: "export type { Cursor } from \"@gadgets/workshop-shared/gatekeeper\";",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "export * from \"./other-types\";",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "export type Page = import(\"./other-types\").Page;",
+      errors: [{ messageId: "moduleReference", data: { source: "./other-types" } }],
+    },
+    {
+      code: "import shared = require(\"./shared\");\nexport type Page = shared.Page;",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "/// <reference types=\"@cloudflare/workers-types\" />\nexport interface Session {}",
+      errors: [{ messageId: "moduleReference", data: { source: "@cloudflare/workers-types" } }],
+    },
+    {
+      code: "/// <reference path=\"./other.d.ts\" />\nexport interface Session {}",
+      errors: [{ messageId: "moduleReference", data: { source: "./other.d.ts" } }],
+    },
+    {
+      code: "import type { A } from \"./a\";\nimport type { B } from \"./b\";",
+      options: [{ allow: ["./a"] }],
+      errors: [{ messageId: "moduleReference", data: { source: "./b" } }],
+    },
+  ],
+});
