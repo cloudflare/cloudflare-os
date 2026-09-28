@@ -64,6 +64,8 @@ const WORKER_INPUTS: WorkerInput[] = [
   { kind: "dir", path: "packages/workshop-shared", excludeDirs: BUILT },
   { kind: "dir", path: "packages/backend-utils", excludeDirs: BUILT },
   { kind: "dir", path: "packages/error-reporting", excludeDirs: BUILT },
+  // Bundled into the fixture gatekeeper.
+  { kind: "dir", path: "packages/gatekeeper-kit", excludeDirs: BUILT },
   // `typed-storage` is the one package that emits: wrangler loads its `dist/index.js`, so `dist` is
   // output here like anywhere else, and it is the package's config -- not just its source -- that
   // decides what gets emitted.

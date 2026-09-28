@@ -60,8 +60,10 @@ type ToolCall = {
   arguments: Record<string, unknown>;
 };
 
-// One model response: text, or one or more tool calls the agent runs in that step.
-type StreamedCompletionStep = { text: string } | { toolCall: ToolCall } | { toolCalls: ToolCall[] };
+// One model response: text, or one or more tool calls the agent runs in that step, with optional
+// token usage (pi sums prompt and completion tokens; it ignores `total_tokens`).
+type StreamedCompletionStep = ({ text: string } | { toolCall: ToolCall } | { toolCalls: ToolCall[] }) &
+  { usage?: typeof USAGE };
 export type ChatCompletionStep = StreamedCompletionStep |
   { error: { status: number; message: string } } |
   { pending: true };
@@ -103,7 +105,7 @@ function stream(step: StreamedCompletionStep, index: number): Response {
   }) + event({
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
-    usage: USAGE,
+    usage: step.usage ?? USAGE,
   }) + "data: [DONE]\n\n";
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }

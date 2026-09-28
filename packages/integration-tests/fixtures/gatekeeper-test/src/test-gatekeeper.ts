@@ -23,8 +23,9 @@ import {
   DurableObject, RpcTarget, WorkerEntrypoint, restore, type RpcStub,
 } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import type {
-  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, Gatekeeper,
+  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff, Gatekeeper,
   GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController, HookInitiator,
   HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame, SupportedResource,
   VendorDescription,
@@ -96,6 +97,10 @@ function outcomeKey(label: string, resourceUrl?: string): string {
   return resourceUrl ? `outcome:${label}:${resourceUrl}` : `outcome:${label}`;
 }
 
+function newAccountLabel(): string {
+  return `test-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}@${VENDOR_HOST}`;
+}
+
 @validateRpc()
 export class TestControl extends DurableObject<Cloudflare.Env> {
   setVerifyOutcome(label: string, outcome: VerifyOutcome, resourceUrl?: string): void {
@@ -129,6 +134,15 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
 
   getAmbientVerificationCount(label: string): number {
     return this.ctx.storage.kv.get<number>(`ambient-verifications:${label}`) ?? 0;
+  }
+
+  recordRevocation(label: string): void {
+    const key = `revocations:${label}`;
+    this.ctx.storage.kv.put(key, (this.ctx.storage.kv.get<number>(key) ?? 0) + 1);
+  }
+
+  getRevocationCount(label: string): number {
+    return this.ctx.storage.kv.get<number>(`revocations:${label}`) ?? 0;
   }
 
   getActionState(label: string): TestActionState {
@@ -220,6 +234,18 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<HookState>(`hook:${key}`) ?? { disableCount: 0 };
   }
 
+  openConnect(label: string, callback: Fetcher<GatekeeperConnectCallback>): void {
+    this.ctx.storage.kv.put(`connect:${label}`, callback);
+  }
+
+  async finishConnect(label: string): Promise<ConnectHandoff | null> {
+    const key = `connect:${label}`;
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(key);
+    if (callback === undefined) return null;
+    this.ctx.storage.kv.delete(key);
+    return callback.complete(this.ctx.exports.TestAccount({ props: { label } }));
+  }
+
   recordGadgetResponse(messageKey: string, response: GadgetResponse): void {
     const key = `gadget-responses:${messageKey}`;
     this.ctx.storage.kv.put(key, [...this.getGadgetResponses(messageKey), response]);
@@ -290,8 +316,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
    */
   @skipRpcValidation()
   async createAccount(): Promise<Fetcher<GatekeeperUser>> {
-    const label = `test-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}@${VENDOR_HOST}`;
-    return this.ctx.exports.TestAccount({ props: { label } });
+    return this.ctx.exports.TestAccount({ props: { label: newAccountLabel() } });
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
@@ -303,11 +328,13 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   }
 
   /**
-   * Required by the interface but unreachable: autoProvisionsAccount means the Workshop mints
-   * accounts through createAccount() and never offers a connect flow.
+   * Reached via `AuthenticatedApi.connectAccount()`; the returned URL is served by this worker's
+   * `GET /connect/<label>`, named for the account the flow mints.
    */
-  async connectAccount(_callback: Fetcher<GatekeeperConnectCallback>): Promise<{ url: string }> {
-    throw new Error("The test gatekeeper auto-provisions accounts; it has no connect flow.");
+  async connectAccount(callback: Fetcher<GatekeeperConnectCallback>): Promise<{ url: string }> {
+    const label = newAccountLabel();
+    await control(this.ctx.exports).openConnect(label, callback);
+    return { url: `https://${VENDOR_HOST}/connect/${label}` };
   }
 }
 
@@ -371,7 +398,9 @@ export class TestAccount
     return null;
   }
 
-  async revoke(): Promise<void> {}
+  async revoke(): Promise<void> {
+    await control(this.ctx.exports).recordRevocation(this.ctx.props.label);
+  }
 
   startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
@@ -619,6 +648,14 @@ export default {
   async fetch(req: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 
+    // The page a finished connect flow ends on, carrying the handoff ticket to the Workshop.
+    if (req.method === "GET" && url.pathname.startsWith("/connect/")) {
+      const handoff = await control(ctx.exports).finishConnect(url.pathname.slice("/connect/".length));
+      return handoff
+        ? htmlResponse(connectHandoffPageHtml(handoff))
+        : new Response("Not Found", { status: 404 });
+    }
+
     let body: unknown;
     if (req.method === "POST") {
       try {
@@ -667,6 +704,12 @@ export default {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
+    }
+
+    if (url.pathname === "/control/revocation-count" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ count: await control(ctx.exports).getRevocationCount(label) });
     }
 
     if (url.pathname === "/control/action-state" && req.method === "POST") {

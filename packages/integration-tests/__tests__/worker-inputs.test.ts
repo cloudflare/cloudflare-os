@@ -56,6 +56,7 @@ it("watches a root covering every entry in the table", () => {
     "packages/workshop-shared",
     "packages/backend-utils",
     "packages/error-reporting",
+    "packages/gatekeeper-kit",
     "packages/typed-storage",
     "packages/bundled-blueprints",
     // The one entry the environment can add, resolved as the blueprint generator resolves it.
