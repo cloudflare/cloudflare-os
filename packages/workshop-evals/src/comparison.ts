@@ -4,7 +4,10 @@ import {
 
 export type EvalStats = {
   trials: number;
+  /** Trials that passed. An infrastructure failure counts as neither a pass nor a fail. */
   passed: number;
+  /** Trials that failed for infrastructure reasons rather than the agent's work. */
+  infrastructureTrials: number;
   meanDurationMs: number;
   meanModelTurns: number;
   meanToolCalls: number;
@@ -12,10 +15,13 @@ export type EvalStats = {
   /** Null when any trial lacks a cost: a mean over a subset would not compare across sides. */
   meanCostUsd: number | null;
   /**
-   * Each check that failed, as `t<turn> <check id>`, with how many trials failed it and the
-   * evidence of the first. Most frequent first.
+   * Each check that failed in some trial, by turn, with how many trials failed it and the evidence
+   * of the first. A turn the agent did not complete fails as `agent.<outcome>`. Leaves out
+   * infrastructure failures. Most frequent first.
    */
-  failedChecks: { check: string; trials: number; evidence: string | null }[];
+  failedChecks: { turn: number; check: string; trials: number; evidence: string | null }[];
+  /** How many trials reached each turn, leaving out infrastructure failures. */
+  turnsReached: number[];
   /** Tool errors by tool and the first line of their message, most frequent first. */
   toolErrors: { tool: string; message: string; count: number }[];
   /** Trials that failed for infrastructure reasons rather than the agent's work, by message. */
@@ -73,6 +79,18 @@ function countBy<T>(items: readonly T[], key: (item: T) => string): { item: T; c
   return [...counts.values()].toSorted((left, right) => right.count - left.count);
 }
 
+type Turn = Assertion["meta"]["harness"]["run"]["output"]["turns"][number];
+
+/**
+ * A turn's failed checks. A turn the agent did not complete has no checks to fail, so it fails as
+ * `agent.<outcome>`.
+ */
+function failures(turn: Turn): { check: string; evidence: unknown }[] {
+  const failed = turn.checks.flatMap(({ id, pass, evidence }) => pass ? [] : [{ check: id, evidence }]);
+  return turn.outcome.status === "completed"
+    ? failed : [{ check: `agent.${turn.outcome.status}`, evidence: undefined }, ...failed];
+}
+
 function infrastructureMessage(assertion: Assertion): string {
   const run = assertion.meta.harness.run;
   const turn = run.output.turns.find(({ outcome }) =>
@@ -87,11 +105,14 @@ function stats({ assertions }: Cohort): EvalStats {
   });
   const runs = assertions.map(assertion => assertion.meta.harness.run);
   const metrics = runs.map(run => run.output.metrics);
-  const failedChecks = countBy(runs.flatMap(run => run.output.turns.flatMap((turn, index) =>
-    turn.checks.filter(check => !check.pass).map(check => ({
-      check: `t${index + 1} ${check.id}`,
-      evidence: check.evidence === undefined ? null : JSON.stringify(check.evidence),
-    })))), failure => failure.check);
+  // A crash's check results say nothing about the agent's work.
+  const judged = assertions.filter(assertion => !hasInfrastructureFailure(assertion));
+  const turns = judged.map(assertion => assertion.meta.harness.run.output.turns);
+  const failedChecks = countBy(turns.flatMap(trial => trial.flatMap((turn, index) =>
+    failures(turn).map(({ check, evidence }) => ({
+      turn: index + 1, check,
+      evidence: evidence === undefined ? null : JSON.stringify(evidence),
+    })))), failure => `${failure.turn} ${failure.check}`);
   const toolErrors = countBy(runs.flatMap(run => run.session.events.flatMap(event =>
     event.type === "tool_result" && event.error !== undefined
       ? [{ tool: event.name ?? "unknown", message: event.error.message.trim().split("\n")[0] ?? "" }]
@@ -100,13 +121,16 @@ function stats({ assertions }: Cohort): EvalStats {
     assertions.filter(hasInfrastructureFailure).map(infrastructureMessage), message => message);
   return {
     trials: assertions.length,
-    passed: assertions.filter(assertion => assertion.status === "passed").length,
+    passed: judged.filter(assertion => assertion.status === "passed").length,
+    infrastructureTrials: assertions.length - judged.length,
     meanDurationMs: mean(assertions.map(assertion => assertion.duration)),
     meanModelTurns: mean(metrics.map(value => value.modelTurns)),
     meanToolCalls: mean(metrics.map(value => value.toolCalls)),
     meanToolErrors: mean(metrics.map(value => value.toolErrors)),
     meanCostUsd: costs.length === assertions.length ? mean(costs) : null,
     failedChecks: failedChecks.map(({ item, count }) => ({ ...item, trials: count })),
+    turnsReached: Array.from({ length: Math.max(0, ...turns.map(trial => trial.length)) },
+      (_, index) => turns.filter(trial => trial.length > index).length),
     toolErrors: toolErrors.map(({ item, count }) => ({ ...item, count })),
     infrastructureErrors: infrastructureErrors.map(({ item, count }) => ({ message: item, trials: count })),
   };
@@ -200,8 +224,9 @@ export function compareEvalResults(
   return { baselineSha, candidateSha, verdict: verdictOf(rows), rows };
 }
 
+/** The pass rate over trials that reached a verdict: an infrastructure failure reached none. */
 function passRate(stats: EvalStats): number {
-  return stats.passed / stats.trials;
+  return stats.passed / (stats.trials - stats.infrastructureTrials);
 }
 
 /** The one value every row shares, or null when they differ and must be shown per row. */
@@ -225,9 +250,13 @@ type ComparedRow = Extract<EvalComparisonRow, { reason: null }>;
  */
 const NBSP = "\u00a0";
 
-/** The pass rate, as a whole percentage. */
+/** The pass rate, as a whole percentage, and how many trials failed for infrastructure reasons. */
 function score(side: EvalStats): string {
-  return `${Math.round(passRate(side) * 100)}%`;
+  const count = side.infrastructureTrials;
+  const errors = `${count}${NBSP}run${NBSP}error${count === 1 ? "" : "s"}`;
+  if (count === side.trials) return errors;
+  const percent = `${Math.round(passRate(side) * 100)}%`;
+  return count === 0 ? percent : `${percent}${NBSP}(${errors})`;
 }
 
 /** The pass-rate change, in percentage points. */
@@ -242,16 +271,41 @@ function pValueText(pValue: number): string {
   return pValue < 0.01 ? `p${NBSP}<${NBSP}0.01` : `p${NBSP}=${NBSP}${pValue.toFixed(2)}`;
 }
 
-/** One value for each side, baseline first, with a dash for a side that lacks it. */
+/**
+ * One value for each side, baseline first, with a dash for a side that lacks it. A value both sides
+ * share is shown once.
+ */
 function sides(row: EvalComparisonRow, value: (side: EvalStats) => string | null): string {
   const cell = (side: EvalStats | null) => (side === null ? null : value(side)) ?? "\u2014";
-  return `${cell(row.baseline)}${NBSP}\u2192${NBSP}${cell(row.candidate)}`;
+  const baseline = cell(row.baseline);
+  const candidate = cell(row.candidate);
+  return baseline === candidate ? baseline : `${baseline}${NBSP}\u2192${NBSP}${candidate}`;
+}
+
+/**
+ * One table row per check that failed on either side: how many trials failed it out of those that
+ * reached its turn, e.g. `2/10 → 5/10`.
+ */
+function failedCheckRows(row: EvalComparisonRow, task: string): string[] {
+  const checks = new Map<string, { turn: number; check: string }>();
+  for (const side of [row.baseline, row.candidate]) {
+    for (const { turn, check } of side?.failedChecks ?? []) checks.set(`t${turn} ${check}`, { turn, check });
+  }
+  return [...checks].toSorted(([, left], [, right]) => left.turn - right.turn).map(([label, { turn, check }]) => {
+    const failed = (side: EvalStats) => {
+      const reached = side.turnsReached[turn - 1] ?? 0;
+      const count = side.failedChecks.find(entry => entry.turn === turn && entry.check === check)?.trials ?? 0;
+      return reached === 0 ? null : `${count}/${reached}`;
+    };
+    return `| ${task} | ${label} | ${sides(row, failed)} |`;
+  });
 }
 
 /**
  * Render the comparison for a pull request comment: the verdict, then one table with each task's
  * score on both sides, its change and Fisher test, and each side's average minutes, cost and
- * steps per run. Headers are short so the table fits a comment's width unwrapped. Bonk's review
+ * steps per run. Headers are short so the table fits a comment's width unwrapped. A collapsed
+ * table lists each check that failed on either side of a task whose inputs changed; Bonk's review
  * explains the failures.
  */
 export function renderEvalComparison(comparison: EvalComparison): string {
@@ -291,6 +345,12 @@ export function renderEvalComparison(comparison: EvalComparison): string {
       sides(row, side => side.meanCostUsd?.toFixed(3) ?? null),
       sides(row, side => side.meanModelTurns.toFixed(1)),
     ].join(" | ")} |`);
+  }
+  const checks = rows.flatMap(row => row.reason === SAME_INPUTS ? [] : failedCheckRows(row, name(row)));
+  if (checks.length > 0) {
+    // GitHub renders a table inside <details> only after a blank line.
+    lines.push("", "<details><summary>Failed checks</summary>", "",
+      "| Task | Check | Failed |", "| --- | --- | --- |", ...checks, "", "</details>");
   }
   lines.push("");
   return lines.join("\n");

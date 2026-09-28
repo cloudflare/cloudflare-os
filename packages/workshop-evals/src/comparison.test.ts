@@ -8,6 +8,11 @@ const HEAD_SHA = "b".repeat(40);
 const SHAS = { baselineSha: BASE_SHA, candidateSha: HEAD_SHA };
 const VERSION = "c".repeat(64);
 
+type Turn = {
+  outcome: { status: "completed" | "error" | "timedOut" | "cancelled" };
+  checks: { id: string; pass: boolean; evidence?: string }[];
+};
+
 type TrialOptions = {
   taskId?: string;
   taskVersion?: string;
@@ -22,6 +27,8 @@ type TrialOptions = {
   outcomeStatus?: "completed" | "error" | "timedOut" | "cancelled";
   checks?: { id: string; pass: boolean; evidence?: string }[];
   events?: object[];
+  /** Every turn, in place of one built from `outcomeStatus` and `checks`. */
+  turns?: Turn[];
 };
 
 function trial(options: TrialOptions = {}) {
@@ -39,6 +46,7 @@ function trial(options: TrialOptions = {}) {
     outcomeStatus = "completed",
     checks = [],
     events = [],
+    turns = [{ outcome: { status: outcomeStatus }, checks }],
   } = options;
   return {
     status,
@@ -53,7 +61,7 @@ function trial(options: TrialOptions = {}) {
           },
           output: {
             metrics: { modelTurns, toolCalls, toolErrors },
-            turns: [{ outcome: { status: outcomeStatus }, checks }],
+            turns,
           },
           errors,
         },
@@ -64,6 +72,11 @@ function trial(options: TrialOptions = {}) {
 
 function taskOf(assertion: ReturnType<typeof trial>) {
   return assertion.meta.harness.run.session.metadata.taskId;
+}
+
+/** A completed turn with one check. */
+function turn(id: string, pass: boolean): Turn {
+  return { outcome: { status: "completed" }, checks: [{ id, pass }] };
 }
 
 /** The rendered comment, reading the non-breaking spaces inside values as spaces. */
@@ -100,7 +113,9 @@ it("compares three-trial task cohorts", () => {
 
   expect(comparison.baselineSha).toBe(BASE_SHA);
   expect(comparison.candidateSha).toBe(HEAD_SHA);
-  const noFailures = { failedChecks: [], toolErrors: [], infrastructureErrors: [] };
+  const noFailures = {
+    infrastructureTrials: 0, failedChecks: [], turnsReached: [3], toolErrors: [], infrastructureErrors: [],
+  };
   expect(comparison.verdict).toBe("unchanged");
   expect(comparison.rows).toEqual([{
     taskId: "project-doc",
@@ -132,7 +147,7 @@ it("compares three-trial task cohorts", () => {
   expect(markdown).toContain("**Verdict: \u26AA Unchanged.**");
   // A 33 pp rise over three trials is noise, so it is not marked significant.
   expect(markdown).toContain("| project-doc | 67% \u2192 100% | +33 pp | p = 1.00 | " +
-    "2.0 \u2192 3.0 | 0.200 \u2192 0.300 | 2.0 \u2192 2.0 |");
+    "2.0 \u2192 3.0 | 0.200 \u2192 0.300 | 2.0 |");
 });
 
 it("calls a significant fall a regression and a small one noise", () => {
@@ -162,7 +177,7 @@ it("reports each failing check and tool error once, with how many trials hit it"
   const comparison = compareEvalResults(report([trial(), trial()]), report([failed("`@here` shown $40M"), failed("again")]), SHAS);
   const { candidate } = comparison.rows[0];
   expect(candidate?.failedChecks).toEqual([
-    { check: "t1 shows-the-target", trials: 2, evidence: JSON.stringify("`@here` shown $40M") },
+    { turn: 1, check: "shows-the-target", trials: 2, evidence: JSON.stringify("`@here` shown $40M") },
   ]);
   expect(candidate?.toolErrors).toEqual(
     [{ tool: "createGadget", message: "Key `@here` is empty", count: 2 }]);
@@ -219,6 +234,38 @@ it("separates infrastructure errors from failed agent outcomes", () => {
   });
 });
 
+it("counts a failed check against the trials that reached its turn, leaving out run errors", () => {
+  const cleanupFailed = () => trial({ status: "failed",
+    errors: [{ name: "EvalCleanupError", message: "Cleanup failed." }],
+    turns: [turn("builds", true), turn("saves", false)] });
+  const baseline = report([
+    trial({ turns: [turn("builds", true), turn("saves", true)] }),
+    trial({ status: "failed", turns: [turn("builds", false)] }),
+    cleanupFailed(),
+  ]);
+  const candidate = report([
+    trial({ gitCommit: HEAD_SHA, turns: [turn("builds", true), turn("saves", true)] }),
+    trial({ gitCommit: HEAD_SHA, status: "failed", turns: [turn("builds", true), turn("saves", false)] }),
+    trial({ gitCommit: HEAD_SHA, status: "failed",
+      turns: [turn("builds", true), { outcome: { status: "timedOut" }, checks: [] }],
+      errors: [{ name: "AgentTimeout", message: "Agent timed out." }, { name: "EvalRunError", message: "Agent timed out." }] }),
+  ]);
+
+  const markdown = rendered(compareEvalResults(baseline, candidate, SHAS));
+
+  expect(markdown).toContain("| project-doc | 50% (1 run error) \u2192 33% | _baseline run errors_ |");
+  expect(markdown).toContain([
+    "<details><summary>Failed checks</summary>", "",
+    "| Task | Check | Failed |", "| --- | --- | --- |",
+    "| project-doc | t1 builds | 1/2 \u2192 0/3 |",
+    "| project-doc | t2 saves | 0/1 \u2192 1/3 |",
+    "| project-doc | t2 agent.timedOut | 0/1 \u2192 1/3 |",
+  ].join("\n"));
+  const allFailed = report([cleanupFailed(), cleanupFailed(), cleanupFailed()]);
+  expect(rendered(compareEvalResults(allFailed, candidate, SHAS)))
+    .toContain("| project-doc | 3 run errors \u2192 33% |");
+});
+
 it("does not compare changed tasks or unequal trial counts", () => {
   const baseline = report([trial(), trial(), trial()]);
   const changed = report([
@@ -257,6 +304,8 @@ it("reports a result both sides share as unchanged, unless it failed to run", ()
   expect(comparison.verdict).toBe("unchanged");
   const markdown = rendered(comparison);
   expect(markdown).toContain("Nothing the evals run changed, so every result is reused.");
+  expect(markdown).toContain("| project-doc | 50% | _same inputs_ | \u2014 | 0.0 | \u2014 | 2.0 |");
+  expect(markdown).not.toContain("Failed checks");
 
   const crashed = report([
     trial(),
