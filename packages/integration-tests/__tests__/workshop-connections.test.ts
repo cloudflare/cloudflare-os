@@ -11,7 +11,9 @@ import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { accountLabel, waitFor, waitForIdleChat, withOwnerWorkspace } from "../src/rpc-client.js";
+import {
+  accountLabel, restartWorkspace, waitFor, waitForIdleChat, withOwnerWorkspace,
+} from "../src/rpc-client.js";
 
 let harness: Harness;
 const models = scriptedModelRouter();
@@ -84,6 +86,15 @@ const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
 function connectionCard(history: AiChatMessage[]) {
   const card = history.find(message => message.type === "connectionRequest");
   if (!card) throw new Error("The agent did not create a connection request");
+  return card;
+}
+
+function connectionCardFor(history: AiChatMessage[], bindingName: string) {
+  const card = history.find(message =>
+    message.type === "connectionRequest" && message.bindingName === bindingName);
+  if (!card || card.type !== "connectionRequest") {
+    throw new Error(`No connection request for ${bindingName}`);
+  }
   return card;
 }
 
@@ -234,5 +245,117 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
     expect((await app.listBindings()).some(binding => binding.name === "RETRY_DATA")).toBe(false);
   });
 
+  expect(model.remainingSteps()).toBe(0);
+});
+
+it.concurrent("the agent resumes once, only after every connection request of its turn is accepted",
+    async () => {
+  const FIRST = {
+    ...REQUEST,
+    resourceUrl: "https://gadgets-test.example/things/first",
+    bindingName: "FIRST_THING",
+  };
+  const SECOND = {
+    ...REQUEST,
+    resourceUrl: "https://gadgets-test.example/things/second",
+    bindingName: "SECOND_THING",
+  };
+  const model = models.script([
+    { toolCalls: [
+      { id: "first", name: "requestConnection", arguments: FIRST },
+      { id: "second", name: "requestConnection", arguments: SECOND },
+    ] },
+    { text: "Both connections are ready." },
+  ]);
+  await using session = await openSession(model, "connectionbarrier");
+
+  const turn = await session.runTurn("Connect both things.");
+  expect(turn.outcome).toEqual({ status: "completed" });
+  expect(turn.history.filter(message => message.type === "connectionRequest")).toHaveLength(2);
+  const first = connectionCardFor(turn.history, "FIRST_THING");
+  const second = connectionCardFor(turn.history, "SECOND_THING");
+  expect(first.state).toBe("pending");
+  expect(second.state).toBe("pending");
+  expect(first.requestId).not.toBe(second.requestId);
+  expect(model.requests).toHaveLength(1);
+  const { chatId } = first;
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    const account = session.connectedAccount(TEST_VENDOR_ID);
+    using firstGatekeeper = await ws.newGatekeeper(account.id, FIRST.resourceUrl);
+    using secondGatekeeper = await ws.newGatekeeper(account.id, SECOND.resourceUrl);
+    if (!firstGatekeeper || !secondGatekeeper) throw new Error("Failed to create the test connections");
+    const [firstId, secondId] = await Promise.all([firstGatekeeper.getId(), secondGatekeeper.getId()]);
+
+    await ws.acceptConnectionRequest(first.requestId, { gatekeeperId: firstId });
+    // Resuming marks the chat active before acceptConnectionRequest returns, so idle means the barrier held.
+    expect((await ws.listChats()).find(chat => chat.id === chatId)?.activeAgent).toBeUndefined();
+    const partial = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+    expect(connectionCardFor(partial, "FIRST_THING"))
+        .toMatchObject({ state: "accepted", gatekeeperId: firstId });
+    expect(connectionCardFor(partial, "SECOND_THING")).toMatchObject({ state: "pending" });
+    expect(model.requests).toHaveLength(1);
+
+    await ws.acceptConnectionRequest(second.requestId, { gatekeeperId: secondId });
+    await waitForIdleChat(ws, chatId);
+    const settled = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+    expect(connectionCardFor(settled, "FIRST_THING"))
+        .toMatchObject({ state: "accepted", gatekeeperId: firstId });
+    expect(connectionCardFor(settled, "SECOND_THING"))
+        .toMatchObject({ state: "accepted", gatekeeperId: secondId });
+    expect(settled.filter(message => message.type === "message" && message.author.type === "agent" &&
+      message.message === "Both connections are ready.")).toHaveLength(1);
+  });
+
+  expect(model.requests).toHaveLength(2);
+  expect(JSON.stringify(model.requests[1])).toContain("env.FIRST_THING");
+  expect(JSON.stringify(model.requests[1])).toContain("env.SECOND_THING");
+  expect(model.remainingSteps()).toBe(0);
+});
+
+it.concurrent("a connection request left pending across a workspace restart is decided exactly once",
+    async () => {
+  const model = models.script([requestConnection, { text: "Connection restored." }]);
+  await using session = await openSession(model, "connectionrestart");
+
+  const first = await session.runTurn("Connect the requested thing.");
+  expect(first.outcome).toEqual({ status: "completed" });
+  const pending = connectionCard(first.history);
+  expect(pending.state).toBe("pending");
+
+  await withOwnerWorkspace(harness.url, session.username, ws => restartWorkspace(harness.url, ws));
+  await waitFor("the restart to drop the session", async () => session.connectionDrops > 0 || null);
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    // A turn that ended on a decision is not an active agent, so restart recovery must not resume it.
+    expect((await ws.listChats()).find(chat => chat.id === pending.chatId)?.activeAgent).toBeUndefined();
+    expect(model.requests).toHaveLength(1);
+    const restarted = await loadAllChatHistory(before => ws.getChatHistory(pending.chatId, before));
+    expect(restarted.filter(message => message.type === "connectionRequest")).toEqual([
+      expect.objectContaining({
+        requestId: pending.requestId,
+        state: "pending",
+        bindingName: REQUEST.bindingName,
+        resourceUrl: REQUEST.resourceUrl,
+      }),
+    ]);
+
+    using chosen = await ws.newGatekeeper(
+        session.connectedAccount(TEST_VENDOR_ID).id, "https://gadgets-test.example/things/restart-chosen");
+    if (!chosen) throw new Error("Failed to create the test connection");
+    const chosenId = await chosen.getId();
+    await ws.acceptConnectionRequest(pending.requestId, { gatekeeperId: chosenId });
+    await waitForIdleChat(ws, pending.chatId);
+
+    const decided = await loadAllChatHistory(before => ws.getChatHistory(pending.chatId, before));
+    expect(decided.filter(message => message.type === "connectionRequest")).toEqual([
+      expect.objectContaining({ requestId: pending.requestId, state: "accepted", gatekeeperId: chosenId }),
+    ]);
+    expect(decided.filter(message => message.type === "message" && message.author.type === "agent" &&
+      message.message === "Connection restored.")).toHaveLength(1);
+  });
+
+  expect(model.requests).toHaveLength(2);
+  expect(JSON.stringify(model.requests[1])).toContain("env.REQUESTED_THING");
   expect(model.remainingSteps()).toBe(0);
 });
