@@ -161,6 +161,49 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
   await expectOpenDeniedAfterRestart(collaboratorName, workspaceId);
 });
 
+it.concurrent("a collaborator's Outputs page follows their access", async () => {
+  const [ownerName, collaboratorName] = usernames("outputsowner", "outputscollaborator");
+  if (!ownerName || !collaboratorName) throw new Error("Missing test username");
+
+  // Released before the revocation restart lands; `using` covers early failures.
+  using setup = new DisposableStack();
+  const owner = setup.use(await signUp(setup.use(connect(requireHarness().url)), ownerName));
+  const collaborator = setup.use(
+      await signUp(setup.use(connect(requireHarness().url)), collaboratorName));
+  const formats = await waitFor("bundled output formats to install", async () => {
+    const offers = await owner.listOutputFormats();
+    return offers.length > 0 ? offers : null;
+  });
+  const document = formats.find(format => format.output.id === "document");
+  if (document === undefined) throw new Error("Document output format is not installed");
+  const workspace = setup.use(await owner.newGadgetFromBlueprint(document.blueprintId, {}));
+  const { id: workspaceId, defaultGadgetId } = await workspace.getMetadata();
+  if (defaultGadgetId === undefined) throw new Error("Output workspace has no default Gadget");
+
+  const added = await workspace.addCollaborator(collaboratorName, "build");
+  if (added === null) throw new Error("Collaborator was not added");
+  setup.use(await collaborator.openGadget(workspaceId));
+
+  const shared = await waitFor("the shared document in the collaborator's outputs", async () =>
+    (await collaborator.listOutputs()).outputs.find(output =>
+      output.workspaceId === workspaceId && output.workpieceId === defaultGadgetId) ?? null);
+  expect(shared.output).toMatchObject({ id: "document" });
+
+  await workspace.removeCollaborator(added.profile.id, []);
+  setup.dispose();
+
+  await waitFor("the revoked document to leave the collaborator's outputs", async () => {
+    try {
+      const { outputs } = await withAuthenticated(collaboratorName, authenticated =>
+        authenticated.listOutputs());
+      return outputs.some(output => output.workspaceId === workspaceId) ? null : true;
+    } catch {
+      return null;
+    }
+  });
+  await expectOpenDeniedAfterRestart(collaboratorName, workspaceId);
+});
+
 it.concurrent("revokes every key and recipient of one share link", async () => {
   const [ownerName, firstName, secondName] = usernames("linkowner", "first", "second");
   if (!ownerName || !firstName || !secondName) throw new Error("Missing test username");

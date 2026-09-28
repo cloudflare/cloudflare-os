@@ -1,6 +1,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { TreeNode } from "@gadgets/workshop-shared/api";
+import type { Overseer, TreeNode, WorkpieceId } from "@gadgets/workshop-shared/api";
+import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { z } from "zod";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
@@ -68,6 +69,41 @@ function treePaths(nodes: TreeNode[], prefix = ""): string[] {
     }
   }
   return paths;
+}
+
+const files = (gadgetId: number, path: string, text?: string): CodeContent =>
+  new Map([[gadgetId, new Map(text === undefined ? [] : [[path, text]])]]);
+
+const edit = (gadgetId: number, path: string, before: string | undefined, after: string) =>
+  diffFiles(files(gadgetId, path, before), files(gadgetId, path, after));
+
+const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: string) =>
+  waitFor(`a new head for gadget ${gadgetId}`, async () => {
+    const summary = workpieces.summaries.get(gadgetId);
+    return summary?.type === "gadget" && summary.commitId !== undefined &&
+        summary.commitId !== after ? summary.commitId : null;
+  });
+
+/** Merge a one-file edit into mainline through a human-only chat; returns the new head. */
+async function commitText(ws: RpcStub<Overseer>, workpieces: WorkpieceRecorder,
+                          gadgetId: WorkpieceId, head: string, path: string,
+                          before: string | undefined, after: string): Promise<string> {
+  const chatId = await ws.newChat("Edit", null);
+  await ws.submitCodeChange(chatId, {
+    generation: 0, revision: 0, clientId: "edit", seq: 1,
+    pins: [{ gadgetId, baseCommit: head }], change: edit(gadgetId, path, before, after),
+  });
+  expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+  return headOf(workpieces, gadgetId, head);
+}
+
+async function committedText(ws: RpcStub<Overseer>, gadgetId: WorkpieceId, path: string) {
+  const workpieces = new WorkpieceRecorder();
+  using stub = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(stub);
+  await workpieces.loaded;
+  const commitId = await headOf(workpieces, gadgetId);
+  return (await ws.readFilesAtCommit(commitId, [path]))[0]?.[1];
 }
 
 it.concurrent("publishes, instantiates, and deletes an owned blueprint", async () => {
@@ -160,6 +196,54 @@ it.concurrent("creates and removes an indexed standard output", async () => {
       ? null
       : true);
   await workspace.deleteSelf();
+});
+
+it.concurrent("republishing a blueprint changes future installs, not existing ones", async () => {
+  using publicApi = connect(requireHarness().url);
+  using authenticated = await signUp(publicApi, username("republish"));
+  using source = await authenticated.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _subscription = await source.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using app = source.createGadget("App", undefined, "APP");
+  const gadgetId = await app.getId();
+  const empty = await headOf(workpieces, gadgetId);
+  const v1Head = await commitText(source, workpieces, gadgetId, empty, "app.txt", undefined, "v1\n");
+
+  const blueprint = await app.createBlueprint("Republished", "Versioned starter");
+  const { version } = (await waitFor("the published blueprint", () =>
+    publicApi.getBlueprint(blueprint.id))).metadata;
+
+  async function install() {
+    const workspace = await authenticated.newGadgetFromBlueprint(blueprint.id, {});
+    const { defaultGadgetId } = await workspace.getMetadata();
+    if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
+    return { workspace, gadgetId: defaultGadgetId };
+  }
+
+  await commitText(source, workpieces, gadgetId, v1Head, "app.txt", "v1\n", "v2\n");
+  expect((await publicApi.getBlueprint(blueprint.id))?.metadata.version).toBe(version);
+  const copyA = await install();
+  expect(await committedText(copyA.workspace, copyA.gadgetId, "app.txt"))
+      .toEqual({ kind: "text", text: "v1\n" });
+
+  await source.updateBlueprint(blueprint.id, { updateCode: true });
+  await waitFor("the republished blueprint version", async () =>
+    (await publicApi.getBlueprint(blueprint.id))?.metadata.version === version + 1 || null);
+
+  const copyB = await install();
+  expect(await committedText(copyB.workspace, copyB.gadgetId, "app.txt"))
+      .toEqual({ kind: "text", text: "v2\n" });
+  expect(await committedText(copyA.workspace, copyA.gadgetId, "app.txt"))
+      .toEqual({ kind: "text", text: "v1\n" });
+
+  // Dispose each workspace right after deleting it, before its DO abort drops the shared WebSocket.
+  for (const { workspace } of [copyA, copyB]) {
+    await workspace.deleteSelf();
+    workspace[Symbol.dispose]();
+  }
+  await source.deleteSelf();
 });
 
 it.concurrent("an installed blueprint binds the installer's account, not the publisher's", async () => {
