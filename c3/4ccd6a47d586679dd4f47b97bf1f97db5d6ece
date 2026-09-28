@@ -1,6 +1,6 @@
 packages/workshop-backend/__tests__/analytics.test.ts
   s_14974c138d0272::t_c5ea935dc4ddd8 34
-  s_1eb750210ff0d3::t_29a04c9c40e13c 39,41-42,66,68-69
+  s_1eb750210ff0d3::t_29a04c9c40e13c 39-69
 packages/workshop-backend/src/analytics.ts
   s_14974c138d0272::t_c5ea935dc4ddd8 82
   s_623394f0a50c92::t_bbf602360d027e 122
