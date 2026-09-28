@@ -90,6 +90,7 @@ test("the Worker, the harness, the lockfile, shared helpers and admission change
   for (const path of [
     "packages/workshop-backend/src/agent.ts",
     "packages/workshop-evals/src/harness.ts",
+    "packages/integration-tests/src/agent-session.ts",
     "pnpm-lock.yaml",
     "packages/workshop-evals/evals/seeded.ts",
     "packages/workshop-evals/src/results.ts",
@@ -105,11 +106,18 @@ test("the workflow's eval settings change every key", () => {
   assert.notEqual(keys(base, "other").tasks.chess, keys(base).tasks.chess);
 });
 
-test("only eval code changes a task's definition, not the product under test", () => {
-  const product = commit({ "packages/workshop-backend/src/agent.ts": "agent 3" });
-  assert.deepEqual(definitions(product), definitions(base));
+test("only eval code changes a task's definition, not the product or the rest of the harness", () => {
+  let next = base;
+  for (const path of [
+    "packages/workshop-backend/src/agent.ts",
+    "packages/integration-tests/src/agent-session.ts",
+    "packages/workshop-evals/package.json",
+  ]) {
+    next = commit({ [path]: `${path} 3` });
+    assert.deepEqual(definitions(next), definitions(base), path);
+  }
   const harness = commit({ "packages/workshop-evals/src/harness.ts": "harness 3" });
-  assert.notDeepEqual(definitions(harness), definitions(product));
+  assert.notDeepEqual(definitions(harness), definitions(next));
   base = harness;
 });
 

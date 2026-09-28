@@ -45,9 +45,13 @@ function isHarnessPath(path: string): boolean {
     (path.startsWith(EVALS) && !path.startsWith(TASKS) && !REPORT_MODULES.has(path));
 }
 
-/** Harness files that define or score a trial, as opposed to the product under test. */
+/**
+ * Harness files that define or score a trial: the eval package's TypeScript. A change to the rest
+ * of the harness, such as its manifests or the integration-tests package the integration tests
+ * share, reruns a task but keeps its two sides comparable, like a product change.
+ */
 function isDefinitionPath(path: string): boolean {
-  return path.startsWith(EVALS) || path.startsWith("packages/integration-tests/");
+  return path.startsWith(EVALS) && path.endsWith(".ts");
 }
 
 function isReportPath(path: string): boolean {
