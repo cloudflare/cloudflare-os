@@ -1,6 +1,8 @@
-import { Cursor } from "@gadgets/workshop-shared/gatekeeper";
-
-export type { Cursor };
+/** Forward-only paginated results. Call `next()` until it returns `null`; dispose the cursor when
+ *  finished, including when stopping early. */
+export interface Cursor<T> {
+  next(): Promise<T[] | null>;
+}
 
 // ── Plain data types ────────────────────────────────────────────────
 
