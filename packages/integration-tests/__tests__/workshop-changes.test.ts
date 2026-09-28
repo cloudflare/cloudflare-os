@@ -2,7 +2,6 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AuthenticatedApi, Overseer, PublicApi, WorkpieceId,
-  WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import {
   applyCodeChange, diffFiles, type CodeChange, type CodeContent,
@@ -13,16 +12,9 @@ import {
   scriptedModelRouter, SCRIPTED_MODEL_ID, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor } from "../src/rpc-client.js";
-
-class WorkpieceRecorder extends RpcTarget implements WorkpiecesSubscriber {
-  readonly summaries = new Map<WorkpieceId, WorkpieceSummary>();
-  readonly #loaded = Promise.withResolvers<void>();
-  readonly loaded = this.#loaded.promise;
-  entry(summary: WorkpieceSummary): void { this.summaries.set(summary.id, summary); }
-  removed(id: WorkpieceId): void { this.summaries.delete(id); }
-  ready(): void { this.#loaded.resolve(); }
-}
+import {
+  connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor, WorkpieceRecorder,
+} from "../src/rpc-client.js";
 
 type AppliedChange = {
   chatId: number;

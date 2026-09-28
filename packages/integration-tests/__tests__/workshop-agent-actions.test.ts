@@ -1,9 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import { z } from "zod";
-import type {
-  ActionState, AiChatMessage, AiChatSubscriber, Overseer,
-} from "@gadgets/workshop-shared/api";
+import type { ActionState, AiChatMessage, Overseer } from "@gadgets/workshop-shared/api";
 import { openAgentSession, type WorkshopAgentSession } from "../src/agent-session.js";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -13,7 +11,7 @@ import {
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  accountLabel, connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
+  accountLabel, restartWorkspace, streamGeneration, waitFor, withOwnerWorkspace,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -82,50 +80,8 @@ const openSession = (model: RoutedScriptedModel, usernamePrefix: string) =>
 const labelOf = (session: WorkshopAgentSession) =>
   accountLabel(session.connectedAccount(TEST_VENDOR_ID));
 
-/** The owner's workspace on a separate connection, for decisions that must not await a resume. */
-async function withOwnerWorkspace<T>(
-    username: string, fn: (ws: RpcStub<Overseer>) => Promise<T>): Promise<T> {
-  using publicApi = connect(harness.url);
-  using api = await logIn(publicApi, username);
-  const [workspace] = await waitFor("the session's workspace", async () => {
-    const workspaces = await api.listGadgets();
-    return workspaces.length > 0 ? workspaces : null;
-  });
-  using ws = await api.openGadget(workspace.id);
-  return await fn(ws);
-}
-
-/** Removing a collaborator is the product's workspace restart. */
-async function restartWorkspace(ws: RpcStub<Overseer>) {
-  const [collaborator] = nextUsernames("restartcollaborator");
-  using publicApi = connect(harness.url);
-  using _api = await signUp(publicApi, collaborator);
-  const added = await ws.addCollaborator(collaborator, "build");
-  if (!added) throw new Error(`Failed to share the workspace with ${collaborator}`);
-  await ws.removeCollaborator(added.profile.id, []);
-}
-
 async function expectIdle(ws: RpcStub<Overseer>) {
   expect((await ws.listChats()).map(chat => chat.activeAgent)).toEqual([undefined]);
-}
-
-class GenerationRecorder extends RpcTarget implements AiChatSubscriber {
-  readonly #generation = Promise.withResolvers<number>();
-  readonly generation = this.#generation.promise;
-  streamGeneration(generation: number) { this.#generation.resolve(generation); }
-  metadata() {}
-  deleted() {}
-  message() {}
-  changeApplied() {}
-  stream() {}
-}
-
-/** The server-instance generation a fresh chat subscription is sent first. */
-async function streamGeneration(ws: RpcStub<Overseer>): Promise<number> {
-  const recorder = new GenerationRecorder();
-  using stub = stubFor(recorder);
-  using _subscription = await ws.subscribeToChat(stub);
-  return await recorder.generation;
 }
 
 async function waitForPendingActions(session: WorkshopAgentSession, count: number) {
@@ -155,7 +111,7 @@ it.concurrent("rejecting an action discards it and leaves the agent stopped", as
 
   await session.runTurn("Set the test value to 7.");
   const [action] = await waitForPendingActions(session, 1);
-  await withOwnerWorkspace(session.username, async ws => {
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
     await ws.rejectAction(action.id);
     await expectIdle(ws);
   });
@@ -184,7 +140,7 @@ it.concurrent("approving every held write applies each and resumes the agent onc
   });
   expect(model.requests).toHaveLength(1);
 
-  await withOwnerWorkspace(session.username, async ws => {
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
     await ws.approveAction(first.id);
     await expectIdle(ws);
   });
@@ -201,7 +157,7 @@ it.concurrent("approving every held write applies each and resumes the agent onc
   expect(model.remainingSteps()).toBe(0);
   expect(agentSaid(resumed.history, "Both values are applied.")).toBe(1);
 
-  await withOwnerWorkspace(session.username, ws =>
+  await withOwnerWorkspace(harness.url, session.username, ws =>
     expect(ws.approveAction(first.id)).rejects.toThrow("Action is not pending"));
   expect((await actionState(label)).applyCount).toBe(2);
 });
@@ -215,7 +171,7 @@ it.concurrent.each(["retry", "reject"] as const)(
   await session.runTurn("Set the test value to 9.");
   const [action] = await waitForPendingActions(session, 1);
   await failNextApply(label, "Test apply failed");
-  await withOwnerWorkspace(session.username, async ws => {
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
     await expect(ws.approveAction(action.id)).rejects.toThrow("Test apply failed");
     await expectIdle(ws);
   });
@@ -231,7 +187,7 @@ it.concurrent.each(["retry", "reject"] as const)(
     expect(model.requests).toHaveLength(2);
     expect(agentSaid(resumed.history, "The retried value is applied.")).toBe(1);
   } else {
-    await withOwnerWorkspace(session.username, async ws => {
+    await withOwnerWorkspace(harness.url, session.username, async ws => {
       await ws.rejectAction(action.id);
       await expectIdle(ws);
     });
@@ -253,7 +209,7 @@ it.concurrent("approving after a workspace restart applies and resumes once", as
   expect(await actionState(label)).toEqual(held);
   expect(model.requests).toHaveLength(1);
 
-  await withOwnerWorkspace(session.username, restartWorkspace);
+  await withOwnerWorkspace(harness.url, session.username, ws => restartWorkspace(harness.url, ws));
   await waitFor("the restart to drop the session", async () => session.connectionDrops > 0 || null);
 
   expect((await session.listActions({ filter: "pending" })).entries.map(e => e.id))
@@ -286,9 +242,9 @@ it.concurrent("a turn interrupted by a workspace restart resumes and completes",
 
   const turning = session.runTurn("What is 6 times 7?");
   await waitFor("the pending model request", async () => model.requests.length === 2 || null);
-  const before = await withOwnerWorkspace(session.username, async ws => {
+  const before = await withOwnerWorkspace(harness.url, session.username, async ws => {
     const generation = await streamGeneration(ws);
-    await restartWorkspace(ws);
+    await restartWorkspace(harness.url, ws);
     return generation;
   });
 
@@ -296,7 +252,7 @@ it.concurrent("a turn interrupted by a workspace restart resumes and completes",
   expect(model.requests).toHaveLength(3);
   expect(model.remainingSteps()).toBe(0);
   expect(model.requests[2]).toEqual(model.requests[1]);
-  await withOwnerWorkspace(session.username, async ws => {
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
     await expectIdle(ws);
     expect(await streamGeneration(ws)).not.toBe(before);
   });

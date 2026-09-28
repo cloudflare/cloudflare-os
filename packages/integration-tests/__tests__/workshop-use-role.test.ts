@@ -2,7 +2,6 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type {
   ActionLogEntry, ActionsSubscriber, AiChatSubscriber, GadgetClient, Overseer, WorkpieceId,
-  WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
@@ -10,6 +9,7 @@ import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   connect, listConnectedAccounts, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
+  WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -28,15 +28,6 @@ afterAll(async () => {
     network.uninstall();
   }
 });
-
-class WorkpieceRecorder extends RpcTarget implements WorkpiecesSubscriber {
-  readonly summaries = new Map<WorkpieceId, WorkpieceSummary>();
-  readonly #loaded = Promise.withResolvers<void>();
-  readonly loaded = this.#loaded.promise;
-  entry(summary: WorkpieceSummary): void { this.summaries.set(summary.id, summary); }
-  removed(id: WorkpieceId): void { this.summaries.delete(id); }
-  ready(): void { this.#loaded.resolve(); }
-}
 
 class ActionRecorder extends RpcTarget implements ActionsSubscriber {
   readonly entries: ActionLogEntry[] = [];

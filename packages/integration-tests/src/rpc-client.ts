@@ -3,8 +3,9 @@
 import { createHash } from "node:crypto";
 import { RpcStub, RpcTarget, newWebSocketRpcSession } from "capnweb";
 import type {
-  AuthenticatedApi, ConnectedAccountsSubscriber, ObserverAccountChoice, ObserverBindingNeed,
-  ObserverConfigCallback, PublicApi,
+  AiChatSubscriber, AuthenticatedApi, ConnectedAccountsFilter, ConnectedAccountsSubscriber,
+  ObserverAccountChoice, ObserverBindingNeed, ObserverConfigCallback, Overseer, PublicApi,
+  WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type {
   AccountDescription, SupportedResource, VendorDescription,
@@ -107,7 +108,7 @@ export function accountLabel(account: ConnectedAccount): string {
 
 /** Read the user's connected accounts by driving subscribeConnectedAccounts() to its ready() call. */
 export async function listConnectedAccounts(
-    api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount[]> {
+    api: RpcStub<AuthenticatedApi>, filter?: ConnectedAccountsFilter): Promise<ConnectedAccount[]> {
   const accounts: ConnectedAccount[] = [];
   let settle: () => void;
   const ready = new Promise<void>(resolve => { settle = resolve; });
@@ -128,9 +129,69 @@ export async function listConnectedAccounts(
   // duplicate of the subscriber, then our original -- and covers the path where the subscribe call
   // itself throws.
   using subscriber = new RpcStub(new Subscriber());
-  using _subscription = await api.subscribeConnectedAccounts(subscriber);
+  using _subscription = await api.subscribeConnectedAccounts(subscriber, filter);
   await ready;
   return accounts;
+}
+
+/** Wait until chat `chatId` exists with no agent running. */
+export function waitForIdleChat(ws: RpcStub<Overseer>, chatId: number): Promise<true> {
+  return waitFor(`chat ${chatId} to go idle`, async () => {
+    const chat = (await ws.listChats()).find(entry => entry.id === chatId);
+    return (chat !== undefined && chat.activeAgent === undefined) || null;
+  });
+}
+
+/** The user's only workspace on a fresh connection, for decisions that must not await a resume. */
+export async function withOwnerWorkspace<T>(
+    baseUrl: URL, username: string, fn: (ws: RpcStub<Overseer>) => Promise<T>): Promise<T> {
+  using publicApi = connect(baseUrl);
+  using api = await logIn(publicApi, username);
+  const [workspace] = await waitFor("the session's workspace", async () => {
+    const workspaces = await api.listGadgets();
+    return workspaces.length > 0 ? workspaces : null;
+  });
+  using ws = await api.openGadget(workspace.id);
+  return await fn(ws);
+}
+
+/** Removing a collaborator is the product's workspace restart. */
+export async function restartWorkspace(baseUrl: URL, ws: RpcStub<Overseer>): Promise<void> {
+  const [collaborator] = nextUsernames("restartcollaborator");
+  using publicApi = connect(baseUrl);
+  using _api = await signUp(publicApi, collaborator);
+  const added = await ws.addCollaborator(collaborator, "build");
+  if (!added) throw new Error(`Failed to share the workspace with ${collaborator}`);
+  await ws.removeCollaborator(added.profile.id, []);
+}
+
+class GenerationRecorder extends RpcTarget implements AiChatSubscriber {
+  readonly #generation = Promise.withResolvers<number>();
+  readonly generation = this.#generation.promise;
+  streamGeneration(generation: number) { this.#generation.resolve(generation); }
+  metadata() {}
+  deleted() {}
+  message() {}
+  changeApplied() {}
+  stream() {}
+}
+
+/** The server-instance generation a fresh chat subscription is sent first. */
+export async function streamGeneration(ws: RpcStub<Overseer>): Promise<number> {
+  const recorder = new GenerationRecorder();
+  using stub = stubFor(recorder);
+  using _subscription = await ws.subscribeToChat(stub);
+  return await recorder.generation;
+}
+
+/** Mirrors a workspace's workpiece summaries; `loaded` resolves at the initial ready(). */
+export class WorkpieceRecorder extends RpcTarget implements WorkpiecesSubscriber {
+  readonly summaries = new Map<WorkpieceId, WorkpieceSummary>();
+  readonly #loaded = Promise.withResolvers<void>();
+  readonly loaded = this.#loaded.promise;
+  entry(summary: WorkpieceSummary): void { this.summaries.set(summary.id, summary); }
+  removed(id: WorkpieceId): void { this.summaries.delete(id); }
+  ready(): void { this.#loaded.resolve(); }
 }
 
 /**
