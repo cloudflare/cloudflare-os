@@ -203,4 +203,29 @@ describe("auto-approval policy", () => {
       await expect(actionState(ws.label)).resolves.toEqual({ pending: [], value: 2, applyCount: 2 });
     });
   });
+
+  it.concurrent("enabling a rule applies the eligible writes already pending, and leaves manual ones",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "drain-pending");
+      // A fixture write resolves once submitted. Eligible first: the drain stops at the first
+      // ineligible pending action.
+      await expect(ws.session.writeValue(1, { autoApprovable: true })).resolves.toBe(1);
+      await expect(ws.session.writeValue(2)).resolves.toBe(2);
+      expect((await listWrites(ws)).map(write => write.state)).toEqual(["pending", "pending"]);
+      await expect(actionState(ws.label)).resolves.toEqual(
+          { pending: [{ id: 1, value: 1 }, { id: 2, value: 2 }], applyCount: 0 });
+
+      await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
+
+      await waitFor("the eligible write to be approved", async () =>
+        (await listWrites(ws))[0]?.state === "approved" || null);
+      await settle(ws);
+      const [applied, held] = await listWrites(ws);
+      expect(applied).toMatchObject({ state: "approved", autoApproved: true });
+      expect(held.state).toBe("pending");
+      await expect(actionState(ws.label)).resolves.toEqual(
+          { pending: [{ id: 2, value: 2 }], value: 1, applyCount: 1 });
+    });
+  });
 });

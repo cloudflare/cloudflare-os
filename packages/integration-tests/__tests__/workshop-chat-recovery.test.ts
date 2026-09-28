@@ -250,3 +250,52 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
   expect(replay.generations[0]).toEqual(expect.any(Number));
   expect(replay.generations[0]).not.toBe(first.generation);
 });
+
+const messageTexts = (messages: AiChatMessage[]) =>
+  messages.flatMap(message => message.type === "message" ? [message.message] : []);
+
+it.concurrent("a chat over its context budget compacts, and history pages across the checkpoint",
+    async () => {
+  // Long enough to fill the retained tail alone, so the compaction cut lands exactly on it.
+  const secondPrompt = "Second question. " + "Keep this turn verbatim. ".repeat(80);
+  const model = models.script([
+    // Over 85% of the scripted model's 229,376-token input budget, so turn 2 compacts first.
+    { text: "First reply.", usage: { prompt_tokens: 195_000, completion_tokens: 1, total_tokens: 195_001 } },
+    { text: "Summary of the first turn." },
+    { text: "Second reply." },
+  ]);
+  const [owner] = nextUsernames("compactowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  await waitFor("the first model request", async () => model.requests.length === 1 || null);
+  await waitForIdleChat(ws, chatId);
+  await ws.sendChatMessage(chatId, secondPrompt, SCRIPTED_MODEL_ID);
+  await waitFor("the summary and resumed requests", async () => model.requests.length === 3 || null);
+  await waitForIdleChat(ws, chatId);
+  expect(model.remainingSteps()).toBe(0);
+
+  const [, summary, resumed] = model.requests.map(request => JSON.stringify(request));
+  expect(summary).toContain("Create the context handoff now. Do not continue the conversation.");
+  expect(summary).toContain("First question");
+  expect(summary).toContain("First reply.");
+  expect(resumed).toContain("<prior_conversation");
+  expect(resumed).toContain("Summary of the first turn.");
+  expect(resumed).toContain("Second question.");
+  expect(resumed).not.toContain("First question");
+
+  const tail = await ws.getChatHistory(chatId);
+  expect(tail.compacted?.summary).toBe("Summary of the first turn.");
+  expect(messageTexts(tail.messages)).toEqual([secondPrompt, "Second reply."]);
+  const boundary = tail.compacted!.to;
+  const older = await ws.getChatHistory(chatId, boundary);
+  expect(older.compacted).toBeUndefined();
+  expect(messageTexts(older.messages)).toEqual(["First question", "First reply."]);
+  expect(older.messages.every(message => message.sequence < boundary)).toBe(true);
+  expect(tail.messages.every(message => message.sequence >= boundary)).toBe(true);
+  expect(messageTexts(await loadAllChatHistory(before => ws.getChatHistory(chatId, before))))
+    .toEqual(["First question", "First reply.", secondPrompt, "Second reply."]);
+});

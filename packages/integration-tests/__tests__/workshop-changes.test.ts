@@ -13,7 +13,8 @@ import {
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor, WorkpieceRecorder,
+  connect, listConnectedAccounts, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
+  WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 type AppliedChange = {
@@ -282,6 +283,44 @@ it.concurrent("reverting agent steps drops their code, then the gadget and its n
       workpieces.summaries.has(gadgetId) ? null : true);
     expect(await proposed()).toEqual([]);
     using _replacement = await ws.createGadget("App", chatB, "APP");
+  });
+});
+
+it.concurrent("deleting a chat drops its provisional gadget, binding claim and attachment", async () => {
+  let accountId: number | undefined;
+  await withClient(api => signUp(api, nextUsernames("chatdelete")[0]!), async api => {
+    await api.provisionAmbientAccount(TEST_VENDOR_ID);
+    accountId = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)?.id;
+    return api.newGadget();
+  }, async ({ ws, workpieces }) => {
+    if (accountId === undefined) throw new Error("The test account was not provisioned");
+    using data = await ws.newGatekeeper(accountId, "https://gadgets-test.example/things/chat-delete");
+    if (data === null) throw new Error("The test connection was not created");
+    const dataId = await data.getId();
+    using app = await ws.createGadget("App", undefined, "APP");
+    const upload = await ws.uploadChatAttachment(
+        { mimeType: "text/plain", content: new TextEncoder().encode("chat A notes"), name: "notes.txt" }, null);
+    const chatA = await ws.newChat("A", null, undefined, [upload]);
+    const chatB = await ws.newChat("B", null);
+    using draft = await ws.createGadget("Draft", chatA, "DRAFT");
+    const draftId = await draft.getId();
+    await app.bind("DATA", dataId, chatA);
+
+    await expect(ws.createGadget("Draft", chatB, "DRAFT"))
+        .rejects.toThrow('The gadget name "DRAFT" is claimed by a gadget still pending in another chat');
+    await expect(app.bind("DATA", dataId, chatB))
+        .rejects.toThrow('The binding name "DATA" is already proposed by another chat.');
+    expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, upload.id))).toBe("chat A notes");
+
+    await ws.deleteChat(chatA);
+
+    await waitFor("the provisional gadget's removal", async () =>
+      workpieces.summaries.has(draftId) ? null : true);
+    await expect(ws.getChatAttachmentContent(chatA, upload.id)).rejects.toThrow("Chat attachment not found.");
+    using _replacement = await ws.createGadget("Draft", chatB, "DRAFT");
+    await app.bind("DATA", dataId, chatB);
+    expect(await app.listBindings(chatB))
+        .toContainEqual(expect.objectContaining({ name: "DATA", target: dataId, chatId: chatB }));
   });
 });
 

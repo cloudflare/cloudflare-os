@@ -102,7 +102,33 @@ it.concurrent("persists an ordered human-only chat without starting an agent", a
 
   await workspace.deleteChat(chatId);
   expect(await workspace.listChats()).toEqual([]);
+  expect((await workspace.getChatHistory(chatId)).messages).toEqual([]);
   await workspace.deleteSelf();
+});
+
+it.concurrent("a chat attachment is readable only through its chat, and a discarded upload is gone",
+    async () => {
+  using publicApi = connect(requireHarness().url);
+  using authenticated = await signUp(publicApi, username());
+  using ws = await authenticated.newGadget();
+
+  const content = new TextEncoder().encode("only chat A");
+  const sent = await ws.uploadChatAttachment({ mimeType: "text/plain", content, name: "a.txt" }, null);
+  const chatA = await ws.newChat("With attachment", null, undefined, [sent]);
+  const chatB = await ws.newChat("Without attachment", null);
+
+  expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, sent.id))).toBe("only chat A");
+  await expect(ws.getChatAttachmentContent(chatB, sent.id)).rejects.toThrow("Chat attachment not found.");
+
+  const discarded = await ws.uploadChatAttachment(
+      { mimeType: "text/plain", content: new TextEncoder().encode("never sent"), name: "b.txt" }, null);
+  await ws.deleteChatAttachment(discarded.id);
+  await expect(ws.sendChatMessage(chatB, "Late attachment", null, undefined, [discarded]))
+    .rejects.toThrow("Chat attachment not found.");
+  const { messages } = await ws.getChatHistory(chatB);
+  expect(messages).not.toContainEqual(expect.objectContaining({ message: "Late attachment" }));
+
+  await ws.deleteSelf();
 });
 
 it.concurrent("creates, renames, reopens, and removes a Gadget capability", async () => {
