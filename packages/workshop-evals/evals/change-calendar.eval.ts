@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { defineTaskEval } from "../src/eval.js";
 import { defineEvalTask } from "../src/task.js";
-import type { EvalVerifier } from "../src/verifier.js";
+import { replyLines, type EvalVerifier } from "../src/verifier.js";
+import { Seeded } from "./seeded.js";
 
 // A week of maintenance for a small platform team, worked the way a person would: build the
-// calendar, write the week up as a document from it, change the rules, then ask it a question.
-// The seeded windows stay in the calendar from turn 1 on; every later turn is checked against them.
+// calendar, write the week up as a document from it, change the rules, then add a search for the
+// earliest free slot and ask it a question. The seeded windows stay in the calendar from turn 1
+// on; every later turn is checked against them.
 
 const OkSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true) }),
@@ -34,6 +36,18 @@ function normalized(window: Window): Window {
 // Extra fields the agent may add are dropped, so what is compared and reported is the contract.
 const WindowsSchema = z.object({ windows: z.array(WindowSchema.loose().transform(normalized)) });
 const ConflictsSchema = z.object({ ids: z.array(z.string()) });
+const SlotSchema = z.object({
+  slot: z.object({ startIso: z.string(), endIso: z.string() }).nullable(),
+});
+type Slot = z.infer<typeof SlotSchema>["slot"];
+
+// A type, not an interface, so queries can go into check evidence as JSON.
+type SlotQuery = {
+  service: string;
+  fromIso: string;
+  toIso: string;
+  durationMinutes: number;
+};
 
 interface CalendarApi {
   schedule(window: Window): Promise<Ok>;
@@ -42,6 +56,7 @@ interface CalendarApi {
     Promise<z.infer<typeof WindowsSchema>>;
   conflicts(input: { service: string; startIso: string; endIso: string }):
     Promise<z.infer<typeof ConflictsSchema>>;
+  earliestAvailable(input: SlotQuery): Promise<z.infer<typeof SlotSchema>>;
 }
 
 const DocumentSchema = z.object({
@@ -58,7 +73,7 @@ const PLAN = "Maintenance Plan — Week 41";
 const WEEK = { fromIso: "2027-10-11T00:00:00Z", toIso: "2027-10-18T00:00:00Z" };
 const OCTOBER = { fromIso: "2027-10-01T00:00:00Z", toIso: "2027-11-01T00:00:00Z" };
 
-// What the calendar holds once turn 1 is verified. api-gateway totals 6.5 hours.
+// What the calendar holds once turn 1 is verified.
 const TLS_ROTATION: Window = { id: "mw-101", service: "api-gateway",
   startIso: "2027-10-12T23:00:00Z", endIso: "2027-10-13T01:00:00Z", reason: "Rotate TLS certificates" };
 const CACHE_WARM: Window = { id: "mw-102", service: "edge-cache",
@@ -74,8 +89,26 @@ const WEEK_41: readonly Window[] = [TLS_ROTATION, CACHE_WARM, GATEWAY_UPGRADE, I
 // Week 43, six hours: valid now, over the billing cap turn 2 introduces, which must not remove it.
 const BILLING_MIGRATION: Window = { id: "mw-106", service: "billing",
   startIso: "2027-10-26T22:00:00Z", endIso: "2027-10-27T04:00:00Z", reason: "Ledger schema migration" };
-const SEEDED: readonly Window[] = [...WEEK_41, DNS_CHANGE, BILLING_MIGRATION];
-const API_GATEWAY_HOURS = 6.5;
+// Week 43, booked under the turn-1 rules, for the audit in turn 4: two auth windows 21 hours
+// apart, two edge-cache windows exactly 24 hours apart, and a billing window of exactly 4 hours.
+const SIGNING_KEYS: Window = { id: "mw-107", service: "auth",
+  startIso: "2027-10-25T23:00:00Z", endIso: "2027-10-26T01:00:00Z", reason: "Rotate session signing keys" };
+const PASSKEYS: Window = { id: "mw-108", service: "auth",
+  startIso: "2027-10-26T22:00:00Z", endIso: "2027-10-27T00:00:00Z", reason: "Enable passkey login" };
+const ORIGIN_SHIELD: Window = { id: "mw-109", service: "edge-cache",
+  startIso: "2027-10-27T23:00:00Z", endIso: "2027-10-28T01:00:00Z", reason: "Swap origin shield" };
+const EDGE_STORAGE: Window = { id: "mw-110", service: "edge-cache",
+  startIso: "2027-10-29T01:00:00Z", endIso: "2027-10-29T03:00:00Z", reason: "Expand edge storage" };
+const INVOICE_ARCHIVE: Window = { id: "mw-111", service: "billing",
+  startIso: "2027-10-30T22:00:00Z", endIso: "2027-10-31T02:00:00Z", reason: "Archive closed invoices" };
+// In the order windows() returns them: by startIso, then id.
+const SEEDED: readonly Window[] = [...WEEK_41, DNS_CHANGE, SIGNING_KEYS, BILLING_MIGRATION,
+  PASSKEYS, ORIGIN_SHIELD, EDGE_STORAGE, INVOICE_ARCHIVE];
+/**
+ * What the turn-3 rules would reject if each window were submitted now, against all the others:
+ * mw-106 is over the new 4-hour billing cap, and mw-107 and mw-108 are 21 hours apart.
+ */
+const REJECTED_NOW = ["mw-106 INVALID_RANGE", "mw-107 TOO_CLOSE", "mw-108 TOO_CLOSE"];
 
 function sameWindows(actual: readonly Window[], expected: readonly Window[]): boolean {
   const key = (window: Window) => JSON.stringify(normalized(window));
@@ -111,6 +144,103 @@ async function checkSeededWindowsIntact(verifier: EvalVerifier, id: string): Pro
       evidence: { windows, conflicts },
     };
   });
+}
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const GRID = 15 * MINUTE;
+
+/** `oct("20T03:45")` is 20 October 2027, 03:45 UTC. */
+function oct(dayTime: string): string {
+  return `2027-10-${dayTime}:00.000Z`;
+}
+
+/**
+ * The earliest slot schedule() would accept under the turn-3 rules, given what is booked. Every
+ * booking of the service blocks, including ones those rules would reject today.
+ */
+function earliestSlot(query: SlotQuery, booked: readonly Window[]): Slot {
+  const cap = query.service === "billing" ? 4 : 8;
+  if (query.durationMinutes > cap * 60) return null;
+  const same = booked.filter(window => window.service === query.service)
+    .map(window => ({ start: Date.parse(window.startIso), end: Date.parse(window.endIso) }));
+  const to = Date.parse(query.toIso);
+  for (let start = Math.ceil(Date.parse(query.fromIso) / GRID) * GRID; ; start += GRID) {
+    const end = start + query.durationMinutes * MINUTE;
+    if (end > to) return null;
+    const hour = new Date(start).getUTCHours();
+    if (hour < 22 && hour > 3) continue;
+    if (same.every(window => start >= window.end + 24 * HOUR || end + 24 * HOUR <= window.start)) {
+      return { startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() };
+    }
+  }
+}
+
+/** Same instants, however the agent spells them; an unparseable timestamp never matches. */
+function sameSlot(actual: Slot, expected: Slot): boolean {
+  if (actual === null || expected === null) return actual === expected;
+  return Date.parse(actual.startIso) === Date.parse(expected.startIso) &&
+    Date.parse(actual.endIso) === Date.parse(expected.endIso);
+}
+
+async function earliestAvailable(api: CalendarApi, query: SlotQuery): Promise<Slot> {
+  return SlotSchema.parse(await api.earliestAvailable(query)).slot;
+}
+
+/**
+ * Each case targets one way to get the search subtly wrong: rounding fromIso down, admitting a
+ * 04:00 start or refusing a start at 03:45, looking only at bookings before the candidate,
+ * skipping the grandfathered six-hour mw-106, the wrong duration cap, letting other services
+ * block, running past toIso, and the exact 24-hour gap on either side.
+ */
+const BOUNDARY_QUERIES: readonly SlotQuery[] = [
+  { service: "auth", fromIso: oct("20T03:45"), toIso: oct("20T04:15"), durationMinutes: 30 },
+  { service: "auth", fromIso: oct("20T03:46"), toIso: oct("20T22:30"), durationMinutes: 30 },
+  // Overlaps mw-101 and mw-102, which are other services.
+  { service: "auth", fromIso: oct("12T23:00"), toIso: oct("13T01:00"), durationMinutes: 120 },
+  // Ends exactly 24 hours before mw-101 starts; fifteen minutes later is too close.
+  { service: "api-gateway", fromIso: oct("11T22:00"), toIso: oct("11T23:00"), durationMinutes: 60 },
+  { service: "api-gateway", fromIso: oct("11T22:15"), toIso: oct("11T23:15"), durationMinutes: 60 },
+  // No room between mw-101 and mw-103; the first start is exactly 24 hours after mw-103 ends.
+  { service: "api-gateway", fromIso: oct("13T01:00"), toIso: oct("16T03:30"), durationMinutes: 60 },
+  { service: "auth", fromIso: oct("26T01:00"), toIso: oct("28T01:00"), durationMinutes: 60 },
+  // mw-109 and mw-110 are exactly 24 hours apart, leaving nothing between them.
+  { service: "edge-cache", fromIso: oct("28T01:00"), toIso: oct("30T04:00"), durationMinutes: 60 },
+  { service: "billing", fromIso: oct("27T03:45"), toIso: oct("29T02:00"), durationMinutes: 240 },
+  { service: "billing", fromIso: oct("28T22:00"), toIso: oct("29T04:00"), durationMinutes: 300 },
+  { service: "dns", fromIso: oct("19T22:00"), toIso: oct("21T07:00"), durationMinutes: 480 },
+  { service: "auth", fromIso: oct("20T22:00"), toIso: oct("20T22:45"), durationMinutes: 60 },
+];
+
+/** Searches starting near real bookings, on and off the grid, some too long for the service. */
+function randomQueries(): SlotQuery[] {
+  const random = new Seeded(20271028);
+  const queries: SlotQuery[] = [];
+  for (const service of ["api-gateway", "edge-cache", "auth", "billing", "dns"]) {
+    for (let index = 0; index < 3; index++) {
+      const anchor = random.pick(SEEDED.filter(window => window.service === service));
+      const from = Date.parse(anchor.startIso) + random.int(-36, 36) * HOUR +
+        random.pick([0, 15, 30, 46]) * MINUTE;
+      const horizon = random.pick([12, 36, 60]) * HOUR;
+      queries.push({
+        service,
+        fromIso: new Date(from).toISOString(),
+        toIso: new Date(from + horizon).toISOString(),
+        durationMinutes: random.pick([30, 60, 75, 120, 240, 300, 480]),
+      });
+    }
+  }
+  return queries;
+}
+
+async function compareQueries(api: CalendarApi, queries: readonly SlotQuery[]) {
+  const results = [];
+  for (const query of queries) {
+    const actual = await earliestAvailable(api, query);
+    const expected = earliestSlot(query, SEEDED);
+    results.push({ query, actual, expected, match: sameSlot(actual, expected) });
+  }
+  return { pass: results.every(result => result.match), evidence: results };
 }
 
 /** The length a bullet states, in hours: "2 hours", "2h", "2.5 hrs", "4.5-hour", "2h 30m". */
@@ -400,18 +530,103 @@ instead of 8, still "INVALID_RANGE". Everything already scheduled stays exactly 
       });
     },
   }, {
-    prompt: `How many hours of maintenance are scheduled for api-gateway in the week of Monday 11
-to Sunday 17 October 2027? Reply with just the number and nothing else, like \`6.5\`.`,
+    prompt: `Keep every window on the calendar exactly as it is, and add one more stable server RPC:
+
+- earliestAvailable({ service: string, fromIso: string, toIso: string, durationMinutes: number })
+  -> { slot: { startIso: string, endIso: string } | null }
+  The earliest window of exactly durationMinutes for that service that schedule() would accept
+  right now, under the current rules, with a fresh id. Candidate starts are on the quarter hour
+  (:00, :15, :30 or :45 UTC, zero seconds), at or after fromIso, and the whole window must fit in
+  [fromIso, toIso): it may end exactly at toIso. Every existing window for the same service
+  counts, including ones the current rules would reject if they were submitted today, and the
+  24-hour gap applies whether the new window comes before or after it; windows for other services
+  never get in the way. Return { slot: null } when nothing fits, including when durationMinutes is
+  over the service's cap. It only answers the question: it never books or changes anything.
+  Inputs are always a known service, UTC ISO timestamps with fromIso before toIso, and a positive
+  whole number of minutes.
+
+Then, under the rules as they stand now, which of the windows already on the calendar, in any
+week, would schedule() reject if each were submitted fresh? Judge each window against all the
+other windows (not against itself), and ignore that its id is already taken.
+
+Reply with one line per rejected window, \`<id> <error code>\`, where the code is the one
+schedule() would return, lowest id first, and nothing else. Reply \`none\` if no window would be
+rejected.`,
     verify: async verifier => {
-      await verifier.check("answers-with-the-number-from-the-calendar", async () => {
-        const reply = verifier.replies.at(-1)?.trim() ?? "";
-        const match = /^`?(\d+(?:\.\d+)?)`?\.?$/.exec(reply);
+      await verifier.check("earliest-available-applies-every-rule", async () => {
+        using api = await verifier.connect<CalendarApi>(CALENDAR);
+        return await compareQueries(api, BOUNDARY_QUERIES);
+      });
+
+      await verifier.check("earliest-available-matches-the-reference", async () => {
+        using api = await verifier.connect<CalendarApi>(CALENDAR);
+        return await compareQueries(api, randomQueries());
+      });
+
+      // schedule() is the ground truth the search promises to agree with. Every boundary case
+      // that has a slot is booked and cancelled before the next, so they cannot block one another.
+      await verifier.check("earliest-available-slots-are-bookable", async () => {
+        using api = await verifier.connect<CalendarApi>(CALENDAR);
+        const results = [];
+        for (const [index, query] of BOUNDARY_QUERIES.entries()) {
+          if (earliestSlot(query, SEEDED) === null) continue;
+          const slot = await earliestAvailable(api, query);
+          if (slot === null) {
+            results.push({ query, slot, scheduled: null, cancelled: null });
+            continue;
+          }
+          const id = `mw-slot-${index}`;
+          const scheduled = OkSchema.parse(await api.schedule({
+            id, service: query.service, reason: "test", startIso: slot.startIso, endIso: slot.endIso,
+          }));
+          const cancelled = scheduled.ok ? OkSchema.parse(await api.cancel({ id })) : null;
+          results.push({ query, slot, scheduled, cancelled });
+        }
         return {
-          pass: match !== null && Number(match[1]) === API_GATEWAY_HOURS,
-          evidence: { reply, replies: verifier.replies.length },
+          pass: results.every(result => result.scheduled?.ok === true && result.cancelled?.ok === true),
+          evidence: results,
         };
       });
-      await checkSeededWindowsIntact(verifier, "asking-a-question-changes-nothing");
+
+      await verifier.check("earliest-available-sees-new-bookings", async () => {
+        using api = await verifier.connect<CalendarApi>(CALENDAR);
+        const query = {
+          service: "dns", fromIso: oct("22T22:00"), toIso: oct("24T02:00"), durationMinutes: 120,
+        };
+        const before = await earliestAvailable(api, query);
+        const expectedBefore = earliestSlot(query, SEEDED);
+        if (expectedBefore === null) throw new Error("the probe query must find a slot");
+        const probe: Window = { id: "mw-probe", service: "dns", reason: "test", ...expectedBefore };
+        const scheduled = OkSchema.parse(await api.schedule(probe));
+        let during: Slot = null;
+        let cancelled: Ok | null = null;
+        try {
+          during = await earliestAvailable(api, query);
+        } finally {
+          if (scheduled.ok) cancelled = OkSchema.parse(await api.cancel({ id: probe.id }));
+        }
+        const after = await earliestAvailable(api, query);
+        const expectedDuring = earliestSlot(query, [...SEEDED, probe]);
+        return {
+          pass: sameSlot(before, expectedBefore) && scheduled.ok && sameSlot(during, expectedDuring) &&
+            cancelled?.ok === true && sameSlot(after, expectedBefore),
+          evidence: { before, scheduled, during, cancelled, after, expectedBefore, expectedDuring },
+        };
+      });
+
+      await verifier.check("names-the-booked-windows-the-new-rules-reject", async () => {
+        const reply = verifier.replies.at(-1) ?? "";
+        const stated = replyLines(reply).filter(line => line.toLowerCase() !== "none")
+          .map(line => {
+            const match = /^(?:[-*•]\s*)?(mw-\d+)\W+([A-Z_]+)\.?$/.exec(line.replace(/[`"']/g, ""));
+            return match === null ? line : `${match[1]} ${match[2]}`;
+          });
+        return {
+          pass: JSON.stringify(stated) === JSON.stringify(REJECTED_NOW),
+          evidence: { reply, stated, expected: REJECTED_NOW },
+        };
+      });
+      await checkSeededWindowsIntact(verifier, "bookings-stay-unchanged");
     },
   }],
 });

@@ -43,6 +43,12 @@ export function agentReplies(
     message.author.type === "agent" ? [message.message] : []);
 }
 
+/** A reply's non-empty lines, trimmed, without the code fences agents often wrap answers in. */
+export function replyLines(reply: string): string[] {
+  return reply.split("\n").map(line => line.trim())
+    .filter(line => line !== "" && !line.startsWith("```"));
+}
+
 /** Runs independent functional checks against the agent's provisional Gadget branch. */
 export class EvalVerifier {
   readonly workpieces: readonly WorkpieceSummary[];

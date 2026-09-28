@@ -2,11 +2,12 @@ import { z } from "zod";
 import { Seeded } from "./seeded.js";
 import { defineTaskEval } from "../src/eval.js";
 import { defineEvalTask } from "../src/task.js";
-import type { EvalVerifier } from "../src/verifier.js";
+import { replyLines, type EvalVerifier } from "../src/verifier.js";
 
 // A day of Workers request logs for six Workers across four colos, generated from a fixed seed with
-// one planted bad hour. The agent builds the analyzer, extends it, then is asked what the data
-// says; every answer is checked against a reference computed here from the same events.
+// one planted bad hour. The agent builds the analyzer, extends it, then adds a latency comparison
+// and is asked what the data says; every answer is checked against a reference computed here from
+// the same events, and the comparison again after a late batch of events arrives.
 
 type LogEvent = {
   ts: string;
@@ -93,8 +94,8 @@ const EVENTS = generate();
 
 type Filter = { fromIso?: string; toIso?: string; worker?: string; colo?: string; route?: string };
 
-function select(filter: Filter): LogEvent[] {
-  return EVENTS.filter(event =>
+function select(filter: Filter, events: readonly LogEvent[] = EVENTS): LogEvent[] {
+  return events.filter(event =>
     (filter.fromIso === undefined || event.ts >= filter.fromIso) &&
     (filter.toIso === undefined || event.ts < filter.toIso) &&
     (filter.worker === undefined || event.worker === filter.worker) &&
@@ -192,6 +193,82 @@ if (WORST.worker !== PLANTED.worker || WORST.hour !== PLANTED.hour) {
     JSON.stringify(WORST)}`);
 }
 
+type Range = { fromIso: string; toIso: string };
+type Filters = { worker?: string; colo?: string; route?: string };
+type RisesQuery = { first: Range; second: Range; minRiseMs: number } & Filters;
+
+/** Pairs whose p95 rose by more than minRiseMs between the two windows, largest rise first. */
+function referenceRises(query: RisesQuery, events: readonly LogEvent[]) {
+  const { first, second, minRiseMs, ...filters } = query;
+  const perPair = (range: Range) => new Map(groupBy(select({ ...range, ...filters }, events),
+    event => `${event.worker} ${event.route}`));
+  const later = perPair(second);
+  return [...perPair(first)].flatMap(([key, before]) => {
+    const after = later.get(key);
+    if (after === undefined) return [];
+    const [worker, route] = key.split(" ") as [string, string];
+    const firstP95Ms = p95(before);
+    const secondP95Ms = p95(after);
+    return [{ worker, route, firstP95Ms, secondP95Ms, riseMs: secondP95Ms - firstP95Ms }];
+  })
+    .filter(pair => pair.riseMs > minRiseMs)
+    .toSorted((left, right) => right.riseMs - left.riseMs ||
+      left.worker.localeCompare(right.worker) || left.route.localeCompare(right.route));
+}
+
+const HALVES = {
+  first: { fromIso: hourIso(0), toIso: hourIso(12) },
+  second: { fromIso: hourIso(12), toIso: "2027-03-10T00:00:00Z" },
+};
+const RISE_QUERIES: RisesQuery[] = [
+  { ...HALVES, minRiseMs: 20 },
+  // checkout-api /cart rises by exactly 25, which is not strictly greater.
+  { ...HALVES, minRiseMs: 25 },
+  { ...HALVES, colo: "SIN", minRiseMs: 0 },
+  {
+    first: { fromIso: hourIso(2), toIso: hourIso(5) },
+    second: { fromIso: hourIso(13), toIso: `${DAY}T21:30:00Z` },
+    worker: "checkout-api", minRiseMs: 5,
+  },
+  { ...HALVES, route: "/checkout", minRiseMs: 0 },
+  // Five minutes each: short enough that some pairs have events in only one of them.
+  {
+    first: { fromIso: `${DAY}T06:00:00Z`, toIso: `${DAY}T06:05:00Z` },
+    second: { fromIso: `${DAY}T18:00:00Z`, toIso: `${DAY}T18:05:00Z` },
+    minRiseMs: 0,
+  },
+];
+
+function lateEvent(ts: string, worker: string, route: string, durationMs: number,
+    colo = "FRA"): LogEvent {
+  return { ts: ts.includes("T") ? ts : `${DAY}T${ts}Z`, worker, colo, status: 200, durationMs, route };
+}
+
+/** Events that arrive after the day's load, out of time order, for latencyRises to take in. */
+const LATE: LogEvent[] = [
+  // Twenty events in each half: nearest rank gives 10 -> 31 (+21, over 20 ms), interpolation
+  // 14.5 -> 31 (not over). The 12:00:00 event belongs to the second half; counted in the first it
+  // cancels the rise. The two 9999 ms at the next midnight belong to neither.
+  lateEvent("2027-03-10T00:00:00Z", "eval-probe", "/near", 9999),
+  lateEvent("2027-03-10T00:00:01Z", "eval-probe", "/near", 9999),
+  lateEvent("12:00:00", "eval-probe", "/near", 31),
+  ...Array.from({ length: 19 }, (_, index) => lateEvent(`18:${pad(index)}:00`, "eval-probe", "/near", 31)),
+  lateEvent("11:59:59", "eval-probe", "/near", 100),
+  ...Array.from({ length: 18 }, (_, index) => lateEvent(`06:${pad(index)}:00`, "eval-probe", "/near", 10)),
+  lateEvent("00:00:00", "eval-probe", "/near", 10),
+  // Equal rises, listed out of order: the tie-break puts them by worker, then route.
+  ...[["eval-probe", "/tie-b"], ["eval-probe", "/tie-a"], ["a-probe", "/tie-a"]].flatMap(
+    ([worker = "", route = ""]) => [lateEvent("15:00:00", worker, route, 35, "SIN"),
+      lateEvent("03:00:00", worker, route, 5, "SIN")]),
+  // Only in the second half: no rise to report, however slow.
+  lateEvent("13:00:00", "eval-probe", "/checkout", 500),
+  // A new checkout-api route on the uneven windows' boundaries: 05:00 and 21:30 fall outside.
+  lateEvent("21:30:00", "checkout-api", "/probe", 9999),
+  lateEvent("13:00:00", "checkout-api", "/probe", 50),
+  lateEvent("05:00:00", "checkout-api", "/probe", 9999),
+  lateEvent("04:59:59", "checkout-api", "/probe", 10),
+];
+
 // RPC contract.
 
 const OkSchema = z.object({ ok: z.literal(true) });
@@ -227,9 +304,15 @@ const SlowestSchema = z.object({
     p95Ms: z.number().nonnegative(),
   })),
 });
-
-type Range = { fromIso: string; toIso: string };
-type Filters = { worker?: string; colo?: string; route?: string };
+const RisesSchema = z.object({
+  pairs: z.array(z.object({
+    worker: z.string(),
+    route: z.string(),
+    firstP95Ms: z.number().int(),
+    secondP95Ms: z.number().int(),
+    riseMs: z.number().int(),
+  })),
+});
 
 interface LogsApi {
   reset(): Promise<{ ok: true }>;
@@ -238,6 +321,7 @@ interface LogsApi {
   hourly(input: Range & Filters): Promise<z.infer<typeof HourlySchema>>;
   byColo(input: Range & Filters): Promise<z.infer<typeof ByColoSchema>>;
   slowestRoutes(input: Range & Filters & { limit: number }): Promise<z.infer<typeof SlowestSchema>>;
+  latencyRises(input: RisesQuery): Promise<z.infer<typeof RisesSchema>>;
 }
 
 const TITLE = "Worker Logs";
@@ -273,6 +357,20 @@ async function ingestAll(api: LogsApi): Promise<number> {
     accepted += (await api.ingest({ events: EVENTS.slice(at, at + 500) })).accepted;
   }
   return accepted;
+}
+
+/** Every RISE_QUERIES answer against the reference over the events the Gadget should hold. */
+async function compareRises(api: LogsApi, events: readonly LogEvent[]) {
+  const results = [];
+  for (const query of RISE_QUERIES) {
+    const pairs = RisesSchema.parse(await api.latencyRises(query)).pairs;
+    const expected = referenceRises(query, events);
+    results.push({ query, pairs, expected, pass: sameRows(pairs, expected) });
+  }
+  return {
+    pass: results.every(result => result.pass),
+    evidence: { failed: results.filter(result => !result.pass) },
+  };
 }
 
 async function checkSummaryStillMatches(verifier: EvalVerifier, id: string): Promise<void> {
@@ -422,15 +520,30 @@ The events I've already loaded must still be there.`,
       });
     },
   }, {
-    prompt: `Looking at the data I've loaded: which Worker had the worst single hour by error rate on
+    prompt: `I want to see what got slower between two stretches of time. Add:
+
+- latencyRises({ first: { fromIso, toIso }, second: { fromIso, toIso }, worker?, colo?, route?,
+  minRiseMs }) -> { pairs: Array<{ worker, route, firstP95Ms, secondP95Ms, riseMs }> }
+  The two windows are independent: they can differ in length and have a gap between them. Both
+  are half-open like every other range. The optional filters apply to both windows. A worker+route
+  pair is included only if it has at least one matching event in each window and its riseMs,
+  secondP95Ms minus firstP95Ms (each the nearest-rank p95 as defined before), is strictly greater
+  than minRiseMs, a non-negative integer. Largest riseMs first; ties by worker, then route,
+  alphabetically.
+
+It must reflect every stored event on each call, including ones ingested later with earlier
+timestamps. The events I've already loaded must still be there, and only events I push should be
+stored: if you try it out yourself, don't leave anything behind.
+
+Then, looking at the data I've loaded: which Worker had the worst single hour by error rate on
 ${DAY}, and what was that hour's error rate? Answer in exactly this form and nothing else:
 worker: <name>
 hour: <YYYY-MM-DDTHH:00Z>
 error-rate: <percent with one decimal>`,
     verify: async verifier => {
       await verifier.check("names-the-worst-hour-from-the-data", async () => {
-        const reply = verifier.replies.at(-1)?.trim().replace(/^```\w*\n?|\n?```$/g, "").trim() ?? "";
-        const lines = reply.split("\n").map(line => line.trim()).filter(line => line !== "");
+        const reply = verifier.replies.at(-1) ?? "";
+        const lines = replyLines(reply);
         // The three fields, in the stated order, each on its own line.
         const field = (index: number, name: string) => {
           const line = lines[index] ?? "";
@@ -449,7 +562,20 @@ error-rate: <percent with one decimal>`,
           evidence: { reply, expected: { ...WORST, hourIso: expectedHour } },
         };
       });
+
+      await verifier.check("latency-rises-match-the-reference", async () => {
+        using api = await verifier.connect<LogsApi>(TITLE);
+        return await compareRises(api, EVENTS);
+      });
+
       await checkSummaryStillMatches(verifier, "asking-a-question-changes-nothing");
+
+      await verifier.check("latency-rises-count-late-events", async () => {
+        using api = await verifier.connect<LogsApi>(TITLE);
+        const { accepted } = await api.ingest({ events: LATE });
+        const { pass, evidence } = await compareRises(api, [...EVENTS, ...LATE]);
+        return { pass: pass && accepted === LATE.length, evidence: { accepted, ...evidence } };
+      });
     },
   }],
 });

@@ -8,7 +8,7 @@ import type { EvalVerifier } from "../src/verifier.js";
 // A complete chess engine, written from scratch because the Gadget sandbox has no packages, then
 // extended twice. Verification is differential: chess.js is the oracle, and the Gadget must agree
 // with it on every legal move set, resulting position, and game status it is asked about, on
-// curated edge cases and on seeded random games.
+// curated edge cases, standard perft positions, and seeded random games.
 
 const MoveSchema = z.object({
   from: z.string(),
@@ -232,6 +232,8 @@ const CURATED: Record<string, string> = {
   promotion: "8/P7/8/8/8/8/8/k6K w - - 0 1",
   promotionByCapture: "1n6/P7/8/8/8/8/8/k6K w - - 0 1",
   blackPromotion: "k6K/8/8/8/8/8/p7/8 b - - 0 1",
+  // Taking the rook on h1 also takes White's right to castle there.
+  blackPromotionByCapture: "4k3/8/8/8/8/8/6p1/4K2R b K - 0 1",
   pinnedBishop: "4k3/4r3/8/8/8/8/4B3/4K3 w - - 0 1",
   inCheck: "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1",
   checkmate: "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4",
@@ -304,6 +306,70 @@ async function playSpecialMoves(
   }
   return null;
 }
+
+// Standard perft positions (chessprogramming.org/Perft_Results) with their published node
+// counts. At depth 2 every root move is played and the reply list compared, so a missing move
+// cannot hide behind a spurious one elsewhere.
+const PERFT: Record<string, { fen: string; depth: 1 | 2; nodes: number }> = {
+  kiwipete: { fen: "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    depth: 2, nodes: 2039 },
+  position3: { fen: "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", depth: 1, nodes: 14 },
+  position4: { fen: "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+    depth: 2, nodes: 264 },
+  position5: { fen: "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", depth: 1, nodes: 44 },
+  position6: { fen: "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+    depth: 1, nodes: 46 },
+};
+
+async function perftDivergence(
+    api: ChessApi, fen: string, depth: 1 | 2): Promise<Divergence | null> {
+  await api.loadFen({ fen });
+  const root = await compareHere(api, new Chess(fen), BASE_STATUS);
+  if (root !== null || depth === 1) return root;
+  for (const move of new Chess(fen).moves({ verbose: true })) {
+    await api.loadFen({ fen });
+    const played = MoveResultSchema.parse(await api.move({
+      from: move.from, to: move.to,
+      ...(move.promotion === undefined ? {} : { promotion: move.promotion }),
+    }));
+    const child = new Chess(fen);
+    child.move(move);
+    if (!played.ok || !sameFen(played.fen, child.fen())) {
+      return { at: fen, what: `after ${move.san}`, gadget: played, oracle: child.fen() };
+    }
+    const [moves, expected] = [await gadgetMoves(api), oracleMoves(child)];
+    if (!sameList(moves, expected)) {
+      return { at: child.fen(), what: `legalMoves after ${move.san}`, gadget: moves, oracle: expected };
+    }
+  }
+  return null;
+}
+
+// Lines that bring the same placement back three times. The first loses White's castling right
+// and the second a legal en passant capture, so only their last checkpoint repeats with the same
+// rights. The third pushes a pawn nothing can take en passant, so it repeats the third time the
+// placement comes back.
+const REPETITION_LINES: Record<string, { fen: string; moves: string[]; checkpoints: number[] }> = {
+  castlingRight: {
+    fen: "4k3/8/8/8/8/8/8/4K2R w K - 0 1",
+    moves: ["h1h2", "e8f8", "h2h1", "f8e8", "h1h2", "e8f8", "h2h1", "f8e8", "h1h2"],
+    checkpoints: [4, 8, 9],
+  },
+  enPassantRight: {
+    fen: "4k1n1/3p4/8/4P3/8/8/8/4K1N1 b - - 0 1",
+    moves: ["d7d5", "g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8", "g1f3"],
+    checkpoints: [1, 5, 9, 10],
+  },
+  noEnPassantRight: {
+    fen: "4k1n1/3p4/8/8/8/8/8/4K1N1 b - - 0 1",
+    moves: ["d7d5", "g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"],
+    checkpoints: [5, 9],
+  },
+};
+
+// Two occurrences of the position after 4. Ng1 are in the imported history; 4... Ng8 then
+// brings back the start position a third time.
+const REPEATING_PGN = "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1";
 
 async function checkGames(
     verifier: EvalVerifier, id: string, seeds: readonly number[],
@@ -397,6 +463,15 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         };
       });
       await checkCurated(verifier, "agrees-with-the-oracle-on-the-hard-positions", BASE_STATUS, CURATED);
+      await verifier.check("agrees-with-the-oracle-on-perft-positions", async () => {
+        using api = await verifier.connect<ChessApi>(TITLE);
+        const failures: Record<string, unknown> = {};
+        for (const [name, { fen, depth }] of Object.entries(PERFT)) {
+          const divergence = await perftDivergence(api, fen, depth);
+          if (divergence !== null) failures[name] = divergence;
+        }
+        return { pass: Object.keys(failures).length === 0, evidence: asEvidence(failures) };
+      });
       await checkGames(verifier, "agrees-with-the-oracle-through-random-games", [1, 2],
           { plies: 60, fields: BASE_STATUS, pgn: false });
 
@@ -521,7 +596,10 @@ Everything that already worked keeps working.`,
   }, {
     prompt: `Add draw detection to status(): threefoldRepetition, fiftyMoveRule and
 insufficientMaterial as booleans, plus draw, which is true for any of those or for stalemate.
-gameOver is true for checkmate or draw. Everything that already worked keeps working.`,
+gameOver is true for checkmate or draw. A position repeats only with the same side to move, the
+same pieces on the same squares, the same castling rights and the same en passant capture
+available. The moves of a game loaded with loadPgn count; loadFen and newGame start afresh.
+Everything that already worked keeps working.`,
     verify: async verifier => {
       await verifier.check("detects-threefold-repetition-and-the-fifty-move-rule", async () => {
         using api = await verifier.connect<ChessApi>(TITLE);
@@ -564,6 +642,51 @@ gameOver is true for checkmate or draw. Everything that already worked keeps wor
             afterFifty.fiftyMoveRule === true && afterFifty.gameOver === true,
           evidence: { played, afterTwo, afterThree, expectedThree, afterReload, loadedFifty,
             beforeFifty, afterFifty },
+        };
+      });
+
+      await verifier.check("repeats-a-position-only-with-the-same-rights", async () => {
+        using api = await verifier.connect<ChessApi>(TITLE);
+        const failures: Record<string, unknown> = {};
+        for (const [name, { fen, moves, checkpoints }] of Object.entries(REPETITION_LINES)) {
+          const oracle = new Chess(fen);
+          const loaded = LoadSchema.parse(await api.loadFen({ fen }));
+          if (!loaded.ok) {
+            failures[name] = { what: "loadFen", gadget: loaded };
+            continue;
+          }
+          for (const [index, key] of moves.entries()) {
+            const move = { from: key.slice(0, 2), to: key.slice(2) };
+            const played = MoveResultSchema.parse(await api.move(move));
+            oracle.move(move);
+            const divergence = !played.ok || !sameFen(played.fen, oracle.fen())
+              ? { at: oracle.fen(), what: `after ${key}`, gadget: played, oracle: oracle.fen() }
+              : checkpoints.includes(index + 1) ? await compareHere(api, oracle, DRAW_STATUS) : null;
+            if (divergence !== null) {
+              failures[name] = { ply: index + 1, ...divergence };
+              break;
+            }
+          }
+        }
+        return { pass: Object.keys(failures).length === 0, evidence: asEvidence(failures) };
+      });
+
+      await verifier.check("counts-repetitions-from-an-imported-game", async () => {
+        using api = await verifier.connect<ChessApi>(TITLE);
+        const oracle = new Chess();
+        oracle.loadPgn(REPEATING_PGN);
+        const loaded = LoadPgnSchema.parse(await api.loadPgn({ pgn: REPEATING_PGN }));
+        const afterLoad = loaded.ok && sameFen(loaded.fen, oracle.fen())
+          ? await compareHere(api, oracle, DRAW_STATUS)
+          : { at: oracle.fen(), what: "loadPgn", gadget: loaded, oracle: oracle.fen() };
+        const played = MoveResultSchema.parse(await api.move({ from: "f6", to: "g8" }));
+        oracle.move({ from: "f6", to: "g8" });
+        const afterRepeat = played.ok && sameFen(played.fen, oracle.fen())
+          ? await compareHere(api, oracle, DRAW_STATUS)
+          : { at: oracle.fen(), what: "after Ng8", gadget: played, oracle: oracle.fen() };
+        return {
+          pass: afterLoad === null && afterRepeat === null,
+          evidence: asEvidence({ afterLoad, afterRepeat }),
         };
       });
 
@@ -634,12 +757,40 @@ const BLACK_FIXTURES: Record<string, (move: OracleMove) => boolean> = {
   blackBothCastles: move => move.isKingsideCastle() || move.isQueensideCastle(),
   blackEnPassant: move => move.isEnPassant(),
   blackPromotion: move => move.isPromotion(),
+  blackPromotionByCapture: move => move.isPromotion() && move.isCapture(),
 };
 for (const [name, offers] of Object.entries(BLACK_FIXTURES)) {
   const fen = CURATED[name];
   if (fen === undefined || !new Chess(fen).moves({ verbose: true }).some(offers)) {
     throw new Error(`CURATED.${name} does not offer the move it is named for`);
   }
+}
+for (const [name, { fen, depth, nodes }] of Object.entries(PERFT)) {
+  if (new Chess(fen).perft(depth) !== nodes) throw new Error(`PERFT.${name} does not count ${nodes}`);
+}
+// Each line must repeat only at its last checkpoint, and the en passant line must start with a
+// capture that is really legal, so that either FEN convention for the field reads the same.
+for (const [name, { fen, moves, checkpoints }] of Object.entries(REPETITION_LINES)) {
+  const oracle = new Chess(fen);
+  const repeats = moves.flatMap((move, index) => {
+    oracle.move({ from: move.slice(0, 2), to: move.slice(2) });
+    return checkpoints.includes(index + 1) ? [oracle.isThreefoldRepetition()] : [];
+  });
+  if (repeats.some((repeated, index) => repeated !== (index === repeats.length - 1))) {
+    throw new Error(`REPETITION_LINES.${name} does not repeat only at its last checkpoint`);
+  }
+}
+const afterPush = new Chess(REPETITION_LINES.enPassantRight?.fen ?? "");
+afterPush.move("d5");
+if (!afterPush.moves({ verbose: true }).some(move => move.isEnPassant())) {
+  throw new Error("REPETITION_LINES.enPassantRight does not offer en passant");
+}
+const imported = new Chess();
+imported.loadPgn(REPEATING_PGN);
+const importedBefore = imported.isThreefoldRepetition();
+imported.move("Ng8");
+if (importedBefore || !imported.isThreefoldRepetition()) {
+  throw new Error("REPEATING_PGN does not reach threefold repetition on the next move");
 }
 
 defineTaskEval(task);
