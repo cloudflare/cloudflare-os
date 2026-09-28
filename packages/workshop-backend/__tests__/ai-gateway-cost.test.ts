@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { AiChatAuthorInfo, AiChatMetadata } from "@gadgets/workshop-shared/api";
 import type { AiGatewayLogRoute } from "../src/ai-gateway.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -37,7 +38,7 @@ describe("AI Gateway cost persistence", () => {
             chatId: number,
             author: AiChatAuthorInfo,
             messages: [],
-            totalTokens?: number,
+            usage?: Usage,
             logId?: string,
             route?: AiGatewayLogRoute,
           ): void;
