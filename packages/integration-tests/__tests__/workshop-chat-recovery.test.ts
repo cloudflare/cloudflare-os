@@ -8,7 +8,7 @@ import {
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   connect, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp, stubFor, waitFor,
-  waitForIdleChat,
+  waitForIdleChat, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -122,6 +122,58 @@ it.concurrent(
   } finally {
     await ws.stopAgent(chatId);
   }
+});
+
+it.concurrent("stopping a running agent keeps its completed steps and leaves the chat usable",
+    async () => {
+  const model = models.script([
+    { toolCall: {
+      id: "create", name: "createGadget", arguments: { title: "Notes", bindingName: "NOTES" },
+    } },
+    { toolCall: {
+      id: "write",
+      name: "writeFile",
+      arguments: { workpiece: "NOTES", filename: "notes.txt", content: "kept\n" },
+    } },
+    { pending: true },
+    { text: "I can continue." },
+  ]);
+  const [owner] = nextUsernames("stopowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+
+  const chatId = await ws.newChat("Write the notes.", SCRIPTED_MODEL_ID);
+  // Request 3 means both tool steps have been saved at their step boundaries.
+  await waitFor("the pending third step", async () => model.requests.length === 3 || null);
+  await ws.stopAgent(chatId);
+  await waitForIdleChat(ws, chatId);
+
+  const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  const gadgetId = history.flatMap(message =>
+    message.type === "changes" ? message.createdGadgets ?? [] : [])[0]?.gadgetId;
+  if (gadgetId === undefined) throw new Error("The stopped turn recorded no created gadget");
+  expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+  const commitId = await waitFor("the merged gadget head", async () => {
+    const summary = workpieces.summaries.get(gadgetId);
+    return summary?.type === "gadget" && summary.commitId !== undefined ? summary.commitId : null;
+  });
+  expect(await ws.readFilesAtCommit(commitId, ["notes.txt"]))
+    .toEqual([["notes.txt", { kind: "text", text: "kept\n" }]]);
+
+  await ws.sendChatMessage(chatId, "Continue.", SCRIPTED_MODEL_ID);
+  await waitFor("the continued model request", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  const continued = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(continued.filter(message =>
+    message.type === "message" && message.author.type === "agent" &&
+    message.message === "I can continue.")).toHaveLength(1);
+  expect(model.remainingSteps()).toBe(0);
 });
 
 it.concurrent("resubscribing during a running turn replays exactly what history lacks", async () => {
