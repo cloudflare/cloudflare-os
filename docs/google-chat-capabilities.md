@@ -41,7 +41,9 @@ returned: listings omit them and lookups throw.
 Google's ACL boundary remains the space. Narrower capabilities restrict delegated authority;
 they do not establish separate Google ACLs or make an account-derived capability into an
 independently shareable Workshop connection. Account bindings remain private. Single-space and
-single-thread bindings are shareable with collaborators whose own account can open the space.
+single-thread bindings are shareable with collaborators whose own account can open the space; a
+single-space binding also lists members, so the collaborator must be able to list them too, since a
+space can restrict its member list to managers.
 A thread binding (`https://chat.google.com/room/{space}/{thread}`) starts its session as a
 `ChatThread`; its configurator accepts a pasted Copy link to the thread or any message in it.
 

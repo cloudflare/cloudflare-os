@@ -1063,10 +1063,11 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     }
   }
 
-  async hasChatSpaceAccess(spaceName: string): Promise<boolean> {
+  async hasChatSpaceAccess(spaceName: string, options: { members?: boolean } = {}): Promise<boolean> {
     let api = new ChatApi(opts => this.#getToken(opts));
     try {
       await api.getSpace(spaceName);
+      if (options.members) await api.listMembers(spaceName, { pageSize: 1 });
       return true;
     } catch (error) {
       // Chat answers a space the observer is not a member of with 403 or 404, which

@@ -23,7 +23,7 @@ export interface GoogleVerifierApi extends GatekeeperUserVerifier {
   hasCalendarWriterAccess(calendarId: string): Promise<boolean>;
   hasCalendarFreeBusyAccess(calendarId: string): Promise<boolean>;
   hasDatasetAccess(projectId: string, datasetId: string): Promise<boolean>;
-  /** Whether the observer's own account can open one Google Chat space. */
-  hasChatSpaceAccess(spaceName: string): Promise<boolean>;
+  /** Whether the observer's own account can open one Google Chat space, and with `members`, list its members. */
+  hasChatSpaceAccess(spaceName: string, options?: { members?: boolean }): Promise<boolean>;
   verifyDriveObservations(observations: DriveObservation[]): Promise<ObserverBatchResult>;
 }

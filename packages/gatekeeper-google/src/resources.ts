@@ -176,14 +176,13 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
  *
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
  * because the binding also edits messages and can undo its own sends, which need the combined
- * scope; it covers reactions too. `chat.users.readstate.readonly` exists only for the account-wide
- * `unreadOnly` search filter.
+ * scope; it covers reactions too. Only the account resource adds `chat.users.readstate.readonly`,
+ * for its `unreadOnly` search filter.
  */
 const CHAT_SCOPES = [
   "https://www.googleapis.com/auth/chat.spaces.readonly",
   "https://www.googleapis.com/auth/chat.messages",
   "https://www.googleapis.com/auth/chat.memberships.readonly",
-  "https://www.googleapis.com/auth/chat.users.readstate.readonly",
 ];
 
 /** The OAuth scopes each grantable resource needs. */
@@ -250,7 +249,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   // and `chat.delete` are all deliberately absent.
   {
     resource: GOOGLE_CHAT_RESOURCE,
-    scopes: CHAT_SCOPES,
+    scopes: [...CHAT_SCOPES, "https://www.googleapis.com/auth/chat.users.readstate.readonly"],
   },
   {
     resource: GOOGLE_CHAT_SPACE_RESOURCE,

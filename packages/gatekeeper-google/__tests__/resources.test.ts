@@ -111,19 +111,28 @@ describe("resource declarations", () => {
   // `chat.admin.*` would reach conversations the connected user cannot open, and `chat.import`
   // and `chat.delete` are destructive surfaces the session never exposes. Memberships are
   // read-only because the session offers no way to change them.
-  it("requests only user-authentication Chat scopes", () => {
-    for (const resource of [GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE]) {
+  it("requests only user-authentication Chat scopes, with read state for the account alone", () => {
+    const conversation = [
+      "https://www.googleapis.com/auth/chat.spaces.readonly",
+      "https://www.googleapis.com/auth/chat.messages",
+      "https://www.googleapis.com/auth/chat.memberships.readonly",
+    ];
+    const readState = "https://www.googleapis.com/auth/chat.users.readstate.readonly";
+    for (const [resource, expected] of [
+      [GOOGLE_CHAT_RESOURCE, [...conversation, readState]],
+      [GOOGLE_CHAT_SPACE_RESOURCE, conversation],
+      [GOOGLE_CHAT_THREAD_RESOURCE, conversation],
+    ] as const) {
       const scopes = RESOURCE_SCOPES.find(entry => entry.resource === resource)!.scopes;
-      expect(scopes).toEqual([
-        "https://www.googleapis.com/auth/chat.spaces.readonly",
-        "https://www.googleapis.com/auth/chat.messages",
-        "https://www.googleapis.com/auth/chat.memberships.readonly",
-        "https://www.googleapis.com/auth/chat.users.readstate.readonly",
-      ]);
+      expect(scopes).toEqual(expected);
       for (const forbidden of ["chat.bot", "chat.app.", "chat.admin.", "chat.import", "chat.delete"]) {
         expect(scopes.some(scope => scope.includes(forbidden))).toBe(false);
       }
     }
+    const chatPatterns = [GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE]
+      .map(resource => resource.urlPattern);
+    expect(resourcesCoveredByScopes(chatPatterns, conversation))
+      .toEqual([GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, GOOGLE_CHAT_THREAD_RESOURCE.urlPattern]);
   });
 
   it("matches the natural folder URL only to the folder resource", () => {

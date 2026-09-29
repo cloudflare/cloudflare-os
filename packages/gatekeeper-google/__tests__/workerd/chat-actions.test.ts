@@ -68,6 +68,10 @@ function chatBackend() {
     members: [] as ChatMembershipRaw[],
     memberRequests: 0,
     membersFail: false,
+    /** Whose token Chat refuses the member list to, as a space restricted to managers would. */
+    membersRejectedToken: undefined as string | undefined,
+    /** How Chat stores submitted text, such as rendering `<users/…>` mentions as `@Name`. */
+    storeText: (text: string) => text,
     /** People API profile names by numeric user id. */
     profiles: {} as Record<string, string>,
     spaceLists: 0,
@@ -131,7 +135,9 @@ function chatBackend() {
     }
     if (url.pathname === `/v1/spaces/${SPACE_ID}/members`) {
       state.memberRequests++;
-      return state.membersFail ? json({}, 403) : json({memberships: state.members});
+      const membersDenied = state.membersFail ||
+        new Headers(init.headers).get("Authorization") === `Bearer ${state.membersRejectedToken}`;
+      return membersDenied ? json({}, 403) : json({memberships: state.members});
     }
     if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
@@ -168,7 +174,7 @@ function chatBackend() {
         replyOption: url.searchParams.get("messageReplyOption"), body});
       const created = {
         name: `${SPACE_NAME}/messages/M${state.creates.length}`,
-        text: body.text,
+        text: state.storeText(body.text),
         createTime: new Date().toISOString(),
         sender: {name: "users/subject-a", type: "HUMAN"},
         thread: body.thread ?? {name: `${SPACE_NAME}/threads/T${state.creates.length}`},
@@ -221,7 +227,7 @@ function chatBackend() {
       if (method === "PATCH") {
         const {text} = JSON.parse(init.body as string) as {text: string};
         state.edits.push({name, text});
-        state.messages[index].text = text;
+        state.messages[index].text = state.storeText(text);
         state.messages[index].lastUpdateTime = new Date().toISOString();
         return json(state.messages[index]);
       }
@@ -406,6 +412,13 @@ describe("Chat identities", () => {
     using space = await chat.session();
     expect(await space.getMetadata()).toMatchObject(
       {name: "Alice Smith", peer: {id: "users/123", name: "Alice Smith", type: "human"}});
+  });
+
+  it("admits a space observer only if their account can list its members; a thread needs no list", async () => {
+    const backend = chatBackend();
+    backend.state.membersRejectedToken = "observer-token";
+    await expect(chatHarness(backend).addObserver()).rejects.toThrow(/cannot access .* or its members/);
+    await chatHarness(backend, undefined, "thread").addObserver();
   });
 
   it("names a peer Chat leaves unnamed from People, including in send approvals", async () => {
@@ -830,6 +843,20 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.applyAction(1)).rejects.toThrow();
     expect(backend.state.creates).toEqual([]);
     await chat.rejectAction(1);
+  });
+
+  it("rebases queued edits onto the text Chat stored for the send and edits before them", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.post("Hi <users/123>")).message;
+    await message.edit("Hi <users/123>, done");
+    await message.edit("All done");
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    await chat.applyAction(3);
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done", "All done"]);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {

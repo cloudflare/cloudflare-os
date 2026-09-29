@@ -182,6 +182,16 @@ class ChatStore {
     return this.#kv.get(`chat:attempted:${id}`) !== undefined;
   }
 
+  /** Later edits queued against `from` now expect `to`, the form Chat stored it in. */
+  rebaseEdits(spaceName: string, messageName: string, from: string, to: string): void {
+    if (from === to) return;
+    for (const { id, action } of this.listForSpace(spaceName)) {
+      if (action.type === "updateMessage" && action.messageName === messageName && action.previousText === from) {
+        this.#kv.put(`chat:action:${id}`, { ...this.get(id), previousText: to });
+      }
+    }
+  }
+
   setRevert(id: number, info: ChatRevertInfo): void {
     this.#kv.put(`chat:revert:${id}`, info);
   }
@@ -1215,6 +1225,7 @@ export class GoogleChatGatekeeperImpl
         }
         requireMessageInScope(scope, created);
         store.setSentMessage(actionId, created);
+        store.rebaseEdits(action.spaceName, created.id, action.text, created.text);
         return { type: "sentMessage", messageName: created.id };
       }
       case "updateMessage": {
@@ -1233,6 +1244,7 @@ export class GoogleChatGatekeeperImpl
           }
           text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
         }
+        store.rebaseEdits(chatActionSpaceName(action), target.committed, action.text, text);
         return {
           type: "updatedMessage", messageName: target.committed, previousText: action.previousText, text,
         };
@@ -1344,6 +1356,8 @@ export class GoogleChatGatekeeperImpl
    * so there is nothing a collaborator could be verified against — strategy A, always refuse.
    * Single-space and single-thread bindings are strategy B: the collaborator's own account must be
    * able to open the conversation, since Google's access control for a thread is its space's.
+   * A space binding also lists members, which a space can restrict to managers, so the
+   * collaborator must be able to list them too; a thread binding exposes no members.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const boundSpace = this.#boundSpaceName();
@@ -1354,8 +1368,9 @@ export class GoogleChatGatekeeperImpl
         "conversation instead.");
     }
     const verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    if (!(await verifier.hasChatSpaceAccess(boundSpace))) {
-      throw new Error("This collaborator cannot access the Google Chat conversation.");
+    const members = this.#boundThreadName() === undefined;
+    if (!(await verifier.hasChatSpaceAccess(boundSpace, { members }))) {
+      throw new Error(`This collaborator cannot access the Google Chat conversation${members ? " or its members" : ""}.`);
     }
   }
 
