@@ -366,16 +366,16 @@ describe("Chat identities", () => {
     expect(backend.state.memberRequests).toBe(1);
   });
 
-  it("does not resolve participant names during picker searches", async () => {
+  it("names picker DMs once, and matches them by name rather than ID", async () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
     using _session = await chat.session();
     const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
-    expect(await picker.listChatSpaces("")).toEqual([
-      {value: SPACE_ID, title: "Direct message", subtitle: "Direct message", meta: SPACE_ID},
-    ]);
-    expect(await picker.listChatSpaces("Alice")).toEqual([]);
-    expect(backend.state.memberRequests).toBe(0);
+    const alice = {value: SPACE_ID, title: "Alice Smith", subtitle: "Direct message"};
+    expect(await picker.listChatSpaces("")).toEqual([alice]);
+    expect(await picker.listChatSpaces("alice")).toEqual([alice]);
+    expect(await picker.listChatSpaces(SPACE_ID.toLowerCase())).toEqual([]);
+    expect(backend.state.memberRequests).toBe(1);
   });
 
   it("opens an exact conversation reference without scanning the picker listing", async () => {
@@ -384,7 +384,7 @@ describe("Chat identities", () => {
     using _session = await chat.session();
     const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
     expect(await picker.listChatSpaces(SPACE_NAME)).toEqual([
-      {value: SPACE_ID, title: "Direct message", subtitle: "Direct message", meta: SPACE_ID},
+      {value: SPACE_ID, title: "Alice Smith", subtitle: "Direct message"},
     ]);
     expect(await picker.listChatSpaces(`https://chat.google.com/dm/${SPACE_ID}`)).toHaveLength(1);
     expect(backend.state.spaceLists).toBe(0);

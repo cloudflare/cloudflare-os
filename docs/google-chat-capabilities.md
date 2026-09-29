@@ -61,9 +61,9 @@ optional: fall back to the ID when Google omits one. The connected account's ide
 the existing sign-in profile lookup. Methods that accept an email address as input still support it.
 
 Call **`space.getMetadata()`** to name a DM or unnamed group chat after its other participants,
-and to identify a DM's other participant (`peer`). Account listings and the connection picker use
-only Chat's returned metadata, with no membership lookups. Agents receive this guidance in the
-API type comments. For example:
+and to identify a DM's other participant (`peer`). Account listings use only Chat's returned
+metadata, with no membership lookups. Agents receive this guidance in the API type comments. For
+example:
 
 ```ts
 const info = entry.info.name ? entry.info : await entry.space.getMetadata();
@@ -77,11 +77,16 @@ responses, so the nameless people among those are looked up in one People API `p
 call; those names need no observer check, since anyone who can open the conversation is a
 participant. When a DM's membership is ambiguous, it has no `peer`; when no source names anyone,
 the conversation stays unnamed and the ID is the fallback. A failed lookup never fails the read.
-Send approvals and connection titles name conversations the same way. Spaces and named group
-chats require no lookup. Memberships are a `kind: "user" | "group"` union. Messages list the
-users they @mention in `mentions`. Picker searches scan at most five pages; paste `spaces/ID`, a
-Chat room/DM URL, or a Chat-in-Gmail `#chat/` URL to access an exact conversation beyond that
-scan.
+Send approvals, connection titles, and the connection picker name conversations the same way.
+Spaces and named group chats require no lookup. Memberships are a `kind: "user" | "group"` union.
+Messages list the users they @mention in `mentions`.
+
+The connection picker matches conversations by name only, and scans at most five pages; paste
+`spaces/ID`, a Chat room/DM URL, or a Chat-in-Gmail `#chat/` URL to access an exact conversation
+beyond that scan. It names at most 200 DMs and unnamed group chats per session, remembering each,
+because every one costs a `members.list` read against the OAuth project's shared quota of 3,000 a
+minute; the People lookups for all of them share batched calls. The rest keep a generic label.
+Google reports a never-set last activity as the epoch, which is treated as absent.
 
 ## Discover and operate on threads
 
@@ -239,5 +244,5 @@ conversation references, time bounds, scope filtering, and overlays. Durable `sp
 handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
 Chat gatekeeper suite. An identity regression checks that Chat-provided names reach message,
 thread, member, and reaction results without extra identity lookups. DM tests cover on-demand
-peer resolution, lookup-free listings and picker searches, peer selection, pagination, and
+peer resolution, lookup-free listings, picker naming and name matching, peer selection, pagination, and
 observer admission by space access.

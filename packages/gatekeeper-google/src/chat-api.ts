@@ -286,10 +286,11 @@ export type ChatPage<T> = { items: T[]; nextPageToken?: string };
 
 // ── Mapping to the agent-facing shapes ──────────────────────────────
 
+/** Google reports an unset timestamp, such as a conversation's never-set last activity, as the epoch. */
 function chatTime(value: string | undefined): Date | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? undefined : parsed;
+  return parsed.valueOf() > 0 ? parsed : undefined;
 }
 
 const SPACE_TYPES: Record<string, ChatSpaceType> = {

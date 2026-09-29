@@ -3,8 +3,9 @@ import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
+import { describeConversations, needsDescription } from "./chat-names";
 import type { ChatSpaceInfo } from "./chat-types";
-import { GoogleAccessToken } from "./google-api";
+import { GoogleAccessToken, getGoogleAccountProfile } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
@@ -31,6 +32,14 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
+/** Per Chat picker: the connected user's id, and each conversation already named. */
+type ChatPickerCache = { selfId?: string; described: Map<string, ChatSpaceInfo> };
+const chatConfiguratorCaches = new WeakMap<object, ChatPickerCache>();
+/**
+ * Conversations one Chat picker names. Each costs a membership read against a quota the whole
+ * OAuth project shares (3,000 a minute), so the rest keep their generic label.
+ */
+const CHAT_CONFIGURATOR_NAMED_MAX = 200;
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS = { maxPages: 1, maxResults: 200 };
 const BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
@@ -112,15 +121,28 @@ function idTail(id: string): string {
 }
 
 function chatSpaceOption(space: ChatSpaceInfo): ConfiguratorOption {
-  const id = space.id.slice("spaces/".length);
   const kind = space.type === "directMessage" ? "Direct message"
     : space.type === "groupChat" ? "Group chat" : "Space";
   return {
-    value: id,
+    value: space.id.slice("spaces/".length),
     title: space.name ?? kind,
     subtitle: space.lastActiveAt ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}` : kind,
-    meta: idTail(id),
   };
+}
+
+/** Name DMs and unnamed group chats after their participants, remembering them for the picker. */
+async function describeChatSpaces(
+  target: object, api: ChatApi, infos: ChatSpaceInfo[],
+): Promise<ChatSpaceInfo[]> {
+  const cache: ChatPickerCache = chatConfiguratorCaches.get(target) ?? { described: new Map() };
+  chatConfiguratorCaches.set(target, cache);
+  const fresh = infos.filter(info => needsDescription(info) && !cache.described.has(info.id))
+    .slice(0, CHAT_CONFIGURATOR_NAMED_MAX - cache.described.size);
+  if (fresh.length > 0) {
+    cache.selfId ??= `users/${(await getGoogleAccountProfile(googleTokenProvider(target))).sub}`;
+    for (const info of await describeConversations(api, fresh, cache.selfId)) cache.described.set(info.id, info);
+  }
+  return infos.map(info => cache.described.get(info.id) ?? info);
 }
 
 async function listDriveFiles(
@@ -293,11 +315,12 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   }
 
   /**
-   * Conversations this account has joined, filtered locally.
+   * Conversations this account has joined, matched by name.
    *
    * Chat's own space search only matches named spaces, so it would hide every direct message and
    * group chat -- exactly the conversations whose id is hardest to find by hand. Scan a bounded
-   * five provider pages, stopping once the picker has its 100 visible options.
+   * five provider pages, naming DMs and unnamed group chats after their participants, and stop
+   * once the picker has its 100 visible options.
    */
   async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
     const api = new ChatApi(googleTokenProvider(this));
@@ -305,20 +328,21 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
     // Exact references bypass the bounded discovery scan, including conversations on later pages.
     const exact = chatSpaceIdFromReference(query);
     if (exact !== undefined) {
+      let space: ChatSpaceInfo;
       try {
-        const space = await api.getSpace(`spaces/${exact}`);
-        return [chatSpaceOption(space)];
+        space = await api.getSpace(`spaces/${exact}`);
       } catch (error) {
         if (isChatNoAccessError(error)) return [];
         throw error;
       }
+      return (await describeChatSpaces(this, api, [space])).map(chatSpaceOption);
     }
     let pageToken: string | undefined;
     for (let pageNumber = 0; pageNumber < 5 && options.length < 100; pageNumber++) {
       const page = await api.listSpaces({ pageSize: query.trim() ? 200 : 100, ...(pageToken ? { pageToken } : {}) });
-      options.push(...page.items
+      options.push(...(await describeChatSpaces(this, api, page.items))
         .map(chatSpaceOption)
-        .filter(option => optionMatches([option.title, option.subtitle, option.value], query)));
+        .filter(option => optionMatches([option.title], query)));
       pageToken = page.nextPageToken;
       if (!pageToken) break;
     }

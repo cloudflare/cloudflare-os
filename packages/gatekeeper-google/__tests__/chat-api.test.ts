@@ -144,7 +144,7 @@ describe("Chat filter construction", () => {
 });
 
 describe("Chat response mapping", () => {
-  it("maps a space", () => {
+  it("maps a space, treating the epoch Google reports for an unset time as absent", () => {
     expect(chatSpaceInfoFromRaw({
       name: "spaces/AAAA",
       displayName: "Project",
@@ -153,6 +153,7 @@ describe("Chat response mapping", () => {
       spaceUri: "https://chat.google.com/room/AAAA",
       spaceDetails: { description: "Planning" },
       createTime: "2024-01-01T00:00:00Z",
+      lastActiveTime: "1970-01-01T00:00:00Z",
       membershipCount: { joinedDirectHumanUserCount: 7 },
     })).toEqual({
       id: "spaces/AAAA",
