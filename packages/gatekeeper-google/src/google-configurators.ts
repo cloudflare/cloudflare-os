@@ -294,13 +294,13 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   }
 
   /**
-   * Conversations this account has joined, matched by name, or the direct message with a person
-   * given by email.
+   * Named conversations this account has joined, matched by name, or the direct message with a
+   * person given by email.
    *
    * Chat's own space search only matches named spaces, so scan a bounded five provider pages
    * instead, stopping once the picker has its 100 visible options. DMs and most group chats have
-   * no name of their own, and naming them costs a membership read each, so they are reached by
-   * email or by pasting a link.
+   * no name of their own, and naming them costs a membership read each, so they are reached only
+   * by email or by pasting a link.
    */
   async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
     const api = new ChatApi(googleTokenProvider(this));
@@ -325,8 +325,8 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
     for (let pageNumber = 0; pageNumber < 5 && options.length < 100; pageNumber++) {
       const page = await api.listSpaces({ pageSize: query.trim() ? 200 : 100, ...(pageToken ? { pageToken } : {}) });
       options.push(...page.items
-        .map(space => chatSpaceOption(space))
-        .filter(option => optionMatches([option.title], query)));
+        .filter(space => space.name && optionMatches([space.name], query))
+        .map(space => chatSpaceOption(space)));
       pageToken = page.nextPageToken;
       if (!pageToken) break;
     }

@@ -81,9 +81,9 @@ Send approvals and connection titles name conversations the same way. Spaces and
 chats require no lookup. Memberships are a `kind: "user" | "group"` union. Messages list the
 users they @mention in `mentions`.
 
-The connection picker matches conversations by name only, and scans at most five pages. It names
-no DMs or unnamed group chats, since each would cost a `members.list` read against the OAuth
-project's shared quota; enter a person's email to find the DM with them
+The connection picker lists only named conversations, matched by name, and scans at most five
+pages. DMs and unnamed group chats are left out, since naming each would cost a `members.list`
+read against the OAuth project's shared quota; enter a person's email to find the DM with them
 (`spaces.findDirectMessage`), or paste `spaces/ID`, a Chat room/DM URL, or a Chat-in-Gmail
 `#chat/` URL to access an exact conversation. Google reports a never-set last activity as the
 epoch, which is treated as absent.

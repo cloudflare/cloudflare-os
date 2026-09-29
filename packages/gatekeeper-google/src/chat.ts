@@ -1212,17 +1212,17 @@ export class GoogleChatGatekeeperImpl
         if (threadName && pendingThreadActionId(threadName) !== undefined) {
           throw new Error("Send the thread's root message before its replies.");
         }
+        const needsThread = threadName !== undefined || action.startsThread === true;
+        const retried = store.wasAttempted(actionId);
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
         let created = await store.attemptWrite(actionId, () => api.createMessage(action.spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
         }, { requestId: action.requestId }));
-        // Idempotent retries may echo only the submitted fields and assigned message ID.
-        if (!created.threadId && (threadName || action.startsThread)) {
-          created = await api.getMessage(created.id);
-          if (!created.threadId) throw new Error("Google Chat did not return the created message's thread.");
-        }
+        // A retry gets its request echoed back, not the message Chat stored.
+        if (retried || (needsThread && !created.threadId)) created = await api.getMessage(created.id);
+        if (needsThread && !created.threadId) throw new Error("Google Chat did not return the created message's thread.");
         requireMessageInScope(scope, created);
         store.setSentMessage(actionId, created);
         store.rebaseEdits(action.spaceName, created.id, action.text, created.text);

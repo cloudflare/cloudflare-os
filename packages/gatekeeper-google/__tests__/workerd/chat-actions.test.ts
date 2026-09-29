@@ -169,7 +169,11 @@ function chatBackend() {
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
       if (state.createFailure >= 400 && state.createFailure < 500) return json({}, state.createFailure);
-      if (prior) return state.createFailure ? json({}, state.createFailure) : json({name: prior, text: body.text});
+      if (prior) {
+        if (state.createFailure) return json({}, state.createFailure);
+        // Google echoes the request with its assigned names, not the stored message.
+        return json({name: prior, text: body.text, thread: state.messages.find(message => message.name === prior)?.thread});
+      }
       if (body.thread && !state.messages.some(message => message.thread?.name === body.thread!.name)) {
         return json({}, 404);
       }
@@ -186,7 +190,7 @@ function chatBackend() {
       state.messages.push(created);
       state.sentRequests.set(requestId, created.name);
       if (state.createFailure) return json({}, state.createFailure);
-      return json(state.echoCreates ? {name: created.name, text: created.text} : created);
+      return json(state.echoCreates ? {name: created.name, text: body.text} : created);
     }
     const name = url.pathname.slice("/v1/".length);
     const reactionParent = /^(spaces\/[^/]+\/messages\/[^/]+)\/reactions$/.exec(name)?.[1];
@@ -369,21 +373,22 @@ describe("Chat identities", () => {
     expect(backend.state.memberRequests).toBe(1);
   });
 
-  it("lists DMs without participant lookups, matching by name only, and finds one by email", async () => {
+  it("browses named conversations by name only, reaching a DM by email without participant lookups", async () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
     using _session = await chat.session();
     const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
-    expect(await picker.listChatSpaces("")).toEqual([
-      {value: SPACE_ID, title: "Direct message", subtitle: "Direct message"},
-    ]);
-    expect(await picker.listChatSpaces("Alice")).toEqual([]);
-    expect(await picker.listChatSpaces(SPACE_ID.toLowerCase())).toEqual([]);
+    expect(await picker.listChatSpaces("")).toEqual([]);
     expect(await picker.listChatSpaces(" alice@example.com ")).toEqual([
       {value: SPACE_ID, title: "alice@example.com", subtitle: "Direct message"},
     ]);
     expect(await picker.listChatSpaces("bob@example.com")).toEqual([]);
     expect(backend.state.memberRequests).toBe(0);
+    Object.assign(backend.state, {spaceType: "SPACE", spaceName: "Project review"});
+    const project = {value: SPACE_ID, title: "Project review", subtitle: "Space"};
+    expect(await picker.listChatSpaces("")).toEqual([project]);
+    expect(await picker.listChatSpaces("review")).toEqual([project]);
+    expect(await picker.listChatSpaces(SPACE_ID.toLowerCase())).toEqual([]);
   });
 
   it("opens an exact conversation reference without scanning the picker listing", async () => {
@@ -865,6 +870,21 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(2);
     await chat.applyAction(3);
     expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done", "All done"]);
+  });
+
+  it("rebases queued edits onto the stored text when a retried send gets its request echoed", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.post("Hi <users/123>")).message;
+    await message.edit("Hi <users/123>, done");
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    backend.state.createFailure = 0;
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done"]);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
