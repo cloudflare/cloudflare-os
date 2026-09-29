@@ -193,13 +193,17 @@ altering the text of the original post action. Reply actions require their root 
 and edit actions require their target post first and apply in submission order, since manual
 approval can otherwise run them out of order and an older edit would overwrite a newer one.
 Rejection rewinds the corresponding overlay; an edit targeting a rejected post cannot be
-applied. Undoing an applied edit restores the previous provider text.
+applied. An edit refuses to overwrite text changed in Google Chat since it was queued, and later
+queued edits follow the form Chat stored earlier ones in, such as a mention rendered as `@Name`.
+Undoing an applied edit restores the previous provider text.
 
 Sends are idempotent through Google's `requestId`, so a retried apply returns the message the
-first attempt created rather than posting again; a retry also recovers thread metadata from the
-committed message when Google echoes only the request. Reactions re-find their own state on
-retry. Replies to rejected roots disappear from the simulation. Authentication and permission
-errors during unsend remain retryable rather than being counted as successful deletion.
+first attempt created rather than posting again; because Google then echoes only the request, a
+retry re-reads the committed message for its stored text and thread. A retried edit rewrites its
+text rather than checking for conflicts, since it cannot tell Chat's rendering of its own lost
+write from an outside edit. Undoing an edit and reactions re-find their own state on retry.
+Replies to rejected roots disappear from the simulation. Authentication and permission errors
+during unsend remain retryable rather than being counted as successful deletion.
 
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
 with the getters after a worker restart. Reactions to new messages require the post to complete;
