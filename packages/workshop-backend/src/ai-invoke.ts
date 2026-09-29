@@ -31,15 +31,15 @@ export class AgentTurnError extends Error {
 /**
  * Best-effort HTTP status extraction for a failed request. pi reports provider failures as
  * error text only, and its onResponse callback never fires for a request the SDK failed (so
- * ModelHandle.lastResponse is unset then) -- but the provider SDKs' error messages conventionally
- * begin with the status code (e.g. "400 {...}"), which is enough for the overseer's triage
- * (report 5xx/unknown, skip expected 4xx).
+ * the request's `response` metadata is unset then) -- but the provider SDKs' error messages
+ * conventionally begin with the status code (e.g. "400 {...}"), which is enough for the
+ * overseer's triage (report 5xx/unknown, skip expected 4xx).
  */
-export function httpStatusFromError(errorMessage: string, handle: ModelHandle)
+export function httpStatusFromError(errorMessage: string, response: ModelHandle["lastResponse"])
     : number | undefined {
   const match = /^(\d{3})\b/.exec(errorMessage.trim());
   if (match) return Number(match[1]);
-  return handle.lastResponse?.status;
+  return response?.status;
 }
 
 /**
@@ -72,7 +72,7 @@ export async function completeText(handle: ModelHandle, args: {
     // Surface a cancellation as the abort reason, like a directly-aborted request would.
     args.signal?.throwIfAborted();
     const errorMessage = message.errorMessage ?? "The model request failed.";
-    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle));
+    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle.lastResponse));
   }
   return message.content
       .filter(block => block.type === "text")

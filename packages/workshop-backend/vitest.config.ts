@@ -27,6 +27,36 @@ const textModules: Plugin = {
   },
 }
 
+// Records the agent spans (see src/agent-tracing.ts) this Worker emits, as a streaming tail
+// worker receives them, so tests can read them back through the SPAN_RECORDER binding.
+const spanRecorder = `
+import { WorkerEntrypoint } from "cloudflare:workers";
+const AGENT_SPAN = /^(invoke_agent|chat|execute_tool|tool_approval)( |$)/;
+const spans = new Map();
+export class SpanRecorder extends WorkerEntrypoint {
+  spans() { return [...spans.values()]; }
+}
+export default {
+  tailStream() {
+    return ({ event, spanContext }) => {
+      if (event.type === "spanOpen" && AGENT_SPAN.test(event.name)) {
+        spans.set(event.spanId, {
+          name: event.name, spanId: event.spanId, parentSpanId: spanContext.spanId,
+          attributes: {}, closed: false,
+        });
+      }
+      let span = spans.get(spanContext.spanId);
+      if (span === undefined) return;
+      if (event.type === "attributes") {
+        for (let { name, value } of event.info) span.attributes[name] = value;
+      } else if (event.type === "spanClose") {
+        span.closed = true;
+      }
+    };
+  },
+};
+`
+
 /**
  * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
  * production -- e.g. Uint8Array.toHex/fromHex and crypto.subtle used by the sharing module. Most
@@ -44,6 +74,15 @@ export default defineConfig({
         compatibilityDate: '2026-09-04',
         // `allow_irrevocable_stub_storage` as in wrangler.jsonc: the user DO persists account stubs.
         compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
+        streamingTails: ['span-recorder'],
+        serviceBindings: { SPAN_RECORDER: { name: 'span-recorder', entrypoint: 'SpanRecorder' } },
+        workers: [{
+          name: 'span-recorder',
+          modules: true,
+          script: spanRecorder,
+          compatibilityDate: '2026-09-04',
+          compatibilityFlags: ['experimental', 'streaming_tail_worker'],
+        }],
         bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },

@@ -18,6 +18,7 @@ import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
+import { traceChat } from "./agent-tracing.js";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
@@ -307,6 +308,9 @@ function makeHandle(args: HandleArgs): ModelHandle {
     stream: (model, context, { thinking = true, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata.
       handle.lastResponse = undefined;
+      // This request's own response metadata: concurrent requests on one handle overwrite
+      // `lastResponse`, but not this.
+      let received: ModelHandle["lastResponse"];
       const headers: ProviderHeaders = {
         ...args.headers,
         ...options.headers,
@@ -333,10 +337,11 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
         sessionId: options.sessionId ?? args.sessionAffinity,
         onResponse: async (response, responseModel) => {
-          handle.lastResponse = {
+          received = {
             status: response.status,
             aiGatewayLogId: getHeader(response.headers, "cf-aig-log-id"),
           };
+          handle.lastResponse = received;
           await options.onResponse?.(response, responseModel);
         },
         // PDF attachments ride pi image parts and are rewritten here into the provider's native
@@ -346,7 +351,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
           return bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
         },
       };
-      return streamFn(model, normalizeContext(context), merged);
+      return traceChat(model, () => received,
+          () => streamFn(model, normalizeContext(context), merged));
     },
   };
   return handle;
