@@ -140,7 +140,7 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
       workspaceTitle: sourceMetadata.title,
     },
   }));
-  const installedWorkspace = await authenticated.newGadgetFromBlueprint(blueprint.id, {});
+  using installedWorkspace = await authenticated.newGadgetFromBlueprint(blueprint.id, {});
   const installedMetadata = await installedWorkspace.getMetadata();
   const installedGadgetId = installedMetadata.defaultGadgetId;
   if (installedGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
@@ -153,9 +153,6 @@ it.concurrent("publishes, instantiates, and deletes an owned blueprint", async (
       ? null
       : true);
   await installedWorkspace.deleteSelf();
-  // Deleting schedules a DO abort; dispose now so the session is told the workspace closed before
-  // the abort drops the stub, which would otherwise take the shared WebSocket down with it.
-  installedWorkspace[Symbol.dispose]();
   await sourceWorkspace.deleteSelf();
 });
 
@@ -238,7 +235,6 @@ it.concurrent("republishing a blueprint changes future installs, not existing on
   expect(await committedText(copyA.workspace, copyA.gadgetId, "app.txt"))
       .toEqual({ kind: "text", text: "v1\n" });
 
-  // Dispose each workspace right after deleting it, before its DO abort drops the shared WebSocket.
   for (const { workspace } of [copyA, copyB]) {
     await workspace.deleteSelf();
     workspace[Symbol.dispose]();
@@ -341,6 +337,5 @@ it.concurrent("an installed blueprint binds the installer's account, not the pub
       .toEqual(await sourceWorkspace.readFilesAtCommit(sourceSummary.commitId, sourcePaths));
 
   await installedWorkspace.deleteSelf();
-  installedWorkspace[Symbol.dispose]();
   await sourceWorkspace.deleteSelf();
 });
