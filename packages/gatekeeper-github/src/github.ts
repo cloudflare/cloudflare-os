@@ -5358,12 +5358,6 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
   }
 
   async createPullRequest(options: GitHubCreatePullRequestOptions): Promise<GitHubPullRequest> {
-    // Queue-time validation reads both branches' current heads (see prepareCreatePullRequest).
-    await this.#approvalQueue.authorizeObservation({
-      title: `Read heads of branches ${options.head} and ${options.base}`,
-      description: `Read the current heads of branches "${options.head}" and "${options.base}" ` +
-        `in order to create a pull request from one into the other.`,
-    });
     const action = await this.#gatekeeper.prepareCreatePullRequest(options);
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Create pull request ${options.title}`,
@@ -5372,21 +5366,17 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
     return new GitHubPullRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
   }
 
+  /**
+   * Opening a capability is not an observation: the caller learns only that the number exists,
+   * and the returned stub's getDetails() records the actual read.
+   */
   async getIssue(id: string): Promise<GitHubIssue> {
-    const details = await this.#gatekeeper.openIssue(id);
-    await this.#approvalQueue.authorizeObservation({
-      title: `Open issue #${details.id}: ${details.title}`,
-      description: `Open a capability for issue #${details.id} in ${details.repo.fullName}.`,
-    });
+    await this.#gatekeeper.openIssue(id);
     return new GitHubIssueImpl(this.#gatekeeper, this.#approvalQueue.dup(), id, "issue");
   }
 
   async getPullRequest(id: string): Promise<GitHubPullRequest> {
-    const details = await this.#gatekeeper.openPullRequest(id, await this.#gitCache.stub());
-    await this.#approvalQueue.authorizeObservation({
-      title: `Open pull request #${details.id}: ${details.title}`,
-      description: `Open a capability for pull request #${details.id} in ${details.repo.fullName}.`,
-    });
+    await this.#gatekeeper.openPullRequest(id, await this.#gitCache.stub());
     return new GitHubPullRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), id);
   }
 
@@ -5499,11 +5489,6 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
         `push() requires a full 40-character commit id; got ${JSON.stringify(commitId)}. ` +
         `Use resolveRef() to resolve a truncated id.`);
     }
-    // Binding the push's expected old head reads the branch's current state.
-    await this.#approvalQueue.authorizeObservation({
-      title: `Read head of branch ${branch}`,
-      description: `Read the current head of branch "${branch}" in order to push to it.`,
-    });
     const action = await this.#gatekeeper.preparePush(
       branch, commitId, options?.force ?? false, await this.#gitCache.stub());
     if (action === null) return;  // the branch is already at commitId: nothing to do
@@ -5553,13 +5538,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
     (this.approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
   }
 
-  protected async authorizeMutationPreparation(action: string): Promise<void> {
-    await this.approvalQueue.authorizeObservation({
-      title: `Read current state of #${this.logicalId}`,
-      description: `Read the current state of #${this.logicalId} in order to ${action} and capture revert information.`,
-    });
-  }
-
   async getDetails(): Promise<GitHubIssueDetails> {
     const details = await this.gatekeeper.openIssue(this.logicalId);
     await this.approvalQueue.authorizeObservation({
@@ -5570,7 +5548,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async setTitle(title: string): Promise<void> {
-    await this.authorizeMutationPreparation("change its title");
     const action = await this.gatekeeper.prepareSetTitle(this.kind, this.logicalId, title);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Rename #${this.logicalId}`,
@@ -5579,7 +5556,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async setBody(bodyMarkdown: string): Promise<void> {
-    await this.authorizeMutationPreparation("edit its body");
     const action = await this.gatekeeper.prepareSetBody(this.kind, this.logicalId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Edit body of #${this.logicalId}`,
@@ -5588,7 +5564,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async addLabels(labels: string[]): Promise<void> {
-    await this.authorizeMutationPreparation("add labels");
     const action = await this.gatekeeper.prepareAddLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Add labels to #${this.logicalId}`,
@@ -5597,7 +5572,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async removeLabels(labels: string[]): Promise<void> {
-    await this.authorizeMutationPreparation("remove labels");
     const action = await this.gatekeeper.prepareRemoveLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Remove labels from #${this.logicalId}`,
@@ -5606,7 +5580,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async close(reason?: "completed" | "notPlanned"): Promise<void> {
-    await this.authorizeMutationPreparation("close it");
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "closed", reason);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Close #${this.logicalId}`,
@@ -5615,7 +5588,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async reopen(): Promise<void> {
-    await this.authorizeMutationPreparation("reopen it");
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "open");
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Reopen #${this.logicalId}`,

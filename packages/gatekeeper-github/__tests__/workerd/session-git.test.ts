@@ -307,14 +307,14 @@ describe("GitHubRepoSessionImpl push", () => {
     return { prepared, submitted, methods };
   }
 
-  it("records the branch-head observation and declares the pushed commit", async () => {
+  it("records no observation for its internal branch-head read and declares the pushed commit", async () => {
     const queue = new TestApprovalQueue();
     const { prepared, submitted, methods } = pushFakes();
     const session = repoSession(queue, methods);
 
     await session.push("main", oid(1));
 
-    expect(queue.observations).toEqual(["Read head of branch main"]);
+    expect(queue.observations).toEqual([]);
     expect(prepared).toHaveLength(1);
     expect(prepared[0].slice(0, 3)).toEqual(["main", oid(1), false]);
     expect(submitted).toHaveLength(1);
@@ -458,5 +458,45 @@ describe("GitHubPullRequestImpl advertising", () => {
     const cursor = await session.listCommits();
     await cursor.next();
     expect(queue.cache.advertised.toSorted()).toEqual([oid(2), oid(3)]);
+  });
+});
+
+function prepare(type: string) {
+  return async () => ({ type });
+}
+
+describe("observation logging", () => {
+  // Reads a method makes only to prepare an action, or to open a capability, return nothing to
+  // the caller, so they must not be logged as observations.
+  it("records no observations for mutations or for opening issue and pull request stubs", async () => {
+    const queue = new TestApprovalQueue();
+    const submitted: string[] = [];
+    const methods = {
+      openIssue: async () => ({ id: "1", title: "Issue", repo: REPO }),
+      openPullRequest: async () => ({ id: "2", title: "PR", repo: REPO }),
+      prepareSetTitle: prepare("setTitle"),
+      prepareSetBody: prepare("setBody"),
+      prepareAddLabels: prepare("addLabels"),
+      prepareRemoveLabels: prepare("removeLabels"),
+      prepareChangeState: prepare("changeState"),
+      prepareCreatePullRequest: async () => ({ type: "createPullRequest", provisionalId: "~1" }),
+      submitActionForApproval: async (_queue: unknown, action: { type: string }) => {
+        submitted.push(action.type);
+      },
+    };
+    const session = repoSession(queue, methods);
+
+    for (const item of [await session.getIssue("1"), await session.getPullRequest("2")]) {
+      await item.setTitle("New title");
+      await item.setBody("New body");
+      await item.addLabels(["bug"]);
+      await item.removeLabels(["bug"]);
+      await item.close();
+      await item.reopen();
+    }
+    await session.createPullRequest({ title: "PR", head: "feature", base: "main" });
+
+    expect(submitted).toHaveLength(13);
+    expect(queue.observations).toEqual([]);
   });
 });
