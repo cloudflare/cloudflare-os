@@ -58,7 +58,7 @@ function trial(options: TrialOptions = {}) {
           usage: {
             model: MODEL,
             metadata: tokens === undefined ? {} : {
-              cumulativePromptTokens: tokens.prompt, cumulativeCachedPromptTokens: tokens.cached,
+              cumulativePromptTokens: tokens.prompt, cumulativeCacheReadTokens: tokens.cached,
             },
           },
           output: {

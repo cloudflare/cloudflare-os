@@ -3,7 +3,9 @@
 // agent's code lives, becomes a fenced block, so no line is longer than its longest source line.
 import { basename } from "node:path";
 import type { JsonValue } from "vitest-evals";
-import { parseResults, trials, type Assertion, type TranscriptEvent } from "./results.ts";
+import {
+  parseResults, trials, type Assertion, type StepUsage, type TranscriptEvent,
+} from "./results.ts";
 
 /** The reader shows this much of a line; anything past it would be lost, so lines are chunked. */
 const LINE_LIMIT = 1_900;
@@ -55,6 +57,12 @@ function event(entry: TranscriptEvent): string {
   }
 }
 
+function stepTokens(step: StepUsage): string {
+  const steps = step.modelSteps === undefined ? "" : ` for ${step.modelSteps} steps, ending with this one`;
+  return `Prompt tokens${steps}: ${step.uncachedTokens} uncached · ` +
+    `${step.cacheReadTokens} cache read · ${step.cacheWriteTokens} cache write`;
+}
+
 function trial(assertion: Assertion, index: number): string {
   const run = assertion.meta.harness.run;
   const { taskId } = run.session.metadata;
@@ -80,7 +88,22 @@ function trial(assertion: Assertion, index: number): string {
     for (const error of run.errors) lines.push(`- ${error.name}: ${value(error.message)}`);
   }
   lines.push("", "### Transcript", "");
-  lines.push(run.session.events.map(event).join("\n\n"));
+  // A step's prompt tokens go before the events of the reply they paid for.
+  const steps = run.usage.metadata.steps ?? [];
+  const transcript: string[] = [];
+  let next = 0;
+  const stepsThrough = (sequence: number) => {
+    for (let step = steps[next]; step !== undefined && step.sequence <= sequence;
+      step = steps[++next]) {
+      transcript.push(stepTokens(step));
+    }
+  };
+  for (const entry of run.session.events) {
+    if (entry.metadata?.sequence !== undefined) stepsThrough(entry.metadata.sequence);
+    transcript.push(event(entry));
+  }
+  stepsThrough(Infinity);
+  lines.push(transcript.join("\n\n"));
   return lines.join("\n");
 }
 

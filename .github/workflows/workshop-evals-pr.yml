@@ -489,6 +489,10 @@ jobs:
             - **<tool>: <error>** · <count> in <task>[, <count> in <task>] · <cause> — <why agents
               hit it, from the transcripts>
 
+            ### Prompt cache
+            - **<task>** · cache hits <baseline>% → <candidate>% · this PR: <yes | no | unclear> —
+              <the step where cache reads fell, and what changed in the prompt there>
+
             ### What to do
             - <one action for the PR author>
 
@@ -519,6 +523,13 @@ jobs:
             included, one bullet per error across tasks, at most five. Give each a <cause> from
             the list above, read from the transcripts where the agent hit it.
 
+            Prompt cache: one bullet per comparable task whose `cacheHitRate` in comparison.json
+            fell by 0.05 or more. In the trajectories each model step opens with its prompt tokens:
+            uncached, cache read and cache write. Find the step where cache reads fell and say
+            what changed in the prompt there, or that no step stands out. The system prompt is
+            built at the start of each turn and lists the workspace's gadgets and their files, so
+            a gadget created during a turn changes the prompt from the next turn on.
+
             What to do: one bullet per action, most important first, naming the file and the
             change, for example a sentence to add to a tool description. For a failure or tool
             error this PR did not cause, say the action is optional, or that there is nothing to
@@ -533,7 +544,7 @@ jobs:
 
             Under the verdict, list only the failure modes this PR caused or may have caused, and
             leave the list out when there are none. Leave out a Triage section that would be
-            empty, and the whole block only when all three are. Keep the blank lines around the
+            empty, and the whole block only when all four are. Keep the blank lines around the
             block's contents: GitHub renders Markdown inside it only after them. Be concise and
             direct; outside the block write plain sentences and the verdict's list, with no other
             headings, tables or code blocks.

@@ -8581,7 +8581,8 @@ class OverseerImpl implements AgentHooks {
       meta.totalTokens = usage.totalTokens;
       meta.promptTokens =
           (meta.promptTokens ?? 0) + usage.input + usage.cacheRead + usage.cacheWrite;
-      meta.cachedPromptTokens = (meta.cachedPromptTokens ?? 0) + usage.cacheRead;
+      meta.cacheReadTokens = (meta.cacheReadTokens ?? 0) + usage.cacheRead;
+      meta.cacheWriteTokens = (meta.cacheWriteTokens ?? 0) + usage.cacheWrite;
     }
 
     meta.lastActive = this.getChatTimestamp();

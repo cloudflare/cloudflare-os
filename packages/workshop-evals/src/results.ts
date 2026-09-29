@@ -8,18 +8,22 @@ import type { JsonValue } from "vitest-evals";
 
 const JsonSchema: z.ZodType<JsonValue> = z.json();
 
+// Events from the chat log carry their message's sequence; a prompt the log never recorded does not.
+const EventMetadataSchema = z.object({ sequence: z.number().int().optional() }).loose().optional();
+
 const TranscriptEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("message"),
     role: z.enum(["system", "user", "assistant"]),
     content: JsonSchema.optional(),
-    metadata: z.record(z.string(), JsonSchema).optional(),
+    metadata: EventMetadataSchema,
   }).loose(),
   z.object({
     type: z.literal("tool_call"),
     id: z.string(),
     name: z.string(),
     arguments: z.record(z.string(), JsonSchema).optional(),
+    metadata: EventMetadataSchema,
   }).loose(),
   z.object({
     type: z.literal("tool_result"),
@@ -27,8 +31,18 @@ const TranscriptEventSchema = z.discriminatedUnion("type", [
     name: z.string().optional(),
     content: JsonSchema.optional(),
     error: z.object({ name: z.string(), message: z.string() }).loose().optional(),
+    metadata: EventMetadataSchema,
   }).loose(),
 ]);
+
+// One model step's prompt tokens, as the Workshop agent session's StepUsage records them.
+const StepUsageSchema = z.object({
+  sequence: z.number().int(),
+  uncachedTokens: z.number(),
+  cacheReadTokens: z.number(),
+  cacheWriteTokens: z.number(),
+  modelSteps: z.number().int().optional(),
+}).loose();
 
 const CheckSchema = z.object({
   id: z.string(),
@@ -55,7 +69,9 @@ export const AssertionSchema = z.object({
           metadata: z.object({
             observedCumulativeChatCostUsd: z.number().nonnegative().optional(),
             cumulativePromptTokens: z.number().nonnegative().optional(),
-            cumulativeCachedPromptTokens: z.number().nonnegative().optional(),
+            cumulativeCacheReadTokens: z.number().nonnegative().optional(),
+            cumulativeCacheWriteTokens: z.number().nonnegative().optional(),
+            steps: z.array(StepUsageSchema).optional(),
           }).loose(),
         }).loose(),
         output: z.object({
@@ -91,6 +107,7 @@ const ResultsSchema = z.object({ testResults: z.array(FileSchema) }).loose();
 export type Assertion = z.infer<typeof AssertionSchema>;
 export type EvalFile = z.infer<typeof FileSchema>;
 export type TranscriptEvent = z.infer<typeof TranscriptEventSchema>;
+export type StepUsage = z.infer<typeof StepUsageSchema>;
 
 /** Parse one report; `name` labels the side in errors. */
 export function parseResults(name: string, text: string): EvalFile[] {

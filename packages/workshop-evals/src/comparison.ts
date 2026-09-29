@@ -103,7 +103,7 @@ function infrastructureMessage(assertion: Assertion): string {
 
 function stats({ assertions }: Cohort): EvalStats {
   const tokens = assertions.flatMap(assertion => {
-    const { cumulativePromptTokens: prompt, cumulativeCachedPromptTokens: cached } =
+    const { cumulativePromptTokens: prompt, cumulativeCacheReadTokens: cached } =
       assertion.meta.harness.run.usage.metadata;
     return prompt === undefined || cached === undefined ? [] : [{ prompt, cached }];
   });

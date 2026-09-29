@@ -84,7 +84,7 @@ export function createWorkshopHarness(
             unrecordedPrompt = undefined;
           }
           if (result.history.length > 0) history = result.history;
-          // Cost and prompt tokens are running totals for the chat, so a turn that reports none
+          // Cost, token totals and steps cover the whole chat so far, so a turn that reports none
           // keeps the last ones. The last step's tokens are the turn's own.
           const { lastStepTokens: _, ...totals } = usage;
           usage = { ...totals, ...result.usage };

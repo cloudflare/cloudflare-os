@@ -20,7 +20,7 @@ function headings(markdown: string): string[] {
   return found;
 }
 
-function report(events: unknown[], checks: unknown[] = []): string {
+function report(events: unknown[], checks: unknown[] = [], steps?: unknown[]): string {
   return JSON.stringify({ testResults: [{
     name: "/evals/project-doc.eval.ts",
     assertionResults: [{
@@ -31,7 +31,10 @@ function report(events: unknown[], checks: unknown[] = []): string {
           metadata: { taskId: "project-doc", taskVersion: "v", gitCommit: "a".repeat(40) },
           events,
         },
-        usage: { model: "@cf/zai-org/glm-5.3-flash", metadata: { observedCumulativeChatCostUsd: 0.01 } },
+        usage: {
+          model: "@cf/zai-org/glm-5.3-flash",
+          metadata: { observedCumulativeChatCostUsd: 0.01, steps },
+        },
         output: {
           metrics: { modelTurns: 1, toolCalls: 1, toolErrors: 0 },
           turns: [{ outcome: { status: "completed" }, checks }],
@@ -102,6 +105,27 @@ it("keeps model-supplied identifiers out of the document structure", () => {
   ]));
   expect(headings(markdown)).toHaveLength(1);
   expect(markdown).toContain("## injected");
+});
+
+it("puts each step's prompt tokens before the reply they paid for", () => {
+  const markdown = renderTrajectories(report([
+    { type: "message", role: "user", content: "Build it.", metadata: { sequence: 0 } },
+    { type: "tool_call", id: "call-1", name: "writeFile", arguments: {}, metadata: { sequence: 1 } },
+    { type: "message", role: "assistant", content: "Done.", metadata: { sequence: 3 } },
+  ], [], [
+    { sequence: 1, uncachedTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 900 },
+    { sequence: 2, uncachedTokens: 40, cacheReadTokens: 900, cacheWriteTokens: 0 },
+    { sequence: 4, uncachedTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0, modelSteps: 2 },
+  ]));
+  expect(markdown.split("### Transcript\n\n")[1]?.trimEnd().split("\n\n")).toEqual([
+    "**user** `Build it.`",
+    "Prompt tokens: 12 uncached · 0 cache read · 900 cache write",
+    "→ `writeFile` `call-1`",
+    "Prompt tokens: 40 uncached · 900 cache read · 0 cache write",
+    "**assistant** `Done.`",
+    "Prompt tokens for 2 steps, ending with this one: 1000 uncached · 0 cache read · " +
+      "0 cache write",
+  ]);
 });
 
 it("shows a file that ran no trials beside the trials of the others", () => {
