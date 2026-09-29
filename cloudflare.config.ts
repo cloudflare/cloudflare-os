@@ -6,7 +6,6 @@ export default defineGadgetsWorker({
   // forwards frontend requests to the backend (see packages/router/src/index.ts), which serves
   // them from its own assets binding in `run-local` mode.
   entrypoint: "packages/router/src/index.ts",
-  compatibilityFlags: ["enable_ctx_exports"],
 
   env: {
     // Gatekeeper service bindings are dynamically added by run-dev-server.ts.

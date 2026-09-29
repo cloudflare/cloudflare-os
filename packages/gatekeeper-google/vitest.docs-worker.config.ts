@@ -1,7 +1,9 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
-import { COMPATIBILITY_DATE } from "@gadgets/scripts/worker-config";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
+import deployed from "./cloudflare.config.ts";
+
+const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 /** Workerd coverage for nested Drive sessions and the Google Doc Durable Object. */
 export default defineConfig({
@@ -10,9 +12,8 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/worker.ts",
       miniflare: {
-        // Kept in step with cloudflare.config.ts; drift here tests a runtime we do not deploy.
-        compatibilityDate: COMPATIBILITY_DATE,
-        compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
+        compatibilityDate,
+        compatibilityFlags,
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {
           GOOGLE_DOC_GATEKEEPER: { className: "GoogleDocGatekeeperImpl", useSQLite: true },

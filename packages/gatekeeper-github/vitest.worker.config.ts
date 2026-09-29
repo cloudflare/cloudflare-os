@@ -1,7 +1,9 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
-import { COMPATIBILITY_DATE } from "@gadgets/scripts/worker-config";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
+import deployed from "./cloudflare.config.ts";
+
+const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 /**
  * The suite that has to run in workerd, because what it covers -- the session-side git-cache
@@ -16,9 +18,8 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/workerd/worker.ts",
       miniflare: {
-        // Kept in step with cloudflare.config.ts; a drift here tests a runtime we do not deploy.
-        compatibilityDate: COMPATIBILITY_DATE,
-        compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
+        compatibilityDate,
+        compatibilityFlags,
         // cloudflare.config.ts's Text-module rules, which github.ts's .txt/.svg imports rely on.
         modulesRules: [
           { type: "Text", include: ["**/*.txt", "**/*.svg"] },

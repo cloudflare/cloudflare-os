@@ -52,6 +52,12 @@ export interface WranglerExtras {
   kvPreviewIds?: Record<string, string>;
 }
 
+/** The `wrangler` export of a gatekeeper validated by capnweb-validate that imports .txt/.svg. */
+export const DEFAULT_GATEKEEPER_WRANGLER = {
+  build: CAPNWEB_VALIDATE_BUILD,
+  rules: textModules(["**/*.txt", "**/*.svg"]),
+} satisfies WranglerExtras;
+
 /** `defineConfig` for one Worker, with the repo-wide compatibility date filled in. */
 export function defineGadgetsWorker(worker: Omit<WorkerConfig, "compatibilityDate">) {
   return defineConfig({ worker: { compatibilityDate: COMPATIBILITY_DATE, ...worker } });

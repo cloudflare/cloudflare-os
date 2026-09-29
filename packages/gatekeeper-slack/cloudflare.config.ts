@@ -1,6 +1,5 @@
 import {
-  CAPNWEB_VALIDATE_BUILD, defineGadgetsWorker, textModules,
-  type DurableObjectMigration, type WranglerExtras,
+  DEFAULT_GATEKEEPER_WRANGLER, defineGadgetsWorker, type DurableObjectMigration,
 } from "@gadgets/scripts/worker-config";
 
 export default defineGadgetsWorker({
@@ -9,10 +8,7 @@ export default defineGadgetsWorker({
   compatibilityFlags: ["allow_irrevocable_stub_storage"],
 });
 
-export const wrangler = {
-  build: CAPNWEB_VALIDATE_BUILD,
-  rules: textModules(["**/*.txt", "**/*.svg"]),
-} satisfies WranglerExtras;
+export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
 
 export const migrations: DurableObjectMigration[] = [
   {
