@@ -37,9 +37,14 @@
       "types": "./release/manifest-lib.ts",
       "import": "./release/manifest-lib.ts"
     },
+    "./worker-config": {
+      "types": "./worker-config.ts",
+      "import": "./worker-config.ts"
+    },
     "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
+    "@cloudflare/config": "0.20.0",
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
     "typescript6": "catalog:",

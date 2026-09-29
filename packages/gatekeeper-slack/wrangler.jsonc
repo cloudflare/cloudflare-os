@@ -1,14 +1,25 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
   "name": "gatekeeper-slack",
   "main": ".wrangler/validate/src/slack.ts",
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": [
+    "allow_irrevocable_stub_storage"
+  ],
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"
   },
-  "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["allow_irrevocable_stub_storage"],
   "rules": [
-    { "type": "Text", "globs": ["**/*.txt", "**/*.svg"], "fallthrough": false }
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.txt",
+        "**/*.svg"
+      ],
+      "fallthrough": false
+    }
   ],
   "migrations": [
     {

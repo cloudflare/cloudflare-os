@@ -1,18 +1,30 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "gatekeeper-context",
   "main": ".wrangler/validate/src/index.ts",
-  "build": {
-    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
-    "watch_dir": "src"
-  },
   "compatibility_date": "2026-09-04",
   "compatibility_flags": [
     "nodejs_compat",
     "allow_irrevocable_stub_storage"
   ],
-
-  // DO classes are reached via ctx.exports; no durable_objects binding needed.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CONTEXT_COLLECTIONS",
+      "preview_id": "gadgets-context-collections"
+    }
+  ],
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
   "migrations": [
     {
       "tag": "v0",
@@ -23,21 +35,5 @@
         "ContextGatekeeper"
       ]
     }
-  ],
-
-  // Public-collections snapshot KV. preview_id preserves existing dev data.
-  "kv_namespaces": [
-    {
-      "binding": "CONTEXT_COLLECTIONS",
-      "preview_id": "gadgets-context-collections"
-    }
-  ],
-
-  // Optional: add an Artifacts binding named ARTIFACTS to enable Git-backed collections.
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1,
-    "logs": { "invocation_logs": false }
-  }
-
+  ]
 }

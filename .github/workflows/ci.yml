@@ -50,6 +50,9 @@ jobs:
       - name: Type-check scripts/
         run: pnpm types:scripts
 
+      - name: Check generated worker configs
+        run: pnpm configs:check
+
   test:
     name: Build and test
     runs-on: ubuntu-latest

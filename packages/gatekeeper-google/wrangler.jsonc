@@ -1,45 +1,72 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
   "name": "gatekeeper-google",
   "main": ".wrangler/validate/src/google.ts",
-  "build": {
-    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
-    "watch_dir": "src"
-  },
   "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["allow_irrevocable_stub_storage", "nodejs_als"],
-  "rules": [
-    { "type": "Text", "globs": ["**/*.txt", "**/*.svg"], "fallthrough": false }
-  ],
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": [ "UserAccount", "GmailGatekeeperImpl" ]
-    },
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [ "BigQueryGatekeeperImpl" ]
-    },
-    {
-      "tag": "v2",
-      "new_sqlite_classes": [ "GoogleCalendarGatekeeperImpl" ]
-    },
-    {
-      "tag": "v3",
-      "new_sqlite_classes": [ "GoogleSheetsGatekeeperImpl" ]
-    },
-    {
-      "tag": "v4",
-      "new_sqlite_classes": [ "GoogleDriveGatekeeperImpl", "GoogleDocGatekeeperImpl" ]
-    },
-    {
-      "tag": "v5",
-      "new_sqlite_classes": [ "GoogleChatGatekeeperImpl" ]
-    }
+  "compatibility_flags": [
+    "allow_irrevocable_stub_storage",
+    "nodejs_als"
   ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
-    "logs": { "invocation_logs": false }
-  }
-
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": [
+        "**/*.txt",
+        "**/*.svg"
+      ],
+      "fallthrough": false
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": [
+        "UserAccount",
+        "GmailGatekeeperImpl"
+      ]
+    },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BigQueryGatekeeperImpl"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "GoogleCalendarGatekeeperImpl"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "GoogleSheetsGatekeeperImpl"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "GoogleDriveGatekeeperImpl",
+        "GoogleDocGatekeeperImpl"
+      ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [
+        "GoogleChatGatekeeperImpl"
+      ]
+    }
+  ]
 }

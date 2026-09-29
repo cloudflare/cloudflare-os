@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
 import { getDevServerConfig } from "./dev-server-config.ts";
+import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
@@ -98,6 +99,10 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
     return [];
   }
 }
+
+// The committed wrangler.jsonc files are generated from cloudflare.config.ts; regenerate them so a
+// TypeScript edit reaches `pnpm dev-server` without a separate step.
+await generateWorkerConfigs({ check: false });
 
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
 

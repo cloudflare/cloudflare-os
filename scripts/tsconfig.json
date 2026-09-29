@@ -18,10 +18,14 @@
     "verbatimModuleSyntax": true
   },
   // The packages' Node-only build/import tools are excluded from their Worker tsconfigs and need the
-  // same Node runtime and erasable-syntax checks as the repo-level scripts.
+  // same Node runtime and erasable-syntax checks as the repo-level scripts. So do the Worker configs,
+  // which scripts/generate-worker-configs.ts imports under `node`.
   "include": [
     "**/*.ts",
     "../packages/workshop-backend/scripts/*.ts",
-    "../packages/gatekeeper-*/build-app.ts"
+    "../packages/gatekeeper-*/build-app.ts",
+    "../cloudflare.config.ts",
+    "../packages/*/cloudflare.config.ts",
+    "../packages/integration-tests/fixtures/*/cloudflare.config.ts"
   ]
 }

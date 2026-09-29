@@ -1,28 +1,23 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "gatekeeper-test",
-
-  // `build:test-gatekeeper` applies the same RPC validation used by production gatekeepers.
   "main": ".wrangler/validate/src/test-gatekeeper.ts",
-
   "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["experimental", "allow_irrevocable_stub_storage"],
-
-  // Lets the control surface submit external chat messages through the Workshop's gateway
-  // entrypoint the way a real chat-integration worker (bound with its own `source` prop) would.
-  // The harness always boots workshop-backend as the primary worker, so the name resolves.
+  "compatibility_flags": [
+    "experimental",
+    "allow_irrevocable_stub_storage"
+  ],
   "services": [
     {
       "binding": "WORKSHOP_EXTERNAL_MESSAGES",
       "service": "workshop-backend",
       "entrypoint": "ExternalMessageGateway",
-      "props": { "source": "test" }
+      "props": {
+        "source": "test"
+      }
     }
   ],
-
-  // The Workshop's Overseer namespace, so the control surface can derive the DO id behind an
-  // external gadgetKey -- the same name-derived id the gateway targets -- for tests to open the
-  // workspace over the web API. The binding only derives ids; it never reaches an instance.
   "durable_objects": {
     "bindings": [
       {
@@ -32,12 +27,13 @@
       }
     ]
   },
-
-  // This worker's own DO classes are reached via ctx.exports; no durable_objects binding needed.
   "migrations": [
     {
       "tag": "v0",
-      "new_sqlite_classes": ["TestGatekeeper", "TestControl"]
+      "new_sqlite_classes": [
+        "TestGatekeeper",
+        "TestControl"
+      ]
     }
   ]
 }
