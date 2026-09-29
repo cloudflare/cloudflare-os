@@ -518,6 +518,7 @@ jobs:
             ⚪ NO REGRESSION FROM THIS PR. Justify it from the comparable tasks' numbers and the
             failure modes; never add up or average tasks that are not comparable.
 
-            When no failed candidate run is left once same-inputs tasks are skipped, write only
-            the heading, Performance and the verdict. Plain sentences; no other headings, tables
-            or code blocks.
+            When no failed candidate run is left once same-inputs tasks are skipped, or this PR
+            caused none of the failures (every one is a no), write only the heading, Performance
+            and the verdict, and keep Performance to how the candidate did. Be concise and direct:
+            plain sentences, no other headings, tables or code blocks.
