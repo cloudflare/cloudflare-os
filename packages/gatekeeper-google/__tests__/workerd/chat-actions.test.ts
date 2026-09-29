@@ -82,8 +82,11 @@ function chatBackend() {
     edits: [] as Array<{name: string; text: string}>,
     /** Answer creates the way Google replays an idempotent request: names only, no thread. */
     echoCreates: false,
-    /** Post the next created message but fail its response, as when the reply is lost. */
-    loseNextCreateResponse: false,
+    /**
+     * Fail creates with this status until cleared: a 4xx refuses before posting, and a 5xx posts
+     * but loses the response, as the retry layer sees an unrecoverable outage.
+     */
+    createFailure: 0,
     getMessageStatus: 200,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
@@ -156,7 +159,8 @@ function chatBackend() {
       const body = JSON.parse(init.body as string) as {text: string; thread?: {name: string}};
       const requestId = url.searchParams.get("requestId")!;
       const prior = state.sentRequests.get(requestId);
-      if (prior) return json({name: prior, text: body.text});
+      if (state.createFailure >= 400 && state.createFailure < 500) return json({}, state.createFailure);
+      if (prior) return state.createFailure ? json({}, state.createFailure) : json({name: prior, text: body.text});
       if (body.thread && !state.messages.some(message => message.thread?.name === body.thread!.name)) {
         return json({}, 404);
       }
@@ -172,10 +176,7 @@ function chatBackend() {
       };
       state.messages.push(created);
       state.sentRequests.set(requestId, created.name);
-      if (state.loseNextCreateResponse) {
-        state.loseNextCreateResponse = false;
-        return json({}, 409);
-      }
+      if (state.createFailure) return json({}, state.createFailure);
       return json(state.echoCreates ? {name: created.name, text: created.text} : created);
     }
     const name = url.pathname.slice("/v1/".length);
@@ -804,15 +805,31 @@ describe("Google Chat gatekeeper behaviors", () => {
     const chat = chatHarness(backend);
     using space = await chat.session();
     using _posted = (await space.post("hello")).message;
-    backend.state.loseNextCreateResponse = true;
+    backend.state.createFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
     await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     await chat.restart();
     await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    // A later refusal says nothing about the earlier attempt that may have posted.
+    backend.state.createFailure = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    backend.state.createFailure = 0;
     await chat.applyAction(1);
     expect(backend.state.creates).toHaveLength(1);
     await chat.revertAction(1);
     expect(backend.state.deletes).toHaveLength(1);
+  });
+
+  it("keeps a send rejectable when Chat definitively refuses its first write", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _posted = (await space.post("hello")).message;
+    backend.state.createFailure = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {

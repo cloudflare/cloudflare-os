@@ -157,9 +157,25 @@ class ChatStore {
     this.#kv.delete(`chat:attempted:${id}`);
   }
 
-  /** Record that an action's write is about to reach Google; its outcome is uncertain until applied. */
-  markAttempted(id: number): void {
-    this.#kv.put(`chat:attempted:${id}`, true);
+  /**
+   * Run one write to Google, first marking the action uncertain so rejectAction refuses it until
+   * an apply finishes. A definitive refusal of the first write proves nothing landed, so it clears.
+   */
+  async attemptWrite<T>(id: number, write: () => Promise<T>): Promise<T> {
+    const key = `chat:attempted:${id}`;
+    const first = this.#kv.get(key) === undefined;
+    this.#kv.put(key, true);
+    try {
+      return await write();
+    } catch (error) {
+      // 408 and 429 leave the outcome open, and a later refusal says nothing about whether an
+      // earlier attempt landed: a send has no read that could tell.
+      if (first && error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
+          error.status !== 408 && error.status !== 429) {
+        this.#kv.delete(key);
+      }
+      throw error;
+    }
   }
 
   wasAttempted(id: number): boolean {
@@ -1188,11 +1204,10 @@ export class GoogleChatGatekeeperImpl
         }
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
-        store.markAttempted(actionId);
-        let created = await api.createMessage(action.spaceName, {
+        let created = await store.attemptWrite(actionId, () => api.createMessage(action.spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
-        }, { requestId: action.requestId });
+        }, { requestId: action.requestId }));
         // Idempotent retries may echo only the submitted fields and assigned message ID.
         if (!created.threadId && (threadName || action.startsThread)) {
           created = await api.getMessage(created.id);
@@ -1216,8 +1231,7 @@ export class GoogleChatGatekeeperImpl
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
           }
-          store.markAttempted(actionId);
-          text = await api.updateMessageText(target.committed, action.text);
+          text = await store.attemptWrite(actionId, () => api.updateMessageText(target.committed, action.text));
         }
         return {
           type: "updatedMessage", messageName: target.committed, previousText: action.previousText, text,
@@ -1229,16 +1243,15 @@ export class GoogleChatGatekeeperImpl
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         if (existing) return { type: "none" };
-        store.markAttempted(actionId);
-        const reaction = await api.createReaction(action.messageName, action.emoji);
+        const reaction = await store.attemptWrite(actionId,
+          () => api.createReaction(action.messageName, action.emoji));
         return { type: "addedReaction", reactionName: reaction.id };
       }
       case "removeReaction": {
         requireMessageInScope(scope, await api.getMessage(action.messageName));
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         if (!existing) return { type: "none" };
-        store.markAttempted(actionId);
-        await api.deleteReaction(existing.id);
+        await store.attemptWrite(actionId, () => api.deleteReaction(existing.id));
         return { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
       }
       default:
