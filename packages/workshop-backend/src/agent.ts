@@ -18,7 +18,7 @@ import { formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
-import { traceAgentTurn, traceRejectedToolCall, traceTool } from "./agent-tracing";
+import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { blobOid } from "./git-store";
@@ -1312,7 +1312,7 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
  * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
  * it has compacted; the model is never prompted.
  */
-export function runAgent(
+export async function runAgent(
     hooks: AgentHooks,
     handle: ModelHandle,
     chatId: number,
@@ -1320,16 +1320,14 @@ export function runAgent(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig): Promise<void> {
-  return traceAgentTurn(hooks.getChatAgentContext(chatId), handle.model, abortSignal, async () => {
-    while (true) {
-      let history = hooks.loadChatHistory(chatId);
-      let outcome = await runAgentPass(
-          hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
-      if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
-      if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
-      abortSignal.throwIfAborted();
-    }
-  });
+  while (true) {
+    let history = hooks.loadChatHistory(chatId);
+    let outcome = await runAgentPass(
+        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
+    if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
+    if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
+    abortSignal.throwIfAborted();
+  }
 }
 
 async function runAgentPass(

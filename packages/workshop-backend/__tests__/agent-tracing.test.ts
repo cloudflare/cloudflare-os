@@ -15,10 +15,15 @@ import type {
 
 // The OverseerImpl members these tests drive; the class itself is private to overseer.ts.
 interface OverseerInternals {
+  env: Cloudflare.Env;
   ownerId: string;
   users: {
     idFromString(id: string): string;
-    get(): { getChatContext(): Promise<{ profile: AiChatAuthorInfo }> };
+    get(): {
+      getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
+      getCloudflareGatekeeperAccount(): Promise<null>;
+      consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
+    };
   };
   storage: {
     chatMeta: { put(meta: AiChatMetadata): void };
@@ -28,8 +33,10 @@ interface OverseerInternals {
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
   };
   nextChatSequence(chatId: number): number;
-  startAgent(chatId: number, aiModel: { profile: AiChatAuthorInfo, config: AiModelConfig },
-             initiator: AiChatAuthorInfo, initiatorUserId: string): void;
+  startAgent(chatId: number, aiModel: AiModel, initiator: AiChatAuthorInfo,
+             initiatorUserId: string): void;
+  deliverAgentCallback(chatId: number, methodName: string, args: unknown[],
+                       initiatorUserId: string, initiatorModelId: string): Promise<void>;
   waitForAllAgentsToComplete(): Promise<void>;
   cancelAgent(chatId: number): void;
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
@@ -38,6 +45,11 @@ interface OverseerInternals {
   getGatekeeperFacet(): { applyAction(): Promise<void> };
   applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
       : Promise<void>;
+}
+
+interface AiModel {
+  profile: AiChatAuthorInfo;
+  config: AiModelConfig;
 }
 
 interface RecordedSpan {
@@ -141,27 +153,40 @@ function stubProvider(responses: (() => Response)[]): Pick<Turn, "requested" | "
   return { requested, release };
 }
 
+interface TurnOptions {
+  config?: AiModelConfig;
+  // Turns on the free-tier usage limit, which the owner has used up.
+  usageLimited?: boolean;
+}
+
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
 // until the turn ends, as a Workshop browser session does.
-function startTurn(responses: (() => Response)[]): Turn {
+function startTurn(responses: (() => Response)[], {
+  config = { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
+  usageLimited = false,
+}: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
   let workspace = `agent-tracing-${crypto.randomUUID()}`;
   let session = inOverseer(workspace, async impl => {
+    if (usageLimited) impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async () => ({ profile: OWNER }) }),
+      get: () => ({
+        getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
+        getCloudflareGatekeeperAccount: async () => null,
+        consumeDailyLlmCall: async () => ({ withinLimits: false }),
+      }),
     };
-    impl.storage.chatMeta.put(
-        { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    impl.storage.chatMeta.put({
+      id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+      activeAgent: MODEL,
+    });
     impl.storage.chats.put({
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
     });
-    impl.startAgent(CHAT_ID, {
-      profile: MODEL,
-      config: { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
-    }, OWNER, OWNER_USER_ID);
+    impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, OWNER_USER_ID);
     await impl.waitForAllAgentsToComplete();
   });
   let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
@@ -178,14 +203,15 @@ async function inOverseer(
   });
 }
 
-// The spans of a finished turn.
-async function turnSpans(turn: Turn): Promise<RecordedSpan[]> {
+// The spans of `turns` finished turns.
+async function turnSpans(turn: Turn, turns = 1): Promise<RecordedSpan[]> {
   await turn.session;
   let spans: RecordedSpan[] = [];
   await vi.waitFor(async () => {
     spans = (await env.SPAN_RECORDER.spans())
         .filter(span => span.attributes["gen_ai.agent.id"] === turn.gadgetId);
-    expect(spans.find(span => span.name.startsWith("invoke_agent"))?.closed).toBe(true);
+    expect(spans.filter(span => span.name.startsWith("invoke_agent") && span.closed))
+        .toHaveLength(turns);
   }, { timeout: 5000 });
   return spans;
 }
@@ -293,6 +319,38 @@ describe("agent tracing", () => {
       "cloudflare.agents.response.finish_reason": "error", "error.type": errorType,
     });
     expect(only(spans, "invoke_agent workshop-agent").attributes["error.type"]).toBe(errorType);
+  });
+
+  it("traces a turn that fails before it reaches a model", async () => {
+    // A Workers AI model with no credentials, which getModel() refuses.
+    let turn = startTurn([], { config: { provider: "cloudflare", model: "@cf/m", apiToken: "" } });
+
+    let spans = await turnSpans(turn);
+    expect(spans.map(span => span.name)).toEqual(["invoke_agent workshop-agent"]);
+    expect(spans[0].attributes).toMatchObject({ modelId: MODEL.id, "error.type": "Error" });
+  });
+
+  it("traces a turn the usage limit blocks as failed", async () => {
+    let turn = startTurn([], { usageLimited: true });
+
+    let spans = await turnSpans(turn);
+    expect(spans.map(span => span.name)).toEqual(["invoke_agent workshop-agent"]);
+    expect(spans[0].attributes["error.type"]).toBe("usage_limit");
+  });
+
+  it("starts the chat's next turn beside the one before, not inside it", async () => {
+    let reply = () => anthropicResponse([{ type: "text", text: "Done." }], "end_turn",
+        { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 });
+    let turn = startTurn([reply, reply]);
+    await turn.requested;
+    // A callback that arrives mid-turn waits for the turn to end, and its teardown starts the next.
+    await inOverseer(turn.workspace, impl =>
+        impl.deliverAgentCallback(CHAT_ID, "ping", [], OWNER_USER_ID, MODEL.id));
+    turn.release();
+
+    let [first, second] = (await turnSpans(turn, 2))
+        .filter(span => span.name.startsWith("invoke_agent"));
+    expect(second.parentSpanId).toBe(first.parentSpanId);
   });
 
   it("marks a stopped turn canceled, not failed", async () => {

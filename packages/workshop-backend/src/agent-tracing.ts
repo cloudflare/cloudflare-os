@@ -72,10 +72,21 @@ function usageAttributes(usage: Usage): Attributes {
   };
 }
 
-/** Runs one agent turn for the chat described by `context` in an `invoke_agent` span. */
-export function traceAgentTurn<Result>(
-    context: AiChatAgentContext, model: Model<Api>, signal: AbortSignal,
-    run: () => Promise<Result>): Promise<Result> {
+/** The `invoke_agent` span of one agent turn, which the turn fills in as it runs. */
+export interface AgentTurnSpan {
+  /** Records the model the turn runs, once it is chosen. */
+  setModel(model: Model<Api>): void;
+  /** Records why a turn that returns without throwing failed, e.g. `usage_limit`. */
+  setErrorType(errorType: string): void;
+}
+
+/**
+ * Runs one agent turn for the chat described by `context` in an `invoke_agent` span. `signal` is
+ * the turn's cancel signal, which tells a stop from a failure.
+ */
+export function traceAgentTurn(
+    context: AiChatAgentContext, signal: AbortSignal,
+    run: (turn: AgentTurnSpan) => Promise<void>): Promise<void> {
   let name = agentName(context);
   return obsContext.with({ agentName: name }, () =>
     tracing.enterSpan(spanName("invoke_agent", name), async (span) => {
@@ -84,11 +95,13 @@ export function traceAgentTurn<Result>(
       span.setAttributes({
         "gen_ai.operation.name": "invoke_agent",
         ...currentAgent(),
-        ...modelAttributes(model),
         operation, gadgetId, chatId, modelId,
       });
       try {
-        return await run();
+        await run({
+          setModel: model => span.setAttributes(modelAttributes(model)),
+          setErrorType: errorType => span.setAttribute("error.type", errorType),
+        });
       } catch (err) {
         span.setAttributes(failureAttributes(err, signal.aborted));
         throw err;
