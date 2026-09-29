@@ -73,9 +73,9 @@ function passwordHashFor(username: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(`integration-test:${username}`).digest());
 }
 
-export async function signUp(
-    api: RpcStub<PublicApi>, username: string): Promise<RpcStub<AuthenticatedApi>> {
-  const token = await api.createAccount(username, username, passwordHashFor(username));
+export async function signUp(api: RpcStub<PublicApi>, username: string, displayName = username)
+    : Promise<RpcStub<AuthenticatedApi>> {
+  const token = await api.createAccount(username, displayName, passwordHashFor(username));
   if (!token) throw new Error(`Signup failed for "${username}" -- username already taken?`);
   return (await api.authenticate(token)) as unknown as RpcStub<AuthenticatedApi>;
 }

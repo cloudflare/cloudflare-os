@@ -17,6 +17,7 @@
     "test:watch": "pnpm run test:prebuild && vitest"
   },
   "dependencies": {
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "jsonc-parser": "^3.3.1",

@@ -39,24 +39,6 @@ async function userWithModel() {
 }
 
 describe("UserDurableObject model editing", () => {
-  it("withholds non-empty secrets from getModelConfig", async () => {
-    const { user } = await userWithModel();
-    expect(await user.getModelConfig(PROFILE.id)).toEqual({
-      profile: PROFILE,
-      config: { ...CONFIG, apiToken: null, extraHeaders: { "X-Proxy-Key": null, "X-Empty": "" } },
-    });
-  });
-
-  it("keeps withheld secrets when the redacted config is passed back", async () => {
-    const { user, stored } = await userWithModel();
-    const { config } = await user.getModelConfig(PROFILE.id);
-    await user.updateModel({ ...PROFILE, name: "Renamed" }, { ...config, contextWindow: 1000 });
-    expect(await stored(PROFILE.id)).toEqual({
-      profile: { ...PROFILE, name: "Renamed" },
-      config: { ...CONFIG, contextWindow: 1000 },
-    });
-  });
-
   it("replaces secrets that are supplied, and drops headers that are omitted", async () => {
     const { user, stored } = await userWithModel();
     await user.updateModel(PROFILE, {

@@ -8,7 +8,7 @@ import {
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   connect, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp, stubFor, waitFor,
-  waitForIdleChat,
+  waitForIdleChat, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -124,6 +124,58 @@ it.concurrent(
   }
 });
 
+it.concurrent("stopping a running agent keeps its completed steps and leaves the chat usable",
+    async () => {
+  const model = models.script([
+    { toolCall: {
+      id: "create", name: "createGadget", arguments: { title: "Notes", bindingName: "NOTES" },
+    } },
+    { toolCall: {
+      id: "write",
+      name: "writeFile",
+      arguments: { workpiece: "NOTES", filename: "notes.txt", content: "kept\n" },
+    } },
+    { pending: true },
+    { text: "I can continue." },
+  ]);
+  const [owner] = nextUsernames("stopowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+
+  const chatId = await ws.newChat("Write the notes.", SCRIPTED_MODEL_ID);
+  // Request 3 means both tool steps have been saved at their step boundaries.
+  await waitFor("the pending third step", async () => model.requests.length === 3 || null);
+  await ws.stopAgent(chatId);
+  await waitForIdleChat(ws, chatId);
+
+  const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  const gadgetId = history.flatMap(message =>
+    message.type === "changes" ? message.createdGadgets ?? [] : [])[0]?.gadgetId;
+  if (gadgetId === undefined) throw new Error("The stopped turn recorded no created gadget");
+  expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+  const commitId = await waitFor("the merged gadget head", async () => {
+    const summary = workpieces.summaries.get(gadgetId);
+    return summary?.type === "gadget" && summary.commitId !== undefined ? summary.commitId : null;
+  });
+  expect(await ws.readFilesAtCommit(commitId, ["notes.txt"]))
+    .toEqual([["notes.txt", { kind: "text", text: "kept\n" }]]);
+
+  await ws.sendChatMessage(chatId, "Continue.", SCRIPTED_MODEL_ID);
+  await waitFor("the continued model request", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  const continued = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(continued.filter(message =>
+    message.type === "message" && message.author.type === "agent" &&
+    message.message === "I can continue.")).toHaveLength(1);
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("resubscribing during a running turn replays exactly what history lacks", async () => {
   const model = models.script([
     { text: "First reply." },
@@ -197,4 +249,53 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
   expect(new Set(sequences).size).toBe(sequences.length);
   expect(replay.generations[0]).toEqual(expect.any(Number));
   expect(replay.generations[0]).not.toBe(first.generation);
+});
+
+const messageTexts = (messages: AiChatMessage[]) =>
+  messages.flatMap(message => message.type === "message" ? [message.message] : []);
+
+it.concurrent("a chat over its context budget compacts, and history pages across the checkpoint",
+    async () => {
+  // Long enough to fill the retained tail alone, so the compaction cut lands exactly on it.
+  const secondPrompt = "Second question. " + "Keep this turn verbatim. ".repeat(80);
+  const model = models.script([
+    // Over 85% of the scripted model's 229,376-token input budget, so turn 2 compacts first.
+    { text: "First reply.", usage: { prompt_tokens: 195_000, completion_tokens: 1, total_tokens: 195_001 } },
+    { text: "Summary of the first turn." },
+    { text: "Second reply." },
+  ]);
+  const [owner] = nextUsernames("compactowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  await waitFor("the first model request", async () => model.requests.length === 1 || null);
+  await waitForIdleChat(ws, chatId);
+  await ws.sendChatMessage(chatId, secondPrompt, SCRIPTED_MODEL_ID);
+  await waitFor("the summary and resumed requests", async () => model.requests.length === 3 || null);
+  await waitForIdleChat(ws, chatId);
+  expect(model.remainingSteps()).toBe(0);
+
+  const [, summary, resumed] = model.requests.map(request => JSON.stringify(request));
+  expect(summary).toContain("Create the context handoff now. Do not continue the conversation.");
+  expect(summary).toContain("First question");
+  expect(summary).toContain("First reply.");
+  expect(resumed).toContain("<prior_conversation");
+  expect(resumed).toContain("Summary of the first turn.");
+  expect(resumed).toContain("Second question.");
+  expect(resumed).not.toContain("First question");
+
+  const tail = await ws.getChatHistory(chatId);
+  expect(tail.compacted?.summary).toBe("Summary of the first turn.");
+  expect(messageTexts(tail.messages)).toEqual([secondPrompt, "Second reply."]);
+  const boundary = tail.compacted!.to;
+  const older = await ws.getChatHistory(chatId, boundary);
+  expect(older.compacted).toBeUndefined();
+  expect(messageTexts(older.messages)).toEqual(["First question", "First reply."]);
+  expect(older.messages.every(message => message.sequence < boundary)).toBe(true);
+  expect(tail.messages.every(message => message.sequence >= boundary)).toBe(true);
+  expect(messageTexts(await loadAllChatHistory(before => ws.getChatHistory(chatId, before))))
+    .toEqual(["First question", "First reply.", secondPrompt, "Second reply."]);
 });

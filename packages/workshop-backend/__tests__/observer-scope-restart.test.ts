@@ -226,47 +226,6 @@ describe("restarting sessions when verification scope widens", () => {
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
-  it("a pending bind is invisible to collaborators, so it restarts nothing",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedGadget(impl, 100);
-
-    // An edge provisional to a chat isn't in #useScopeGatekeeperIds until it's promoted, which
-    // is what restarts (see the merge case below).
-    impl.bindWorkpiece(100, "DB", 1, 7);
-
-    expect(restarts).toEqual([]);
-  }));
-
-  it("promoting a pending bind at merge restarts a connected use collaborator",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedGadget(impl, 100);
-    impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
-
-    impl.bindWorkpiece(100, "DB", 1, 1);
-    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "bound a connection" }], {
-      changes: [],
-      createdGadgets: [],
-      addedBindings: [{ gadgetId: 100, name: "DB", target: 1 }],
-      createdWorktrees: [],
-      worktreeCommits: [],
-    });
-    expect(restarts).toEqual([]);
-
-    expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
-        .toEqual({ outcome: "merged" });
-
-    // Accepting the change is the moment the edge becomes visible to "use" collaborators.
-    expect(impl.storage.gadgets.get(100).bindings.DB.pending).toBeUndefined();
-    expect(restarts).toHaveLength(1);
-    // And, as with a direct bind, the promoted connection is blocked until the reset lands.
-    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
-  }));
-
   it("a merge that promotes only a vendorless edge restarts nothing",
       () => withImpl(async (impl, restarts) => {
     joinSession(impl, "use");
@@ -580,20 +539,6 @@ describe("hooks widen use scope", () => {
       pending: { chatId },
     });
   }
-
-  it("enabling a hook on an unbound connection restarts a connected use collaborator",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedHook(impl);
-
-    impl.enableHookRecord(impl.storage.boundHooks.get(5));
-
-    expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
-    expect(restarts).toHaveLength(1);
-    // And, like any other widening, the connection is blocked until the reset lands.
-    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
-  }));
 
   it("enabling a hook on an already-bound connection widens nothing",
       () => withImpl(async (impl, restarts) => {

@@ -99,6 +99,48 @@ it.concurrent("an external message gets one reply, and a reused idempotency key 
   expect(model.remainingSteps()).toBe(0);
 });
 
+it.concurrent("two external conversations with one gadget keep separate contexts", async () => {
+  const model = models.script([
+    { text: "Alpha reply." },
+    { text: "Beta reply." },
+    { text: "Alpha follow-up reply." },
+  ]);
+  const [owner] = nextUsernames("isolation");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  const base = { callerEmail: owner, gadgetKey: `${owner}-gadget`, gadgetTitle: `${owner}-gadget` };
+  const ALPHA = `alpha-${owner}`;
+  const BETA = `beta-${owner}`;
+
+  // One message at a time keeps the scripted steps in order.
+  const alpha = await submitExternalMessage({
+    ...base, chatKey: `${owner}-alpha`, messageKey: `${owner}-a1`, prompt: `Remember ${ALPHA}.`,
+  });
+  if (!alpha.accepted) throw new Error(`External message was rejected: ${alpha.message}`);
+  expect(await awaitReplies(`${owner}-a1`)).toEqual(["Alpha reply."]);
+
+  const beta = await submitExternalMessage({
+    ...base, chatKey: `${owner}-beta`, messageKey: `${owner}-b1`, prompt: `Remember ${BETA}.`,
+  });
+  if (!beta.accepted) throw new Error(`External message was rejected: ${beta.message}`);
+  expect(beta.chatPath).not.toBe(alpha.chatPath);
+  expect(await awaitReplies(`${owner}-b1`)).toEqual(["Beta reply."]);
+  expect(JSON.stringify(model.requests[1])).toContain(BETA);
+  expect(JSON.stringify(model.requests[1])).not.toContain(ALPHA);
+
+  await expect(submitExternalMessage({
+    ...base, chatKey: `${owner}-alpha`, messageKey: `${owner}-a2`,
+    prompt: "What should you remember?",
+  })).resolves.toEqual({ accepted: true, chatPath: alpha.chatPath });
+  expect(await awaitReplies(`${owner}-a2`)).toEqual(["Alpha follow-up reply."]);
+  expect(JSON.stringify(model.requests[2])).toContain(ALPHA);
+  expect(JSON.stringify(model.requests[2])).not.toContain(BETA);
+
+  expect(model.requests).toHaveLength(3);
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("deleting the chat while a reply is pending sends the terminal text", async () => {
   const model = models.script([{ pending: true }]);
   const [owner] = nextUsernames("owner");

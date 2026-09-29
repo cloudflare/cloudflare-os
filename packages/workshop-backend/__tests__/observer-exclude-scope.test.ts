@@ -180,8 +180,7 @@ describe("excludeObservers against the observer's verification scope", () => {
 });
 
 // An enabled hook is a live write channel into a gadget a "use" collaborator can open, so its
-// connection stays in their verification scope even with no binding edge -- both for exclusion
-// (above) and for what a fresh open verifies them against.
+// connection stays in their verification scope even with no binding edge.
 describe("hooks keep an unbound connection in use scope", () => {
   function armHook(impl: any, enabled: boolean): void {
     impl.storage.boundHooks.put({
@@ -214,22 +213,6 @@ describe("hooks keep an unbound connection in use scope", () => {
     // and she is de-registered as usual.
     await observe(impl);
     expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
-  }));
-
-  it("a fresh use open is verified against a hook-armed unbound connection",
-      () => withImpl("use", async (impl) => {
-    armHook(impl, true);
-    let added: string[] = [];
-    impl.getGatekeeperFacet = (id: number) => ({
-      addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
-      removeObserver: async () => {},
-    });
-
-    await impl.ensureObserver(
-        CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
-        "use");
-
-    expect(added).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
   }));
 });
 

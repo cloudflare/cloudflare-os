@@ -865,6 +865,9 @@ importers:
 
   packages/integration-tests:
     dependencies:
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared

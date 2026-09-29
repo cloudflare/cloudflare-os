@@ -301,6 +301,10 @@ class TestThread {
     const infos = await this.call("thread.messagesVisibleTo", [this.id, address]) as GmailMessageInfo[];
     return infos.map(info => new TestMessage(this.call, info.id, info));
   }
+
+  mutate(operation: string, lastMessageId?: string, label?: unknown): Promise<void> {
+    return this.call("thread.mutate", [this.id, operation, lastMessageId, label]) as Promise<void>;
+  }
 }
 
 class TestSession {
@@ -2760,6 +2764,7 @@ describe("Gmail message lookup", () => {
       snippet: "Latest reply",
       subject: "Project update",
       messageCount: 2,
+      latestMessageId: "1a03a1e31ecc5e71",
       timestamp: new Date(2000),
       participants: [
         {address: "alice@example.com", name: "Alice"},
@@ -2839,8 +2844,7 @@ describe("Gmail message lookup", () => {
         return json(messageMetadata(
           messageId, threadId, "<refresh@example.com>", unread ? ["UNREAD"] : []));
       }
-      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}/modify` &&
-          init.method === "POST") {
+      if (url.pathname === "/gmail/v1/users/me/messages/batchModify" && init.method === "POST") {
         unread = false;
         return new Response(null, {status: 204});
       }
@@ -3204,6 +3208,8 @@ describe("Gmail message lookup", () => {
       id: threadId,
       subject: "Visible subject",
       messageCount: 1,
+      // The newer excluded message must not leak through the cutoff hint.
+      latestMessageId: messageId,
       timestamp: new Date(1000),
       participants: [
         {address: "allowed@example.com", name: "Allowed"},
@@ -3426,13 +3432,188 @@ describe("Gmail account identity", () => {
 });
 
 describe("Gmail message mutations", () => {
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+  type BatchBody = {ids: string[]; addLabelIds: string[]; removeLabelIds: string[]};
+  const batchBodies = (calls: FetchCall[]) => calls
+    .filter(call => call.url.pathname === batchModifyPath && call.init.method === "POST")
+    .map(call => JSON.parse(String(call.init.body)) as BatchBody);
+
+  // A whole-mailbox thread whose message list can grow between calls, like a live inbox.
+  function liveThreadHarness(threadMessages: string[]) {
+    const harness = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        if (url.searchParams.get("format") === "minimal") {
+          return json(threadMinimal("abc", threadMessages));
+        }
+        return json({id: "abc", messages: threadMessages.map((id, i) => ({
+          ...messageMetadata(id, "abc"), internalDate: String(i + 1),
+        }))});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [{id: "Label_1", name: "Done", type: "user"}]});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    return harness;
+  }
+
+  it("reports the newest message as latestMessageId", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+    await expect((await session.getThread("abc")).getMetadata())
+      .resolves.toMatchObject({messageCount: 3, latestMessageId: "a3"});
+  });
+
+  it("leaves messages after lastMessageId untouched, even ones arriving before approval", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const thread = await session.getThread("abc");
+    const {latestMessageId} = await thread.getMetadata();
+
+    threadMessages.push("a3"); // Arrives after the user saw the thread.
+    await thread.mutate("archive", latestMessageId);
+    threadMessages.push("a4"); // Arrives while the action awaits approval.
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["INBOX"]},
+    ]);
+    const [submission] = (await queue.read!()).submissions;
+    expect(fieldOf(submission.description, "Message IDs")).toMatchObject({items: ["a1", "a2"]});
+    expect(calls.some(call => call.url.pathname.startsWith("/gmail/v1/users/me/threads/abc/")))
+      .toBe(false);
+  });
+
+  it("fixes the message set at submission when lastMessageId is omitted", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate("markRead");
+    threadMessages.push("a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["UNREAD"]},
+    ]);
+  });
+
+  it("applies a label through lastMessageId", async () => {
+    const {calls, gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate(
+      "applyLabel", "a2", {id: "Label_1", name: "Done", type: "custom"});
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: ["Label_1"], removeLabelIds: []},
+    ]);
+  });
+
+  it("rejects a lastMessageId that is not in the thread", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1"]);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await expect((await session.getThread("abc")).mutate("trash", "ffff"))
+      .rejects.toThrow(/lastMessageId/);
+    expect((await queue.read!()).submissions).toHaveLength(0);
+  });
+
+  it("limits a restricted thread cutoff to its admitted messages", async () => {
+    const {calls, gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: "a3", threadId: "abc"}, {id: "a1", threadId: "abc"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        return json(threadMinimal("abc", ["a1", "a2", "a3", "a4"]));
+      }
+      if (/^\/gmail\/v1\/users\/me\/messages\/a[1-4]$/.test(url.pathname) && !init.method) {
+        const id = url.pathname.split("/").pop()!;
+        return json({...messageMetadata(id, "abc"), internalDate: id.slice(1)});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {searchQuery: "from:sender@example.com"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread("abc");
+
+    await expect(thread.getMetadata()).resolves.toMatchObject({latestMessageId: "a3"});
+    await expect(thread.mutate("star", "a2")).rejects.toThrow(/lastMessageId/);
+    await thread.mutate("star", "a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a3"], addLabelIds: ["STARRED"], removeLabelIds: []},
+    ]);
+  });
+
   it.each([
-    ["archive", "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
-    ["markRead", "/modify", {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
-    ["markUnread", "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
-    ["star", "/modify", {addLabelIds: ["STARRED"], removeLabelIds: []}],
-    ["unstar", "/modify", {addLabelIds: [], removeLabelIds: ["STARRED"]}],
-  ] as const)("applies %s with the expected label mutation", async (operation, suffix, body) => {
+    ["archive", undefined, {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["trash", undefined, {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["markRead", undefined, {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
+    ["markUnread", undefined, {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["star", undefined, {addLabelIds: ["STARRED"], removeLabelIds: []}],
+    ["unstar", undefined, {addLabelIds: [], removeLabelIds: ["STARRED"]}],
+    ["applyLabel", "TRASH", {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["removeLabel", "TRASH", {addLabelIds: [], removeLabelIds: ["TRASH"]}],
+  ] as const)("applies %s as one batchModify call", async (operation, labelId, body) => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation,
+      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      ...(labelId ? {labelId} : {}),
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([{ids: ["aaa", "bbb"], ...body}]);
+  });
+
+  it("splits more than 1000 messages across batchModify calls", async () => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const messageIds = Array.from({length: 1001}, (_, i) => `m${i}`);
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation", operation: "archive", target: {kind: "messages", messageIds},
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls).map(body => body.ids)).toEqual([
+      messageIds.slice(0, 1000), messageIds.slice(1000),
+    ]);
+  });
+
+  it.each([
+    ["archive", undefined, "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["markUnread", undefined, "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["trash", undefined, "/trash", undefined],
+    ["applyLabel", "TRASH", "/trash", undefined],
+    ["removeLabel", "TRASH", "/untrash", undefined],
+  ] as const)("still applies a legacy thread-wide %s action", async (
+      operation, labelId, suffix, body) => {
     const {calls, gatekeeper, storage} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
         return new Response(null, {status: 204});
@@ -3443,47 +3624,24 @@ describe("Gmail message mutations", () => {
       type: "messageMutation",
       operation,
       target: {kind: "thread", threadId: "thread"},
+      ...(labelId ? {labelId} : {}),
     });
 
     await gatekeeper.applyAction(1);
 
     const call = calls.find(item => item.url.pathname.includes("/threads/thread"));
     expect(call?.url.pathname).toBe(`/gmail/v1/users/me/threads/thread${suffix}`);
-    expect(JSON.parse(String(call?.init.body))).toEqual(body);
+    if (body) expect(JSON.parse(String(call?.init.body))).toEqual(body);
   });
 
-  it.each([
-    ["trash", "/trash"],
-    ["applyLabel", "/trash"],
-    ["removeLabel", "/untrash"],
-  ] as const)("applies %s with the expected trash endpoint", async (operation, suffix) => {
-    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
-      if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
-        return new Response(null, {status: 204});
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    storage.kv.put("pending:action:1", {
-      type: "messageMutation",
-      operation,
-      target: {kind: "thread", threadId: "thread"},
-      ...(operation === "applyLabel" || operation === "removeLabel" ? {labelId: "TRASH"} : {}),
-    });
-
-    await gatekeeper.applyAction(1);
-
-    expect(calls.some(item => item.url.pathname === `/gmail/v1/users/me/threads/thread${suffix}`))
-      .toBe(true);
-  });
-
-  it("keeps a partially applied multi-message mutation unrejectable until retry succeeds", async () => {
+  it("keeps a partially applied multi-chunk mutation unrejectable until retry succeeds", async () => {
     let rejectSecond = true;
     const writes: string[] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        if (match[1] === "bbb" && rejectSecond) {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const first = (JSON.parse(String(init.body)) as BatchBody).ids[0];
+        writes.push(first);
+        if (first === "m1000" && rejectSecond) {
           rejectSecond = false;
           return json({error: "invalid mutation"}, 400);
         }
@@ -3494,24 +3652,24 @@ describe("Gmail message mutations", () => {
     storage.kv.put("pending:action:1", {
       type: "messageMutation",
       operation: "markRead",
-      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      target: {kind: "messages", messageIds: Array.from({length: 1001}, (_, i) => `m${i}`)},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(true);
     await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb", "aaa", "bbb"]);
+    expect(writes).toEqual(["m0", "m1000", "m0", "m1000"]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
 
-  it("allows rejection when the first mutation target gets a definitive 400", async () => {
+  it("allows rejection when the first batchModify gets a definitive 400", async () => {
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      if (url.pathname === "/gmail/v1/users/me/messages/aaa/modify" && init.method === "POST") {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
         return json({error: "invalid mutation"}, 400);
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -3522,22 +3680,26 @@ describe("Gmail message mutations", () => {
       target: {kind: "messages", messageIds: ["aaa", "bbb"]},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
     expect(await values.has("pending:action:1")).toBe(false);
   });
 
-  it("treats a missing target as terminal while reconciling a multi-message mutation", async () => {
-    const writes: string[] = [];
+  it("skips messages deleted since the first attempt while reconciling", async () => {
+    const batches: string[][] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        return match[1] === "aaa"
-          ? json({error: "missing"}, 404)
-          : new Response(null, {status: 204});
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const {ids} = JSON.parse(String(init.body)) as BatchBody;
+        batches.push(ids);
+        return ids.includes("aaa") ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/aaa" && !init.method) {
+        return json({error: "missing"}, 404);
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/bbb" && !init.method) {
+        return json(messageMetadata("bbb", "thread"));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -3550,7 +3712,7 @@ describe("Gmail message mutations", () => {
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb"]);
+    expect(batches).toEqual([["aaa", "bbb"], ["bbb"]]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });

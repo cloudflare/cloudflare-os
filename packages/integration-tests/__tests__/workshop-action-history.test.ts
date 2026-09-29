@@ -1,14 +1,18 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { RpcStub } from "capnweb";
+import type { RpcPromise, RpcStub } from "capnweb";
+import { z } from "zod";
 import {
   actionChangeTime, type ActionHistoryFilter, type ActionLogEntry, type ActionsSubscriber,
-  type Overseer,
+  type AuthenticatedApi, type GatekeeperClient, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
-import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
+import {
+  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+} from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, listConnectedAccounts, logIn, nextUsernames, RpcTarget, signUp, stubFor, waitFor,
+  accountLabel, connect, listConnectedAccounts, logIn, MAX_OBSERVER_PROMPTS, nextUsernames,
+  ObserverConfigRecorder, RpcTarget, signUp, stubFor, waitFor, type ConnectedAccount,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -64,6 +68,48 @@ async function writeValues(session: RpcStub<TestSession>, from: number, to: numb
 const ids = (entries: ActionLogEntry[]) => entries.map(e => e.id);
 const idsDown = (from: number, to: number) =>
   Array.from({ length: from - to + 1 }, (_, i) => from - i);
+
+const TEST_ACTION_STATE = z.object({
+  pending: z.array(z.object({ id: z.number(), value: z.number() })),
+  value: z.number().optional(),
+  applyCount: z.number(),
+});
+
+async function actionState(label: string) {
+  const response = await harness.fetchWorker(
+      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
+      { method: "POST", body: JSON.stringify({ label }) });
+  if (response.status !== 200) {
+    throw new Error(`Reading test action state failed with ${response.status}: ${await response.text()}`);
+  }
+  return TEST_ACTION_STATE.parse(await response.json());
+}
+
+async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<ConnectedAccount> {
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  return waitFor("the test account to be provisioned", async () => {
+    const accounts = await listConnectedAccounts(api);
+    return accounts.find(a => a.vendorId === TEST_VENDOR_ID) ?? null;
+  });
+}
+
+async function reopenAfterRestart(
+    workspaceId: string, username: string, observerAccountId?: number) {
+  return waitFor("the workspace to come back after the restart", async () => {
+    using stack = new DisposableStack();
+    // A fresh recorder per attempt, so a failed attempt can't consume a later one's responses.
+    using callback = observerAccountId === undefined ? undefined : stubFor(
+        new ObserverConfigRecorder().alwaysChoose(observerAccountId, MAX_OBSERVER_PROMPTS));
+    try {
+      const api = await logIn(stack.use(connect(harness.url)), username);
+      const overseer = stack.use(await api.openGadget(workspaceId, undefined, callback));
+      await overseer.getMetadata();
+      return Object.assign(stack.move(), { overseer });
+    } catch {
+      return null;
+    }
+  });
+}
 
 it("pages, filters, streams and replays a workspace's action history", async () => {
   const [owner] = nextUsernames("historyowner");
@@ -141,4 +187,69 @@ it("pages, filters, streams and replays a workspace's action history", async () 
   expect(replayed.has(2)).toBe(false);
   const times = replay.entries.map(e => actionChangeTime(e).getTime());
   expect(times).toEqual(times.toSorted((a, b) => a - b));
+});
+
+it("approvals route to the account whose connection staged the write", async () => {
+  const [alice, bob] = nextUsernames("routingalice", "routingbob");
+  // Released before reopening; `using` covers early failures.
+  using setup = new DisposableStack();
+  const aliceApi = setup.use(await signUp(setup.use(connect(harness.url)), alice));
+  const aliceAccount = await provisionAccount(aliceApi);
+  const ws = setup.use(await aliceApi.newGadget());
+  const workspaceId = (await ws.getMetadata()).id;
+  const aliceGatekeeper = await ws.newGatekeeper(
+      aliceAccount.id, "https://gadgets-test.example/things/routing-alice");
+  if (!aliceGatekeeper) throw new Error("Failed to create Alice's connection");
+  const aliceGatekeeperId = await setup.use(aliceGatekeeper).getId();
+
+  const bobApi = setup.use(await signUp(setup.use(connect(harness.url)), bob));
+  const bobAccount = await provisionAccount(bobApi);
+  if (!await ws.addCollaborator(bob, "build")) throw new Error("Failed to add Bob");
+  const callback = setup.use(stubFor(
+      new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS)));
+  const bobWs = setup.use(await bobApi.openGadget(workspaceId, undefined, callback));
+  // A live build collaborator makes this account-requiring connection restart the workspace
+  // ~100ms after the call; pipelining getId() fetches the id before the abort.
+  const bobGatekeeperId = await (bobWs.newGatekeeper(
+      bobAccount.id, "https://gadgets-test.example/things/routing-bob") as
+      RpcPromise<GatekeeperClient<any>>).getId();
+
+  await waitFor("the restart to fell the old workspace instance", () =>
+    ws.getMetadata().then(() => null, () => true));
+  setup.dispose();
+
+  using aliceSide = await reopenAfterRestart(workspaceId, alice);
+  using bobSide = await reopenAfterRestart(workspaceId, bob, bobAccount.id);
+  using aliceConnection = await aliceSide.overseer.getGatekeeperById(aliceGatekeeperId);
+  using aliceSession = await aliceConnection.openSession() as RpcStub<TestSession>;
+  using bobConnection = await bobSide.overseer.getGatekeeperById(bobGatekeeperId);
+  using bobSession = await bobConnection.openSession() as RpcStub<TestSession>;
+  // The fixture numbers actions per account.
+  expect(await Promise.all([aliceSession.writeValue(21), bobSession.writeValue(22)]))
+      .toEqual([1, 1]);
+
+  const { entries } = await listAll(aliceSide.overseer, "pending");
+  expect(entries).toHaveLength(2);
+  const pendingFor = (gatekeeperId: number) => {
+    const entry = entries.find(e => e.type === "action" && e.gatekeeperId === gatekeeperId);
+    if (!entry) throw new Error(`No pending write for gatekeeper ${gatekeeperId}`);
+    return entry;
+  };
+  const aliceEntry = pendingFor(aliceGatekeeperId);
+  const bobEntry = pendingFor(bobGatekeeperId);
+  const aliceLabel = accountLabel(aliceAccount);
+  const bobLabel = accountLabel(bobAccount);
+  await expect(actionState(aliceLabel)).resolves.toEqual(
+      { pending: [{ id: 1, value: 21 }], applyCount: 0 });
+  await expect(actionState(bobLabel)).resolves.toEqual(
+      { pending: [{ id: 1, value: 22 }], applyCount: 0 });
+
+  await aliceSide.overseer.approveAction(bobEntry.id);
+  await expect(actionState(bobLabel)).resolves.toEqual({ pending: [], value: 22, applyCount: 1 });
+  await expect(actionState(aliceLabel)).resolves.toEqual(
+      { pending: [{ id: 1, value: 21 }], applyCount: 0 });
+
+  await aliceSide.overseer.approveAction(aliceEntry.id);
+  await expect(actionState(aliceLabel)).resolves.toEqual({ pending: [], value: 21, applyCount: 1 });
+  expect((await actionState(bobLabel)).applyCount).toBe(1);
 });

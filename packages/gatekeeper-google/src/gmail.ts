@@ -12,7 +12,8 @@ import {
   GmailMessageRaw,
   GmailMessageRef,
   GmailNormalizedRecipients, GmailOutboundAttachment, GmailOutboundMessage, GmailOutboundSpec, GmailParsedDraft,
-  GmailParsedDraftSnapshot, MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
+  GmailParsedDraftSnapshot, GMAIL_BATCH_MODIFY_MAX_IDS, MAX_GMAIL_ATTACHMENT_BYTES,
+  MAX_GMAIL_FORWARD_SOURCE_BYTES,
   extractRfc822Attachments, gmailMessageIdQueryValue, newGmailMessageId, normalizeAggregateRecipients,
   normalizeContentId, normalizeEmailRecipients, normalizeMessageIdHeader, normalizeReferencesHeader,
   normalizeTextBody, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
@@ -33,8 +34,9 @@ import {
   validateOutboundFields,
 } from "./gmail-validate";
 import {
-  GMAIL_MAILBOX_SCOPE, GmailCapabilityScope, gmailMessagesAllowedByScope, gmailMutationTarget,
-  gmailRestrictedScope, gmailScopeAllowsMessage, groupGmailMessagesByThread,
+  GMAIL_MAILBOX_SCOPE, GmailCapabilityScope, GmailMessagesTarget, gmailMessagesAllowedByScope,
+  GmailMutationTarget, gmailRestrictedScope, gmailScopeAllowsMessage, gmailThreadMutationTarget,
+  groupGmailMessagesByThread,
 } from "./gmail-scope";
 import {
   applyGmailDraftPatch, canonicalizeGmailMutableLabel, CanonicalMutableLabel, GmailDecision,
@@ -82,7 +84,7 @@ type GmailSourceAttachment = GmailForwardSnapshotReference & {
 type GmailMessageMutationAction = {
   type: "messageMutation";
   operation: GmailMutationOperation;
-  target: ReturnType<typeof gmailMutationTarget>;
+  target: GmailMutationTarget;
   labelId?: string;
   dependsOn?: number[];
 };
@@ -2526,7 +2528,7 @@ function mutationAliasMethod(
 
 async function submitMutation(
     ctx: GmailContext, operation: GmailMutationOperation,
-    target: ReturnType<typeof gmailMutationTarget>, title: string,
+    target: GmailMessagesTarget, title: string,
     description: ActionDescriptionBuilder, label?: CanonicalMutableLabel): Promise<void> {
   const alias = mutationAliasMethod(operation, label);
   if (alias && label) {
@@ -2635,32 +2637,51 @@ class GmailThreadStub extends GmailRpcTarget implements GmailThread {
     return visible.map(id => new GmailMessageStub(this.#ctx, id, this.#threadId, this.#scope));
   }
 
-  async #mutate(operation: GmailMutationOperation, label?: GmailMutableLabel): Promise<void> {
+  async #mutate(
+      operation: GmailMutationOperation, lastMessageId: string | undefined,
+      label?: GmailMutableLabel): Promise<void> {
     const info = await this.#loadInfo();
     const canonical = label ? await resolveMutableLabel(this.#ctx, label) : undefined;
+    // Fix the exact messages now, so mail arriving before approval is never reached.
+    const thread = await this.#ctx.api.getThread(this.#threadId);
+    if (thread.id !== this.#threadId) throw new Error("Gmail thread identity changed unexpectedly.");
+    const target = gmailThreadMutationTarget(
+      this.#scope, thread.messages.map(message => message.id), lastMessageId);
     await this.#ctx.approvalQueue.authorizeObservation({
       title: "Read Gmail thread before mutation",
-      description: "Read the admitted thread metadata needed to describe this action.",
+      description: "Read the admitted thread messages needed to describe this action.",
     });
     await submitMutation(
       this.#ctx,
       operation,
-      gmailMutationTarget(this.#scope, this.#threadId),
+      target,
       `${mutationTitle(operation)}: ${info.subject || "(no subject)"}`,
       mutationDescription(operation, canonical),
       canonical);
   }
 
-  async archive(): Promise<void> { await this.#mutate("archive"); }
-  async trash(): Promise<void> { await this.#mutate("trash"); }
-  async markRead(): Promise<void> { await this.#mutate("markRead"); }
-  async markUnread(): Promise<void> { await this.#mutate("markUnread"); }
-  async star(): Promise<void> { await this.#mutate("star"); }
-  async unstar(): Promise<void> { await this.#mutate("unstar"); }
+  async archive(lastMessageId?: string): Promise<void> {
+    await this.#mutate("archive", lastMessageId);
+  }
+  async trash(lastMessageId?: string): Promise<void> { await this.#mutate("trash", lastMessageId); }
+  async markRead(lastMessageId?: string): Promise<void> {
+    await this.#mutate("markRead", lastMessageId);
+  }
+  async markUnread(lastMessageId?: string): Promise<void> {
+    await this.#mutate("markUnread", lastMessageId);
+  }
+  async star(lastMessageId?: string): Promise<void> { await this.#mutate("star", lastMessageId); }
+  async unstar(lastMessageId?: string): Promise<void> {
+    await this.#mutate("unstar", lastMessageId);
+  }
   @skipRpcValidation()
-  async applyLabel(label: GmailMutableLabel): Promise<void> { await this.#mutate("applyLabel", label); }
+  async applyLabel(label: GmailMutableLabel, lastMessageId?: string): Promise<void> {
+    await this.#mutate("applyLabel", lastMessageId, label);
+  }
   @skipRpcValidation()
-  async removeLabel(label: GmailMutableLabel): Promise<void> { await this.#mutate("removeLabel", label); }
+  async removeLabel(label: GmailMutableLabel, lastMessageId?: string): Promise<void> {
+    await this.#mutate("removeLabel", lastMessageId, label);
+  }
 }
 
 function mutationTitle(operation: GmailMutationOperation): string {
@@ -2684,17 +2705,14 @@ function mutationDescription(
       .inline("Label", label?.name ?? "(unknown)");
   }
   return buildDescription(
-    `${mutationTitle(operation)} only the messages admitted by this capability.`);
+    `${mutationTitle(operation)} exactly the listed messages; later messages are unaffected.`);
 }
 
 function describeMutationTarget(
-    builder: ActionDescriptionBuilder, target: ReturnType<typeof gmailMutationTarget>,
+    builder: ActionDescriptionBuilder, target: GmailMessagesTarget,
     labelId?: string): ActionDescriptionBuilder {
-  builder.inline("Mutation scope", target.kind === "thread"
-    ? "the complete thread admitted by a whole-mailbox binding"
-    : `${target.messageIds.length} explicitly admitted individual message(s)`);
-  if (target.kind === "thread") builder.inline("Thread ID", target.threadId);
-  else builder.list("Message IDs", target.messageIds);
+  builder.inline("Mutation scope", `${target.messageIds.length} message(s)`);
+  builder.list("Message IDs", target.messageIds);
   if (labelId !== undefined) builder.inline("Label ID", labelId);
   return builder;
 }
@@ -3659,53 +3677,54 @@ async function sentMessageFingerprint(
   return gmailDraftFingerprint(parsed, threadId);
 }
 
+/** Every mutation is a label change; trash and untrash add and remove the `TRASH` label. */
+function mutationLabelChanges(
+    operation: GmailMutationOperation, labelId: string | undefined): {add: string[]; remove: string[]} {
+  switch (operation) {
+    case "archive": return {add: [], remove: ["INBOX"]};
+    case "trash": return {add: ["TRASH"], remove: []};
+    case "markRead": return {add: [], remove: ["UNREAD"]};
+    case "markUnread": return {add: ["UNREAD"], remove: []};
+    case "star": return {add: ["STARRED"], remove: []};
+    case "unstar": return {add: [], remove: ["STARRED"]};
+    case "applyLabel": return {add: [labelId!], remove: []};
+    case "removeLabel": return {add: [], remove: [labelId!]};
+  }
+}
+
+/** Actions queued before mutations named exact messages still apply to the whole thread. */
+async function applyLegacyThreadMutation(
+    api: GmailApi, threadId: string, operation: GmailMutationOperation,
+    labelId: string | undefined): Promise<void> {
+  const {add, remove} = mutationLabelChanges(operation, labelId);
+  if (add.includes("TRASH")) await api.trashThread(threadId);
+  else if (remove.includes("TRASH")) await api.untrashThread(threadId);
+  else await api.modifyThread(threadId, add, remove);
+}
+
 async function applyMessageMutation(
     api: GmailApi, store: GmailStore, actionId: number,
     action: GmailMessageMutationAction): Promise<void> {
   const labelId = action.labelId ? providerLabelId(store, action.labelId) : undefined;
-  const trashLabelOperation = labelId === "TRASH" &&
-    (action.operation === "applyLabel" || action.operation === "removeLabel");
-  const labels = (() => {
-    switch (action.operation) {
-      case "archive": return {add: [] as string[], remove: ["INBOX"]};
-      case "markRead": return {add: [] as string[], remove: ["UNREAD"]};
-      case "markUnread": return {add: ["UNREAD"], remove: [] as string[]};
-      case "star": return {add: ["STARRED"], remove: [] as string[]};
-      case "unstar": return {add: [] as string[], remove: ["STARRED"]};
-      case "applyLabel": return {add: [labelId!], remove: [] as string[]};
-      case "removeLabel": return {add: [] as string[], remove: [labelId!]};
-      case "trash": return undefined;
-    }
-  })();
-  const applyTarget = async (target: {messageId?: string; threadId?: string}) => {
-    const targetId = target.messageId ?? target.threadId!;
-    if (action.operation === "trash" || (trashLabelOperation && action.operation === "applyLabel")) {
-      if (target.messageId) await api.trashMessage(targetId);
-      else await api.trashThread(targetId);
-    } else if (trashLabelOperation) {
-      if (target.messageId) await api.untrashMessage(targetId);
-      else await api.untrashThread(targetId);
-    } else if (target.messageId) {
-      await api.modifyMessage(targetId, labels!.add, labels!.remove);
-    } else {
-      await api.modifyThread(targetId, labels!.add, labels!.remove);
-    }
-  };
-  const targets = action.target.kind === "thread"
-    ? [{threadId: action.target.threadId}]
-    : action.target.messageIds.map(messageId => ({messageId}));
+  const {add, remove} = mutationLabelChanges(action.operation, labelId);
   const reconciling = store.isApplying(actionId);
   let mayHaveWritten = reconciling;
   store.markApplying(actionId);
   try {
-    for (const target of targets) {
+    if (action.target.kind === "thread") {
+      await applyLegacyThreadMutation(api, action.target.threadId, action.operation, labelId);
+      return;
+    }
+    const ids = action.target.messageIds;
+    for (let i = 0; i < ids.length; i += GMAIL_BATCH_MODIFY_MAX_IDS) {
+      const chunk = ids.slice(i, i + GMAIL_BATCH_MODIFY_MAX_IDS);
       try {
-        await applyTarget(target);
+        await api.batchModifyMessages(chunk, add, remove);
       } catch (error) {
-        if (!(reconciling && action.target.kind === "messages" &&
-            error instanceof GmailApiError && error.status === 404)) {
-          throw error;
-        }
+        if (!(reconciling && error instanceof GmailApiError && error.status === 404)) throw error;
+        // A retry must not wedge on a message deleted since the first attempt, so modify the rest.
+        const remaining = await existingMessageIds(api, chunk);
+        if (remaining.length) await api.batchModifyMessages(remaining, add, remove);
       }
       mayHaveWritten = true;
     }
@@ -3713,6 +3732,24 @@ async function applyMessageMutation(
     if (!mayHaveWritten && isDefinitiveWriteRejection(error)) store.clearApplying(actionId);
     throw error;
   }
+}
+
+async function existingMessageIds(api: GmailApi, ids: readonly string[]): Promise<string[]> {
+  const existing: string[] = [];
+  for (let i = 0; i < ids.length; i += 5) {
+    const batch = ids.slice(i, i + 5);
+    const found = await Promise.all(batch.map(async id => {
+      try {
+        await api.getMessageMetadata(id);
+        return true;
+      } catch (error) {
+        if (error instanceof GmailApiError && error.status === 404) return false;
+        throw error;
+      }
+    }));
+    existing.push(...batch.filter((_, j) => found[j]));
+  }
+  return existing;
 }
 
 @validateRpc()
