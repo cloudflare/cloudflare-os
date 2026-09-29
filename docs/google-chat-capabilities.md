@@ -204,8 +204,8 @@ text rather than checking for conflicts, since it cannot tell Chat's rendering o
 write from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
 its undo, since the state it finds may be its own lost write. Undoing an edit is likewise safe to
 retry. An action whose write may have landed cannot be rejected, except once its target message
-is deleted, which leaves nothing it could have changed. A reply Google posts outside a thread
-binding's thread is deleted again, so that action stays rejectable; if removing it fails, the
+is deleted, which leaves nothing it could have changed. A reply Google posts outside its thread,
+from any binding, is deleted again, so that action stays rejectable; if removing it fails, the
 error says so, and once it is deleted by hand, the next apply reports the deletion and the action
 can be rejected. Replies to rejected roots disappear from the simulation. Authentication and
 permission errors during unsend remain retryable rather than being counted as successful deletion.

@@ -1243,6 +1243,9 @@ export class GoogleChatGatekeeperImpl
         const created = await readTarget(id);
         try {
           if (needsThread && !created.threadId) throw new Error("Google Chat did not return the created message's thread.");
+          if (threadName !== undefined && created.threadId !== threadName) {
+            throw new Error("Google Chat posted this reply outside its thread.");
+          }
           requireMessageInScope(scope, created);
         } catch (error) {
           logger.warn("taking back a Google Chat message posted outside its request", {

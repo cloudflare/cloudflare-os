@@ -969,14 +969,20 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(1);
   });
 
-  it("takes back a reply Google posts outside a thread binding's thread, even when re-applied", async () => {
+  it.each(["thread", "space"] as const)("takes back a reply Google posts outside its thread from a %s binding, even when re-applied", async binding => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
-    const chat = chatHarness(backend, undefined, "thread");
-    using thread = await chat.thread();
-    using _reply = (await thread.post("ack")).message;
+    const chat = chatHarness(backend, undefined, binding);
+    if (binding === "thread") {
+      using thread = await chat.thread();
+      using _reply = (await thread.post("ack")).message;
+    } else {
+      using space = await chat.session();
+      using root = (await space.getMessage(messageName("root"))).message;
+      using _reply = (await root.reply("ack")).message;
+    }
     backend.state.misplaceReplies = true;
-    await expect(chat.applyAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
+    await expect(chat.applyAction(1)).rejects.toThrow(/posted this reply outside its thread/);
     expect(backend.state.deletes).toEqual([`${SPACE_NAME}/messages/M1`]);
     // Chat now answers the request id with the deleted message.
     await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
