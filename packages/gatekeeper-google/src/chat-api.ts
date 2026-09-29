@@ -92,7 +92,7 @@ function isDeletedChatMessage(raw: ChatMessageRaw): boolean {
 export function isChatNoAccessError(error: unknown): boolean {
   return error instanceof PrivateChatMessageError ||
     (error instanceof ChatApiError &&
-      (error.status === 401 || error.status === 403 || error.status === 404));
+      (error.status === 403 || error.status === 404));
 }
 
 // ── Identifier validation ───────────────────────────────────────────
@@ -106,7 +106,8 @@ const SPACE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 /** Message, thread, and reaction ids share one documented shape. */
 const ITEM_ID_RE = /^(?=.*[^.])[A-Za-z0-9_.-]{1,256}$/;
 const USER_ID_RE = /^(?=.*[^.])[A-Za-z0-9_.@+-]{1,320}$/;
-const MEDIA_RESOURCE_RE = /^[A-Za-z0-9_./=+-]{1,1024}$/;
+/** Slash-separated, so every segment must avoid `.` and `..`. */
+const MEDIA_RESOURCE_RE = /^(?!(?:.*\/)?\.{1,2}(?:\/|$))[A-Za-z0-9_./=+-]{1,1024}$/;
 
 /** Validate a bare space id (the `AAAA1234` of `spaces/AAAA1234`). */
 export function validateChatSpaceId(spaceId: string): string {
@@ -765,7 +766,7 @@ export class ChatApi {
     return chatMessageInfoFromRaw(await this.#request<ChatMessageRaw>(
       "messages.create",
       `/spaces/${spaceId}/messages${query ? `?${query}` : ""}`,
-      { method: "POST", body: JSON.stringify(body) }));
+      { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined }));
   }
 
   /** Returns the text as Chat stored it. */
@@ -810,6 +811,7 @@ export class ChatApi {
   /** Returns null when the named user is not a member of the space or does not exist. */
   async getMembership(spaceName: string, user: string): Promise<ChatMembership | null> {
     const spaceId = chatSpaceId(spaceName);
+    // A person's membership ID is their user ID.
     const member = chatUserName(user).slice("users/".length);
     try {
       return chatMembershipFromRaw(await this.#request<ChatMembershipRaw>(

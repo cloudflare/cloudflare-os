@@ -149,8 +149,8 @@ function chatBackend() {
       return membersDenied ? json({}, 403) : json({memberships: state.members});
     }
     if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
-      const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
-      const member = state.members.find(item => item.member?.name === `users/${id}`);
+      const name = `${SPACE_NAME}/members/${decodeURIComponent(url.pathname.split("/").at(-1)!)}`;
+      const member = state.members.find(item => item.name === name);
       return member ? json(member) : json({}, 404);
     }
     if (url.pathname === `/v1/spaces/${SPACE_ID}/messages`) {
@@ -202,6 +202,7 @@ function chatBackend() {
     const name = url.pathname.slice("/v1/".length);
     const reactionParent = /^(spaces\/[^/]+\/messages\/[^/]+)\/reactions$/.exec(name)?.[1];
     if (reactionParent) {
+      if (!state.messages.some(message => message.name === reactionParent)) return json({}, 404);
       if (method === "GET") {
         const filter = url.searchParams.get("filter") ?? "";
         const emoji = /emoji.unicode = "([^"]+)"/.exec(filter)?.[1];
@@ -848,6 +849,26 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.revertAction(1)).resolves.toBeUndefined();
     expect(backend.state.edits).toHaveLength(writes);
     expect(backend.state.messages[0].text).toBe("root");
+  });
+
+  it.each(["an edit", "a reaction removal"] as const)("counts undoing %s as done once its message is deleted", async change => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    if (change === "an edit") {
+      await message.edit("Resolved");
+    } else {
+      await message.addReaction("👍");
+      await chat.applyAction(1);
+      await message.removeReaction("👍");
+    }
+    const id = change === "an edit" ? 1 : 2;
+    await chat.applyAction(id);
+    backend.state.messages = [];
+    await expect(chat.revertAction(id)).resolves.toBeUndefined();
+    await expect(chat.revertAction(id)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
   });
 
   it("asks for a restart only when a later action shares the rejected one's conversation", async () => {

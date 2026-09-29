@@ -40,6 +40,15 @@ describe("Chat identifier validation", () => {
     expect(() => chatUserName(dots)).toThrow(/Invalid Google Chat user reference/);
   });
 
+  it.each(["..", "a/..", "../../v1/spaces/X/messages/Y", "a/./b"])("refuses the attachment media name %s before fetching", async name => {
+    const fetch = vi.fn(async () => new Response("bytes"));
+    vi.stubGlobal("fetch", fetch);
+    const api = new ChatApi(async () => "token");
+    await expect(api.downloadAttachment(name)).rejects.toThrow(/Invalid Google Chat attachment/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(new TextDecoder().decode(await api.downloadAttachment("a..b/c.d=="))).toBe("bytes");
+  });
+
   it("normalizes a user reference given either way", () => {
     expect(chatUserName("users/123")).toBe("users/123");
     expect(chatUserName("person@example.com")).toBe("users/person@example.com");

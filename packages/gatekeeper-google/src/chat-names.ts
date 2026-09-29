@@ -1,5 +1,8 @@
 import type { ChatApi } from "./chat-api";
 import type { ChatSpaceInfo, ChatUser } from "./chat-types";
+import { obsContext } from "./observability";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
 
 /** How many participants an unnamed group chat's label names. */
 const LABELLED_PARTICIPANTS = 3;
@@ -23,7 +26,10 @@ export async function describeConversation(
   api: ChatApi, info: ChatSpaceInfo, selfId: string,
 ): Promise<ChatSpaceInfo> {
   if (!needsDescription(info)) return info;
-  return nameAfterParticipants(api, info, selfId).catch(() => info);
+  return nameAfterParticipants(api, info, selfId).catch((error: unknown) => {
+    logger.warn("failed to name a Google Chat conversation", { event: "chat.describe.failed", error });
+    return info;
+  });
 }
 
 async function nameAfterParticipants(

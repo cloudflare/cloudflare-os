@@ -197,9 +197,10 @@ applied. An edit refuses to overwrite text changed in Google Chat since it was q
 queued edits follow the form Chat stored earlier ones in, such as a mention rendered as `@Name`.
 Undoing an applied edit restores the previous provider text.
 
-Sends are idempotent through Google's `requestId`, so a retried apply returns the message the
-first attempt created rather than posting again. Google may then echo only the request, so every
-send re-reads the created message for its stored text and thread. A retried edit rewrites its
+Sends are idempotent through Google's `requestId`, so a transient failure is retried and a
+retried apply returns the message the first attempt created rather than posting again. Google
+may then echo only the request, so every send re-reads the created message for its stored text
+and thread. A retried edit rewrites its
 text rather than checking for conflicts, since it cannot tell Chat's rendering of its own lost
 write from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
 its undo, since the state it finds may be its own lost write. Undoing an edit is likewise safe to
@@ -207,8 +208,10 @@ retry. An action whose write may have landed cannot be rejected, except once its
 is deleted, which leaves nothing it could have changed. A reply Google posts outside its thread,
 from any binding, is deleted again, so that action stays rejectable; if removing it fails, the
 error says so, and once it is deleted by hand, the next apply reports the deletion and the action
-can be rejected. Replies to rejected roots disappear from the simulation. Authentication and
-permission errors during unsend remain retryable rather than being counted as successful deletion.
+can be rejected. Replies to rejected roots disappear from the simulation. Undoing any change
+whose message was since deleted counts as done, since nothing is left to restore. Authentication
+and permission errors during undo remain retryable rather than being counted as successful
+deletion.
 
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
 with the getters after a worker restart. Reactions to new messages require the post to complete;

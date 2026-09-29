@@ -86,6 +86,8 @@ type ChatRevertInfo =
   | { type: "addedReaction"; reactionName: string }
   | { type: "removedReaction"; messageName: string; emoji: string };
 
+type RevertResult = void | { message?: string; canRetry?: boolean; restart?: boolean };
+
 function previewText(text: string, maxLength: number): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength)}…` : collapsed;
@@ -510,6 +512,52 @@ async function deleteMessageIfPresent(api: ChatApi, messageName: string): Promis
     await api.deleteMessage(messageName);
   } catch (error) {
     if (!isChatMessageGone(error)) throw error;
+  }
+}
+
+/** Undo one applied change. A target deleted in Google Chat throws, leaving nothing to undo. */
+async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise<RevertResult> {
+  switch (info.type) {
+    case "none":
+      return;
+    case "sentMessage":
+      try {
+        await deleteMessageIfPresent(api, info.messageName);
+      } catch (error) {
+        // Chat refuses a non-force delete of a message with threaded replies, and force would
+        // cascade into deleting other people's replies. Leave the revert record so a retry
+        // works once the replies are gone.
+        if (error instanceof ChatApiError && error.rpcCode === "FAILED_PRECONDITION") {
+          return {
+            message: "This message has threaded replies, so it cannot be un-sent " +
+              "automatically. Delete it in Google Chat.",
+            canRetry: true,
+          };
+        }
+        throw error;
+      }
+      return;
+    case "updatedMessage": {
+      const { text } = await api.getMessage(info.messageName);
+      if (text === info.text) await api.updateMessageText(info.messageName, info.previousText);
+      else if (text !== info.previousText) {
+        return {
+          message: "This message was edited again after this change, so it can't be undone " +
+            "automatically. Edit it in Google Chat.",
+        };
+      }
+      return;
+    }
+    case "addedReaction":
+      return api.deleteReaction(info.reactionName);
+    case "removedReaction":
+      if (!await api.findOwnReaction(info.messageName, info.emoji, self.id)) {
+        await api.createReaction(info.messageName, info.emoji);
+      }
+      return;
+    default:
+      info satisfies never;
+      throw new Error("Unknown Google Chat revert record.");
   }
 }
 
@@ -1056,8 +1104,8 @@ export class GoogleChatGatekeeperImpl
     extends DurableObject<Env, GoogleChatGatekeeperImplProps>
     implements Gatekeeper<ChatSession | ChatSpace | ChatThread> {
   #self?: ChatUser;
-  /** Actions whose apply is in flight: a reject then could not stop a write already sent. */
-  #applying = new Set<number>();
+  /** Actions whose apply or undo is in flight: a reject then could not stop a write already sent. */
+  #inFlight = new Set<number>();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1192,14 +1240,20 @@ export class GoogleChatGatekeeperImpl
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
     if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
-    if (this.#applying.has(actionId)) throw new Error("This Google Chat action is already being applied.");
-    this.#applying.add(actionId);
-    try {
+    await this.#exclusively(actionId, async () => {
       const revert = await this.#perform(store, actionId, action, await this.#getSelf());
       store.setRevert(actionId, revert);
       store.remove(actionId);
+    });
+  }
+
+  async #exclusively<T>(actionId: number, run: () => Promise<T>): Promise<T> {
+    if (this.#inFlight.has(actionId)) throw new Error("This Google Chat action is already in progress.");
+    this.#inFlight.add(actionId);
+    try {
+      return await run();
     } finally {
-      this.#applying.delete(actionId);
+      this.#inFlight.delete(actionId);
     }
   }
 
@@ -1318,7 +1372,7 @@ export class GoogleChatGatekeeperImpl
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
     if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
-    if (this.#applying.has(actionId)) {
+    if (this.#inFlight.has(actionId)) {
       throw new Error("This Google Chat action is being applied and can no longer be rejected.");
     }
     if (store.wasAttempted(actionId)) {
@@ -1333,9 +1387,7 @@ export class GoogleChatGatekeeperImpl
     return restart ? { restart } : undefined;
   }
 
-  async revertAction(
-    actionId: number,
-  ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+  async revertAction(actionId: number): Promise<RevertResult> {
     const store = new ChatStore(this.ctx.storage);
     const info = store.getRevert(actionId);
     if (!info) {
@@ -1344,53 +1396,15 @@ export class GoogleChatGatekeeperImpl
           "This Google Chat action can no longer be undone automatically. Undo it in Google Chat.",
       };
     }
-    const self = await this.#getSelf();
-    const api = this.#api();
-    switch (info.type) {
-      case "none":
-        break;
-      case "sentMessage":
-        try {
-          await deleteMessageIfPresent(api, info.messageName);
-        } catch (error) {
-          // Chat refuses a non-force delete of a message with threaded replies, and force would
-          // cascade into deleting other people's replies. Leave the revert record so a retry
-          // works once the replies are gone.
-          if (error instanceof ChatApiError && error.rpcCode === "FAILED_PRECONDITION") {
-            return {
-              message: "This message has threaded replies, so it cannot be un-sent " +
-                "automatically. Delete it in Google Chat.",
-              canRetry: true,
-            };
-          }
-          throw error;
-        }
-        break;
-      case "updatedMessage": {
-        const { text } = await api.getMessage(info.messageName);
-        if (text === info.text) await api.updateMessageText(info.messageName, info.previousText);
-        else if (text !== info.previousText) {
-          return {
-            message: "This message was edited again after this change, so it can't be undone " +
-              "automatically. Edit it in Google Chat.",
-          };
-        }
-        break;
+    return this.#exclusively(actionId, async () => {
+      try {
+        const result = await undo(this.#api(), await this.#getSelf(), info);
+        if (result) return result;
+      } catch (error) {
+        if (!isChatMessageGone(error)) throw error;
       }
-      case "addedReaction":
-        try { await api.deleteReaction(info.reactionName); }
-        catch (error) { if (!(error instanceof ChatApiError && error.status === 404)) throw error; }
-        break;
-      case "removedReaction": {
-        const existing = await api.findOwnReaction(info.messageName, info.emoji, self.id);
-        if (!existing) await api.createReaction(info.messageName, info.emoji);
-        break;
-      }
-      default:
-        info satisfies never;
-        throw new Error("Unknown Google Chat revert record.");
-    }
-    store.clearRevert(actionId);
+      store.clearRevert(actionId);
+    });
   }
 
   /**
