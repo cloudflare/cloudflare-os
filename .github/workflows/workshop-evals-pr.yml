@@ -474,24 +474,32 @@ jobs:
             <two or three sentences: how the candidate did, from comparison.json's pass rates, and
             which failure modes cost it the most runs>
 
-            ### Failure modes
-            - **<failure mode>** · <task> <failed>/<runs>[, <task> <failed>/<runs>] · <cause> —
-              <what went wrong and why, naming the turn and the tool call or reply>
+            ## <🔴 | 🟡 | 🟢 | ⚪> VERDICT: <REGRESSION FROM THIS PR | INCONCLUSIVE | IMPROVEMENT FROM THIS PR | NO REGRESSION FROM THIS PR>
+            <one sentence that justifies it>
+            - **<failure mode>** · caused by this PR: <yes | unclear> — <why>
 
-            ### Caused by this PR?
-            - **<failure mode>** · <yes | no | unclear> — <why>
+            <details><summary>Triage</summary>
+
+            ### Failure modes
+            - **<failure mode>** · <task> <failed>/<runs>[, <task> <failed>/<runs>] · <cause> ·
+              this PR: <yes | no | unclear> — <what went wrong and why, naming the turn and the
+              tool call or reply>
+
+            ### Tool errors
+            - **<tool>: <error>** · <count> in <task>[, <count> in <task>] · <cause> — <why agents
+              hit it, from the transcripts>
 
             ### What to do
             - <one action for the PR author>
 
-            ## <🔴 | 🟡 | 🟢 | ⚪> VERDICT: <REGRESSION FROM THIS PR | INCONCLUSIVE | IMPROVEMENT FROM THIS PR | NO REGRESSION FROM THIS PR>
-            <one sentence that justifies it>
+            </details>
 
             Failure modes group the candidate's failed runs by what went wrong, across tasks, most
-            runs first. Read them from the trajectories, not the check names. Skip a task whose
-            comparison reason is "same inputs": both sides are one result, so its failures say
-            nothing about this pull request. <cause> is exactly one of these, and must be backed
-            by what the trajectory shows:
+            runs first. Read them from the trajectories, not the check names. A task whose
+            comparison reason is "same inputs" has one result on both sides: list its failure
+            modes, marked (same inputs), but they are never caused by this PR and never count
+            toward the verdict. <cause> is exactly one of these, and must be backed by what the
+            trajectory shows:
             - system prompt: the prompt omits, contradicts or misleads about what the task needed.
             - tool design: a tool's description, parameters or error message led the agent wrong,
               for example it retried an error that did not say how to recover.
@@ -501,15 +509,20 @@ jobs:
             - model error: the prompt and tools gave the agent what it needed, and it still got
               it wrong.
 
-            Caused by this PR: yes when the code at fault (the system prompt, a tool, the harness,
+            This PR: yes when the code at fault (the system prompt, a tool, the harness,
             or the task's prompt or checks) is changed by the diff and the failure follows from
             that change; no when the diff leaves that code alone, the baseline fails the same way,
             or the cause is a model error; otherwise unclear. A task being new in this PR does not
             by itself make its failures this PR's.
 
+            Tool errors: the candidate's most frequent tool errors in comparison.json, passing runs
+            included, one bullet per error across tasks, at most five. Give each a <cause> from
+            the list above, read from the transcripts where the agent hit it.
+
             What to do: one bullet per action, most important first, naming the file and the
-            change, for example a sentence to add to a tool description. For a failure this PR
-            did not cause, say the action is optional, or that there is nothing to do in this repo.
+            change, for example a sentence to add to a tool description. For a failure or tool
+            error this PR did not cause, say the action is optional, or that there is nothing to
+            do in this repo.
 
             Verdict, decided in this order: 🔴 REGRESSION FROM THIS PR if comparison.json's
             `verdict` is `regressed` and a failure mode caused by this PR explains a task that
@@ -518,7 +531,9 @@ jobs:
             ⚪ NO REGRESSION FROM THIS PR. Justify it from the comparable tasks' numbers and the
             failure modes; never add up or average tasks that are not comparable.
 
-            When no failed candidate run is left once same-inputs tasks are skipped, or this PR
-            caused none of the failures (every one is a no), write only the heading, Performance
-            and the verdict, and keep Performance to how the candidate did. Be concise and direct:
-            plain sentences, no other headings, tables or code blocks.
+            Under the verdict, list only the failure modes this PR caused or may have caused, and
+            leave the list out when there are none. Leave out a Triage section that would be
+            empty, and the whole block only when all three are. Keep the blank lines around the
+            block's contents: GitHub renders Markdown inside it only after them. Be concise and
+            direct; outside the block write plain sentences and the verdict's list, with no other
+            headings, tables or code blocks.
