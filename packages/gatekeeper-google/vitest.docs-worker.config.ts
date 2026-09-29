@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { COMPATIBILITY_DATE } from "@gadgets/scripts/worker-config";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
@@ -9,8 +10,8 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/worker.ts",
       miniflare: {
-        // Kept in step with wrangler.jsonc; drift here tests a runtime we do not deploy.
-        compatibilityDate: "2026-09-04",
+        // Kept in step with cloudflare.config.ts; drift here tests a runtime we do not deploy.
+        compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {

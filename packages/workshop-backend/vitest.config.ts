@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
+import { COMPATIBILITY_DATE } from '@gadgets/scripts/worker-config'
 import capnwebValidate from 'capnweb-validate/vite'
 
 // Wrangler ships `*.txt` imports as Text modules (its default module rules; see
@@ -71,8 +72,8 @@ export default defineConfig({
       // The production Worker plus test-only entrypoints (see __tests__/test-worker.ts).
       main: './__tests__/test-worker.ts',
       miniflare: {
-        compatibilityDate: '2026-09-04',
-        // `allow_irrevocable_stub_storage` as in wrangler.jsonc: the user DO persists account stubs.
+        compatibilityDate: COMPATIBILITY_DATE,
+        // `allow_irrevocable_stub_storage` as in cloudflare.config.ts: the user DO persists account stubs.
         compatibilityFlags: ['experimental', 'nodejs_compat', 'allow_irrevocable_stub_storage'],
         streamingTails: ['span-recorder'],
         serviceBindings: { SPAN_RECORDER: { name: 'span-recorder', entrypoint: 'SpanRecorder' } },
@@ -80,7 +81,7 @@ export default defineConfig({
           name: 'span-recorder',
           modules: true,
           script: spanRecorder,
-          compatibilityDate: '2026-09-04',
+          compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
         }],
         bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
