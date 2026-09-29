@@ -406,6 +406,10 @@ const json = (value: unknown, status = 200) =>
 
 type FetchCall = {url: URL; init: RequestInit};
 
+async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await new Promise(resolve => setTimeout(resolve, 1));
+}
+
 function actionHarness(
     gmailFetch: (url: URL, init: RequestInit) => Response | Promise<Response>,
     options: {
@@ -935,6 +939,38 @@ describe("Gmail auto-approval eligibility", () => {
       {actionKind: {tag: "labelCreate", label: "Create labels"}, autoApprovable: true},
       {actionKind: {tag: "labelRename", label: "Rename labels"}, autoApprovable: true},
       {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: true},
+    ]);
+  });
+
+  it("records no observations for reads that only prepare an action", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        return json(messageMetadata("abc123", "def456"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Subject", text: "Body",
+    });
+    await draft.update({subject: "Updated subject"});
+    await draft.delete();
+    await (await session.getMessage("abc123")).archive();
+    const label = await session.createLabel("Agent label");
+    const renamed = await session.renameLabel(label, "Renamed agent label");
+    await session.deleteLabel(renamed);
+
+    const {observations, submissions} = await queue.read!();
+    expect(submissions).toHaveLength(7);
+    // The only read that returns data is the harness's createDraft(), which returns the draft's
+    // metadata. Reopening a draft or message by its opaque ID is not an observation.
+    expect((observations as Array<{title: string}>).map(({title}) => title)).toEqual([
+      "Read Gmail draft: Subject",
     ]);
   });
 
@@ -4362,8 +4398,16 @@ describe("Gmail draft dependency reconciliation", () => {
     }).raw;
     let providerMessageId = before.messageId!;
     let updates = 0;
-    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+    // Holds the update's own draft read open while the earlier write applies. Flags rather than
+    // promises, because workerd refuses to resume a promise resolved by another Durable Object.
+    const pause = {armed: false, reached: false, released: false};
+    const {gatekeeper, storage, values} = actionHarness(async (url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        if (pause.armed) {
+          pause.armed = false;
+          pause.reached = true;
+          await until(() => pause.released);
+        }
         return json({
           id: providerId,
           message: {
@@ -4395,13 +4439,13 @@ describe("Gmail draft dependency reconciliation", () => {
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
     const draft = await session.getDraft(providerId);
-    await queue.pauseObservation!("Read Gmail draft before update");
+    pause.armed = true;
 
     const updateExpectation = expect(draft.update({text: "Second update"}))
-      .rejects.toThrow(/changed while this update was being prepared/);
-    await queue.waitForPausedObservation!();
+      .rejects.toThrow(/changed identity while it was being read/);
+    await until(() => pause.reached);
     await gatekeeper.applyAction(1);
-    await queue.releasePausedObservation!();
+    pause.released = true;
     await updateExpectation;
 
     expect(updates).toBe(1);
