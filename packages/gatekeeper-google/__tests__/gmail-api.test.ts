@@ -1583,13 +1583,22 @@ describe("Gmail API request shapes", () => {
     expect(calls[0].url.searchParams.get("includeSpamTrash")).toBe("true");
   });
 
-  it("uses the per-message modify endpoint", async () => {
+  it("modifies exactly the listed messages through batchModify", async () => {
     const calls = stubFetch([new Response(null, {status: 204})]);
-    await api().modifyMessage("m1", ["STARRED"], ["UNREAD"]);
-    expect(calls[0].url.pathname).toBe("/gmail/v1/users/me/messages/m1/modify");
+    await api().batchModifyMessages(["m1", "m2"], ["STARRED"], ["UNREAD"]);
+    expect(calls[0].url.pathname).toBe("/gmail/v1/users/me/messages/batchModify");
     expect(calls[0].init.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init.body)))
-      .toEqual({addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"]});
+      .toEqual({ids: ["m1", "m2"], addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"]});
+  });
+
+  it("rejects batchModify calls outside Gmail's ID-count limits before fetching", async () => {
+    const calls = stubFetch([]);
+    await expect(api().batchModifyMessages([], ["STARRED"])).rejects.toThrow(/between 1 and 1000/);
+    await expect(api().batchModifyMessages(
+      Array.from({length: 1001}, (_, i) => `m${i}`), ["STARRED"]))
+      .rejects.toThrow(/between 1 and 1000/);
+    expect(calls).toHaveLength(0);
   });
 
   it("creates drafts and renames labels through their resource endpoints", async () => {

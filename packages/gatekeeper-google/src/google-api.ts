@@ -31,6 +31,7 @@ export type GmailThreadInfoRaw = {
   snippet?: string;
   subject: string;
   messageCount: number;
+  latestMessageId: string;
   timestamp: Date;
   participants: EmailAddress[];
   unread: boolean;
@@ -393,6 +394,8 @@ type GmailThreadMetadata = {
 export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 /** Conservative raw-message ceiling aligned with Gmail's documented 25 MB personal limit. */
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
+/** Gmail's per-call limit on message IDs for `users.messages.batchModify`. */
+export const GMAIL_BATCH_MODIFY_MAX_IDS = 1000;
 const MAX_GMAIL_MESSAGE_HEADERS = 256;
 const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
 
@@ -1808,9 +1811,14 @@ export function summarizeGmailThread(
   const labelIds: string[] = [];
   const seenLabels = new Set<string>();
   let timestamp = 0;
+  let latestMessageId = "";
   let unread = false;
   for (const message of messages) {
-    timestamp = Math.max(timestamp, message.timestamp.getTime());
+    // Callers may pass messages in search order, so pick the newest by date; ties keep the later.
+    if (!latestMessageId || message.timestamp.getTime() >= timestamp) {
+      latestMessageId = message.id;
+      timestamp = message.timestamp.getTime();
+    }
     unread ||= message.labelIds.includes("UNREAD");
     for (const labelId of message.labelIds) {
       if (!seenLabels.has(labelId)) {
@@ -1831,6 +1839,7 @@ export function summarizeGmailThread(
     ...(snippet !== undefined ? {snippet} : {}),
     subject: messages[0]?.subject ?? "",
     messageCount: messages.length,
+    latestMessageId,
     timestamp: new Date(timestamp),
     participants,
     unread,
@@ -2693,35 +2702,27 @@ export class GmailApi {
     return await response.json() as GmailMessageRaw;
   }
 
-  async modifyMessage(
-      messageId: string, addLabelIds: string[] = [], removeLabelIds: string[] = []): Promise<void> {
-    validateGmailId(messageId, "message ID");
+  /**
+   * Add and remove labels on exactly the listed messages in one call. Gmail accepts at most
+   * {@link GMAIL_BATCH_MODIFY_MAX_IDS} IDs per call. `TRASH` may be added or removed like any
+   * other label, which is how trash and untrash are expressed.
+   */
+  async batchModifyMessages(
+      messageIds: readonly string[], addLabelIds: string[] = [],
+      removeLabelIds: string[] = []): Promise<void> {
+    if (messageIds.length === 0 || messageIds.length > GMAIL_BATCH_MODIFY_MAX_IDS) {
+      throw new Error(
+        `Gmail batchModify requires between 1 and ${GMAIL_BATCH_MODIFY_MAX_IDS} message IDs.`);
+    }
+    for (const id of messageIds) validateGmailId(id, "message ID");
     for (const id of [...addLabelIds, ...removeLabelIds]) validateGmailId(id, "label ID");
     const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({addLabelIds, removeLabelIds}),
+        body: JSON.stringify({ids: messageIds, addLabelIds, removeLabelIds}),
       });
-    if (!response.ok) await gmailApiFailure("messages.modify", response);
-    await response.body?.cancel();
-  }
-
-  async trashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.trash", response);
-    await response.body?.cancel();
-  }
-
-  /** Restore one message from trash. */
-  async untrashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/untrash`,
-      {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.untrash", response);
+    if (!response.ok) await gmailApiFailure("messages.batchModify", response);
     await response.body?.cancel();
   }
 

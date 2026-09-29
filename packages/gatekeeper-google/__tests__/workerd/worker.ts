@@ -503,6 +503,25 @@ testGmailPrototype.runTestOperation = async function(
       disposeRpc(thread);
     }
   }
+  case "thread.mutate": {
+    const thread = await session.getThread(id as string);
+    const lastMessageId = extra as string | undefined;
+    try {
+      switch (value) {
+        case "archive": return await thread.archive(lastMessageId);
+        case "trash": return await thread.trash(lastMessageId);
+        case "markRead": return await thread.markRead(lastMessageId);
+        case "markUnread": return await thread.markUnread(lastMessageId);
+        case "star": return await thread.star(lastMessageId);
+        case "unstar": return await thread.unstar(lastMessageId);
+        case "applyLabel": return await thread.applyLabel(options as never, lastMessageId);
+        case "removeLabel": return await thread.removeLabel(options as never, lastMessageId);
+        default: throw new Error(`Unknown thread mutation: ${String(value)}`);
+      }
+    } finally {
+      disposeRpc(thread);
+    }
+  }
   case "thread.messagesVisibleTo": {
     const thread = await session.getThread(id as string);
     try {

@@ -36,6 +36,12 @@ export type GmailThreadInfo = {
   subject: string;
   /** The number of messages represented by this thread capability. */
   messageCount: number;
+  /**
+   * The ID of the newest represented message. After showing this thread to a user, pass it to a
+   * {@link GmailThread} mutation such as `archive(latestMessageId)` so messages that arrive
+   * afterwards are left alone.
+   */
+  latestMessageId: string;
   /** The timestamp of the newest represented message. */
   timestamp: Date;
   /** Unique senders and recipients across the represented messages. */
@@ -325,7 +331,15 @@ export interface GmailSession extends GmailScopedSession {
   deleteLabel(label: GmailCustomLabel): Promise<void>;
 }
 
-/** Access to one Gmail thread admitted by the binding's scope. */
+/**
+ * Access to one Gmail thread admitted by the binding's scope.
+ *
+ * Each mutation applies to the thread's messages available through this capability, up to and
+ * including `lastMessageId` in thread order (oldest first). Pass the newest message the user or
+ * agent actually saw, such as {@link GmailThreadInfo.latestMessageId}, so a reply that arrives
+ * afterwards is not archived, marked read, or labeled unseen. When omitted, the mutation applies to
+ * all messages present at the time the method is called.
+ */
 export interface GmailThread {
   /**
    * Get the subject, snippet, and count for the messages this thread
@@ -354,37 +368,37 @@ export interface GmailThread {
    */
   messagesVisibleTo(address: string): Promise<GmailMessage[]>;
 
-  /** Remove the messages available through this capability from the inbox. */
-  archive(): Promise<void>;
+  /** Remove the thread's messages through `lastMessageId` from the inbox. */
+  archive(lastMessageId?: string): Promise<void>;
 
-  /** Move the messages available through this capability to trash. */
-  trash(): Promise<void>;
+  /** Move the thread's messages through `lastMessageId` to trash. */
+  trash(lastMessageId?: string): Promise<void>;
 
-  /** Mark the messages available through this capability as read. */
-  markRead(): Promise<void>;
+  /** Mark the thread's messages through `lastMessageId` as read. */
+  markRead(lastMessageId?: string): Promise<void>;
 
-  /** Mark the messages available through this capability as unread. */
-  markUnread(): Promise<void>;
+  /** Mark the thread's messages through `lastMessageId` as unread. */
+  markUnread(lastMessageId?: string): Promise<void>;
 
-  /** Star the messages available through this capability. */
-  star(): Promise<void>;
+  /** Star the thread's messages through `lastMessageId`. */
+  star(lastMessageId?: string): Promise<void>;
 
-  /** Remove the star from the messages available through this capability. */
-  unstar(): Promise<void>;
-
-  /**
-   * Apply a mutable label returned by this binding to the available messages.
-   * Use {@link trash}, {@link markUnread}, or {@link star} instead of applying
-   * the equivalent built-in label.
-   */
-  applyLabel(label: GmailMutableLabel): Promise<void>;
+  /** Remove the star from the thread's messages through `lastMessageId`. */
+  unstar(lastMessageId?: string): Promise<void>;
 
   /**
-   * Remove a mutable label returned by this binding from the available messages.
-   * Use {@link archive}, {@link markRead}, or {@link unstar} instead of removing
+   * Apply a mutable label returned by this binding to the thread's messages through
+   * `lastMessageId`. Use {@link trash}, {@link markUnread}, or {@link star} instead of applying
    * the equivalent built-in label.
    */
-  removeLabel(label: GmailMutableLabel): Promise<void>;
+  applyLabel(label: GmailMutableLabel, lastMessageId?: string): Promise<void>;
+
+  /**
+   * Remove a mutable label returned by this binding from the thread's messages through
+   * `lastMessageId`. Use {@link archive}, {@link markRead}, or {@link unstar} instead of removing
+   * the equivalent built-in label.
+   */
+  removeLabel(label: GmailMutableLabel, lastMessageId?: string): Promise<void>;
 }
 
 /** Access to one Gmail message admitted by the binding's scope. */

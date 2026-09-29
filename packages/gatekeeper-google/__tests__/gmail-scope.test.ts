@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {
-  GMAIL_MAILBOX_SCOPE, gmailMessagesAllowedByScope, gmailMutationTarget, gmailRestrictedScope,
-  gmailScopeAllowsMessage, groupGmailMessagesByThread,
+  GMAIL_MAILBOX_SCOPE, gmailMessagesAllowedByScope, gmailRestrictedScope,
+  gmailScopeAllowsMessage, gmailThreadMutationTarget, groupGmailMessagesByThread,
 } from "../src/gmail-scope";
 
 describe("restricted Gmail capability scope", () => {
@@ -14,14 +14,33 @@ describe("restricted Gmail capability scope", () => {
     expect(gmailScopeAllowsMessage(scope, "sibling")).toBe(false);
   });
 
-  it("uses message-level mutations for restricted threads", () => {
-    expect(gmailMutationTarget(gmailRestrictedScope(["m1", "m2"]), "thread"))
+  it("mutates only the admitted messages of a restricted thread, in thread order", () => {
+    expect(gmailThreadMutationTarget(gmailRestrictedScope(["m3", "m1"]), ["m1", "m2", "m3"]))
+      .toEqual({kind: "messages", messageIds: ["m1", "m3"]});
+  });
+
+  it("names every current message for whole-mailbox authority, never the thread", () => {
+    expect(gmailThreadMutationTarget(GMAIL_MAILBOX_SCOPE, ["m1", "m2", "m1"]))
       .toEqual({kind: "messages", messageIds: ["m1", "m2"]});
   });
 
-  it("uses a thread endpoint only for whole-mailbox authority", () => {
-    expect(gmailMutationTarget(GMAIL_MAILBOX_SCOPE, "thread"))
-      .toEqual({kind: "thread", threadId: "thread"});
+  it("stops at lastMessageId so later messages are untouched", () => {
+    expect(gmailThreadMutationTarget(GMAIL_MAILBOX_SCOPE, ["m1", "m2", "m3"], "m2"))
+      .toEqual({kind: "messages", messageIds: ["m1", "m2"]});
+    expect(gmailThreadMutationTarget(gmailRestrictedScope(["m1", "m3"]), ["m1", "m2", "m3"], "m1"))
+      .toEqual({kind: "messages", messageIds: ["m1"]});
+  });
+
+  it("rejects a lastMessageId outside the thread or the capability", () => {
+    expect(() => gmailThreadMutationTarget(GMAIL_MAILBOX_SCOPE, ["m1"], "elsewhere"))
+      .toThrow(/lastMessageId/);
+    expect(() => gmailThreadMutationTarget(gmailRestrictedScope(["m1"]), ["m1", "m2"], "m2"))
+      .toThrow(/lastMessageId/);
+  });
+
+  it("rejects a thread with no admitted messages", () => {
+    expect(() => gmailThreadMutationTarget(gmailRestrictedScope(["gone"]), ["m1"]))
+      .toThrow(/admits no messages/);
   });
 
   it("groups matching messages without adding siblings", () => {

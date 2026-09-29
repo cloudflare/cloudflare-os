@@ -22,18 +22,32 @@ export function gmailMessagesAllowedByScope<T extends {id: string}>(
   return messages.filter(message => admitted.has(message.id));
 }
 
-export type GmailMutationTarget =
-  | {kind: "thread"; threadId: string}
-  | {kind: "messages"; messageIds: string[]};
+/** Exact message IDs a mutation applies to. */
+export type GmailMessagesTarget = {kind: "messages"; messageIds: string[]};
 
-/** Restricted capabilities always resolve to message endpoints, never a thread-wide endpoint. */
-export function gmailMutationTarget(
-    scope: GmailCapabilityScope, threadId: string): GmailMutationTarget {
-  if (scope.kind === "mailbox") return {kind: "thread", threadId};
-  if (scope.admittedMessageIds.length === 0) {
-    throw new Error("This restricted Gmail thread capability admits no messages.");
+/**
+ * What a stored mutation applies to. New actions always name exact messages; `thread` survives
+ * only in actions queued by earlier versions, which Gmail applies to the thread as it is then.
+ */
+export type GmailMutationTarget = {kind: "thread"; threadId: string} | GmailMessagesTarget;
+
+/**
+ * Resolve a thread mutation to exact message IDs, fixed when the action is submitted: the
+ * thread's messages admitted by `scope`, in thread order, through `lastMessageId` when given.
+ * Never a thread-wide endpoint, which would also reach messages arriving before approval.
+ */
+export function gmailThreadMutationTarget(
+    scope: GmailCapabilityScope, threadMessageIds: readonly string[],
+    lastMessageId?: string): GmailMessagesTarget {
+  const admitted = gmailMessagesAllowedByScope(
+    scope, [...new Set(threadMessageIds)].map(id => ({id}))).map(message => message.id);
+  if (admitted.length === 0) throw new Error("This Gmail thread capability admits no messages.");
+  if (lastMessageId === undefined) return {kind: "messages", messageIds: admitted};
+  const end = admitted.indexOf(lastMessageId);
+  if (end < 0) {
+    throw new Error("lastMessageId is not a message of this thread available to this capability.");
   }
-  return {kind: "messages", messageIds: [...scope.admittedMessageIds]};
+  return {kind: "messages", messageIds: admitted.slice(0, end + 1)};
 }
 
 /** Group matching messages into restricted thread capabilities without duplicate message IDs. */
