@@ -15,11 +15,12 @@ export interface Cursor<T> extends RpcTarget {
 
 /** A person or Chat app visible to the connected Google account. */
 export type ChatUser = {
-  /** Stable opaque identity for joins and API calls. Prefer name for display when available. */
-  id: string;
   /**
-   * Display name supplied by Google Chat when visible to the connected account. May be omitted.
+   * Stable opaque identity, such as `users/123`. Compare users by this, and pass it wherever a
+   * method takes a user.
    */
+  id: string;
+  /** Display name, when Google Chat supplies one. Fall back to `id` when it is absent. */
   name?: string;
   /** Whether this identity is a person or a Chat app. */
   type: "human" | "app";
@@ -33,8 +34,8 @@ export type ChatSpaceInfo = {
   /** Opaque conversation ID, such as `spaces/AAAA1234`. */
   id: string;
   /**
-   * Space name, or the other participant's name for a DM when available. Listings may omit DM
-   * names; call that entry's space.getMetadata() when you need a human-readable DM label.
+   * Display name. A direct message has no name of its own: `ChatSpace.getMetadata()` names it
+   * after the other participant (see `peer`), while listings and lookups leave both absent.
    */
   name?: string;
   /**
@@ -46,7 +47,12 @@ export type ChatSpaceInfo = {
   url?: string;
   /** Kind of conversation. */
   type: ChatSpaceType;
-  /** Whether this conversation supports thread discovery and threaded replies. */
+  /**
+   * Whether messages here are grouped into threads, which `listThreads()`, `getThread()`,
+   * `ChatMessage.getThread()`, and `ChatMessage.reply()` require. Spaces, group chats, and direct
+   * messages normally support threads; the exceptions are conversations Google keeps flat, such
+   * as continuous meeting chat and some group chats created before 2022.
+   */
   supportsThreads: boolean;
   /** Description of a named space, when one is set. */
   description?: string;
@@ -63,7 +69,7 @@ export type ChatSpaceInfo = {
 
 /** A listing result: space metadata plus a capability for that space. */
 export type ChatSpaceEntry = {
-  /** Metadata for this result. For an unnamed DM, space.getMetadata() can resolve its participant's name. */
+  /** Metadata for this result. */
   info: ChatSpaceInfo;
   /** Capability for reading and acting in this conversation. */
   space: ChatSpace;
@@ -127,21 +133,26 @@ export type ChatMessageInfo = {
   /**
    * Opaque message ID, such as `spaces/AAAA1234/messages/BBBB5678`.
    *
-   * A message that has been submitted but not yet committed to Google Chat instead has a
-   * temporary ID of the form `pending:send:{n}` and sets `pending`.
+   * A message you posted that is still pending has a temporary ID of the form
+   * `pending:send:{n}` instead. Keep using it: it continues to identify the message after it
+   * is committed.
    */
   id: string;
   /** ID of the containing conversation. */
   spaceId: string;
   /**
-   * Containing thread ID. Chat assigns one to every message, but it only means something in a
-   * conversation whose `supportsThreads` is true; ignore it elsewhere. A newly posted root uses
-   * a temporary pending:thread:{n} ID.
+   * Containing thread ID, such as `spaces/AAAA1234/threads/CCCC`. Only meaningful where the
+   * conversation's `supportsThreads` is true. A top-level message you just posted names its new
+   * thread with a temporary `pending:thread:{n}` ID until it is committed.
    */
   threadId?: string;
   /** Who sent the message. */
   sender?: ChatUser;
-  /** Plain-text body. Empty for a message whose content is unavailable. */
+  /**
+   * Message body in Google Chat's formatting syntax (see `ChatSpace.post()`). Mentions appear
+   * as `@Name`; `mentions` lists who they refer to. Empty when the message has no text, such as
+   * an attachment-only message.
+   */
   text: string;
   /** Users @mentioned in the message. Empty for a pending message until it is committed. */
   mentions: ChatUser[];
@@ -149,17 +160,16 @@ export type ChatMessageInfo = {
   createdAt: Date;
   /** When the message was last edited, when Google returns it. */
   editedAt?: Date;
-  /** Whether this message is a reply within a thread. */
+  /** Whether this message is a reply in a thread rather than the thread's first message. */
   isReply: boolean;
   /** Files attached to the message. */
   attachments: ChatAttachmentInfo[];
   /** Reaction counts, grouped by emoji. */
   reactions: ChatReactionSummary[];
   /**
-   * True for a message that has been submitted but is not yet committed to Google Chat. Such a
-   * message's `createdAt` is provisional: the committed message carries the timestamp Google
-   * assigns at commit. Replies and edits can be queued immediately; reactions require the post
-   * to complete. Its capability and temporary ID remain usable after posting completes.
+   * True for a message you posted that is not committed yet. Its `createdAt` is provisional:
+   * the committed message carries the time Google assigns. You can reply to it and edit it right
+   * away; reactions can be added once it is committed.
    */
   pending?: boolean;
 };
@@ -172,7 +182,7 @@ export type ChatMessageEntry = {
   message: ChatMessage;
 };
 
-/** A creation-time window including since and excluding before. Times use millisecond precision. */
+/** Messages created within `[since, before)`, at millisecond precision. */
 export type ChatWindow = {
   /** Include messages created at or after this time. */
   since?: Date;
@@ -180,7 +190,10 @@ export type ChatWindow = {
   before?: Date;
 };
 
-/** Options for conversation or thread history. Deleted and private messages are omitted. */
+/**
+ * Options for reading a conversation's or thread's history. Deleted messages, and messages a
+ * Chat app showed only to you, are omitted.
+ */
 export type ChatListMessagesOptions = ChatWindow & {
   /**
    * Result order. `ChatSpace.listMessages()` defaults to `"newestFirst"`;
@@ -190,38 +203,48 @@ export type ChatListMessagesOptions = ChatWindow & {
 };
 
 /**
- * Structured filters for searching messages within one conversation. Every supplied field must
- * match.
+ * Filters for searching messages within one conversation. Supply at least one. Every supplied
+ * field must match; within a list-valued field, a message matches if it matches any entry.
  *
- * Google's message search omits some messages by design: private messages, messages posted by
- * Chat apps, messages in Chat app direct messages, messages from blocked users, and messages in
- * conversations the connected user has muted. Search reflects committed provider state — it does
- * not simulate pending sends or edits, and its index can lag recent edits and deletions by
- * minutes. Use `ChatSpace.listMessages()` when complete, current history for one known
- * conversation is required.
+ * Search covers committed messages only: your pending posts and edits don't appear, and the
+ * search index can lag recent edits and deletions by minutes. It never returns messages posted
+ * by Chat apps, messages in direct messages with Chat apps, messages from blocked users,
+ * messages a Chat app showed only to you, or messages in conversations you have muted. Use
+ * `ChatSpace.listMessages()` when you need complete, current history for one conversation.
+ *
+ * Google rejects a search whose combined filters exceed 1,000 characters.
  */
 export type ChatSpaceMessageSearch = ChatWindow & {
-  /** Words or quoted phrases the message must contain. */
+  /**
+   * Words and "quoted phrases" the message must all contain, such as `budget "Q3 plan"`. Each
+   * word or phrase is at most 500 characters; an unmatched `"` is an error.
+   */
   text?: string;
-  /** Limit results to messages sent by these users, named `users/{user}` or by email address. */
+  /** Only messages sent by any of these users, each `users/{user}` or an email address. */
   senders?: string[];
-  /** Limit results to messages mentioning these users, named `users/{user}` or by email address. */
+  /**
+   * Only messages mentioning any of these users, each `users/{user}` or an email address;
+   * `users/me` is you. Cannot be combined with `mentionsMe`.
+   */
   mentions?: string[];
   /** Only messages that mention you. Cannot be combined with `mentions`. */
   mentionsMe?: boolean;
-  /** Only return messages the connected user has not read. */
+  /** Only messages you have not read. */
   unreadOnly?: boolean;
-  /** Only return messages that have at least one attachment. */
+  /** Only messages with at least one attachment. */
   hasAttachment?: boolean;
-  /** Only return messages whose text contains at least one link. */
+  /** Only messages whose text contains at least one link. */
   hasLink?: boolean;
 };
 
 /** Filters for searching across conversations, adding conversation selectors. */
 export type ChatMessageSearch = ChatSpaceMessageSearch & {
-  /** Limit results to these conversations, identified by `ChatSpaceInfo.id`. */
+  /**
+   * Only messages in any of these conversations, by `ChatSpaceInfo.id`. To search conversations
+   * by name, find them with `ChatSession.searchSpaces()` first.
+   */
   spaceIds?: string[];
-  /** Limit results to these conversation types. */
+  /** Only messages in conversations of any of these types. */
   spaceTypes?: ChatSpaceType[];
 };
 
@@ -235,13 +258,16 @@ export type ChatReaction = {
   user?: ChatUser;
 };
 
-/** A thread snapshot: a top-level message together with zero or more replies. */
+/** A thread: a first message together with zero or more replies. */
 export type ChatThreadInfo = {
-  /** Canonical spaces/{space}/threads/{thread}, or pending:thread:{n} for a new root. */
+  /**
+   * Thread ID, such as `spaces/AAAA1234/threads/CCCC`, or a temporary `pending:thread:{n}` for
+   * a thread whose first message is still pending.
+   */
   id: string;
-  /** ID of the containing conversation; this alone confers no access to it. */
+  /** ID of the containing conversation. */
   spaceId: string;
-  /** Newest visible message; in discovery results, the newest within the listing's window. */
+  /** The newest message; in `listThreads()` results, the newest within the listing's window. */
   latestMessage: ChatMessageInfo;
   /**
    * The thread's first message. Absent only when that message was deleted or is hidden from
@@ -271,28 +297,25 @@ export interface ChatSession extends RpcTarget {
   getCurrentUser(): Promise<ChatUser>;
 
   /**
-   * List conversations the connected user has joined.
-   *
-   * Group chats and direct messages appear only once they contain a message.
-   * DM participant names are not resolved by this listing. If info.type is "directMessage"
-   * and info.name is absent, call entry.space.getMetadata() when you need its display name.
+   * List conversations the connected user has joined. Group chats and direct messages appear
+   * only once they contain a message.
    */
   listSpaces(options?: ChatListSpacesOptions): Promise<Cursor<ChatSpaceEntry>>;
 
   /**
-   * Find joined named spaces whose display name matches `name`.
+   * Find joined spaces whose display name matches `name`: at most 100, returned as one page.
    *
    * The text is matched loosely: token by token, case-insensitively, against any part of the
    * name, so `proj rev` matches "Project review" — and partial tokens can match inside words.
-   * Group chats and direct messages have no display name and are never returned; use
-   * {@link listSpaces} or {@link findDirectMessage} for those.
+   * Only spaces are searched; group chats (even named ones) and direct messages are never
+   * returned. Use {@link listSpaces} or {@link findDirectMessage} for those.
    */
   searchSpaces(name: string): Promise<Cursor<ChatSpaceEntry>>;
 
   /**
    * Open the existing direct message between the connected user and `user`, named
    * `users/{user}` or by email address. Returns `null` when no direct message exists or the
-   * user cannot be found. The entry's info omits the DM name; see {@link ChatSpaceEntry}.
+   * user cannot be found.
    */
   findDirectMessage(user: string): Promise<ChatSpaceEntry | null>;
 
@@ -304,9 +327,9 @@ export interface ChatSession extends RpcTarget {
   getSpace(idOrUrl: string): Promise<ChatSpaceEntry>;
 
   /**
-   * Search messages across the conversations available to the connected user.
+   * Search messages across the conversations available to the connected user, newest first.
    *
-   * See {@link ChatMessageSearch} for the messages Google's search leaves out.
+   * See {@link ChatMessageSearch} for what search covers.
    */
   searchMessages(query: ChatMessageSearch): Promise<Cursor<ChatMessageEntry>>;
 }
@@ -314,46 +337,49 @@ export interface ChatSession extends RpcTarget {
 /** Access to one Google Chat space, group chat, or direct message. */
 export interface ChatSpace extends RpcTarget {
   /**
-   * Return current metadata. For an unnamed DM, resolve the other participant's display name
-   * on demand. Call this when a listing omits a DM name and you need a human-readable label.
-   * If the name is unavailable, name remains absent; use the conversation ID as a fallback.
+   * Return current metadata. For a direct message this also identifies the other participant
+   * (`peer`) and names the conversation after them.
    */
   getMetadata(): Promise<ChatSpaceInfo>;
 
   /** Return the connected account's own Chat identity, the sender of anything posted here. */
   getCurrentUser(): Promise<ChatUser>;
 
-  /** List messages in this conversation, oldest first unless `order` says otherwise. */
-  listMessages(
-    options?: ChatListMessagesOptions,
-  ): Promise<Cursor<ChatMessageEntry>>;
+  /**
+   * List messages in this conversation, newest first unless `order` says otherwise.
+   *
+   * Thread replies are interleaved with top-level messages by creation time; group by
+   * `threadId`, or use {@link listThreads}, to follow individual threads.
+   */
+  listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
 
   /**
    * Search messages in this conversation, newest first.
    *
-   * See {@link ChatSpaceMessageSearch} for the messages Google's search leaves out.
+   * See {@link ChatSpaceMessageSearch} for what search covers.
    */
   searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>>;
 
   /**
    * List threads with messages posted within the window, newest matching message first.
-   * Includes zero-reply roots and older threads with new replies; each thread appears once.
-   * Pending sends appear ahead of committed history, with provisional timestamps.
-   * Edits and reactions do not count as new messages. Throws when supportsThreads is false;
-   * use listMessages() there. At most 5,000 threads per cursor; use a narrower window if that
+   * Includes zero-reply threads and older threads with new replies; each thread appears once.
+   * Your pending posts appear ahead of committed history, with provisional timestamps. Edits
+   * and reactions do not count as new messages. Throws when `supportsThreads` is false; use
+   * {@link listMessages} there. At most 5,000 threads per cursor; use a narrower window if that
    * limit is reached.
    */
   listThreads(window?: ChatWindow): Promise<Cursor<ChatThreadEntry>>;
 
   /**
-   * Get an accessible thread in this conversation by its canonical or temporary ID, with its
-   * current metadata. Throws if the thread is unavailable or belongs to another conversation.
+   * Get a thread in this conversation by its ID, including a temporary `pending:thread:{n}`,
+   * with its current metadata. Throws if the thread is unavailable, belongs to another
+   * conversation, or this conversation does not support threads.
    */
   getThread(id: string): Promise<ChatThreadEntry>;
 
   /**
-   * Get a message by its ID, with its current metadata. Throws if unavailable or outside this
-   * conversation.
+   * Get a message by its ID, with its current metadata. Throws if it has been deleted, is
+   * unavailable, or is outside this conversation.
    */
   getMessage(id: string): Promise<ChatMessageEntry>;
 
@@ -367,42 +393,57 @@ export interface ChatSpace extends RpcTarget {
   findMember(user: string): Promise<ChatMembership | null>;
 
   /**
-   * Post a top-level text message to this conversation as the connected user.
+   * Post a top-level message to this conversation as the connected user.
    *
-   * Chat attributes the message to the user, not to an app. Formatting markup in `text` is
-   * rendered by Chat. The message must be at most 32,000 bytes of text. The returned entry
-   * describes the new message, including its temporary ID until it is committed.
+   * `text` uses Google Chat's formatting syntax, the same syntax `ChatMessageInfo.text` is read
+   * back in: `*bold*`, `_italic_`, `~strikethrough~`, `` `code` ``, ```` ``` ```` code blocks,
+   * lines starting with `* ` or `- ` for bullets, `<https://example.com|label>` for a link,
+   * `<users/{user}>` to @mention someone, and `<users/all>` to mention everyone. Markdown such
+   * as `**bold**` or `[label](url)` is not rendered. At most 32,000 bytes.
+   *
+   * Where `supportsThreads` is true, the message starts a new thread; call
+   * `entry.message.getThread()` to continue it. The returned entry describes the new message,
+   * with its temporary ID until it is committed.
    */
   post(text: string): Promise<ChatMessageEntry>;
 }
 
-/** Access to one thread's root and replies, including future replies, without the parent space. */
+/**
+ * Access to one thread: its first message, its replies, and future replies. It does not reach
+ * the rest of the conversation.
+ */
 export interface ChatThread extends RpcTarget {
   /**
-   * Return current identity and latest-message metadata, with root content when cheaply
-   * available. Throws if no visible messages remain in the thread.
+   * Return the thread's ID, first message, and newest message. Throws if no messages you can
+   * see remain in the thread.
    */
   getMetadata(): Promise<ChatThreadInfo>;
 
   /** Return the connected account's own Chat identity, the sender of anything posted here. */
   getCurrentUser(): Promise<ChatUser>;
 
-  /** Return the root message, or null if it is unavailable. Never substitutes a surviving reply. */
+  /** Return the thread's first message, or `null` if it was deleted or is hidden from you. */
   getRootMessage(): Promise<ChatMessageEntry | null>;
 
-  /** List only this thread's messages, oldest first unless order says otherwise. */
+  /** List this thread's messages, oldest first unless `order` says otherwise. */
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
 
-  /** Post in this thread as the connected user. Fails rather than starting a new thread. */
+  /**
+   * Reply in this thread as the connected user. `text` uses the formatting described on
+   * `ChatSpace.post()`. Fails rather than starting a new thread.
+   */
   post(text: string): Promise<ChatMessageEntry>;
 }
 
 /**
- * Access to one message in a Google Chat conversation. A capability obtained through a thread
- * remains restricted to that thread, including its replies and attachment capabilities.
+ * Access to one message in a Google Chat conversation and to its thread, but not to the rest
+ * of the conversation.
  */
 export interface ChatMessage extends RpcTarget {
-  /** Return the message's current sender, text, timestamps, attachments, and reaction counts. */
+  /**
+   * Return the message's current sender, text, mentions, timestamps, attachments, and reaction
+   * counts. Throws if it has been deleted.
+   */
   getMetadata(): Promise<ChatMessageInfo>;
 
   /**
@@ -412,25 +453,25 @@ export interface ChatMessage extends RpcTarget {
   getThread(): Promise<ChatThreadEntry>;
 
   /**
-   * Reply in this message's thread as the connected user.
-   *
-   * Direct messages and group chats are not threaded, so replying there fails; send a new
-   * message with `ChatSpace.post()` instead. This does not grant read access to siblings.
+   * Reply in this message's thread as the connected user. `text` uses the formatting described
+   * on `ChatSpace.post()`. Throws where the conversation's `supportsThreads` is false; post a
+   * new message with `ChatSpace.post()` there.
    */
   reply(text: string): Promise<ChatMessageEntry>;
 
   /**
-   * Replace the text of this message.
-   *
-   * Google permits this only for messages the connected user may edit, which in practice means
-   * their own; it fails otherwise. Also works immediately on a newly posted message.
+   * Replace the text of one of your own messages, including one that is still pending. `text`
+   * uses the formatting described on `ChatSpace.post()`. Throws for anyone else's message.
    */
   edit(text: string): Promise<void>;
 
-  /** List the individual reactions to this message. */
+  /** List the individual reactions to this message. A pending message has none. */
   listReactions(): Promise<Cursor<ChatReaction>>;
 
-  /** React to this message as the connected user with one Unicode emoji. */
+  /**
+   * React to this message as the connected user with one Unicode emoji. Throws while the
+   * message is still pending.
+   */
   addReaction(emoji: string): Promise<void>;
 
   /** Remove the connected user's own reaction with this Unicode emoji. */

@@ -7,39 +7,43 @@ the `chat-types.txt` symlink).
 ## Resource model
 
 A **thread is a top-level message and its replies**, including a root with zero replies.
-Threading is available where Google's API supports it: named spaces with inline or grouped
-threading. DMs, group chats, and explicitly unthreaded spaces remain flat message histories.
+Threading follows Google's `spaceThreadingState`: spaces, group chats, and direct messages with
+inline or grouped threading support it; explicitly unthreaded conversations (continuous meeting
+chat, some pre-2022 group chats) remain flat message histories.
 `ChatSpace.getMetadata().supportsThreads` reports the distinction.
 
 Capabilities lead to narrower resources:
 
 ```text
-GoogleChatSession -> ChatSpace -> ChatThread -> ChatMessage -> ChatAttachment
-                         \------------------> ChatMessage
+ChatSession -> ChatSpace -> ChatThread <-> ChatMessage -> ChatAttachment
 ```
 
 A thread grants access to its root, existing replies, and future replies. A message grants
-access to that message and the ability to reply, edit its text where permitted, and manage
-the connected user's reactions. Neither can return a containing space capability; a message
-cannot return its containing thread capability. Resource IDs in metadata do not grant access.
+access to that message, its thread (`message.getThread()`), and the ability to reply, edit its
+text if it is the connected user's own, and manage the connected user's reactions. Neither can
+return a containing space capability. Resource IDs in metadata do not grant access.
 Messages produced by a thread retain its immutable thread restriction through root lookup,
-history, posts, replies, reactions, and attachments; fresh reads recheck membership in that
-thread. A write is scoped when it is queued; approval applies what was queued.
+history, posts, replies, reactions, attachments, and `getThread()`; fresh reads recheck
+membership in that thread. A write is scoped when it is queued; approval applies what was queued.
 
-Known resources use `getSpace(id)`, `getThread(id)`, and `getMessage(id)`: each returns the
+Known resources use `getSpace(idOrUrl)`, `getThread(id)`, and `getMessage(id)`: each returns the
 same `{ info, <capability> }` entry the listings use, or throws if the resource is unavailable,
-so a lookup never has to be followed by a second read. `list…` enumerates resources; `find…`
-performs an optional lookup and returns null when absent. Writes (`post`, `reply`,
-`startThread`) return entries too, describing the queued message or thread under its temporary
-ID. IDs are opaque strings (normally Google's canonical paths), while `name` is the
-human-readable label. Data uses `spaceId`, `threadId`, `createdAt`, `editedAt`, and `isReply`
-consistently. Chat assigns a `threadId` to every message, but it only means something where
-`supportsThreads` is true; ignore it elsewhere (replies there fail with a clear error).
+so a lookup never has to be followed by a second read. `getSpace` accepts `spaces/ID`, a bare ID,
+or a chat.google.com room/DM link, including a message's Copy link. `list…` enumerates resources;
+`find…` performs an optional lookup and returns null when absent. Writes (`post`, `reply`)
+return entries too, describing the queued message under its temporary ID. IDs are opaque strings
+(normally Google's canonical paths), while `name` is the human-readable label. Data uses
+`spaceId`, `threadId`, `createdAt`, `editedAt`, and `isReply` consistently. Chat assigns a
+`threadId` to every message, but it only means something where `supportsThreads` is true;
+ignore it elsewhere (thread operations there fail with a clear error). Deleted messages are never
+returned: listings omit them and lookups throw.
 
 Google's ACL boundary remains the space. Narrower capabilities restrict delegated authority;
 they do not establish separate Google ACLs or make an account-derived capability into an
-independently shareable Workshop connection. Account bindings remain private. A single-space
-binding is shareable with collaborators whose own account can open the space.
+independently shareable Workshop connection. Account bindings remain private. Single-space and
+single-thread bindings are shareable with collaborators whose own account can open the space.
+A thread binding (`https://chat.google.com/room/{space}/{thread}`) starts its session as a
+`ChatThread`; its configurator accepts a pasted Copy link to the thread or any message in it.
 
 ## Names and identities
 
@@ -54,22 +58,23 @@ Prefer `name` for human-facing output and keep `id` for joins, mentions, and API
 optional: fall back to the ID when Google omits one. The connected account's identity comes from
 the existing sign-in profile lookup. Methods that accept an email address as input still support it.
 
-Call **`space.getMetadata()`** to resolve an unnamed DM's other participant on demand. Account
-listings and the connection picker use only Chat's returned metadata, with no membership
-lookups. Agents receive this guidance in the API type comments. For example:
+Call **`space.getMetadata()`** to identify a DM's other participant (`peer`) and name the DM
+after them. Account listings and the connection picker use only Chat's returned metadata, with
+no membership lookups. Agents receive this guidance in the API type comments. For example:
 
 ```ts
-const info = entry.info.type === "directMessage" && !entry.info.name
+const info = entry.info.type === "directMessage"
   ? await entry.space.getMetadata()
   : entry.info;
 const label = info.name ?? info.id;
 ```
 
-The name comes from the DM's own membership list (`members.list`), which Chat populates for
-the people the account talks to; there is no second lookup. When Chat omits the name, or the
-membership is ambiguous, the DM stays unnamed and the ID is the fallback. Existing space names
-and group chats require no lookup. Picker searches scan at most five pages; paste `spaces/ID`
-or a Chat room/DM URL to access an exact conversation beyond that scan.
+The peer comes from the DM's own membership list (`members.list`), which Chat populates for
+the people the account talks to; there is no second lookup. When the membership is ambiguous,
+the DM has no `peer`; when Chat omits the peer's name, the DM stays unnamed and the ID is the
+fallback. Spaces and group chats require no lookup. Memberships are a `kind: "user" | "group"`
+union. Messages list the users they @mention in `mentions`. Picker searches scan at most five
+pages; paste `spaces/ID` or a Chat room/DM URL to access an exact conversation beyond that scan.
 
 ## Discover and operate on threads
 
@@ -105,13 +110,15 @@ the observation is authorized, so a denied page can be retried. A cursor returns
 threads, then throws with a request to use a narrower window. As elsewhere in the Google
 gatekeeper, `[]` means more work remains; only `null` means exhaustion.
 
-`space.listThreads()`, `getThread()`, and `startThread()` all throw in a conversation whose
-`supportsThreads` is false; use `listMessages()` there. Known threads can be retrieved with
-`space.getThread(id)`, which returns a `ChatThreadEntry`. The thread exposes:
+`space.listThreads()`, `space.getThread()`, `message.getThread()`, and `message.reply()` all
+throw in a conversation whose `supportsThreads` is false; use `listMessages()` there. Known
+threads can be retrieved with `space.getThread(id)` or `message.getThread()`, which return a
+`ChatThreadEntry`. The thread exposes:
 
 ```ts
 interface ChatThread extends RpcTarget {
   getMetadata(): Promise<ChatThreadInfo>;
+  getCurrentUser(): Promise<ChatUser>;
   getRootMessage(): Promise<ChatMessageEntry | null>;
   listMessages(options?: ChatListMessagesOptions): Promise<Cursor<ChatMessageEntry>>;
   post(text: string): Promise<ChatMessageEntry>;
@@ -123,16 +130,16 @@ surviving reply. Replies fail rather than silently becoming new top-level messag
 Thread getters use a bounded page scan and throw if it is exhausted before finding visible
 messages; a `listMessages()` cursor can continue through longer stretches of omitted messages.
 
-`getMetadata()` returns the current thread ID, space ID, and latest visible message. Both this
-snapshot and discovery's `info` include `rootMessage` when the root is already in the page being
-read, without additional per-thread lookups. An omitted `rootMessage` means it wasn't cheaply
-available, not that it doesn't exist; use `getRootMessage()` to request it explicitly.
+`getMetadata()` returns the current thread ID, space ID, latest visible message, and root.
+Both this snapshot and discovery's `info` always include `rootMessage` unless the root was
+deleted or is hidden: when it is not in the page already read, one extra oldest-first lookup
+per thread fetches it, unbounded by the discovery window.
 
 ## History and search
 
-`space.listMessages({ since, before })` is the flattened history across threads. Use it for a
-digester that only needs recent messages. The same options work on a thread. All history is
-oldest-first by default; `order: "newestFirst"` reverses it.
+`space.listMessages({ since, before })` is the flattened history across threads, newest first by
+default. Use it for a digester that only needs recent messages. The same options work on a
+thread, where history is oldest first by default. `order` overrides either.
 
 Time windows are half-open `[since, before)` at JavaScript `Date`'s millisecond precision.
 The REST adapter widens Google's strictly exclusive lower bound, then filters decoded results
@@ -141,9 +148,10 @@ message identity: creation-time history is not an exactly-once change feed.
 
 Account discovery offers `listSpaces`, `searchSpaces`, `findDirectMessage`, `getSpace`, and
 `getCurrentUser`. Account-wide `searchMessages` retains its structured filters, including
-`unreadOnly`, with the same `since`/`before` names. Google's search index can lag and omits some
-message categories; use history for complete recent-message scans. A `ChatSpace` — the only
-binding that can be shared — offers `getCurrentUser` and a `searchMessages` limited to that
+`unreadOnly` and `mentionsMe`, with the same `since`/`before` names. Search `text` is split into
+words and "quoted phrases", each of which must match. Google's search index can lag and omits some
+message categories; use history for complete recent-message scans. A `ChatSpace` offers
+`getCurrentUser` and a `searchMessages` limited to that
 conversation: Google's search only accepts `spaces/-`, so the gatekeeper adds the `space.name`
 filter itself and rejects any result outside the space. Thread capabilities have no search.
 
@@ -155,12 +163,13 @@ metadata already lists its attachments; `message.getAttachment(id)` returns the 
 reads one. Event history, explicit message deletion, outgoing uploads, and generic
 drafts/patches are absent. Undo-send remains supported internally.
 
-`space.startThread(text)` posts a root and returns its thread entry directly. It fails without
-posting in an unthreaded conversation. The new thread is ready for further posts and edits
+`space.post(text)` posts a top-level message, which in a threaded conversation starts a new
+thread; `message.getThread()` continues it. The new thread is ready for further posts and edits
 immediately:
 
 ```ts
-using thread = (await space.startThread("Deployment investigation")).thread;
+using root = (await space.post("Deployment investigation")).message;
+using thread = (await root.getThread()).thread;
 using status = (await thread.post("Gathering the relevant logs.")).message;
 await status.edit("Resolved: the deployment is healthy.");
 ```
@@ -179,7 +188,8 @@ retry. Replies to rejected roots disappear from the simulation. Authentication a
 errors during unsend remain retryable rather than being counted as successful deletion.
 
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
-with the getters after a worker restart. Reactions to new messages require the post to complete.
+with the getters after a worker restart. Reactions to new messages require the post to complete;
+until then `listReactions()` returns none.
 
 ## Passing resources to callable agents
 
@@ -209,13 +219,16 @@ persistent merely by storing them.
 ## Verification
 
 Workerd behavior tests cover discovery across pages, authorization retries, zero-reply roots,
-old roots with new replies, private-message exclusion, parent/sibling authority boundaries,
-capability lifetime after discovery disposal, authorized metadata and cheap root enrichment,
-thread creation, pending posts/replies/edits, rejection, undo, the apply/reject race, and
-retrieving temporary IDs after restart. Attenuation regressions cover every message creation path
-and its attachment/reaction descendants. Pure tests cover provider thread support, time
-bounds, scope filtering, and overlays. Durable `spawnCallable` handoff uses the existing gadget
-restoration mechanism; it is not exercised end-to-end by the Chat gatekeeper suite.
-An identity regression checks that Chat-provided names reach message, thread, member, and reaction
-results without extra identity lookups. DM tests cover on-demand resolution, lookup-free listings
-and picker searches, peer selection, pagination, and observer admission by space access.
+old roots with new replies and root lookups outside the window, private and deleted message
+exclusion, parent/sibling authority boundaries, capability lifetime after discovery disposal,
+authorized metadata, threaded DMs and group chats, thread creation from a posted message,
+single-thread bindings, pending posts/replies/edits, edit ownership, rejection, undo (including
+already-deleted sends), the apply/reject race, and retrieving temporary IDs after restart.
+Attenuation regressions cover every message creation path and its thread, attachment, and
+reaction descendants. Pure tests cover provider thread support, search keywords and mentions,
+conversation references, time bounds, scope filtering, and overlays. Durable `spawnCallable`
+handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
+Chat gatekeeper suite. An identity regression checks that Chat-provided names reach message,
+thread, member, and reaction results without extra identity lookups. DM tests cover on-demand
+peer resolution, lookup-free listings and picker searches, peer selection, pagination, and
+observer admission by space access.
