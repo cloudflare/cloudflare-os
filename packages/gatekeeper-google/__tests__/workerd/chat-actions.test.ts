@@ -228,16 +228,20 @@ function chatHarness(
 ) {
   // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
   // in the test context cannot be awaited there.
-  const gate = {hold: false, reached: false, released: false};
+  const gate = {
+    match: undefined as ((url: URL, method: string) => boolean) | undefined,
+    reached: false,
+    released: false,
+  };
   const tick = () => new Promise<void>(resolve => setTimeout(resolve, 5));
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    if (gate.match?.(url, (init.method ?? "GET").toUpperCase())) {
+      gate.match = undefined;
+      gate.reached = true;
+      while (!gate.released) await tick();
+    }
     if (url.hostname === "www.googleapis.com" && url.pathname === "/oauth2/v3/userinfo") {
-      if (gate.hold) {
-        gate.hold = false;
-        gate.reached = true;
-        while (!gate.released) await tick();
-      }
       return json(userInfo(new Headers(init.headers).get("Authorization")));
     }
     return backend.fetch(url, init);
@@ -293,9 +297,9 @@ function chatHarness(
       runHook(hook, instance => instance.chatRevertAction(facetName, id, props, actionId))),
     rejectAction: (actionId: number) => ready.then(() =>
       runHook(hook, instance => instance.chatRejectAction(facetName, id, props, actionId))),
-    /** Hold the next account lookup; resolves once it is reached, returning its release. */
-    holdNextUserInfo: async (): Promise<() => void> => {
-      gate.hold = true;
+    /** Hold the next matching request; resolves once it is reached, returning its release. */
+    holdNextRequest: async (match: (url: URL, method: string) => boolean): Promise<() => void> => {
+      gate.match = match;
       while (!gate.reached) await tick();
       return () => { gate.released = true; };
     },
@@ -428,21 +432,73 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.creates[1].body.thread?.name).toBe(threadName("T1"));
   });
 
-  // approveAction and rejectAction both pass the overseer's "still pending" check before their own
-  // awaits, so a reject can land while an apply is resolving the account. The write must not
-  // reach Google once the queue has recorded the action as rejected.
-  it("does not send an action that was rejected while its apply was in flight", async () => {
+  // The overseer checks "still pending" before calling either method, so a reject can land while
+  // the create is in flight. It must be refused: the write already left for Google.
+  it("refuses to reject an action while its write is in flight", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     await chat.call("space.post", ["hello"]);
-    const held = chat.holdNextUserInfo();
+    const held = chat.holdNextRequest((url, method) =>
+      method === "POST" && url.pathname === `/v1/${SPACE_NAME}/messages`);
     const applying = chat.applyAction(1);
     const release = await held;
-    await chat.rejectAction(1);
+    await expect(chat.rejectAction(1)).rejects.toThrow(/being applied/);
     release();
-    await expect(applying).rejects.toThrow(/rejected before it was applied/);
-    expect(backend.state.creates).toEqual([]);
-    await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/no longer be undone/)});
+    await applying;
+    expect(backend.state.creates).toHaveLength(1);
+    await chat.revertAction(1);
+    expect(backend.state.messages).toEqual([]);
+  });
+
+  it("shows the approver the exact message text", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    const text = "Standup at 3pm <!-- hidden -->\n\n  indented";
+    using _posted = (await space.post(text)).message;
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit(text);
+    const [send, edit] = (await chat.readQueue()).submissions.map(entry => entry.description);
+    expect(send).toMatchObject({
+      fields: [{label: "Message", kind: "text", value: text}], descriptionIsComplete: true,
+    });
+    expect(edit).toMatchObject({fields: [
+      {label: "Current", kind: "text", value: "root"},
+      {label: "New", kind: "text", value: text},
+    ]});
+  });
+
+  it("applies queued reactions in submission order and undoes them", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.addReaction("👍");
+    await message.removeReaction("👍");
+    await expect(chat.applyAction(2)).rejects.toThrow(/earlier queued change/);
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    await chat.revertAction(2);
+    expect(backend.state.reactionWrites.map(write => write.method)).toEqual(["POST", "DELETE", "POST"]);
+    // An add whose reaction is already there, as on a retried apply, writes nothing.
+    await message.addReaction("👍");
+    await chat.applyAction(3);
+    await chat.revertAction(3);
+    expect(backend.state.reactionWrites).toHaveLength(3);
+    expect(backend.state.reactions.map(reaction => reaction.emoji?.unicode)).toEqual(["👍"]);
+  });
+
+  it("refuses observers on a whole-account binding and checks them on a thread binding", async () => {
+    await expect(chatHarness(chatBackend(), undefined, "account").addObserver())
+      .rejects.toThrow(/cannot be shared/);
+    const backend = chatBackend();
+    const chat = chatHarness(backend, undefined, "thread");
+    backend.state.rejectedToken = "observer-token";
+    await expect(chat.addObserver()).rejects.toThrow(/cannot access the Google Chat conversation/);
+    backend.state.rejectedToken = undefined;
+    await chat.addObserver();
   });
 
   it("keeps a denied unsend retryable and handles disappearance between GET and DELETE", async () => {
@@ -455,7 +511,7 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages).toHaveLength(1);
     backend.state.getMessageStatus = 200;
     backend.state.deleteAfterGet = true;
-    await chat.revertAction(1);
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
     expect(backend.state.messages).toEqual([]);
   });
 
@@ -646,7 +702,7 @@ describe("Google Chat gatekeeper behaviors", () => {
     using message = (await space.getMessage(messageName("root"))).message;
     await message.edit("Investigating");
     await message.edit("Resolved");
-    await expect(chat.applyAction(2)).rejects.toThrow(/earlier edits first/);
+    await expect(chat.applyAction(2)).rejects.toThrow(/earlier queued change/);
     expect(backend.state.edits).toEqual([]);
     await chat.applyAction(1);
     await chat.applyAction(2);

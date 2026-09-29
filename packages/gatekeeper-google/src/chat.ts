@@ -21,6 +21,9 @@
 
 import { DurableObject, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import {
+  buildDescription, codeSpan, plainInline, sanitizeTitle,
+} from "@gadgets/gatekeeper-kit/action-description";
 import type {
   ActionDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier,
   ResourceDescription,
@@ -87,14 +90,14 @@ function previewText(text: string, maxLength: number): string {
 
 /** How a conversation is named in approval and observation text. */
 function spaceLabel(info: ChatSpaceInfo): string {
-  if (info.name) return `"${info.name}" (${info.id})`;
+  if (info.name) return `"${plainInline(info.name)}" (${info.id})`;
   return info.type === "directMessage"
     ? `a direct message (${info.id})`
     : `an unnamed conversation (${info.id})`;
 }
 
 function userLabel(user: ChatUser | undefined): string {
-  return user?.name ?? user?.id ?? "an unknown user";
+  return user?.name ? plainInline(user.name) : user?.id ?? "an unknown user";
 }
 
 // ── Storage ─────────────────────────────────────────────────────────
@@ -234,6 +237,14 @@ async function submitChatAction(
     ctx.store.remove(actionId);
     throw error;
   }
+}
+
+/** Manual approval can run out of order, and an older change applied later would undo this one. */
+function requireOldestChange(
+  store: ChatStore, actionId: number, action: ChatAction, conflicts: (other: ChatAction) => boolean,
+): void {
+  const first = store.listForSpace(chatActionSpaceName(action)).find(entry => conflicts(entry.action));
+  if (first?.id !== actionId) throw new Error("Apply the earlier queued change to this message first.");
 }
 
 /** Base class for every Chat capability: the shared context plus one approval-queue reference. */
@@ -502,11 +513,12 @@ async function queueChatMessage(
     submittedAt: Date.now(),
   };
   const id = await submitChatAction(ctx, action, {
-    title: `Send a Google Chat message to ${info.name ?? spaceName}`,
-    description:
+    title: sanitizeTitle(`Send a Google Chat message to ${info.name ?? spaceName}`),
+    ...buildDescription(
       `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(info)}` +
-      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.` +
-      `\n\n> ${previewText(body, 1000)}`,
+      `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`)
+      .verbatim("Message", body)
+      .finish(),
     implementsRevert: true,
     actionKind: SEND_MESSAGE_ACTION,
     autoApprovable: true,
@@ -841,10 +853,11 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
       text: body, submittedAt: Date.now(),
     }, {
       title: `Edit a Google Chat message in ${current.spaceId}`,
-      description:
-        `Replace the text of message ${current.id}, sent by ${userLabel(current.sender)}.` +
-        `\n\n**Current:** ${previewText(current.text, 500)}` +
-        `\n\n**New:** ${previewText(body, 500)}`,
+      ...buildDescription(
+        `Replace the text of message ${current.id}, sent by ${userLabel(current.sender)}.`)
+        .verbatim("Current", current.text)
+        .verbatim("New", body)
+        .finish(),
       implementsRevert: true,
       actionKind: EDIT_MESSAGE_ACTION,
       autoApprovable: true,
@@ -886,10 +899,10 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     await submitChatAction(this.ctx, {
       type: "addReaction", messageName: name, emoji: value, submittedAt: Date.now(),
     }, {
-      title: `React ${value} to a Google Chat message`,
+      title: sanitizeTitle(`React ${value} to a Google Chat message`),
       description:
-        `Add the reaction ${value} to message ${name}, sent by ${userLabel(current.sender)}, ` +
-        `as ${userLabel(this.ctx.self)}.`,
+        `Add the reaction ${codeSpan(value)} to message ${name}, sent by ` +
+        `${userLabel(current.sender)}, as ${userLabel(this.ctx.self)}.`,
       implementsRevert: true,
       actionKind: REACTION_ACTION,
       autoApprovable: true,
@@ -904,10 +917,10 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     await submitChatAction(this.ctx, {
       type: "removeReaction", messageName: name, emoji: value, submittedAt: Date.now(),
     }, {
-      title: `Remove the ${value} reaction from a Google Chat message`,
+      title: sanitizeTitle(`Remove the ${value} reaction from a Google Chat message`),
       description:
-        `Remove ${userLabel(this.ctx.self)}'s own ${value} reaction from message ${name}, ` +
-        `sent by ${userLabel(current.sender)}.`,
+        `Remove ${userLabel(this.ctx.self)}'s own ${codeSpan(value)} reaction from message ` +
+        `${name}, sent by ${userLabel(current.sender)}.`,
       implementsRevert: true,
       actionKind: REACTION_ACTION,
       autoApprovable: true,
@@ -987,6 +1000,8 @@ export class GoogleChatGatekeeperImpl
     extends DurableObject<Env, GoogleChatGatekeeperImplProps>
     implements Gatekeeper<ChatSession | ChatSpace | ChatThread> {
   #self?: ChatUser;
+  /** Actions whose apply is in flight: a reject then could not stop a write already sent. */
+  #applying = new Set<number>();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1112,10 +1127,15 @@ export class GoogleChatGatekeeperImpl
     const store = new ChatStore(this.ctx.storage);
     const action = store.get(actionId);
     if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
-    const self = await this.#getSelf();
-    const revert = await this.#perform(store, actionId, action, self);
-    store.setRevert(actionId, revert);
-    store.remove(actionId);
+    if (this.#applying.has(actionId)) throw new Error("This Google Chat action is already being applied.");
+    this.#applying.add(actionId);
+    try {
+      const revert = await this.#perform(store, actionId, action, await this.#getSelf());
+      store.setRevert(actionId, revert);
+      store.remove(actionId);
+    } finally {
+      this.#applying.delete(actionId);
+    }
   }
 
   /** Send one action to Google, returning what a later revert needs to know. */
@@ -1127,11 +1147,10 @@ export class GoogleChatGatekeeperImpl
   ): Promise<ChatRevertInfo> {
     const api = this.#api();
     const scope = { store, boundSpace: this.#boundSpaceName() };
-    // The reads before each write yield, and the overseer lets a rejectAction land in that window;
-    // a write after it would reach Chat as something the queue records as rejected.
-    const stillPending = () => {
-      if (!store.get(actionId)) throw new Error("This Google Chat action was rejected before it was applied.");
-    };
+    if (action.type === "addReaction" || action.type === "removeReaction") {
+      requireOldestChange(store, actionId, action, other => "emoji" in other &&
+        other.messageName === action.messageName && other.emoji === action.emoji);
+    }
     switch (action.type) {
       case "sendMessage": {
         const threadName = action.threadName === undefined
@@ -1140,7 +1159,6 @@ export class GoogleChatGatekeeperImpl
         if (threadName && pendingThreadActionId(threadName) !== undefined) {
           throw new Error("Send the thread's root message before its replies.");
         }
-        stillPending();
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
         let created = await api.createMessage(action.spaceName, {
@@ -1159,13 +1177,10 @@ export class GoogleChatGatekeeperImpl
       case "updateMessage": {
         const target = resolveMessage({ store }, action.messageName);
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
-        // Manual approval can run out of order; an older edit applied later would overwrite this.
-        const edits = store.listForSpace(chatActionSpaceName(action)).filter(entry =>
-          entry.action.type === "updateMessage" && entry.action.messageName === target.committed);
-        if (edits[0]?.id !== actionId) throw new Error("Apply this message's earlier edits first.");
+        requireOldestChange(store, actionId, action, other =>
+          other.type === "updateMessage" && other.messageName === target.committed);
         const previous = await api.getMessage(target.committed);
         requireInScope(scope, previous.spaceId);
-        stillPending();
         if (previous.text !== action.text) await api.updateMessageText(target.committed, action.text);
         return { type: "updatedMessage", messageName: target.committed, previousText: previous.text };
       }
@@ -1174,7 +1189,6 @@ export class GoogleChatGatekeeperImpl
         requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        stillPending();
         const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
         return existing ? { type: "none" } : { type: "addedReaction", reactionName: reaction.id };
       }
@@ -1182,7 +1196,6 @@ export class GoogleChatGatekeeperImpl
         requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         if (!existing) return { type: "none" };
-        stillPending();
         await api.deleteReaction(existing.id);
         return { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
       }
@@ -1197,6 +1210,9 @@ export class GoogleChatGatekeeperImpl
     const pending = store.list();
     const index = pending.findIndex(entry => entry.id === actionId);
     if (index === -1) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
+    if (this.#applying.has(actionId)) {
+      throw new Error("This Google Chat action is being applied and can no longer be rejected.");
+    }
     store.remove(actionId);
     // Anything queued behind this action was written against a simulation that included it, so
     // the gadget has to start again rather than keep building on a world that will not exist.
