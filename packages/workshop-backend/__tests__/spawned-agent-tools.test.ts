@@ -190,6 +190,28 @@ describe("spawned agent tools", () => {
     ]);
   }));
 
+  it("tells an edit of a missing file apart from an edit of an unread one",
+      () => withImpl(async impl => {
+    let commit = await commitFiles(impl, { "README.md": "hello\n" });
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+    let edit = { workpiece: "REPO", textToReplace: "hello", replacement: "bye" };
+
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([
+        fauxToolCall("createWorktree", { title: "Repo", bindingName: "REPO", commitId: commit }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([
+        fauxToolCall("editFile", { ...edit, filename: "README.md" }),
+        fauxToolCall("editFile", { ...edit, filename: "REPO/README.md" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+
+    let [unread, missing] = toolCalls(impl, chatId).filter(call => call.toolName === "editFile");
+    expect(unread.error).toMatch(/must read a file/);
+    expect(missing.error).toMatch(/has no file named "REPO\/README\.md"/);
+  }));
+
   it("refuses a new binding named GIT, which would shadow env.GIT",
       () => withImpl(async impl => {
     let commit = await commitFiles(impl, { "README.md": "hello\n" });

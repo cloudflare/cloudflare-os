@@ -778,7 +778,7 @@ Tools refer to Gadgets by their binding name in your env: the file tools (\`read
 
 Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Workers.
 
-Each Gadget has two main files: client.js and server.js
+A Gadget is defined by two main files, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
 
 server.js defines the Gadget's server-side logic, in the form of a Cloudflare Durable Object class. The class must be exported under the name \`Gadget\`. Unlike with normal Durable Objects on Cloudflare, there is no need to export a separate fetch handler; the Gadgets platform automatically takes care of routing requests to the Gadget. The Gadget has access to private storage via the regular Durable Objects KV and SQLite storage APIs. A simple server.js might look like:
 
@@ -1055,7 +1055,7 @@ Write a complete file, creating it if it doesn't exist, or replacing it if it do
 `.trim();
 
 let EDIT_FILE_TOOL_DESCRIPTION = `
-Edit content of a file. If you need to edit multiple places in a file or across multiple files, you should issue multiple tool calls simultaneously, rather than in series.
+Edit content of a file. If you need to edit multiple places in a file or across multiple files, you should issue multiple tool calls simultaneously, rather than in series. You can only edit a file after reading or writing it; create new files with writeFile.
 `.trim();
 
 let WEBFETCH_TOOL_DESCRIPTION = `
@@ -1477,6 +1477,26 @@ async function runAgentPass(
       : Promise<string | undefined> =>
       worktreeRemovedPaths.get(worktreeId)?.has(filename)
           ? undefined : await faultWorktreeBase(worktreeId, filename);
+
+  // A file as readFile shows it, or undefined if it does not exist. An unpinned workpiece with
+  // committed code is read live at its base -- a gadget's head (fixed for the turn; see
+  // observeHead) or a worktree's accepted commit -- by path, never by materializing the tree,
+  // and stamped with the blob's oid: replay reproduces the text from it, and editFile compares
+  // it against the file at the head it pins. Pinned workpieces -- and gadgets with no committed
+  // code, whose files exist only in the chat's change stream -- read from the session content,
+  // unstamped: it is never stale within an epoch. Worktree session content is lazy: a path not
+  // yet touched or read resolves against the pinned base commit (with descriptive errors for
+  // symlinks, submodules, and oversized or binary content). A removed path stays removed
+  // (readWorktreeBase).
+  let readToolFile = async (id: WorkpieceId, filename: string)
+      : Promise<{text: string, oid?: string} | undefined> => {
+    if (!pinnedGadgets.has(id)) {
+      let base = observeHead(id) ?? hooks.getWorktreePinBase(id);
+      if (base !== undefined) return await hooks.readFileAtCommitWithOid(base, filename);
+    }
+    let text = sessionContent.get(id)?.get(filename) ?? await readWorktreeBase(id, filename);
+    return text === undefined ? undefined : {text};
+  };
 
   // Seeds the base texts a change's worktree edits need before it applies to the session
   // content -- the agent-side mirror of the overseer's seedWorktreeEditBases, and deliberately
@@ -2933,38 +2953,13 @@ async function runAgentPass(
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let window = {startLine, lineCount};
 
-          // An unpinned workpiece with committed code is read live at its base -- a gadget's
-          // head (fixed for the turn; see observeHead) or a worktree's accepted commit -- by
-          // path, never by materializing the tree, and stamped with the blob's oid: replay
-          // reproduces the text from it, and editFile compares it against the file at the head
-          // it pins. Pinned workpieces -- and gadgets with no committed code, whose files exist
-          // only in the chat's change stream -- read from the session content, unstamped: it is
-          // never stale within an epoch.
-          if (!pinnedGadgets.has(resolved.workpieceId)) {
-            let base = observeHead(resolved.workpieceId) ??
-                hooks.getWorktreePinBase(resolved.workpieceId);
-            if (base !== undefined) {
-              let file = await hooks.readFileAtCommitWithOid(base, filename);
-              if (file === undefined) {
-                throw new Error("File does not exist.");
-              }
-              let shown = readFileWindow(file.text, window);
-              markFileRead(resolved.workpieceId, filename, file.oid);
-              return toolResult(shown, {observedOid: file.oid});
-            }
-          }
-
-          // Worktree session content is lazy: a path not yet touched or read resolves against
-          // the pinned base commit (with descriptive errors for symlinks, submodules, and
-          // oversized or binary content). A removed path stays removed (readWorktreeBase).
-          let text = sessionContent.get(resolved.workpieceId)?.get(filename) ??
-              await readWorktreeBase(resolved.workpieceId, filename);
-          if (text === undefined) {
+          let file = await readToolFile(resolved.workpieceId, filename);
+          if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let shown = readFileWindow(text, window);
-          markFileRead(resolved.workpieceId, filename);
-          return toolResult(shown);
+          let shown = readFileWindow(file.text, window);
+          markFileRead(resolved.workpieceId, filename, file.oid);
+          return toolResult(shown, file.oid === undefined ? {} : {observedOid: file.oid});
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -3095,7 +3090,10 @@ async function runAgentPass(
           assertMayModifyWorkpiece(resolved.workpieceId);
           let readFiles = filesRead.get(resolved.workpieceId);
           if (readFiles === undefined || !readFiles.has(filename)) {
-            throw new Error("You must read a file before you can edit it.");
+            // A file the agent never saw may not exist at all, usually a mistyped name.
+            throw new Error(await readToolFile(resolved.workpieceId, filename) === undefined
+                ? `${workpiece} has no file named "${filename}".`
+                : "You must read a file before you can edit it.");
           }
 
           // The first edit to an unpinned gadget with committed code pins it at the *current*
