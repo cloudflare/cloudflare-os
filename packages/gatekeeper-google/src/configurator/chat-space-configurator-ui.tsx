@@ -28,7 +28,7 @@ export default {
         <Autocomplete
           name="spaceId"
           value={values.spaceId}
-          placeholder="Search conversations or paste a Chat URL or spaces/ID..."
+          placeholder="Search by name, enter a person's email, or paste a Chat URL or spaces/ID..."
           loadOptions={query => ui.listChatSpaces(query)}
           onChange={spaceId => setValues({ spaceId })}
         />

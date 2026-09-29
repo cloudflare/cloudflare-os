@@ -3,9 +3,8 @@ import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
-import { describeConversations, needsDescription } from "./chat-names";
 import type { ChatSpaceInfo } from "./chat-types";
-import { GoogleAccessToken, getGoogleAccountProfile } from "./google-api";
+import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
@@ -32,17 +31,6 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
-/**
- * Per Chat picker: the connected user's id, and each conversation's naming, cached while still in
- * flight so a search typed during the initial load does not repeat its lookups.
- */
-type ChatPickerCache = { selfId?: Promise<string>; described: Map<string, Promise<ChatSpaceInfo>> };
-const chatConfiguratorCaches = new WeakMap<object, ChatPickerCache>();
-/**
- * Conversations one Chat picker names. Each costs a membership read against a quota the whole
- * OAuth project shares (3,000 a minute), so the rest keep their generic label.
- */
-const CHAT_CONFIGURATOR_NAMED_MAX = 200;
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS = { maxPages: 1, maxResults: 200 };
 const BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
@@ -123,30 +111,17 @@ function idTail(id: string): string {
   return id.length > 8 ? `…${id.slice(-8)}` : id;
 }
 
-function chatSpaceOption(space: ChatSpaceInfo): ConfiguratorOption {
+/** A person's email address, which the picker resolves to the direct message with them. */
+const CHAT_EMAIL_RE = /^[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+
+function chatSpaceOption(space: ChatSpaceInfo, title = space.name): ConfiguratorOption {
   const kind = space.type === "directMessage" ? "Direct message"
     : space.type === "groupChat" ? "Group chat" : "Space";
   return {
     value: space.id.slice("spaces/".length),
-    title: space.name ?? kind,
+    title: title ?? kind,
     subtitle: space.lastActiveAt ? `${kind} · Active ${space.lastActiveAt.toLocaleDateString()}` : kind,
   };
-}
-
-/** Name DMs and unnamed group chats after their participants, remembering them for the picker. */
-async function describeChatSpaces(
-  target: object, api: ChatApi, infos: ChatSpaceInfo[],
-): Promise<ChatSpaceInfo[]> {
-  const cache: ChatPickerCache = chatConfiguratorCaches.get(target) ?? { described: new Map() };
-  chatConfiguratorCaches.set(target, cache);
-  const fresh = infos.filter(info => needsDescription(info) && !cache.described.has(info.id))
-    .slice(0, CHAT_CONFIGURATOR_NAMED_MAX - cache.described.size);
-  if (fresh.length > 0) {
-    cache.selfId ??= getGoogleAccountProfile(googleTokenProvider(target)).then(({ sub }) => `users/${sub}`);
-    const described = cache.selfId.then(selfId => describeConversations(api, fresh, selfId));
-    fresh.forEach((info, i) => cache.described.set(info.id, described.then(all => all[i], () => info)));
-  }
-  return Promise.all(infos.map(info => cache.described.get(info.id) ?? info));
 }
 
 async function listDriveFiles(
@@ -319,33 +294,38 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   }
 
   /**
-   * Conversations this account has joined, matched by name.
+   * Conversations this account has joined, matched by name, or the direct message with a person
+   * given by email.
    *
-   * Chat's own space search only matches named spaces, so it would hide every direct message and
-   * group chat -- exactly the conversations whose id is hardest to find by hand. Scan a bounded
-   * five provider pages, naming DMs and unnamed group chats after their participants, and stop
-   * once the picker has its 100 visible options.
+   * Chat's own space search only matches named spaces, so scan a bounded five provider pages
+   * instead, stopping once the picker has its 100 visible options. DMs and most group chats have
+   * no name of their own, and naming them costs a membership read each, so they are reached by
+   * email or by pasting a link.
    */
   async listChatSpaces(query: string): Promise<ConfiguratorOption[]> {
     const api = new ChatApi(googleTokenProvider(this));
     const options: ConfiguratorOption[] = [];
+    const email = query.trim();
+    if (CHAT_EMAIL_RE.test(email)) {
+      const dm = await api.findDirectMessage(email);
+      return dm ? [chatSpaceOption(dm, email)] : [];
+    }
     // Exact references bypass the bounded discovery scan, including conversations on later pages.
     const exact = chatSpaceIdFromReference(query);
     if (exact !== undefined) {
-      let space: ChatSpaceInfo;
       try {
-        space = await api.getSpace(`spaces/${exact}`);
+        const space = await api.getSpace(`spaces/${exact}`);
+        return [chatSpaceOption(space)];
       } catch (error) {
         if (isChatNoAccessError(error)) return [];
         throw error;
       }
-      return (await describeChatSpaces(this, api, [space])).map(chatSpaceOption);
     }
     let pageToken: string | undefined;
     for (let pageNumber = 0; pageNumber < 5 && options.length < 100; pageNumber++) {
       const page = await api.listSpaces({ pageSize: query.trim() ? 200 : 100, ...(pageToken ? { pageToken } : {}) });
-      options.push(...(await describeChatSpaces(this, api, page.items))
-        .map(chatSpaceOption)
+      options.push(...page.items
+        .map(space => chatSpaceOption(space))
         .filter(option => optionMatches([option.title], query)));
       pageToken = page.nextPageToken;
       if (!pageToken) break;
