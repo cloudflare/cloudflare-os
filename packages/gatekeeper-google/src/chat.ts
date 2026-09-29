@@ -389,13 +389,55 @@ async function readThreadPage(
     buildEntries: async items => items,
     authorize: () => observe(ctx,
       metadata ? "Read Google Chat thread metadata" : "Open a Google Chat thread",
-      `Read a page of messages in ${name}.`),
+      metadata ? `Read the newest and first messages of ${name}.` : `Read a page of messages in ${name}.`),
   });
   const page = await pager.next();
   if (page?.length === 0) {
     throw new Error("Thread lookup exceeded its page budget. Use listMessages() to scan the history.");
   }
   return page;
+}
+
+async function requireThreads(ctx: ChatContext, spaceName: string): Promise<void> {
+  if (!(await ctx.api.getSpace(spaceName)).supportsThreads) {
+    throw new Error("This conversation does not support threads. Use listMessages() instead.");
+  }
+}
+
+/** A thread capability paired with its current metadata; every path that hands out a thread. */
+async function threadEntry(
+  ctx: ChatContext, spaceName: string, threadName: string,
+): Promise<ChatThreadEntry> {
+  await requireThreads(ctx, spaceName);
+  const thread = new ChatThreadImpl(ctx, threadName);
+  try {
+    return { info: await thread.getMetadata(), thread };
+  } catch (error) {
+    thread[Symbol.dispose]();
+    throw error;
+  }
+}
+
+/**
+ * The thread's first message, or undefined when it was deleted or is hidden. Unbounded by any
+ * listing window, and records no observation: callers disclose it under their own.
+ */
+async function fetchThreadRoot(
+  ctx: ChatContext, threadName: string,
+): Promise<ChatMessageInfo | undefined> {
+  const thread = resolveThread(ctx, threadName);
+  const pending = ctx.store.listForSpace(thread.spaceName);
+  if (thread.pending) {
+    const id = pendingThreadActionId(thread.name)!;
+    const action = ctx.store.get(id);
+    return action?.type === "sendMessage"
+      ? overlayMessage(pendingMessageInfo(id, action, ctx.self), pending) : undefined;
+  }
+  const page = await ctx.api.listMessages(thread.spaceName, {
+    threadName: thread.name, order: "oldestFirst", pageSize: 1,
+  });
+  const first = page.items[0];
+  return first && !first.isReply ? overlayMessage(first, pending) : undefined;
 }
 
 /** Undo a send, counting a message already removed in Google Chat as success. */
@@ -430,14 +472,14 @@ async function queueChatMessage(
   ctx: ChatContext,
   spaceName: string,
   text: string,
-  destination?: { threadName: string } | { startThread: true },
+  destination?: { threadName: string },
 ): Promise<ChatMessageInfo> {
   const body = validateMessageText(text);
   const info = await ctx.api.getSpace(spaceName);
   if (destination && !info.supportsThreads) {
     throw new Error("This conversation does not support threaded replies.");
   }
-  let threadName = destination && "threadName" in destination ? destination.threadName : undefined;
+  let threadName = destination?.threadName;
   requireInScope(ctx, spaceName);
   requireThreadInScope(ctx, threadName);
   if (threadName !== undefined) {
@@ -575,7 +617,7 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     const fetchPage = messagePages(this.ctx, this.#spaceName, {
       since: window.since, before: window.before, order: "newestFirst",
     });
-    await this.#requireThreads();
+    await requireThreads(this.ctx, this.#spaceName);
     let seen = new Set<string>();
     return chatCursor(this.ctx, {
       fetchPage,
@@ -600,13 +642,18 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
         if (seen.size + fresh.size > 5_000) {
           throw new Error("Too many Google Chat threads. Use a narrower time window.");
         }
-        return [...fresh.values()].map(info => ({
-          info, thread: new ChatThreadImpl(this.ctx, info.id),
+        const infos = [...fresh.values()];
+        // A root is its thread's oldest message, so it is often on a page this scan never reaches.
+        await Promise.all(infos.map(async info => {
+          if (info.rootMessage) return;
+          const root = await fetchThreadRoot(this.ctx, info.id);
+          if (root) info.rootMessage = root;
         }));
+        return infos.map(info => ({ info, thread: new ChatThreadImpl(this.ctx, info.id) }));
       },
       authorize: async entries => {
         await observe(this.ctx, "List Google Chat threads",
-          `Read ${entries.length} thread(s) and their latest matching messages in ${this.#spaceName}.`);
+          `Read ${entries.length} thread(s), each with its first and latest matching messages, in ${this.#spaceName}.`);
         // A denied page must neither advance the provider cursor nor hide its threads on retry.
         for (const entry of entries) seen.add(entry.info.id);
       },
@@ -616,24 +663,11 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
     });
   }
 
-  async #requireThreads(): Promise<void> {
-    if (!(await this.ctx.api.getSpace(this.#spaceName)).supportsThreads) {
-      throw new Error("This conversation does not support threads. Use listMessages() instead.");
-    }
-  }
-
   async getThread(id: string): Promise<ChatThreadEntry> {
     if (resolveThread(this.ctx, id).spaceName !== this.#spaceName) {
       throw new Error("That thread belongs to a different conversation.");
     }
-    await this.#requireThreads();
-    const thread = new ChatThreadImpl(this.ctx, id);
-    try {
-      return { info: await thread.getMetadata(), thread };
-    } catch (error) {
-      thread[Symbol.dispose]();
-      throw error;
-    }
+    return threadEntry(this.ctx, this.#spaceName, id);
   }
 
   async getMessage(id: string): Promise<ChatMessageEntry> {
@@ -677,16 +711,6 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   async post(text: string): Promise<ChatMessageEntry> {
     return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
   }
-
-  async startThread(text: string): Promise<ChatThreadEntry> {
-    const root = await queueChatMessage(this.ctx, this.#spaceName, text, { startThread: true });
-    // A queued root always names its pending thread, which is that one message so far.
-    const id = root.threadId!;
-    return {
-      info: { id, spaceId: this.#spaceName, latestMessage: root, rootMessage: root },
-      thread: new ChatThreadImpl(this.ctx, id),
-    };
-  }
 }
 
 // ── Thread capability ───────────────────────────────────────────────
@@ -705,11 +729,16 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
     const thread = resolveThread(this.ctx, this.#name);
     const messages = await readThreadPage(this.ctx, this.#name, true);
     if (!messages) throw new Error("This thread is not available.");
-    const rootMessage = messages.find(message => !message.isReply);
+    const rootMessage = messages.find(message => !message.isReply) ??
+      await fetchThreadRoot(this.ctx, this.#name);
     return {
       id: thread.name, spaceId: thread.spaceName, latestMessage: messages[0],
       ...(rootMessage ? { rootMessage } : {}),
     };
+  }
+
+  async getCurrentUser(): Promise<ChatUser> {
+    return currentUser(this.ctx);
   }
 
   async getRootMessage(): Promise<ChatMessageEntry | null> {
@@ -766,6 +795,14 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
       : await this.ctx.api.getMessage(target.committed);
     requireMessageInScope(this.ctx, info);
     return overlayMessage(info, this.#pending());
+  }
+
+  async getThread(): Promise<ChatThreadEntry> {
+    const info = await this.#info();
+    if (info.threadId === undefined) {
+      throw new Error("This conversation does not support threads. Use listMessages() instead.");
+    }
+    return threadEntry(this.ctx, info.spaceId, info.threadId);
   }
 
   async getMetadata(): Promise<ChatMessageInfo> {

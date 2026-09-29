@@ -244,8 +244,8 @@ export type ChatThreadInfo = {
   /** Newest visible message; in discovery results, the newest within the listing's window. */
   latestMessage: ChatMessageInfo;
   /**
-   * Root content when it was available in the page already read. Omission does not mean the
-   * root is missing; use getRootMessage() when it is needed explicitly.
+   * The thread's first message. Absent only when that message was deleted or is hidden from
+   * you; the replies remain readable.
    */
   rootMessage?: ChatMessageInfo;
 };
@@ -374,12 +374,6 @@ export interface ChatSpace extends RpcTarget {
    * describes the new message, including its temporary ID until it is committed.
    */
   post(text: string): Promise<ChatMessageEntry>;
-
-  /**
-   * Post a root message and return its thread, ready for reading and further posts.
-   * Throws without posting if this conversation does not support threads.
-   */
-  startThread(text: string): Promise<ChatThreadEntry>;
 }
 
 /** Access to one thread's root and replies, including future replies, without the parent space. */
@@ -389,6 +383,9 @@ export interface ChatThread extends RpcTarget {
    * available. Throws if no visible messages remain in the thread.
    */
   getMetadata(): Promise<ChatThreadInfo>;
+
+  /** Return the connected account's own Chat identity, the sender of anything posted here. */
+  getCurrentUser(): Promise<ChatUser>;
 
   /** Return the root message, or null if it is unavailable. Never substitutes a surviving reply. */
   getRootMessage(): Promise<ChatMessageEntry | null>;
@@ -407,6 +404,12 @@ export interface ChatThread extends RpcTarget {
 export interface ChatMessage extends RpcTarget {
   /** Return the message's current sender, text, timestamps, attachments, and reaction counts. */
   getMetadata(): Promise<ChatMessageInfo>;
+
+  /**
+   * Return this message's thread, with its current metadata. Throws where the conversation's
+   * `supportsThreads` is false.
+   */
+  getThread(): Promise<ChatThreadEntry>;
 
   /**
    * Reply in this message's thread as the connected user.

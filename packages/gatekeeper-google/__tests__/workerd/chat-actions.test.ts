@@ -414,7 +414,8 @@ describe("Google Chat gatekeeper behaviors", () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
-    using thread = (await space.startThread("root")).thread;
+    using root = (await space.post("root")).message;
+    using thread = (await root.getThread()).thread;
     using _reply = (await thread.post("reply")).message;
     // Google may answer a create with only the submitted fields plus the assigned name.
     backend.state.echoCreates = true;
@@ -483,7 +484,8 @@ describe("Google Chat gatekeeper behaviors", () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
-    using thread = (await space.startThread("root")).thread;
+    using root = (await space.post("root")).message;
+    using thread = (await root.getThread()).thread;
     using reply = (await thread.post("reply")).message;
     await chat.rejectAction(1);
     await expect(Promise.resolve(reply.getMetadata())).rejects.toThrow(/root message was never created/);
@@ -761,7 +763,7 @@ describe("Google Chat thread capabilities", () => {
     expect(backend.state.gets).toEqual([]);
   });
 
-  it("omits roots outside the current page rather than fetching them for discovery or metadata", async () => {
+  it("fetches roots outside the scanned page and window for discovery and metadata", async () => {
     const backend = chatBackend();
     backend.state.pageSize = 1;
     backend.state.messages.push(
@@ -772,16 +774,15 @@ describe("Google Chat thread capabilities", () => {
     using space = await chat.session();
     using cursor = await space.listThreads({since: new Date("2024-01-02T00:00:00Z")});
     using page = await cursor.next();
-    expect(page![0].info).not.toHaveProperty("rootMessage");
-    expect(backend.state.lists).toHaveLength(1);
-    const info = await page![0].thread.getMetadata();
-    expect(info).toMatchObject({id: threadName("A"), spaceId: SPACE_NAME,
-      latestMessage: {text: "reply"}});
-    expect(info).not.toHaveProperty("rootMessage");
+    expect(page![0].info.rootMessage?.text).toBe("root");
     expect(backend.state.lists).toHaveLength(2);
+    const rootLookup = backend.state.lists[1];
+    expect(rootLookup.searchParams.get("filter")).toContain(`thread.name = ${threadName("A")}`);
+    expect(rootLookup.searchParams.get("filter")).not.toContain("createTime");
+    expect(rootLookup.searchParams.get("orderBy")).toBe("createTime ASC");
+    expect(await page![0].thread.getMetadata()).toMatchObject(
+      {latestMessage: {text: "reply"}, rootMessage: {text: "root"}});
     expect(backend.state.gets).toEqual([]);
-    using root = (await page![0].thread.getRootMessage())!.message;
-    expect((await root!.getMetadata()).text).toBe("root");
   });
 
   it("refreshes authorized thread metadata including same-page roots and pending edits", async () => {
@@ -822,16 +823,22 @@ describe("Google Chat thread capabilities", () => {
     });
     await chat.failNextObservation("List Google Chat threads");
     await expect(Promise.resolve(cursor.next())).rejects.toThrow(/denied by the test/);
-    const results: Array<[string, string]> = [];
+    const results: Array<[string, string, string | undefined]> = [];
     for (let i = 0; i < 10; i++) {
       using page = await cursor.next();
       if (page === null) break;
-      for (const entry of page) results.push([entry.info.id, entry.info.latestMessage.text]);
+      for (const entry of page) {
+        results.push([entry.info.id, entry.info.latestMessage.text, entry.info.rootMessage?.text]);
+      }
     }
-    expect(results).toEqual([[threadName("A"), "latest-reply"], [threadName("B"), "zero-replies"]]);
+    // The old root predates the window, yet is still reported as the thread's first message.
+    expect(results).toEqual([
+      [threadName("A"), "latest-reply", "old-root"], [threadName("B"), "zero-replies", "zero-replies"],
+    ]);
     expect(await cursor.next()).toBeNull();
-    expect(backend.state.lists[0].searchParams.get("pageToken")).toBeNull();
-    expect(backend.state.lists[2].searchParams.get("pageToken")).toBeNull();
+    const scans = backend.state.lists.filter(url => !(url.searchParams.get("filter") ?? "").includes("thread.name"));
+    expect(scans[0].searchParams.get("pageToken")).toBeNull();
+    expect(scans[2].searchParams.get("pageToken")).toBeNull();
   });
 
   it("keeps delegated threads alive after discovery is disposed, without parent or sibling access", async () => {
@@ -862,7 +869,9 @@ describe("Google Chat thread capabilities", () => {
     expect(backend.state.lists.at(-1)!.searchParams.get("filter")).toContain(`thread.name = ${threadName("A")}`);
     await expect(Promise.resolve(Reflect.get(thread, "getSpace")())).rejects.toThrow();
     await expect(Promise.resolve(Reflect.get(root!, "space")())).rejects.toThrow();
-    await expect(Promise.resolve(Reflect.get(root!, "getThread")())).rejects.toThrow();
+    const fromMessage = await root.getThread();
+    using _fromMessageThread = fromMessage.thread;
+    expect(fromMessage.info.id).toBe(threadName("A"));
     using response = (await thread.post("acknowledged")).message;
     expect((await response.getMetadata()).threadId).toBe(threadName("A"));
     expect(backend.state.creates).toEqual([]);
@@ -916,6 +925,7 @@ describe("Google Chat thread capabilities", () => {
     await expect(Promise.resolve(message.addReaction("🎉"))).rejects.toThrow(scopeError);
     await expect(Promise.resolve(message.removeReaction("👍"))).rejects.toThrow(scopeError);
     await expect(Promise.resolve(message.getAttachment(attachmentId))).rejects.toThrow(scopeError);
+    await expect(Promise.resolve(message.getThread())).rejects.toThrow(scopeError);
     await expect(Promise.resolve(reactions.next())).rejects.toThrow(scopeError);
     await expect(Promise.resolve(attachment.getMetadata())).rejects.toThrow(scopeError);
     await expect(Promise.resolve(attachment.getContent())).rejects.toThrow(scopeError);
@@ -943,27 +953,44 @@ describe("Google Chat thread capabilities", () => {
       .rejects.toThrow(/not available/);
   });
 
-  it("does not invent writable threads in an unthreaded conversation", async () => {
-    const [spaceType, spaceThreadingState] = ["SPACE", "UNTHREADED_MESSAGES"];
+  it.each(["DIRECT_MESSAGE", "GROUP_CHAT"])("threads a %s whose threading state is threaded", async spaceType => {
     const backend = chatBackend();
-    Object.assign(backend.state, {spaceType, spaceThreadingState});
+    backend.state.spaceType = spaceType;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using threads = await space.listThreads();
+    using page = await threads.next();
+    expect(page!.map(entry => entry.info.id)).toEqual([threadName("A")]);
+    using message = (await space.getMessage(messageName("root"))).message;
+    const entry = await message.getThread();
+    using _thread = entry.thread;
+    expect(entry.info).toMatchObject({id: threadName("A"), rootMessage: {text: "root"}});
+    expect((await message.reply("hello")).info.threadId).toBe(threadName("A"));
+  });
+
+  it("keeps an unthreaded conversation flat", async () => {
+    const backend = chatBackend();
+    backend.state.spaceThreadingState = "UNTHREADED_MESSAGES";
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
     const chat = chatHarness(backend);
     using space = await chat.session();
     await expect(Promise.resolve(space.listThreads())).rejects.toThrow(/does not support/);
     expect(backend.state.lists).toEqual([]);
     await expect(Promise.resolve(space.getThread(threadName("A")))).rejects.toThrow(/does not support/);
-    await expect(Promise.resolve(space.startThread("new topic"))).rejects.toThrow(/does not support/);
     using message = (await space.getMessage(messageName("root"))).message;
+    await expect(Promise.resolve(message.getThread())).rejects.toThrow(/does not support/);
     await expect(Promise.resolve(message.reply("hello"))).rejects.toThrow(/does not support/);
     expect((await chat.readQueue()).submissions).toEqual([]);
   });
 
-  it("starts a thread ready for posting and keeps its capabilities valid through approval", async () => {
+  it("continues a posted message as a thread through approval", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
-    const started = await space.startThread("new topic");
+    const posted = await space.post("new topic");
+    using root = posted.message;
+    const started = await root.getThread();
     using thread = started.thread;
     const expected = {
       id: "pending:thread:1", spaceId: SPACE_NAME,
@@ -971,7 +998,6 @@ describe("Google Chat thread capabilities", () => {
     };
     expect(started.info).toMatchObject(expected);
     expect(await thread.getMetadata()).toMatchObject(expected);
-    using root = (await thread.getRootMessage())!.message;
     const rootInfo = await root.getMetadata();
     expect(rootInfo.threadId).toBe("pending:thread:1");
     using response = (await thread.post("first reply")).message;
