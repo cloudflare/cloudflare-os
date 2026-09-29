@@ -8,9 +8,13 @@ const MEMBER_PAGES = 3;
 
 const LIST_FORMAT = new Intl.ListFormat("en");
 
+/** Whether `describeConversation` has anything to add: a DM or an unnamed group chat. */
+export const needsDescription = (info: ChatSpaceInfo): boolean =>
+  info.type === "directMessage" || (info.type === "groupChat" && !info.name);
+
 /**
  * Name a direct message or unnamed group chat after its other participants, and identify a DM's
- * `peer`. Spaces and named group chats return unchanged.
+ * `peer`. Spaces and named group chats return unchanged, as does anything whose lookup fails.
  *
  * Chat may omit members' display names, so nameless people are looked up in the People API.
  * Those names need no observer check: anyone who can open the conversation is a participant.
@@ -18,8 +22,14 @@ const LIST_FORMAT = new Intl.ListFormat("en");
 export async function describeConversation(
   api: ChatApi, info: ChatSpaceInfo, selfId: string,
 ): Promise<ChatSpaceInfo> {
+  if (!needsDescription(info)) return info;
+  return nameAfterParticipants(api, info, selfId).catch(() => info);
+}
+
+async function nameAfterParticipants(
+  api: ChatApi, info: ChatSpaceInfo, selfId: string,
+): Promise<ChatSpaceInfo> {
   const dm = info.type === "directMessage";
-  if (!dm && (info.type !== "groupChat" || info.name)) return info;
   const others = await otherParticipants(api, info.id, selfId);
   if (dm && others.length !== 1) return info;
   const shown = others.slice(0, LABELLED_PARTICIPANTS);

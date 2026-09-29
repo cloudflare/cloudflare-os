@@ -159,8 +159,8 @@ message categories; use history for complete recent-message scans. A `ChatSpace`
 `getCurrentUser` and a `searchMessages` limited to that
 conversation: Google's search only accepts `spaces/-`, so the gatekeeper adds the `space.name`
 filter itself and rejects any result outside the space. It has no `unreadOnly`, because read
-state is the owner's and a space binding can be shared; the gatekeeper clears the field even if
-an agent sends it. Thread capabilities have no search.
+state is the owner's and a space binding can be shared; the gatekeeper passes on only the
+declared filters, so the field is dropped even if an agent sends it. Thread capabilities have no search.
 
 ## Writing and newly created threads
 

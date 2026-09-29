@@ -54,7 +54,7 @@ import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import CHAT_TYPES_CODE from "./chat-types.txt";
-import { describeConversation } from "./chat-names";
+import { describeConversation, needsDescription } from "./chat-names";
 
 type Env = Cloudflare.Env;
 
@@ -524,7 +524,7 @@ async function queueChatMessage(
     requestId: crypto.randomUUID(),
     submittedAt: Date.now(),
   };
-  const recipient = await describeConversation(ctx.api, info, ctx.self.id).catch(() => info);
+  const recipient = await describeConversation(ctx.api, info, ctx.self.id);
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
     ...buildDescription(
@@ -614,7 +614,7 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   async getMetadata(): Promise<ChatSpaceInfo> {
     const raw = await this.ctx.api.getSpace(this.#spaceName);
     requireInScope(this.ctx, raw.id);
-    const info = await describeConversation(this.ctx.api, raw, this.ctx.self.id).catch(() => raw);
+    const info = await describeConversation(this.ctx.api, raw, this.ctx.self.id);
     await observe(
       this.ctx,
       "Read Google Chat conversation metadata",
@@ -638,10 +638,13 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   }
 
   async searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>> {
-    // The space filter is ours, not the caller's; results outside it fail the scope check.
-    // Read state is the owner's own, not the conversation's, and this capability can be shared.
-    // RPC validation keeps undeclared fields, so clear the account-only filter here.
-    const filter = chatMessagesSearchFilter({ ...query, unreadOnly: false, spaceIds: [this.#spaceName] });
+    // Copy only public fields: RPC validation keeps undeclared keys, and account-wide filters such
+    // as the owner's read state must not reach a capability that can be shared. The space filter
+    // is ours, not the caller's; results outside it fail the scope check.
+    const { text, senders, mentions, mentionsMe, hasAttachment, hasLink, since, before } = query;
+    const filter = chatMessagesSearchFilter({
+      text, senders, mentions, mentionsMe, hasAttachment, hasLink, since, before, spaceIds: [this.#spaceName],
+    });
     return searchCursor(this.ctx, filter, this.#spaceName);
   }
 
@@ -1078,24 +1081,23 @@ export class GoogleChatGatekeeperImpl
     }
     const api = this.#api();
     const space = await api.getSpace(boundSpace);
-    const info = space.type === "space"
-      ? space : await describeConversation(api, space, (await this.#getSelf()).id).catch(() => space);
+    const info = needsDescription(space)
+      ? await describeConversation(api, space, (await this.#getSelf()).id) : space;
     const spaceTitle = info.name ??
       (info.type === "directMessage" ? "Google Chat direct message" : "Google Chat conversation");
     const boundThread = this.#boundThreadName();
     if (boundThread !== undefined) {
       if (!info.supportsThreads) throw new Error("This Google Chat conversation does not support threads.");
       // Hidden and deleted messages are dropped after Chat pages, so a page can come back empty.
-      let first: ChatMessageInfo | undefined;
-      let pageToken: string | undefined;
-      for (let page = 0; page < 3 && !first; page++) {
-        const result = await api.listMessages(boundSpace, {
-          threadName: boundThread, order: "oldestFirst", pageToken,
-        });
-        first = result.items[0];
-        pageToken = result.nextPageToken;
-        if (!pageToken) break;
-      }
+      const [first] = await new CursorPager<ChatMessageInfo, ChatMessageInfo>({
+        provider: "Google Chat",
+        fetchPage: pageToken => api.listMessages(boundSpace, {
+          threadName: boundThread, order: "oldestFirst", pageSize: 10, pageToken,
+        }),
+        buildEntries: async items => items,
+        authorize: async () => {},
+        maxProviderPagesPerCall: 3,
+      }).next() ?? [];
       if (!first) throw new Error("This Google Chat thread has no messages this account can see.");
       return {
         url: `https://chat.google.com/room/${chatSpaceId(boundSpace)}/${chatThreadParts(boundThread).threadId}`,
@@ -1226,9 +1228,10 @@ export class GoogleChatGatekeeperImpl
         requireMessageInScope(scope, await api.getMessage(action.messageName));
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        if (!existing) store.markAttempted(actionId);
-        const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
-        return existing ? { type: "none" } : { type: "addedReaction", reactionName: reaction.id };
+        if (existing) return { type: "none" };
+        store.markAttempted(actionId);
+        const reaction = await api.createReaction(action.messageName, action.emoji);
+        return { type: "addedReaction", reactionName: reaction.id };
       }
       case "removeReaction": {
         requireMessageInScope(scope, await api.getMessage(action.messageName));
