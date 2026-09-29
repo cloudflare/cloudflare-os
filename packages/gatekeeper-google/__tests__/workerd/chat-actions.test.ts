@@ -916,11 +916,8 @@ describe("Google Chat thread capabilities", () => {
       .rejects.toThrow(/not available/);
   });
 
-  it.each([
-    ["DIRECT_MESSAGE", "THREADED_MESSAGES"],
-    ["GROUP_CHAT", "THREADED_MESSAGES"],
-    ["SPACE", "UNTHREADED_MESSAGES"],
-  ])("does not invent writable threads in %s / %s", async (spaceType, spaceThreadingState) => {
+  it("does not invent writable threads in an unthreaded conversation", async () => {
+    const [spaceType, spaceThreadingState] = ["SPACE", "UNTHREADED_MESSAGES"];
     const backend = chatBackend();
     Object.assign(backend.state, {spaceType, spaceThreadingState});
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));

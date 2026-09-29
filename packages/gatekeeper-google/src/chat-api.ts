@@ -267,9 +267,8 @@ export function chatSpaceInfoFromRaw(raw: ChatSpaceRaw): ChatSpaceInfo {
     ...(raw.displayName ? { name: raw.displayName } : {}),
     ...(raw.spaceUri ? { url: raw.spaceUri } : {}),
     type: SPACE_TYPES[raw.spaceType ?? ""] ?? "space",
-    supportsThreads: raw.spaceType === "SPACE" &&
-      (raw.spaceThreadingState === "THREADED_MESSAGES" ||
-        raw.spaceThreadingState === "GROUPED_MESSAGES"),
+    supportsThreads: raw.spaceThreadingState === "THREADED_MESSAGES" ||
+      raw.spaceThreadingState === "GROUPED_MESSAGES",
     ...(raw.spaceDetails?.description ? { description: raw.spaceDetails.description } : {}),
     ...(createTime ? { createdAt: createTime } : {}),
     ...(lastActiveTime ? { lastActiveAt: lastActiveTime } : {}),
@@ -373,6 +372,24 @@ function quoteChatString(value: string): string {
   return `"${value.replace(/([\\"])/g, "\\$1")}"`;
 }
 
+/** Split search text into bare words and "quoted phrases"; a message must contain every one. */
+function chatSearchKeywords(text: string): string[] {
+  if ((text.match(/"/g)?.length ?? 0) % 2 !== 0) {
+    throw new Error('Search text has an unmatched double quote (").');
+  }
+  return [...text.matchAll(/"([^"]*)"|([^\s"]+)/g)]
+    .map(match => (match[1] ?? match[2]).trim())
+    .filter(keyword => keyword.length > 0);
+}
+
+/** One mention term; the caller alias is unquoted, the form Google documents for it. */
+function chatMentionTerm(user: string): string {
+  const name = chatUserName(user);
+  return name === "users/me"
+    ? "annotations.user_mentions.user.name:users/me"
+    : `annotations.user_mentions.user.name:"${name}"`;
+}
+
 function chatTimestamp(value: Date, label: string): string {
   if (!(value instanceof Date) || Number.isNaN(value.valueOf())) {
     throw new Error(`${label} must be a valid Date.`);
@@ -429,15 +446,15 @@ export function chatMessagesListFilter(options: ChatListMessagesRequest): string
 /** Build the `filter` for `messages.search`. */
 export function chatMessagesSearchFilter(query: ChatMessageSearch): string {
   validateChatWindow(query);
+  if (query.mentionsMe && query.mentions && query.mentions.length > 0) {
+    throw new Error('Pass mentions or mentionsMe, not both. Include "users/me" in mentions to match either.');
+  }
   const terms: string[] = [];
-  if (query.text !== undefined && query.text.trim()) terms.push(quoteChatString(query.text.trim()));
+  if (query.text !== undefined) terms.push(...chatSearchKeywords(query.text).map(quoteChatString));
   if (query.spaceIds && query.spaceIds.length > 0) {
     terms.push(`(${query.spaceIds
       .map(name => `space.name = "spaces/${chatSpaceId(name)}"`)
       .join(" OR ")})`);
-  }
-  if (query.spaceNameContains !== undefined && query.spaceNameContains.trim()) {
-    terms.push(`space.display_name:${quoteChatString(query.spaceNameContains.trim())}`);
   }
   if (query.spaceTypes && query.spaceTypes.length > 0) {
     terms.push(`(${[...new Set(query.spaceTypes)]
@@ -450,10 +467,9 @@ export function chatMessagesSearchFilter(query: ChatMessageSearch): string {
       .join(" OR ")})`);
   }
   if (query.mentions && query.mentions.length > 0) {
-    terms.push(`(${query.mentions
-      .map(user => `annotations.user_mentions.user.name:"${chatUserName(user)}"`)
-      .join(" OR ")})`);
+    terms.push(`(${query.mentions.map(chatMentionTerm).join(" OR ")})`);
   }
+  if (query.mentionsMe) terms.push(chatMentionTerm("users/me"));
   if (query.since) {
     terms.push(`createTime >= ${chatTimestamp(query.since, "since")}`);
   }

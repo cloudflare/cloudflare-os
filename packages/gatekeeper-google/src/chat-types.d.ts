@@ -192,6 +192,8 @@ export type ChatSpaceMessageSearch = ChatWindow & {
   senders?: string[];
   /** Limit results to messages mentioning these users, named `users/{user}` or by email address. */
   mentions?: string[];
+  /** Only messages that mention you. Cannot be combined with `mentions`. */
+  mentionsMe?: boolean;
   /** Only return messages the connected user has not read. */
   unreadOnly?: boolean;
   /** Only return messages that have at least one attachment. */
@@ -204,8 +206,6 @@ export type ChatSpaceMessageSearch = ChatWindow & {
 export type ChatMessageSearch = ChatSpaceMessageSearch & {
   /** Limit results to these conversations, identified by `ChatSpaceInfo.id`. */
   spaceIds?: string[];
-  /** Limit results to conversations whose display name contains this text. */
-  spaceNameContains?: string;
   /** Limit results to these conversation types. */
   spaceTypes?: ChatSpaceType[];
 };

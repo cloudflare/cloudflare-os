@@ -91,17 +91,29 @@ describe("Chat filter construction", () => {
       hasAttachment: true,
       hasLink: true,
     })).toBe(
-      '"quarterly report" AND (space.name = "spaces/AAAA" OR space.name = "spaces/BBBB") AND ' +
+      '"quarterly" AND "report" AND (space.name = "spaces/AAAA" OR space.name = "spaces/BBBB") AND ' +
       '(sender.name = "users/123" OR sender.name = "users/person@example.com") AND ' +
       '(annotations.user_mentions.user.name:"users/456") AND ' +
       'createTime >= "2024-03-01T00:00:00.000Z" AND is_unread() AND attachment:* AND has_link()');
   });
 
-  // Search text is caller-supplied prose. Quoting it is what keeps a stray quote from ending the
-  // phrase and starting a second filter term.
-  it("escapes quotes and backslashes in search text", () => {
-    expect(chatMessagesSearchFilter({ text: 'say "hi" \\ bye' }))
-      .toBe('"say \\"hi\\" \\\\ bye"');
+  // Search text is caller-supplied prose. Quoting each keyword is what keeps a stray quote or
+  // backslash from ending the phrase and starting a second filter term.
+  it("treats words and quoted phrases as separate keywords", () => {
+    expect(chatMessagesSearchFilter({ text: 'budget "Q3 plan" C:\\temp' }))
+      .toBe('"budget" AND "Q3 plan" AND "C:\\\\temp"');
+    expect(() => chatMessagesSearchFilter({ text: 'say "hi' })).toThrow(/unmatched double quote/);
+    expect(() => chatMessagesSearchFilter({ text: '  ""  ' })).toThrow(/at least one filter/);
+  });
+
+  // Google documents the caller alias unquoted, and rejects mixing AND with OR on this field.
+  it("filters for messages that mention the caller", () => {
+    expect(chatMessagesSearchFilter({ mentionsMe: true }))
+      .toBe("annotations.user_mentions.user.name:users/me");
+    expect(chatMessagesSearchFilter({ mentions: ["me", "users/1"] })).toBe(
+      '(annotations.user_mentions.user.name:users/me OR annotations.user_mentions.user.name:"users/1")');
+    expect(() => chatMessagesSearchFilter({ mentionsMe: true, mentions: ["users/1"] }))
+      .toThrow(/not both/);
   });
 
   it("refuses a message search with nothing to filter on", () => {
@@ -174,8 +186,9 @@ describe("Chat response mapping", () => {
     ["SPACE", "GROUPED_MESSAGES", true],
     ["SPACE", "UNTHREADED_MESSAGES", false],
     ["SPACE", undefined, false],
-    ["DIRECT_MESSAGE", "THREADED_MESSAGES", false],
-    ["GROUP_CHAT", "THREADED_MESSAGES", false],
+    ["DIRECT_MESSAGE", "THREADED_MESSAGES", true],
+    ["DIRECT_MESSAGE", "UNTHREADED_MESSAGES", false],
+    ["GROUP_CHAT", "THREADED_MESSAGES", true],
   ])("reports API thread support for %s / %s", (spaceType, spaceThreadingState, supported) => {
     expect(chatSpaceInfoFromRaw({name: "spaces/AAAA", spaceType, spaceThreadingState})
       .supportsThreads).toBe(supported);
