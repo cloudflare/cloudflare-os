@@ -83,23 +83,14 @@ packages/gatekeeper-<name>/
 │   ├── types.d.ts             # Session/Hook types (compile-time)
 │   ├── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
 │   └── <name>-api.ts          # (optional) Helper wrapping the service's HTTP API
-├── wrangler.jsonc
+├── cloudflare.config.ts      # wrangler.jsonc is generated from it
 ├── package.json
 └── tsconfig.json
 ```
 
-### Step 5: Configure and register
+### Step 5: Register
 
-Add a service binding to `packages/workshop-backend/wrangler.jsonc`:
-```jsonc
-{
-  "binding": "GATEKEEPER_<NAME>",
-  "service": "gatekeeper-<name>",
-  "entrypoint": "GatekeeperVendor"
-}
-```
-
-The backend auto-discovers vendors from `GATEKEEPER_`-prefixed bindings (see `packages/workshop-backend/src/user.ts`).
+There is no binding to add. `run-dev-server.ts` binds every `packages/gatekeeper-*` that has a `wrangler.jsonc` to the backend as `GATEKEEPER_<NAME>`, and the deploy service does the same for installed gatekeepers. The backend auto-discovers vendors from `GATEKEEPER_`-prefixed bindings (see `packages/workshop-backend/src/user.ts`).
 
 ### Step 6: Add resource selection UI
 
@@ -347,7 +338,7 @@ When defining a session interface with hooks, it's important to include comments
 - For read-only or push-only gatekeepers, `applyAction()` / `rejectAction()` / `revertAction()` can simply throw (they'll never be called since the gatekeeper never submits actions).
 - For `WorkerEntrypoint` and `DurableObject` subclasses, pass credentials and resource IDs via `ctx.props`, not constructor arguments. RPC stubs pointing to these types can be stored in long-term storage and restored later, creating a new instance based on the same `props`.
 - If the gatekeeper implements multiple unrelated resource types with disjoint APIs, each may have its own `.d.ts` file, so that the `getTypeScriptTypes()` method of the specific `Gatekeeper` implementation only returns the types that matter for it. The `getTypeScriptTypes()` method on the top-level `GatekeeperVendor` should return the concatenation of all of these.
-- All DO classes must appear in `wrangler.jsonc` under `migrations[].new_sqlite_classes`.
+- All DO classes must appear in `cloudflare.config.ts`'s `migrations` export under `new_sqlite_classes`.
 - Set a self-destruct alarm in `UserAccount.setCallback()` in case the OAuth flow is never completed.
 - `authorizeObservation()` may be called *after* fetching data (so the description can include details about what was fetched) but must be awaited *before* returning anything to the caller.
 - `getVerifier()` / `addObserver()` / `removeObserver()` are **mandatory** — the gatekeeper won't type-check without them. Even a read-only or push-only gatekeeper needs them (sharing is independent of whether the gatekeeper has actions). Pick a strategy per [Observers](#observer-verification): a low-stakes one can be A or D; otherwise B/C.

@@ -1,7 +1,8 @@
 # Gatekeeper Kit contributor notes
 
-`@gadgets/gatekeeper-kit` is a library, not a deployable Worker. Do not add `wrangler.jsonc`; its
-presence makes release tooling treat this package as a gatekeeper deployment.
+`@gadgets/gatekeeper-kit` is a library, not a deployable Worker. Do not add a `cloudflare.config.ts`:
+the `wrangler.jsonc` generated from it is what makes release tooling treat this package as a
+gatekeeper deployment.
 
 ## Package boundaries
 
