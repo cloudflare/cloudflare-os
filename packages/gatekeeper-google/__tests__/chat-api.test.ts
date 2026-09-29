@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ChatApi, chatMessageInfoFromRaw, chatMessageParts, chatMessagesListFilter,
   chatMessagesSearchFilter, chatMembershipFromRaw,
-  chatSpaceId, chatSpaceInfoFromRaw, chatSpacesListFilter, chatSpacesSearchQuery, chatThreadParts,
+  chatSpaceId, chatSpaceIdFromReference, chatSpaceInfoFromRaw, chatSpaceNameFromIdOrUrl,
+  chatSpacesListFilter, chatSpacesSearchQuery, chatThreadParts,
   chatUserName, validateChatEmoji, validateChatSpaceId,
 } from "../src/chat-api";
 
@@ -51,6 +52,24 @@ describe("Chat identifier validation", () => {
     expect(validateChatEmoji("🎉")).toBe("🎉");
     expect(() => validateChatEmoji(":tada:")).toThrow(/Unicode emoji/);
     expect(() => validateChatEmoji('a" OR user.name = "users/me')).toThrow(/Invalid reaction/);
+  });
+
+  it("reads a conversation reference", () => {
+    const dmLink = "https://chat.google.com/dm/pBt6ayAAAAE/HrpoFQHIJRc/HrpoFQHIJRc?cls=10";
+    for (const [reference, id] of [
+      ["spaces/AAAA1234", "AAAA1234"],
+      ["https://chat.google.com/room/AAAA1234", "AAAA1234"],
+      ["https://chat.google.com/dm/pBt6ayAAAAE?cls=11", "pBt6ayAAAAE"],
+      [dmLink, "pBt6ayAAAAE"],
+      ["  https://chat.google.com/room/AAAA1234/  ", "AAAA1234"],
+    ]) expect(chatSpaceIdFromReference(reference)).toBe(id);
+    for (const reference of [
+      "AAAA1234", "Project review", "https://example.com/room/AAAA", "http://chat.google.com/room/AAAA",
+      "spaces/AAAA/threads/T", "https://chat.google.com/room/A%2FB",
+    ]) expect(chatSpaceIdFromReference(reference)).toBeUndefined();
+    expect(chatSpaceNameFromIdOrUrl("AAAA1234")).toBe("spaces/AAAA1234");
+    expect(chatSpaceNameFromIdOrUrl(dmLink)).toBe("spaces/pBt6ayAAAAE");
+    expect(() => chatSpaceNameFromIdOrUrl("Project review")).toThrow(/Expected a Google Chat conversation/);
   });
 });
 
@@ -169,7 +188,6 @@ describe("Chat response mapping", () => {
       sender: { id: "users/123", name: "Ada", type: "human" },
       text: "hello",
       isReply: true,
-      deleted: false,
       reactions: [{ emoji: "🎉", count: 2 }],
     });
     expect(info.attachments).toEqual([{
@@ -212,13 +230,31 @@ describe("Chat response mapping", () => {
     });
   });
 
-  it("reports a deleted message as deleted, with any residual text withheld", () => {
+  it("lists each mentioned user once", () => {
+    const mention = (name: string, displayName: string, type: string, kind: string) =>
+      ({ type: "USER_MENTION", userMention: { user: { name, displayName, type }, type: kind } });
     expect(chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      annotations: [
+        mention("users/1", "Ada", "HUMAN", "MENTION"),
+        mention("users/2", "Bot", "BOT", "ADD"),
+        mention("users/1", "Ada", "HUMAN", "MENTION"),
+        { type: "SLASH_COMMAND" },
+      ],
+    }).mentions).toEqual([
+      { id: "users/1", name: "Ada", type: "human" },
+      { id: "users/2", name: "Bot", type: "app" },
+    ]);
+  });
+
+  it("refuses a deleted message", () => {
+    expect(() => chatMessageInfoFromRaw({
       name: "spaces/AAAA/messages/BBB",
       createTime: "2024-01-02T03:04:05Z",
       text: "meeting at noon",
       deletionMetadata: { deletionType: "CREATOR" },
-    })).toMatchObject({ deleted: true, text: "" });
+    })).toThrow(/has been deleted/);
   });
 
   it("rejects app-authored private messages", () => {
@@ -230,13 +266,21 @@ describe("Chat response mapping", () => {
     })).toThrow(/not available through this connection/);
   });
 
-  it("maps a membership", () => {
+  it("maps user and group memberships with their roles", () => {
+    const id = "spaces/AAAA/members/111";
     expect(chatMembershipFromRaw({
-      name: "spaces/AAAA/members/111",
+      name: id,
       state: "JOINED",
       role: "ROLE_MANAGER",
       member: { name: "users/123", displayName: "Ada", type: "HUMAN" },
-    })).toMatchObject({ state: "joined", role: "manager" });
+    })).toEqual({
+      id, state: "joined", role: "manager", kind: "user",
+      user: { id: "users/123", name: "Ada", type: "human" },
+    });
+    expect(chatMembershipFromRaw({
+      name: id, state: "INVITED", role: "ROLE_ASSISTANT_MANAGER", groupMember: { name: "groups/eng" },
+    })).toEqual({ id, state: "invited", role: "assistantManager", kind: "group", groupId: "groups/eng" });
+    expect(chatMembershipFromRaw({ name: id })).toBeUndefined();
   });
 });
 
@@ -261,6 +305,7 @@ describe("Chat provider error handling", () => {
       {name: "spaces/AAAA/messages/end", createTime: before.toISOString()},
       {name: "spaces/AAAA/messages/sibling", createTime: since.toISOString(), thread: {name: "spaces/AAAA/threads/OTHER"}},
       {name: "spaces/OTHER/messages/foreign", createTime: since.toISOString()},
+      {name: "spaces/AAAA/messages/gone", createTime: since.toISOString(), deleteTime: since.toISOString()},
     ].map(message => ({thread: {name: threadName}, ...message}));
     const api = stubResponse(200, {messages, nextPageToken: "next"});
     const page = await api.listMessages("spaces/AAAA", {since, before, threadName});

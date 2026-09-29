@@ -64,6 +64,17 @@ class PrivateChatMessageError extends Error {
   }
 }
 
+/** A message Google Chat reports as deleted: its tombstone has no content to return. */
+export class DeletedChatMessageError extends Error {
+  constructor() {
+    super("This Google Chat message has been deleted.");
+  }
+}
+
+function isDeletedChatMessage(raw: ChatMessageRaw): boolean {
+  return raw.deleteTime !== undefined || raw.deletionMetadata !== undefined;
+}
+
 /** Whether an error means "this identity cannot see that", rather than a transient failure. */
 export function isChatNoAccessError(error: unknown): boolean {
   return error instanceof PrivateChatMessageError ||
@@ -95,6 +106,29 @@ export function chatSpaceId(spaceName: string): string {
   const match = /^spaces\/([^/]+)$/.exec(spaceName);
   if (!match) throw new Error("Expected a space resource name of the form spaces/{space}.");
   return validateChatSpaceId(match[1]);
+}
+
+const CHAT_SPACE_REFERENCE_RE =
+  /^(?:spaces\/([A-Za-z0-9_-]{1,128})|https:\/\/chat\.google\.com\/(?:room|dm)\/([A-Za-z0-9_-]{1,128})(?:\/[^/?#]+){0,2}\/?(?:\?[^#]*)?)$/;
+
+/**
+ * The space id in `spaces/{space}` or a chat.google.com room/dm link to a conversation or to
+ * a thread or message in it; undefined for anything else, including a bare id.
+ */
+export function chatSpaceIdFromReference(reference: string): string | undefined {
+  const match = CHAT_SPACE_REFERENCE_RE.exec(reference.trim());
+  return match ? match[1] ?? match[2] : undefined;
+}
+
+/** `spaces/{space}` for any conversation reference an agent may pass, including a bare id. */
+export function chatSpaceNameFromIdOrUrl(idOrUrl: string): string {
+  const bare = idOrUrl.trim();
+  const id = chatSpaceIdFromReference(idOrUrl) ?? (SPACE_ID_RE.test(bare) ? bare : undefined);
+  if (id === undefined) {
+    throw new Error(
+      "Expected a Google Chat conversation: spaces/{space}, its bare ID, or a chat.google.com link to it.");
+  }
+  return `spaces/${id}`;
 }
 
 /** Split `spaces/{space}/messages/{message}` into its parts, rejecting anything else. */
@@ -209,6 +243,7 @@ export type ChatMessageRaw = {
   deletionMetadata?: { deletionType?: string };
   /** Set only for an app-authored message visible to one user in an otherwise shared space. */
   privateMessageViewer?: ChatUserRaw;
+  annotations?: { type?: string; userMention?: { user?: ChatUserRaw; type?: string } }[];
 };
 
 export type ChatMembershipRaw = {
@@ -302,28 +337,38 @@ export function chatAttachmentMediaName(raw: ChatAttachmentRaw): string | undefi
   return raw.source === "DRIVE_FILE" ? undefined : raw.attachmentDataRef?.resourceName;
 }
 
+/** Each user a message @mentions, once, in order of first mention; both ADD and MENTION kinds count. */
+function chatMentionsFromRaw(raw: ChatMessageRaw): ChatUser[] {
+  const byId = new Map<string, ChatUser>();
+  for (const annotation of raw.annotations ?? []) {
+    if (annotation.type !== "USER_MENTION") continue;
+    const user = chatUserFromRaw(annotation.userMention?.user);
+    if (user && !byId.has(user.id)) byId.set(user.id, user);
+  }
+  return [...byId.values()];
+}
+
 export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   // App-authored private messages have a message-level ACL narrower than their containing space.
   // This user-authenticated integration deliberately omits them everywhere rather than exposing
   // owner-only content through a shareable space capability.
   if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
+  if (isDeletedChatMessage(raw)) throw new DeletedChatMessageError();
   if (!raw.name) throw new Error("Google Chat returned a message with no resource name.");
   const { spaceId } = chatMessageParts(raw.name);
   const createTime = chatTime(raw.createTime);
   const lastUpdateTime = chatTime(raw.lastUpdateTime);
   const sender = chatUserFromRaw(raw.sender);
-  const deleted = raw.deleteTime !== undefined || raw.deletionMetadata !== undefined;
   return {
     id: raw.name,
     spaceId: `spaces/${spaceId}`,
     ...(raw.thread?.name ? { threadId: raw.thread.name } : {}),
     ...(sender ? { sender } : {}),
-    // A tombstone promises no text, whatever the provider left on it.
-    text: deleted ? "" : raw.text ?? "",
+    text: raw.text ?? "",
+    mentions: chatMentionsFromRaw(raw),
     createdAt: createTime ?? new Date(0),
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,
-    deleted,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
@@ -332,19 +377,18 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   };
 }
 
-export function chatMembershipFromRaw(raw: ChatMembershipRaw): ChatMembership {
+/** Map one membership; undefined when Chat names neither a user nor a group. */
+export function chatMembershipFromRaw(raw: ChatMembershipRaw): ChatMembership | undefined {
   if (!raw.name) throw new Error("Google Chat returned a membership with no resource name.");
-  const member = chatUserFromRaw(raw.member);
   const state = raw.state === "INVITED"
     ? "invited" as const
     : raw.state === "NOT_A_MEMBER" ? "notMember" as const : "joined" as const;
-  return {
-    id: raw.name,
-    ...(member ? { member } : {}),
-    ...(raw.groupMember?.name ? { groupId: raw.groupMember.name } : {}),
-    state,
-    role: raw.role === "ROLE_MANAGER" ? "manager" : "member",
-  };
+  const role = raw.role === "ROLE_MANAGER" ? "manager" as const
+    : raw.role === "ROLE_ASSISTANT_MANAGER" ? "assistantManager" as const : "member" as const;
+  const user = chatUserFromRaw(raw.member);
+  if (user) return { id: raw.name, state, role, kind: "user", user };
+  if (raw.groupMember?.name) return { id: raw.name, state, role, kind: "group", groupId: raw.groupMember.name };
+  return undefined;
 }
 
 export function chatReactionFromRaw(raw: ChatReactionRaw): ChatReaction {
@@ -538,7 +582,7 @@ export class ChatApi {
 
   async listSpaces(options: ChatListSpacesRequest = {}): Promise<ChatPage<ChatSpaceInfo>> {
     const params = new URLSearchParams({ pageSize: String(options.pageSize ?? 100) });
-    const filter = chatSpacesListFilter(options.types);
+    const filter = chatSpacesListFilter(options.spaceTypes);
     if (filter) params.set("filter", filter);
     if (options.pageToken) params.set("pageToken", options.pageToken);
     const body = await this.#request<{ spaces?: ChatSpaceRaw[]; nextPageToken?: string }>(
@@ -619,9 +663,9 @@ export class ChatApi {
       "messages.list", `/spaces/${spaceId}/messages?${params}`);
     return {
       items: (body.messages ?? [])
-        .filter(message => message.privateMessageViewer === undefined)
+        .filter(message => message.privateMessageViewer === undefined && !isDeletedChatMessage(message))
         .map(chatMessageInfoFromRaw)
-        .filter(message => !message.deleted && message.spaceId === spaceName &&
+        .filter(message => message.spaceId === spaceName &&
           (!options.threadName || message.threadId === options.threadName) &&
           chatTimeInWindow(message.createdAt, options)),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
@@ -648,7 +692,8 @@ export class ChatApi {
       items: (body.results ?? [])
         .map(result => result.message)
         .filter((message): message is ChatMessageRaw =>
-          message !== undefined && message.privateMessageViewer === undefined)
+          message !== undefined && message.privateMessageViewer === undefined &&
+          !isDeletedChatMessage(message))
         .map(chatMessageInfoFromRaw),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
@@ -664,6 +709,7 @@ export class ChatApi {
     const raw = await this.#request<ChatMessageRaw>(
       "messages.get", `/spaces/${spaceId}/messages/${messageId}`);
     if (raw.privateMessageViewer !== undefined) throw new PrivateChatMessageError();
+    if (isDeletedChatMessage(raw)) throw new DeletedChatMessageError();
     return raw;
   }
 
@@ -731,7 +777,7 @@ export class ChatApi {
       nextPageToken?: string;
     }>("members.list", `/spaces/${spaceId}/members?${params}`);
     return {
-      items: (body.memberships ?? []).map(chatMembershipFromRaw),
+      items: (body.memberships ?? []).flatMap(raw => chatMembershipFromRaw(raw) ?? []),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
     };
   }
@@ -742,7 +788,7 @@ export class ChatApi {
     const member = chatUserName(user).slice("users/".length);
     try {
       return chatMembershipFromRaw(await this.#request<ChatMembershipRaw>(
-        "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`));
+        "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`)) ?? null;
     } catch (error) {
       // 404 is "not a member". As in findDirectMessage above, a 400 here means the validated
       // reference names no real account, which is the same negative answer.

@@ -2,7 +2,7 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
-import { ChatApi, isChatNoAccessError } from "./chat-api";
+import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
@@ -298,10 +298,10 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
     const api = new ChatApi(googleTokenProvider(this));
     const options: ConfiguratorOption[] = [];
     // Exact references bypass the bounded discovery scan, including conversations on later pages.
-    const exact = /^(?:spaces\/|https:\/\/chat\.google\.com\/(?:room|dm)\/)([A-Za-z0-9_-]{1,128})\/?$/.exec(query.trim());
-    if (exact) {
+    const exact = chatSpaceIdFromReference(query);
+    if (exact !== undefined) {
       try {
-        const space = await api.getSpace(`spaces/${exact[1]}`);
+        const space = await api.getSpace(`spaces/${exact}`);
         return [chatSpaceOption(space)];
       } catch (error) {
         if (isChatNoAccessError(error)) return [];

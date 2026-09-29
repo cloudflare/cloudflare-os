@@ -37,6 +37,11 @@ export type ChatSpaceInfo = {
    * names; call that entry's space.getMetadata() when you need a human-readable DM label.
    */
   name?: string;
+  /**
+   * For a direct message, the other participant. Present only in `ChatSpace.getMetadata()`
+   * results, and only when Chat identifies exactly one other participant.
+   */
+  peer?: ChatUser;
   /** Browser URL for opening the conversation, when Google returns one. */
   url?: string;
   /** Kind of conversation. */
@@ -66,23 +71,30 @@ export type ChatSpaceEntry = {
 
 /** Options for listing conversations. */
 export type ChatListSpacesOptions = {
-  /** Limit results to these conversation types. Defaults to all of them. */
-  types?: ChatSpaceType[];
+  /** Only list conversations of any of these types. Defaults to all of them. */
+  spaceTypes?: ChatSpaceType[];
 };
 
-/** One user's membership in a space. */
+/** One membership in a space: a person or Chat app, or a Google Group. */
 export type ChatMembership = {
   /** Opaque membership ID. */
   id: string;
-  /** The member, when the membership refers to a user or Chat app rather than a Google Group. */
-  member?: ChatUser;
-  /** Google Group ID, when this membership refers to a group. */
-  groupId?: string;
   /** Current membership state. */
   state: "joined" | "invited" | "notMember";
   /** The member's role in the space. */
-  role: "member" | "manager";
-};
+  role: "member" | "assistantManager" | "manager";
+} & (
+  | {
+    kind: "user";
+    /** The person or Chat app. */
+    user: ChatUser;
+  }
+  | {
+    kind: "group";
+    /** The Google Group's resource name, such as `groups/123`. */
+    groupId: string;
+  }
+);
 
 // ── Messages ────────────────────────────────────────────────────────
 
@@ -131,14 +143,14 @@ export type ChatMessageInfo = {
   sender?: ChatUser;
   /** Plain-text body. Empty for a message whose content is unavailable. */
   text: string;
+  /** Users @mentioned in the message. Empty for a pending message until it is committed. */
+  mentions: ChatUser[];
   /** When the message was created. */
   createdAt: Date;
   /** When the message was last edited, when Google returns it. */
   editedAt?: Date;
   /** Whether this message is a reply within a thread. */
   isReply: boolean;
-  /** Whether the message has been deleted. Deleted messages expose no text. */
-  deleted: boolean;
   /** Files attached to the message. */
   attachments: ChatAttachmentInfo[];
   /** Reaction counts, grouped by emoji. */
@@ -170,8 +182,11 @@ export type ChatWindow = {
 
 /** Options for conversation or thread history. Deleted and private messages are omitted. */
 export type ChatListMessagesOptions = ChatWindow & {
-  /** Result order. Defaults to oldest first. */
-  order?: "oldestFirst" | "newestFirst";
+  /**
+   * Result order. `ChatSpace.listMessages()` defaults to `"newestFirst"`;
+   * `ChatThread.listMessages()` defaults to `"oldestFirst"`.
+   */
+  order?: "newestFirst" | "oldestFirst";
 };
 
 /**
@@ -251,7 +266,7 @@ export type ChatThreadEntry = {
  * Use this to find conversations and search across them, then use the `ChatSpace`
  * capabilities it returns to read and act inside one conversation.
  */
-export interface GoogleChatSession extends RpcTarget {
+export interface ChatSession extends RpcTarget {
   /** Return the connected account's own Chat identity. */
   getCurrentUser(): Promise<ChatUser>;
 
@@ -282,11 +297,11 @@ export interface GoogleChatSession extends RpcTarget {
   findDirectMessage(user: string): Promise<ChatSpaceEntry | null>;
 
   /**
-   * Get a conversation by its opaque ID, such as `spaces/{space}`, with its current metadata.
-   *
-   * Throws when the connected user cannot access it.
+   * Open a conversation, with its current metadata, by its ID (`spaces/AAAA1234` or bare
+   * `AAAA1234`) or by a `https://chat.google.com/room/…` or `https://chat.google.com/dm/…`
+   * link to it or to a message in it. Throws when the connected user cannot access it.
    */
-  getSpace(id: string): Promise<ChatSpaceEntry>;
+  getSpace(idOrUrl: string): Promise<ChatSpaceEntry>;
 
   /**
    * Search messages across the conversations available to the connected user.

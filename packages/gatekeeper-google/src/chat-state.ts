@@ -102,9 +102,9 @@ export function pendingMessageInfo(
     ...(threadName !== undefined ? { threadId: threadName } : {}),
     sender: self,
     text: action.text,
+    mentions: [],
     createdAt: new Date(action.submittedAt),
     isReply: action.threadName !== undefined,
-    deleted: false,
     attachments: [],
     reactions: [],
     pending: true,
@@ -118,8 +118,7 @@ export function overlayMessage(
 ): ChatMessageInfo {
   let result = info;
   for (const { action } of pending) {
-    // Edited text must not resurface on a record the provider has deleted.
-    if (action.type === "updateMessage" && action.messageName === info.id && !result.deleted) {
+    if (action.type === "updateMessage" && action.messageName === info.id) {
       result = { ...result, text: action.text, editedAt: new Date(action.submittedAt) };
     }
   }
@@ -160,9 +159,7 @@ export function overlayMessageList(
     exhausted: boolean;
   },
 ): ChatMessageInfo[] {
-  const result = messages
-    .map(message => overlayMessage(message, pending))
-    .filter(message => !message.deleted);
+  const result = messages.map(message => overlayMessage(message, pending));
   const newestFirst = context.options.order === "newestFirst";
   if (newestFirst ? !context.first : !context.exhausted) return result;
 

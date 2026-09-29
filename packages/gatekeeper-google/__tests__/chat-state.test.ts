@@ -22,9 +22,9 @@ function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {
     id: `${SPACE}/messages/${name}`,
     spaceId: SPACE,
     text,
+    mentions: [],
     createdAt: new Date("2024-01-01T00:00:00Z"),
     isReply: false,
-    deleted: false,
     attachments: [],
     reactions: [],
     ...extra,
@@ -107,24 +107,6 @@ describe("message list overlay", () => {
       pending(edit),
       { ...oldestFirst, first: true, exhausted: true });
     expect(result.map(info => info.text)).toEqual(["edited", "second"]);
-  });
-
-  it("omits provider-deleted messages", () => {
-    const deleted = message("1", "", { deleted: true });
-    expect(overlayMessageList([deleted], [], {
-      ...oldestFirst, first: true, exhausted: true,
-    })).toEqual([]);
-  });
-
-  it("never lets a queued edit put text back on a deleted message", () => {
-    const edit: ChatAction = {
-      type: "updateMessage",
-      messageName: `${SPACE}/messages/1`,
-      text: "edited",
-      submittedAt: Date.now(),
-    };
-    expect(overlayMessage(message("1", "", { deleted: true }), pending(edit)))
-      .toMatchObject({ deleted: true, text: "" });
   });
 });
 

@@ -330,7 +330,8 @@ describe("Chat identities", () => {
     expect(page![0].info).toMatchObject({id: SPACE_NAME, type: "directMessage"});
     expect(page![0].info.name).toBeUndefined();
     expect(backend.state.memberRequests).toBe(0);
-    expect(await page![0].space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    expect(await page![0].space.getMetadata()).toMatchObject(
+      {name: "Alice Smith", peer: {id: "users/123", name: "Alice Smith", type: "human"}});
     expect(backend.state.memberRequests).toBe(1);
   });
 
@@ -366,7 +367,8 @@ describe("Chat identities", () => {
     backend.state.rejectedToken = undefined;
     await chat.addObserver();
     using space = await chat.session();
-    expect(await space.getMetadata()).toMatchObject({name: "Alice Smith"});
+    expect(await space.getMetadata()).toMatchObject(
+      {name: "Alice Smith", peer: {id: "users/123", name: "Alice Smith", type: "human"}});
   });
 
   it("uses Chat-provided names across results without extra identity lookups", async () => {
@@ -384,7 +386,7 @@ describe("Chat identities", () => {
     const chat = chatHarness(backend);
     using requests = vi.spyOn(globalThis, "fetch");
     using space = await chat.session();
-    using messages = await space.listMessages();
+    using messages = await space.listMessages({order: "oldestFirst"});
     using page = await messages.next();
     expect(page![0].info.sender).toEqual(expected);
     expect(page![1].info.sender).toEqual(expected);
@@ -396,8 +398,8 @@ describe("Chat identities", () => {
     expect((await entries![0].thread.getMetadata()).rootMessage?.sender).toEqual(expected);
     using members = await space.listMembers();
     using memberPage = await members.next();
-    expect(memberPage![0].member).toEqual(expected);
-    expect((await space.findMember("users/123"))?.member).toEqual(expected);
+    expect(memberPage![0]).toMatchObject({kind: "user", user: expected});
+    expect(await space.findMember("users/123")).toMatchObject({kind: "user", user: expected});
     using reactions = await page![0].message.listReactions();
     using reactionPage = await reactions.next();
     expect(reactionPage![0].user).toEqual(expected);
@@ -490,7 +492,7 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.applyAction(2)).rejects.toThrow(/root message was never created/);
   });
 
-  it.each([false, true])("gates sends and supports undo (already removed: %s)", async alreadyRemoved => {
+  it.each(["present", "removed", "tombstoned"])("gates sends and supports undo (message %s)", async state => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
 
@@ -511,12 +513,13 @@ describe("Google Chat gatekeeper behaviors", () => {
     // posting a second one.
     expect(backend.state.creates[0].requestId).toBeTruthy();
     expect(backend.state.creates[0].body).toEqual({text: "hello"});
-    if (alreadyRemoved) backend.state.messages.length = 0;
+    if (state === "removed") backend.state.messages.length = 0;
+    if (state === "tombstoned") backend.state.messages[0].deleteTime = new Date().toISOString();
 
     // Explicit deletion is absent from the message capability, but a send still has an undo.
     expect(await chat.revertAction(1)).toBeUndefined();
-    expect(backend.state.messages).toEqual([]);
-    expect(backend.state.deletes).toEqual(alreadyRemoved ? [] : [`${SPACE_NAME}/messages/M1`]);
+    if (state !== "tombstoned") expect(backend.state.messages).toEqual([]);
+    expect(backend.state.deletes).toEqual(state === "present" ? [`${SPACE_NAME}/messages/M1`] : []);
   });
 
   // Chat refuses a non-force delete of a message with threaded replies, and force would cascade
@@ -681,14 +684,38 @@ describe("Google Chat gatekeeper behaviors", () => {
     backend.state.messages.push(
       {...threadMessage("private", "A", "2024-01-01T00:00:00Z"), privateMessageViewer: {name: "users/1"}},
       {...threadMessage("deleted", "A", "2024-01-01T00:00:00Z"), deleteTime: "2024-01-02T00:00:00Z"},
+      threadMessage("later", "A", "2024-01-01T00:00:00Z"),
     );
     const chat = chatHarness(backend);
     using space = await chat.session();
     await expect(Promise.resolve(space.getMessage(messageName("missing")))).rejects.toThrow(/http=404/);
     await expect(Promise.resolve(space.getMessage(messageName("private")))).rejects.toThrow(/not available/);
-    await expect(Promise.resolve(space.getMessage(messageName("deleted")))).rejects.toThrow(/no longer available/);
+    await expect(Promise.resolve(space.getMessage(messageName("deleted")))).rejects.toThrow(/has been deleted/);
+    using later = (await space.getMessage(messageName("later"))).message;
+    backend.state.messages.find(message => message.name === messageName("later"))!.deleteTime =
+      "2024-01-02T00:00:00Z";
+    await expect(Promise.resolve(later.getMetadata())).rejects.toThrow(/has been deleted/);
     await expect(Promise.resolve(space.getMessage("spaces/OTHER/messages/1")))
       .rejects.toThrow(/different conversation/);
+  });
+
+  it("refuses to queue an edit of someone else's message", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(
+      {...threadMessage("theirs", "A", "2024-01-01T00:00:00Z"), sender: {name: "users/other", type: "HUMAN"}});
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("theirs"))).message;
+    await expect(Promise.resolve(message.edit("mine now"))).rejects.toThrow(/Only your own/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
+  });
+
+  it("lists no reactions on a message that is still pending", async () => {
+    const chat = chatHarness(chatBackend());
+    using space = await chat.session();
+    using message = (await space.post("hello")).message;
+    using reactions = await message.listReactions();
+    expect(await reactions.next()).toBeNull();
   });
 
   it("scopes a space search to its conversation and rejects foreign results", async () => {
@@ -713,7 +740,7 @@ const messageName = (id: string) => `${SPACE_NAME}/messages/${id}`;
 
 function threadMessage(id: string, thread: string, createTime: string, reply = false): ChatMessageRaw {
   return {name: messageName(id), text: id, thread: {name: threadName(thread)},
-    createTime, threadReply: reply};
+    createTime, threadReply: reply, sender: {name: "users/subject-a", type: "HUMAN"}};
 }
 
 describe("Google Chat thread capabilities", () => {

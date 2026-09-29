@@ -10,7 +10,7 @@ import type {
   GmailSession,
 } from "../../src/types";
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatSpace, GoogleChatSession,
+  ChatListMessagesOptions, ChatMessageInfo, ChatSession, ChatSpace,
 } from "../../src/chat-types";
 
 export { default } from "../../src/google";
@@ -365,11 +365,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async openChatAccountSession(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
-  ): Promise<GoogleChatSession> {
+  ): Promise<ChatSession> {
     const queue = this.#queues.get(queueId);
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
     using queueStub = new RpcStub(queue);
-    return await this.#chat(facetName, id, props).startSession(queueStub) as GoogleChatSession;
+    return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSession;
   }
 
   async chatAddObserver(
