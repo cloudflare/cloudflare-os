@@ -21,7 +21,7 @@ Read `packages/workshop-shared/src/gatekeeper.ts` for the canonical interfaces a
 
 3. **Fine-grained resource granting** — Enable the end user to grant access to agents at fine granularities, in addition to coarse-grained access. For example, a user may want to give an agent access to a specific Google Doc or GitHub repo, rather than granting broad access to everything they can do. This should be straightforward given a capability-based API. That said, broad access should also be allowed when it makes sense. Consider carefully which granularities are meaningful — a Jira gatekeeper might support "whole service", "project", and "issue" granularities, but it would be silly to support granting access to a single field of an issue separately.
 
-4. **Logging & approvals** — Every action the agent or gadget performs must be logged via the `ApprovalQueue` API. Every action with an externally-visible side effect must be submitted via `submitAction()`, and must not actually be performed until `applyAction()` has been called. Read-only observations must call `authorizeObservation()` before returning data to the caller.
+4. **Logging & approvals** — Every action the agent or gadget performs must be logged via the `ApprovalQueue` API. Every action with an externally-visible side effect must be submitted via `submitAction()`, and must not actually be performed until `applyAction()` has been called. Read-only observations must call `authorizeObservation()` before returning data to the caller. Reads the gatekeeper makes for its own purposes, returning nothing to the caller, are not observations (see [What counts as an observation](#what-counts-as-an-observation)).
 
 5. **Caching** — When it makes sense, cache remote content in the gatekeeper's DO storage to improve performance when agents or gadgets repeatedly read the same data. Caching also enables a better TypeScript API when the service's underlying API has an inconvenient data shape. For example, Gmail's API for listing threads returns only thread IDs without metadata, requiring a callback for each thread; with caching, the gatekeeper can provide an API that returns rich thread summaries directly, reading from local content synchronized with Gmail as needed. See Phase 2 for implementation guidance.
 
@@ -158,10 +158,27 @@ In this phase, we focus on responsibilities 4-7. These are typically added as a 
 
 Go through all the API methods and decide where to insert calls to the `ApprovalQueue`.
 
-- Any operation which reads external data (but with no side effects) must call authorizeObservation().
+- Any operation which reads external data and returns it to the caller (but with no side effects) must call authorizeObservation().
 - Any operation which has visible side effects on the world must call submitAction(), and must not actually apply the action until approved.
 
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+
+#### What counts as an observation
+
+The observation log records what the **caller** (agent or gadget) learned, not what the gatekeeper read. Deciding this correctly keeps the log readable for the user. Ask: *what information did this call hand back to the caller?* If the answer is "nothing", don't log an observation, however much the gatekeeper fetched internally.
+
+Do **not** call `authorizeObservation()` for:
+
+- **Reads that only prepare an action.** A mutation that fetches current state to build the action description, bind an expected old value, capture revert information, or validate the request, and then calls `submitAction()`, returns `void` (or a provisional stub or a freshly generated ID). The action description the user approves already shows what was read. Don't log "Read X before mutation".
+- **Session setup.** `startSession()` resolving the account, a bound label, and so on returns only a session stub.
+- **Creating a cursor or stub that returns no data itself**, provided its later reads (cursor pages, `getDetails()`, …) log their own observations. Log wherever the data actually crosses to the caller; if a cursor logs once up front and not per page, that up-front log is the real one and must stay.
+- **Information that leaks only through a validation error** ("label already exists", "branch is not a fast-forward").
+
+**Existence checks are a judgment call, but usually not an observation.** A method like `getIssue(id)` that confirms an item exists and returns a stub tells the caller one bit. When the ID is an unguessable, high-entropy value (a Gmail message ID, a commit SHA, a UUID), that bit is no information at all: a caller that already holds the ID knows the item exists, and the ID itself encodes nothing. Sequential numbers and human-readable names are more ambiguous, but an agent leaking information by probing whether titles exist is far-fetched, so the default is not to log. Log the stub's real reads instead. Don't put fetched details (such as the item's title) into a log entry for data the caller never received.
+
+Returning a boolean or count *is* data when that is the answer the caller asked for (`isFollowing()`, `areTracksSaved()`, a `null` from `getArea()` meaning "no area"). Log those.
+
+**Exception: observer tracking.** Under observer strategy C (below), `authorizeObservation()` does more than log. Its `excludeObservers` and set-tracking side effects gate which collaborators may see the workspace, and `containsRestrictedData` / `ownerInvitesOnly` change workspace state. A call that carries any of these is a security control, and removing it is a security decision, not a logging cleanup (see the Drive session's "Check Google Drive folder" fences).
 
 It's critically important that you add `ApprovalQueue` to all API operations that interact with the outside world, otherwise the gatekeeper security model is broken.
 

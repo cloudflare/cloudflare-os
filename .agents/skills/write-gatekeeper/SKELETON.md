@@ -512,7 +512,9 @@ class MySessionImpl extends RpcTarget implements MySession {
 
   // Example: action (side effect). Submit for approval; do NOT perform here.
   // Assign a sequential action ID, store the action details in the gatekeeper's
-  // own storage, then submit the ID to the approval queue.
+  // own storage, then submit the ID to the approval queue. If you read current state to build
+  // the description or capture revert info, do NOT log it as an observation: nothing is
+  // returned to the caller.
   async updateData(newValue: string): Promise<void> {
     let actionId = /* assign next sequential ID and store action details */ 0;
 
