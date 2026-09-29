@@ -366,14 +366,13 @@ describe("Chat identities", () => {
     expect(backend.state.memberRequests).toBe(1);
   });
 
-  it("names picker DMs once, and matches them by name rather than ID", async () => {
+  it("names picker DMs once, even for a search typed during the first load, and matches by name not ID", async () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
     using _session = await chat.session();
     const picker = new ChatSpaceConfiguratorUI(async () => ({token: "access-token", expires: new Date(Date.now() + 60_000)}));
     const alice = {value: SPACE_ID, title: "Alice Smith", subtitle: "Direct message"};
-    expect(await picker.listChatSpaces("")).toEqual([alice]);
-    expect(await picker.listChatSpaces("alice")).toEqual([alice]);
+    expect(await Promise.all([picker.listChatSpaces(""), picker.listChatSpaces("alice")])).toEqual([[alice], [alice]]);
     expect(await picker.listChatSpaces(SPACE_ID.toLowerCase())).toEqual([]);
     expect(backend.state.memberRequests).toBe(1);
   });

@@ -32,8 +32,11 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
-/** Per Chat picker: the connected user's id, and each conversation already named. */
-type ChatPickerCache = { selfId?: string; described: Map<string, ChatSpaceInfo> };
+/**
+ * Per Chat picker: the connected user's id, and each conversation's naming, cached while still in
+ * flight so a search typed during the initial load does not repeat its lookups.
+ */
+type ChatPickerCache = { selfId?: Promise<string>; described: Map<string, Promise<ChatSpaceInfo>> };
 const chatConfiguratorCaches = new WeakMap<object, ChatPickerCache>();
 /**
  * Conversations one Chat picker names. Each costs a membership read against a quota the whole
@@ -139,10 +142,11 @@ async function describeChatSpaces(
   const fresh = infos.filter(info => needsDescription(info) && !cache.described.has(info.id))
     .slice(0, CHAT_CONFIGURATOR_NAMED_MAX - cache.described.size);
   if (fresh.length > 0) {
-    cache.selfId ??= `users/${(await getGoogleAccountProfile(googleTokenProvider(target))).sub}`;
-    for (const info of await describeConversations(api, fresh, cache.selfId)) cache.described.set(info.id, info);
+    cache.selfId ??= getGoogleAccountProfile(googleTokenProvider(target)).then(({ sub }) => `users/${sub}`);
+    const described = cache.selfId.then(selfId => describeConversations(api, fresh, selfId));
+    fresh.forEach((info, i) => cache.described.set(info.id, described.then(all => all[i], () => info)));
   }
-  return infos.map(info => cache.described.get(info.id) ?? info);
+  return Promise.all(infos.map(info => cache.described.get(info.id) ?? info));
 }
 
 async function listDriveFiles(
