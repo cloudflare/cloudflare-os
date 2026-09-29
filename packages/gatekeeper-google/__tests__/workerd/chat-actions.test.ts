@@ -814,8 +814,10 @@ describe("Google Chat gatekeeper behaviors", () => {
     backend.state.editFailure = 503;
     await expect(chat.revertAction(1)).rejects.toThrow(/http=503/);
     backend.state.editFailure = 0;
+    const writes = backend.state.edits.length;
     await expect(chat.revertAction(1)).resolves.toBeUndefined();
-    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Resolved", "root"]);
+    expect(backend.state.edits).toHaveLength(writes);
+    expect(backend.state.messages[0].text).toBe("root");
   });
 
   it("asks for a restart only when a later action shares the rejected one's conversation", async () => {
@@ -903,6 +905,23 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(1);
     await chat.applyAction(2);
     expect(backend.state.edits.map(edit => edit.text)).toEqual(["Hi <users/123>, done"]);
+  });
+
+  it("finishes a retried edit whose lost write Chat stored in rendered form", async () => {
+    const backend = chatBackend();
+    backend.state.storeText = text => text.replace("<users/123>", "@Alice");
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Hi <users/123>");
+    backend.state.editFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
+    backend.state.editFailure = 0;
+    await chat.applyAction(1);
+    expect(backend.state.messages[0].text).toBe("Hi @Alice");
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
+    expect(backend.state.messages[0].text).toBe("root");
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {

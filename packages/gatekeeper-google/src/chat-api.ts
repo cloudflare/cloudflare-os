@@ -774,7 +774,7 @@ export class ChatApi {
     const updated = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
-      { method: "PATCH", body: JSON.stringify({ text }) });
+      { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
     return updated.text ?? text;
   }
 

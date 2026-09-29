@@ -1233,11 +1233,13 @@ export class GoogleChatGatekeeperImpl
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
+        const retried = store.wasAttempted(actionId);
         const current = await api.getMessage(target.committed);
         requireMessageInScope(scope, current);
         let text = current.text;
         if (text !== action.text) {
-          if (text !== action.previousText) {
+          // A retry can't tell Chat's rendering of its own lost write from an outside edit.
+          if (!retried && text !== action.previousText) {
             throw new Error(
               "This message was edited in Google Chat after this change was queued, so applying it " +
               "would overwrite that edit. Reject this change and edit the message again.");
