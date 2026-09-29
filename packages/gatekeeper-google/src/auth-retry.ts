@@ -148,11 +148,15 @@ export async function fetchWithAuthRetry(
       // Deliberately does not touch `attempt`: the refresh is one-shot, so it can add at most one
       // request to the budget rather than doubling it.
       refreshed = true;
-      await response.body?.cancel();
       // Naming the rejected token lets the authority collapse a concurrent burst of 401s into a
       // single token exchange — see AccessTokenRequest.
-      token = await getAccessToken({ forceRefresh: true, staleToken: token });
-      continue;
+      let fresh = await getAccessToken({ forceRefresh: true, staleToken: token });
+      // A provider that cannot refresh (a fixed token) hands back the one just rejected.
+      if (fresh !== token) {
+        token = fresh;
+        await response.body?.cancel();
+        continue;
+      }
     }
 
     if (response.status === 403 && !reloaded && replayable) {

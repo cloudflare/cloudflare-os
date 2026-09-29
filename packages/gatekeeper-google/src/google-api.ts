@@ -208,12 +208,10 @@ export type GoogleAccountProfile = {
 };
 
 export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
-  const url = 'https://www.googleapis.com/oauth2/v3/userinfo';
-  const headers = { 'Accept': 'application/json' };
-  // A fixed token cannot be refreshed, so a 401 retry would only repeat the request.
-  const response = typeof accessToken === "string"
-    ? await fetch(url, { headers: { ...headers, 'Authorization': `Bearer ${accessToken}` } })
-    : await fetchWithAuthRetry(url, { method: 'GET', headers }, accessToken);
+  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
+    method: 'GET',
+    headers: { 'Accept': 'application/json' },
+  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {
     await response.body?.cancel();

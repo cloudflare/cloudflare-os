@@ -875,7 +875,7 @@ describe("auth retry", () => {
   });
 
   it("gives up rather than looping when the refreshed token is also rejected", async () => {
-    let drive = new DriveApi(async () => "tok");
+    let drive = new DriveApi(async opts => opts?.forceRefresh ? "fresh" : "tok");
     let calls = stubFetch(() => new Response("expired", { status: 401 }));
 
     await expect(drive.listFiles()).rejects.toThrow("401");

@@ -78,6 +78,14 @@ describe("fetchWithAuthRetry", () => {
     expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
+  it("does not replay a 401 when the provider cannot refresh its token", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });
+    let response = await fetchWithAuthRetry("https://chat.googleapis.com/v1/spaces", {}, async () => "fixed");
+    expect(response.status).toBe(401);
+    expect(requests).toBe(1);
+  });
+
   it("refreshes an invalidated profile token before checking the account subject", async () => {
     const provider = vi.fn(async (opts?: AccessTokenRequest) => opts?.forceRefresh ? "fresh" : "stale");
     vi.stubGlobal("fetch", async (_input: string, init: RequestInit) =>
