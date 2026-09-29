@@ -827,7 +827,7 @@ export class ChatApi {
   /**
    * Profile names from the People API, keyed by `users/{user}`, for people Chat left unnamed.
    * Users whose profile the connected user cannot see are absent, as is everyone when the People
-   * API is unavailable. At most 200 users.
+   * API refuses the request; network failures and malformed responses throw. At most 200 users.
    */
   async profileNames(users: readonly string[]): Promise<Map<string, string>> {
     const byResource = new Map<string, string>(users.flatMap(user => {

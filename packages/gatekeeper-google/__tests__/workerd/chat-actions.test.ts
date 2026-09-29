@@ -93,6 +93,10 @@ function chatBackend() {
     createFailure: 0,
     /** Apply edits but lose their responses with this status until cleared. */
     editFailure: 0,
+    /** Apply reaction writes but lose their responses with this status until cleared. */
+    reactionFailure: 0,
+    /** Post replies as new top-level threads, as Google would by ignoring the reply option. */
+    misplaceReplies: false,
     getMessageStatus: 200,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
@@ -181,13 +185,14 @@ function chatBackend() {
       }
       state.creates.push({requestId: url.searchParams.get("requestId"),
         replyOption: url.searchParams.get("messageReplyOption"), body});
+      const thread = state.misplaceReplies ? undefined : body.thread;
       const created = {
         name: `${SPACE_NAME}/messages/M${state.creates.length}`,
         text: state.storeText(body.text),
         createTime: new Date().toISOString(),
         sender: {name: "users/subject-a", type: "HUMAN"},
-        thread: body.thread ?? {name: `${SPACE_NAME}/threads/T${state.creates.length}`},
-        threadReply: body.thread !== undefined,
+        thread: thread ?? {name: `${SPACE_NAME}/threads/T${state.creates.length}`},
+        threadReply: thread !== undefined,
       };
       state.messages.push(created);
       state.sentRequests.set(requestId, created.name);
@@ -215,14 +220,14 @@ function chatBackend() {
           emoji, user: {name: "users/subject-a", type: "HUMAN"}};
         state.reactions.push(reaction);
         state.reactionWrites.push({method, id: reaction.name});
-        return json(reaction);
+        return state.reactionFailure ? json({}, state.reactionFailure) : json(reaction);
       }
     }
     const reactionIndex = state.reactions.findIndex(reaction => reaction.name === name);
     if (reactionIndex !== -1 && method === "DELETE") {
       state.reactions.splice(reactionIndex, 1);
       state.reactionWrites.push({method, id: name});
-      return json({});
+      return state.reactionFailure ? json({}, state.reactionFailure) : json({});
     }
     const index = state.messages.findIndex(message => message.name === name);
     if (index !== -1) {
@@ -572,12 +577,37 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(2);
     await chat.revertAction(2);
     expect(backend.state.reactionWrites.map(write => write.method)).toEqual(["POST", "DELETE", "POST"]);
-    // An add whose reaction is already there, as on a retried apply, writes nothing.
+    // An add whose reaction was already there before it was tried writes nothing, so undoes nothing.
     await message.addReaction("👍");
     await chat.applyAction(3);
     await chat.revertAction(3);
     expect(backend.state.reactionWrites).toHaveLength(3);
     expect(backend.state.reactions.map(reaction => reaction.emoji?.unicode)).toEqual(["👍"]);
+  });
+
+  it("undoes reactions whose writes landed but lost their responses", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    const applyLosingResponse = async (id: number) => {
+      backend.state.reactionFailure = 503;
+      await expect(chat.applyAction(id)).rejects.toThrow(/http=503/);
+      backend.state.reactionFailure = 0;
+      await chat.applyAction(id);
+    };
+    const reactions = () => backend.state.reactions.map(reaction => reaction.emoji?.unicode);
+    await message.addReaction("👍");
+    await applyLosingResponse(1);
+    await chat.revertAction(1);
+    expect(reactions()).toEqual([]);
+    await message.addReaction("👍");
+    await chat.applyAction(2);
+    await message.removeReaction("👍");
+    await applyLosingResponse(3);
+    await chat.revertAction(3);
+    expect(reactions()).toEqual(["👍"]);
   });
 
   it("refuses observers on a whole-account binding and checks them on a thread binding", async () => {
@@ -924,6 +954,50 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.messages[0].text).toBe("root");
   });
 
+  it("lets an uncertain edit be rejected once its message is deleted", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.editFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    backend.state.messages = [];
+    await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
+    await chat.rejectAction(1);
+  });
+
+  it("takes back a reply Google posts outside a thread binding's thread, even when re-applied", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend, undefined, "thread");
+    using thread = await chat.thread();
+    using _reply = (await thread.post("ack")).message;
+    backend.state.misplaceReplies = true;
+    await expect(chat.applyAction(1)).rejects.toThrow(/only covers one Google Chat thread/);
+    expect(backend.state.deletes).toEqual([`${SPACE_NAME}/messages/M1`]);
+    // Chat now answers the request id with the deleted message.
+    await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
+    await chat.rejectAction(1);
+  });
+
+  it("keeps a misplaced reply unrejectable while taking it back fails, until it is deleted by hand", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend, undefined, "thread");
+    using thread = await chat.thread();
+    using _reply = (await thread.post("ack")).message;
+    backend.state.misplaceReplies = true;
+    backend.state.repliesOn.add(`${SPACE_NAME}/messages/M1`);
+    await expect(chat.applyAction(1)).rejects.toThrow(/removing it failed/);
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    backend.state.messages = backend.state.messages.filter(message => message.name !== `${SPACE_NAME}/messages/M1`);
+    await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
+    await chat.rejectAction(1);
+  });
+
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
@@ -935,6 +1009,20 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
     expect(backend.state.edits).toEqual([]);
     await chat.rejectAction(1);
+  });
+
+  it("leaves an owner's matching edit alone when undoing an edit that wrote nothing", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.messages[0].text = "Resolved";
+    await chat.applyAction(1);
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
+    expect(backend.state.edits).toEqual([]);
+    expect(backend.state.messages[0].text).toBe("Resolved");
   });
 
   it("keeps the owner's read state out of a shareable conversation's search", async () => {

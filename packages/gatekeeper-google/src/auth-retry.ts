@@ -150,7 +150,7 @@ export async function fetchWithAuthRetry(
       refreshed = true;
       // Naming the rejected token lets the authority collapse a concurrent burst of 401s into a
       // single token exchange — see AccessTokenRequest.
-      let fresh = await getAccessToken({ forceRefresh: true, staleToken: token });
+      let fresh = await releasingOnFailure(response, getAccessToken({ forceRefresh: true, staleToken: token }));
       // A provider that cannot refresh (a fixed token) hands back the one just rejected.
       if (fresh !== token) {
         token = fresh;
@@ -163,7 +163,7 @@ export async function fetchWithAuthRetry(
       // Also one-shot, and it replays only on a token that really changed: an unchanged one means
       // the grant itself is insufficient, and re-sending it would just 403 again.
       reloaded = true;
-      let stored = await getAccessToken({ reloadStored: true });
+      let stored = await releasingOnFailure(response, getAccessToken({ reloadStored: true }));
       if (stored !== token) {
         token = stored;
         await response.body?.cancel();
@@ -180,6 +180,16 @@ export async function fetchWithAuthRetry(
     }
 
     return response;
+  }
+}
+
+/** Await `token`, cancelling the rejected response's body if it fails. */
+async function releasingOnFailure(response: Response, token: Promise<string>): Promise<string> {
+  try {
+    return await token;
+  } catch (error) {
+    await response.body?.cancel();
+    throw error;
   }
 }
 

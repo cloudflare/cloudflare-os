@@ -55,6 +55,9 @@ import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import CHAT_TYPES_CODE from "./chat-types.txt";
 import { describeConversation, needsDescription } from "./chat-names";
+import { obsContext } from "./observability";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
 
 type Env = Cloudflare.Env;
 
@@ -154,6 +157,10 @@ class ChatStore {
 
   remove(id: number): void {
     this.#kv.delete(`chat:action:${id}`);
+    this.clearAttempt(id);
+  }
+
+  clearAttempt(id: number): void {
     this.#kv.delete(`chat:attempted:${id}`);
   }
 
@@ -162,9 +169,8 @@ class ChatStore {
    * an apply finishes. A definitive refusal of the first write proves nothing landed, so it clears.
    */
   async attemptWrite<T>(id: number, write: () => Promise<T>): Promise<T> {
-    const key = `chat:attempted:${id}`;
-    const first = this.#kv.get(key) === undefined;
-    this.#kv.put(key, true);
+    const first = !this.wasAttempted(id);
+    this.#kv.put(`chat:attempted:${id}`, true);
     try {
       return await write();
     } catch (error) {
@@ -172,7 +178,7 @@ class ChatStore {
       // earlier attempt landed: a send has no read that could tell.
       if (first && error instanceof ChatApiError && error.status >= 400 && error.status < 500 &&
           error.status !== 408 && error.status !== 429) {
-        this.#kv.delete(key);
+        this.clearAttempt(id);
       }
       throw error;
     }
@@ -494,15 +500,16 @@ async function fetchThreadRoot(
   return first && !first.isReply ? overlayMessage(first, pending) : undefined;
 }
 
+const isChatMessageGone = (error: unknown): boolean =>
+  error instanceof DeletedChatMessageError || (error instanceof ChatApiError && error.status === 404);
+
 /** Undo a send, counting a message already removed in Google Chat as success. */
 async function deleteMessageIfPresent(api: ChatApi, messageName: string): Promise<void> {
   try {
     await api.getMessage(messageName);
     await api.deleteMessage(messageName);
   } catch (error) {
-    if (error instanceof DeletedChatMessageError) return;
-    if (error instanceof ChatApiError && error.status === 404) return;
-    throw error;
+    if (!isChatMessageGone(error)) throw error;
   }
 }
 
@@ -866,7 +873,8 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     return threadEntry(this.ctx, info.spaceId, info.threadId);
   }
 
-  async getMetadata(): Promise<ChatMessageInfo> {
+  /** `#info()`, recorded as an observation. */
+  async #read(): Promise<ChatMessageInfo> {
     const info = await this.#info();
     await observe(
       this.ctx,
@@ -876,8 +884,12 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     return info;
   }
 
+  getMetadata(): Promise<ChatMessageInfo> {
+    return this.#read();
+  }
+
   async reply(text: string): Promise<ChatMessageEntry> {
-    const info = await this.#info();
+    const info = await this.#read();
     if (info.threadId === undefined) {
       throw new Error(
         "This conversation does not support threaded replies; send a new message instead.");
@@ -888,7 +900,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 
   async edit(text: string): Promise<void> {
     const body = validateMessageText(text);
-    const current = await this.#info();
+    const current = await this.#read();
     if (current.sender?.id !== this.ctx.self.id) {
       throw new Error("Only your own Google Chat messages can be edited.");
     }
@@ -1200,6 +1212,14 @@ export class GoogleChatGatekeeperImpl
   ): Promise<ChatRevertInfo> {
     const api = this.#api();
     const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: this.#boundThreadName() };
+    const retried = store.wasAttempted(actionId);
+    // Once the target is deleted, nothing an earlier attempt wrote remains, so the action may be rejected.
+    const readTarget = (name: string) => api.getMessage(name).catch((error: unknown) => {
+      if (!isChatMessageGone(error)) throw error;
+      store.clearAttempt(actionId);
+      throw new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
+        "Reject it.", { cause: error });
+    });
     if (action.type === "addReaction" || action.type === "removeReaction") {
       requireOldestChange(store, actionId, action, other => "emoji" in other &&
         other.messageName === action.messageName && other.emoji === action.emoji);
@@ -1213,17 +1233,33 @@ export class GoogleChatGatekeeperImpl
           throw new Error("Send the thread's root message before its replies.");
         }
         const needsThread = threadName !== undefined || action.startsThread === true;
-        const retried = store.wasAttempted(actionId);
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
-        let created = await store.attemptWrite(actionId, () => api.createMessage(action.spaceName, {
+        const { id } = await store.attemptWrite(actionId, () => api.createMessage(action.spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
         }, { requestId: action.requestId }));
-        // A retry gets its request echoed back, not the message Chat stored.
-        if (retried || (needsThread && !created.threadId)) created = await api.getMessage(created.id);
-        if (needsThread && !created.threadId) throw new Error("Google Chat did not return the created message's thread.");
-        requireMessageInScope(scope, created);
+        // A replayed create echoes the request, not the message Chat stored.
+        const created = await readTarget(id);
+        try {
+          if (needsThread && !created.threadId) throw new Error("Google Chat did not return the created message's thread.");
+          requireMessageInScope(scope, created);
+        } catch (error) {
+          logger.warn("taking back a Google Chat message posted outside its request", {
+            event: "chat.send.taken_back", actionId, messageId: id, error,
+          });
+          try {
+            await deleteMessageIfPresent(api, id);
+          } catch (deleteError) {
+            logger.error("failed to take back a Google Chat message posted outside its request", {
+              event: "chat.send.take_back.failed", actionId, messageId: id, error: deleteError,
+            });
+            throw new Error("Google Chat posted this message outside its requested conversation or thread, " +
+              "and removing it failed. Delete it in Google Chat.", { cause: deleteError });
+          }
+          store.clearAttempt(actionId);
+          throw error;
+        }
         store.setSentMessage(actionId, created);
         store.rebaseEdits(action.spaceName, created.id, action.text, created.text);
         return { type: "sentMessage", messageName: created.id };
@@ -1233,10 +1269,10 @@ export class GoogleChatGatekeeperImpl
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
-        const retried = store.wasAttempted(actionId);
-        const current = await api.getMessage(target.committed);
+        const current = await readTarget(target.committed);
         requireMessageInScope(scope, current);
         let text = current.text;
+        if (text === action.text && !retried) return { type: "none" };
         if (text !== action.text) {
           // A retry can't tell Chat's rendering of its own lost write from an outside edit.
           if (!retried && text !== action.previousText) {
@@ -1253,20 +1289,21 @@ export class GoogleChatGatekeeperImpl
       }
       case "addReaction": {
         // Re-fetching the message re-runs the private-message check at apply time.
-        requireMessageInScope(scope, await api.getMessage(action.messageName));
+        requireMessageInScope(scope, await readTarget(action.messageName));
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        if (existing) return { type: "none" };
+        if (existing) return retried ? { type: "addedReaction", reactionName: existing.id } : { type: "none" };
         const reaction = await store.attemptWrite(actionId,
           () => api.createReaction(action.messageName, action.emoji));
         return { type: "addedReaction", reactionName: reaction.id };
       }
       case "removeReaction": {
-        requireMessageInScope(scope, await api.getMessage(action.messageName));
+        requireMessageInScope(scope, await readTarget(action.messageName));
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
-        if (!existing) return { type: "none" };
+        const removed = { type: "removedReaction", messageName: action.messageName, emoji: action.emoji } as const;
+        if (!existing) return retried ? removed : { type: "none" };
         await store.attemptWrite(actionId, () => api.deleteReaction(existing.id));
-        return { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
+        return removed;
       }
       default:
         action satisfies never;
