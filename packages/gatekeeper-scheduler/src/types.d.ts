@@ -251,7 +251,7 @@ export interface ScheduledFiring {
 }
 
 /**
- * Hook implemented by workspace code and made persistent with `ctx.restore()` before registration.
+ * Hook implemented by workspace code and registered as a persistent stub (see `ScheduleSession`).
  */
 export interface ScheduledTaskHook {
   /**
@@ -266,12 +266,13 @@ export interface ScheduledTaskHook {
 /**
  * Workspace-scoped Scheduled Tasks capability.
  *
- * Define the callback in the Gadget's `[restore]()` method. Then call `ctx.restore()` -- either
- * directly from `executeCode`, or as `this.ctx.restore()` inside the Gadget itself -- and pass the
- * resulting persistent stub to a registration method. The parameters passed to `ctx.restore()` must
- * be serializable; the system passes them to `[restore]()` both immediately and when restoring the
- * callback later. The restored `RpcTarget` is a separate object and does not inherit the Gadget's
- * `ctx`; pass any required dependencies, such as `this.ctx.storage`, to it from `[restore]()`.
+ * Define the callback in the Gadget's `[restore]()` method, then pass a persistent stub for it to a
+ * registration method. From `executeCode`, create the stub with `env.MY_GADGET[restore](params)`
+ * on the Gadget's binding (`ctx.restore()` there targets the executeCode worker, not the Gadget);
+ * inside the Gadget, use `this.ctx.restore(params)`. The params must be serializable; the system
+ * passes them to `[restore]()` whenever it restores the callback. The restored `RpcTarget` is a
+ * separate object and does not inherit the Gadget's `ctx`; pass any required dependencies, such as
+ * `this.ctx.storage`, to it from `[restore]()`.
  *
  * Use the Scheduler binding shown in the agent environment directly; it does not need to be saved as
  * a Gadget binding. Registration returns a stable schedule ID immediately, but the schedule remains
@@ -298,13 +299,16 @@ export interface ScheduledTaskHook {
  * }
  *
  * // executeCode
- * const callback = await ctx.restore({ type: "dailyBrief" });
- * const scheduleId = await scheduler.calendarAt(
- *   { timeZone: "America/Chicago", freq: "daily", hour: 7, minute: 0 },
- *   callback,
- *   { title: "Daily brief", description: "Prepare the morning activity summary." },
- * );
- * console.log("Schedule registered:", scheduleId);
+ * import { restore } from "cloudflare:workers";
+ * export default async function(self, env) {
+ *   const callback = await env.MY_GADGET[restore]({ type: "dailyBrief" });
+ *   const scheduleId = await env.SCHEDULER.calendarAt(
+ *     { timeZone: "America/Chicago", freq: "daily", hour: 7, minute: 0 },
+ *     callback,
+ *     { title: "Daily brief", description: "Prepare the morning activity summary." },
+ *   );
+ *   console.log("Schedule registered:", scheduleId);
+ * }
  */
 export interface ScheduleSession {
   /**
@@ -312,7 +316,7 @@ export interface ScheduleSession {
    * least 60,000. Occurrences stay aligned to registration time; delayed or missed occurrences are
    * skipped rather than replayed.
    *
-   * @param callback A persistent `ScheduledTaskHook` stub created with `ctx.restore()`.
+   * @param callback A persistent `ScheduledTaskHook` stub.
    * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
    * or run until the user enables it in Connections.
    */
@@ -326,7 +330,7 @@ export interface ScheduleSession {
    * Registers a timezone-aware wall-clock recurrence. Ask the user for `rule.timeZone`; do not guess
    * or infer it. See `CalendarRule` for supported hourly, daily, and weekly shapes.
    *
-   * @param callback A persistent `ScheduledTaskHook` stub created with `ctx.restore()`.
+   * @param callback A persistent `ScheduledTaskHook` stub.
    * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
    * or run until the user enables it in Connections.
    */
@@ -340,7 +344,7 @@ export interface ScheduleSession {
    * Registers a one-shot callback. A numeric `when` is an absolute Unix epoch-millisecond timestamp
    * in UTC. A wall-clock `when` requires an explicit IANA timezone; ask the user rather than guessing.
    *
-   * @param callback A persistent `ScheduledTaskHook` stub created with `ctx.restore()`.
+   * @param callback A persistent `ScheduledTaskHook` stub.
    * @returns The stable schedule ID and immediate registration receipt. The schedule is not listed
    * or run until the user enables it in Connections.
    */
