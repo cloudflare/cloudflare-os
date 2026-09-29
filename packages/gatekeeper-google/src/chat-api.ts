@@ -748,6 +748,7 @@ export class ChatApi {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams();
     if (options.requestId) params.set("requestId", options.requestId);
+    // Google documents this as named-space only, but a live DM reply threaded correctly.
     if (message.threadName !== undefined) {
       params.set("messageReplyOption", "REPLY_MESSAGE_OR_FAIL");
     }
