@@ -235,6 +235,42 @@ it.concurrent.each(["approve", "reject"] as const)(
   expect(model.requests).toHaveLength(3);
 });
 
+it.concurrent("approving an older turn's held write leaves a newer finished turn ended", async () => {
+  const secondUrl = "https://gadgets-test.example/things/second";
+  const model = models.script([
+    writeValues(7),
+    { toolCall: { id: "request-second", name: "requestConnection", arguments: {
+      vendorId: TEST_VENDOR_ID, resourceUrl: secondUrl, reason: "Set the second value.",
+      bindingName: "SECOND",
+    } } },
+    { toolCall: { id: "write-second", name: "executeCode", arguments: {
+      code: "export default async function(self, env) { " +
+          "await env.SECOND.writeValue(8, { autoApprovable: true }); }",
+    } } },
+    { text: "The second value is applied." },
+  ]);
+  await using session = await openSession(model, "agentolder");
+
+  await session.runTurn("Set the test value to 7.");
+  const [held] = await waitForPendingActions(session, 1);
+  const { history } = await session.runTurn("Set the second value to 8.");
+  const request = history.find(message => message.type === "connectionRequest");
+  if (request?.type !== "connectionRequest") throw new Error("The agent did not request a connection");
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using second = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id, secondUrl);
+    if (!second) throw new Error("Failed to create the second connection");
+    const secondId = await second.getId();
+    await ws.setAutoApprovedActionKind(secondId, SET_VALUE);
+    await ws.acceptConnectionRequest(request.requestId, { gatekeeperId: secondId });
+    await waitForResumedTurn(ws, model);
+
+    await ws.approveAction(held.id);
+    await expectIdle(ws);
+  });
+  expect(model.requests).toHaveLength(4);
+});
+
 it.concurrent.each(["retry", "reject"] as const)(
     "a failed apply stays pending until the user chooses %s", async choice => {
   const model = models.script([writeValues(9), { text: "The retried value is applied." }]);

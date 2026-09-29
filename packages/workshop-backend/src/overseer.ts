@@ -11246,7 +11246,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
     if (action.caller.from === "agent" && action.description.awaitDecision) {
-      await this.#maybeResumeAfterActionDecision(action.caller.chatId);
+      await this.#maybeResumeAfterActionDecision(action.caller.chatId, action.id);
     }
 
     // Clearing this manual gate may unblock later auto-eligible pending actions on the same
@@ -11257,17 +11257,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // A drain can decide an agent turn's last awaited action, which must resume that turn just as a
   // manual approval does.
   async #drainAutoApprovalsAndResume(gatekeeperId: WorkpieceId): Promise<void> {
-    let chatIds = new Set<number>();
+    // Snapshot every awaited action, even auto-eligible ones that didn't suspend their turn: a turn
+    // suspended on a manual action can also be waiting on them. Accepted cost: one applied here
+    // (e.g. a retried auto-apply failure) can resume a turn that never suspended.
+    let awaited = new Map<number, number>();  // action id -> chat id
     for (let record of this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
       if (record.type === "action" && record.caller.from === "agent" &&
           record.description.awaitDecision) {
-        chatIds.add(record.caller.chatId);
+        awaited.set(record.id, record.caller.chatId);
       }
     }
     await this.impl.drainAutoApprovals(gatekeeperId);
     // No caller awaits a drain, so log each failed resume rather than letting it end the loop.
-    for (let chatId of chatIds) {
-      await this.#maybeResumeAfterActionDecision(chatId).catch(error => {
+    for (let [id, chatId] of awaited) {
+      if (this.impl.storage.actions.get(id)?.state !== "approved") continue;
+      await this.#maybeResumeAfterActionDecision(chatId, id).catch(error => {
         this.impl.logger.error("failed to resume agent after auto-approval", {
           event: "agent.resume.failed", chatId, error,
         });
@@ -11346,9 +11350,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.impl.deleteHook(id);
   }
 
-  // Resume a turn suspended on awaitDecision once all awaited actions from that turn are approved.
-  // Scoping to the current turn prevents older rejected actions from blocking future resumes.
-  async #maybeResumeAfterActionDecision(chatId: number): Promise<void> {
+  // Resume a turn suspended on awaitDecision once approving `approvedId` leaves all of that turn's
+  // awaited actions approved. Scoping to the current turn keeps older actions out of it: a rejected
+  // one can't block future resumes, and approving one can't restart a newer turn.
+  async #maybeResumeAfterActionDecision(chatId: number, approvedId: number): Promise<void> {
     let awaited: (ActionRecord & {type: "action"})[] = [];
     for (let msg of this.impl.storage.chats.list(
         {prefix: `${keyString(chatId)}.`, reverse: true})) {
@@ -11370,7 +11375,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     awaited.reverse();  // Present titles chronologically.
 
     // Only resume when every awaited action in the turn has been decided and all were approved.
-    if (awaited.length === 0) return;                       // No awaited action in current turn.
+    if (!awaited.some(r => r.id === approvedId)) return;    // Approved an older turn's action.
     if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
     if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
 
