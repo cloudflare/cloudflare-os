@@ -176,8 +176,8 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
  *
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
  * because the binding also edits messages and can undo its own sends, which need the combined
- * scope; it covers reactions too. `chat.users.readstate.readonly` exists only for the `unreadOnly`
- * search filter.
+ * scope; it covers reactions too. `chat.users.readstate.readonly` exists only for the account-wide
+ * `unreadOnly` search filter.
  */
 const CHAT_SCOPES = [
   "https://www.googleapis.com/auth/chat.spaces.readonly",

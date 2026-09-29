@@ -99,6 +99,7 @@ describe("message list overlay", () => {
     const edit: ChatAction = {
       type: "updateMessage",
       messageName: `${SPACE}/messages/1`,
+      previousText: "first",
       text: "edited",
       submittedAt: Date.now(),
     };

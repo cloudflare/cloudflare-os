@@ -231,8 +231,6 @@ export type ChatSpaceMessageSearch = ChatWindow & {
   mentions?: string[];
   /** Only messages that mention you. Cannot be combined with `mentions`. */
   mentionsMe?: boolean;
-  /** Only messages you have not read. */
-  unreadOnly?: boolean;
   /** Only messages with at least one attachment. */
   hasAttachment?: boolean;
   /** Only messages whose text contains at least one link. */
@@ -248,6 +246,11 @@ export type ChatMessageSearch = ChatSpaceMessageSearch & {
    * by name, find them with `ChatSession.searchSpaces()` first.
    */
   spaceIds?: string[];
+  /**
+   * Only messages you have not read. Your read state is yours alone, so only account-wide search
+   * offers this; pass `spaceIds` to narrow it to one conversation.
+   */
+  unreadOnly?: boolean;
   /** Only messages in conversations of any of these types. */
   spaceTypes?: ChatSpaceType[];
 };

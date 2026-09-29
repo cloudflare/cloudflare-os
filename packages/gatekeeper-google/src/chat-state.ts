@@ -36,6 +36,8 @@ export type ChatUpdateMessageAction = ChatActionBase & {
   messageName: string;
   /** Needed to scope an edit whose target still has a temporary message ID. */
   spaceName?: string;
+  /** The text this edit replaces, as the caller saw it; apply refuses if Chat's text has moved on. */
+  previousText: string;
   text: string;
 };
 
@@ -143,7 +145,8 @@ function pendingSendMatches(
  * Overlay one page of a space's messages.
  *
  * Queued sends are the newest messages, so they join the final page when paging oldest-first and
- * the first page when paging newest-first.
+ * the first page when paging newest-first. That holds even when others post while a send awaits
+ * approval: Chat stamps it at apply time, after them, and its provisional `createdAt` is earlier.
  */
 export function overlayMessageList(
   messages: readonly ChatMessageInfo[],

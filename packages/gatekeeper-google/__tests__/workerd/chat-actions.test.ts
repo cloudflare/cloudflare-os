@@ -82,6 +82,8 @@ function chatBackend() {
     edits: [] as Array<{name: string; text: string}>,
     /** Answer creates the way Google replays an idempotent request: names only, no thread. */
     echoCreates: false,
+    /** Post the next created message but fail its response, as when the reply is lost. */
+    loseNextCreateResponse: false,
     getMessageStatus: 200,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
@@ -170,6 +172,10 @@ function chatBackend() {
       };
       state.messages.push(created);
       state.sentRequests.set(requestId, created.name);
+      if (state.loseNextCreateResponse) {
+        state.loseNextCreateResponse = false;
+        return json({}, 409);
+      }
       return json(state.echoCreates ? {name: created.name, text: created.text} : created);
     }
     const name = url.pathname.slice("/v1/".length);
@@ -789,6 +795,49 @@ describe("Google Chat gatekeeper behaviors", () => {
     await expect(chat.applyAction(2)).rejects.toThrow(/never created/);
     expect(backend.state.creates).toEqual([]);
     expect(backend.state.edits).toEqual([]);
+    // Nothing reached Google, so the failed change can still be rejected.
+    await chat.rejectAction(2);
+  });
+
+  it("refuses to reject a send that may have posted until a retry settles it", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _posted = (await space.post("hello")).message;
+    backend.state.loseNextCreateResponse = true;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.restart();
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.applyAction(1);
+    expect(backend.state.creates).toHaveLength(1);
+    await chat.revertAction(1);
+    expect(backend.state.deletes).toHaveLength(1);
+  });
+
+  it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    backend.state.messages[0].text = "Changed by hand";
+    await expect(chat.applyAction(1)).rejects.toThrow(/edited in Google Chat after this change was queued/);
+    expect(backend.state.edits).toEqual([]);
+    await chat.rejectAction(1);
+  });
+
+  it("keeps the owner's read state out of a shareable conversation's search", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    // Not part of ChatSpaceMessageSearch, but RPC validation passes undeclared fields through.
+    const query = {text: "report", unreadOnly: true};
+    using results = await space.searchMessages(query);
+    await results.next();
+    expect(backend.state.searches).toHaveLength(1);
+    expect(backend.state.searches[0]).not.toContain("is_unread");
   });
 
   it("restores queued edits across a worker restart", async () => {
@@ -1066,6 +1115,18 @@ describe("Google Chat thread capabilities", () => {
     expect((await broad.getMetadata()).threadId).toBe(threadName("B"));
     delete raw.thread;
     await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(scopeError);
+  });
+
+  it("titles a thread binding past a first page of messages hidden from this account", async () => {
+    const backend = chatBackend();
+    backend.state.pageSize = 2;
+    backend.state.messages.push(
+      {...threadMessage("private-1", "A", "2024-01-01T00:00:00Z"), privateMessageViewer: {name: "users/1"}},
+      {...threadMessage("private-2", "A", "2024-01-01T01:00:00Z", true), privateMessageViewer: {name: "users/1"}},
+      threadMessage("visible", "A", "2024-01-02T00:00:00Z", true),
+    );
+    const chat = chatHarness(backend, undefined, "thread");
+    expect(await chat.describe()).toMatchObject({title: "Thread in Project", tsType: "ChatThread"});
   });
 
   it("binds one thread as the whole session", async () => {

@@ -154,6 +154,16 @@ class ChatStore {
 
   remove(id: number): void {
     this.#kv.delete(`chat:action:${id}`);
+    this.#kv.delete(`chat:attempted:${id}`);
+  }
+
+  /** Record that an action's write is about to reach Google; its outcome is uncertain until applied. */
+  markAttempted(id: number): void {
+    this.#kv.put(`chat:attempted:${id}`, true);
+  }
+
+  wasAttempted(id: number): boolean {
+    return this.#kv.get(`chat:attempted:${id}`) !== undefined;
   }
 
   setRevert(id: number, info: ChatRevertInfo): void {
@@ -629,7 +639,9 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
 
   async searchMessages(query: ChatSpaceMessageSearch): Promise<Cursor<ChatMessageEntry>> {
     // The space filter is ours, not the caller's; results outside it fail the scope check.
-    const filter = chatMessagesSearchFilter({ ...query, spaceIds: [this.#spaceName] });
+    // Read state is the owner's own, not the conversation's, and this capability can be shared.
+    // RPC validation keeps undeclared fields, so clear the account-only filter here.
+    const filter = chatMessagesSearchFilter({ ...query, unreadOnly: false, spaceIds: [this.#spaceName] });
     return searchCursor(this.ctx, filter, this.#spaceName);
   }
 
@@ -853,7 +865,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     }
     await submitChatAction(this.ctx, {
       type: "updateMessage", messageName: current.id, spaceName: current.spaceId,
-      text: body, submittedAt: Date.now(),
+      previousText: current.text, text: body, submittedAt: Date.now(),
     }, {
       title: `Edit a Google Chat message in ${current.spaceId}`,
       ...buildDescription(
@@ -1073,9 +1085,17 @@ export class GoogleChatGatekeeperImpl
     const boundThread = this.#boundThreadName();
     if (boundThread !== undefined) {
       if (!info.supportsThreads) throw new Error("This Google Chat conversation does not support threads.");
-      const first = (await api.listMessages(boundSpace, {
-        threadName: boundThread, order: "oldestFirst", pageSize: 10,
-      })).items[0];
+      // Hidden and deleted messages are dropped after Chat pages, so a page can come back empty.
+      let first: ChatMessageInfo | undefined;
+      let pageToken: string | undefined;
+      for (let page = 0; page < 3 && !first; page++) {
+        const result = await api.listMessages(boundSpace, {
+          threadName: boundThread, order: "oldestFirst", pageToken,
+        });
+        first = result.items[0];
+        pageToken = result.nextPageToken;
+        if (!pageToken) break;
+      }
       if (!first) throw new Error("This Google Chat thread has no messages this account can see.");
       return {
         url: `https://chat.google.com/room/${chatSpaceId(boundSpace)}/${chatThreadParts(boundThread).threadId}`,
@@ -1166,6 +1186,7 @@ export class GoogleChatGatekeeperImpl
         }
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
+        store.markAttempted(actionId);
         let created = await api.createMessage(action.spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
@@ -1184,17 +1205,28 @@ export class GoogleChatGatekeeperImpl
         if ("queued" in target) throw new Error("Post the message before applying its edits.");
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
-        const previous = await api.getMessage(target.committed);
-        requireMessageInScope(scope, previous);
-        const text = previous.text === action.text
-          ? previous.text : await api.updateMessageText(target.committed, action.text);
-        return { type: "updatedMessage", messageName: target.committed, previousText: previous.text, text };
+        const current = await api.getMessage(target.committed);
+        requireMessageInScope(scope, current);
+        let text = current.text;
+        if (text !== action.text) {
+          if (text !== action.previousText) {
+            throw new Error(
+              "This message was edited in Google Chat after this change was queued, so applying it " +
+              "would overwrite that edit. Reject this change and edit the message again.");
+          }
+          store.markAttempted(actionId);
+          text = await api.updateMessageText(target.committed, action.text);
+        }
+        return {
+          type: "updatedMessage", messageName: target.committed, previousText: action.previousText, text,
+        };
       }
       case "addReaction": {
         // Re-fetching the message re-runs the private-message check at apply time.
         requireMessageInScope(scope, await api.getMessage(action.messageName));
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
+        if (!existing) store.markAttempted(actionId);
         const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
         return existing ? { type: "none" } : { type: "addedReaction", reactionName: reaction.id };
       }
@@ -1202,6 +1234,7 @@ export class GoogleChatGatekeeperImpl
         requireMessageInScope(scope, await api.getMessage(action.messageName));
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         if (!existing) return { type: "none" };
+        store.markAttempted(actionId);
         await api.deleteReaction(existing.id);
         return { type: "removedReaction", messageName: action.messageName, emoji: action.emoji };
       }
@@ -1217,6 +1250,11 @@ export class GoogleChatGatekeeperImpl
     if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
     if (this.#applying.has(actionId)) {
       throw new Error("This Google Chat action is being applied and can no longer be rejected.");
+    }
+    if (store.wasAttempted(actionId)) {
+      throw new Error(
+        "This Google Chat action may already have reached Google. Apply it again to finish it, " +
+        "then undo it if it isn't wanted.");
     }
     // Later actions in the same conversation were written against a simulation that included
     // this one, so the gadget has to start again.
