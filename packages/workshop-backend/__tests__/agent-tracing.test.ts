@@ -136,8 +136,8 @@ function stubProvider(responses: (() => Response)[]): Pick<Turn, "requested" | "
   let calls = 0;
   let realFetch = globalThis.fetch;
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    let url = input instanceof Request ? input.url : String(input);
-    if (!url.startsWith(API_URL)) return realFetch(input, init);
+    let url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== API_URL) return realFetch(input, init);
     let response = responses[calls++];
     if (response === undefined) throw new Error(`unexpected model request ${calls}`);
     if (calls === 1) {
