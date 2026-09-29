@@ -8,7 +8,7 @@
 
 import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
-import { validateChatSpaceId } from "./chat-api";
+import { validateChatSpaceId, validateChatThreadId } from "./chat-api";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
 
 /** Host serving the synthetic BigQuery resource URLs. */
@@ -85,6 +85,15 @@ export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
   description:
       "Read and post in one selected conversation as you, including its members, reactions, " +
       "and attachments.",
+  grantable: true,
+};
+
+/** One thread in a Google Chat conversation: its first message, replies, and future replies. */
+export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/room/:spaceId/:threadId",
+  title: "Google Chat Thread",
+  description:
+      "Read and reply in one selected thread as you, including its reactions and attachments.",
   grantable: true,
 };
 
@@ -234,8 +243,9 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/spreadsheets.readonly",
     ],
   },
-  // Both Chat resources request the same scopes: Google grants Chat authority per API, not per
-  // space, so narrowing to one conversation is enforced by the binding rather than by consent.
+  // Every Chat resource requests the same scopes: Google grants Chat authority per API, not per
+  // space, so narrowing to one conversation or thread is enforced by the binding rather than by
+  // consent.
   // Every scope here is a user scope; `chat.bot`, `chat.app.*`, `chat.admin.*`, `chat.import`
   // and `chat.delete` are all deliberately absent.
   {
@@ -244,6 +254,10 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
   {
     resource: GOOGLE_CHAT_SPACE_RESOURCE,
+    scopes: CHAT_SCOPES,
+  },
+  {
+    resource: GOOGLE_CHAT_THREAD_RESOURCE,
     scopes: CHAT_SCOPES,
   },
   {
@@ -411,7 +425,8 @@ export type ResourceTarget =
   | { kind: "driveFolder"; folderId: string }
   | { kind: "driveFile"; fileId: string }
   | { kind: "chatAccount" }
-  | { kind: "chatSpace"; spaceId: string };
+  | { kind: "chatSpace"; spaceId: string }
+  | { kind: "chatThread"; spaceId: string; threadId: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
@@ -425,6 +440,7 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
   chatAccount: GOOGLE_CHAT_RESOURCE,
   chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
+  chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
 };
 
 /**
@@ -545,8 +561,9 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
 /**
  * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
  * the configurator mints: the bare host for the whole account, `/room/{space}` for one
- * conversation. The id is the Chat space id without its `spaces/` prefix, validated here because
- * every downstream request interpolates it into a path.
+ * conversation, `/room/{space}/{thread}` for one thread. The ids are Chat's without their
+ * `spaces/` and `threads/` prefixes, validated here because every downstream request
+ * interpolates them into a path.
  */
 function parseChatUrl(parsed: URL): ResourceTarget {
   if (parsed.search || parsed.hash) {
@@ -557,6 +574,15 @@ function parseChatUrl(parsed: URL): ResourceTarget {
   let room = /^\/room\/([^/]+)\/?$/.exec(parsed.pathname);
   if (room) {
     return { kind: "chatSpace", spaceId: validateChatSpaceId(decodeURIComponent(room[1])) };
+  }
+
+  let thread = /^\/room\/([^/]+)\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (thread) {
+    return {
+      kind: "chatThread",
+      spaceId: validateChatSpaceId(decodeURIComponent(thread[1])),
+      threadId: validateChatThreadId(decodeURIComponent(thread[2])),
+    };
   }
 
   throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);

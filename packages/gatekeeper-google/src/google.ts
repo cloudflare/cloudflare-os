@@ -64,6 +64,7 @@ import {
   CalendarConfiguratorUI,
   ChatAccountConfiguratorUI,
   ChatSpaceConfiguratorUI,
+  ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
@@ -75,6 +76,7 @@ import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
 import CHAT_ACCOUNT_CONFIGURATOR_HTML from "./generated/chat-account-configurator-ui.txt";
 import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui.txt";
+import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
@@ -86,7 +88,7 @@ import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
-  GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, RESOURCE_BY_KIND, SUPPORTED_RESOURCES,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
@@ -790,10 +792,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
       case "chatAccount":
-      case "chatSpace": {
+      case "chatSpace":
+      case "chatThread": {
         let props: GoogleChatGatekeeperImplProps = {
           userObjectId,
-          ...(target.kind === "chatSpace" ? { spaceId: target.spaceId } : {}),
+          ...(target.kind !== "chatAccount" ? { spaceId: target.spaceId } : {}),
+          ...(target.kind === "chatThread" ? { threadId: target.threadId } : {}),
         };
         return { class: this.ctx.exports.GoogleChatGatekeeperImpl({ props }), resource };
       }
@@ -864,6 +868,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: CHAT_SPACE_CONFIGURATOR_HTML,
         ui: new RpcStub(new ChatSpaceConfiguratorUI(getToken)),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_CHAT_THREAD_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: CHAT_THREAD_CONFIGURATOR_HTML,
+        ui: new RpcStub(new ChatThreadConfiguratorUI()),
       };
     }
 

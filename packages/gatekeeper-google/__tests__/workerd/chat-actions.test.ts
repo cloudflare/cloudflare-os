@@ -224,7 +224,7 @@ function chatBackend() {
 function chatHarness(
     backend: ReturnType<typeof chatBackend>,
     userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
-    accountBinding = false,
+    binding: "account" | "space" | "thread" = "space",
 ) {
   // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
   // in the test context cannot be awaited there.
@@ -248,7 +248,8 @@ function chatHarness(
   const facetName = `chat-${name}`;
   const props: GoogleChatGatekeeperImplProps = {
     userObjectId: testEnv.UserAccount.idFromName(name).toString(),
-    ...(accountBinding ? {} : {spaceId: SPACE_ID}),
+    ...(binding === "account" ? {} : {spaceId: SPACE_ID}),
+    ...(binding === "thread" ? {threadId: "A"} : {}),
   };
   const queueId = `queue-${crypto.randomUUID()}`;
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
@@ -267,6 +268,8 @@ function chatHarness(
     }),
     session: () => ready.then(() => hook.openChatSession(facetName, id, props, queueId)),
     account: () => ready.then(() => hook.openChatAccountSession(facetName, id, props, queueId)),
+    thread: () => ready.then(() => hook.openChatThreadSession(facetName, id, props, queueId)),
+    describe: () => ready.then(() => hook.chatDescribe(facetName, id, props)),
     addObserver: async () => {
       await ready;
       await runInDurableObject(testEnv.UserAccount.get(observerId), (_instance: unknown, state: DurableObjectState) => {
@@ -321,7 +324,7 @@ describe("Chat identities", () => {
 
   it("keeps listings cheap and resolves a DM name only when metadata is requested", async () => {
     const backend = directMessage();
-    const chat = chatHarness(backend, undefined, true);
+    const chat = chatHarness(backend, undefined, "account");
     using account = await chat.account();
     using cursor = await account.listSpaces();
     await chat.failNextObservation("List Google Chat conversations");
@@ -939,6 +942,32 @@ describe("Google Chat thread capabilities", () => {
     await expect(Promise.resolve(message.getMetadata())).rejects.toThrow(scopeError);
   });
 
+  it("binds one thread as the whole session", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(
+      threadMessage("root", "A", "2024-01-01T00:00:00Z"),
+      threadMessage("reply", "A", "2024-01-02T00:00:00Z", true),
+      threadMessage("unrelated", "B", "2024-01-03T00:00:00Z"),
+    );
+    const chat = chatHarness(backend, undefined, "thread");
+    expect(await chat.describe()).toMatchObject({
+      url: `https://chat.google.com/room/${SPACE_ID}/A`, title: "Project: root",
+      suggestedBindingName: "GOOGLE_CHAT_THREAD", tsType: "ChatThread",
+    });
+    using thread = await chat.thread();
+    expect(await thread.getCurrentUser()).toEqual({id: "users/subject-a", name: "Ada", type: "human"});
+    expect(await thread.getMetadata()).toMatchObject({
+      id: threadName("A"), rootMessage: {text: "root"}, latestMessage: {text: "reply"},
+    });
+    using history = await thread.listMessages();
+    using page = await history.next();
+    expect(page!.map(entry => entry.info.text)).toEqual(["root", "reply"]);
+    await expect(Promise.resolve(Reflect.get(thread, "listThreads")())).rejects.toThrow(/does not implement/);
+    const posted = await thread.post("ack");
+    using _posted = posted.message;
+    expect(posted.info.threadId).toBe(threadName("A"));
+  });
+
   it("checks thread ownership and never substitutes a surviving reply for the root", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("reply", "A", "2024-01-02T00:00:00Z", true));
@@ -966,7 +995,9 @@ describe("Google Chat thread capabilities", () => {
     const entry = await message.getThread();
     using _thread = entry.thread;
     expect(entry.info).toMatchObject({id: threadName("A"), rootMessage: {text: "root"}});
-    expect((await message.reply("hello")).info.threadId).toBe(threadName("A"));
+    const reply = await message.reply("hello");
+    using _reply = reply.message;
+    expect(reply.info.threadId).toBe(threadName("A"));
   });
 
   it("keeps an unthreaded conversation flat", async () => {

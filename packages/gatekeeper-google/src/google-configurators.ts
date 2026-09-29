@@ -17,6 +17,7 @@ import type {
   ChatAccountConfiguratorRpc,
 } from "./configurator/chat-account-configurator-types";
 import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
+import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-configurator-types";
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
@@ -278,6 +279,10 @@ export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheet
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class ChatAccountConfiguratorUI extends RpcTarget implements ChatAccountConfiguratorRpc {}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class ChatThreadConfiguratorUI extends RpcTarget implements ChatThreadConfiguratorRpc {}
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()

@@ -17,6 +17,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Field: "Field",
   RadioCards: "RadioCards",
   Section: "Section",
+  TextInput: "TextInput",
 }));
 import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
 import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
@@ -26,8 +27,10 @@ import driveFolderConfigurator from "../src/configurator/drive-folder-configurat
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
+import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
 import {
   GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   parseResourceUrl,
 } from "../src/resources";
@@ -196,6 +199,44 @@ describe("Google Chat configurator URLs", () => {
       .toContain("cannot be shared with collaborators");
     expect(renderedCopy(chatSpaceConfigurator))
       .toContain("only if their own Google account can open it too");
+  });
+});
+
+describe("Google Chat thread configurator URLs", () => {
+  const threadReady = (link: string) =>
+    chatThreadConfigurator.isReady!({ values: { link }, ui: noUi } as never);
+
+  it.for([
+    ["https://chat.google.com/dm/pBt6ayAAAAE/HrpoFQHIJRc/HrpoFQHIJRc?cls=10", "pBt6ayAAAAE", "HrpoFQHIJRc"],
+    ["https://chat.google.com/room/AAAA1234/TTT?cls=10", "AAAA1234", "TTT"],
+    ["spaces/AAAA1234/threads/TTT", "AAAA1234", "TTT"],
+  ] as const)("mints a canonical thread URL from %s", ([link, spaceId, threadId]) => {
+    expect(threadReady(link)).toBe(true);
+    const url = configurableUrl(chatThreadConfigurator, { link });
+    expect(url).toBe(`https://chat.google.com/room/${spaceId}/${threadId}`);
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatThread", spaceId, threadId });
+  });
+
+  it("round-trips a canonical thread URL", () => {
+    const url = "https://chat.google.com/room/AAAA1234/TTT";
+    const values = chatThreadConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl: url, resourceUrlPattern: GOOGLE_CHAT_THREAD_RESOURCE.urlPattern, ui: noUi,
+    });
+    expect(configurableUrl(chatThreadConfigurator, values)).toBe(url);
+  });
+
+  it.for([
+    "https://chat.google.com/room/AAAA1234",
+    "https://chat.google.com/room/AAAA1234/...",
+    "spaces/AAAA1234",
+    "https://example.com/room/AAAA1234/TTT",
+  ])("is not ready for %s", link => {
+    expect(threadReady(link)).toBe(false);
+  });
+
+  it("explains who can open a thread connection", () => {
+    expect(renderedCopy(chatThreadConfigurator))
+      .toContain("only if their own Google account can open its conversation");
   });
 });
 

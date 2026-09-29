@@ -1,6 +1,7 @@
 // Google Chat gatekeeper: user-authenticated access to the connected account's conversations.
 //
-// Two resource granularities share this Durable Object class, distinguished by `props.spaceId`:
+// Three resource granularities share this Durable Object class, distinguished by `props.spaceId`
+// and `props.threadId`:
 //
 //   - Whole account (`ChatSession`). Discovery and cross-space search, handing out narrower
 //     space capabilities. Observers: strategy A — a Chat account spans direct messages and
@@ -8,6 +9,8 @@
 //     and addObserver() always throws.
 //   - One conversation (`ChatSpace`). Observers: strategy B — a collaborator may observe if
 //     their own account can open the space.
+//   - One thread (`ChatThread`). Observers: strategy B, as for its conversation — Google's
+//     access control stops at the space, so that is what a collaborator is verified against.
 //
 // Everything reachable here is a user-authenticated call. There is no Chat app identity, no
 // `chat.bot` scope, no administrator access, and no import mode; see chat-api.ts.
@@ -27,7 +30,7 @@ import {
   chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
   chatMessagesSearchFilter,
   chatSpaceId, chatSpaceNameFromIdOrUrl, chatThreadParts, chatUserName, validateChatEmoji,
-  validateChatSpaceId, validateChatWindow,
+  validateChatSpaceId, validateChatThreadId, validateChatWindow,
 } from "./chat-api";
 import {
   ChatAction, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
@@ -54,8 +57,10 @@ type Env = Cloudflare.Env;
 
 export type GoogleChatGatekeeperImplProps = {
   userObjectId: string;
-  /** Present for a single-conversation binding; absent for a whole-account binding. */
+  /** Present for a single-conversation or single-thread binding; absent for a whole-account binding. */
   spaceId?: string;
+  /** Present, with `spaceId`, for a single-thread binding. */
+  threadId?: string;
 };
 
 const SEND_MESSAGE_ACTION: ActionKind = { tag: "chatSendMessage", label: "Send Chat messages" };
@@ -980,7 +985,7 @@ class ChatAttachmentImpl extends ChatRpcTarget implements ChatAttachment {
 @validateRpc()
 export class GoogleChatGatekeeperImpl
     extends DurableObject<Env, GoogleChatGatekeeperImplProps>
-    implements Gatekeeper<ChatSession | ChatSpace> {
+    implements Gatekeeper<ChatSession | ChatSpace | ChatThread> {
   #self?: ChatUser;
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
@@ -1010,6 +1015,13 @@ export class GoogleChatGatekeeperImpl
     return spaceId === undefined ? undefined : `spaces/${validateChatSpaceId(spaceId)}`;
   }
 
+  #boundThreadName(): string | undefined {
+    const { spaceId, threadId } = this.ctx.props;
+    if (threadId === undefined) return undefined;
+    if (spaceId === undefined) throw new Error("A Google Chat thread binding is missing its conversation.");
+    return `spaces/${validateChatSpaceId(spaceId)}/threads/${validateChatThreadId(threadId)}`;
+  }
+
   /**
    * The connected account's own Chat identity.
    *
@@ -1034,13 +1046,30 @@ export class GoogleChatGatekeeperImpl
         tsType: "ChatSession",
       };
     }
-    const info = await this.#api().getSpace(boundSpace);
-    const title = info.name ??
+    const api = this.#api();
+    const info = await api.getSpace(boundSpace);
+    const spaceTitle = info.name ??
       (info.type === "directMessage" ? "Google Chat direct message" : "Google Chat conversation");
+    const boundThread = this.#boundThreadName();
+    if (boundThread !== undefined) {
+      if (!info.supportsThreads) throw new Error("This Google Chat conversation does not support threads.");
+      const first = (await api.listMessages(boundSpace, {
+        threadName: boundThread, order: "oldestFirst", pageSize: 10,
+      })).items[0];
+      if (!first) throw new Error("This Google Chat thread has no messages this account can see.");
+      return {
+        url: `https://chat.google.com/room/${chatSpaceId(boundSpace)}/${chatThreadParts(boundThread).threadId}`,
+        title: first.isReply || !first.text.trim()
+          ? `Thread in ${spaceTitle}` : `${spaceTitle}: ${previewText(first.text, 80)}`,
+        snippet: `Google Chat thread in ${spaceTitle}`,
+        suggestedBindingName: "GOOGLE_CHAT_THREAD",
+        tsType: "ChatThread",
+      };
+    }
     return {
       url: info.url ?? `https://chat.google.com/room/${chatSpaceId(boundSpace)}`,
-      title,
-      snippet: `Google Chat conversation: ${title}`,
+      title: spaceTitle,
+      snippet: `Google Chat conversation: ${spaceTitle}`,
       suggestedBindingName: "GOOGLE_CHAT_SPACE",
       tsType: "ChatSpace",
     };
@@ -1056,14 +1085,15 @@ export class GoogleChatGatekeeperImpl
 
   async startSession(
     approvalQueue: RpcStub<ApprovalQueue>,
-  ): Promise<ChatSession | ChatSpace> {
+  ): Promise<ChatSession | ChatSpace | ChatThread> {
     const self = await this.#getSelf();
     const boundSpace = this.#boundSpaceName();
+    const boundThread = this.#boundThreadName();
     await approvalQueue.authorizeObservation({
       title: "Open a Google Chat session",
       description: boundSpace === undefined
         ? "Resolve the connected Google account behind this Chat connection."
-        : `Resolve the connected Google account and open ${boundSpace}.`,
+        : `Resolve the connected Google account and open ${boundThread ?? boundSpace}.`,
     });
     const ctx: ChatContext = {
       api: this.#api(),
@@ -1072,6 +1102,7 @@ export class GoogleChatGatekeeperImpl
       self,
       ...(boundSpace !== undefined ? { boundSpace } : {}),
     };
+    if (boundThread !== undefined) return new ChatThreadImpl(ctx, boundThread);
     return boundSpace === undefined
       ? new ChatSessionImpl(ctx)
       : new ChatSpaceImpl(ctx, boundSpace);
@@ -1228,8 +1259,9 @@ export class GoogleChatGatekeeperImpl
    * Observer admission.
    *
    * A whole-account binding reaches direct messages and every conversation the owner belongs to,
-   * so there is nothing a collaborator could be verified against — strategy A, always refuse. A
-   * single-space binding is strategy B: the collaborator's own account must be able to open it.
+   * so there is nothing a collaborator could be verified against — strategy A, always refuse.
+   * Single-space and single-thread bindings are strategy B: the collaborator's own account must be
+   * able to open the conversation, since Google's access control for a thread is its space's.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     const boundSpace = this.#boundSpaceName();

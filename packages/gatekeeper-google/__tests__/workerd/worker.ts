@@ -3,14 +3,14 @@ import { GmailForwardSnapshotStore } from "../../src/gmail-state";
 import { GmailGatekeeperImpl, type GmailGatekeeperImplProps } from "../../src/gmail";
 import { GoogleChatGatekeeperImpl, type GoogleChatGatekeeperImplProps } from "../../src/chat";
 import { UserAccount, GoogleVerifier } from "../../src/google";
-import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionKind, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
   GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailReplyOptions,
   GmailSession,
 } from "../../src/types";
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatSession, ChatSpace,
+  ChatListMessagesOptions, ChatMessageInfo, ChatSession, ChatSpace, ChatThread,
 } from "../../src/chat-types";
 
 export { default } from "../../src/google";
@@ -354,22 +354,37 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  async openChatSession(
+  async #openChat(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
-  ): Promise<ChatSpace> {
+  ): Promise<ChatSession | ChatSpace | ChatThread> {
     const queue = this.#queues.get(queueId);
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
     using queueStub = new RpcStub(queue);
-    return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSpace;
+    return await this.#chat(facetName, id, props).startSession(queueStub);
+  }
+
+  async openChatSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<ChatSpace> {
+    return await this.#openChat(facetName, id, props, queueId) as ChatSpace;
   }
 
   async openChatAccountSession(
       facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
   ): Promise<ChatSession> {
-    const queue = this.#queues.get(queueId);
-    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
-    using queueStub = new RpcStub(queue);
-    return await this.#chat(facetName, id, props).startSession(queueStub) as ChatSession;
+    return await this.#openChat(facetName, id, props, queueId) as ChatSession;
+  }
+
+  async openChatThreadSession(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps, queueId: string,
+  ): Promise<ChatThread> {
+    return await this.#openChat(facetName, id, props, queueId) as ChatThread;
+  }
+
+  async chatDescribe(
+      facetName: string, id: string, props: GoogleChatGatekeeperImplProps,
+  ): Promise<ResourceDescription> {
+    return this.#chat(facetName, id, props).describe();
   }
 
   async chatAddObserver(

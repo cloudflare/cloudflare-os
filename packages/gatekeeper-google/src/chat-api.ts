@@ -143,15 +143,19 @@ export function chatMessageParts(messageName: string): { spaceId: string; messag
   return { spaceId: validateChatSpaceId(match[1]), messageId };
 }
 
+/** Validate a bare thread id (the `TTT` of `spaces/{space}/threads/TTT`). */
+export function validateChatThreadId(threadId: string): string {
+  if (!ITEM_ID_RE.test(threadId)) throw new Error("Invalid Google Chat thread ID.");
+  return threadId;
+}
+
 /** Split `spaces/{space}/threads/{thread}` into its parts, rejecting anything else. */
 export function chatThreadParts(threadName: string): { spaceId: string; threadId: string } {
   const match = /^spaces\/([^/]+)\/threads\/([^/]+)$/.exec(threadName);
   if (!match) {
     throw new Error("Expected a thread resource name of the form spaces/{space}/threads/{thread}.");
   }
-  const threadId = match[2];
-  if (!ITEM_ID_RE.test(threadId)) throw new Error("Invalid Google Chat thread ID.");
-  return { spaceId: validateChatSpaceId(match[1]), threadId };
+  return { spaceId: validateChatSpaceId(match[1]), threadId: validateChatThreadId(match[2]) };
 }
 
 /** Split `spaces/{space}/messages/{message}/reactions/{reaction}`, rejecting anything else. */

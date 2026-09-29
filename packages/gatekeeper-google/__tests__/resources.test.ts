@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
-  GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_DOC_RESOURCE,
+  GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
   RESOURCE_BY_KIND, RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
@@ -34,6 +34,7 @@ describe("resource declarations", () => {
       "https://drive.google.com/file/d/:fileId/view",
       "https://chat.google.com/",
       "https://chat.google.com/room/:spaceId",
+      "https://chat.google.com/room/:spaceId/:threadId",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
   });
@@ -111,7 +112,7 @@ describe("resource declarations", () => {
   // and `chat.delete` are destructive surfaces the session never exposes. Memberships are
   // read-only because the session offers no way to change them.
   it("requests only user-authentication Chat scopes", () => {
-    for (const resource of [GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE]) {
+    for (const resource of [GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE]) {
       const scopes = RESOURCE_SCOPES.find(entry => entry.resource === resource)!.scopes;
       expect(scopes).toEqual([
         "https://www.googleapis.com/auth/chat.spaces.readonly",
@@ -506,6 +507,10 @@ describe("parseResourceUrl", () => {
         { kind: "chatSpace", spaceId: "AAAA1234" }],
       ["one conversation with a trailing slash", "https://chat.google.com/room/AAAA1234/",
         { kind: "chatSpace", spaceId: "AAAA1234" }],
+      ["one thread", "https://chat.google.com/room/AAAA1234/TTT",
+        { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
+      ["one thread with a trailing slash", "https://chat.google.com/room/AAAA1234/TTT/",
+        { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
     ] as const)("scopes to %s", (_name, url, expected) => {
       expect(parseResourceUrl(url)).toEqual(expected);
     });
@@ -515,7 +520,11 @@ describe("parseResourceUrl", () => {
     it.each([
       "https://chat.google.com/room/",
       "https://chat.google.com/room/AAA%2F..%2FBBB",
-      "https://chat.google.com/room/AAA/BBB",
+      "https://chat.google.com/room/AAA/BBB/CCC",
+      "https://chat.google.com/room/AAA/B%2FC",
+      "https://chat.google.com/room/AAA/...",
+      "https://chat.google.com/dm/AAAA1234/TTT",
+      "https://chat.google.com/room/AAAA1234/TTT?cls=10",
       "https://chat.google.com/dm/AAAA1234",
       "https://chat.google.com/u/0/",
       // A grant is keyed on the canonical URL, so noise is refused rather than normalized.
@@ -529,6 +538,7 @@ describe("parseResourceUrl", () => {
       for (const [url, expected] of [
         ["https://chat.google.com/", GOOGLE_CHAT_RESOURCE],
         ["https://chat.google.com/room/AAAA1234", GOOGLE_CHAT_SPACE_RESOURCE],
+        ["https://chat.google.com/room/AAAA1234/TTT", GOOGLE_CHAT_THREAD_RESOURCE],
       ] as const) {
         for (const resource of SUPPORTED_RESOURCES) {
           expect(new URLPattern(resource.urlPattern).test(url)).toBe(resource === expected);
