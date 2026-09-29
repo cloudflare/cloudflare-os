@@ -12,6 +12,10 @@
       "types": "./src/observability-context.ts",
       "import": "./src/observability-context.ts"
     },
+    "./tracing": {
+      "types": "./src/tracing.ts",
+      "import": "./src/tracing.ts"
+    },
     "./error-reporting": {
       "types": "./src/error-reporting.ts",
       "import": "./src/error-reporting.ts"
