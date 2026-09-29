@@ -324,8 +324,8 @@ export interface ChatSession extends RpcTarget {
 
   /**
    * Open a conversation, with its current metadata, by its ID (`spaces/AAAA1234` or bare
-   * `AAAA1234`) or by a `https://chat.google.com/room/…` or `https://chat.google.com/dm/…`
-   * link to it or to a message in it. Throws when the connected user cannot access it.
+   * `AAAA1234`) or by a Google Chat link to it or to a message in it, from chat.google.com or
+   * Chat in Gmail. Throws when the connected user cannot access it.
    */
   getSpace(idOrUrl: string): Promise<ChatSpaceEntry>;
 

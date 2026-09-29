@@ -112,16 +112,20 @@ export function chatSpaceId(spaceName: string): string {
   return validateChatSpaceId(match[1]);
 }
 
-const CHAT_SPACE_REFERENCE_RE =
-  /^(?:spaces\/([A-Za-z0-9_-]{1,128})|https:\/\/chat\.google\.com\/(?:room|dm)\/([A-Za-z0-9_-]{1,128})(?:\/[^/?#]+){0,2}\/?(?:\?[^#]*)?)$/;
+const CHAT_SPACE_REFERENCE_RES = [
+  /^spaces\/([A-Za-z0-9_-]{1,128})$/,
+  /^https:\/\/chat\.google\.com\/(?:room|dm)\/([A-Za-z0-9_-]{1,128})(?:\/[^/?#]+){0,2}\/?(?:\?[^#]*)?$/,
+  /^https:\/\/mail\.google\.com\/(?:chat|mail)(?:\/u\/\d+)?\/?(?:\?[^#]*)?#chat\/(?:space|dm)\/([A-Za-z0-9_-]{1,128})(?:\/[^/?#]+){0,2}\/?$/,
+];
 
 /**
- * The space id in `spaces/{space}` or a chat.google.com room/dm link to a conversation or to
- * a thread or message in it; undefined for anything else, including a bare id.
+ * The space id in `spaces/{space}`, or in a chat.google.com room/dm link or a Gmail `#chat/`
+ * link to a conversation or to a thread or message in it; undefined for anything else,
+ * including a bare id.
  */
 export function chatSpaceIdFromReference(reference: string): string | undefined {
-  const match = CHAT_SPACE_REFERENCE_RE.exec(reference.trim());
-  return match ? match[1] ?? match[2] : undefined;
+  const trimmed = reference.trim();
+  return CHAT_SPACE_REFERENCE_RES.map(re => re.exec(trimmed)?.[1]).find(Boolean);
 }
 
 /** `spaces/{space}` for any conversation reference an agent may pass, including a bare id. */
@@ -130,7 +134,7 @@ export function chatSpaceNameFromIdOrUrl(idOrUrl: string): string {
   const id = chatSpaceIdFromReference(idOrUrl) ?? (SPACE_ID_RE.test(bare) ? bare : undefined);
   if (id === undefined) {
     throw new Error(
-      "Expected a Google Chat conversation: spaces/{space}, its bare ID, or a chat.google.com link to it.");
+      "Expected a Google Chat conversation: spaces/{space}, its bare ID, or a Google Chat link to it.");
   }
   return `spaces/${id}`;
 }
@@ -753,12 +757,14 @@ export class ChatApi {
       { method: "POST", body: JSON.stringify(body) }));
   }
 
-  async updateMessageText(messageName: string, text: string): Promise<void> {
+  /** Returns the text as Chat stored it. */
+  async updateMessageText(messageName: string, text: string): Promise<string> {
     const { spaceId, messageId } = chatMessageParts(messageName);
-    await this.#request<ChatMessageRaw>(
+    const updated = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
       { method: "PATCH", body: JSON.stringify({ text }) });
+    return updated.text ?? text;
   }
 
   async deleteMessage(messageName: string): Promise<void> {

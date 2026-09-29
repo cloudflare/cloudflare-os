@@ -79,7 +79,7 @@ const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
 type ChatRevertInfo =
   | { type: "none" }
   | { type: "sentMessage"; messageName: string }
-  | { type: "updatedMessage"; messageName: string; previousText: string }
+  | { type: "updatedMessage"; messageName: string; previousText: string; text: string }
   | { type: "addedReaction"; reactionName: string }
   | { type: "removedReaction"; messageName: string; emoji: string };
 
@@ -361,7 +361,8 @@ function resolveThread(ctx: ChatScope, name: string) {
   if (id !== undefined) {
     const action = ctx.store.get(id);
     if (action?.type !== "sendMessage" || !action.startsThread) {
-      throw new Error("This thread's root message was never created.");
+      throw new Error(
+        "This thread's first message was rejected, so the thread doesn't exist. Reject anything queued in it.");
     }
     return { name, spaceName: requireInScope(ctx, action.spaceName), pending: true };
   }
@@ -492,13 +493,13 @@ async function queueChatMessage(
   destination?: { threadName: string },
 ): Promise<ChatMessageInfo> {
   const body = validateMessageText(text);
+  let threadName = destination?.threadName;
+  requireInScope(ctx, spaceName);
+  requireThreadInScope(ctx, threadName);
   const info = await ctx.api.getSpace(spaceName);
   if (destination && !info.supportsThreads) {
     throw new Error("This conversation does not support threaded replies.");
   }
-  let threadName = destination?.threadName;
-  requireInScope(ctx, spaceName);
-  requireThreadInScope(ctx, threadName);
   if (threadName !== undefined) {
     const thread = resolveThread(ctx, threadName);
     if (thread.spaceName !== spaceName) throw new Error("That thread belongs to a different conversation.");
@@ -513,7 +514,7 @@ async function queueChatMessage(
     requestId: crypto.randomUUID(),
     submittedAt: Date.now(),
   };
-  const recipient = await describeDirectMessage(ctx.api, info, ctx.self.id);
+  const recipient = await describeDirectMessage(ctx.api, info, ctx.self.id).catch(() => info);
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
     ...buildDescription(
@@ -1064,7 +1065,10 @@ export class GoogleChatGatekeeperImpl
       };
     }
     const api = this.#api();
-    const info = await api.getSpace(boundSpace);
+    const space = await api.getSpace(boundSpace);
+    const info = space.type === "directMessage"
+      ? await describeDirectMessage(api, space, (await this.#getSelf()).id).catch(() => space)
+      : space;
     const spaceTitle = info.name ??
       (info.type === "directMessage" ? "Google Chat direct message" : "Google Chat conversation");
     const boundThread = this.#boundThreadName();
@@ -1148,7 +1152,7 @@ export class GoogleChatGatekeeperImpl
     self: ChatUser,
   ): Promise<ChatRevertInfo> {
     const api = this.#api();
-    const scope = { store, boundSpace: this.#boundSpaceName() };
+    const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: this.#boundThreadName() };
     if (action.type === "addReaction" || action.type === "removeReaction") {
       requireOldestChange(store, actionId, action, other => "emoji" in other &&
         other.messageName === action.messageName && other.emoji === action.emoji);
@@ -1172,7 +1176,7 @@ export class GoogleChatGatekeeperImpl
           created = await api.getMessage(created.id);
           if (!created.threadId) throw new Error("Google Chat did not return the created message's thread.");
         }
-        requireInScope(scope, created.spaceId);
+        requireMessageInScope(scope, created);
         store.setSentMessage(actionId, created);
         return { type: "sentMessage", messageName: created.id };
       }
@@ -1182,20 +1186,21 @@ export class GoogleChatGatekeeperImpl
         requireOldestChange(store, actionId, action, other =>
           other.type === "updateMessage" && other.messageName === target.committed);
         const previous = await api.getMessage(target.committed);
-        requireInScope(scope, previous.spaceId);
-        if (previous.text !== action.text) await api.updateMessageText(target.committed, action.text);
-        return { type: "updatedMessage", messageName: target.committed, previousText: previous.text };
+        requireMessageInScope(scope, previous);
+        const text = previous.text === action.text
+          ? previous.text : await api.updateMessageText(target.committed, action.text);
+        return { type: "updatedMessage", messageName: target.committed, previousText: previous.text, text };
       }
       case "addReaction": {
         // Re-fetching the message re-runs the private-message check at apply time.
-        requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
+        requireMessageInScope(scope, await api.getMessage(action.messageName));
         // Adding a reaction twice is an error, so a retry reuses the one already there.
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         const reaction = existing ?? await api.createReaction(action.messageName, action.emoji);
         return existing ? { type: "none" } : { type: "addedReaction", reactionName: reaction.id };
       }
       case "removeReaction": {
-        requireInScope(scope, (await api.getMessage(action.messageName)).spaceId);
+        requireMessageInScope(scope, await api.getMessage(action.messageName));
         const existing = await api.findOwnReaction(action.messageName, action.emoji, self.id);
         if (!existing) return { type: "none" };
         await api.deleteReaction(existing.id);
@@ -1209,16 +1214,16 @@ export class GoogleChatGatekeeperImpl
 
   async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
     const store = new ChatStore(this.ctx.storage);
-    const pending = store.list();
-    const index = pending.findIndex(entry => entry.id === actionId);
-    if (index === -1) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
+    const action = store.get(actionId);
+    if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
     if (this.#applying.has(actionId)) {
       throw new Error("This Google Chat action is being applied and can no longer be rejected.");
     }
+    // Later actions in the same conversation were written against a simulation that included
+    // this one, so the gadget has to start again.
+    const restart = store.listForSpace(chatActionSpaceName(action)).some(entry => entry.id > actionId);
     store.remove(actionId);
-    // Anything queued behind this action was written against a simulation that included it, so
-    // the gadget has to start again rather than keep building on a world that will not exist.
-    return index < pending.length - 1 ? { restart: true } : undefined;
+    return restart ? { restart } : undefined;
   }
 
   async revertAction(
@@ -1255,6 +1260,12 @@ export class GoogleChatGatekeeperImpl
         }
         break;
       case "updatedMessage":
+        if ((await api.getMessage(info.messageName)).text !== info.text) {
+          return {
+            message: "This message was edited again after this change, so it can't be undone " +
+              "automatically. Edit it in Google Chat.",
+          };
+        }
         await api.updateMessageText(info.messageName, info.previousText);
         break;
       case "addedReaction":

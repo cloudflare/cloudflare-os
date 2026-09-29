@@ -62,10 +62,13 @@ describe("Chat identifier validation", () => {
       ["https://chat.google.com/dm/pBt6ayAAAAE?cls=11", "pBt6ayAAAAE"],
       [dmLink, "pBt6ayAAAAE"],
       ["  https://chat.google.com/room/AAAA1234/  ", "AAAA1234"],
+      ["https://mail.google.com/chat/u/0/#chat/space/AAAA1234", "AAAA1234"],
+      ["https://mail.google.com/mail/u/1/#chat/dm/pBt6ayAAAAE/HrpoFQHIJRc", "pBt6ayAAAAE"],
     ]) expect(chatSpaceIdFromReference(reference)).toBe(id);
     for (const reference of [
       "AAAA1234", "Project review", "https://example.com/room/AAAA", "http://chat.google.com/room/AAAA",
       "spaces/AAAA/threads/T", "https://chat.google.com/room/A%2FB",
+      "https://mail.google.com/mail/u/0/#inbox", "https://mail.google.com/chat/u/0/#chat/home",
     ]) expect(chatSpaceIdFromReference(reference)).toBeUndefined();
     expect(chatSpaceNameFromIdOrUrl("AAAA1234")).toBe("spaces/AAAA1234");
     expect(chatSpaceNameFromIdOrUrl(dmLink)).toBe("spaces/pBt6ayAAAAE");

@@ -177,17 +177,6 @@ describe("Google Chat configurator URLs", () => {
     expect(chatValues(configurableUrl(chatSpaceConfigurator, values))).toEqual(values);
   });
 
-  // The Chat UI writes several shapes for one conversation and people paste all of them. Each
-  // has to prefill the same capability the canonical URL would mint.
-  it.for([
-    ["a space URL", "https://chat.google.com/room/AAAA1234/xyz"],
-    ["a direct message URL", "https://chat.google.com/dm/AAAA1234"],
-    ["a Gmail Chat fragment", "https://mail.google.com/chat/u/0/#chat/space/AAAA1234"],
-    ["a bare resource name", "spaces/AAAA1234"],
-  ] as const)("prefills from %s", ([, pasted]) => {
-    expect(chatValues(pasted)).toEqual({ spaceId: "AAAA1234" });
-  });
-
   it("prefills nothing from a URL that names no conversation", () => {
     expect(chatValues("https://chat.google.com/")).toEqual({});
     expect(chatValues("https://chat.google.com/room/%ZZ")).toEqual({});

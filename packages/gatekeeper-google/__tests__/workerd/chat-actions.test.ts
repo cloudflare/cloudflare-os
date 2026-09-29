@@ -67,6 +67,7 @@ function chatBackend() {
     messages: [] as ChatMessageRaw[],
     members: [] as ChatMembershipRaw[],
     memberRequests: 0,
+    membersFail: false,
     /** People API profile names by numeric user id. */
     profiles: {} as Record<string, string>,
     spaceLists: 0,
@@ -121,7 +122,7 @@ function chatBackend() {
     }
     if (url.pathname === `/v1/spaces/${SPACE_ID}/members`) {
       state.memberRequests++;
-      return json({memberships: state.members});
+      return state.membersFail ? json({}, 403) : json({memberships: state.members});
     }
     if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
@@ -372,6 +373,18 @@ describe("Chat identities", () => {
     expect(backend.state.spaceLists).toBe(0);
   });
 
+  it("titles a DM connection after its peer, falling back when members are unavailable", async () => {
+    const backend = directMessage();
+    const chat = chatHarness(backend);
+    expect(await chat.describe()).toMatchObject({title: "Alice Smith"});
+    backend.state.membersFail = true;
+    expect(await chat.describe()).toMatchObject({title: "Google Chat direct message"});
+    using space = await chat.session();
+    using _posted = (await space.post("hi")).message;
+    expect((await chat.readQueue()).submissions[0].description)
+      .toMatchObject({title: `Send a Google Chat message to ${SPACE_NAME}`});
+  });
+
   it("admits an observer only when their own account can open the conversation", async () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
@@ -569,10 +582,10 @@ describe("Google Chat gatekeeper behaviors", () => {
     using thread = (await root.getThread()).thread;
     using reply = (await thread.post("reply")).message;
     await chat.rejectAction(1);
-    await expect(Promise.resolve(reply.getMetadata())).rejects.toThrow(/root message was never created/);
+    await expect(Promise.resolve(reply.getMetadata())).rejects.toThrow(/first message was rejected/);
     await chat.restart();
     expect(await chat.call("space.listMessages", [{}])).toEqual([]);
-    await expect(chat.applyAction(2)).rejects.toThrow(/root message was never created/);
+    await expect(chat.applyAction(2)).rejects.toThrow(/first message was rejected/);
   });
 
   it.each(["present", "removed", "tombstoned"])("gates sends and supports undo (message %s)", async state => {
@@ -729,6 +742,22 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.applyAction(1);
     await chat.applyAction(2);
     expect(backend.state.messages[0].text).toBe("Resolved");
+    await expect(chat.revertAction(1)).resolves.toMatchObject({message: expect.stringMatching(/edited again/)});
+    await chat.revertAction(2);
+    await chat.revertAction(1);
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Investigating", "Resolved", "Investigating", "root"]);
+  });
+
+  it("asks for a restart only when a later action shares the rejected one's conversation", async () => {
+    const chat = chatHarness(chatBackend(), undefined, "account");
+    using account = await chat.account();
+    using here = (await account.getSpace(SPACE_NAME)).space;
+    using there = (await account.getSpace("spaces/BBBB")).space;
+    using _first = (await here.post("one")).message;
+    using _elsewhere = (await there.post("two")).message;
+    using _second = (await here.post("three")).message;
+    expect(await chat.rejectAction(2)).toBeUndefined();
+    expect(await chat.rejectAction(1)).toEqual({restart: true});
   });
 
   it("refuses an edit whose prerequisite post was rejected", async () => {
@@ -1148,7 +1177,7 @@ describe("Google Chat thread capabilities", () => {
     using page = await cursor.next();
     expect(page!.map(entry => entry.info.latestMessage.text)).toEqual(["new topic"]);
     await chat.rejectAction(1);
-    await expect(Promise.resolve(thread.getRootMessage())).rejects.toThrow(/never created/);
+    await expect(Promise.resolve(thread.getRootMessage())).rejects.toThrow(/first message was rejected/);
     using retry = await space.listThreads();
     expect(await retry.next()).toBeNull();
   });

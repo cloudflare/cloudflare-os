@@ -3,35 +3,9 @@ import type {
   ChatSpaceConfiguratorRpc, ChatSpaceConfiguratorValues,
 } from "./chat-space-configurator-types";
 
-/**
- * Pull a Chat space id out of whatever the user pasted.
- *
- * Chat writes several URL shapes for the same conversation -- `/room/{id}` for a space, `/dm/{id}`
- * for a direct message, and a `#chat/space/{id}` fragment inside Gmail -- and people also paste the
- * bare `spaces/{id}` resource name. All of them name the same capability, so all of them prefill.
- */
-function spaceIdFrom(resourceUrl: string): string | undefined {
-  const candidates: string[] = [];
-  try {
-    const parsed = new URL(resourceUrl);
-    const path = /\/(?:room|dm|space)\/([^/?#]+)/.exec(parsed.pathname);
-    if (path) candidates.push(path[1]);
-    const fragment = /(?:chat\/)?(?:space|dm)\/([^/?#]+)/.exec(parsed.hash);
-    if (fragment) candidates.push(fragment[1]);
-  } catch {
-    const bare = /^spaces\/([^/?#]+)$/.exec(resourceUrl.trim());
-    if (bare) candidates.push(bare[1]);
-  }
-  for (const candidate of candidates) {
-    try {
-      const decoded = decodeURIComponent(candidate);
-      if (/^[A-Za-z0-9_-]{1,128}$/.test(decoded)) return decoded;
-    } catch {
-      // Malformed pasted URL: leave the picker editable rather than failing initialization.
-    }
-  }
-  return undefined;
-}
+/** The configurator only receives URLs matching the resource pattern, `/room/{id}`. */
+const spaceIdFrom = (resourceUrl: string): string | undefined =>
+  /^https:\/\/chat\.google\.com\/room\/([A-Za-z0-9_-]{1,128})\/?$/.exec(resourceUrl)?.[1];
 
 export default {
   initial: {},

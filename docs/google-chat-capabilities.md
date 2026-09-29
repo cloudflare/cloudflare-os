@@ -76,7 +76,8 @@ membership is ambiguous, the DM has no `peer`; when neither source names the pee
 unnamed and the ID is the fallback. Send approvals for a DM name its recipient the same way.
 Spaces and group chats require no lookup. Memberships are a `kind: "user" | "group"`
 union. Messages list the users they @mention in `mentions`. Picker searches scan at most five
-pages; paste `spaces/ID` or a Chat room/DM URL to access an exact conversation beyond that scan.
+pages; paste `spaces/ID`, a Chat room/DM URL, or a Chat-in-Gmail `#chat/` URL to access an exact
+conversation beyond that scan. DM connections are titled after the peer when it can be identified.
 
 ## Discover and operate on threads
 
