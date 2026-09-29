@@ -1324,15 +1324,17 @@ export class GoogleChatGatekeeperImpl
           throw error;
         }
         break;
-      case "updatedMessage":
-        if ((await api.getMessage(info.messageName)).text !== info.text) {
+      case "updatedMessage": {
+        const { text } = await api.getMessage(info.messageName);
+        if (text === info.text) await api.updateMessageText(info.messageName, info.previousText);
+        else if (text !== info.previousText) {
           return {
             message: "This message was edited again after this change, so it can't be undone " +
               "automatically. Edit it in Google Chat.",
           };
         }
-        await api.updateMessageText(info.messageName, info.previousText);
         break;
+      }
       case "addedReaction":
         try { await api.deleteReaction(info.reactionName); }
         catch (error) { if (!(error instanceof ChatApiError && error.status === 404)) throw error; }

@@ -91,6 +91,8 @@ function chatBackend() {
      * but loses the response, as the retry layer sees an unrecoverable outage.
      */
     createFailure: 0,
+    /** Apply edits but lose their responses with this status until cleared. */
+    editFailure: 0,
     getMessageStatus: 200,
     deleteAfterGet: false,
     rejectedToken: undefined as string | undefined,
@@ -236,6 +238,7 @@ function chatBackend() {
         state.edits.push({name, text});
         state.messages[index].text = state.storeText(text);
         state.messages[index].lastUpdateTime = new Date().toISOString();
+        if (state.editFailure) return json({}, state.editFailure);
         return json(state.messages[index]);
       }
       if (method === "DELETE") {
@@ -798,6 +801,21 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.revertAction(2);
     await chat.revertAction(1);
     expect(backend.state.edits.map(edit => edit.text)).toEqual(["Investigating", "Resolved", "Investigating", "root"]);
+  });
+
+  it("completes an edit undo retried after its response was lost", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Resolved");
+    await chat.applyAction(1);
+    backend.state.editFailure = 503;
+    await expect(chat.revertAction(1)).rejects.toThrow(/http=503/);
+    backend.state.editFailure = 0;
+    await expect(chat.revertAction(1)).resolves.toBeUndefined();
+    expect(backend.state.edits.map(edit => edit.text)).toEqual(["Resolved", "root"]);
   });
 
   it("asks for a restart only when a later action shares the rejected one's conversation", async () => {
