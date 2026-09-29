@@ -23,6 +23,15 @@ const CHAT_API_BASE = "https://chat.googleapis.com/v1";
 const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
 
 type PeopleNameRaw = { displayName?: unknown; metadata?: { primary?: boolean } };
+type PersonResponseRaw = { requestedResourceName?: unknown; person?: { names?: unknown } } | null;
+
+/** The primary name in a People `names` list. */
+function peopleDisplayName(names: unknown): string | undefined {
+  const entries = (Array.isArray(names) ? names : [])
+    .filter((entry): entry is PeopleNameRaw => typeof entry === "object" && entry !== null);
+  const name = (entries.find(entry => entry.metadata?.primary) ?? entries[0])?.displayName;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
 
 /** Largest attachment body this gatekeeper will read back into memory. */
 export const MAX_CHAT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -814,26 +823,36 @@ export class ChatApi {
   }
 
   /**
-   * A person's profile name from the People API, for when Chat omits a display name. Undefined
-   * when the profile is not visible to the connected user or the People API is unavailable.
+   * Profile names from the People API, keyed by `users/{user}`, for people Chat left unnamed.
+   * Users whose profile the connected user cannot see are absent, as is everyone when the People
+   * API is unavailable. At most 200 users.
    */
-  async profileName(user: string): Promise<string | undefined> {
-    const id = /^users\/(\d{1,32})$/.exec(user)?.[1];
-    if (!id) return undefined;
+  async profileNames(users: readonly string[]): Promise<Map<string, string>> {
+    const byResource = new Map<string, string>(users.flatMap(user => {
+      const id = /^users\/(\d{1,32})$/.exec(user)?.[1];
+      return id ? [[`people/${id}`, user] as const] : [];
+    }));
+    const names = new Map<string, string>();
+    if (byResource.size === 0) return names;
     const params = new URLSearchParams({ personFields: "names", sources: "READ_SOURCE_TYPE_PROFILE" });
-    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people/${id}?${params}`,
+    for (const resource of byResource.keys()) params.append("resourceNames", resource);
+    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:batchGet?${params}`,
       { headers: { Accept: "application/json" } }, this.getAccessToken);
     if (!response.ok) {
       await response.body?.cancel();
-      return undefined;
+      return names;
     }
-    const body = await readGoogleJson<{ names?: unknown } | null>(response, {
-      provider: "Google People", operation: "people.get", maxBytes: 64 * 1024,
+    const body = await readGoogleJson<{ responses?: unknown } | null>(response, {
+      provider: "Google People", operation: "people.batchGet", maxBytes: 256 * 1024,
     });
-    const entries = (Array.isArray(body?.names) ? body.names : [])
-      .filter((entry): entry is PeopleNameRaw => typeof entry === "object" && entry !== null);
-    const name = (entries.find(entry => entry.metadata?.primary) ?? entries[0])?.displayName;
-    return typeof name === "string" && name.trim() ? name.trim() : undefined;
+    for (const entry of (Array.isArray(body?.responses) ? body.responses : []) as PersonResponseRaw[]) {
+      // A profile linked to a contact can answer under a different resource name, so match each
+      // response by the name that was requested.
+      const user = byResource.get(String(entry?.requestedResourceName));
+      const name = peopleDisplayName(entry?.person?.names);
+      if (user && name) names.set(user, name);
+    }
+    return names;
   }
 
   // ── Reactions ─────────────────────────────────────────────────────

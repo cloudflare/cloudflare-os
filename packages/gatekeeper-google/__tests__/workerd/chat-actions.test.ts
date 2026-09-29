@@ -97,8 +97,12 @@ function chatBackend() {
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
     if (url.hostname === "people.googleapis.com") {
-      const name = state.profiles[url.pathname.slice("/v1/people/".length)];
-      return name ? json({names: [{displayName: name, metadata: {primary: true}}]}) : json({}, 404);
+      return json({responses: url.searchParams.getAll("resourceNames").map(requestedResourceName => {
+        const name = state.profiles[requestedResourceName.slice("people/".length)];
+        return name
+          ? {requestedResourceName, person: {names: [{displayName: name, metadata: {primary: true}}]}}
+          : {requestedResourceName, httpStatusCode: 404};
+      })});
     }
     if (state.rejectedToken && url.hostname === "chat.googleapis.com" &&
         new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
@@ -411,6 +415,21 @@ describe("Chat identities", () => {
       title: "Send a Google Chat message to Alice Smith",
       description: expect.stringContaining(`a direct message with Alice Smith (${SPACE_NAME})`),
     });
+  });
+
+  it("names an unnamed group chat after its members in metadata, approvals and the connection title", async () => {
+    const backend = directMessage();
+    backend.state.spaceType = "GROUP_CHAT";
+    backend.state.members.push({name: `${SPACE_NAME}/members/456`, member: {name: "users/456", type: "HUMAN"}});
+    backend.state.profiles["456"] = "Bob";
+    const chat = chatHarness(backend);
+    expect(await chat.describe()).toMatchObject({title: "Alice Smith and Bob"});
+    using space = await chat.session();
+    expect(await space.getMetadata()).toEqual(expect.objectContaining({name: "Alice Smith and Bob"}));
+    expect((await space.getMetadata()).peer).toBeUndefined();
+    using _posted = (await space.post("hi")).message;
+    expect((await chat.readQueue()).submissions[0].description)
+      .toMatchObject({title: "Send a Google Chat message to Alice Smith and Bob"});
   });
 
   it("uses Chat-provided names across results without extra identity lookups", async () => {

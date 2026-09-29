@@ -329,20 +329,27 @@ describe("Chat provider error handling", () => {
     expect(await api.getMembership("spaces/AAAA", "nobody@example.com")).toBeNull();
   });
 
-  it("reads the primary People profile name and treats an unreadable profile as unnamed", async () => {
+  it("batches People profile names, matching aliased responses by the requested name", async () => {
     const requests: string[] = [];
     vi.stubGlobal("fetch", async (input: string) => {
       requests.push(input);
-      return new Response(JSON.stringify({ names: [
-        { displayName: "Al" }, { displayName: " Alice Smith ", metadata: { primary: true } },
+      return new Response(JSON.stringify({ responses: [
+        { requestedResourceName: "people/123", person: { resourceName: "people/c999", names: [
+          { displayName: "Al" }, { displayName: " Alice Smith ", metadata: { primary: true } },
+        ] } },
+        { requestedResourceName: "people/456", httpStatusCode: 404 },
+        { requestedResourceName: "people/789", person: { names: [{ displayName: "Bob" }] } },
       ] }));
     });
     const api = new ChatApi(async () => "token");
-    expect(await api.profileName("users/123")).toBe("Alice Smith");
-    expect(new URL(requests[0]).pathname).toBe("/v1/people/123");
-    expect(await api.profileName("users/app")).toBeUndefined();
+    expect(await api.profileNames(["users/123", "users/456", "users/app"]))
+      .toEqual(new Map([["users/123", "Alice Smith"]]));
+    const url = new URL(requests[0]);
+    expect(url.pathname).toBe("/v1/people:batchGet");
+    expect(url.searchParams.getAll("resourceNames")).toEqual(["people/123", "people/456"]);
+    expect(await api.profileNames(["users/app"])).toEqual(new Map());
     expect(requests).toHaveLength(1);
-    expect(await stubResponse(403, {}).profileName("users/123")).toBeUndefined();
+    expect(await stubResponse(403, {}).profileNames(["users/123"])).toEqual(new Map());
   });
 
   // Chat error prose can quote message text back, so only the closed google.rpc code enum may

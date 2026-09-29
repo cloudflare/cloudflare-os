@@ -34,8 +34,9 @@ export type ChatSpaceInfo = {
   /** Opaque conversation ID, such as `spaces/AAAA1234`. */
   id: string;
   /**
-   * Display name. A direct message has no name of its own: `ChatSpace.getMetadata()` names it
-   * after the other participant (see `peer`), while listings and lookups leave both absent.
+   * Display name. Direct messages and most group chats have no name of their own:
+   * `ChatSpace.getMetadata()` names them after their other participants (see `peer`), while
+   * listings and lookups leave both absent.
    */
   name?: string;
   /**
@@ -340,8 +341,8 @@ export interface ChatSession extends RpcTarget {
 /** Access to one Google Chat space, group chat, or direct message. */
 export interface ChatSpace extends RpcTarget {
   /**
-   * Return current metadata. For a direct message this also identifies the other participant
-   * (`peer`) and names the conversation after them.
+   * Return current metadata. For a direct message or unnamed group chat this also names the
+   * conversation after its other participants, and identifies a direct message's `peer`.
    */
   getMetadata(): Promise<ChatSpaceInfo>;
 

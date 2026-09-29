@@ -54,7 +54,7 @@ import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import CHAT_TYPES_CODE from "./chat-types.txt";
-import { describeDirectMessage } from "./chat-dm-names";
+import { describeConversation } from "./chat-names";
 
 type Env = Cloudflare.Env;
 
@@ -514,7 +514,7 @@ async function queueChatMessage(
     requestId: crypto.randomUUID(),
     submittedAt: Date.now(),
   };
-  const recipient = await describeDirectMessage(ctx.api, info, ctx.self.id).catch(() => info);
+  const recipient = await describeConversation(ctx.api, info, ctx.self.id).catch(() => info);
   const id = await submitChatAction(ctx, action, {
     title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
     ...buildDescription(
@@ -604,7 +604,7 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   async getMetadata(): Promise<ChatSpaceInfo> {
     const raw = await this.ctx.api.getSpace(this.#spaceName);
     requireInScope(this.ctx, raw.id);
-    const info = await describeDirectMessage(this.ctx.api, raw, this.ctx.self.id);
+    const info = await describeConversation(this.ctx.api, raw, this.ctx.self.id).catch(() => raw);
     await observe(
       this.ctx,
       "Read Google Chat conversation metadata",
@@ -1066,9 +1066,8 @@ export class GoogleChatGatekeeperImpl
     }
     const api = this.#api();
     const space = await api.getSpace(boundSpace);
-    const info = space.type === "directMessage"
-      ? await describeDirectMessage(api, space, (await this.#getSelf()).id).catch(() => space)
-      : space;
+    const info = space.type === "space"
+      ? space : await describeConversation(api, space, (await this.#getSelf()).id).catch(() => space);
     const spaceTitle = info.name ??
       (info.type === "directMessage" ? "Google Chat direct message" : "Google Chat conversation");
     const boundThread = this.#boundThreadName();

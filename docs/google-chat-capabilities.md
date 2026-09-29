@@ -58,26 +58,28 @@ Prefer `name` for human-facing output and keep `id` for joins, mentions, and API
 optional: fall back to the ID when Google omits one. The connected account's identity comes from
 the existing sign-in profile lookup. Methods that accept an email address as input still support it.
 
-Call **`space.getMetadata()`** to identify a DM's other participant (`peer`) and name the DM
-after them. Account listings and the connection picker use only Chat's returned metadata, with
-no membership lookups. Agents receive this guidance in the API type comments. For example:
+Call **`space.getMetadata()`** to name a DM or unnamed group chat after its other participants,
+and to identify a DM's other participant (`peer`). Account listings and the connection picker use
+only Chat's returned metadata, with no membership lookups. Agents receive this guidance in the
+API type comments. For example:
 
 ```ts
-const info = entry.info.type === "directMessage"
-  ? await entry.space.getMetadata()
-  : entry.info;
+const info = entry.info.name ? entry.info : await entry.space.getMetadata();
 const label = info.name ?? info.id;
 ```
 
-The peer comes from the DM's own membership list (`members.list`). Chat may omit display names
-in user-authenticated responses, so a nameless peer is looked up in the People API; that name
-needs no observer check, since anyone who can open a DM is one of its two participants. When the
-membership is ambiguous, the DM has no `peer`; when neither source names the peer, the DM stays
-unnamed and the ID is the fallback. Send approvals for a DM name its recipient the same way.
-Spaces and group chats require no lookup. Memberships are a `kind: "user" | "group"`
-union. Messages list the users they @mention in `mentions`. Picker searches scan at most five
-pages; paste `spaces/ID`, a Chat room/DM URL, or a Chat-in-Gmail `#chat/` URL to access an exact
-conversation beyond that scan. DM connections are titled after the peer when it can be identified.
+Participants come from the conversation's own membership list (`members.list`, at most three
+pages). An unnamed group chat is labelled with its first three other participants:
+`Alice, Bob, Carol, and 2 more`. Chat may omit display names in user-authenticated
+responses, so the nameless people among those are looked up in one People API `people:batchGet`
+call; those names need no observer check, since anyone who can open the conversation is a
+participant. When a DM's membership is ambiguous, it has no `peer`; when no source names anyone,
+the conversation stays unnamed and the ID is the fallback. A failed lookup never fails the read.
+Send approvals and connection titles name conversations the same way. Spaces and named group
+chats require no lookup. Memberships are a `kind: "user" | "group"` union. Messages list the
+users they @mention in `mentions`. Picker searches scan at most five pages; paste `spaces/ID`, a
+Chat room/DM URL, or a Chat-in-Gmail `#chat/` URL to access an exact conversation beyond that
+scan.
 
 ## Discover and operate on threads
 
