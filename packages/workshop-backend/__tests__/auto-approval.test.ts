@@ -140,21 +140,21 @@ describe("AutoApprovalDrainer.drain", () => {
 
     let first = drainer.drain(GK);   // starts, calls apply(1), parks mid-apply
     let second = drainer.drain(GK);  // must coalesce, not start a second apply
-    await second;
+    await flush();
 
     expect(apply.calls).toEqual([1]);
     expect(apply.inFlight()).toBe(1);
 
     apply.releaseNext();             // resolve apply(1); record becomes approved
-    await first;                     // rerun pass re-lists: action 1 no longer pending -> no re-apply
+    await Promise.all([first, second]);  // rerun re-lists: action 1 no longer pending
 
     expect(apply.calls).toEqual([1]);
     expect(getAction(storage, 1).state).toBe("approved");
   });
 
-  // Work that arrives while a drain is parked must still be applied -- the coalescing
-  // "rerun" flag must not drop the wakeup.
-  it("applies work submitted while a drain is parked mid-apply", async () => {
+  // Work that arrives while a drain is parked must still be applied -- the coalescing "rerun" flag
+  // must not drop the wakeup -- and the coalesced caller must see it applied when drain() resolves.
+  it("applies work submitted mid-drain before resolving the drain that requested it", async () => {
     let storage = makeStorage();
     enableRule(storage);
     putAction(storage, 1);
@@ -165,18 +165,18 @@ describe("AutoApprovalDrainer.drain", () => {
     let first = drainer.drain(GK);   // parks mid-apply on action 1
 
     putAction(storage, 2);           // new eligible action arrives mid-drain
-    let second = drainer.drain(GK);  // coalesces -> sets the rerun flag
-    await second;
-    expect(apply.calls).toEqual([1]);
+    let secondResolved = false;
+    let second = drainer.drain(GK).then(() => { secondResolved = true; });
 
     apply.releaseNext();             // finish action 1; rerun pass should pick up action 2
     await flush();
 
     expect(apply.calls).toEqual([1, 2]);
     expect(apply.inFlight()).toBe(1);
+    expect(secondResolved).toBe(false);
 
     apply.releaseNext();             // finish action 2
-    await first;
+    await Promise.all([first, second]);
 
     expect(apply.calls).toEqual([1, 2]);
     expect(getAction(storage, 1).state).toBe("approved");

@@ -45,26 +45,33 @@ export type ApplyPendingActionFn = (
     autoApproved: boolean) => Promise<void>;
 
 export class AutoApprovalDrainer {
-  // Per-gatekeeper single-flight state. Key present => a drain is running for that gatekeeper; the
-  // value is a "rerun" flag, set when another drain is requested while one is in flight, so work
-  // submitted during a drain isn't lost.
-  #draining = new Map<number, boolean>();
+  // Per-gatekeeper single-flight state: the running drain, and whether another was requested while
+  // it ran, so work submitted during a drain isn't lost. Coalesced callers share the running
+  // drain's promise, so it settles only after the rerun they requested.
+  #draining = new Map<number, Promise<void>>();
+  #rerun = new Set<number>();
 
   constructor(
       private storage: AutoApprovalStorage,
       private applyPendingAction: ApplyPendingActionFn) {}
 
-  async drain(gatekeeperId: number): Promise<void> {
-    if (this.#draining.has(gatekeeperId)) {
-      this.#draining.set(gatekeeperId, true);  // ask the running drain to loop again
-      return;
+  drain(gatekeeperId: number): Promise<void> {
+    let running = this.#draining.get(gatekeeperId);
+    if (running) {
+      this.#rerun.add(gatekeeperId);
+      return running;
     }
-    this.#draining.set(gatekeeperId, false);
+    running = this.#drainWhileRequested(gatekeeperId);
+    this.#draining.set(gatekeeperId, running);
+    return running;
+  }
+
+  async #drainWhileRequested(gatekeeperId: number): Promise<void> {
     try {
       do {
-        this.#draining.set(gatekeeperId, false);
+        this.#rerun.delete(gatekeeperId);
         await this.#drainOnce(gatekeeperId);
-      } while (this.#draining.get(gatekeeperId));
+      } while (this.#rerun.has(gatekeeperId));
     } finally {
       this.#draining.delete(gatekeeperId);
     }

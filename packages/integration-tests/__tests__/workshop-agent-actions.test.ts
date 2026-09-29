@@ -58,13 +58,14 @@ async function failNextApply(label: string, reason: string): Promise<void> {
   }
 }
 
-const writeValues = (...values: number[]): ChatCompletionStep => ({
+// Each write is one writeValue() call's argument list.
+const writeValues = (...writes: (number | string)[]): ChatCompletionStep => ({
   toolCall: {
     id: "write-test-value",
     name: "executeCode",
     arguments: {
       code: `export default async function(self, env) { console.log(${
-        values.map(value => `await env.TEST_AMBIENT.writeValue(${value})`).join(", ")}); }`,
+        writes.map(args => `await env.TEST_AMBIENT.writeValue(${args})`).join(", ")}); }`,
     },
   },
 });
@@ -82,6 +83,14 @@ const labelOf = (session: WorkshopAgentSession) =>
 
 async function expectIdle(ws: RpcStub<Overseer>) {
   expect((await ws.listChats()).map(chat => chat.activeAgent)).toEqual([undefined]);
+}
+
+const SET_VALUE = { tag: "set-value", label: "Set value" };
+
+// Auto-approval applies after its RPC returns, so wait for the turn it resumes to finish.
+async function waitForResumedTurn(ws: RpcStub<Overseer>, model: RoutedScriptedModel) {
+  await waitFor("the resumed turn to finish", async () =>
+    model.remainingSteps() === 0 && !(await ws.listChats())[0]?.activeAgent || null);
 }
 
 async function waitForPendingActions(session: WorkshopAgentSession, count: number) {
@@ -160,6 +169,70 @@ it.concurrent("approving every held write applies each and resumes the agent onc
   await withOwnerWorkspace(harness.url, session.username, ws =>
     expect(ws.approveAction(first.id)).rejects.toThrow("Action is not pending"));
   expect((await actionState(label)).applyCount).toBe(2);
+});
+
+it.concurrent("approving a held write while its code runs lets the agent carry on", async () => {
+  const model = models.script([
+    { toolCall: { id: "write-then-wait", name: "executeCode", arguments: {
+      // The wait keeps the tool running while the test approves the write.
+      code: "export default async function(self, env) { " +
+          "await env.TEST_AMBIENT.writeValue(7); await scheduler.wait(2000); }",
+    } } },
+    { text: "The value is applied." },
+  ]);
+  await using session = await openSession(model, "agentmidtool");
+
+  const turn = session.runTurn("Set the test value to 7.");
+  const [action] = await waitForPendingActions(session, 1);
+  await withOwnerWorkspace(harness.url, session.username, ws => ws.approveAction(action.id));
+  expect(agentSaid((await turn).history, "The value is applied.")).toBe(1);
+});
+
+it.concurrent("always approving a held write's kind applies it and resumes the agent", async () => {
+  const model = models.script([
+    writeValues("7, { autoApprovable: true }"), { text: "The value is applied." },
+  ]);
+  await using session = await openSession(model, "agentalways");
+  const label = labelOf(session);
+
+  await session.runTurn("Set the test value to 7.");
+  const [action] = await waitForPendingActions(session, 1);
+  expect(model.requests).toHaveLength(1);
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    await ws.setAutoApprovedActionKind(action.gatekeeperId!, SET_VALUE);
+    await waitForResumedTurn(ws, model);
+  });
+  expect(await actionState(label)).toEqual({ pending: [], value: 7, applyCount: 1 });
+  expect(await actionStatus(session, action.id)).toMatchObject(decidedBy(session, "approved"));
+  expect(model.requests).toHaveLength(2);
+});
+
+it.concurrent.each(["approve", "reject"] as const)(
+    "an always-approved write queued behind a held one applies once the user chooses %s",
+    async decision => {
+  const model = models.script([
+    writeValues(7), writeValues("8, { autoApprovable: true }"), { text: "The value is applied." },
+  ]);
+  await using session = await openSession(model, `agentqueued${decision}`);
+  const label = labelOf(session);
+
+  await session.runTurn("Set the test value to 7.");
+  const [held] = await waitForPendingActions(session, 1);
+  await withOwnerWorkspace(harness.url, session.username, ws =>
+      ws.setAutoApprovedActionKind(held.gatekeeperId!, SET_VALUE));
+
+  await session.runTurn("Set the test value to 8.");
+  await waitForPendingActions(session, 2);
+  expect(model.requests).toHaveLength(2);
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    await (decision === "approve" ? ws.approveAction(held.id) : ws.rejectAction(held.id));
+    await waitForResumedTurn(ws, model);
+  });
+  expect(await actionState(label))
+      .toEqual({ pending: [], value: 8, applyCount: decision === "approve" ? 2 : 1 });
+  expect(model.requests).toHaveLength(3);
 });
 
 it.concurrent.each(["retry", "reject"] as const)(
