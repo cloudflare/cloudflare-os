@@ -9,6 +9,12 @@ import type { ActionDescription, ActionKind, ApprovalQueue }
   from "@gadgets/workshop-shared/gatekeeper";
 
 import {
+  toolUiResourceUri,
+  uiResourceUriInResult,
+  type AppCallSnapshot,
+  type AppResultLike,
+} from "./apps.js";
+import {
   MAX_TOOL_NAME_CHARS,
   type McpClient,
 } from "./client.js";
@@ -57,6 +63,15 @@ export type StoredAction = {
   retryable?: boolean;
   /** Populated once applied; delivered to the Gadget as an observation. */
   result?: Extract<McpCallResult, { status: "ok" }>;
+  /**
+   * The `ui://` resource the applied call's own result named, when it named one.
+   *
+   * The stored `result` is the flattened shape this host hands a Gadget, so a result's `_meta` never
+   * reaches it: a server that declares its view on the result rather than on the tool would lose its
+   * sidecar link between the approval and the collection. Read back by the applied arm of
+   * `getActionResult`, which prefers the tool's own declaration when the catalog still has one.
+   */
+  appUri?: string;
   /** Terminal failure reason retained for later collection. */
   error?: string;
 };
@@ -82,6 +97,15 @@ export interface McpSessionHost {
     fn: (client: McpClient) => Promise<T>,
     options?: WithClientOptions,
   ): Promise<T>;
+
+  /**
+   * Mints the sidecar link for one `ui://` resource on this binding, or undefined if it cannot.
+   *
+   * On the host rather than in the session because the facet is what knows the binding a link has
+   * to be scoped to: its endpoint, server name, scope, and trust live there, and the session
+   * reaching this interface is already in a Gadget's hands.
+   */
+  appLink(uri: string, call: AppCallSnapshot): Promise<string | undefined>;
 
   /** The approval-kind tag for one tool, namespaced so pre-approvals cannot cross servers. */
   actionKindFor(toolName: string): ActionKind;
@@ -182,6 +206,37 @@ export class McpSessionBase extends RpcTarget {
       : `This binding does not grant a tool named "${name}".`;
   }
 
+  // Decorates a result with the sidecar link for one `ui://` resource.
+  //
+  // Best-effort by construction: a link is a convenience on top of a result the agent already has,
+  // so a host that cannot mint one, an endpoint that has gone away, or a server naming a resource
+  // it does not serve all leave the result exactly as the server returned it. The resource is
+  // resolved by the caller rather than here, because the two paths learn it from different places:
+  // a read tool from the result it just received, and a queued one from what the store kept beside
+  // it when the call was applied.
+  async #withAppLink(
+    result: Extract<McpCallResult, { status: "ok" }>,
+    // The `ui://` resource this call renders, or undefined when nothing named one.
+    uri: string | undefined,
+    // The tool's own title, when the catalog the call was made from still has it.
+    title: string | undefined,
+    // The server's own result: what the sidecar is handed as the outcome of the call. Wire shape,
+    // never the flattened one: the page relays it as the `tools/call` result a View parses with
+    // MCP's own schema.
+    serverResult: AppResultLike,
+    // The tool call the sidecar replays. An app is told the input and the result, never the session.
+    call: Omit<AppCallSnapshot, "result">,
+  ): Promise<Extract<McpCallResult, { status: "ok" }>> {
+    if (result.isError === true || uri === undefined) return result;
+    let url: string | undefined;
+    try {
+      url = await this.#host.appLink(uri, { ...call, result: serverResult });
+    } catch {
+      return result;
+    }
+    return url === undefined ? result : { ...result, app: { uri, url, title } };
+  }
+
   async callTool(name: string, args?: Record<string, unknown>): Promise<McpCallResult> {
     requireToolName("callTool", name);
     const toolArgs = args ?? {};
@@ -208,7 +263,15 @@ export class McpSessionBase extends RpcTarget {
       await this.#queue.authorizeObservation({
         title, description: text, ...(fields ? { fields } : {}),
       });
-      return toCallResult(result);
+      // The result is in hand here, so both places an association can live are read: the tool's own
+      // declaration first, then the result's. A tool that names one describes every call it makes,
+      // where a result describes only the call it came from.
+      return this.#withAppLink(
+        toCallResult(result),
+        toolUiResourceUri(entry.tool) ?? uiResourceUriInResult(result),
+        entry.tool.title,
+        result,
+        { toolName: name, input: toolArgs });
     }
 
     const staged = host.stageAction(name, toolArgs);
@@ -282,7 +345,25 @@ export class McpSessionBase extends RpcTarget {
             `Read the response from the approved call to \`${stored.toolName}\` on ` +
             `**${host.serverName}**.`,
         });
-        return result;
+        // The stored copy is the flattened result, so the association is read from wherever it
+        // survived: the catalog for a tool that declares a view, and the action record for one its
+        // own result declared. `_meta` itself reaches neither.
+        const tool = await host.findTool(stored.toolName)
+          .then(entry => entry?.tool)
+          .catch(() => undefined);
+        // Rebuilt in the wire shape a View parses, since the store kept only the flattened result:
+        // `status` and `text` are this host's vocabulary, `content` is the server's.
+        const serverResult = {
+          content: result.content,
+          structuredContent: result.structuredContent,
+          isError: result.isError,
+        };
+        return this.#withAppLink(
+          result,
+          (tool && toolUiResourceUri(tool)) ?? stored.appUri,
+          tool?.title,
+          serverResult,
+          { toolName: stored.toolName, input: stored.args });
       }
     }
   }

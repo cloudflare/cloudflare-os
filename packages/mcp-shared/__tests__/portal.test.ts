@@ -3,6 +3,7 @@ import {
   isPortalNativeTool,
   looksLikePortal,
   parsePortalServers,
+  portalResourcePrefix,
   reconcilePortalServers,
   toolBelongsToServer,
 } from "../src/portal.js";
@@ -103,6 +104,16 @@ const REAL_PORTAL_REPLY = {
       "Use portal_toggle_single_server to enable/disable a specific server.",
   }],
 };
+
+describe("resource naming", () => {
+  it("namespaces a resource under the server ID, as the portal's own listing does", () => {
+    // Read off a live portal: `resources/list` reports this name for an upstream's
+    // `ui://demo/dashboard`, while `resources/read` of the upstream's own URI is refused.
+    expect(portalResourcePrefix("mcp-app-server")).toBe("mcp-app-server_");
+    expect(portalResourcePrefix("mcp-app-server") + "ui://demo/dashboard")
+      .toBe("mcp-app-server_ui://demo/dashboard");
+  });
+});
 
 describe("parsePortalServers", () => {
   it("reads a real portal's reply, ignoring the prose around it", () => {

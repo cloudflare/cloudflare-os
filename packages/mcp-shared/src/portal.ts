@@ -78,6 +78,20 @@ export function toolBelongsToServer(toolName: string, serverId: string): boolean
   return serverIdOfTool(toolName) === serverId;
 }
 
+/**
+ * The prefix a portal serves one upstream server's resources under: the server ID and an underscore,
+ * the namespacing its tools and prompts already get, so a resource a server declares as
+ * `ui://demo/dashboard` is listed and read as `mcp-app-server_ui://demo/dashboard`.
+ *
+ * Read off a live portal: `resources/list` reports the namespaced URI, `resources/read` of that URI
+ * answers with the upstream's document under the upstream's own URI, and `resources/read` of the URI
+ * the upstream declared is refused with `-32602 Resource not found` -- so an app resource fetched
+ * through a portal has to be asked for by its namespaced name.
+ */
+export function portalResourcePrefix(serverId: string): string {
+  return `${serverId}_`;
+}
+
 // `portal_list_servers` answers in prose, not JSON. A Cloudflare portal replies with bullet lines of
 // the form `- {display name} ({server id}): {status}`:
 //

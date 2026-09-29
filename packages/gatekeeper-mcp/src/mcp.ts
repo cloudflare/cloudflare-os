@@ -57,6 +57,7 @@ import {
   INVALID_LINK_HTML,
 } from "@gadgets/mcp-shared/html";
 import { handleMcpHttpRequest } from "@gadgets/mcp-shared/http";
+import { appHttp } from "@gadgets/mcp-shared/app-http";
 import {
   McpGatekeeperUserBase,
   mcpGatekeeperUserContext,
@@ -99,6 +100,7 @@ export default {
       accountForId: id => ctx.exports.McpAccount.get(
         ctx.exports.McpAccount.idFromString(id)),
       log: logger,
+      app: appHttp<DurableObjectStub<McpAccount>>({ baseUrl: getBaseUrl(env), log: logger }),
       connect: async (request, account, initiationNonce, path) => {
         if (request.method !== "GET" && request.method !== "POST") {
           return new Response("Method Not Allowed", { status: 405 });

@@ -14,6 +14,16 @@
 // 401/403/404 classification below are the SSRF and response-size boundary for this connector.
 
 import {
+  APP_EXTENSION_ID,
+  APP_MIME_TYPES,
+  clampResourceMeta,
+  isAppMimeType,
+  isUiUri,
+  MAX_APP_HTML_BYTES,
+  MAX_UI_URI_CHARS,
+  type McpAppResourceMeta,
+} from "./apps.js";
+import {
   guardedFetch,
   FetchNotStartedError,
   MAX_RESPONSE_BYTES,
@@ -23,8 +33,10 @@ import {
 import { redactSecrets, safeServerText } from "./util.js";
 import type {
   CallToolResult,
+  ClientCapabilities,
   ContentBlock,
   InitializeResult,
+  ReadResourceResult,
   Tool,
   ToolAnnotations,
 } from "@modelcontextprotocol/client";
@@ -116,6 +128,28 @@ export type McpTool = {
   inputSchema?: JsonSchema;
   outputSchema?: JsonSchema;
   annotations?: McpToolAnnotations;
+  /**
+   * The MCP Apps association the server declared under `_meta.ui`, and nothing else from `_meta`.
+   * A tool with a view is rendered from this; a tool without one is an ordinary tool.
+   */
+  ui?: {
+    /** The `ui://` resource that renders this tool's results, when it declared one. */
+    resourceUri?: string;
+    /** Which sides may see this tool; absent means both, the specification's default. */
+    visibility?: ("model" | "app")[];
+  };
+};
+
+/** One `ui://` resource's contents, as much of a `resources/read` result as this client retains. */
+export type McpResourceContent = {
+  /** The URI the server answered for. Always a `ui://` URI. */
+  uri: string;
+  /** Content type, when the server declared one. */
+  mimeType?: string;
+  /** The document, decoded from `blob` when the server sent the HTML as base64. */
+  text?: string;
+  /** The resource's declared CSP and permissions, when it declared any. */
+  ui?: McpAppResourceMeta;
 };
 
 /** The subset of JSON Schema this gatekeeper understands when generating TypeScript. */
@@ -260,7 +294,7 @@ async function readSseResponse(
   let total = 0;
 
   const consume = (): JsonRpcResponse | undefined => {
-    for (;;) {
+    for (; ;) {
       const boundary = /(?:\r\n|\r(?!\n)|(?<!\r)\n)(?:\r\n|\r(?!\n)|(?<!\r)\n)/.exec(buffered);
       if (!boundary) return undefined;
       const block = buffered.slice(0, boundary.index);
@@ -280,7 +314,7 @@ async function readSseResponse(
   };
 
   try {
-    for (;;) {
+    for (; ;) {
       const { done, value } = await reader.read();
       if (done) {
         buffered += `${decoder.decode()}\n\n`;
@@ -335,6 +369,40 @@ function clampAnnotations(
   };
 }
 
+// The tool-metadata key the specification replaced with a nested `_meta.ui.resourceUri`. Servers
+// still emit the flat spelling and it has not been removed, so it is read as a fallback.
+const LEGACY_UI_RESOURCE_URI_KEY = "ui/resourceUri";
+
+// Keeps the MCP Apps association and nothing else from `_meta`: the rest of a server's metadata is
+// arbitrary JSON that would otherwise enter the catalog uncapped. The deprecated flat spelling is
+// folded into the nested one here, so every consumer reads a single shape.
+//
+// The field this function produces is read back through it when an already-clamped tool is clamped
+// again, which is why both spellings arrive here rather than only the wire one: the wire's `_meta`
+// wins when a tool carries both, and a tool that carries neither keeps no association.
+function clampToolUi(tool: McpWireTool | McpTool): McpTool["ui"] {
+  const wire = "_meta" in tool ? tool._meta : undefined;
+  const declared = wire?.ui ?? ("ui" in tool ? tool.ui : undefined);
+  const nested = typeof declared === "object" && declared !== null && !Array.isArray(declared)
+    ? declared as Record<string, unknown>
+    : undefined;
+  // An association is an identifier rather than prose, so it does not get a description's budget.
+  const resourceUri = clampText(
+    nested?.resourceUri ?? wire?.[LEGACY_UI_RESOURCE_URI_KEY], MAX_UI_URI_CHARS);
+  const visibility = clampVisibility(nested?.visibility);
+  return resourceUri === undefined && visibility === undefined
+    ? undefined
+    : { resourceUri, visibility };
+}
+
+// Visibility is a list of the two sides the specification defines. A value that is not a list is not
+// a declaration at all, so the specification's default of both sides applies; a list that survives
+// as empty hides the tool from both, since nothing readable was left in it.
+function clampVisibility(value: unknown): ("model" | "app")[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((side): side is "model" | "app" => side === "model" || side === "app");
+}
+
 /** Reduces one untrusted wire tool to the bounded fields this gatekeeper understands. */
 export function clampToolDefinition(tool: McpWireTool | McpTool): McpTool {
   const schema = tool.inputSchema && typeof tool.inputSchema === "object"
@@ -350,6 +418,7 @@ export function clampToolDefinition(tool: McpWireTool | McpTool): McpTool {
     description: clampText(tool.description, MAX_TOOL_DESCRIPTION_CHARS),
     inputSchema: oversized ? undefined : schema,
     annotations: clampAnnotations(tool.annotations),
+    ui: clampToolUi(tool),
   };
 }
 
@@ -370,6 +439,26 @@ export function clampToolSummary(tool: McpWireTool | McpTool): McpTool {
 
 /** Supplies a bearer token for an MCP method, or null for a public server. */
 export type AuthorizationProvider = (method: string) => Promise<string | null>;
+
+// The document out of one `resources/read` item, when it carries one.
+//
+// A document sent as `blob` is base64 over its UTF-8 bytes, so it is decoded through bytes rather
+// than as `atob`'s one-character-per-byte string, which would mangle every non-ASCII character.
+// Only the app content type is decoded: nothing else here renders a document, and a caller has no
+// use for the base64 of one.
+function resourceText(
+  item: { text?: unknown; blob?: unknown },
+  mimeType: string | undefined,
+): string | undefined {
+  if (typeof item.text === "string") return item.text;
+  if (!isAppMimeType(mimeType) || typeof item.blob !== "string") return undefined;
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(item.blob), char => char.charCodeAt(0)));
+  } catch {
+    // Malformed base64 is the server's error: the resource is treated as one with no document.
+    return undefined;
+  }
+}
 
 /**
  * A stateless-per-instance MCP client. Construct one per operation; the only state worth keeping
@@ -538,11 +627,18 @@ export class McpClient {
 
   /** Performs the `initialize` handshake and the follow-up `notifications/initialized`. */
   async initialize(clientName: string): Promise<McpServerInfo> {
+    // Annotated rather than passed to `#call` as `unknown`, so the extension declaration is checked
+    // against the SDK's capability schema at build time instead of only at the server's.
+    const capabilities: ClientCapabilities = {
+      // The MCP Apps extension is the only capability declared: it is what tells a server this
+      // client renders a `ui://` document in a sidecar window, so a server can attach a view to a
+      // tool. `sampling`, `elicitation`, and `roots` stay unadvertised -- nothing here serves them,
+      // and declaring one invites a request the connector would have to refuse.
+      extensions: { [APP_EXTENSION_ID]: { mimeTypes: [...APP_MIME_TYPES] } },
+    };
     const info = await this.#call<InitializeResult>("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      // No client capabilities: this gatekeeper never serves roots, sampling, or elicitation, so
-      // advertising them would invite requests it cannot honour.
-      capabilities: {},
+      capabilities,
       clientInfo: { name: clientName, version: "1.0.0" },
     });
     await this.#notify("notifications/initialized");
@@ -682,5 +778,30 @@ export class McpClient {
   /** Invokes one tool. A tool-level failure arrives as `isError`, not as a thrown error. */
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
     return this.#call<McpToolCallResult>("tools/call", { name, arguments: args });
+  }
+
+  /**
+   * Reads one resource, retaining only `ui://` contents.
+   *
+   * The app surface is the only reason this client reads a resource at all, and a caller given
+   * arbitrary resource contents would have to derive that same decision again with less context, so
+   * anything that is not a `ui://` URI is dropped here. A document over `MAX_APP_HTML_BYTES` is
+   * dropped too rather than clipped: half a document renders as a broken page, and the caller's next
+   * move is to refuse the link.
+   */
+  async readResource(uri: string): Promise<McpResourceContent[]> {
+    const { result } = await this.#callMeasured<ReadResourceResult>("resources/read", { uri });
+    const contents: McpResourceContent[] = [];
+    for (const item of result.contents ?? []) {
+      // The wire types describe a well-behaved server: a URI that is not a string would otherwise
+      // reach `isUiUri` and raise a `TypeError` from the router instead of being dropped here.
+      const itemUri = item.uri;
+      if (typeof itemUri !== "string" || !isUiUri(itemUri)) continue;
+      const mimeType = typeof item.mimeType === "string" ? item.mimeType : undefined;
+      const text = resourceText(item, mimeType);
+      if (text !== undefined && encoder.encode(text).byteLength > MAX_APP_HTML_BYTES) continue;
+      contents.push({ uri: itemUri, mimeType, text, ui: clampResourceMeta(item._meta?.["ui"]) });
+    }
+    return contents;
   }
 }

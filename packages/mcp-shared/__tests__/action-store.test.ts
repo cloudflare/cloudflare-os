@@ -6,8 +6,7 @@ import { McpProtocolError, McpSessionExpiredError } from "../src/client.js";
 
 type TestSql = ConstructorParameters<typeof ActionStore>[0];
 
-function fakeSql(): TestSql {
-  const db = new DatabaseSync(":memory:");
+function sqlOver(db: DatabaseSync): TestSql {
   return {
     exec<T>(query: string, ...bindings: SQLInputValue[]) {
       const rows = bindings.length > 0
@@ -24,6 +23,10 @@ function fakeSql(): TestSql {
       };
     },
   } as unknown as TestSql;
+}
+
+function fakeSql(): TestSql {
+  return sqlOver(new DatabaseSync(":memory:"));
 }
 
 const log = { debug() {}, info() {}, warn() {}, error() {}, with() { return log; } };
@@ -386,6 +389,49 @@ describe("ActionStore", () => {
     await store.apply(staged.id, fn => fn({ callTool: big } as never), log);
     expect(store.get(staged.id)?.state).toBe("applied");
     expect(store.get(staged.id)?.result?.text).toMatch(/too large to retain/);
+  });
+
+  it("keeps the view an applied call's result declared", async () => {
+    // The association is read from the result's `_meta`, which the flattened result the Gadget is
+    // handed does not carry. Losing it here loses the sidecar link for every server that declares its
+    // view on the result instead of on the tool.
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("get_mcp_app_demo", {});
+    const withView = async () => ({
+      content: [{ type: "text" as const, text: "Dashboard ready" }],
+      _meta: { ui: { resourceUri: "ui://demo/dashboard" } },
+    });
+    await store.apply(staged.id, fn => fn({ callTool: withView } as never), log);
+
+    expect(store.get(staged.id)?.appUri).toBe("ui://demo/dashboard");
+    expect(store.get(staged.id)?.result).not.toHaveProperty("_meta");
+  });
+
+  it("migrates a table created before it kept the association", async () => {
+    // A Durable Object created before `app_uri` existed keeps the table it was created with, and a
+    // write naming a column it does not have fails every apply on it.
+    const db = new DatabaseSync(":memory:");
+    db.exec(`CREATE TABLE mcp_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      state TEXT NOT NULL,
+      submitted_at INTEGER NOT NULL,
+      claimed_at INTEGER,
+      retryable INTEGER,
+      result_json TEXT,
+      error TEXT
+    ) STRICT`);
+    const store = new ActionStore(sqlOver(db));
+    const staged = store.stage("get_mcp_app_demo", {});
+    const withView = async () => ({
+      content: [],
+      _meta: { ui: { resourceUri: "ui://demo/dashboard" } },
+    });
+    await store.apply(staged.id, fn => fn({ callTool: withView } as never), log);
+
+    expect(store.get(staged.id)?.state).toBe("applied");
+    expect(store.get(staged.id)?.appUri).toBe("ui://demo/dashboard");
   });
 
   it("is idempotent, because the Workshop may retry a call whose result it never saw", async () => {

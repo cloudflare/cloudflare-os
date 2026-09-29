@@ -88,6 +88,24 @@ persisted on an account or a binding's props, so clearing it de-escalates every 
 on the next call. Setting it does not retroactively auto-apply anything; the user must still enable
 a rule for each action kind.
 
+## Local development
+
+`pnpm dev-server` — and therefore `pnpm run-local`, which drives it — passes `MCP_PORTAL_*` through
+from the shell and the repo-root `.dev.vars`, and `--mcp-portal-url URL` sets `MCP_PORTAL_URL` for one
+run without editing a file:
+
+```
+pnpm run-local --mcp-portal-url http://localhost:9000/mcp
+```
+
+That URL is written only into the generated, gitignored `wrangler.dev.jsonc`, and it beats a
+`.dev.vars` entry. When the URL is `http://` the dev server also sets `MCP_ALLOW_INSECURE=true` for
+this connector, since a portal on this machine is unreachable otherwise; set the variable explicitly
+in the shell or `.dev.vars` to keep the production checks. `MCP_PORTAL_AUTH`, `MCP_PORTAL_TOKEN`,
+`MCP_PORTAL_NAME`, `MCP_PORTAL_TRUST_ANNOTATIONS`, and `MCP_PORTAL_HIDDEN_SERVER_IDS` travel the same
+way. None of this changes what a deployment ships: the committed `wrangler.jsonc` still names no
+portal, and a deployment without `MCP_PORTAL_URL` still hides this connector.
+
 ## How the connect flow works
 
 There is no connect form: the endpoint is a deployment setting, so pressing "connect" goes straight
@@ -200,6 +218,27 @@ credentials regardless. A sharper check is available here than for a bare endpoi
 `portal_list_servers` is per-user and Access-filtered, so it could confirm a collaborator may reach
 the same server — but that is still server-granular, not record-granular. See
 [`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
+
+## Sidecar apps
+
+Identical to [`gatekeeper-mcp`](../gatekeeper-mcp/README.md#sidecar-apps), with the grant in force
+being this binding's: a `ui://` result from an upstream server opens with that server's scope and
+through the portal's own session, so nothing else behind the portal becomes reachable by opening a
+link. Hidden upstream servers are refused at the grant boundary, so no app link can reach past
+`MCP_PORTAL_HIDDEN_SERVER_IDS` either. The read-only rule is enforced in `@gadgets/mcp-shared`, so
+the two connectors cannot serve two different policies for the same link.
+
+The portal **renames the resources it fronts**, exactly as it namespaces tools and prompts: it lists
+and reads an upstream's `ui://demo/dashboard` as `mcp-app-server_ui://demo/dashboard`, and answers a
+read of the upstream's own URI with `-32602 Resource not found`. A link therefore keeps the URI its
+server declared — that is the app's identity and the name its window asks for — and this connector
+supplies `resourceUriPrefix` so the read goes out under the portal's name
+([`portal.ts`](../mcp-shared/src/portal.ts) states the rule; `appResourceUri` applies it). The minted
+link logs both names (`appUri`, `resourceUri`), which is the pair to read when one fails to open.
+
+Links minted before that prefix existed name a resource the portal will not serve, so a mint replaces
+one rather than reusing it when the binding's resource naming has changed; an untouched link still
+expires after its 24 hours.
 
 ## Notes and current limitations
 

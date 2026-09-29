@@ -184,6 +184,26 @@ flag, whose restricted mode blocks every action for the rest of the session. See
 To share the work rather than the binding, publish the Gadget as a blueprint and let each person
 connect their own server.
 
+## Sidecar apps
+
+A result whose tool names a `ui://` resource comes back with an `app` link beside its text. Opening
+it renders the server's own HTML in a sidecar tab served by this Worker: the page is the MCP Apps
+host half, the app runs inside a nested opaque-origin sandbox, and the app's `tools/call`,
+`resources/read`, and `ui/open-link` requests reach this Worker through a token-authenticated
+JSON-RPC endpoint on the link. Nothing is fetched on the agent's turn — the link is minted with the
+result, and the page loads the resource when someone opens it.
+
+An app may call only what a sidecar window can honestly be trusted with, and that rule lives in
+`@gadgets/mcp-shared` rather than here so the two connectors cannot drift apart on it: **read-only
+tools only**, inside the grant the binding already holds, never anything that would queue for
+approval. A write refused there is not downgraded and not auto-approved — the app is told to ask the
+agent in the chat instead. The link is a second way to see what the binding can already read, not a
+grant of new authority, and it never changes the endpoint's trust tier.
+
+The link opens a tab. It is not a sized popup: window sizing is the Workshop frontend's decision,
+the frontend has no affordance for it yet, and adding one is a separate proposal there rather than
+something this connector can do on its own.
+
 ## Notes and current limitations
 
 - **No simulation.** MCP describes no way to predict a tool's effect, so a queued call is not

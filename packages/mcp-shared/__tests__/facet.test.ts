@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 
 import { McpFacetBase } from "../src/facet.js";
+import type { AppBinding } from "../src/apps.js";
 import { McpSessionBase } from "../src/session.js";
 import { classifyTool, type ServerTrust } from "../src/tools.js";
 import type { McpClient, McpTool } from "../src/client.js";
@@ -97,6 +98,31 @@ it("builds tool methods and falls back to the plain session when catalog loading
 it("keeps facets owner-only using the connector's resource label", async () => {
   await expect(facet().addObserver("observer", {} as never))
     .rejects.toThrow(/test server.*only be opened by its owner/s);
+});
+
+it("mints a link under this endpoint's own resource naming", async () => {
+  const minted: AppBinding[] = [];
+  class RenamingFacet extends TestFacet {
+    protected override get resourceUriPrefix(): string { return "portal-server_"; }
+    protected override account(): ConnectionAccount {
+      return {
+        mintAppLink: async (binding: AppBinding) => {
+          minted.push(binding);
+          return "https://gadgets.example/app/token";
+        },
+      } as unknown as ConnectionAccount;
+    }
+  }
+  const subject = new RenamingFacet({
+    props: { endpoint: "https://example.com/mcp", scope: {} },
+    storage: { kv: {} },
+  } as never, {});
+  const url = await subject.appLink(
+    "ui://demo/dashboard", { toolName: "get_mcp_app_demo", input: {} });
+
+  expect(url).toBe("https://gadgets.example/app/token");
+  expect(minted[0]?.resourceUriPrefix).toBe("portal-server_");
+  expect(minted[0]?.endpoint).toBe("https://example.com/mcp");
 });
 
 it("discovers and resolves tools beyond the initially described catalog", async () => {

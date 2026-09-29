@@ -62,7 +62,11 @@ export type CatalogRequest = {
 
 /** A binding's currently described tools and whether their endpoint is a portal. */
 export type ScopedCatalog = {
-  /** Scoped and classified definitions retained in the bounded catalog. */
+  /**
+   * Scoped and classified definitions retained in the bounded catalog, including any that only an
+   * app may see: who a tool is for is a property of the consumer, so the MCP Apps visibility rule is
+   * applied by the facet, where it builds what the agent sees, and never here.
+   */
   tools: ClassifiedTool[];
   /** Whether the endpoint is known or conservatively assumed to be a portal. */
   isPortal: boolean;

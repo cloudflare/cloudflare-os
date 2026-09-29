@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./account": "./src/account.ts",
+    "./app-http": "./src/app-http.ts",
     "./base-types": "./src/base-types.ts",
     "./client": "./src/client.ts",
     "./connect-nonce": "./src/connect-nonce.ts",

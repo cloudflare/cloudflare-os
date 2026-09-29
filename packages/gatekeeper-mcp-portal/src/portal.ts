@@ -38,6 +38,7 @@ import {
   looksLikePortal,
   parsePortalServers,
   PORTAL_LIST_SERVERS_TOOL,
+  portalResourcePrefix,
   reconcilePortalServers,
   type PortalServer,
   type PortalServerListing,
@@ -57,6 +58,7 @@ import {
   INVALID_LINK_HTML,
 } from "@gadgets/mcp-shared/html";
 import { handleMcpHttpRequest } from "@gadgets/mcp-shared/http";
+import { appHttp } from "@gadgets/mcp-shared/app-http";
 import {
   McpGatekeeperUserBase,
   mcpGatekeeperUserContext,
@@ -231,6 +233,7 @@ export default {
       accountForId: id => ctx.exports.McpAccount.get(
         ctx.exports.McpAccount.idFromString(id)),
       log: logger,
+      app: appHttp<DurableObjectStub<McpAccount>>({ baseUrl: getBaseUrl(env), log: logger }),
       connect: async (request, account, initiationNonce) => {
         if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
         return continueConnect(account, initiationNonce, env);
@@ -552,6 +555,14 @@ export class McpGatekeeperImpl
 
   protected get trust(): ServerTrust {
     return portalTrust(this.env);
+  }
+
+  /**
+   * This endpoint is a portal, so it names the resources it fronts after the upstream server that
+   * owns them -- the same prefix its tools carry.
+   */
+  protected get resourceUriPrefix(): string {
+    return portalResourcePrefix(this.ctx.props.scope.serverId);
   }
 
   protected get sessionClass() {

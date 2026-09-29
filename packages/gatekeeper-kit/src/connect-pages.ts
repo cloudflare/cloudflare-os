@@ -128,7 +128,7 @@ export const PAGE_STYLE = `
  * @param value JSON-serializable value.
  * @returns A JavaScript expression evaluating to the value.
  */
-function scriptLiteral(value: unknown): string {
+export function scriptLiteral(value: unknown): string {
   return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, char =>
     `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }

@@ -11,6 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 
 import { ActionStore, REVERT_UNSUPPORTED_MESSAGE } from "./action-store.js";
+import { toolVisibleToModel, type AppBinding, type AppCallSnapshot } from "./apps.js";
 import {
   CATALOG_TTL_MS,
   HydratedTools,
@@ -43,6 +44,17 @@ type FacetProps = {
   scope: ToolScope;
 };
 
+// The app half of an account. Both connectors declare `account()` as the transport subset
+// (`ConnectionAccount`) while returning the concrete account Durable Object, which is what mints
+// links; this names only the method this file calls, so no connector's class is a dependency here.
+type AppMintAccount = {
+  mintAppLink(
+    binding: AppBinding,
+    resource: { uri: string; title?: string },
+    call?: AppCallSnapshot,
+  ): Promise<string>;
+};
+
 type SessionConstructor<Session extends McpSessionBase> = new (
   host: McpSessionHost,
   queue: RpcStub<ApprovalQueue>,
@@ -67,6 +79,16 @@ export abstract class McpFacetBase<
 
   #actions(): ActionStore {
     return this.#actionStore ??= new ActionStore(this.ctx.storage.sql);
+  }
+
+  // The MCP Apps visibility rule: a definition whose `_meta.ui.visibility` is present and omits
+  // `"model"` is a tool for the app, not for the agent. Applied to every catalog the session can
+  // reach, so the catalog it lists, the generated `.d.ts` a coding agent reads, and the per-tool
+  // methods installed on a new session cannot disagree about which tools the agent has. The app
+  // gateway is unaffected: it builds its own catalog from the endpoint, where an app-only tool is
+  // still found.
+  #agentTools(tools: ClassifiedTool[]): ClassifiedTool[] {
+    return tools.filter(entry => toolVisibleToModel(entry.tool));
   }
 
   /** Connector-owned logger carrying the facet's safe identifying fields. */
@@ -106,6 +128,17 @@ export abstract class McpFacetBase<
     return this.ctx.props.scope;
   }
 
+  /**
+   * Prefix this endpoint serves its resources under, when it renames them.
+   *
+   * Absent for a server that serves a resource under the URI it declared; a connector in front of an
+   * endpoint that renames -- a portal -- overrides it, so links minted here read the resource under
+   * the name that endpoint answers to.
+   */
+  protected get resourceUriPrefix(): string | undefined {
+    return undefined;
+  }
+
   /** Canonical resource URL for this facet's endpoint and scope. */
   protected get resourceUrl(): string {
     return formatToolScope(this.endpoint, this.scope);
@@ -137,9 +170,9 @@ export abstract class McpFacetBase<
     return this.#catalogPromise;
   }
 
-  /** Returns this facet's scoped and classified tool definitions. */
+  /** Returns this facet's scoped and classified tool definitions, as the agent may see them. */
   async tools(): Promise<ClassifiedTool[]> {
-    return (await this.catalog()).tools;
+    return this.#agentTools((await this.catalog()).tools);
   }
 
   /** Runs Gadget-triggered catalog I/O within one facet-wide concurrency bound. */
@@ -180,7 +213,8 @@ export abstract class McpFacetBase<
     return this.runDiscovery(async deadline => {
       const catalog = await this.catalog(deadline);
       if (!catalog.truncated) {
-        return catalog.tools.filter(entry => matchesToolQuery(entry.tool, terms))
+        return this.#agentTools(catalog.tools)
+          .filter(entry => matchesToolQuery(entry.tool, terms))
           .slice(0, MAX_SEARCH_RESULTS);
       }
       const { isPortal } = catalog;
@@ -191,7 +225,7 @@ export abstract class McpFacetBase<
         ),
         { deadline },
       );
-      return tools.map(tool => classifyTool(tool, this.trust));
+      return this.#agentTools(tools.map(tool => classifyTool(tool, this.trust)));
     });
   }
 
@@ -205,13 +239,15 @@ export abstract class McpFacetBase<
       const catalog = await this.catalog(deadline);
       if (!scopeAllows(this.scope, name, catalog.isPortal)) return undefined;
       const described = catalog.tools.find(entry => entry.tool.name === name);
-      if (described) return described;
+      // A described but app-only tool stays hidden, and hydrating past the catalog would fetch the
+      // same definition again.
+      if (described) return this.#agentTools([described]).at(0);
       if (!catalog.truncated) return undefined;
 
       const load = (candidate: string) =>
         this.call(client => client.findTool(candidate), { deadline });
       const tool = await this.#hydrated.resolve(name, load);
-      return tool && classifyTool(tool, this.trust);
+      return tool && this.#agentTools([classifyTool(tool, this.trust)]).at(0);
     });
   }
 
@@ -280,6 +316,27 @@ export abstract class McpFacetBase<
     options?: WithClientOptions,
   ): Promise<T> {
     return withClient(this.env, this.account(), this.endpoint, fn, options);
+  }
+
+  /** Mints the sidecar link for one `ui://` resource on this binding, or undefined if it cannot. */
+  async appLink(uri: string, call: AppCallSnapshot): Promise<string | undefined> {
+    try {
+      // The link belongs to the account, which holds the token and the deployment's base URL.
+      const account = this.account() as ConnectionAccount & AppMintAccount;
+      return await account.mintAppLink({
+        endpoint: this.endpoint,
+        serverName: this.serverName,
+        scope: this.scope,
+        trust: this.trust,
+        resourceUriPrefix: this.resourceUriPrefix,
+      }, { uri }, call);
+    } catch (err) {
+      // A view is an extra on top of a result the agent is still waiting for, so this fails soft.
+      this.log.warn("could not mint an app link", {
+        event: "app.link.mint.failed", error: err,
+      });
+      return undefined;
+    }
   }
 
   /** Namespaces one tool's approval kind to this facet. */

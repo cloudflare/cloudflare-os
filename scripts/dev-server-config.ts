@@ -30,6 +30,47 @@ export function getWranglerPortFromBackendHost(backendHost: string): string | nu
 }
 
 /**
+ * The portal URL named by `--mcp-portal-url`, or null when the flag is absent. The flag is how a
+ * local run points the MCP Server Portals connector (`MCP_PORTAL_URL`) at a portal on this machine,
+ * without editing a tracked file -- see `run-dev-server.ts`, which writes it into the gitignored
+ * generated dev config.
+ *
+ * Validated as an absolute `http:`/`https:` URL carrying no credentials, which is the shape the
+ * connector's own `readPortalConfig()` accepts. A value the connector would refuse is an error here
+ * instead: written into the config it would hide the connector with nothing on screen to say why.
+ */
+export function getMcpPortalUrl(args: readonly string[]): string | null {
+  let portalUrl: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg !== "--mcp-portal-url" && !arg.startsWith("--mcp-portal-url=")) continue;
+
+    if (portalUrl !== null) {
+      throw new Error("--mcp-portal-url may only be specified once.");
+    }
+
+    const value = arg === "--mcp-portal-url" ? args[++i] : arg.slice("--mcp-portal-url=".length);
+    let url: URL;
+    try {
+      url = new URL(value ?? "");
+    } catch {
+      throw new Error("--mcp-portal-url must be an absolute http:// or https:// URL.");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("--mcp-portal-url must be an absolute http:// or https:// URL.");
+    }
+    if (url.username || url.password) {
+      throw new Error("--mcp-portal-url must not include credentials.");
+    }
+
+    portalUrl = url.href;
+  }
+
+  return portalUrl;
+}
+
+/**
  * Resolve where the dev server's backend lives: an explicit `--port` wins, else
  * `VITE_BACKEND_HOST`, else `localhost:8787`.
  */

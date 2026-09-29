@@ -18,7 +18,7 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 
 | Module | Purpose |
 | --- | --- |
-| `client` | Bounded Streamable HTTP transport (`initialize`, `tools/list`, `tools/call`) using official MCP wire types |
+| `client` | Bounded Streamable HTTP transport (`initialize`, `tools/list`, `tools/call`, `resources/read`) using official MCP wire types |
 | `oauth` | Small adapter around the official MCP client's OAuth errors and token revocation gap |
 | `tools` | The trust boundary: read/action classification, auto-approval eligibility, approval prompts, catalog fingerprinting |
 | `schema-to-ts` | JSON Schema to TypeScript, strict `callTool` overloads plus progressive discovery |
@@ -34,9 +34,14 @@ does so through a named hook (`staticToken`, `mintAccount`), not a private copy.
 | `connection` | `withClient` — transport sessions, retries, credential-expiry reporting |
 | `action-store` | Staged to applied/rejected/failed, with a bound on what is retained and a claim so one approval is never sent twice |
 | `session` | The Gadget-facing capability, and the one path every tool call takes |
+| `apps` | The MCP Apps boundary: `ui://` recognition, tool visibility, View CSP and permissions, bounded results |
+| `app-tokens` | App links: what one authorizes, how long it lives, and reuse so a binding mints one per resource |
+| `app-gateway` | What an open sidecar page may ask for: the read-only rule, and the JSON-RPC framing around it |
+| `app-page` | The sidecar page: the Host half of MCP Apps, the sandbox proxy nested inside it, and the sized window it offers |
+| `app-http` | The `/app/...` HTTP routes both connectors serve: the page, and the JSON-RPC endpoint it calls |
 | `sharing-policy` | The owner-only sharing rule |
 | `html` | The connect-flow pages, so both connectors look like one product |
-| `http` | Base-path, OAuth callback, and connect-link routing shared by both Workers |
+| `http` | Base-path, OAuth callback, connect-link, and app-link routing shared by both Workers |
 | `log` | The field vocabulary both connectors log against |
 | `user` | The common account description, revocation, and reconnect lifecycle |
 | `util` | Hex encoding, host extraction, binding-name slugs; no policy |
@@ -109,6 +114,61 @@ retries or discards it, and a call the agent awaits blocks its chat until then, 
 `failed` record instead of refusing it. Discarding keeps the failure on record for the Gadget to
 collect, so an unknown outcome is still reported as unknown, and rules out any further attempt.
 
+## Sidecar apps
+
+A tool result that names a `ui://` resource comes back carrying an `app` link, and opening that link
+renders the server's own HTML in a sidecar page served by the connector that minted it. The page is
+three nested documents, and the middle one is the point: the popup is the Host, an opaque-origin
+sandbox proxy sits inside it, and the View sits inside that. A `srcdoc` frame that kept its parent's
+origin would hand the View this deployment's own origin, which is exactly the escape the
+specification's two-origin rule exists to prevent, so the sandbox is what stands in for the second
+origin here. The View's own CSP travels as a `<meta http-equiv>` the proxy prepends to it, which is
+the mechanism the specification names.
+
+The page it opens is a tab, because no `target` can ask a browser for a window of a chosen size:
+only `window.open` from a gesture can, and the chat's markdown renderer has no click of its own to
+spend on that. So the page offers the one gesture it has — a button — and opens itself as
+the sidecar the specification describes, marked with `?sidecar=1` so that the copy which lands in a
+window offers nothing further and cannot open another. A browser that blocks the window says so in
+the page and the app stays where it is: the tab a link opened is a working sidecar either way, and
+the button only trades a click for the size.
+
+The View reaches the deployment only through `POST /app/<account>/<token>/rpc`, and only via its own
+page: the route answers a same-origin JSON post, reads a bounded body, and hands the message to the
+account. `app-gateway.ts` owns what happens next, and the allowed surface is deliberately small — an
+app may call a tool only if this binding classified it `mode: "read"`, only if the tool is inside the
+grant the binding already holds, and only if the tool's own visibility admits apps; it may read
+`ui://` resources and no others. Opening a link is the page's, not the endpoint's, and the page
+passes `http(s)` to the browser and nothing else. Anything else is refused with `-32001` and a
+sentence telling the user to ask the agent in the chat.
+
+An endpoint that renames its resources — a portal fronts an upstream's `ui://demo/dashboard` as
+`mcp-app-server_ui://demo/dashboard` and refuses the upstream's own URI — is what
+`AppBinding.resourceUriPrefix` is for. The link keeps the URI its server declared, which is the
+app's identity and the name its window asks for; `appResourceUri` adds the prefix only on the way
+out, for the page's read and for the window's `resources/read` alike. A mint that finds a live link
+whose stored binding names resources differently replaces it, since that link can read nothing.
+
+That rule is the whole design, not a setting. A sidecar window has no approval queue and no
+conversation behind it, so there is nowhere for a queued write to be decided and nobody to tell the
+app it is waiting. Never silently downgraded, never auto-approved: an app link is a second way to
+*see* what the binding could already read, and not a grant of new authority.
+
+What this host does not do:
+
+- **No dedicated app origin.** The specification lets a resource declare `_meta.ui.domain`, so a
+  host can serve each app from its own origin. This deployment has one origin per Worker, so the
+  field is accepted and ignored, and the sandbox proxy carries the boundary instead.
+- **No conversation.** There is no chat behind a link, so `ui/message` and
+  `ui/update-model-context` have nowhere to go and are never declared to a View.
+- **No sampling, elicitation, or roots.** The host declares only what a window can honour, and a
+  View feature-detects what is declared.
+- **No app-provided tools.** The View calls this server's tools; it cannot add tools of its own.
+- **No approval queue.** An app call is read-only by construction, never staged and never decided
+  out of band.
+- **No `resources/list`.** An app reads the `ui://` resource it is made of, by URI, and nothing
+  else.
+
 ## Limits
 
 Fixed rather than configurable.
@@ -134,6 +194,13 @@ Fixed rather than configurable.
 | Redirect hops | 3 | `fetch.ts` | Each one re-checked; more is a loop, not a deployment |
 | Connect link | 10 min | `connect-nonce.ts` | Single-use, and consumed on success |
 | Unfinished connect | 1 hour | `connect-nonce.ts` | After which a half-built account deletes itself |
+| App link (`APP_TOKEN_LIFETIME_MS`) | 24 hours | `app-tokens.ts` | Long enough to open a result from the conversation it appeared in, short enough that an old link stops working |
+| App document (`MAX_APP_HTML_BYTES`) | 512 KiB | `apps.ts` | One page render; a server shipping more than this is shipping an application, not a view |
+| App tool result (`MAX_APP_RESULT_BYTES`) | 64 KiB | `apps.ts` | What one View is handed per call; the agent's own copy of the same result is not bounded by this |
+| Stored app call snapshot | 128 KiB | `app-tokens.ts` | The Durable Object's per-value limit, so a mint that would exceed it keeps the link and drops the result instead of failing |
+| App JSON-RPC message | 64 KiB | `app-http.ts` | A `tools/call` with its arguments, not an upload: the data travels back in the reply |
+| Sidecar window | 900 × 700 px | `app-page.ts` | A panel beside the conversation rather than a full window; the browser clamps it to the screen |
+| App links per binding | one per `ui://` resource | `app-tokens.ts` | Reuse holds the key count at bindings × resources, the tightest bound reachable without `list()` |
 
 ## Build & test
 

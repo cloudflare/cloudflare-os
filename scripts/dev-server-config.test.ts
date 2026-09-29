@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   getDevServerConfig,
+  getMcpPortalUrl,
   getWranglerPortFromBackendHost,
 } from "./dev-server-config.ts";
 
@@ -71,4 +72,51 @@ describe("getDevServerConfig", () => {
       assert.throws(() => getDevServerConfig(args), /--port must be an integer between 1 and 65535/);
     });
   }
+});
+
+describe("getMcpPortalUrl", () => {
+  it("is absent when the flag is not given", () => {
+    assert.equal(getMcpPortalUrl([]), null);
+    assert.equal(getMcpPortalUrl(["--port", "9000", "--use-workers-ai-binding"]), null);
+  });
+
+  it("reads an https portal URL", () => {
+    assert.equal(
+        getMcpPortalUrl(["--mcp-portal-url", "https://mcp.example.com/mcp"]),
+        "https://mcp.example.com/mcp");
+  });
+
+  it("accepts --mcp-portal-url=value", () => {
+    assert.equal(
+        getMcpPortalUrl(["--mcp-portal-url=https://mcp.example.com/mcp"]),
+        "https://mcp.example.com/mcp");
+  });
+
+  it("keeps the host, path, and query of an http portal, which local dev uses", () => {
+    assert.equal(
+        getMcpPortalUrl(["--mcp-portal-url", "http://localhost:9000/mcp?codemode=off"]),
+        "http://localhost:9000/mcp?codemode=off");
+  });
+
+  for (const args of [
+    ["--mcp-portal-url"],
+    ["--mcp-portal-url", "mcp.example.com/mcp"],
+    ["--mcp-portal-url", "ftp://mcp.example.com/mcp"],
+    ["--mcp-portal-url", "https://user:pass@mcp.example.com/mcp"],
+  ]) {
+    it(`rejects an unusable URL: ${args.join(" ")}`, () => {
+      assert.throws(
+          () => getMcpPortalUrl(args),
+          /must be an absolute http:\/\/ or https:\/\/ URL|must not include credentials/);
+    });
+  }
+
+  it("rejects a repeated flag rather than silently taking the last", () => {
+    assert.throws(
+        () => getMcpPortalUrl([
+          "--mcp-portal-url", "https://one.example.com/mcp",
+          "--mcp-portal-url", "https://two.example.com/mcp",
+        ]),
+        /--mcp-portal-url may only be specified once/);
+  });
 });

@@ -7,6 +7,8 @@
 //   --use-workers-ai-binding   Include the Workers AI binding in
 //                               workshop-backend (requires Cloudflare login).
 //   --port PORT                 Listen on PORT instead of 8787. Overrides VITE_BACKEND_HOST.
+//   --mcp-portal-url URL        Point the MCP Server Portals connector at a portal. Written
+//                               only into the gitignored generated dev config; beats .dev.vars.
 //
 // Env:
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
@@ -21,7 +23,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
-import { getDevServerConfig } from "./dev-server-config.ts";
+import { getDevServerConfig, getMcpPortalUrl } from "./dev-server-config.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
@@ -71,9 +73,11 @@ const serveFrontendAssets = process.argv.includes("--serve-frontend-assets");
 
 let backendHost: string;
 let wranglerPort: string | null;
+let mcpPortalUrl: string | null;
 try {
   ({ backendHost, wranglerPort } = getDevServerConfig(
       process.argv.slice(2), process.env.VITE_BACKEND_HOST));
+  mcpPortalUrl = getMcpPortalUrl(process.argv.slice(2));
 } catch (err) {
   console.error((err as Error).message);
   process.exit(1);
@@ -106,6 +110,15 @@ const gatekeepers = findGatekeepers(PACKAGES_DIR);
 // autoProvisionsAccount, so core auto-provisions one Context account per user. The only extra
 // wiring it needs is a sharingDomain in its binding props (see below).
 const CONTEXT_GATEKEEPER_NAME = "gatekeeper-context";
+
+// The MCP Server Portals connector (packages/gatekeeper-mcp-portal). It differs from every other
+// gatekeeper here in that a whole deployment points at one portal through `MCP_PORTAL_URL`, set in
+// the deployment's own configuration -- the committed wrangler.jsonc deliberately leaves it unset,
+// since a URL there would send every deployment's users to whichever host it named. So a local run
+// gets one from `--mcp-portal-url` or `.dev.vars`, and without either the connector advertises no
+// resources and the Workshop hides the vendor.
+const MCP_PORTAL_GATEKEEPER_NAME = "gatekeeper-mcp-portal";
+
 
 // What Wrangler picks for itself when no --port is derived, so also what we poll.
 const DEFAULT_WRANGLER_PORT = 8787;
@@ -512,6 +525,23 @@ for (const gk of gatekeepers) {
     if (process.env[name] !== undefined) {
       config.vars[name] = process.env[name];
     }
+  }
+
+  // `--mcp-portal-url` is the most explicit source there is, so it is applied last and beats a
+  // `.dev.vars` entry. Only this connector reads MCP_PORTAL_URL, and it advertises nothing at all
+  // while the value is unset -- which is why a local run needs one of the two.
+  if (gk.name === MCP_PORTAL_GATEKEEPER_NAME && mcpPortalUrl !== null) {
+    config.vars.MCP_PORTAL_URL = mcpPortalUrl;
+    // A portal running on this machine is plain http, which the connector refuses unless
+    // MCP_ALLOW_INSECURE is set. Applied only when the URL we are injecting actually needs it, and
+    // only here: the pinned `"false"` in the committed wrangler.jsonc is what keeps the relaxation
+    // out of every deployment, and an explicit value from the shell or `.dev.vars`, applied just
+    // above, is not overridden.
+    if (mcpPortalUrl.startsWith("http:") && process.env.MCP_ALLOW_INSECURE === undefined) {
+      config.vars.MCP_ALLOW_INSECURE = "true";
+      console.log(`mcp-portal: MCP_ALLOW_INSECURE=true, since ${mcpPortalUrl} is http://`);
+    }
+    console.log(`mcp-portal: MCP_PORTAL_URL=${mcpPortalUrl}`);
   }
 
   const outPath = join(gk.dir, "wrangler.dev.jsonc");

@@ -29,6 +29,19 @@ export type McpCallResult =
       structuredContent?: unknown;
       /** True when the tool itself reported failure (the call succeeded; the tool did not). */
       isError?: boolean;
+      /**
+       * Present when this result has an interactive view. Relay `url` to the user: opening it
+       * renders the same result in a sidecar window, with live access to this server's read-only
+       * tools.
+       */
+      app?: {
+        /** The `ui://` resource that renders this result. */
+        uri: string;
+        /** Link to open. Single-use-free and reusable while the account stays connected. */
+        url: string;
+        /** Display name for the link, when the server gave one. */
+        title?: string;
+      };
     }
   | {
       status: "pending";

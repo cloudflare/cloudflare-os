@@ -1,6 +1,7 @@
 // Durable lifecycle for approval-gated MCP tool calls. The owning facet supplies its isolated SQLite
 // database; claims are persisted before external I/O so an interrupted write is never replayed.
 
+import { uiResourceUriInResult } from "./apps.js";
 import { callMayHaveTakenEffect, type McpClient, type McpToolCallResult } from "./client.js";
 import type { McpLog } from "./log.js";
 import type { StoredAction } from "./session.js";
@@ -21,6 +22,7 @@ type ActionRow = {
   claimed_at: number | null;
   retryable: number | null;
   result_json: string | null;
+  app_uri: string | null;
   error: string | null;
 };
 
@@ -36,6 +38,7 @@ function fromRow(row: ActionRow): StoredAction {
     result: row.result_json
       ? JSON.parse(row.result_json) as StoredAction["result"]
       : undefined,
+    appUri: row.app_uri ?? undefined,
     error: row.error ?? undefined,
   };
 }
@@ -60,8 +63,18 @@ export class ActionStore {
       claimed_at INTEGER,
       retryable INTEGER CHECK (retryable IS NULL OR retryable IN (0, 1)),
       result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+      app_uri TEXT,
       error TEXT
     ) STRICT`);
+    // A Durable Object that has had this table since before `app_uri` existed keeps the shape it
+    // was created with: `CREATE TABLE IF NOT EXISTS` does nothing there, and every later write would
+    // fail on a column it does not have. A zero-row read is the cheapest way to ask, and the missing
+    // column is the only error it can raise against a table that was just created.
+    try {
+      sql.exec("SELECT app_uri FROM mcp_actions LIMIT 0");
+    } catch {
+      sql.exec("ALTER TABLE mcp_actions ADD COLUMN app_uri TEXT");
+    }
     // A fresh store means a fresh Durable Object activation. Any persisted claim belonged to an
     // interrupted prior activation and must never be replayed because the write may have landed.
     sql.exec(
@@ -80,12 +93,14 @@ export class ActionStore {
 
   #save(action: StoredAction): void {
     this.#sql.exec(
-      `UPDATE mcp_actions SET state = ?, claimed_at = ?, retryable = ?, result_json = ?, error = ?
+      `UPDATE mcp_actions SET state = ?, claimed_at = ?, retryable = ?, result_json = ?,
+                              app_uri = ?, error = ?
        WHERE id = ?`,
       action.state,
       action.claimedAt ?? null,
       action.retryable === undefined ? null : Number(action.retryable),
       action.result === undefined ? null : JSON.stringify(action.result),
+      action.appUri ?? null,
       action.error ?? null,
       action.id,
     );
@@ -147,6 +162,7 @@ export class ActionStore {
     stored.claimedAt = Date.now();
     stored.error = undefined;
     stored.result = undefined;
+    stored.appUri = undefined;
     this.#save(stored);
 
     let result: McpToolCallResult;
@@ -171,6 +187,10 @@ export class ActionStore {
 
     stored.state = "applied";
     stored.retryable = undefined;
+    // Kept beside the flattened result rather than inside it: the association is read from the
+    // result's `_meta`, which the flattening drops, and a server may declare its view there instead
+    // of on the tool. Read before the result is measured, so an oversized result still gets a link.
+    stored.appUri = uiResourceUriInResult(result);
     try {
       const flattened = toCallResult(result);
       const encoded = JSON.stringify(flattened);

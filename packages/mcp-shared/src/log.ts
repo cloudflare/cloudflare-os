@@ -21,6 +21,22 @@ export type McpLogFields = {
   trust: ServerTrust;
   /** Who chose the endpoint. Distinguishes a user-supplied server from a deployment's own gateway. */
   provenance: "user" | "deployment";
+  /**
+   * The `ui://` resource an app-surface event is about. Server-chosen, and not a secret: it names a
+   * resource, not the link that opens it.
+   */
+  appUri: string;
+  /** The CSP a sidecar app's document is actually served under, for security review of its reach. */
+  appCsp: string;
+  /** The `allow` attribute the app's frame actually got, when its resource declared permissions. */
+  appAllow: string;
+  /**
+   * The URI this binding addresses the resource by, logged beside `appUri` whenever a link is minted
+   * or read, because those differ for a binding that renames resources: a portal namespaces them
+   * (`{serverId}_{uri}`), so a read that failed or a link that will not open names nothing an
+   * operator can check after the fact without the name it went out under.
+   */
+  resourceUri: string;
 };
 
 /** The logger this package expects to be handed. */
