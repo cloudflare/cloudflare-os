@@ -149,9 +149,10 @@ export type ChatMessageInfo = {
   /** Who sent the message. */
   sender?: ChatUser;
   /**
-   * Message body in Google Chat's formatting syntax (see `ChatSpace.post()`). Mentions appear
-   * as `@Name`; `mentions` lists who they refer to. Empty when the message has no text, such as
-   * an attachment-only message.
+   * Message body in Google Chat's formatting syntax (see `ChatSpace.post()`). Committed mentions
+   * read back as `@Name`, with `mentions` listing who they refer to; a pending message keeps the
+   * `<users/{user}>` form you posted. Empty when the message has no text, such as an
+   * attachment-only message.
    */
   text: string;
   /** Users @mentioned in the message. Empty for a pending message until it is committed. */
@@ -203,8 +204,8 @@ export type ChatListMessagesOptions = ChatWindow & {
 };
 
 /**
- * Filters for searching messages within one conversation. Supply at least one. Every supplied
- * field must match; within a list-valued field, a message matches if it matches any entry.
+ * Filters for searching messages within one conversation. Every supplied field must match;
+ * within a list-valued field, a message matches if it matches any entry.
  *
  * Search covers committed messages only: your pending posts and edits don't appear, and the
  * search index can lag recent edits and deletions by minutes. It never returns messages posted
@@ -237,7 +238,9 @@ export type ChatSpaceMessageSearch = ChatWindow & {
   hasLink?: boolean;
 };
 
-/** Filters for searching across conversations, adding conversation selectors. */
+/**
+ * Filters for searching across conversations, adding conversation selectors. Supply at least one.
+ */
 export type ChatMessageSearch = ChatSpaceMessageSearch & {
   /**
    * Only messages in any of these conversations, by `ChatSpaceInfo.id`. To search conversations
@@ -305,8 +308,8 @@ export interface ChatSession extends RpcTarget {
   /**
    * Find joined spaces whose display name matches `name`: at most 100, returned as one page.
    *
-   * The text is matched loosely: token by token, case-insensitively, against any part of the
-   * name, so `proj rev` matches "Project review" — and partial tokens can match inside words.
+   * The text is matched token by token, case-insensitively, against the start of any word in the
+   * name, so `proj rev` matches "Project review" but `ject` does not.
    * Only spaces are searched; group chats (even named ones) and direct messages are never
    * returned. Use {@link listSpaces} or {@link findDirectMessage} for those.
    */
@@ -395,11 +398,11 @@ export interface ChatSpace extends RpcTarget {
   /**
    * Post a top-level message to this conversation as the connected user.
    *
-   * `text` uses Google Chat's formatting syntax, the same syntax `ChatMessageInfo.text` is read
-   * back in: `*bold*`, `_italic_`, `~strikethrough~`, `` `code` ``, ```` ``` ```` code blocks,
-   * lines starting with `* ` or `- ` for bullets, `<https://example.com|label>` for a link,
-   * `<users/{user}>` to @mention someone, and `<users/all>` to mention everyone. Markdown such
-   * as `**bold**` or `[label](url)` is not rendered. At most 32,000 bytes.
+   * `text` uses Google Chat's formatting syntax: `*bold*`, `_italic_`, `~strikethrough~`,
+   * `` `code` ``, ```` ``` ```` code blocks, lines starting with `* ` or `- ` for bullets,
+   * `<https://example.com|label>` for a link, `<users/{user}>` to @mention someone, and
+   * `<users/all>` to mention everyone. Markdown such as `**bold**` or `[label](url)` is not
+   * rendered. At most 32,000 bytes.
    *
    * Where `supportsThreads` is true, the message starts a new thread; call
    * `entry.message.getThread()` to continue it. The returned entry describes the new message,

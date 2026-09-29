@@ -69,10 +69,12 @@ const info = entry.info.type === "directMessage"
 const label = info.name ?? info.id;
 ```
 
-The peer comes from the DM's own membership list (`members.list`), which Chat populates for
-the people the account talks to; there is no second lookup. When the membership is ambiguous,
-the DM has no `peer`; when Chat omits the peer's name, the DM stays unnamed and the ID is the
-fallback. Spaces and group chats require no lookup. Memberships are a `kind: "user" | "group"`
+The peer comes from the DM's own membership list (`members.list`). Chat may omit display names
+in user-authenticated responses, so a nameless peer is looked up in the People API; that name
+needs no observer check, since anyone who can open a DM is one of its two participants. When the
+membership is ambiguous, the DM has no `peer`; when neither source names the peer, the DM stays
+unnamed and the ID is the fallback. Send approvals for a DM name its recipient the same way.
+Spaces and group chats require no lookup. Memberships are a `kind: "user" | "group"`
 union. Messages list the users they @mention in `mentions`. Picker searches scan at most five
 pages; paste `spaces/ID` or a Chat room/DM URL to access an exact conversation beyond that scan.
 

@@ -90,6 +90,7 @@ function previewText(text: string, maxLength: number): string {
 
 /** How a conversation is named in approval and observation text. */
 function spaceLabel(info: ChatSpaceInfo): string {
+  if (info.peer) return `a direct message with ${userLabel(info.peer)} (${info.id})`;
   if (info.name) return `"${plainInline(info.name)}" (${info.id})`;
   return info.type === "directMessage"
     ? `a direct message (${info.id})`
@@ -512,10 +513,11 @@ async function queueChatMessage(
     requestId: crypto.randomUUID(),
     submittedAt: Date.now(),
   };
+  const recipient = await describeDirectMessage(ctx.api, info, ctx.self.id);
   const id = await submitChatAction(ctx, action, {
-    title: sanitizeTitle(`Send a Google Chat message to ${info.name ?? spaceName}`),
+    title: sanitizeTitle(`Send a Google Chat message to ${recipient.name ?? spaceName}`),
     ...buildDescription(
-      `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(info)}` +
+      `Post a message as ${userLabel(ctx.self)} in ${spaceLabel(recipient)}` +
       `${threadName !== undefined ? `, as a reply in thread ${threadName}` : ""}.`)
       .verbatim("Message", body)
       .finish(),

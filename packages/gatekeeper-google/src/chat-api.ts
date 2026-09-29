@@ -12,6 +12,7 @@
 // user could reach in the Chat UI.
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatReaction,
@@ -19,6 +20,9 @@ import type {
 } from "./chat-types";
 
 const CHAT_API_BASE = "https://chat.googleapis.com/v1";
+const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
+
+type PeopleNameRaw = { displayName?: unknown; metadata?: { primary?: boolean } };
 
 /** Largest attachment body this gatekeeper will read back into memory. */
 export const MAX_CHAT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
@@ -801,6 +805,29 @@ export class ChatApi {
       }
       throw error;
     }
+  }
+
+  /**
+   * A person's profile name from the People API, for when Chat omits a display name. Undefined
+   * when the profile is not visible to the connected user or the People API is unavailable.
+   */
+  async profileName(user: string): Promise<string | undefined> {
+    const id = /^users\/(\d{1,32})$/.exec(user)?.[1];
+    if (!id) return undefined;
+    const params = new URLSearchParams({ personFields: "names", sources: "READ_SOURCE_TYPE_PROFILE" });
+    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people/${id}?${params}`,
+      { headers: { Accept: "application/json" } }, this.getAccessToken);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const body = await readGoogleJson<{ names?: unknown } | null>(response, {
+      provider: "Google People", operation: "people.get", maxBytes: 64 * 1024,
+    });
+    const entries = (Array.isArray(body?.names) ? body.names : [])
+      .filter((entry): entry is PeopleNameRaw => typeof entry === "object" && entry !== null);
+    const name = (entries.find(entry => entry.metadata?.primary) ?? entries[0])?.displayName;
+    return typeof name === "string" && name.trim() ? name.trim() : undefined;
   }
 
   // ── Reactions ─────────────────────────────────────────────────────

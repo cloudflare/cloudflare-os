@@ -67,6 +67,8 @@ function chatBackend() {
     messages: [] as ChatMessageRaw[],
     members: [] as ChatMembershipRaw[],
     memberRequests: 0,
+    /** People API profile names by numeric user id. */
+    profiles: {} as Record<string, string>,
     spaceLists: 0,
     searches: [] as string[],
     pageSize: 50,
@@ -93,6 +95,10 @@ function chatBackend() {
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
+    if (url.hostname === "people.googleapis.com") {
+      const name = state.profiles[url.pathname.slice("/v1/people/".length)];
+      return name ? json({names: [{displayName: name, metadata: {primary: true}}]}) : json({}, 404);
+    }
     if (state.rejectedToken && url.hostname === "chat.googleapis.com" &&
         new Headers(init.headers).get("Authorization") === `Bearer ${state.rejectedToken}`) return json({}, 403);
     if (url.pathname.startsWith("/v1/media/")) {
@@ -376,6 +382,22 @@ describe("Chat identities", () => {
     using space = await chat.session();
     expect(await space.getMetadata()).toMatchObject(
       {name: "Alice Smith", peer: {id: "users/123", name: "Alice Smith", type: "human"}});
+  });
+
+  it("names a peer Chat leaves unnamed from People, including in send approvals", async () => {
+    const backend = directMessage();
+    backend.state.members[1] = {name: `${SPACE_NAME}/members/123`, member: {name: "users/123", type: "HUMAN"}};
+    backend.state.profiles["123"] = "Alice Smith";
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    expect(await space.getMetadata()).toMatchObject(
+      {name: "Alice Smith", peer: {id: "users/123", name: "Alice Smith", type: "human"}});
+    using _posted = (await space.post("hi")).message;
+    const [send] = (await chat.readQueue()).submissions;
+    expect(send.description).toMatchObject({
+      title: "Send a Google Chat message to Alice Smith",
+      description: expect.stringContaining(`a direct message with Alice Smith (${SPACE_NAME})`),
+    });
   });
 
   it("uses Chat-provided names across results without extra identity lookups", async () => {

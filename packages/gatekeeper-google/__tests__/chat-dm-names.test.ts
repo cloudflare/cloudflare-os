@@ -27,15 +27,20 @@ describe("DM participants", () => {
     expect(members).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves a DM unnamed when Chat omits the peer's name, and undescribed when the peer is ambiguous", async () => {
+  it("falls back to the People API for a nameless human peer, and leaves an ambiguous DM undescribed", async () => {
     const api = new ChatApi(async () => "token");
     const members = vi.spyOn(api, "listMembers").mockResolvedValue({
       items: [member("spaces/A", "1", "Owner"), member("spaces/A", "2")],
     });
+    const profile = vi.spyOn(api, "profileName").mockResolvedValueOnce("Alice").mockResolvedValueOnce(undefined);
+    expect(await describeDirectMessage(api, dm(), "users/1"))
+      .toEqual({ ...dm(), name: "Alice", peer: alice });
+    expect(profile).toHaveBeenCalledWith("users/2");
     expect(await describeDirectMessage(api, dm(), "users/1"))
       .toEqual({ ...dm(), peer: { id: "users/2", type: "human" } });
     members.mockResolvedValue({ items: [member("spaces/A", "2", "Alice"), member("spaces/A", "3", "Bob")] });
     expect(await describeDirectMessage(api, dm(), "users/1")).toEqual(dm());
+    expect(profile).toHaveBeenCalledTimes(2);
   });
 
   it("follows membership pages but never scans past a DM's plausible size", async () => {

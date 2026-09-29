@@ -4,8 +4,9 @@ import type { ChatSpaceInfo, ChatUser } from "./chat-types";
 /**
  * Identify a direct message's other participant (`peer`) and name the DM after them.
  *
- * Chat itself names the members of a DM the account is in, so no further lookup is involved: when
- * Chat omits the name, the DM simply stays unnamed. Spaces and group chats return unchanged.
+ * Chat may omit a member's display name, so a nameless person is looked up in the People API. That
+ * name needs no observer check: anyone who can open a DM is one of its two participants.
+ * Spaces and group chats return unchanged.
  */
 export async function describeDirectMessage(
   api: ChatApi, info: ChatSpaceInfo, selfId: string,
@@ -24,7 +25,9 @@ export async function describeDirectMessage(
     if (!result.nextPageToken) break;
     pageToken = result.nextPageToken;
   }
-  const peer = peers.size === 1 ? [...peers.values()][0] : undefined;
-  if (!peer) return info;
-  return { ...info, peer, ...(!info.name && peer.name ? { name: peer.name } : {}) };
+  const found = peers.size === 1 ? [...peers.values()][0] : undefined;
+  if (!found) return info;
+  const name = found.name ?? (found.type === "human" ? await api.profileName(found.id) : undefined);
+  const peer = name ? { ...found, name } : found;
+  return { ...info, peer, ...(!info.name && name ? { name } : {}) };
 }

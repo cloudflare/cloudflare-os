@@ -967,8 +967,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasCalendarFreeBusyAccess covers foreign calendars read by an all-visible availability query.
 //   - BigQuery — strategy C (data-set tracking by dataset): hasDatasetAccess answers whether the
 //     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
-//   - Google Chat — strategies A/C: accounts stay private; a conversation checks its Chat ACL
-//     and the separate visibility of any People name used to label an unnamed DM.
+//   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
+//     binding checks that the observer can open its conversation.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results.
 

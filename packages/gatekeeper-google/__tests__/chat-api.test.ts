@@ -326,6 +326,22 @@ describe("Chat provider error handling", () => {
     expect(await api.getMembership("spaces/AAAA", "nobody@example.com")).toBeNull();
   });
 
+  it("reads the primary People profile name and treats an unreadable profile as unnamed", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      requests.push(input);
+      return new Response(JSON.stringify({ names: [
+        { displayName: "Al" }, { displayName: " Alice Smith ", metadata: { primary: true } },
+      ] }));
+    });
+    const api = new ChatApi(async () => "token");
+    expect(await api.profileName("users/123")).toBe("Alice Smith");
+    expect(new URL(requests[0]).pathname).toBe("/v1/people/123");
+    expect(await api.profileName("users/app")).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(await stubResponse(403, {}).profileName("users/123")).toBeUndefined();
+  });
+
   // Chat error prose can quote message text back, so only the closed google.rpc code enum may
   // travel — a fabricated status string must not reach the error message.
   it("surfaces the canonical rpc code and nothing else from an error body", async () => {
