@@ -18,7 +18,7 @@ const network = new NetworkInterceptor();
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness();
+  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true });
 });
 
 afterAll(async () => {
@@ -83,6 +83,19 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
     return summary?.type === "gadget" && summary.commitId !== undefined &&
         summary.commitId !== after ? summary.commitId : null;
   });
+
+const CSV_EXPORT_SERVER =
+    `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";\n` +
+    `export class Gadget extends DurableObject {}\n` +
+    `export class ExportHandler extends WorkerEntrypoint {\n` +
+    `  async getExportFormats(_gadget) {\n` +
+    `    return [{ id: "csv", label: "CSV", mode: "server", contentType: "text/csv", fileExtension: ".csv" }];\n` +
+    `  }\n` +
+    `  async export(_gadget, id) {\n` +
+    `    if (id !== "csv") throw new Error(\`Unsupported export format: \${id}\`);\n` +
+    `    return new Response("a,b\\n1,2\\n").body;\n` +
+    `  }\n` +
+    `}\n`;
 
 /** Merge a one-file edit into mainline through a human-only chat; returns the new head. */
 async function commitText(ws: RpcStub<Overseer>, workpieces: WorkpieceRecorder,
@@ -242,7 +255,7 @@ it.concurrent("republishing a blueprint changes future installs, not existing on
   await source.deleteSelf();
 });
 
-it.concurrent("an installed blueprint binds the installer's account, not the publisher's", async () => {
+it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind the installer's account", async () => {
   const [publisher, installer] = nextUsernames("blueprintpublisher", "blueprintinstaller");
   if (!publisher || !installer) throw new Error("Failed to allocate test usernames");
 
@@ -278,6 +291,11 @@ it.concurrent("an installed blueprint binds the installer's account, not the pub
       publisherAccount.id, "https://gadgets-test.example/things/source");
   if (!decoy || !data) throw new Error("Failed to create the publisher's test connections");
   await sourceGadget.bind("DATA", await data.getId());
+  const annotation = {
+    title: "Source data", description: "Connect the source test thing.", suggestValue: true,
+  };
+  await sourceGadget.setBlueprintAnnotation("DATA", annotation);
+  expect(await sourceGadget.getBlueprintAnnotation("DATA")).toEqual(annotation);
   const blueprint = await sourceGadget.createBlueprint(
       "Bound", "Blueprint with a DATA binding");
 
@@ -285,6 +303,16 @@ it.concurrent("an installed blueprint binds the installer's account, not the pub
   using installerApi = await signUp(installerPublic, installer);
   const importedId = await installerApi.importBlueprint(
       await publisherPublic.downloadBlueprint(blueprint.id));
+  expect((await installerPublic.getBlueprint(importedId))?.metadata.bindings).toEqual({
+    DATA: {
+      title: "Source data",
+      description: "Connect the source test thing.",
+      type: "gatekeeper",
+      gatekeeperName: TEST_VENDOR_ID,
+      typeUrlPattern: "https://gadgets-test.example/things/*",
+      resourceUrl: "https://gadgets-test.example/things/source",
+    },
+  });
   await installerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const installerAccount = (await listConnectedAccounts(installerApi))
       .find(account => account.vendorId === TEST_VENDOR_ID);
@@ -309,6 +337,10 @@ it.concurrent("an installed blueprint binds the installer's account, not the pub
   }
   expect((await installedWorkspace.getMetadata()).defaultGadgetId).toBe(installedSummary.id);
   using installedGadget = await installedWorkspace.getGadget(installedSummary.id);
+  // PINNED (GF): install recreates each binding with a bare `gadget.bind` (server.ts:531), so the
+  // annotation is dropped and republishing an installed copy falls back to the resource title and
+  // an empty description. Bundled blueprints have no bindings today.
+  expect(await installedGadget.getBlueprintAnnotation("DATA")).toBeNull();
   using binding = await installedGadget.getBinding("DATA");
   if (!binding) throw new Error("Installed Gadget has no DATA binding");
   expect(await binding.getCreationSpec()).toMatchObject({
@@ -338,4 +370,27 @@ it.concurrent("an installed blueprint binds the installer's account, not the pub
 
   await installedWorkspace.deleteSelf();
   await sourceWorkspace.deleteSelf();
+});
+
+// This stream is the gadget's own export, not a `.gadget` archive; the importable round trip is
+// the blueprint archive test above.
+it.concurrent("a gadget's ExportHandler lists and streams its format", async () => {
+  using publicApi = connect(requireHarness().url);
+  using api = await signUp(publicApi, username("gadgetexport"));
+  using ws = await api.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using app = ws.createGadget("App", undefined, "APP");
+  const gadgetId = await app.getId();
+  await commitText(ws, workpieces, gadgetId, await headOf(workpieces, gadgetId),
+      "server.js", undefined, CSV_EXPORT_SERVER);
+
+  expect(await app.getExportFormats()).toEqual([
+    { id: "csv", label: "CSV", mode: "server", contentType: "text/csv", fileExtension: ".csv" },
+  ]);
+  expect(await new Response(await app.export("csv")).text()).toBe("a,b\n1,2\n");
+
+  await ws.deleteSelf();
 });

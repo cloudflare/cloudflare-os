@@ -190,6 +190,34 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return reason;
   }
 
+  recordApplyAttempt(label: string): void {
+    this.ctx.storage.kv.put(`apply-attempts:${label}`, this.getApplyAttempts(label) + 1);
+  }
+
+  /** Every applyAction() call, including ones that then fail: a double dispatch shows up here. */
+  getApplyAttempts(label: string): number {
+    return this.ctx.storage.kv.get<number>(`apply-attempts:${label}`) ?? 0;
+  }
+
+  /** Parks the next applyAction() for `label` until releaseApply(), so a test can race another. */
+  holdNextApply(label: string): void {
+    this.ctx.storage.kv.put(`hold-next-apply:${label}`, true);
+    this.ctx.storage.kv.delete(`release-apply:${label}`);
+  }
+
+  /** One-shot, like takeApplyFailure(). */
+  takeNextApplyHold(label: string): boolean {
+    return this.ctx.storage.kv.delete(`hold-next-apply:${label}`);
+  }
+
+  releaseApply(label: string): void {
+    this.ctx.storage.kv.put(`release-apply:${label}`, true);
+  }
+
+  isApplyReleased(label: string): boolean {
+    return this.ctx.storage.kv.get<boolean>(`release-apply:${label}`) ?? false;
+  }
+
   enableHook(
       key: string, initiator: Fetcher<HookInitiator<ValueHook>>, target: HookTargetMetadata): void {
     this.ctx.storage.kv.put(`hook:${key}`, { ...this.#hook(key), initiator, target });
@@ -238,12 +266,62 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     this.ctx.storage.kv.put(`connect:${label}`, callback);
   }
 
+  /**
+   * Keeps the callback (its doc allows storing it) so the account can later expire and reconnect,
+   * and starts the live credential generation at 1.
+   */
   async finishConnect(label: string): Promise<ConnectHandoff | null> {
     const key = `connect:${label}`;
     const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(key);
     if (callback === undefined) return null;
     this.ctx.storage.kv.delete(key);
-    return callback.complete(this.ctx.exports.TestAccount({ props: { label } }));
+    const handoff = await callback.complete(this.ctx.exports.TestAccount({ props: { label } }));
+    this.ctx.storage.kv.put(`callback:${label}`, callback);
+    this.ctx.storage.kv.put(`credential:${label}`, 1);
+    return handoff;
+  }
+
+  async expireCredentials(label: string): Promise<void> {
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(`callback:${label}`);
+    if (callback === undefined) throw new Error("The test gatekeeper has no credentials to expire.");
+    await callback.credentialsExpired();
+  }
+
+  /** Auto-provisioned accounts never ran a connect flow, so they have no callback to reconnect. */
+  startReconnect(label: string): string {
+    if (this.ctx.storage.kv.get(`callback:${label}`) === undefined) {
+      throw new Error("The test gatekeeper has no credentials to reconnect.");
+    }
+    const flow = crypto.randomUUID();
+    this.ctx.storage.kv.put(`reconnect:${flow}`, label);
+    return flow;
+  }
+
+  /** Stages the replacement credentials; only commitReconnect() with this stage makes them live. */
+  async finishReconnect(flow: string): Promise<ConnectHandoff | null> {
+    const key = `reconnect:${flow}`;
+    const label = this.ctx.storage.kv.get<string>(key);
+    if (label === undefined) return null;
+    this.ctx.storage.kv.delete(key);
+    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>(`callback:${label}`)!;
+    const stageId = crypto.randomUUID();
+    this.ctx.storage.kv.put(`reconnect-stage:${label}`, stageId);
+    return callback.reconnectComplete(stageId);
+  }
+
+  /** Activates the staged generation and revokes the grant it replaces. */
+  commitReconnect(label: string, stageId: string): void {
+    const stageKey = `reconnect-stage:${label}`;
+    if (this.ctx.storage.kv.get<string>(stageKey) !== stageId) {
+      throw new Error("No reconnect is awaiting confirmation.");
+    }
+    this.ctx.storage.kv.delete(stageKey);
+    this.ctx.storage.kv.put(`credential:${label}`, this.getCredential(label)! + 1);
+    this.recordRevocation(label);
+  }
+
+  getCredential(label: string): number | null {
+    return this.ctx.storage.kv.get<number>(`credential:${label}`) ?? null;
   }
 
   recordGadgetResponse(messageKey: string, response: GadgetResponse): void {
@@ -406,12 +484,13 @@ export class TestAccount
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
   }
 
-  commitReconnect(_stageId: string): Promise<void> {
-    throw new Error("The test gatekeeper has no credentials to reconnect.");
+  async commitReconnect(stageId: string): Promise<void> {
+    await control(this.ctx.exports).commitReconnect(this.ctx.props.label, stageId);
   }
 
-  reconnect(): Promise<{ url: string }> {
-    throw new Error("The test gatekeeper has no credentials to reconnect.");
+  async reconnect(): Promise<{ url: string }> {
+    const flow = await control(this.ctx.exports).startReconnect(this.ctx.props.label);
+    return { url: `https://${VENDOR_HOST}/reconnect/${flow}` };
   }
 }
 
@@ -527,6 +606,14 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
 const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
 
+/** Polls rather than parks a promise: the release arrives on another request to TestControl. */
+async function waitForApplyRelease(state: DurableObjectStub<TestControl>, label: string) {
+  for (const deadline = Date.now() + 30_000; !await state.isApplyReleased(label);) {
+    if (Date.now() > deadline) throw new Error("The held test apply was never released.");
+    await scheduler.wait(25);
+  }
+}
+
 @validateRpc()
 export class TestGatekeeper
     extends DurableObject<Cloudflare.Env, BindingProps> implements Gatekeeper<TestSession> {
@@ -597,9 +684,12 @@ export class TestGatekeeper
 
   async applyAction(action: number): Promise<void> {
     const state = control(this.ctx.exports);
-    const failure = await state.takeApplyFailure(this.ctx.props.label);
+    const { label } = this.ctx.props;
+    await state.recordApplyAttempt(label);
+    if (await state.takeNextApplyHold(label)) await waitForApplyRelease(state, label);
+    const failure = await state.takeApplyFailure(label);
     if (failure !== null) throw new Error(failure);
-    await state.applyAction(this.ctx.props.label, action);
+    await state.applyAction(label, action);
   }
 
   async rejectAction(action: number): Promise<void> {
@@ -651,6 +741,15 @@ export default {
     // The page a finished connect flow ends on, carrying the handoff ticket to the Workshop.
     if (req.method === "GET" && url.pathname.startsWith("/connect/")) {
       const handoff = await control(ctx.exports).finishConnect(url.pathname.slice("/connect/".length));
+      return handoff
+        ? htmlResponse(connectHandoffPageHtml(handoff))
+        : new Response("Not Found", { status: 404 });
+    }
+
+    // The page a finished reconnect flow ends on, carrying the restore ticket to the Workshop.
+    if (req.method === "GET" && url.pathname.startsWith("/reconnect/")) {
+      const handoff = await control(ctx.exports).finishReconnect(
+          url.pathname.slice("/reconnect/".length));
       return handoff
         ? htmlResponse(connectHandoffPageHtml(handoff))
         : new Response("Not Found", { status: 404 });
@@ -712,6 +811,23 @@ export default {
       return Response.json({ count: await control(ctx.exports).getRevocationCount(label) });
     }
 
+    // Tell the Workshop, through the account's stored connect callback, that its grant expired.
+    // Body: {"label": "..."}
+    if (url.pathname === "/control/expire-credentials" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      await control(ctx.exports).expireCredentials(label);
+      return new Response(null, { status: 204 });
+    }
+
+    // The live credential generation: 1 after connect, +1 per committed reconnect.
+    // Body: {"label": "..."} -> {"credential": number | null}
+    if (url.pathname === "/control/credential" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ credential: await control(ctx.exports).getCredential(label) });
+    }
+
     if (url.pathname === "/control/action-state" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
@@ -721,6 +837,30 @@ export default {
         value: state.value,
         applyCount: state.applyCount,
       });
+    }
+
+    // Body: {"label": "..."} -> {"attempts": number}
+    if (url.pathname === "/control/apply-attempts" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ attempts: await control(ctx.exports).getApplyAttempts(label) });
+    }
+
+    // One-shot: the next applyAction() for `label` waits for /control/release-apply.
+    // Body: {"label": "..."}
+    if (url.pathname === "/control/hold-next-apply" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      await control(ctx.exports).holdNextApply(label);
+      return new Response(null, { status: 204 });
+    }
+
+    // Body: {"label": "..."}
+    if (url.pathname === "/control/release-apply" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      await control(ctx.exports).releaseApply(label);
+      return new Response(null, { status: 204 });
     }
 
     // One-shot: the next applyAction() for `label` throws `reason` without applying.

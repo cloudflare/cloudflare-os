@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import { z } from "zod";
 import type { ActionState, AiChatMessage, Overseer } from "@gadgets/workshop-shared/api";
+import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { openAgentSession, type WorkshopAgentSession } from "../src/agent-session.js";
 import {
   startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
@@ -39,24 +40,24 @@ const TEST_ACTION_STATE = z.object({
 });
 type TestActionState = z.infer<typeof TEST_ACTION_STATE>;
 
-async function actionState(label: string): Promise<TestActionState> {
+async function control(path: string, body: object): Promise<unknown> {
   const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
-      { method: "POST", body: JSON.stringify({ label }) });
-  if (response.status !== 200) {
-    throw new Error(`Reading test action state failed with ${response.status}: ${await response.text()}`);
+      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${path}`,
+      { method: "POST", body: JSON.stringify(body) });
+  if (!response.ok) {
+    throw new Error(`/control/${path} failed with ${response.status}: ${await response.text()}`);
   }
-  return TEST_ACTION_STATE.parse(await response.json());
+  return response.status === 204 ? undefined : response.json();
 }
 
-async function failNextApply(label: string, reason: string): Promise<void> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/fail-next-apply",
-      { method: "POST", body: JSON.stringify({ label, reason }) });
-  if (response.status !== 204) {
-    throw new Error(`Arming an apply failure failed with ${response.status}: ${await response.text()}`);
-  }
-}
+const actionState = async (label: string): Promise<TestActionState> =>
+  TEST_ACTION_STATE.parse(await control("action-state", { label }));
+const failNextApply = (label: string, reason: string) =>
+  control("fail-next-apply", { label, reason });
+const holdNextApply = (label: string) => control("hold-next-apply", { label });
+const releaseApply = (label: string) => control("release-apply", { label });
+const applyAttempts = async (label: string) =>
+  z.object({ attempts: z.number() }).parse(await control("apply-attempts", { label })).attempts;
 
 const writeValues = (...values: number[]): ChatCompletionStep => ({
   toolCall: {
@@ -196,6 +197,43 @@ it.concurrent.each(["retry", "reject"] as const)(
     expect(model.requests).toHaveLength(1);
     expect(model.remainingSteps()).toBe(1);
   }
+});
+
+// PINNED (GB): two concurrent approvals of one action both dispatch the gatekeeper apply. Not a
+// double-click -- each approval surface disables its own button while processing -- but in one tab
+// the chat card, Activity pane and header notifications keep separate processing sets, and two tabs
+// or collaborators, a retry after a dropped WebSocket, or a manual approve racing
+// drainAutoApprovals (whose single-flight guard covers drains only) reach it too. approveAction
+// checks `pending`, then awaits the gatekeeper apply before marking the action approved
+// (overseer.ts ~11235-11254, ~5391-5410), so both calls dispatch. Only the fixture's one-shot
+// pending state stops a second write here; a non-idempotent gatekeeper (GitHub, Calendar, Linear)
+// would write twice.
+it.concurrent("approving one action twice at once dispatches two applies", async () => {
+  await using session = await openSession(models.script([{ text: "Ready." }]), "agentdoubleapprove");
+  const label = labelOf(session);
+  // A workspace is listed, so withOwnerWorkspace can open it, once it has seen activity.
+  await session.runTurn("Get ready.");
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using connection = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
+        "https://gadgets-test.example/things/double-approval");
+    if (!connection) throw new Error("Failed to create the test connection");
+    using testSession = await connection.openSession() as RpcStub<TestSession>;
+    expect(await testSession.writeValue(23)).toBe(1);
+    const [action] = await waitForPendingActions(session, 1);
+
+    await holdNextApply(label);
+    const first = expect(ws.approveAction(action.id)).rejects.toThrow("Unknown pending test action 1");
+    await waitFor("the first apply to be held", async () => await applyAttempts(label) === 1 || null);
+    // The same session, as a second approval surface in the same tab would call it.
+    await ws.approveAction(action.id);
+    await releaseApply(label);
+    await first;
+
+    expect(await applyAttempts(label)).toBe(2);
+    expect(await actionState(label)).toEqual({ pending: [], value: 23, applyCount: 1 });
+    expect(await actionStatus(session, action.id)).toMatchObject(decidedBy(session, "approved"));
+  });
 });
 
 it.concurrent("approving after a workspace restart applies and resumes once", async () => {

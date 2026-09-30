@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { AiChatMessage, AiChatSubscriber } from "@gadgets/workshop-shared/api";
-import { loadAllChatHistory } from "../src/agent-session.js";
-import { settleRestart, startTestGatekeeperHarness, type Harness } from "../src/harness.js";
+import { loadAllChatHistory, openAgentSession } from "../src/agent-session.js";
+import {
+  settleRestart, startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+} from "../src/harness.js";
 import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  connect, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp, stubFor, waitFor,
-  waitForIdleChat, WorkpieceRecorder,
+  accountLabel, connect, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp, stubFor,
+  waitFor, waitForIdleChat, withOwnerWorkspace, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -298,4 +300,126 @@ it.concurrent("a chat over its context budget compacts, and history pages across
   expect(tail.messages.every(message => message.sequence >= boundary)).toBe(true);
   expect(messageTexts(await loadAllChatHistory(before => ws.getChatHistory(chatId, before))))
     .toEqual(["First question", "First reply.", secondPrompt, "Second reply."]);
+});
+
+it.concurrent("switching models keeps history, refuses a deleted model, and recovers with another",
+    async () => {
+  const modelA = models.script([
+    { text: "A's first reply." },
+    { error: { status: 500, message: "scripted provider outage" } },
+  ]);
+  const modelB = models.script([{ text: "B saw model A's history." }, { text: "B retried the chat." }]);
+  // Every script shares SCRIPTED_MODEL_ID; B keeps its routed accountId under its own model id.
+  const MODEL_B_ID = "scripted-model-b";
+  const [owner] = nextUsernames("modellifecycleowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(modelA.userModel.profile, modelA.userModel.config);
+  await api.addModel(
+      { ...modelB.userModel.profile, id: MODEL_B_ID, name: "Scripted model B" },
+      { ...modelB.userModel.config, model: MODEL_B_ID });
+  using ws = await api.newGadget();
+  await api.setQuickModel(SCRIPTED_MODEL_ID);
+  expect(await api.getQuickModel()).toBe(SCRIPTED_MODEL_ID);
+  await api.setPreferredModel(SCRIPTED_MODEL_ID);
+  expect(await api.getPreferredModel()).toBe(SCRIPTED_MODEL_ID);
+
+  const chatId = await ws.newChat("Ask model A.", SCRIPTED_MODEL_ID);
+  const history = () => loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  const settled = async (model: RoutedScriptedModel, requests: number) => {
+    await waitFor(`request ${requests}`, async () => model.requests.length === requests || null);
+    await waitForIdleChat(ws, chatId);
+  };
+  await settled(modelA, 1);
+  await ws.sendChatMessage(chatId, "Ask model B.", MODEL_B_ID);
+  await settled(modelB, 1);
+  const switched = JSON.stringify(modelB.requests[0]);
+  for (const text of ["Ask model A.", "A's first reply.", "Ask model B."]) {
+    expect(switched).toContain(text);
+  }
+  // The user switches back to A, whose provider fails, and deletes it.
+  await ws.sendChatMessage(chatId, "Ask model A again.", SCRIPTED_MODEL_ID);
+  await settled(modelA, 2);
+
+  await api.deleteModel(SCRIPTED_MODEL_ID);
+  expect(await api.getQuickModel()).toBeNull();
+  // PINNED: deleteModel leaves the preferred-model id dangling, but no product path reads it
+  // unchecked: the composer validates its localStorage choice against listModels
+  // (workshop-frontend/src/modelSelection.ts), and external messages look the preferred id up in
+  // listModels(), falling through to the first model (workshop-backend/src/user.ts:901-908).
+  expect(await api.getPreferredModel()).toBe(SCRIPTED_MODEL_ID);
+
+  const beforeRefused = await history();
+  await expect(ws.sendChatMessage(chatId, "This must not be saved.", SCRIPTED_MODEL_ID))
+    .rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
+  expect(await history()).toEqual(beforeRefused);
+  expect(modelA.requests).toHaveLength(2);
+
+  // Retry answers the failed turn's message; after a completed reply it would have nothing to do.
+  await ws.retryAgent(chatId, MODEL_B_ID);
+  await settled(modelB, 2);
+  expect(messageTexts(await history())).toEqual([
+    "Ask model A.", "A's first reply.", "Ask model B.", "B saw model A's history.",
+    "Ask model A again.", "B retried the chat.",
+  ]);
+});
+
+// PINNED (GC′): a user can delete a model in settings while its chat waits for an approval.
+// Approval applies the action and appends its note, then strict model resolution for the resume
+// throws: the RPC rejects, no agent resumes and the chat gets no error. Restart recovery handles
+// the same case (workshop-agent-actions.test.ts); approval doesn't.
+it.concurrent("approving after the waiting chat's model was deleted applies but cannot resume",
+    async () => {
+  const model = models.script([
+    { toolCall: {
+      id: "write-test-value",
+      name: "executeCode",
+      arguments: {
+        code: "export default async function(self, env) { console.log(await env.TEST_AMBIENT.writeValue(13)); }",
+      },
+    } },
+    { text: "This must not run." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+    ambientVendorIds: [TEST_VENDOR_ID],
+    usernamePrefix: "deletedapprovalmodel",
+  });
+  const label = accountLabel(session.connectedAccount(TEST_VENDOR_ID));
+
+  expect((await session.runTurn("Set the test value to 13.")).outcome)
+    .toEqual({ status: "completed" });
+  const [action] = await waitFor("the test write to await approval", async () => {
+    const { entries } = await session.listActions({ filter: "pending" });
+    return entries.length === 1 ? entries : null;
+  });
+  expect(action).toMatchObject({ description: { title: "Set the test value to 13" } });
+  {
+    using publicApi = connect(harness.url);
+    using api = await logIn(publicApi, session.username);
+    await api.deleteModel(SCRIPTED_MODEL_ID);
+  }
+
+  await expect(withOwnerWorkspace(harness.url, session.username, ws =>
+    ws.approveAction(action!.id))).rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
+  expect((await session.listActions({ filter: "action" })).entries)
+    .toContainEqual(expect.objectContaining({ id: action!.id, state: "approved" }));
+  const state = await harness.fetchWorker(
+      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
+      { method: "POST", body: JSON.stringify({ label }) });
+  expect(await state.json()).toEqual({ pending: [], value: 13, applyCount: 1 });
+
+  const history = await withOwnerWorkspace(harness.url, session.username, async ws => {
+    const [chat] = await ws.listChats();
+    if (chat === undefined) throw new Error("The approval chat is missing");
+    await waitForIdleChat(ws, chat.id);
+    return loadAllChatHistory(before => ws.getChatHistory(chat.id, before));
+  });
+  expect(messageTexts(history)).toContain(
+    'The changes you submitted have been approved and applied: "Set the test value to 13". ' +
+    "Reads now reflect them.");
+  expect(history.filter(message => message.type === "error")).toEqual([]);
+  expect(model.requests).toHaveLength(1);
+  expect(model.remainingSteps()).toBe(1);
 });
