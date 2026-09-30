@@ -20,6 +20,10 @@ let events: string[] = [];
 let callbackScheduleIds: string[] = [];
 let activeCallbacks = 0;
 let maxActiveCallbacks = 0;
+// When set, callbacks hold until this many have overlapped once, so reaching the driver's
+// concurrency bound does not depend on its startHook/authorization round trips racing a timer.
+let callbackConcurrencyTarget = 0;
+const CALLBACK_CONCURRENCY_WAIT_MS = 2_000;
 let disposedApprovalQueues = 0;
 let disposedCallbacks = 0;
 let blockPoint: BlockPoint | null = null;
@@ -81,6 +85,14 @@ async function pauseIfBlocked(point: BlockPoint): Promise<void> {
   while (blockPoint === point) await new Promise((resolve) => setTimeout(resolve, 1));
 }
 
+async function waitForCallbackConcurrency(): Promise<void> {
+  const deadline = Date.now() + CALLBACK_CONCURRENCY_WAIT_MS;
+  // eslint-disable-next-line no-unmodified-loop-condition -- sibling callbacks raise this.
+  while (maxActiveCallbacks < callbackConcurrencyTarget && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 class TestApprovalQueue extends RpcTarget {
   readonly #generation = generation;
   #markDisposed!: () => void;
@@ -116,6 +128,7 @@ class TestCallback extends RpcTarget {
     activeCallbacks++;
     maxActiveCallbacks = Math.max(maxActiveCallbacks, activeCallbacks);
     try {
+      await waitForCallbackConcurrency();
       await pauseIfBlocked("callback");
       if (mode === "callback-reject") throw new Error("callback rejected");
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -159,6 +172,10 @@ export class TestHooks extends WorkerEntrypoint {
   async waitUntilBlocked(): Promise<void> {
     // eslint-disable-next-line no-unmodified-loop-condition -- pauseIfBlocked() mutates this via RPC.
     while (blockedPoint === null) await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+
+  holdCallbacksUntilConcurrent(count: number): void {
+    callbackConcurrencyTarget = count;
   }
 
   release(): void {
@@ -206,6 +223,7 @@ export class TestHooks extends WorkerEntrypoint {
     callbackScheduleIds = [];
     activeCallbacks = 0;
     maxActiveCallbacks = 0;
+    callbackConcurrencyTarget = 0;
     disposedApprovalQueues = 0;
     disposedCallbacks = 0;
     blockedPoint = null;

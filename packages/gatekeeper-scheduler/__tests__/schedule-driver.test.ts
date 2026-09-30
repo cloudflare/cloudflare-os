@@ -21,6 +21,7 @@ type TestHooks = HookInitiator<ScheduleHookTarget> & {
     mode: "success" | "start-reject" | "authorization-reject" | "callback-reject",
   ): Promise<void>;
   blockAt(point: "start" | "authorization" | "callback"): Promise<void>;
+  holdCallbacksUntilConcurrent(count: number): Promise<void>;
   read(): Promise<{
     events: string[];
     callbackScheduleIds: string[];
@@ -718,6 +719,7 @@ describe("ScheduleDriver", () => {
         }
       });
     });
+    await testEnv.TEST_HOOKS.holdCallbacksUntilConcurrent(4);
 
     await runDurableObjectAlarm(driver);
     await vi.waitFor(async () => {
