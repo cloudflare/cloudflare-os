@@ -36,7 +36,7 @@
     "@gadgets/bundled-blueprints": "workspace:*",
     "@gadgets/scripts": "workspace:*",
     "@types/pako": "^2.0.4",
-    "dompurify": "^3.4.15",
+    "dompurify": "^3.4.16",
     "esbuild": "^0.28.1",
     "typescript": "catalog:",
     "vitest": "catalog:",
