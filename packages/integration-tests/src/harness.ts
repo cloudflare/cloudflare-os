@@ -5,7 +5,7 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
@@ -17,7 +17,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Sibling of this package, whether that's `packages/` in this repo or `public/packages/` when a repo
 // vendors this one as a submodule.
 const WORKSHOP_DIR = resolve(HERE, "../../workshop-backend");
-const REPO_ROOT = resolve(HERE, "../../..");
+
+// wrangler treats an inline config as living at `<root>/wrangler.jsonc`, so it loads that directory's
+// .dev.vars (or .env) -- and lets those values override the config's own vars of the same name. A
+// developer's local settings (say CF_AI_GATEWAY_*) at the repo root would then make suites behave
+// differently on their machine than in CI, up to sending real AI traffic. So every harness boots
+// from a directory that holds no var files. Nothing else resolves against it: readWorkerConfig makes
+// the paths wrangler reads absolute, and it only collects wrangler's per-run scratch. Configs must
+// not declare `secrets` either: that makes wrangler fold process.env over the vars the same way.
+const HARNESS_ROOT = resolve(HERE, "../.wrangler/harness-root");
 
 /** Directory of the bundled fixture gatekeeper. See fixtures/gatekeeper-test/README-ish comments. */
 export const TEST_GATEKEEPER_DIR = resolve(HERE, "../fixtures/gatekeeper-test");
@@ -81,12 +89,6 @@ function readWorkerConfig(dir: string): WorkerConfig {
   const config = parsed.data;
   config.build = { ...config.build, cwd: dir };
   config.main = join(dir, config.main);
-
-  // Local-dev var files (.dev.vars/.env at the harness root) must not leak into tests: a
-  // developer's local settings (say CF_AI_GATEWAY_*) would make suites behave differently on
-  // their machine than in CI -- up to sending real AI traffic. Declaring an empty required-secrets
-  // list makes wrangler exclude every such key that is not already a config var.
-  config.secrets = { required: [] };
   return config;
 }
 
@@ -141,8 +143,6 @@ export async function startHarness(opts: {
   gatekeepers: GatekeeperSpec[];
   patchWorkshop?: (config: WorkerConfig) => void;
   enableGadgetExecution?: boolean;
-  /** Defaults to this repo's root. Override when a gatekeeper lives outside it. */
-  root?: string;
 }): Promise<Harness> {
   // Each gatekeeper's config is read (and patched) exactly once; the service binding below points at
   // the name the booted worker will actually carry, patches included.
@@ -152,8 +152,9 @@ export async function startHarness(opts: {
     return { binding: gk.binding, name: config.name, config };
   });
 
+  mkdirSync(HARNESS_ROOT, { recursive: true });
   const server = createTestHarness({
-    root: opts.root ?? REPO_ROOT,
+    root: HARNESS_ROOT,
     // workshop-backend is primary, so unrouted requests (e.g. /api) go to it.
     workers: [
       { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false,
