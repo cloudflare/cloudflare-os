@@ -104,6 +104,8 @@ export interface WranglerConfig {
   migrations?: DurableObjectMigration[];
   /** Workers observability settings. */
   observability?: ObservabilityConfig;
+  /** Per-invocation resource limits; `cpu_ms` also applies to the worker's Durable Objects. */
+  limits?: { cpu_ms?: number };
   /** KV namespace bindings; ids become `$KV_<BINDING>_ID` placeholders. */
   kv_namespaces?: BindingDecl[];
   /** R2 bucket bindings; names become `$R2_<BINDING>_NAME` placeholders. */
@@ -192,6 +194,8 @@ export interface WorkerEntry {
   vars: Record<string, unknown>;
   /** Workers observability settings. */
   observability: ObservabilityConfig;
+  /** Per-invocation resource limits, verbatim from wrangler.jsonc. */
+  limits?: { cpu_ms?: number };
   /** How the deploy service expands installed gatekeepers into `GATEKEEPER_*` bindings. */
   gatekeeperBindingExpansion?: {
     entrypoint?: string;
@@ -244,7 +248,7 @@ export interface WorkerBuild {
 const HANDLED_CONFIG_KEYS = new Set([
   "$schema", "name", "main", "build", "compatibility_date", "compatibility_flags", "rules",
   "migrations", "observability", "kv_namespaces", "r2_buckets", "worker_loaders", "services",
-  "assets", "vars",
+  "assets", "vars", "limits",
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
@@ -529,6 +533,7 @@ export function buildWorkerEntry(
     bindings,
     vars,
     observability: config.observability ?? { enabled: false },
+    ...(config.limits ? { limits: config.limits } : {}),
     ...(gatekeeperBindingExpansion ? { gatekeeperBindingExpansion } : {}),
     ...(assetsConfig ? { assetsConfig } : {}),
     ...(inputs ? { inputs } : {}),

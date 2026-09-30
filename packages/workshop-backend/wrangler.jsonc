@@ -8,6 +8,10 @@
   },
   "compatibility_date": "2026-09-04",
 
+  // An agent turn runs inside one long OverseerDurableObject invocation, and its CPU time can
+  // exceed the 30s default ("Worker exceeded CPU time limit." mid-turn).
+  "limits": { "cpu_ms": 300000 },
+
   // `global_fetch_strictly_public` makes the global fetch() function strictly fetch from
   // the public internet in production, rather than the legacy behavior in which same-zone
   // requests go directly to origin bypassing Cloudflare. This flag is important to protect

@@ -1094,6 +1094,9 @@
       },
       "installable": true,
       "kind": "backend",
+      "limits": {
+        "cpu_ms": 300000
+      },
       "mainModule": "server.js",
       "migrations": [
         {
