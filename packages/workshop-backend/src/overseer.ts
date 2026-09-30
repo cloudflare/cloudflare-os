@@ -2691,8 +2691,9 @@ class OverseerImpl implements AgentHooks {
   // worktree has no hooks or facet, so those steps are no-ops for one). Gatekeepers a gadget
   // bound survive, possibly orphaned. The workpiece's commits become dangling objects in the git
   // store, which is fine: content-addressed objects are cheap, unreachable, and shared with any
-  // related histories. (Chat docs may still hold content in the gadget's files root; such
-  // content is inert because the registry entry -- the enumeration source of truth -- is gone.)
+  // related histories. (Chat docs may still hold content in the gadget's files root, and chats
+  // may still pin the gadget; the pins stay because the chat's rows still fold on them. Both are
+  // inert because the registry entry -- the enumeration source of truth -- is gone.)
   async removeWorkpiece(id: WorkpieceId): Promise<void> {
     let record = this.storage.gadgets.get(id);
     if (!record) {
@@ -2707,10 +2708,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    // These chats stop proposing the workpiece once its record is gone, which no chatMeta write
+    // of theirs reports, so re-put their metadata to re-broadcast it (as reconcilePendingGadgets).
+    let proposingChats = Array.from(this.storage.chatMeta.list())
+        .filter(meta => this.proposedChangeWorkpieceIds(meta.id, meta).includes(id));
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
+    for (let meta of proposingChats) this.storage.chatMeta.put(meta);
   }
 
   // Chat deletion's workpiece cleanup: remove the gadgets and worktrees still provisional to the
@@ -3303,7 +3309,8 @@ class OverseerImpl implements AgentHooks {
   proposedChangeWorkpieceIds(chatId: number, meta: AiChatMetadata): WorkpieceId[] {
     let ids = new Set<WorkpieceId>();
     for (let pin of meta.codeBase?.pins ?? []) {
-      ids.add(pin.gadgetId);
+      // A removed workpiece's pin outlives it (see removeWorkpiece) but proposes nothing.
+      if (this.storage.gadgets.get(pin.gadgetId)) ids.add(pin.gadgetId);
     }
     for (let record of this.storage.gadgets.list()) {
       if (ids.has(record.id) || record.type !== "gadget") continue;
