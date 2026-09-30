@@ -1,0 +1,21 @@
+packages/integration-tests/src/harness.ts
+  s_84958af81f24c6::t_b907d4a9729d6a 21-24,157
+  s_84958af81f24c6::t_897b5d2b94c0e3 8,25-28,155
+  s_84958af81f24c6::t_3806c8d14cedb4 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a70f0979420b604003d62e64843a0c93fb42fbe2",
+  "prompts": {},
+  "sessions": {
+    "s_84958af81f24c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe3a76c0-3183-4af3-8310-cefb2b49affc",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
