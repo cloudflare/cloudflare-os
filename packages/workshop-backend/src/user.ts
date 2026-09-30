@@ -7,7 +7,7 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { getAiGatewayConfig } from "./ai-gateway.js";
+import { getAiGatewayConfig, type AiGatewayConfig } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
@@ -657,16 +657,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
+    return this.#listModels(getAiGatewayConfig(this.env));
+  }
+
+  #listModels(gwConfig: AiGatewayConfig | null): AiChatAuthorInfo[] {
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include the suggested models offered on enabled providers.
-    let gwConfig = getAiGatewayConfig(this.env);
     if (gwConfig) {
       result.push(...gwConfig.getModelList());
     }
 
     // Also include user-configured models, skipping any that a gateway model shadows, including
-    // a hidden one (see getChatContext()).
+    // a hidden one (see #resolveModel()).
     for (let model of this.storage.aiModels.list()) {
       if (!gwConfig?.resolveModel(model.profile.id)) {
         result.push(model.profile);
@@ -681,8 +684,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (copySecretsFrom !== undefined) {
       source = this.#getHandAddedModel(copySecretsFrom).config;
     }
+    // A gateway model, hidden or not, would shadow the new model and leave it unreachable.
     if (this.storage.aiModels.get(profile.id) ||
-        (source && getAiGatewayConfig(this.env)?.resolveModel(profile.id))) {
+        getAiGatewayConfig(this.env)?.resolveModel(profile.id)) {
       throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
     this.#putModel(profile, resolveWithheldSecrets(config, source));
@@ -759,10 +763,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
-      // Validate that the model exists in the user's configured models or as a gateway model.
-      let gwConfig = getAiGatewayConfig(this.env);
-      let exists = !!this.storage.aiModels.get(id) || !!gwConfig?.resolveModel(id);
-      if (!exists) {
+      // Any model that resolves is accepted, hidden ones included (see getExternalMessageChatContext()).
+      if (!this.#resolveModel(id, getAiGatewayConfig(this.env))) {
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -863,19 +865,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    let gwConfig = getAiGatewayConfig(this.env);
+    return this.#getChatContext(modelId, getAiGatewayConfig(this.env));
+  }
 
+  #getChatContext(modelId: string | null, gwConfig: AiGatewayConfig | null): UserChatContext {
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      // In AI Gateway mode, resolve gateway models first.
-      if (gwConfig) {
-        result.aiModel = gwConfig.resolveModel(modelId);
-      }
-      if (!result.aiModel) {
-        result.aiModel = this.storage.aiModels.get(modelId);
-      }
+      result.aiModel = this.#resolveModel(modelId, gwConfig);
       if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
     }
 
@@ -900,16 +898,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // conversation takes the user's preferred model only while it is still offered, as the web
     // composer does with its stored choice, and otherwise the first available model.
     let gwConfig = getAiGatewayConfig(this.env);
-    let models = await this.listModels();
-    let preferredModel = this.storage.preferredModel.get();
-    let chatModelResolves = existingChatModelId !== null &&
-        !!(gwConfig?.resolveModel(existingChatModelId) ??
-           this.storage.aiModels.get(existingChatModelId));
-    let selectedModelId = chatModelResolves
-      ? existingChatModelId
-      : (models.find(model => model.id === preferredModel) ?? models[0])?.id ?? null;
+    let selectedModelId = existingChatModelId;
+    if (selectedModelId === null || !this.#resolveModel(selectedModelId, gwConfig)) {
+      let models = this.#listModels(gwConfig);
+      let preferredModel = this.storage.preferredModel.get();
+      selectedModelId = (models.find(model => model.id === preferredModel) ?? models[0])?.id ?? null;
+    }
 
-    return this.getChatContext(selectedModelId);
+    return this.#getChatContext(selectedModelId, gwConfig);
+  }
+
+  /**
+   * Resolve a model ID the way chats do: a gateway model, hidden ones included, shadows a stored
+   * model with the same ID.
+   */
+  #resolveModel(id: string, gwConfig: AiGatewayConfig | null): UserAiModelRecord | undefined {
+    return gwConfig?.resolveModel(id) ?? this.storage.aiModels.get(id);
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {

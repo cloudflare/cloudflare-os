@@ -1009,12 +1009,14 @@ export async function openAgentSession(
     if (options.userModel !== undefined) {
       await authenticated.addModel(options.userModel.profile, options.userModel.config);
     }
-    const models = await authenticated.listModels();
-    if (!models.some(model => model.id === options.modelId)) {
-      throw new Error(`Model "${options.modelId}" is not available to the test account`);
-    }
     await authenticated.setQuickModel(null);
-    await authenticated.setPreferredModel(options.modelId);
+    // setPreferredModel accepts any model that resolves, not only the ones listModels() offers, so
+    // an eval can compare a superseded (hidden) model with its replacement.
+    try {
+      await authenticated.setPreferredModel(options.modelId);
+    } catch (cause) {
+      throw new Error(`Model "${options.modelId}" is not available to the test account`, { cause });
+    }
     await authenticated.completeOnboarding();
 
     const accounts = new Map<string, ConnectedAccount>();

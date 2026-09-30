@@ -521,11 +521,16 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Get the user's preferred model, chosen during onboarding. Returns null if the user has not
-   * set a preference (or explicitly chose "No agent").
+   * set a preference (or explicitly chose "No agent"). The preference may name a model that is
+   * no longer offered (see setPreferredModel).
    */
   getPreferredModel(): Promise<string | null>;
 
-  /** Set the user's preferred model. Pass null to indicate "No agent". */
+  /**
+   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
+   * accepted, including one hidden from pickers, but a new external conversation uses the
+   * preference only while it is offered, and otherwise the first offered model.
+   */
   setPreferredModel(id: string | null): Promise<void>;
 
   /** Returns true if the user has completed the onboarding wizard. */

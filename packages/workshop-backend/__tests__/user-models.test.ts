@@ -115,3 +115,42 @@ describe("UserDurableObject model editing", () => {
     await expect(user.addModel(clone, { ...CONFIG, apiToken: null })).rejects.toThrow("required");
   });
 });
+
+describe("UserDurableObject hidden gateway models", () => {
+  const HIDDEN_ID = "claude-opus-5";
+
+  // Every call runs in one invocation, since the gateway env is only overridden on this instance.
+  function inGatewayUser<T>(f: (user: UserDurableObject) => Promise<T>) {
+    const stub = env.TEST_USER.getByName(`user-models-${++userCounter}`);
+    return runInDurableObject(stub, user => {
+      const impl = user as unknown as { env: Cloudflare.Env };
+      impl.env = {
+        ...impl.env,
+        CF_AI_GATEWAY: "platform-gateway",
+        CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+        CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+        CF_AI_GATEWAY_PROVIDERS: "anthropic",
+      };
+      return f(user);
+    });
+  }
+
+  it("refuses to add a model that a hidden gateway model would shadow", () => inGatewayUser(async user => {
+    await expect(user.addModel({ ...PROFILE, id: HIDDEN_ID }, { ...CONFIG, model: HIDDEN_ID }))
+        .rejects.toThrow("already exists");
+  }));
+
+  it("keeps an existing chat on a hidden model", () => inGatewayUser(async user => {
+    const context = await user.getExternalMessageChatContext(HIDDEN_ID);
+    expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
+  }));
+
+  it("starts a new conversation on the first offered model when the preference is hidden",
+      () => inGatewayUser(async user => {
+    await user.setPreferredModel(HIDDEN_ID);
+    const [first] = await user.listModels();
+    expect(first.id).not.toBe(HIDDEN_ID);
+    const context = await user.getExternalMessageChatContext(null);
+    expect(context.aiModel?.profile.id).toBe(first.id);
+  }));
+});

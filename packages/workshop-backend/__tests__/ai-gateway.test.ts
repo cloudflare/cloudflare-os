@@ -124,10 +124,11 @@ describe("AiGatewayConfig transport selection", () => {
 });
 
 describe("AiGatewayConfig model offering", () => {
-  const config = new AiGatewayConfig(env({
+  const gatewayEnv = env({
     CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
     CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-  }));
+  });
+  const config = new AiGatewayConfig(gatewayEnv);
 
   it("lists visible models on enabled providers only", () => {
     const ids = config.getModelList().map(model => model.id);
@@ -138,16 +139,11 @@ describe("AiGatewayConfig model offering", () => {
 
   // Chats, spawners, and preferences created before a model was hidden still name it.
   it("still resolves a hidden model that it doesn't list", () => {
-    expect(config.isModelOffered("openai", "gpt-6-sol")).toBe(false);
-    expect(config.isModelOffered("openai", "not-a-model")).toBe(false);
     expect(config.getModelList().map(model => model.id)).not.toContain("gpt-6-sol");
 
     const record = config.resolveModel("gpt-6-sol");
     expect(record?.profile).toEqual({ type: "agent", id: "gpt-6-sol", name: "GPT-6 Sol" });
-    const handle = getModel(env({
-      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
-      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
-    }), record!.config, { type: "user", id: "user-1", name: "User" });
+    const handle = getModel(gatewayEnv, record!.config, { type: "user", id: "user-1", name: "User" });
     expect(handle.model.id).toBe("gpt-6-sol");
   });
 });
