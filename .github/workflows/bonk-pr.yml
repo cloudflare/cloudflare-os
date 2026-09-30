@@ -156,10 +156,11 @@ jobs:
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           # Paths outside the checkout are denied, not prompted: nobody can answer a prompt in CI.
-          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-6.1-sol":{}}}}}'
+          # BONK_MODEL is a repository variable, shared by every Bonk workflow.
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{}}}}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
-          model: "cloudflare-ai-gateway/openai/gpt-6.1-sol"
+          model: "cloudflare-ai-gateway/${{ vars.BONK_MODEL }}"
           variant: "high"
           forks: "false"
           permissions: write
