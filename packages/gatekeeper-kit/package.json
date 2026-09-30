@@ -23,6 +23,7 @@
     "./oauth-client": "./src/oauth-client.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
+    "./serial-queue": "./src/serial-queue.ts",
     "./simulation": "./src/simulation.ts"
   },
   "scripts": {

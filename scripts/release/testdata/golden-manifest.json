@@ -63,6 +63,14 @@
             "CloudflareObservabilityGatekeeper"
           ],
           "tag": "v1"
+        },
+        {
+          "new_sqlite_classes": [
+            "CloudflareNotificationsGatekeeper",
+            "CloudflareNotificationReceiver",
+            "CloudflareNotificationRegistry"
+          ],
+          "tag": "v2"
         }
       ],
       "modules": [
