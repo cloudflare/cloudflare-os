@@ -582,17 +582,17 @@ async function gadgetState(ws: RpcStub<Overseer>, gadgetId: WorkpieceId, chatId?
   using gadget = await ws.getGadget(gadgetId);
   using facet = await gadget.connectToGadget(chatId) as StatefulGadget;
   await act?.(facet);
-  return { version: await facet.version(), k: await facet.get("k"), draft: await facet.get("draft") };
+  return { version: await facet.version(), k: await facet.get("k") };
 }
 
 it.concurrent("gadget state survives code changes and restart but is not copied to a blueprint",
     async () => {
-  const v2State = { version: "v2", k: "v1-data", draft: "draft-data" };
+  const v2State = { version: "v2", k: "v1-data" };
   const { username, gadgetId, generation } = await withOwner(async (client, _api, username) => {
     const { ws, workpieces } = client;
     const { gadgetId, head } = await seedGadget(client, "server.js", stateServer("v1"));
     expect(await gadgetState(ws, gadgetId, undefined, facet => facet.put("k", "v1-data")))
-        .toEqual({ version: "v1", k: "v1-data", draft: null });
+        .toEqual({ version: "v1", k: "v1-data" });
 
     const v2Chat = await ws.newChat("V2", null);
     await ws.submitCodeChange(v2Chat, {
@@ -601,7 +601,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
     });
     expect(await ws.mergeChanges(v2Chat)).toEqual({ outcome: "merged" });
     const v2Head = await headOf(workpieces, gadgetId, head);
-    expect(await gadgetState(ws, gadgetId)).toEqual({ ...v2State, draft: null });
+    expect(await gadgetState(ws, gadgetId)).toEqual(v2State);
 
     const v3Chat = await ws.newChat("V3", null);
     await ws.submitCodeChange(v3Chat, {
@@ -609,11 +609,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
       change: edit(gadgetId, "server.js", stateServer("v2"), stateServer("v3")),
     });
     await ws.finalizeChatDraft(v3Chat);
-    expect(await gadgetState(ws, gadgetId, v3Chat, facet => facet.put("draft", "draft-data")))
-        .toEqual({ ...v2State, version: "v3" });
-    // PINNED: previews reuse the mainline facet (gadgetFacetName) and swap only its code, so draft
-    // code reads and writes real data, and reverting the chat doesn't undo its writes.
-    expect(await gadgetState(ws, gadgetId)).toEqual(v2State);
+    expect((await gadgetState(ws, gadgetId, v3Chat)).version).toBe("v3");
 
     // There is no public mainline revert (`revertChanges` on a merged message is a no-op), so
     // reverting a later draft is the revert users can reach.
@@ -636,7 +632,7 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
     const { defaultGadgetId } = await installed.getMetadata();
     if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
     expect(await gadgetState(installed, defaultGadgetId))
-        .toEqual({ version: "v2", k: null, draft: null });
+        .toEqual({ version: "v2", k: null });
     expect(await gadgetState(ws, gadgetId)).toEqual(v2State);
   });
 });

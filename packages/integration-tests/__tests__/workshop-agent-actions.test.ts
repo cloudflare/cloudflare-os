@@ -180,12 +180,11 @@ it.concurrent.each(["retry", "reject"] as const)(
   }
 });
 
-// PINNED (GB): two concurrent approvals of one action both dispatch the gatekeeper apply. Each
-// approval surface only guards its own button, so two surfaces or tabs, a retry after a dropped
-// WebSocket, or an approve racing drainAutoApprovals reach it. Overseer.approveAction checks
-// `pending`, then awaits applyPendingAction before marking the action approved. Only the fixture's
-// one-shot pending state stops a second write; a non-idempotent gatekeeper would write twice.
-it.concurrent("approving one action twice at once dispatches two applies", async () => {
+// Known bug, kept as a deterministic repro: Overseer.approveAction checks `pending`, then awaits
+// applyPendingAction before marking the action approved, so two concurrent approvals (separate
+// approval surfaces, tabs, or a retry after a dropped WebSocket) both dispatch the apply, and a
+// non-idempotent gatekeeper writes twice. Drop `.fails` once approval claims the action first.
+it.concurrent.fails("approving one action twice at once applies it once", async () => {
   await using session = await openSession(models.script([{ text: "Ready." }]), "agentdoubleapprove");
   const label = labelOf(session);
   // A workspace is listed, so withOwnerWorkspace can open it, once it has seen activity.
@@ -200,18 +199,17 @@ it.concurrent("approving one action twice at once dispatches two applies", async
     const [action] = await waitForPendingActions(session, 1);
 
     await control("hold-next-apply", { label });
-    const first = expect(ws.approveAction(action.id)).rejects.toThrow("Unknown pending test action 1");
+    const first = ws.approveAction(action.id);
     try {
       await waitFor("the first apply to be held", async () => await applyAttempts(label) === 1 || null);
-      // The same session, as a second approval surface in the same tab would call it.
-      await ws.approveAction(action.id);
+      await expect(() => ws.approveAction(action.id)).rejects.toThrow(`Action is not pending: ${action.id}`);
     } finally {
       await control("release-apply", { label });
       await Promise.allSettled([first]);
     }
     await first;
 
-    expect(await applyAttempts(label)).toBe(2);
+    expect(await applyAttempts(label)).toBe(1);
     expect(await actionState(label)).toEqual({ pending: [], value: 23, applyCount: 1 });
     expect(await actionStatus(session, action.id)).toMatchObject(decidedBy(session, "approved"));
   });

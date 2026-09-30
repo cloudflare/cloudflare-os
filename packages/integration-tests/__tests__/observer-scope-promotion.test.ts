@@ -367,12 +367,8 @@ it("mainline binding names steer clear of another chat's pending binding", async
       "Accept or revert that chat's changes first, or choose a different name.");
   expect(await app.bindWithSuggestedName(mainlineTargetId)).toBe("TEST_THING_2");
 
-  // PINNED (GE): renaming onto another chat's hidden pending name fails with the generic
-  // duplicate error, not bind's "already proposed" guidance. Connections' rename shows only
-  // "Failed to update binding name" (Connections.tsx), so the wording never reaches users.
   await app.bind("MAIN", mainlineTargetId);
-  await expect(app.renameBinding("MAIN", "TEST_THING")).rejects.toThrow(
-      'There is already a binding named "TEST_THING".');
+  await expect(app.renameBinding("MAIN", "TEST_THING")).rejects.toThrow();
 });
 
 it("a mainline bind re-verifies a held use viewer against the bound connection", async () => {

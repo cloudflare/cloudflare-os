@@ -174,9 +174,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
     change: clientEdit(targetId, CLIENT_DRAFT, CLIENT_V1),
   })).rejects.toThrow(`Code change touches a nonexistent gadget: ${targetId}`);
 
-  // PINNED: a blueprint is a published snapshot, so removing its source leaves it listed and
-  // installable (newGadgetFromBlueprint reads the stored snapshot, server.ts); only refreshing it
-  // from source (updateBlueprint's updateCode re-reads the source gadget's record) fails.
+  // A published blueprint is a snapshot: it outlives its source but can't be refreshed from it.
   expect(await ws.listBlueprints()).toContainEqual(expect.objectContaining({ id: blueprint.id }));
   using installed = await api.newGadgetFromBlueprint(blueprint.id, {});
   const { defaultGadgetId } = await installed.getMetadata();

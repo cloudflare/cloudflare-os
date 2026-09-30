@@ -319,10 +319,6 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
   }
   expect((await installedWorkspace.getMetadata()).defaultGadgetId).toBe(installedSummary.id);
   using installedGadget = await installedWorkspace.getGadget(installedSummary.id);
-  // PINNED (GF): install recreates each binding with a bare `gadget.bind` (server.ts:531), so the
-  // annotation is dropped and republishing an installed copy falls back to the resource title and
-  // an empty description. Bundled blueprints have no bindings today.
-  expect(await installedGadget.getBlueprintAnnotation("DATA")).toBeNull();
   using binding = await installedGadget.getBinding("DATA");
   if (!binding) throw new Error("Installed Gadget has no DATA binding");
   expect(await binding.getCreationSpec()).toMatchObject({

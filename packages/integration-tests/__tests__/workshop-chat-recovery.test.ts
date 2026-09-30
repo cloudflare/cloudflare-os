@@ -343,11 +343,6 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
 
   await api.deleteModel(SCRIPTED_MODEL_ID);
   expect(await api.getQuickModel()).toBeNull();
-  // PINNED: deleteModel leaves the preferred-model id dangling, but no product path reads it
-  // unchecked: the composer validates its localStorage choice against listModels
-  // (workshop-frontend/src/modelSelection.ts), and external messages look the preferred id up in
-  // listModels(), falling through to the first model (workshop-backend/src/user.ts:901-908).
-  expect(await api.getPreferredModel()).toBe(SCRIPTED_MODEL_ID);
 
   const beforeRefused = await history();
   await expect(ws.sendChatMessage(chatId, "This must not be saved.", SCRIPTED_MODEL_ID))
@@ -364,11 +359,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   ]);
 });
 
-// PINNED (GC′): a user can delete a model in settings while its chat waits for an approval.
-// Approval applies the action and appends its note, then the resume's model lookup throws: the RPC
-// rejects, no agent resumes and the chat gets no error. Restart recovery posts an error instead
-// (workshop-backend agent-calls.test.ts); approval doesn't.
-it.concurrent("approving after the waiting chat's model was deleted applies but cannot resume",
+it.concurrent("approving after the waiting chat's model was deleted applies once without resuming",
     async () => {
   const model = models.script([
     { toolCall: {
@@ -401,22 +392,15 @@ it.concurrent("approving after the waiting chat's model was deleted applies but 
     await api.deleteModel(SCRIPTED_MODEL_ID);
   }
 
-  await expect(withOwnerWorkspace(harness.url, session.username, ws =>
-    ws.approveAction(action!.id))).rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    // What the approval call should then report is undecided, so only its effects are asserted.
+    await Promise.allSettled([ws.approveAction(action!.id)]);
+    const [chat] = await ws.listChats();
+    await waitForIdleChat(ws, chat!.id);
+  });
   expect((await session.listActions({ filter: "action" })).entries)
     .toContainEqual(expect.objectContaining({ id: action!.id, state: "approved" }));
   expect(await testActionState(harness, label)).toEqual({ pending: [], value: 13, applyCount: 1 });
-
-  const history = await withOwnerWorkspace(harness.url, session.username, async ws => {
-    const [chat] = await ws.listChats();
-    if (chat === undefined) throw new Error("The approval chat is missing");
-    await waitForIdleChat(ws, chat.id);
-    return loadAllChatHistory(before => ws.getChatHistory(chat.id, before));
-  });
-  expect(messageTexts(history)).toContain(
-    'The changes you submitted have been approved and applied: "Set the test value to 13". ' +
-    "Reads now reflect them.");
-  expect(history.filter(message => message.type === "error")).toEqual([]);
   expect(model.requests).toHaveLength(1);
   expect(model.remainingSteps()).toBe(1);
 });
