@@ -548,7 +548,8 @@ jobs:
             does not. For a rate or an average: it must move the same way on most comparable
             tasks, by more than one side's runs differ from each other. Decide in this order:
             - 🔴 REGRESSION FROM THIS PR: a failure mode caused by this PR explains a task that
-              fell in a `regressed` verdict, or a change for the worse counts.
+              fell in a `regressed` verdict, or a change for the worse counts and none for the
+              better does.
             - 🟡 INCONCLUSIVE: the `verdict` is `regressed` or `inconclusive` and nothing above
               explains it, a failure mode is or may be caused by this PR, or one change for the
               better and one for the worse both count.
