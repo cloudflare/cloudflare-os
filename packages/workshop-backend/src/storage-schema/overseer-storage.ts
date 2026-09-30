@@ -1151,6 +1151,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // its `ObservationDescription`. Share links stop working and only the owner can add
       // collaborators (enforced by SharingManager).
       ownerInvitesOnly: singleton(false),
+
+      // A random string, created on the workspace's first agent turn, that leads the
+      // project-specific part of the agent's system prompt, so nobody without that prompt can
+      // probe a shared prompt cache for it (see runAgentPass).
+      promptCacheSalt: <string | undefined>undefined,
     },
 
     collections: {

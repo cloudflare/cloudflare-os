@@ -1654,4 +1654,23 @@ describe("System prompt cache blocks", () => {
     expect(JSON.parse(split).input[0]).toMatchObject({ content: RENDERED_TEXT });
     expect(split).toBe(await captureBody(handle, false, options));
   }, 15000);
+
+  // A chat's handle, whose affinity pi sends as the prompt cache key.
+  const chatHandle = (model: string) => getModel(env({ CF_AI_GATEWAY: undefined }),
+      { provider: "openai", model, apiToken: "direct-api-token" }, INITIATOR,
+      { sessionAffinity: "chat-7" });
+
+  it("drops the chat's prompt cache key from a split GPT-5.6 request", async () => {
+    expect(JSON.parse(await captureBody(chatHandle("gpt-6-luna"), true)))
+        .not.toHaveProperty("prompt_cache_key");
+  }, 15000);
+
+  it.each([
+    { name: "a request with no project block, like compaction", model: "gpt-6-luna",
+      sections: false },
+    { name: "models before GPT-5.6, which route by it", model: "gpt-5.2", sections: true },
+  ])("keeps the chat's prompt cache key on $name", async ({ model, sections }) => {
+    const body = JSON.parse(await captureBody(chatHandle(model), sections));
+    expect(body.prompt_cache_key).toBe("chat-7");
+  }, 15000);
 });

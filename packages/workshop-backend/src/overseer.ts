@@ -8281,6 +8281,15 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  getPromptCacheSalt(): string {
+    let salt = this.storage.promptCacheSalt.get();
+    if (salt === undefined) {
+      salt = crypto.randomUUID();
+      this.storage.promptCacheSalt.put(salt);
+    }
+    return salt;
+  }
+
   async listConnectableVendors(): Promise<{id: string, displayName: string}[]> {
     try {
       let vendors = await this.#listGatekeeperVendorsCached();

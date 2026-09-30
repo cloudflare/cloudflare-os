@@ -546,6 +546,9 @@ export interface AgentHooks {
    */
   getInstanceInstructions(): Promise<string>;
 
+  /** A random string that belongs to this workspace and never changes. */
+  getPromptCacheSalt(): string;
+
   /**
    * Connection-request hooks for the agent.
    *
@@ -2988,8 +2991,15 @@ async function runAgentPass(
   if (instanceInstructions) {
     systemPromptSlots[0] += `\n\n${instanceInstructions}`;
   }
+  // Prompt caches are shared across the provider account, so anyone on it could probe for a cached
+  // prefix. The workspace's random salt leads the project-specific part, so nobody without this
+  // prompt can probe that part, or the chat after it.
   let systemMessage: SystemMessage = {
-    role: "system", content: systemPromptSlots[0], sections: {environment: systemPromptSlots[1]},
+    role: "system", content: systemPromptSlots[0],
+    sections: {
+      environment: `Prompt cache salt (ignore): ${hooks.getPromptCacheSalt()}\n\n` +
+          systemPromptSlots[1],
+    },
     timestamp: 0,
   };
 

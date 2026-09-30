@@ -31,7 +31,7 @@ import {
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
-import { splitSystemPrompt } from "./system-prompt-blocks.js";
+import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -522,12 +522,15 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
         // apply to: PDF attachments ride pi image parts and become the provider's native document
         // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
-        // split after its static text (see system-prompt-blocks.ts).
+        // split after its static text (see system-prompt-blocks.ts), and a split request drops
+        // pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
           if (options.cacheRetention === "none") return bridged;
-          return splitSystemPrompt(args.model, transcript, bridged ?? payload) ?? bridged;
+          const split = splitSystemPrompt(args.model, transcript, bridged ?? payload);
+          if (split === undefined) return bridged;
+          return withoutPromptCacheKey(args.model, split) ?? split;
         },
       };
       return traceChat(model, () => received,
@@ -535,6 +538,21 @@ function makeHandle(args: HandleArgs): ModelHandle {
     },
   };
   return handle;
+}
+
+// GPT-5.6 and later keep a separate cache for each prompt_cache_key, so the key pi sets from the
+// chat's affinity stops chats from sharing the cached tools and static system prompt. Without a
+// key, the cache is shared across the OpenAI organization, as Anthropic's is across a workspace.
+// Only split requests are agent turns, whose project-specific block starts with the workspace's
+// random salt (see runAgentPass); others, like compaction's chat history, keep the key so
+// they can't be probed. Older models route by the key, so they keep it too.
+function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | undefined {
+  if (!hasGpt56PromptCaching(model) || typeof payload !== "object" || payload === null ||
+      !("prompt_cache_key" in payload)) {
+    return undefined;
+  }
+  const { prompt_cache_key, ...rest } = payload;
+  return rest;
 }
 
 /**
