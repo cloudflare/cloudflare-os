@@ -22,6 +22,7 @@ import { traceChat } from "./agent-tracing.js";
 import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { splitSystemPrompt } from "./system-prompt-blocks.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -318,6 +319,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
             ? { "cf-aig-metadata": JSON.stringify(args.gatewayMetadata) }
             : {}),
       };
+      const transcript = normalizeContext(context);
       const merged: SimpleStreamOptions = {
         // API defaults first, so an explicit per-call option can override them. `thinking: false`
         // replaces them with a quick request. Managed-effort Anthropic models must use adaptive
@@ -344,15 +346,19 @@ function makeHandle(args: HandleArgs): ModelHandle {
           handle.lastResponse = received;
           await options.onResponse?.(response, responseModel);
         },
-        // PDF attachments ride pi image parts and are rewritten here into the provider's native
-        // document blocks (no-op for payloads without one; see chat-attachment-pdf.ts).
+        // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
+        // apply to: PDF attachments ride pi image parts and become the provider's native document
+        // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
+        // split after its static text (see system-prompt-blocks.ts).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
-          return bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          if (options.cacheRetention === "none") return bridged;
+          return splitSystemPrompt(args.model, transcript, bridged ?? payload) ?? bridged;
         },
       };
       return traceChat(model, () => received,
-          () => streamFn(model, normalizeContext(context), merged));
+          () => streamFn(model, transcript, merged));
     },
   };
   return handle;

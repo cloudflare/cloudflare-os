@@ -742,3 +742,84 @@ describe("PDF attachment bridging", () => {
     }));
   }, 15000);
 });
+
+// Counts the cache breakpoints in an Anthropic request body.
+const breakpointCount = (body: string) => body.split(`"cache_control"`).length - 1;
+
+describe("System prompt cache blocks", () => {
+  // The agent's leading system message: shared text as its content, project-specific text as a
+  // section (see runAgentPass). Every handle's onPayload hook splits pi's single system block
+  // there (see system-prompt-blocks.ts). These tests drive the real pi adapters and compare the
+  // outgoing request with one whose prompt is the same text as plain content.
+  const STATIC_TEXT = "Shared instructions.";
+  const RENDERED_TEXT = `${STATIC_TEXT}\n\nThis workspace's gadgets.`;
+
+  async function captureBody(
+      handle: ModelHandle, sections: boolean,
+      options: NonNullable<Parameters<ModelHandle["stream"]>[2]> = {}): Promise<string> {
+    capturedRequests.length = 0;
+    const stream = handle.stream(handle.model, {
+      messages: [
+        sections
+            ? {
+                role: "system", content: STATIC_TEXT,
+                sections: { environment: "This workspace's gadgets." }, timestamp: 0,
+              }
+            : { role: "system", content: RENDERED_TEXT, timestamp: 0 },
+        { role: "user", content: "hello", timestamp: 0 },
+      ],
+    }, { fetch: fetchStub, maxRetries: 0, ...options });
+    const message = await stream.result();
+    expect(message.stopReason).toBe("error");
+    return capturedRequests[0].body;
+  }
+
+  // An OAuth token makes pi put an identity block (with its own breakpoint) before the prompt.
+  it.each(["direct-api-token", "sk-ant-oat01-direct"])(
+      "moves Anthropic's system breakpoint after the static text, with token %s",
+      async (apiToken) => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "anthropic", model: "claude-sonnet-4-5", apiToken,
+    }, INITIATOR);
+    const split = await captureBody(handle, true);
+    const unsplit = await captureBody(handle, false);
+
+    const { system: unsplitSystem } = JSON.parse(unsplit);
+    expect(unsplitSystem.at(-1)).toMatchObject({ text: RENDERED_TEXT });
+    expect(JSON.parse(split).system).toEqual([
+      ...unsplitSystem.slice(0, -1),
+      { type: "text", text: STATIC_TEXT, cache_control: { type: "ephemeral" } },
+      { type: "text", text: RENDERED_TEXT.slice(STATIC_TEXT.length) },
+    ]);
+    expect(breakpointCount(split)).toBe(breakpointCount(unsplit));
+  }, 15000);
+
+  function openAiHandle(model: string): ModelHandle {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
+      provider: "openai", model, apiToken: "direct-api-token",
+    }, INITIATOR);
+    expect(handle.model.api).toBe("openai-responses");
+    return handle;
+  }
+
+  it("puts an OpenAI GPT-5.6+ breakpoint after the static text", async () => {
+    const handle = openAiHandle("gpt-6-luna");
+    expect(JSON.parse(await captureBody(handle, true)).input[0]).toEqual({
+      role: "developer",
+      content: [
+        { type: "input_text", text: STATIC_TEXT, prompt_cache_breakpoint: { mode: "explicit" } },
+        { type: "input_text", text: RENDERED_TEXT.slice(STATIC_TEXT.length) },
+      ],
+    });
+  }, 15000);
+
+  it.each([
+    { name: "models before GPT-5.6", model: "gpt-5.2", options: {} },
+    { name: "requests with caching off", model: "gpt-6-luna", options: { cacheRetention: "none" } },
+  ] as const)("leaves the OpenAI prompt whole for $name", async ({ model, options }) => {
+    const handle = openAiHandle(model);
+    const split = await captureBody(handle, true, options);
+    expect(JSON.parse(split).input[0]).toMatchObject({ content: RENDERED_TEXT });
+    expect(split).toBe(await captureBody(handle, false, options));
+  }, 15000);
+});

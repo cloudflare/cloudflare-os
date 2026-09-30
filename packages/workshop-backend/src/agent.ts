@@ -4,9 +4,9 @@ import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type Code
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
-import { Type, toToolDeclaration } from "@earendil-works/pi-ai";
+import { Type, getSystemMessageText, toToolDeclaration } from "@earendil-works/pi-ai";
 import type {
-  AssistantMessage, ImageContent, Message, TSchema, TextContent, ToolCall, Usage,
+  AssistantMessage, ImageContent, Message, SystemMessage, TSchema, TextContent, ToolCall, Usage,
 } from "@earendil-works/pi-ai";
 import {
   runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
@@ -2530,9 +2530,11 @@ async function runAgentPass(
   let instanceInstructions = formatInstanceInstructions(await hooks.getInstanceInstructions());
 
   // The two system prompt slots: the non-project-specific parts, followed by the
-  // project-specific parts. Kept as a two-part construction (static slot first) so the shared
-  // prefix stays byte-stable for prompt caching; they are concatenated into the leading system
-  // message in pi's transcript below.
+  // project-specific parts. They become the leading system message's content and its one
+  // section, which pi renders as `${slot0}\n\n${slot1}`. On APIs with cache breakpoints, the
+  // model handle sends that as two blocks with a breakpoint between them (see
+  // system-prompt-blocks.ts), so the static prefix stays cached when the project-specific part
+  // changes.
   let systemPromptSlots: [string, string];
 
   if (agentContext.spawnerConfig) {
@@ -2685,7 +2687,10 @@ async function runAgentPass(
   if (instanceInstructions) {
     systemPromptSlots[0] += `\n\n${instanceInstructions}`;
   }
-  let systemPrompt = `${systemPromptSlots[0]}\n\n${systemPromptSlots[1]}`;
+  let systemMessage: SystemMessage = {
+    role: "system", content: systemPromptSlots[0], sections: {environment: systemPromptSlots[1]},
+    timestamp: 0,
+  };
 
   // Some models charge their response to the same window as the prompt, so the reservation is both
   // withheld from the prompt's budget and sent as the response cap -- the two can't disagree.
@@ -2704,7 +2709,8 @@ async function runAgentPass(
         projection.filter(({message, sequence}) => sequence !== undefined &&
           (sequence > lastMeasuredSequence ||
            (sequence === lastMeasuredSequence && message.role === "toolResult"))))
-    : estimateProjectionTokens(projection) + Math.ceil(systemPrompt.length / 4);
+    : estimateProjectionTokens(projection) +
+        Math.ceil(getSystemMessageText(systemMessage).length / 4);
 
   let compactionTurn = isCompactionTurn(chatMessages);
   if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
@@ -3710,10 +3716,9 @@ async function runAgentPass(
   }
 
   let context: AgentContext = {
-    messages: [{
-      role: "system", content: systemPrompt, toolsAdded: toolList.map(toToolDeclaration),
-      timestamp: 0,
-    }, ...modelMessages],
+    messages: [
+      {...systemMessage, toolsAdded: toolList.map(toToolDeclaration)}, ...modelMessages,
+    ],
     tools: toolList,
   };
 
