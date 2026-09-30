@@ -8,7 +8,7 @@ import type { RpcStub } from "capnweb";
 import type { AiChatMessage, AuthenticatedApi, Overseer } from "@gadgets/workshop-shared/api";
 import { openAgentSession } from "../src/agent-session.js";
 import {
-  settleRestart, startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  settleRestart, startTestGatekeeperHarness, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
@@ -72,16 +72,6 @@ function connectionCard(history: AiChatMessage[]) {
   const card = history.find(message => message.type === "connectionRequest");
   if (!card) throw new Error("The agent did not create a connection request");
   return card;
-}
-
-async function control(route: string, body: object): Promise<unknown> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${route}`,
-      { method: "POST", body: JSON.stringify(body) });
-  if (response.status !== 200) {
-    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
-  }
-  return await response.json();
 }
 
 // A viewer's session on its own connection. The default recorder has no queued responses, so an
@@ -284,12 +274,12 @@ export default async function(self, env) {
   using reopened = await reopenVerified(workspaceId, viewer);
   expect(reopened.recorder.callCount).toBe(1);
   expect(reopened.recorder.calls[0].map(n => n.gatekeeperId)).toEqual([sourceId]);
-  expect(await control("observer-events", { resourceUrl: SOURCE_URL }))
+  expect(await testControl(harness, "observer-events", { resourceUrl: SOURCE_URL }))
       .toEqual({ events: [expect.objectContaining({ type: "add" })] });
 
   using gadget = await reopened.overseer.getGadget(hook.gadgetId);
   using facet = await gadget.connectToGadget() as RpcStub<StateGadget>;
-  expect(await control("fire-hook", { key: hookKey, value: 7 })).toEqual({ fired: true });
+  expect(await testControl(harness, "fire-hook", { key: hookKey, value: 7 })).toEqual({ fired: true });
   expect(await facet.deliveredValue()).toBe(7);
 });
 

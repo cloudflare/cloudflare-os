@@ -3,7 +3,8 @@ import type { RpcStub } from "capnweb";
 import type { BoundHookInfo, Overseer } from "@gadgets/workshop-shared/api";
 import type { HookTargetMetadata } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ADMIN_USERNAME, startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  ADMIN_USERNAME, hookServer, startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState,
+  testControl, type Harness,
 } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
@@ -31,18 +32,6 @@ afterAll(async () => {
   }
 });
 
-const HOOK_SERVER = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
-export class Gadget extends DurableObject {
-  async [restore](params) {
-    if (params.type !== "value-hook") throw new TypeError("Unknown restore type: " + params.type);
-    return new ValueHook(this.env.TEST_AMBIENT);
-  }
-}
-class ValueHook extends RpcTarget {
-  constructor(thing) { super(); this.thing = thing; }
-  async onValueRequested(value) { await this.thing.writeValue(value); }
-}`;
-
 const watchCode = (keys: string[]) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
   for (const key of ${JSON.stringify(keys)}) {
@@ -50,23 +39,11 @@ export default async function(self, env) {
   }
 }`;
 
-type FireResult = { fired: true } | { error: string };
 type HookState = { enabled: boolean; target?: HookTargetMetadata; disableCount: number };
-type ActionState = { pending: { id: number; value: number }[]; value?: number; applyCount: number };
 
-async function control<T>(route: string, body: object): Promise<T> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${route}`,
-      { method: "POST", body: JSON.stringify(body) });
-  if (response.status !== 200) {
-    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
-  }
-  return await response.json() as T;
-}
-
-const fire = (key: string, value: number) => control<FireResult>("fire-hook", { key, value });
-const hookState = (key: string) => control<HookState>("hook-state", { key });
-const actionState = (label: string) => control<ActionState>("action-state", { label });
+const fire = (key: string, value: number) => testControl(harness, "fire-hook", { key, value });
+const hookState = (key: string) => testControl<HookState>(harness, "hook-state", { key });
+const actionState = (label: string) => testActionState(harness, label);
 
 type ArmedHooks = Disposable & {
   username: string;
@@ -88,7 +65,7 @@ async function armHooks(prefix: string, names: string[]): Promise<ArmedHooks> {
         {
           id: "write",
           name: "writeFile",
-          arguments: { workpiece: "HOOKED", filename: "server.js", content: HOOK_SERVER },
+          arguments: { workpiece: "HOOKED", filename: "server.js", content: hookServer("TEST_AMBIENT") },
         },
         {
           id: "bind",

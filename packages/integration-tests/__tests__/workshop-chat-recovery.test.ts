@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { AiChatMessage, AiChatSubscriber } from "@gadgets/workshop-shared/api";
 import { loadAllChatHistory, openAgentSession } from "../src/agent-session.js";
 import {
-  settleRestart, startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  settleRestart, startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, type Harness,
 } from "../src/harness.js";
 import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel,
@@ -365,9 +365,9 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
 });
 
 // PINNED (GC′): a user can delete a model in settings while its chat waits for an approval.
-// Approval applies the action and appends its note, then strict model resolution for the resume
-// throws: the RPC rejects, no agent resumes and the chat gets no error. Restart recovery handles
-// the same case (workshop-agent-actions.test.ts); approval doesn't.
+// Approval applies the action and appends its note, then the resume's model lookup throws: the RPC
+// rejects, no agent resumes and the chat gets no error. Restart recovery posts an error instead
+// (workshop-backend agent-calls.test.ts); approval doesn't.
 it.concurrent("approving after the waiting chat's model was deleted applies but cannot resume",
     async () => {
   const model = models.script([
@@ -405,10 +405,7 @@ it.concurrent("approving after the waiting chat's model was deleted applies but 
     ws.approveAction(action!.id))).rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
   expect((await session.listActions({ filter: "action" })).entries)
     .toContainEqual(expect.objectContaining({ id: action!.id, state: "approved" }));
-  const state = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
-      { method: "POST", body: JSON.stringify({ label }) });
-  expect(await state.json()).toEqual({ pending: [], value: 13, applyCount: 1 });
+  expect(await testActionState(harness, label)).toEqual({ pending: [], value: 13, applyCount: 1 });
 
   const history = await withOwnerWorkspace(harness.url, session.username, async ws => {
     const [chat] = await ws.listChats();

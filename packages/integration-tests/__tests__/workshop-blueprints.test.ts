@@ -2,10 +2,9 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { Overseer, TreeNode, WorkpieceId } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
-import { z } from "zod";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, type Harness,
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
@@ -39,23 +38,6 @@ function username(prefix: string): string {
   const value = nextUsernames(prefix).at(0);
   if (value === undefined) throw new Error("Failed to allocate a test username");
   return value;
-}
-
-const TEST_ACTION_STATE = z.object({
-  pending: z.array(z.object({ id: z.number(), value: z.number() })),
-  value: z.number().optional(),
-  applyCount: z.number(),
-});
-type TestActionState = z.infer<typeof TEST_ACTION_STATE>;
-
-async function actionState(label: string): Promise<TestActionState> {
-  const response = await requireHarness().fetchWorker(
-      TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/action-state",
-      { method: "POST", body: JSON.stringify({ label }) });
-  if (response.status !== 200) {
-    throw new Error(`Reading test action state failed with ${response.status}: ${await response.text()}`);
-  }
-  return TEST_ACTION_STATE.parse(await response.json());
 }
 
 function treePaths(nodes: TreeNode[], prefix = ""): string[] {
@@ -357,9 +339,9 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
   });
   await installedWorkspace.approveAction(pending.id);
   await write;
-  expect(await actionState(accountLabel(installerAccount)))
+  expect(await testActionState(requireHarness(), accountLabel(installerAccount)))
       .toEqual({ pending: [], value: 17, applyCount: 1 });
-  expect(await actionState(accountLabel(publisherAccount)))
+  expect(await testActionState(requireHarness(), accountLabel(publisherAccount)))
       .toEqual({ pending: [], applyCount: 0 });
 
   const sourcePaths = treePaths(await sourceWorkspace.listTree(sourceSummary.commitId));

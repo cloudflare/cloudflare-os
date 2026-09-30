@@ -195,3 +195,39 @@ export function startTestGatekeeperHarness(options: { enableGadgetExecution?: bo
     enableGadgetExecution: options.enableGadgetExecution,
   });
 }
+
+/** POST `body` to the fixture gatekeeper's `/control/<route>`: its JSON reply, or undefined for 204. */
+export async function testControl<T = unknown>(harness: Harness, route: string, body: object)
+    : Promise<T> {
+  const response = await harness.fetchWorker(TEST_GATEKEEPER_WORKER,
+      `http://gatekeeper-test.test/control/${route}`, { method: "POST", body: JSON.stringify(body) });
+  if (!response.ok) {
+    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
+  }
+  return (response.status === 204 ? undefined : await response.json()) as T;
+}
+
+const TEST_ACTION_STATE = z.object({
+  pending: z.array(z.object({ id: z.number(), value: z.number() })),
+  value: z.number().optional(),
+  applyCount: z.number(),
+});
+
+/** The fixture's held and applied test actions for account `label`. */
+export async function testActionState(harness: Harness, label: string) {
+  return TEST_ACTION_STATE.parse(await testControl(harness, "action-state", { label }));
+}
+
+/** A gadget server whose `value-hook` restore writes each requested value through `binding`. */
+export const hookServer = (binding: string) =>
+  `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "value-hook") throw new TypeError("Unknown restore type: " + params.type);
+    return new ValueHook(this.env.${binding});
+  }
+}
+class ValueHook extends RpcTarget {
+  constructor(thing) { super(); this.thing = thing; }
+  async onValueRequested(value) { await this.thing.writeValue(value); }
+}`;

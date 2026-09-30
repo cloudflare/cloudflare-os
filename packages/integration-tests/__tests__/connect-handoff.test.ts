@@ -3,7 +3,8 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  hookServer, startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, testActionState,
+  testControl, type Harness,
 } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
@@ -64,38 +65,10 @@ const credentialsValid = (api: RpcStub<AuthenticatedApi>, accountId: number, val
   waitFor(`the account's credentials to be ${valid ? "valid" : "expired"}`, async () =>
     (await testAccounts(api)).some(a => a.id === accountId && a.credentialsValid === valid) || null);
 
-async function control<T>(route: string, body: object): Promise<T> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${route}`,
-      { method: "POST", body: JSON.stringify(body) });
-  if (!response.ok) {
-    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
-  }
-  return response.status === 204 ? undefined as T : await response.json() as T;
-}
-
-type FireResult = { fired: true } | { error: string };
-type ActionState = { pending: { id: number; value: number }[]; value?: number; applyCount: number };
+const control = <T>(route: string, body: object) => testControl<T>(harness, route, body);
 
 const revocations = async (label: string) =>
   (await control<{ count: number }>("revocation-count", { label })).count;
-const expireCredentials = (label: string) => control<void>("expire-credentials", { label });
-const credential = async (label: string) =>
-  (await control<{ credential: number | null }>("credential", { label })).credential;
-const fire = (key: string, value: number) => control<FireResult>("fire-hook", { key, value });
-const actionState = (label: string) => control<ActionState>("action-state", { label });
-
-const HOOK_SERVER = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
-export class Gadget extends DurableObject {
-  async [restore](params) {
-    if (params.type !== "value-hook") throw new TypeError("Unknown restore type: " + params.type);
-    return new ValueHook(this.env.TEST_THING);
-  }
-}
-class ValueHook extends RpcTarget {
-  constructor(thing) { super(); this.thing = thing; }
-  async onValueRequested(value) { await this.thing.writeValue(value); }
-}`;
 
 const watchCode = (key: string) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
@@ -148,7 +121,7 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
   const key = `${username}:reconnected`;
   const model = models.script([
     { toolCall: { id: "server", name: "writeFile", arguments: {
-      workpiece: "HOOKED", filename: "server.js", content: HOOK_SERVER,
+      workpiece: "HOOKED", filename: "server.js", content: hookServer("TEST_THING"),
     } } },
     { text: "Built." },
     { toolCall: { id: "watch", name: "executeCode", arguments: { code: watchCode(key) } } },
@@ -187,9 +160,10 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
     const { entries } = await ws.listActions({ filter: "pending" });
     return entries.length === 1 ? entries : null;
   });
-  expect(await actionState(label)).toEqual({ pending: [{ id: fixtureId, value: 701 }], applyCount: 0 });
+  expect(await testActionState(harness, label))
+    .toEqual({ pending: [{ id: fixtureId, value: 701 }], applyCount: 0 });
 
-  await expireCredentials(label);
+  await control("expire-credentials", { label });
   await credentialsValid(api, account.id, false);
 
   const { url, nonce } = await api.reconnectAccount(account.id);
@@ -202,18 +176,18 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
   await credentialsValid(api, account.id, true);
   expect(await testAccounts(api))
       .toEqual([expect.objectContaining({ id: account.id, credentialsValid: true })]);
-  expect(await credential(label)).toBe(2);
+  expect(await control("credential", { label })).toEqual({ credential: 2 });
   expect(await revocations(label)).toBe(1);
 
   using fresh = await openSession();
   expect(await fresh.readValue()).toBe(42);
-  expect(await fire(key, 702)).toEqual({ fired: true });
+  expect(await control("fire-hook", { key, value: 702 })).toEqual({ fired: true });
   const fired = await waitFor("the hook's write", async () =>
     (await ws.listActions({ filter: "pending" })).entries
         .find(entry => entry.description.title === "Set the test value to 702") ?? null);
   await ws.approveAction(held.id);
   await ws.approveAction(fired.id);
-  expect(await actionState(label)).toEqual({ pending: [], value: 702, applyCount: 2 });
+  expect(await testActionState(harness, label)).toEqual({ pending: [], value: 702, applyCount: 2 });
 });
 
 it.concurrent("another user cannot redeem a reconnect handoff", async () => {
@@ -223,7 +197,7 @@ it.concurrent("another user cannot redeem a reconnect handoff", async () => {
   const bob = stack.use(await signUp(stack.use(connect(harness.url)), bobName!));
   const account = await connectConfirmed(alice);
   const label = accountLabel(account);
-  await expireCredentials(label);
+  await control("expire-credentials", { label });
   await credentialsValid(alice, account.id, false);
 
   const { url, nonce } = await alice.reconnectAccount(account.id);
@@ -232,6 +206,6 @@ it.concurrent("another user cannot redeem a reconnect handoff", async () => {
 
   expect(await testAccounts(alice))
       .toEqual([expect.objectContaining({ id: account.id, credentialsValid: false })]);
-  expect(await credential(label)).toBe(1);
+  expect(await control("credential", { label })).toEqual({ credential: 1 });
   expect(await revocations(label)).toBe(0);
 });

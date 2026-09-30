@@ -8,7 +8,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  startTestGatekeeperHarness, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
@@ -100,13 +100,8 @@ type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string }
 
 /** The addObserver()/removeObserver() calls one binding's gatekeeper has seen, in order. */
 async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
-  const res = await harness.fetchWorker(
-    TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/observer-events",
-    { method: "POST", body: JSON.stringify({ resourceUrl }) });
-  if (res.status !== 200) {
-    throw new Error(`Reading observer events failed with ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json() as { events: ObserverEvent[] }).events;
+  return (await testControl<{ events: ObserverEvent[] }>(harness, "observer-events", { resourceUrl }))
+    .events;
 }
 
 /**

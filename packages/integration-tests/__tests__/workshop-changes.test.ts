@@ -611,8 +611,8 @@ it.concurrent("gadget state survives code changes and restart but is not copied 
     await ws.finalizeChatDraft(v3Chat);
     expect(await gadgetState(ws, gadgetId, v3Chat, facet => facet.put("draft", "draft-data")))
         .toEqual({ ...v2State, version: "v3" });
-    // PINNED: a draft preview swaps code on the gadget's one facet but keeps its storage, so a
-    // write made while previewing a chat lands in mainline and survives reverting that chat.
+    // PINNED: previews reuse the mainline facet (gadgetFacetName) and swap only its code, so draft
+    // code reads and writes real data, and reverting the chat doesn't undo its writes.
     expect(await gadgetState(ws, gadgetId)).toEqual(v2State);
 
     // There is no public mainline revert (`revertChanges` on a merged message is a no-op), so

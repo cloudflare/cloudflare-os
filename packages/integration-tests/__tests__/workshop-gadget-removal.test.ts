@@ -4,7 +4,7 @@ import type { AiChatMetadata, AiChatSubscriber } from "@gadgets/workshop-shared/
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  hookServer, startTestGatekeeperHarness, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
@@ -31,18 +31,6 @@ afterAll(async () => {
   }
 });
 
-const HOOK_SERVER = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
-export class Gadget extends DurableObject {
-  async [restore](params) {
-    if (params.type !== "value-hook") throw new TypeError("Unknown restore type: " + params.type);
-    return new ValueHook(this.env.TEST_AMBIENT);
-  }
-}
-class ValueHook extends RpcTarget {
-  constructor(thing) { super(); this.thing = thing; }
-  async onValueRequested(value) { await this.thing.writeValue(value); }
-}`;
-
 const watchCode = (key: string) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
   await env.TEST_AMBIENT.watch(${JSON.stringify(key)}, await env.HOOKED[restore]({ type: "value-hook" }));
@@ -50,18 +38,6 @@ export default async function(self, env) {
 
 const CLIENT_V1 = `document.body.textContent = "blueprint v1";\n`;
 const CLIENT_DRAFT = `document.body.textContent = "draft";\n`;
-
-type FireResult = { fired: true } | { error: string };
-
-async function control<T>(route: string, body: object): Promise<T> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${route}`,
-      { method: "POST", body: JSON.stringify(body) });
-  if (response.status !== 200) {
-    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
-  }
-  return await response.json() as T;
-}
 
 class ChatMetadataRecorder extends RpcTarget implements AiChatSubscriber {
   readonly metadataEvents: AiChatMetadata[] = [];
@@ -89,7 +65,7 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
         {
           id: "server",
           name: "writeFile",
-          arguments: { workpiece: "HOOKED", filename: "server.js", content: HOOK_SERVER },
+          arguments: { workpiece: "HOOKED", filename: "server.js", content: hookServer("TEST_AMBIENT") },
         },
         {
           id: "client",
@@ -179,9 +155,9 @@ it.concurrent("removing a gadget tears down its hook and draft proposals but spa
 
   // The hook is deleted, the gatekeeper is told, and a fire is refused.
   expect(await ws.listHooks()).toEqual([]);
-  expect((await control<{ disableCount: number }>("hook-state", { key: hookKey })).disableCount)
-      .toBe(1);
-  expect(await control<FireResult>("fire-hook", { key: hookKey, value: 101 }))
+  expect(await testControl(harness, "hook-state", { key: hookKey }))
+      .toMatchObject({ disableCount: 1 });
+  expect(await testControl(harness, "fire-hook", { key: hookKey, value: 101 }))
       .toEqual({ error: "Hook has been deleted or disabled." });
 
   // The draft stops proposing the removed gadget, and subscribers are told so.

@@ -2,9 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
-import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, type Harness,
-} from "../src/harness.js";
+import { startTestGatekeeperHarness, testControl, type Harness } from "../src/harness.js";
 import { scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
@@ -27,23 +25,13 @@ afterAll(async () => {
   }
 });
 
-async function control<T>(route: string, body: unknown): Promise<T> {
-  const response = await harness.fetchWorker(
-      TEST_GATEKEEPER_WORKER, `http://gatekeeper-test.test/control/${route}`,
-      { method: "POST", body: JSON.stringify(body) });
-  if (response.status !== 200) {
-    throw new Error(`${route} failed with ${response.status}: ${await response.text()}`);
-  }
-  return await response.json() as T;
-}
-
 function submitExternalMessage(input: Omit<SubmitExternalMessageInput, "chatGatewayRpcTarget">) {
-  return control<SubmitExternalMessageResult>("submit-external-message", input);
+  return testControl<SubmitExternalMessageResult>(harness, "submit-external-message", input);
 }
 
 /** Distinct reply texts: delivery is at-least-once, so a reply may repeat but never differ. */
 async function replies(messageKey: string): Promise<string[]> {
-  const { responses } = await control<{ responses: GadgetResponse[] }>(
+  const { responses } = await testControl<{ responses: GadgetResponse[] }>(harness,
       "gadget-responses", { messageKey });
   return [...new Set(responses.map(response => response.text))];
 }
@@ -54,7 +42,8 @@ const awaitReplies = (messageKey: string) => waitFor(`a reply to ${messageKey}`,
 });
 
 async function externalGadgetId(gadgetKey: string): Promise<string> {
-  return (await control<{ gadgetId: string }>("external-gadget-id", { gadgetKey })).gadgetId;
+  return (await testControl<{ gadgetId: string }>(harness, "external-gadget-id", { gadgetKey }))
+    .gadgetId;
 }
 
 it.concurrent("an external message gets one reply, and a reused idempotency key starts nothing",

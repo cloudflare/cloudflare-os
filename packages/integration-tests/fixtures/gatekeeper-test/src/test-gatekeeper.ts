@@ -685,8 +685,9 @@ export class TestGatekeeper
   async applyAction(action: number): Promise<void> {
     const state = control(this.ctx.exports);
     const { label } = this.ctx.props;
+    const held = await state.takeNextApplyHold(label);
     await state.recordApplyAttempt(label);
-    if (await state.takeNextApplyHold(label)) await waitForApplyRelease(state, label);
+    if (held) await waitForApplyRelease(state, label);
     const failure = await state.takeApplyFailure(label);
     if (failure !== null) throw new Error(failure);
     await state.applyAction(label, action);
