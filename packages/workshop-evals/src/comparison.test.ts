@@ -23,6 +23,8 @@ type TrialOptions = {
   toolCalls?: number;
   toolErrors?: number;
   tokens?: { prompt: number; cached: number };
+  steps?: { sequence: number; uncachedTokens: number; cacheReadTokens: number;
+    cacheWriteTokens: number; modelSteps?: number }[];
   errors?: { name: string; message: string }[];
   outcomeStatus?: "completed" | "error" | "timedOut" | "cancelled";
   checks?: { id: string; pass: boolean; evidence?: string }[];
@@ -42,6 +44,7 @@ function trial(options: TrialOptions = {}) {
     toolCalls = 3,
     toolErrors = 0,
     tokens,
+    steps,
     errors = [],
     outcomeStatus = "completed",
     checks = [],
@@ -57,8 +60,11 @@ function trial(options: TrialOptions = {}) {
           session: { metadata: { taskId, taskVersion, gitCommit }, events },
           usage: {
             model: MODEL,
-            metadata: tokens === undefined ? {} : {
-              cumulativePromptTokens: tokens.prompt, cumulativeCacheReadTokens: tokens.cached,
+            metadata: {
+              ...tokens === undefined ? {} : {
+                cumulativePromptTokens: tokens.prompt, cumulativeCacheReadTokens: tokens.cached,
+              },
+              ...steps === undefined ? {} : { steps },
             },
           },
           output: {
@@ -128,6 +134,10 @@ it("compares three-trial task cohorts", () => {
     model: MODEL,
     reason: null,
     pValue: expect.closeTo(1),
+    // Of the 20 ways to split the six trials' rates three and three, 4 give the candidate rates at
+    // least this high, and the test doubles that.
+    cacheHitPValue: expect.closeTo(0.4),
+    cacheBreakPValue: null,
     baseline: {
       trials: 3,
       passed: 2,
@@ -136,6 +146,7 @@ it("compares three-trial task cohorts", () => {
       meanToolCalls: 3,
       meanToolErrors: 1 / 3,
       cacheHitRate: 0.5,
+      cacheBreakRate: null,
       ...noFailures,
     },
     candidate: {
@@ -146,6 +157,7 @@ it("compares three-trial task cohorts", () => {
       meanToolCalls: 3,
       meanToolErrors: 0,
       cacheHitRate: 0.7,
+      cacheBreakRate: null,
       ...noFailures,
     },
   }]);
@@ -202,7 +214,64 @@ it("does not compare cache hit rates from different trial populations", () => {
   const row = comparison.rows[0];
   expect(row.baseline?.cacheHitRate).toBeNull();
   expect(row.candidate?.cacheHitRate).toBe(0.5);
+  expect(row).toMatchObject({ cacheHitPValue: null });
   expect(rendered(comparison)).toContain("| \u2014 \u2192 50% |");
+});
+
+it("counts as cache breaks only tokens the step before sent that a step could not read", () => {
+  const step = (sequence: number, cacheReadTokens: number, cacheWriteTokens: number,
+      modelSteps?: number) => ({
+    sequence, uncachedTokens: 0, cacheReadTokens, cacheWriteTokens,
+    ...modelSteps === undefined ? {} : { modelSteps },
+  });
+  const steps = [
+    step(1, 0, 1000),
+    // Reads all 1000 tokens the step before sent, and adds 200: no break.
+    step(2, 1000, 200),
+    // Reads none of the 1200: all of them break.
+    step(3, 0, 1300),
+    // The totals of two steps at once, which say nothing about either step on its own.
+    step(6, 1300, 3000, 2),
+    step(7, 0, 4400),
+    // Compaction shortened the prompt, so at most its own 1000 tokens repeat: 500 break.
+    step(8, 500, 500),
+  ];
+  const comparison = compareEvalResults(
+    report([trial({ steps })]), report([trial({ gitCommit: HEAD_SHA, steps })]), SHAS);
+  expect(comparison.rows[0].candidate?.cacheBreakRate).toBeCloseTo((1200 + 500) / (1000 + 1200 + 1000));
+});
+
+it("tests cache rates on each trial's own rate, and bolds a cache hit change beyond noise", () => {
+  const side = (gitCommit: string, cached: number, read: number) =>
+    report(Array.from({ length: 10 }, () => trial({
+      gitCommit, tokens: { prompt: 1000, cached },
+      steps: [
+        { sequence: 1, uncachedTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 400 },
+        { sequence: 2, uncachedTokens: 0, cacheReadTokens: read, cacheWriteTokens: 600 - read },
+      ],
+    })));
+  const comparison = compareEvalResults(side(BASE_SHA, 500, 0), side(HEAD_SHA, 700, 400), SHAS);
+  // Every candidate trial beats every baseline trial, as 1 of the 184,756 ways to split 20 trials
+  // in half does, and the test doubles that.
+  const separated = expect.closeTo(2 / 184_756, 12);
+  expect(comparison.rows[0]).toMatchObject({
+    cacheHitPValue: separated, cacheBreakPValue: separated,
+    baseline: { cacheHitRate: 0.5, cacheBreakRate: 1 },
+    candidate: { cacheHitRate: 0.7, cacheBreakRate: 0 },
+  });
+  expect(rendered(comparison)).toContain("| 50% \u2192 70%<br>**+20 pp** |");
+});
+
+it("does not mark a pooled cache hit change that most trials moved against", () => {
+  const side = (gitCommit: string, runs: { rate: number; prompt: number; count: number }[]) =>
+    report(runs.flatMap(({ rate, prompt, count }) => Array.from({ length: count },
+      () => trial({ gitCommit, tokens: { prompt, cached: rate * prompt } }))));
+  const comparison = compareEvalResults(
+    side(BASE_SHA, [{ rate: 0.9, prompt: 100_000, count: 10 }]),
+    // Most trials rose, but two long ones fell far enough to pull the pooled rate down.
+    side(HEAD_SHA, [{ rate: 0.95, prompt: 50_000, count: 8 }, { rate: 0.8, prompt: 400_000, count: 2 }]),
+    SHAS);
+  expect(rendered(comparison)).toContain("| 90% \u2192 85%<br>\u22125 pp |");
 });
 
 it("separates infrastructure errors from failed agent outcomes", () => {
