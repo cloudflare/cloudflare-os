@@ -2,27 +2,27 @@ import { DropdownMenu } from "@cloudflare/kumo";
 import { CaretDown, Check } from "@phosphor-icons/react";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 
+/**
+ * The composer's model, or null for "No agent". `name` labels it when `models` doesn't offer it,
+ * such as a hidden model an existing chat last ran on; the raw id is shown when that is absent too.
+ */
+export type SelectedModel = { id: string; name?: string } | null;
+
 type ComposerModelSelectorProps = {
   models: readonly AiChatAuthorInfo[];
-  selectedModel: string | null;
-  /**
-   * Shown for `selectedModel` when `models` doesn't offer it, such as a hidden model an existing
-   * chat last ran on. The raw model id is shown when this is absent too.
-   */
-  selectedModelName?: string;
+  selectedModel: SelectedModel;
   onModelChange: (modelId: string | null) => void;
 };
 
 export const ComposerModelSelector = ({
   models,
   selectedModel,
-  selectedModelName,
   onModelChange,
 }: ComposerModelSelectorProps) => {
   const selectedModelLabel = selectedModel == null
     ? "No agent"
-    : models.find((model) => model.id === selectedModel)?.name ??
-      selectedModelName ?? selectedModel;
+    : models.find((model) => model.id === selectedModel.id)?.name ??
+      selectedModel.name ?? selectedModel.id;
 
   return (
     <DropdownMenu>
@@ -44,7 +44,7 @@ export const ComposerModelSelector = ({
       />
       <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[190px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
         {models.map((model) => {
-          const active = selectedModel === model.id;
+          const active = selectedModel?.id === model.id;
           return (
             <DropdownMenu.Item
               key={model.id}

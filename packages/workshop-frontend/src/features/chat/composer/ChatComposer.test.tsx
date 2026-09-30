@@ -76,7 +76,7 @@ describe("ChatComposer", () => {
         onSend={onSend}
         isAgentActive={false}
         models={[]}
-        selectedModel="model-a"
+        selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
       />,
     ));
@@ -135,7 +135,7 @@ describe("ChatComposer", () => {
         onSend={onSend}
         isAgentActive={false}
         models={[]}
-        selectedModel="model-a"
+        selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
         chatKey={7}
       />,
@@ -178,7 +178,7 @@ describe("ChatComposer", () => {
         onSend={() => {}}
         isAgentActive={false}
         models={[]}
-        selectedModel="model-a"
+        selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
         attachLabel="Legacy resource"
       />,
@@ -245,7 +245,7 @@ describe("ChatComposer", () => {
         onSend={onSend}
         isAgentActive={false}
         models={[]}
-        selectedModel="model-a"
+        selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
       />,
     ));
@@ -335,7 +335,7 @@ describe("ChatComposer", () => {
         onSend={() => {}}
         isAgentActive={false}
         models={[]}
-        selectedModel="model-a"
+        selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
       />,
     ));

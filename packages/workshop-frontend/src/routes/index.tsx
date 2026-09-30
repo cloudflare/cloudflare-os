@@ -187,7 +187,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           onSend={handleSend}
           isAgentActive={false}
           models={models}
-          selectedModel={selectedModel}
+          selectedModel={selectedModel === null ? null : { id: selectedModel }}
           onModelChange={handleModelChange}
           newChat
           offerFormats
