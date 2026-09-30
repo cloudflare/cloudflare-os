@@ -1217,8 +1217,11 @@ export class GoogleChatGatekeeperImpl
     const self = await this.#getSelf();
     const boundSpace = this.#boundSpaceName();
     const boundThread = this.#boundThreadName();
+    let title = "Open a Google Chat session";
+    if (boundSpace !== undefined) title = "Open a Google Chat conversation";
+    if (boundThread !== undefined) title = "Open a Google Chat thread";
     await approvalQueue.authorizeObservation({
-      title: "Open a Google Chat session",
+      title,
       description: boundSpace === undefined
         ? "Resolve the connected Google account behind this Chat connection."
         : `Resolve the connected Google account and open ${boundThread ?? boundSpace}.`,

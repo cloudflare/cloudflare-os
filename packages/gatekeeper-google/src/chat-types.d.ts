@@ -294,7 +294,7 @@ export type ChatThreadEntry = {
 // ── Capability interfaces ───────────────────────────────────────────
 
 /**
- * Google Chat access for the connected account.
+ * A session bound to the connected Google Chat account.
  *
  * Use this to find conversations and search across them, then use the `ChatSpace`
  * capabilities it returns to read and act inside one conversation.
@@ -341,7 +341,10 @@ export interface ChatSession extends RpcTarget {
   searchMessages(query: ChatMessageSearch): Promise<Cursor<ChatMessageEntry>>;
 }
 
-/** Access to one Google Chat space, group chat, or direct message. */
+/**
+ * A session bound to one Google Chat space, group chat, or direct message: its messages,
+ * threads, and members. Call `post()` to send a new message to it.
+ */
 export interface ChatSpace extends RpcTarget {
   /**
    * Return current metadata. For a direct message or unnamed group chat this also names the
@@ -416,8 +419,8 @@ export interface ChatSpace extends RpcTarget {
 }
 
 /**
- * Access to one thread: its first message, its replies, and future replies. It does not reach
- * the rest of the conversation.
+ * A session bound to one thread: its first message, its replies, and future replies. Call
+ * `post()` to reply in it.
  */
 export interface ChatThread extends RpcTarget {
   /**
