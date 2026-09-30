@@ -419,7 +419,9 @@ describe("getModel direct routing (no gateway)", () => {
 
   it.each([
     ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
+    ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
     ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000],
+    ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000],
     ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000],
     ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000],
     ["openai", "gpt-6-luna", "GPT-6 Luna", 1_050_000],
@@ -449,7 +451,7 @@ describe("getModel direct routing (no gateway)", () => {
       : { supportsExplicitPromptCacheMode: true });
   });
 
-  it.each(["claude-opus-5-5", "claude-fable-5-1"])(
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
       "keeps quick requests valid for %s", async (model) => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "anthropic",
@@ -473,10 +475,12 @@ describe("getModel direct routing (no gateway)", () => {
     }
   });
 
-  it("does not try to disable reasoning for GPT-6 Astra", async () => {
+  // pi maps these models' "off" thinking level to nothing, since they can't turn reasoning off.
+  it.each(["gpt-6-astra", "gpt-6.1-sol"])(
+      "does not try to disable reasoning for %s", async (model) => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "openai",
-      model: "gpt-6-astra",
+      model,
       apiToken: "direct-api-token",
     }, INITIATOR);
 

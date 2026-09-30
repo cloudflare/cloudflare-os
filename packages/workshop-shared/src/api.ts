@@ -1399,6 +1399,7 @@ const SUGGESTED_MODEL_CATALOG = {
   },
   "anthropic": {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
+    "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
     "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000},
@@ -1407,6 +1408,10 @@ const SUGGESTED_MODEL_CATALOG = {
   "openai": {
     // pi's GPT-6 catalog reports a 272K window, but these models support 1.05M. Use 272K as the
     // preferred compaction budget, not as the hard context limit.
+    "gpt-6.1-sol": {
+      name: "GPT-6.1 Sol", contextWindow: 1050000, outputLimit: 128000,
+      compactionInputBudget: 272000,
+    },
     "gpt-6-sol": {
       name: "GPT-6 Sol", contextWindow: 1050000, outputLimit: 128000,
       compactionInputBudget: 272000,

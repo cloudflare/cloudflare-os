@@ -108,7 +108,7 @@ describe("compaction trigger", () => {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
           .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
     }
-    for (let model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
+    for (let model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]) {
       expect(getModelTokenLimits({provider: "openai", model, apiToken: ""}))
           .toEqual({inputBudget: 272_000, maxOutputTokens: 128_000});
     }
