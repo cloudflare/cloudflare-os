@@ -10412,16 +10412,34 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Recover the model this thread was using. getChatContext(null) does NOT resolve a model, so we
     // find the id from the most recent agent-authored message (its author.id is the model id).
-    let modelId: string | null = null;
+    let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.author.type === "agent") {
-        modelId = msg.author.id;
+        agent = msg.author;
         break;
       }
     }
 
-    let userMeta = await retryOnDoReset(
-        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
+    let userMeta: UserChatContext;
+    try {
+      userMeta = await retryOnDoReset(
+          () => this.#clientUser.getChatContext(agent?.id ?? null), this.impl.logger);
+    } catch (err) {
+      // The outcome that triggered this resume is already recorded, so the caller's approval or
+      // accept must not fail because the thread's model stopped resolving (deleted, or disabled by
+      // an administrator). Say why in the chat, as that agent, and leave the turn ended. With no
+      // agent message there is no one to attribute the error to.
+      if (!agent) throw err;
+      this.impl.logger.error("error resolving model while resuming suspended agent", {
+        event: "agent.resume.suspended.model.resolve.failed",
+        chatId, modelId: agent.id, error: err,
+      });
+      // A turn that started during the lookup is not waiting on this one.
+      if (this.impl.storage.chatMeta.get(chatId)?.activeAgent) return;
+      this.impl.postAgentErrorMessage(chatId, agent,
+          `The agent could not be resumed: ${stringifyError(err)}`);
+      return;
+    }
     if (!userMeta.aiModel) return;  // No model resolved; nothing to resume.
 
     let preparation = this.impl.waitForChatMessagePreparation(chatId);
