@@ -224,7 +224,7 @@ importers:
         version: 0.3.0(capnweb@0.12.0)(esbuild@0.28.2)(rollup@4.62.3)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.1))
       isomorphic-git:
         specifier: ^1.42.2
-        version: 1.42.4
+        version: 1.42.2
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -977,7 +977,7 @@ importers:
         version: 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       motion:
         specifier: ^13.4.2
-        version: 13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 13.4.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@cloudflare/kumo':
         specifier: ^2.14.0
@@ -1047,13 +1047,13 @@ importers:
         version: 0.0.3
       isomorphic-git:
         specifier: ^1.42.2
-        version: 1.42.4
+        version: 1.42.2
       jose:
         specifier: ^6.2.12
         version: 6.2.12
       pako:
-        specifier: ^2.1.0
-        version: 2.2.0
+        specifier: ^3.0.2
+        version: 3.0.2
       yjs:
         specifier: ^13.6.33
         version: 13.6.33
@@ -1071,8 +1071,8 @@ importers:
         specifier: workspace:*
         version: link:../../scripts
       '@types/pako':
-        specifier: ^2.0.4
-        version: 2.0.4
+        specifier: ^3.0.0
+        version: 3.0.0
       dompurify:
         specifier: ^3.4.16
         version: 3.4.16
@@ -3068,8 +3068,9 @@ packages:
   '@types/node@26.1.0':
     resolution: {integrity: sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==}
 
-  '@types/pako@2.0.4':
-    resolution: {integrity: sha512-VWDCbrLeVXJM9fihYodcLiIv0ku+AlOa/TQ1SvYOaBuyrSKgEcro95LJyIsJ4vSo6BXIxOKxiJAat04CmST9Fw==}
+  '@types/pako@3.0.0':
+    resolution: {integrity: sha512-MtIzg1Ul1GxhHZLq6oSKvWQENKqmfK1fdaW+SDcPJe7+YcJVo6AbmkW0BvGFH6+559+hEuCwdXZZe8F85lBPkA==}
+    deprecated: This is a stub types definition. pako provides its own type definitions, so you do not need this installed.
 
   '@types/react-dom@19.2.7':
     resolution: {integrity: sha512-I8bPpDLcHBv1qiIiXDCy71Rt8eQDKJP0sMSWJphDdAcdqiJ1sGpZamavoEIRZmYzjia9LuEb2HlYdDpmoENpvQ==}
@@ -4269,8 +4270,8 @@ packages:
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
-  isomorphic-git@1.42.4:
-    resolution: {integrity: sha512-ls44U1EUITCziPQcDWil+xYhm4lCgiIo/pJsHz6QfSsoqh4kKNGv0idx3B+qnQrjNTTdBPSK/D/qa6RJq+tGqA==}
+  isomorphic-git@1.42.2:
+    resolution: {integrity: sha512-Rb7czWhLO4JYqmg4an01nNomuAgFbWWK2CVfkHGBOvK5t7hrGTKOXPx/csscJ1j9o3uXFzNcC6njgvCafSmIPw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -4696,8 +4697,8 @@ packages:
       react-dom:
         optional: true
 
-  motion@13.4.6:
-    resolution: {integrity: sha512-zDXi6lIdyhda6wZlTsv9QgT2ed6UExAfRegtl/akQmZb5iaeLlArXr9Gmo/hx3iTx2y4R7tmdb9k9koFQmV+NQ==}
+  motion@13.4.3:
+    resolution: {integrity: sha512-Js4rk+VUxSRMKOFT4hOMyMKlxyF11ee9jomiLT3uuwMOU88EoSro0ZEbTYes4m457pqZQ2G3RsLdHQzoEDyBCQ==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -4827,8 +4828,8 @@ packages:
   pako@1.0.11:
     resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
 
-  pako@2.2.0:
-    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
+  pako@3.0.2:
+    resolution: {integrity: sha512-uBv6IT2aT1A78iU6dpNEbf6+CyhlV/6g9JlJs9kpgjFGFhruIICVRysF/W0SLzXg5+hCl+KroH7e4YUyfEmgLg==}
 
   parse-entities@4.0.2:
     resolution: {integrity: sha512-GG2AQYWoLgL877gQIKeRPGO1xF9+eG1ujIb5soS5gPvLQ1y2o8FL90w2QWNdf9I361Mpp7726c+lj3U0qK1uGw==}
@@ -7400,7 +7401,9 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  '@types/pako@2.0.4': {}
+  '@types/pako@3.0.0':
+    dependencies:
+      pako: 3.0.2
 
   '@types/react-dom@19.2.7(@types/react@19.2.18)':
     dependencies:
@@ -8519,7 +8522,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  isomorphic-git@1.42.4:
+  isomorphic-git@1.42.2:
     dependencies:
       async-lock: 1.4.1
       clean-git-ref: 2.0.1
@@ -9125,7 +9128,7 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
-  motion@13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  motion@13.4.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       framer-motion: 13.4.6(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       tslib: 2.8.1
@@ -9316,7 +9319,7 @@ snapshots:
 
   pako@1.0.11: {}
 
-  pako@2.2.0: {}
+  pako@3.0.2: {}
 
   parse-entities@4.0.2:
     dependencies:

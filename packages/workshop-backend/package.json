@@ -27,7 +27,7 @@
     "diff3": "0.0.3",
     "isomorphic-git": "^1.42.2",
     "jose": "^6.2.12",
-    "pako": "^2.1.0",
+    "pako": "^3.0.2",
     "yjs": "^13.6.33",
     "zod": "catalog:"
   },
@@ -35,7 +35,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@gadgets/bundled-blueprints": "workspace:*",
     "@gadgets/scripts": "workspace:*",
-    "@types/pako": "^2.0.4",
+    "@types/pako": "^3.0.0",
     "dompurify": "^3.4.16",
     "esbuild": "^0.28.1",
     "typescript": "catalog:",
