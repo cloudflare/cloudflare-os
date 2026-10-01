@@ -135,6 +135,7 @@ it("an admin's modes, added models and say over users' own decide which models r
         { ...ADDED, mode: "enabled", defaultMode: "enabled", added: true },
       ],
       userModelsEnabled: true,
+      modelsDevSuggestions: false,
     });
 
     // Disabled: nothing resolves it, the binding minted earlier included, and its ID stays taken.
@@ -221,8 +222,15 @@ it("an admin's modes, added models and say over users' own decide which models r
     expect(await api.getAiConfig()).toMatchObject({ enabled: true, userModelsEnabled: true });
     expect(ids(await api.listModels())).toEqual([...offered, mine.id]);
     (await mineBinding.openSession())[Symbol.dispose]();
+
+    // Whether the admin UI suggests models is stored and reported, and changes nothing else.
+    await admin.setModelsDevSuggestions(true);
+    expect(await gatewayModels()).toEqual({ ...before, modelsDevSuggestions: true });
+    await admin.setModelsDevSuggestions(false);
+    expect(await gatewayModels()).toEqual(before);
   } finally {
     try {
+      await admin.setModelsDevSuggestions(false);
       await admin.setUserModelsEnabled(true);
       await admin.setGatewayModelMode(SCRIPTED_MODEL_ID, "enabled");
       await admin.setGatewayModelMode(other.id, "enabled");

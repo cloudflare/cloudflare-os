@@ -291,6 +291,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     userModelsEnabled: typeof p.userModelsEnabled === "boolean"
       ? p.userModelsEnabled
       : DEFAULT_ADMIN_CONFIG.userModelsEnabled,
+    modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
+      ? p.modelsDevSuggestions
+      : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
   };
 }
 

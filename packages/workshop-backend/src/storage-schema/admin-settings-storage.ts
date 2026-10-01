@@ -79,6 +79,11 @@ export type AdminConfig = {
    * in ai-gateway.ts).
    */
   userModelsEnabled: boolean;
+  /**
+   * Whether the admin UI may suggest models from models.dev while an admin adds one (default
+   * false). The admin's browser reads it and fetches the suggestions; the server only stores it.
+   */
+  modelsDevSuggestions: boolean;
 };
 
 /**
@@ -120,6 +125,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   modelModes: {},
   addedModels: [],
   userModelsEnabled: true,
+  modelsDevSuggestions: false,
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {

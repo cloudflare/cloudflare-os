@@ -39,6 +39,7 @@ const GATEWAY_MODELS: GatewayModels = {
   providers: ['anthropic', 'openai'],
   models: [SONNET, LEGACY, ADDED],
   userModelsEnabled: true,
+  modelsDevSuggestions: false,
 }
 
 const deferred = () => {

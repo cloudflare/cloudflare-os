@@ -297,6 +297,44 @@ describe("AdminSettings users' own models", () => {
   });
 });
 
+// Whether the admin UI may suggest models from models.dev, as stored and as the admin panel is
+// shown it.
+const suggestions = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async admin => ({
+  stored: admin.getAdminConfig().modelsDevSuggestions,
+  view: (await admin.getSettings("admin")).gatewayModels!.modelsDevSuggestions,
+}));
+
+describe("AdminSettings models.dev suggestions", () => {
+  it("are off until turned on, storing and mirroring each change", async () => {
+    const { inDo, put, mirror } = adminSettings();
+    expect(await suggestions(inDo)).toEqual({ stored: false, view: false });
+
+    await inDo(admin => admin.setModelsDevSuggestions(true));
+    expect(await suggestions(inDo)).toEqual({ stored: true, view: true });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![0]).toBe(".adminConfig");
+    expect(JSON.parse(mirror.current!).modelsDevSuggestions).toBe(true);
+
+    await inDo(admin => admin.setModelsDevSuggestions(false));
+    expect(await suggestions(inDo)).toEqual({ stored: false, view: false });
+    expect(JSON.parse(mirror.current!).modelsDevSuggestions).toBe(false);
+  });
+
+  it("leave the gateway's models, their modes and users' own models alone", async () => {
+    const { inDo, stored } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED));
+    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "disabled"));
+    await inDo(admin => admin.setUserModelsEnabled(false));
+    const before = await inDo(admin => admin.getSettings("admin"));
+
+    await inDo(admin => admin.setModelsDevSuggestions(true));
+    expect(await stored()).toEqual(
+        { modelModes: { "claude-fable-5-1": "disabled" }, addedModels: [ADDED] });
+    const after = await inDo(admin => admin.getSettings("admin"));
+    expect(after.gatewayModels).toEqual({ ...before.gatewayModels, modelsDevSuggestions: true });
+  });
+});
+
 describe("AdminSettings.getSettings gateway models", () => {
   it("lists every gateway model in its mode, and the providers a model may be added under",
       async () => {
@@ -351,8 +389,10 @@ describe("AdminSettings outside AI Gateway mode", () => {
     put.mockClear();
     await expect(inDo(admin => admin.removeGatewayModel("claude-test"))).rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setUserModelsEnabled(false))).rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setModelsDevSuggestions(true))).rejects.toThrow(NOT_GATEWAY);
     expect(await stored()).toEqual({ modelModes: {}, addedModels: [ADDED] });
     expect(await inDo(admin => admin.getAdminConfig().userModelsEnabled)).toBe(true);
+    expect(await inDo(admin => admin.getAdminConfig().modelsDevSuggestions)).toBe(false);
     expect(put).not.toHaveBeenCalled();
   });
 });

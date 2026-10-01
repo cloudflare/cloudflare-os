@@ -1018,6 +1018,11 @@ export type AdminSettingsView = {
     models: AdminModel[];
     /** Whether users may add models of their own (see AdminApi.setUserModelsEnabled). */
     userModelsEnabled: boolean;
+    /**
+     * Whether the admin UI may suggest models from models.dev while an admin adds one (see
+     * AdminApi.setModelsDevSuggestions).
+     */
+    modelsDevSuggestions: boolean;
   };
 };
 
@@ -1220,6 +1225,17 @@ export interface AdminApi {
    * models users added work again once this is back on.
    */
   setUserModelsEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Set whether the admin UI may suggest models from models.dev while an admin adds one. Off by
+   * default.
+   *
+   * The admin's browser reads the setting and, with it on, downloads models.dev's public model
+   * list while an admin adds a model, to fill in the add-model form. It changes nothing the server
+   * does: the server never contacts models.dev, and addGatewayModel() validates a suggested model
+   * like any other.
+   */
+  setModelsDevSuggestions(enabled: boolean): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */

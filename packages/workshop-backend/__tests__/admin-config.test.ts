@@ -233,4 +233,16 @@ describe("admin config gateway models", () => {
     expect(parseAdminConfig(serializeAdminConfig(
         { ...DEFAULT_ADMIN_CONFIG, userModelsEnabled: false })).userModelsEnabled).toBe(false);
   });
+
+  it("suggests models from models.dev only when that is stored as on", () => {
+    expect(DEFAULT_ADMIN_CONFIG.modelsDevSuggestions).toBe(false);
+    expect(parseAdminConfig(null).modelsDevSuggestions).toBe(false);
+    for (let stored of ["{}", '{"modelsDevSuggestions":null}', '{"modelsDevSuggestions":"true"}',
+        '{"modelsDevSuggestions":1}', '{"modelsDevSuggestions":false}']) {
+      expect(parseAdminConfig(stored).modelsDevSuggestions, stored).toBe(false);
+    }
+    expect(parseAdminConfig('{"modelsDevSuggestions":true}').modelsDevSuggestions).toBe(true);
+    expect(parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, modelsDevSuggestions: true })).modelsDevSuggestions).toBe(true);
+  });
 });
