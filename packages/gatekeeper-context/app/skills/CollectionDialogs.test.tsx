@@ -40,6 +40,14 @@ const button = (label: string) => [...document.querySelectorAll<HTMLButtonElemen
 const radio = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
   .find((candidate) => candidate.closest("label")?.textContent?.includes(label));
 
+const collectionSummary = (id: string, title: string) => ({
+  id,
+  title,
+  description: "",
+  source: "private" as const,
+  lastUpdated: new Date(),
+});
+
 describe("collection dialogs", () => {
   let container: HTMLDivElement | undefined;
   let root: ReturnType<typeof createRoot> | undefined;
@@ -89,6 +97,7 @@ describe("collection dialogs", () => {
     } as unknown as ContextApi;
     render(
       <CreateCollectionDialog
+        collections={[]}
         viewerInfo={{ isAdmin: true, supportsGitCollections: true }}
         onCreated={() => {}}
         onClose={() => {}}
@@ -143,6 +152,7 @@ describe("collection dialogs", () => {
     render(
       <EditCollectionDialog
         collection={collection}
+        collections={[collectionSummary(collection.id, collection.title)]}
         supportsGitCollections
         onUpdated={() => {}}
         onClose={() => {}}
@@ -158,5 +168,63 @@ describe("collection dialogs", () => {
     });
 
     expect(updateContextCollection).toHaveBeenCalledWith("collection", { branch: "release" });
+  });
+
+  it("shows an inline error for a duplicate collection name when creating", () => {
+    const createContextCollection = vi.fn<ContextApi["createContextCollection"]>();
+    mocks.api = { createContextCollection } as unknown as ContextApi;
+    render(
+      <CreateCollectionDialog
+        collections={[collectionSummary("existing", "Engineering")]}
+        viewerInfo={{ isAdmin: false, supportsGitCollections: false }}
+        onCreated={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    act(() => setInputValue(
+      document.querySelector<HTMLInputElement>('input[placeholder^="A short name"]')!,
+      " engineering ",
+    ));
+
+    expect(document.body.textContent).toContain("A collection with this name already exists.");
+    expect(button("Add collection")?.disabled).toBe(true);
+    expect(createContextCollection).not.toHaveBeenCalled();
+  });
+
+  it("shows an inline error for another collection's name when editing", () => {
+    const updateContextCollection = vi.fn<ContextApi["updateContextCollection"]>();
+    mocks.api = {
+      updateContextCollection,
+      listContextCollectionGitTokens: async () => ({ tokens: [] }),
+    } as unknown as ContextApi;
+    const collection: ContextCollectionMetadata = {
+      id: "collection",
+      title: "Engineering",
+      description: "",
+      visibility: "private",
+      created: new Date(),
+      lastUpdated: new Date(),
+      documentCount: 0,
+      content: { source: "web" },
+    };
+    render(
+      <EditCollectionDialog
+        collection={collection}
+        collections={[
+          collectionSummary(collection.id, collection.title),
+          collectionSummary("existing", "Marketing"),
+        ]}
+        supportsGitCollections={false}
+        onUpdated={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    act(() => setInputValue(document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!, "marketing"));
+
+    expect(document.body.textContent).toContain("A collection with this name already exists.");
+    expect(button("Save changes")?.disabled).toBe(true);
+    expect(updateContextCollection).not.toHaveBeenCalled();
   });
 });

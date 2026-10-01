@@ -188,6 +188,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       )}
       {pendingAddCollection && (
         <CreateCollectionDialog
+          collections={collections}
           viewerInfo={viewerInfo}
           onCreated={reload}
           onClose={() => setPendingAddCollection(false)}
@@ -196,6 +197,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
       {pendingEditCollection && (
         <EditCollectionDialog
           collection={pendingEditCollection}
+          collections={collections}
           supportsGitCollections={viewerInfo.supportsGitCollections}
           onUpdated={reload}
           onClose={() => setPendingEditCollection(null)}

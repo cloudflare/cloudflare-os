@@ -15,14 +15,18 @@ import {
   type ContextCollectionMetadata,
   type ContextGitTokenCreateResult,
   type ContextGitTokenInfo,
+  DUPLICATE_COLLECTION_TITLE_ERROR,
+  type EnabledCollectionInfo,
 } from "../../src/context-types";
 import { CollectionIconPicker, DEFAULT_COLLECTION_ICON } from "../components/CollectionIconPicker";
 import { useContextApi } from "../bridge";
 import { GitTokenCredentials } from "./GitTokenCredentials";
+import { hasDuplicateCollectionTitle } from "./collectionTitle";
 import { useMutationDialog } from "./useMutationDialog";
 
 type EditCollectionDialogProps = {
   collection: ContextCollectionMetadata;
+  collections: readonly EnabledCollectionInfo[];
   supportsGitCollections: boolean;
   onUpdated: () => void;
   onClose: () => void;
@@ -179,6 +183,7 @@ const GitTokenManager = ({
 /** Dialog that edits a manageable collection's metadata and Git configuration. */
 export const EditCollectionDialog = ({
   collection,
+  collections,
   supportsGitCollections,
   onUpdated,
   onClose,
@@ -192,12 +197,15 @@ export const EditCollectionDialog = ({
     collection.content.source === "git" ? collection.content.branch : DEFAULT_GIT_BRANCH,
   );
   const [updating, setUpdating] = useState(false);
+  const [serverTitleError, setServerTitleError] = useState<string | null>(null);
   const [tokenBusy, setTokenBusy] = useState(false);
   const dialog = useMutationDialog(updating || tokenBusy, onClose);
+  const duplicateTitle = hasDuplicateCollectionTitle(collections, title, collection.id);
+  const titleError = duplicateTitle ? DUPLICATE_COLLECTION_TITLE_ERROR : serverTitleError;
 
   const update = async () => {
     const trimmedTitle = title.trim();
-    if (!trimmedTitle || updating || tokenBusy) return;
+    if (!trimmedTitle || duplicateTitle || updating || tokenBusy) return;
     const trimmedDescription = description.trim();
     const expectedIcon = collection.icon ?? DEFAULT_COLLECTION_ICON;
     const updates: { title?: string; description?: string; icon?: string; branch?: string } = {};
@@ -219,6 +227,10 @@ export const EditCollectionDialog = ({
       onUpdated();
       dialog.closeAfterSuccess();
     } catch (error) {
+      if (error instanceof Error && error.message === DUPLICATE_COLLECTION_TITLE_ERROR) {
+        setServerTitleError(error.message);
+        return;
+      }
       toasts.add({
         title: error instanceof Error ? error.message : "Failed to update collection",
         variant: "error",
@@ -249,13 +261,16 @@ export const EditCollectionDialog = ({
           />
         </div>
         <div className="flex max-h-[min(72vh,680px)] flex-col gap-4 overflow-y-auto px-4 py-5 sm:px-6">
-          <Field label="Name">
+          <Field label="Name" error={titleError ? { message: titleError, match: true } : undefined}>
             <div className="flex w-full items-center gap-2">
               <CollectionIconPicker value={icon} onChange={setIcon} variant="boxed" size={24} />
               <Input
                 aria-label="Name"
                 value={title}
-                onChange={(event) => setTitle(event.target.value)}
+                onChange={(event) => {
+                  setTitle(event.target.value);
+                  setServerTitleError(null);
+                }}
                 onKeyDown={(event) => { if (event.key === "Enter") void update(); }}
                 maxLength={100}
                 placeholder="A short name, e.g., Brand guidelines"
@@ -290,7 +305,13 @@ export const EditCollectionDialog = ({
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
           <Button variant="secondary" onClick={dialog.requestClose} disabled={updating || tokenBusy}>Cancel</Button>
-          <Button onClick={update} loading={updating} disabled={!title.trim() || tokenBusy}>Save changes</Button>
+          <Button
+            onClick={update}
+            loading={updating}
+            disabled={!title.trim() || duplicateTitle || tokenBusy}
+          >
+            Save changes
+          </Button>
         </div>
       </Dialog>
     </Dialog.Root>

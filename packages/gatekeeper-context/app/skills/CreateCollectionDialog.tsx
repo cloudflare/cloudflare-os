@@ -11,18 +11,22 @@ import {
 } from "@cloudflare/kumo";
 import { Buildings, GitBranch, Lock, PencilSimple, X } from "@phosphor-icons/react";
 import { useState } from "react";
+import { DUPLICATE_COLLECTION_TITLE_ERROR } from "../../src/context-types";
 import type {
   ContextCollectionContent,
   ContextCollectionMetadata,
   ContextCollectionVisibility,
   ContextGitTokenCreateResult,
+  EnabledCollectionInfo,
 } from "../../src/context-types";
 import { CollectionIconPicker, DEFAULT_COLLECTION_ICON } from "../components/CollectionIconPicker";
 import { useContextApi } from "../bridge";
 import { GitTokenCredentials } from "./GitTokenCredentials";
+import { hasDuplicateCollectionTitle } from "./collectionTitle";
 import { useMutationDialog } from "./useMutationDialog";
 
 type CreateCollectionDialogProps = {
+  collections: readonly EnabledCollectionInfo[];
   viewerInfo: { isAdmin: boolean; supportsGitCollections: boolean };
   onCreated: () => void;
   onClose: () => void;
@@ -30,6 +34,7 @@ type CreateCollectionDialogProps = {
 
 /** Dialog that creates a collection with the sources and visibility available to the viewer. */
 export const CreateCollectionDialog = ({
+  collections,
   viewerInfo,
   onCreated,
   onClose,
@@ -42,12 +47,15 @@ export const CreateCollectionDialog = ({
   const [source, setSource] = useState<ContextCollectionContent["source"]>("web");
   const [visibility, setVisibility] = useState<ContextCollectionVisibility>("private");
   const [creating, setCreating] = useState(false);
+  const [serverTitleError, setServerTitleError] = useState<string | null>(null);
   const [creatingToken, setCreatingToken] = useState(false);
   const [gitSetup, setGitSetup] = useState<{
     collection: ContextCollectionMetadata;
     token: ContextGitTokenCreateResult | null;
   } | null>(null);
   const busy = creating || creatingToken;
+  const duplicateTitle = hasDuplicateCollectionTitle(collections, title);
+  const titleError = duplicateTitle ? DUPLICATE_COLLECTION_TITLE_ERROR : serverTitleError;
   const dialog = useMutationDialog(busy, onClose);
 
   const createToken = async (collection: ContextCollectionMetadata) => {
@@ -67,7 +75,7 @@ export const CreateCollectionDialog = ({
 
   const create = async () => {
     const trimmedTitle = title.trim();
-    if (!trimmedTitle || creating) return;
+    if (!trimmedTitle || duplicateTitle || creating) return;
 
     setCreating(true);
     try {
@@ -86,6 +94,10 @@ export const CreateCollectionDialog = ({
         dialog.closeAfterSuccess();
       }
     } catch (error) {
+      if (error instanceof Error && error.message === DUPLICATE_COLLECTION_TITLE_ERROR) {
+        setServerTitleError(error.message);
+        return;
+      }
       toasts.add({
         title: error instanceof Error ? error.message : "Failed to create collection",
         variant: "error",
@@ -149,13 +161,16 @@ export const CreateCollectionDialog = ({
             </>
           ) : (
             <>
-              <Field label="Name">
+              <Field label="Name" error={titleError ? { message: titleError, match: true } : undefined}>
                 <div className="flex w-full items-center gap-2">
                   <CollectionIconPicker value={icon} onChange={setIcon} variant="boxed" size={24} />
                   <Input
                     aria-label="Name"
                     value={title}
-                    onChange={(event) => setTitle(event.target.value)}
+                    onChange={(event) => {
+                      setTitle(event.target.value);
+                      setServerTitleError(null);
+                    }}
                     onKeyDown={(event) => { if (event.key === "Enter") void create(); }}
                     maxLength={100}
                     placeholder="A short name, e.g., Brand guidelines"
@@ -220,7 +235,13 @@ export const CreateCollectionDialog = ({
           ) : (
             <>
               <Button variant="secondary" onClick={dialog.requestClose} disabled={busy}>Cancel</Button>
-              <Button onClick={create} loading={creating} disabled={!title.trim()}>Add collection</Button>
+              <Button
+                onClick={create}
+                loading={creating}
+                disabled={!title.trim() || duplicateTitle}
+              >
+                Add collection
+              </Button>
             </>
           )}
         </div>

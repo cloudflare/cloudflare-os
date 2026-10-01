@@ -6,6 +6,9 @@ import type { RpcTarget } from "capnweb";
 /** Vendor id = GATEKEEPER_<NAME> binding suffix (lowercased). */
 export const VENDOR_ID = "context";
 
+/** Error returned when a visible collection already uses the requested title. */
+export const DUPLICATE_COLLECTION_TITLE_ERROR = "A collection with this name already exists.";
+
 // ---------------------------------------------------------------------------
 // Read-session value types
 //

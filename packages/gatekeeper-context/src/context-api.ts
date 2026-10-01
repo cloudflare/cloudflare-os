@@ -6,7 +6,7 @@ import { validateRpc } from "capnweb-validate";
 import {
   ContextApi, ContextCollectionContent, ContextCollectionMetadata, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary, ContextGitTokenCreateResult, ContextGitTokenList,
-  DEFAULT_GIT_BRANCH, EnabledCollectionInfo,
+  DEFAULT_GIT_BRANCH, DUPLICATE_COLLECTION_TITLE_ERROR, EnabledCollectionInfo,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
@@ -80,6 +80,16 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
     return this.registries.getByName(this.domain);
   }
 
+  async #assertUniqueCollectionTitle(title: string, excludeCollectionId?: string): Promise<void> {
+    let normalizedTitle = title.trim().toLowerCase();
+    let collections = await loadEnabledContextCollections(this.env, this.domain, this.#userLib());
+    if (collections.some(collection =>
+      collection.id !== excludeCollectionId
+      && collection.title.trim().toLowerCase() === normalizedTitle)) {
+      throw new Error(DUPLICATE_COLLECTION_TITLE_ERROR);
+    }
+  }
+
   // Whether this account owns the private collection.
   async #ownsPrivate(collectionId: string): Promise<boolean> {
     return this.#userLib().hasOwned(collectionId);
@@ -137,6 +147,7 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
     if (source === "git" && !this.env.ARTIFACTS) {
       throw new Error("Git-backed Context collections are not enabled.");
     }
+    await this.#assertUniqueCollectionTitle(title);
 
     let id = crypto.randomUUID();
     let metadata: ContextCollectionMetadata = {
@@ -176,6 +187,9 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
   }): Promise<void> {
     await this.#assertCanWrite(collectionId);
     if (options.branch !== undefined) this.#assertArtifactsAvailable();
+    if (options.title !== undefined) {
+      await this.#assertUniqueCollectionTitle(options.title, collectionId);
+    }
     await this.#collection(collectionId).updateMetadata(options);
   }
 
