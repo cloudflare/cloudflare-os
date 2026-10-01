@@ -41,8 +41,8 @@ export const readUploadFile = async (
   let contentType = pathContentType;
   let body: string;
 
-  // Unknown extensions default to Markdown in the document editor. Use browser metadata or a UTF-8
-  // probe here so arbitrary skill assets are not corrupted by being decoded as text.
+  // Unknown extensions have a Markdown path default. Infer their stored type so arbitrary skill
+  // assets are not corrupted by being decoded as text.
   if (options.inferUnknownBinary && pathContentType === "text/markdown" && !hasMarkdownExtension) {
     if (file.type) {
       contentType = file.type;

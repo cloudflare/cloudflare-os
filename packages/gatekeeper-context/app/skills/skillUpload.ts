@@ -141,9 +141,13 @@ export const writeSkillUploadMetadata = (
   description: string,
 ): string => {
   const { frontmatter, content } = splitFrontmatter(body);
+  let markdownContent = content;
   let document = frontmatter === null ? new Document({}) : parseDocument(frontmatter);
-  if (document.errors.length > 0 || !isMap(document.contents)) document = new Document({});
+  if (document.errors.length > 0 || !isMap(document.contents)) {
+    document = new Document({});
+    markdownContent = body;
+  }
   document.set("name", name);
   document.set("description", description.trim());
-  return joinFrontmatter(document.toString().trimEnd(), content);
+  return joinFrontmatter(document.toString().trimEnd(), markdownContent);
 };

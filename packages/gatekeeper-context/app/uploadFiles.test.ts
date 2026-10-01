@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import { fileToBase64, readDroppedUploadFiles } from "./uploadFiles";
+import { fileToBase64, readDroppedUploadFiles, readUploadFile } from "./uploadFiles";
 
 describe("fileToBase64", () => {
   it("encodes files without a data URL, including across chunk boundaries", async () => {
@@ -12,6 +12,25 @@ describe("fileToBase64", () => {
     const decoded = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
 
     expect(decoded).toEqual(bytes);
+  });
+});
+
+describe("readUploadFile", () => {
+  it("preserves the MIME type and bytes of an unknown binary skill asset", async () => {
+    const bytes = Uint8Array.from([0, 255, 1, 254]);
+    const file = {
+      name: "asset.bin",
+      type: "application/octet-stream",
+      arrayBuffer: async () => bytes.buffer,
+    } as File;
+
+    const uploaded = await readUploadFile(file, undefined, { inferUnknownBinary: true });
+
+    expect(uploaded).toEqual({
+      path: "asset.bin",
+      contentType: "application/octet-stream",
+      body: "AP8B/g==",
+    });
   });
 });
 

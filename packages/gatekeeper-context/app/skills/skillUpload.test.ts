@@ -87,7 +87,7 @@ describe("writeSkillUploadMetadata", () => {
     expect(match?.[2]).toBe("# Instructions");
   });
 
-  it("replaces malformed frontmatter without dropping the Markdown body", () => {
+  it("preserves malformed frontmatter as Markdown content", () => {
     const body = writeSkillUploadMetadata(
       "---\nname: [broken\n---\nKeep this",
       "fixed",
@@ -97,6 +97,16 @@ describe("writeSkillUploadMetadata", () => {
     expect(body).toContain("name: fixed");
     expect(body).toContain("description: Fixed metadata");
     expect(body).toContain("Keep this");
-    expect(body).not.toContain("[broken");
+    expect(body).toContain("---\nname: [broken\n---\nKeep this");
+  });
+
+  it("preserves a non-mapping block between Markdown thematic rules", () => {
+    const original = "---\nFollow these instructions carefully.\n---\nThen verify the result.";
+
+    const body = writeSkillUploadMetadata(original, "careful-review", "Review carefully");
+
+    expect(body).toContain("name: careful-review");
+    expect(body).toContain("description: Review carefully");
+    expect(body).toContain(original);
   });
 });

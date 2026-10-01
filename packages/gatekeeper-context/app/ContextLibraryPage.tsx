@@ -2375,8 +2375,9 @@ function DocumentEditor({
   const [description, setDescription] = useState("");
   const [body, setBody] = useState("");
   const [skillName, setSkillName] = useState<string | null>(null);
-  // Content type is path-derived, so renames update rendering immediately.
-  const contentType = contentTypeFromPath(path);
+  // The stored type determines whether the body is literal text or base64; the path is only a
+  // fallback while the document loads.
+  const [contentType, setContentType] = useState(() => contentTypeFromPath(path));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -2414,6 +2415,7 @@ function DocumentEditor({
         savedDocumentRef.current = { description: d.description, body: d.body };
         setDescription(d.description);
         setBody(d.body);
+        setContentType(d.contentType);
         setSkillName(d.skillName ?? null);
         setDirty(false);
         setMode(readOnly || initialMode !== "edit" ? "read" : "edit");
@@ -2458,6 +2460,7 @@ function DocumentEditor({
         description: saved?.description ?? savedDescription,
         body: saved?.body ?? savedBody,
       };
+      setContentType(saved?.contentType ?? overrides?.contentType ?? contentType);
       setSkillName(saved?.skillName ?? null);
       setDirty(false);
       toasts.add({ title: "Saved", variant: "success" });
@@ -2498,7 +2501,6 @@ function DocumentEditor({
   const replaceFile = async (file: File) => {
     const newBody = await fileToBase64(file);
     setBody(newBody);
-    // Content type stays path-derived.
     await save({ body: newBody });
   };
 
