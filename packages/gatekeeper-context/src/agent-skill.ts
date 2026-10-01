@@ -1,9 +1,10 @@
-import { parse as parseYaml } from "yaml";
+import { isScalar, parse as parseYaml, parseDocument } from "yaml";
 import { z } from "zod";
 import { boundAgentCatalog } from "@gadgets/workshop-shared/gatekeeper";
 import type { AgentCatalog, SlashCommandDescriptor } from "@gadgets/workshop-shared/gatekeeper";
 import type { EnabledCollectionInfo } from "./context-types.js";
 import { docIdRoot, encodeDocId } from "./context-types.js";
+import { splitFrontmatter } from "./description-extractors.js";
 
 const AGENT_SKILL_NAME_MAX_LENGTH = 64;
 
@@ -182,4 +183,31 @@ export function parseSkillManifest(path: string, source: string): SkillManifestM
     name: result.data.name,
     description: result.data.description,
   };
+}
+
+/**
+ * Rewrites a direct scalar name while preserving the rest of the manifest byte-for-byte.
+ * This intentionally edits the source instead of serializing the parsed document, which would
+ * reformat unrelated YAML. Aliases are not supported: replacing one would require deciding whether
+ * to change its shared anchor or only this reference.
+ */
+export function updateSkillManifestName(source: string, newName: string): string {
+  let {frontmatter} = splitFrontmatter(source);
+  if (frontmatter === null) throw new Error("Skill manifest must start with YAML frontmatter.");
+
+  let document = parseDocument(frontmatter);
+  if (document.errors.length > 0) throw new Error("Skill frontmatter is not valid YAML.");
+  let name = document.get("name", true);
+  if (!isScalar(name) || !name.range) throw new Error("Skill name is required.");
+  let [start, end] = name.range;
+  let replacement = JSON.stringify(newName);
+  // Unlike other scalars, a block scalar's range includes its terminating line break.
+  if (frontmatter[end - 1] === "\n") {
+    let header = frontmatter.slice(start, end).split(/\r?\n/, 1)[0] ?? "";
+    replacement += header.match(/[ \t]+#.*$/)?.[0] ?? "";
+    end -= frontmatter[end - 2] === "\r" ? 2 : 1;
+  }
+  let frontmatterStart = source.indexOf(frontmatter);
+  return source.slice(0, frontmatterStart + start) + replacement
+    + source.slice(frontmatterStart + end);
 }
