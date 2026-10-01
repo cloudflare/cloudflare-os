@@ -251,14 +251,15 @@ export async function openLocalEvalTarget(
     modelId: model.model,
     turnTimeoutMs,
     costAccountingTimeoutMs: access.kind === "gateway" ? GATEWAY_COST_ACCOUNTING_TIMEOUT_MS : 0,
-    userModel: {
+    // A gateway serves every eval model, since each is a suggested model of the provider it
+    // enables, and the Workshop refuses a hand-added model that a gateway model would shadow.
+    userModel: access.kind === "gateway" ? undefined : {
       profile: { type: "agent", id: model.model, name: model.model },
       config: {
         provider: model.provider,
         model: model.model,
         accountId: access.accountId,
-        // Gateway mode takes transport credentials from the Worker environment.
-        apiToken: access.kind === "direct" ? access.apiToken : "",
+        apiToken: access.apiToken,
       },
     },
   };
