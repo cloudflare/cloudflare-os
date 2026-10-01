@@ -144,6 +144,16 @@ describe("updateSkillManifestName", () => {
     });
     expect(updated).toBe(source.replace("\"old-name\"", "\"new-name\""));
   });
+
+  it.each(["123", "true", "false", "null"])(
+    "keeps scalar-like renamed names as YAML strings: %s",
+    (newName) => {
+      const source = `---\nname: old-name\ndescription: Existing skill.\n---\nInstructions\n`;
+      const updated = updateSkillManifestName(source, newName);
+
+      expect(parseSkillManifest(`${newName}/SKILL.md`, updated).name).toBe(newName);
+    },
+  );
 });
 
 describe("buildAgentSkillCommands", () => {

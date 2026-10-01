@@ -195,9 +195,7 @@ export function updateSkillManifestName(source: string, newName: string): string
   let name = document.get("name", true);
   if (!isScalar(name) || !name.range) throw new Error("Skill name is required.");
   let [start, end] = name.range;
-  let original = frontmatter.slice(start, end);
-  let quote = original[0];
-  let replacement = quote === "\"" || quote === "'" ? `${quote}${newName}${quote}` : newName;
+  let replacement = JSON.stringify(newName);
   let frontmatterStart = source.indexOf(frontmatter);
   return source.slice(0, frontmatterStart + start) + replacement
     + source.slice(frontmatterStart + end);
