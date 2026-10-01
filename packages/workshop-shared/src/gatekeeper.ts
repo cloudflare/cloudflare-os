@@ -80,6 +80,18 @@ export type VendorDescription = {
 }
 
 /**
+ * Workshop-owned capability for reading a picked user's current display name.
+ *
+ * This capability conveys no authority over the user's gatekeeper account. Gatekeepers must use
+ * the paired `GatekeeperUserVerifier` for vendor-specific authorization and routing, and must not
+ * persist the name returned here as identity data.
+ */
+export interface GatekeeperUserProfile extends WorkerEntrypoint {
+  /** Current display name, or null if the Workshop user no longer exists. */
+  getDisplayName(): Promise<string | null>;
+}
+
+/**
  * Per-open context the Workshop passes to GatekeeperUser.startAppUi(). `isAdmin` is supplied fresh
  * each time rather than baked into the account, since a user's admin status can change over time.
  */
@@ -744,6 +756,29 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    */
   startAppUi?(context: AppUiContext): Promise<GatekeeperUiFrame>;
 
+  /**
+   * Deliver another user that the account's user selected with the Workshop
+   * user picker, which this account's management UI opened by calling
+   * `selectUsers(target)`. Present only for accounts whose describe() sets
+   * AccountDescription.providesUi and whose UI uses the picker.
+   *
+   * `target` is the string the UI passed to `selectUsers`, forwarded unmodified:
+   * it identifies the context for the user being selected (e.g. a resource id
+   * to be shared with them). It comes from browser code, so treat it as a
+   * request from this account's own user and validate it exactly as a `ui` call
+   * from the same UI. `user` is the selected person's identity with this vendor
+   * and `profile` reads their current Workshop display name. Both may be
+   * stored.
+   *
+   * The Workshop calls this once per user as they are selected, so the
+   * selection is delivered before the picker closes; the UI can then refresh
+   * its state through `ui`. Throw an Error with a user-facing message to have
+   * the picker show it next to the person's name.
+   */
+  receiveSelectedUser?(
+      target: string, user: Fetcher<GatekeeperUserVerifier>, profile: Fetcher<GatekeeperUserProfile>,
+  ): Promise<void>;
+
   // TODO:
   // - Query whether account has scope to access a particular URL.
 }
@@ -751,7 +786,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 /**
  * Opaque object representing the capability to verify whether a particular user is able to access
  * a particular Gatekeeper. Minted by `GatekeeperUser`, and then passed to
- * `Gatekeeper.addObserver()` and possibly other future interfaces.
+ * `Gatekeeper.addObserver()`, `GatekeeperUser.receiveSelectedUser()`, and possibly other future
+ * interfaces.
  *
  * At present, this interface has no methods, because it is merely meant to be passed back to the
  * Gatekeeper that created it.
