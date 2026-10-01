@@ -243,9 +243,35 @@ class TestMessage {
     }>;
   }
 
+  getContent(): Promise<EmailContent> {
+    return this.call("message.getContent", [this.id]) as Promise<EmailContent>;
+  }
+
+  attachments(): Promise<Array<{info: GmailAttachmentInfo; content?: ArrayBuffer}>> {
+    return this.call("message.attachments", [this.id]) as Promise<Array<{
+      info: GmailAttachmentInfo; content?: ArrayBuffer;
+    }>>;
+  }
+
+  readAcrossDecision(actionId: number, decision: "apply" | "reject"): Promise<{
+    before: GmailMessageInfo; after?: GmailMessageInfo; error?: string;
+  }> {
+    return this.call("message.readAcrossDecision", [this.id, actionId, decision]) as Promise<{
+      before: GmailMessageInfo; after?: GmailMessageInfo; error?: string;
+    }>;
+  }
+
   async thread(): Promise<TestThread> {
     const info = await this.call("message.thread", [this.id]) as GmailThreadInfo;
     return new TestThread(this.call, info.id, info);
+  }
+
+  threadMessages(): Promise<GmailMessageInfo[]> {
+    return this.call("message.threadMessages", [this.id]) as Promise<GmailMessageInfo[]>;
+  }
+
+  threadArchive(lastMessageId?: string): Promise<void> {
+    return this.call("message.threadArchive", [this.id, lastMessageId]) as Promise<void>;
   }
 
   reply(body: string, options?: GmailReplyOptions): Promise<string> {
@@ -768,7 +794,9 @@ describe("Gmail session API surface", () => {
 
     const messageId = await session.send(["to@example.com"], "Subject", "Body");
     expect(messageId).toMatch(/^<[-0-9a-f]+@gadgets\.invalid>$/);
-    await expect(session.getMessage(messageId)).rejects.toThrow(/pending or has not been reconciled/);
+    // The same ID opens the message before Gmail has it.
+    await expect((await session.getMessage(messageId)).getMetadata())
+      .resolves.toMatchObject({id: messageId, subject: "Subject"});
 
     await gatekeeper.applyAction(1);
 
@@ -1130,6 +1158,10 @@ describe("Gmail auto-approval eligibility", () => {
     for (const index of [0, 1, 2, 3, 5]) {
       expect(descriptions[index]).not.toHaveProperty("actionKind");
       expect(descriptions[index]).not.toHaveProperty("autoApprovable");
+    }
+    // Later reads show each message as sent, so no send stops the caller to wait for a decision.
+    for (const description of descriptions) {
+      expect(description).not.toHaveProperty("awaitDecision");
     }
     expect(descriptions[4]).toMatchObject({
       actionKind: {tag: "draftCreate", label: "Create drafts"},
@@ -2100,8 +2132,9 @@ describe("Gmail draft lookup", () => {
     expect(action.messageId).toMatch(/^<[-0-9a-f]+@gadgets\.invalid>$/);
     expect(sentMessageId).toBe(action.messageId);
     expect(action.approved.rfcMessageId).toBe(action.messageId);
-    await expect(session.getMessage(sentMessageId))
-      .rejects.toThrow(/pending or has not been reconciled/);
+    // The message is read back under the send's own Message-ID before Gmail has it.
+    await expect((await session.getMessage(sentMessageId)).getHeaders())
+      .resolves.toContainEqual({name: "Message-ID", value: sentMessageId});
   });
 
   it("replaces an imported Message-ID with the send action identity used for reconciliation", async () => {
@@ -3793,6 +3826,38 @@ const systemLabel = (id: string) => ({id, name: id, type: "system"});
 const entryIds = (entries: Array<{info: {id: string}}> | null) =>
   entries?.map(entry => entry.info.id) ?? null;
 
+const infoIds = (infos: Array<{id: string}>) => infos.map(info => info.id);
+
+/** The IDs a thread's message capabilities report, in the order the thread returned them. */
+async function memberIds(messages: Promise<TestMessage[]>): Promise<string[]> {
+  return infoIds(await Promise.all((await messages).map(message => message.getMetadata())));
+}
+
+const headerNamed = (headers: Array<{name: string; value: string}>, name: string) =>
+  headers.find(candidate => candidate.name.toLowerCase() === name.toLowerCase())?.value;
+
+const decodeText = (content: ArrayBuffer | undefined) => new TextDecoder().decode(content);
+
+/** A message as a fake mailbox keeps it: the MIME it was given, and what Gmail adds to it. */
+type FakeMail = {
+  id: string; threadId: string; labelIds: string[]; internalDate: number; from: string;
+  raw: string;
+};
+
+// Gmail returns header values decoded, which matters for the subject's encoded-word form.
+async function fakeMailHeaders(mail: FakeMail): Promise<Array<{name: string; value: string}>> {
+  const parsed = await parseMimeMessage(mail.raw);
+  return parsed.headers.map(candidate => ({
+    name: candidate.originalKey ?? candidate.key,
+    value: candidate.key === "subject" ? parsed.subject ?? "" : candidate.value,
+  }));
+}
+
+const fakeMailRaw = (mail: FakeMail) => ({
+  id: mail.id, threadId: mail.threadId, internalDate: String(mail.internalDate),
+  labelIds: mail.labelIds, raw: mail.raw,
+});
+
 describe("Gmail pending label changes", () => {
   type FakeMessage = {id: string; threadId: string; labelIds: string[]};
   const teamLabel = {id: "Label_1", name: "Team", type: "custom"};
@@ -4215,6 +4280,697 @@ describe("Gmail pending label changes", () => {
     const session = await gatekeeper.startSession(approvalQueue());
 
     expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1"]);
+  });
+});
+
+describe("Gmail pending sends", () => {
+  const ME = "me@example.com";
+  const SENDER = "sender@example.com";
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+  // The messages each submitted mutation names, in submission order.
+  const mutationTargets = async (queue: ApprovalQueueHandle) =>
+    (await queue.read!()).submissions.flatMap(({description}) => {
+      const field = fieldOf(description, "Message IDs") as {items: string[]} | undefined;
+      return field ? [field.items] : [];
+    });
+
+  // A mailbox that keeps every message as the MIME it was given and answers each read from it,
+  // as Gmail does. Only a send, a draft write or a label change that reaches Gmail alters it, so
+  // whatever a read shows beyond it is the simulation.
+  function mailHarness(options: {
+    searchQuery?: string;
+    /** What a search matches. Defaults to everything. */
+    matches?: (mail: FakeMail) => boolean;
+  } = {}) {
+    const mailbox: FakeMail[] = [];
+    const drafts = new Map<string, FakeMail>();
+    let lastId = 0;
+    // Hex, as Gmail's own IDs are.
+    const newId = (prefix: string) => `${prefix}${(++lastId).toString(16).padStart(3, "0")}`;
+    const deliver = (mail: Partial<FakeMail> & {raw: string}): FakeMail => {
+      const stored = {
+        id: newId("a"),
+        threadId: mail.threadId ?? newId("c"),
+        labelIds: mail.labelIds ?? ["INBOX", "UNREAD"],
+        internalDate: mail.internalDate ?? Date.now(),
+        from: mail.from ?? SENDER,
+        raw: mail.raw,
+      };
+      mailbox.push(stored);
+      return stored;
+    };
+    /** A message from someone else, already in the mailbox when the test starts. */
+    const receive = (spec: Partial<GmailOutboundSpec> = {}, mail: Partial<FakeMail> = {}) => {
+      const from = spec.from ?? SENDER;
+      return deliver({
+        internalDate: mailbox.length + 1,
+        from,
+        ...mail,
+        raw: buildEncodedEmail({
+          from,
+          to: [ME],
+          cc: [],
+          bcc: [],
+          subject: "Quarterly report",
+          text: "Source body",
+          messageId: `<source-${mailbox.length + 1}@example.com>`,
+          attachments: [],
+          ...spec,
+        }),
+      });
+    };
+    /** A draft written in Gmail itself, which this binding has not seen. */
+    const saveDraft = (spec: Partial<GmailOutboundSpec>) => {
+      const mail = deliver({
+        labelIds: ["DRAFT"],
+        from: ME,
+        internalDate: mailbox.length + 1,
+        raw: buildEncodedEmail({
+          from: ME, to: ["to@example.com"], cc: [], bcc: [], subject: "Imported", text: "Body",
+          messageId: "<imported@example.com>", attachments: [], ...spec,
+        }),
+      });
+      const id = newId("d");
+      drafts.set(id, mail);
+      return {id, mail};
+    };
+    const metadata = async (mail: FakeMail) => ({
+      id: mail.id,
+      threadId: mail.threadId,
+      internalDate: String(mail.internalDate),
+      labelIds: mail.labelIds,
+      sizeEstimate: base64UrlDecodedByteLength(mail.raw),
+      payload: {headers: await fakeMailHeaders(mail)},
+    });
+    // Enough of the MIME tree for a draft's headers and plain-text body to be read.
+    const full = async (mail: FakeMail) => {
+      const text = (await parseMimeMessage(mail.raw)).text ?? "";
+      return {
+        ...await metadata(mail),
+        payload: {
+          mimeType: "text/plain",
+          headers: await fakeMailHeaders(mail),
+          body: {size: text.length, data: base64Url(text)},
+        },
+      };
+    };
+    const listed = (url: URL) => {
+      const labelIds = url.searchParams.getAll("labelIds");
+      return mailbox.filter(mail => labelIds.every(id => mail.labelIds.includes(id)) &&
+        (!url.searchParams.has("q") || (options.matches?.(mail) ?? true)));
+    };
+    const respond = async (url: URL, init: RequestInit): Promise<Response> => {
+      const [collection, id] = url.pathname.replace("/gmail/v1/users/me/", "").split("/");
+      const format = url.searchParams.get("format");
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      if (collection === "labels" && !init.method) {
+        return json({labels: ["INBOX", "UNREAD", "STARRED", "TRASH", "SENT", "DRAFT"]
+          .map(systemLabel)});
+      }
+      if (collection === "messages" && id === "send" && init.method === "POST") {
+        const sent = deliver(
+          {raw: body.raw, threadId: body.threadId, labelIds: ["SENT"], from: ME});
+        return json({id: sent.id, threadId: sent.threadId});
+      }
+      if (collection === "messages" && id === "batchModify" && init.method === "POST") {
+        for (const mail of mailbox.filter(candidate => body.ids.includes(candidate.id))) {
+          mail.labelIds = [
+            ...mail.labelIds.filter(label =>
+              !body.removeLabelIds.includes(label) && !body.addLabelIds.includes(label)),
+            ...body.addLabelIds,
+          ];
+        }
+        return new Response(null, {status: 204});
+      }
+      if (collection === "drafts" && id === undefined && init.method === "POST") {
+        const mail = deliver({
+          raw: body.message.raw, threadId: body.message.threadId, labelIds: ["DRAFT"], from: ME,
+        });
+        const draftId = newId("d");
+        drafts.set(draftId, mail);
+        return json({id: draftId, message: {id: mail.id, threadId: mail.threadId}});
+      }
+      if (collection === "drafts" && id === "send" && init.method === "POST") {
+        const draft = drafts.get(body.id);
+        if (!draft) return json({error: "no such draft"}, 404);
+        // Gmail consumes the draft: its message is gone, and the sent one has an ID of its own.
+        drafts.delete(body.id);
+        mailbox.splice(mailbox.indexOf(draft), 1);
+        const sent = deliver(
+          {raw: body.message.raw, threadId: draft.threadId, labelIds: ["SENT"], from: ME});
+        return json({id: sent.id, threadId: sent.threadId});
+      }
+      if (init.method) throw new Error(`Unexpected request: ${init.method} ${url}`);
+      if (collection === "drafts" && id !== undefined) {
+        const mail = drafts.get(id);
+        if (!mail) return json({error: "no such draft"}, 404);
+        return json({id, message: format === "full" ? await full(mail) : fakeMailRaw(mail)});
+      }
+      if (collection === "messages" && id === undefined) {
+        return json({messages: listed(url).map(mail => ({id: mail.id, threadId: mail.threadId}))});
+      }
+      if (collection === "threads" && id === undefined) {
+        return json({threads: [...new Set(listed(url).map(mail => mail.threadId))]
+          .map(threadId => ({id: threadId}))});
+      }
+      const mail = mailbox.find(candidate => candidate.id === id);
+      if (collection === "messages") {
+        if (!mail) return json({error: "no such message"}, 404);
+        return json(format === "raw" ? fakeMailRaw(mail) : await metadata(mail));
+      }
+      const thread = mailbox.filter(candidate => candidate.threadId === id);
+      if (collection === "threads" && thread.length) {
+        return json(format === "minimal"
+          ? threadMinimal(id, thread.map(candidate => candidate.id))
+          : {id, messages: await Promise.all(thread.map(metadata))});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    return {...actionHarness(respond, options), mailbox, drafts, receive, saveDraft};
+  }
+
+  const attachment = {
+    filename: "source.txt",
+    contentType: "text/plain",
+    data: btoa("source attachment"),
+    disposition: "attachment" as const,
+    description: "source attachment",
+  };
+
+  it("opens new mail as soon as it is sent", async () => {
+    const {gatekeeper, mailbox, values} = mailHarness();
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await session.send(["to@example.com"], "Hello", "Plain body", {
+      cc: ["Carol <carol@example.com>"], bcc: ["hidden@example.com"], html: "<p>HTML body</p>",
+    });
+    const {submittedAt} = (await values.get<{submittedAt: number}>("pending:action:1"))!;
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toEqual({
+      id,
+      from: {address: ME},
+      to: [{address: "to@example.com"}],
+      cc: [{address: "carol@example.com", name: "Carol"}],
+      bcc: [{address: "hidden@example.com"}],
+      subject: "Hello",
+      timestamp: new Date(submittedAt),
+      labels: [systemLabel("SENT")],
+    });
+    const headers = await message.getHeaders();
+    expect(headerNamed(headers, "Message-ID")).toBe(id);
+    expect(headerNamed(headers, "To")).toContain("to@example.com");
+    expect(headerNamed(headers, "Bcc")).toContain("hidden@example.com");
+    const content = await message.getContent();
+    expect(content.text?.trim()).toBe("Plain body");
+    expect(content.html?.trim()).toBe("<p>HTML body</p>");
+    expect(await message.attachments()).toEqual([]);
+    // Gmail assigns new mail its thread only when it sends it.
+    await expect(message.thread()).rejects.toThrow(/once this message has been delivered/);
+    expect(mailbox).toEqual([]);
+  });
+
+  it("reads a pending reply back as it will be sent, dated when it was submitted", async () => {
+    const {gatekeeper, receive, storage, values} = mailHarness();
+    const source = receive({cc: ["carol@example.com"]});
+    const sourceMessageId = (await parseMimeMessage(source.raw)).messageId;
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    // Long past, so a `Date` stamped at the time of each read would show.
+    const submittedAt = Date.UTC(2026, 0, 2, 3, 4, 5);
+    storage.kv.put("pending:action:1", {...await values.get<object>("pending:action:1"), submittedAt});
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toEqual({
+      id,
+      threadId: source.threadId,
+      from: {address: ME},
+      to: [{address: SENDER}],
+      cc: [],
+      subject: "Re: Quarterly report",
+      timestamp: new Date(submittedAt),
+      labels: [systemLabel("SENT")],
+    });
+    const headers = await message.getHeaders();
+    expect(headerNamed(headers, "Message-ID")).toBe(id);
+    expect(headerNamed(headers, "In-Reply-To")).toBe(sourceMessageId);
+    expect(headerNamed(headers, "References")).toContain(sourceMessageId);
+    expect(new Date(headerNamed(headers, "Date")!)).toEqual(new Date(submittedAt));
+    expect(headerNamed(await (await session.getMessage(id)).getHeaders(), "Date"))
+      .toBe(headerNamed(headers, "Date"));
+    expect((await message.getContent()).text?.trim()).toBe("Reply body");
+    expect(await message.attachments()).toEqual([]);
+  });
+
+  it("reads a pending forward back with its quoted source and the source's attachments", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive({html: "<p>Source <strong>HTML</strong></p>", attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id))
+      .forward(["recipient@example.com"], "Intro");
+    const message = await session.getMessage(id);
+
+    const info = await message.getMetadata();
+    expect(info).toMatchObject({
+      id, to: [{address: "recipient@example.com"}], subject: "Fwd: Quarterly report",
+      labels: [systemLabel("SENT")],
+    });
+    expect(info).not.toHaveProperty("threadId");
+    const content = await message.getContent();
+    expect(content.text).toContain("Intro");
+    expect(content.text).toContain("---------- Forwarded message ---------");
+    expect(content.text).toContain("Source body");
+    expect(content.html).toContain("Source <strong>HTML</strong>");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info)).toEqual([{
+      filename: "source.txt", mimeType: "text/plain", size: 17, disposition: "attachment",
+      readable: true,
+    }]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+    await expect(message.thread()).rejects.toThrow(/once this message has been delivered/);
+  });
+
+  it("reads back the send of an inline-forward draft Gmail does not have yet", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id))
+      .createForwardDraft(["recipient@example.com"], "Intro");
+
+    const id = await draft.send();
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toMatchObject({
+      id, to: [{address: "recipient@example.com"}], subject: "Fwd: Quarterly report",
+    });
+    expect(headerNamed(await message.getHeaders(), "Message-ID")).toBe(id);
+    const content = await message.getContent();
+    expect(content.text).toContain("Intro");
+    expect(content.text).toContain("Source body");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info.filename)).toEqual(["source.txt"]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+    expect(mailbox).toEqual([source]);
+  });
+
+  it("reads back the send of a draft written in Gmail, with the draft's attachments", async () => {
+    const {gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({html: "<p>Body</p>", attachments: [attachment]});
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getDraft(imported.id)).send();
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toMatchObject({
+      id, threadId: imported.mail.threadId, to: [{address: "to@example.com"}],
+      subject: "Imported", labels: [systemLabel("SENT")],
+    });
+    // The send carries its own Message-ID, not the one the draft was written with.
+    expect(headerNamed(await message.getHeaders(), "Message-ID")).toBe(id);
+    const content = await message.getContent();
+    expect(content.text?.trim()).toBe("Body");
+    expect(content.html?.trim()).toBe("<p>Body</p>");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info.filename)).toEqual(["source.txt"]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+  });
+
+  it("still describes a sent draft whose Gmail draft can no longer be read", async () => {
+    const {drafts, gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({attachments: [attachment]});
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getDraft(imported.id)).send();
+
+    // As after a send whose outcome is unknown, where Gmail may have consumed the draft.
+    drafts.delete(imported.id);
+
+    const message = await session.getMessage(id);
+    await expect(message.getMetadata()).resolves.toMatchObject({id, subject: "Imported"});
+    // The email cannot be rebuilt without the draft's attachments.
+    await expect(message.getHeaders()).rejects.toThrow(/drafts\.get failed/);
+    await expect(message.getContent()).rejects.toThrow(/drafts\.get failed/);
+    await expect(message.attachments()).rejects.toThrow(/drafts\.get failed/);
+  });
+
+  it("shows a pending reply in its thread", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive({cc: ["carol@example.com"]});
+    const before = structuredClone(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+
+    const summary = await thread.getMetadata();
+    expect(summary).toMatchObject({
+      id: source.threadId,
+      subject: "Quarterly report",
+      messageCount: 2,
+      latestMessageId: id,
+      participants: [{address: SENDER}, {address: ME}, {address: "carol@example.com"}],
+      unread: true,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD"), systemLabel("SENT")],
+    });
+    expect(summary.timestamp.getTime()).toBeGreaterThan(source.internalDate);
+    expect(await (await session.listThreads()).next()).toMatchObject([
+      {info: {id: source.threadId, messageCount: 2, latestMessageId: id}},
+    ]);
+    expect(await memberIds(thread.messages())).toEqual([source.id, id]);
+    // The reply goes to the sender alone, so the Cc'd recipient of the original cannot see it.
+    expect(await memberIds(thread.messagesVisibleTo(SENDER))).toEqual([source.id, id]);
+    expect(await memberIds(thread.messagesVisibleTo("carol@example.com"))).toEqual([source.id]);
+    // Mail waiting to be sent is not in any message list.
+    expect(entryIds(await (await session.listMessages()).next())).toEqual([source.id]);
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("shows a sent draft in its thread in place of the draft's message", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threadIds = async () => memberIds((await session.getThread(source.threadId)).messages());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    const draftMessage = mailbox[1];
+    // Gmail lists a draft in its thread.
+    expect(await threadIds()).toEqual([source.id, draftMessage.id]);
+
+    const id = await draft.send();
+
+    expect(await threadIds()).toEqual([source.id, id]);
+    await expect((await session.getThread(source.threadId)).getMetadata()).resolves.toMatchObject({
+      messageCount: 2, latestMessageId: id,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD"), systemLabel("SENT")],
+    });
+    await expect((await session.getMessage(id)).getMetadata())
+      .resolves.toMatchObject({id, threadId: source.threadId});
+    // The draft's message is gone from search results too.
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect(mailbox).toEqual([source, draftMessage]);
+
+    await gatekeeper.applyAction(2);
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([["INBOX", "UNREAD"], ["SENT"]]);
+    expect(await threadIds()).toEqual([source.id, mailbox[1].id]);
+  });
+
+  it("keeps the draft's message hidden when its creation is approved after it was sent", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threadIds = async () => memberIds((await session.getThread(source.threadId)).messages());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    const id = await draft.send();
+    expect(await threadIds()).toEqual([source.id, id]);
+
+    // Only now does Gmail have the draft, under a message ID the send never saw.
+    await gatekeeper.applyAction(1);
+
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([["INBOX", "UNREAD"], ["DRAFT"]]);
+    expect(await threadIds()).toEqual([source.id, id]);
+    await expect((await session.getThread(source.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 2, latestMessageId: id});
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect((await (await session.getMessage(id)).getContent()).text?.trim()).toBe("Reply body");
+  });
+
+  it("leaves a draft that is being deleted out of its thread", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const thread = await session.getThread(source.threadId);
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    expect(await memberIds(thread.messages())).toEqual([source.id, mailbox[1].id]);
+
+    await draft.delete();
+
+    expect(await memberIds(thread.messages())).toEqual([source.id]);
+    await expect(thread.getMetadata()).resolves.toMatchObject({
+      messageCount: 1, latestMessageId: source.id,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD")],
+    });
+    await thread.mutate("archive");
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+  });
+
+  it("drops a thread from a search that only its outgoing draft still matched", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const read = async () => entryIds(await (await session.searchThreads("is:read")).next());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    // The incoming message is unread, so the thread matches through its draft alone.
+    expect(await read()).toEqual([source.threadId]);
+
+    await draft.delete();
+
+    expect(await read()).toBeNull();
+    expect(entryIds(await (await session.searchThreads("is:unread")).next()))
+      .toEqual([source.threadId]);
+  });
+
+  it("drops a thread whose only message is a draft that is being sent", async () => {
+    const {gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({});
+    imported.mail.labelIds = ["DRAFT", "STARRED"];
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const starred = async () => entryIds(await (await session.searchThreads("is:starred")).next());
+    expect(await starred()).toEqual([imported.mail.threadId]);
+
+    const id = await (await session.getDraft(imported.id)).send();
+
+    // Nothing Gmail matched is left in the thread, and the message waiting to be sent is not
+    // starred. It is still there to open, in the thread the draft had.
+    expect(await starred()).toBeNull();
+    expect(await (await session.searchThreads("subject:Imported")).next()).toBeNull();
+    await expect((await session.getThread(imported.mail.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: id, labels: [systemLabel("SENT")]});
+  });
+
+  it("archives through a pending reply the earlier replies delivered since", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage(source.id);
+    const first = await message.reply("First reply");
+    const second = await message.reply("Second reply");
+    const thread = await session.getThread(source.threadId);
+    expect(await memberIds(thread.messages())).toEqual([source.id, first, second]);
+    const {latestMessageId} = await thread.getMetadata();
+    expect(latestMessageId).toBe(second);
+
+    // Gmail dates the first reply at its approval, after the second was submitted. The caller
+    // saw it ahead of the second all the same.
+    await gatekeeper.applyAction(1);
+    mailbox[1].internalDate = Date.now() + 60_000;
+    await thread.mutate("archive", latestMessageId);
+    expect(await mutationTargets(queue)).toEqual([[source.id, mailbox[1].id]]);
+
+    await gatekeeper.applyAction(2);
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[1]).toEqual([source.id, mailbox[1].id, mailbox[2].id]);
+  });
+
+  it("archives a thread through a pending reply, and means the same after it is sent", async () => {
+    const {calls, gatekeeper, mailbox, receive, storage, values} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+    const {latestMessageId} = await thread.getMetadata();
+    expect(latestMessageId).toBe(id);
+    // Arrives once the caller has seen the thread, and so before the reply is approved.
+    const late = receive({}, {threadId: source.threadId, internalDate: Date.now() + 60_000});
+
+    await thread.mutate("archive", latestMessageId);
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+
+    await gatekeeper.applyAction(1);
+    const delivered = mailbox[2];
+    expect(delivered.labelIds).toEqual(["SENT"]);
+    // Gmail files the reply after the late arrival, but the caller still never saw that one.
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[1]).toEqual([source.id, delivered.id]);
+
+    await gatekeeper.applyAction(3);
+    expect(late.labelIds).toEqual(["INBOX", "UNREAD"]);
+    expect(calls.filter(call => call.url.pathname === batchModifyPath)).toHaveLength(1);
+
+    // A send completed before sends recorded when they were submitted stops at Gmail's copy.
+    const receiptKey = `gmail:sentAlias:${id.slice(1, -1)}`;
+    const {submittedAt, ...receipt} = (await values.get<{submittedAt: number}>(receiptKey))!;
+    expect(submittedAt).toBeLessThan(late.internalDate);
+    storage.kv.put(receiptKey, receipt);
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[2]).toEqual([source.id, late.id, delivered.id]);
+  });
+
+  it("refuses a thread mutation through a reply that was rejected", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+
+    await gatekeeper.rejectAction(1);
+
+    await expect(thread.mutate("archive", id)).rejects.toThrow(/lastMessageId is not a message/);
+    await expect(thread.mutate("archive", "<unknown@gadgets.invalid>"))
+      .rejects.toThrow(/lastMessageId is not a message/);
+    expect((await queue.read!()).submissions).toHaveLength(1);
+    await expect(thread.getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+  });
+
+  it("leaves a draft that is being sent out of a thread mutation", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    await draft.send();
+    const thread = await session.getThread(source.threadId);
+
+    await thread.mutate("archive", (await thread.getMetadata()).latestMessageId);
+    await thread.mutate("markRead");
+
+    // Gmail no longer has the draft's message once the send is applied.
+    expect(await mutationTargets(queue)).toEqual([[source.id], [source.id]]);
+    await gatekeeper.applyAction(2);
+    await gatekeeper.applyAction(3);
+    await gatekeeper.applyAction(4);
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([[], ["SENT"]]);
+  });
+
+  it("becomes Gmail's copy on the same capability once the send is applied", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    const {before, after} = await (await session.getMessage(id)).readAcrossDecision(1, "apply");
+
+    expect(before).toMatchObject({id, threadId: source.threadId});
+    expect(after).toMatchObject({
+      id: mailbox[1].id, threadId: source.threadId, subject: "Re: Quarterly report",
+      labels: [systemLabel("SENT")],
+    });
+    // Delivered, it can be changed like any other message, under either ID.
+    await (await session.getMessage(id)).mutate("star");
+    await gatekeeper.applyAction(2);
+    expect(mailbox[1].labelIds).toEqual(["SENT", "STARRED"]);
+  });
+
+  it("reports that the message was not sent once the send is rejected", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    const {before, error} = await (await session.getMessage(id)).readAcrossDecision(1, "reject");
+
+    expect(before).toMatchObject({id});
+    expect(error).toMatch(/This message was not sent/);
+    await expect(session.getMessage(id)).rejects.toThrow(/Unknown Gmail message ID/);
+    await expect((await session.getThread(source.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+  });
+
+  it("refuses to change, answer or forward a message that has not been delivered", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const message = await session.getMessage(id);
+    const notDelivered = /\(\) is available once this message has been delivered/;
+
+    for (const operation of ["archive", "trash", "markRead", "markUnread", "star", "unstar"]) {
+      await expect(message.mutate(operation)).rejects.toThrow(notDelivered);
+    }
+    await expect(message.applyLabel(systemLabel("INBOX"))).rejects.toThrow(notDelivered);
+    await expect(message.removeLabel(systemLabel("IMPORTANT"))).rejects.toThrow(notDelivered);
+    await expect(message.reply("Again")).rejects.toThrow(notDelivered);
+    await expect(message.replyAll("Again")).rejects.toThrow(notDelivered);
+    await expect(message.forward(["to@example.com"])).rejects.toThrow(notDelivered);
+    await expect(message.createReplyDraft("Again")).rejects.toThrow(notDelivered);
+    await expect(message.createForwardDraft(["to@example.com"])).rejects.toThrow(notDelivered);
+    expect((await queue.read!()).submissions).toHaveLength(1);
+  });
+
+  it("shows a restricted binding its pending reply only in the thread opened from it", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness({
+      searchQuery: `from:${SENDER}`, matches: mail => mail.from === SENDER,
+    });
+    const source = receive();
+    receive({from: "other@example.com"}, {threadId: source.threadId});
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    // The binding's own view of the thread holds what its search matches, as it will once the
+    // reply is delivered: the reply is from the mailbox owner, which the search does not match.
+    const thread = await session.getThread(source.threadId);
+    await expect(thread.getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+    expect(await memberIds(thread.messages())).toEqual([source.id]);
+    expect(await (await session.listThreads()).next()).toMatchObject([
+      {info: {id: source.threadId, messageCount: 1, latestMessageId: source.id}},
+    ]);
+
+    const reply = await session.getMessage(id);
+    await expect(reply.getMetadata()).resolves.toMatchObject({id, threadId: source.threadId});
+    await expect((await reply.thread()).getMetadata())
+      .resolves.toMatchObject({messageCount: 2, latestMessageId: id});
+    // Never the sibling the search does not match.
+    expect(infoIds(await reply.threadMessages())).toEqual([source.id, id]);
+    await reply.threadArchive(id);
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+
+    await gatekeeper.applyAction(1);
+    const delivered = mailbox[2];
+    expect(infoIds(await (await session.getMessage(id)).threadMessages()))
+      .toEqual([source.id, delivered.id]);
+  });
+
+  it("opens a restricted binding's pending reply after its source stopped matching", async () => {
+    let matching = true;
+    const {gatekeeper, receive} = mailHarness({
+      searchQuery: "is:unread", matches: () => matching,
+    });
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    matching = false;
+
+    const reply = await session.getMessage(id);
+    await expect((await reply.thread()).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: id, unread: false});
+    expect(infoIds(await reply.threadMessages())).toEqual([id]);
+    await expect(reply.threadArchive(id)).rejects.toThrow(/until that message has been delivered/);
+    await expect(session.getThread(source.threadId)).rejects.toThrow(/not available/);
   });
 });
 

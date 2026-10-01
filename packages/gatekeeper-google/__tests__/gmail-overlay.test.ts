@@ -3,9 +3,9 @@ import {summarizeGmailThread, type GmailMessageInfoRaw} from "../src/google-api"
 import type {GmailDecision, GmailLabelResource, PendingOverlayAction} from "../src/gmail-state";
 import {
   compileListFilter, messageMayMatch, mutationLabelChanges, overlayMessageInfo,
-  overlayThreadMessages, pendingLabelChanges, threadMayMatch,
-  type GmailLabelChangeAction, type GmailMutationOperation, type GmailOverlay,
-  type PendingLabelChange,
+  overlayThreadMessages, pendingLabelChanges, pendingOutbound, threadMayMatch,
+  type GmailLabelChangeAction, type GmailMutationOperation, type GmailOutboundOverlayAction,
+  type GmailOverlay, type PendingLabelChange, type PendingSentMessage,
 } from "../src/gmail-overlay";
 
 function message(id: string, labelIds: string[], threadId = "thread"): GmailMessageInfoRaw {
@@ -26,8 +26,37 @@ function overlayOf(...changes: Array<Omit<PendingLabelChange, "actionId">>): Gma
   return {
     generation: 0,
     labelChanges: changes.map((change, index) => ({actionId: index + 1, ...change})),
+    sent: [],
+    hiddenMessageIds: new Set(),
   };
 }
+
+// Mail queued for sending and draft messages on their way out, with no label changes.
+function outboundOverlay(
+    actions: GmailOutboundOverlayAction[],
+    options: {decisions?: Array<[number, GmailDecision]>; now?: number} = {}): GmailOverlay {
+  return {
+    ...overlayOf(),
+    ...pendingOutbound(
+      actions.map((action, index) => ({id: index + 1, action})),
+      new Map(options.decisions ?? []), options.now ?? 0),
+  };
+}
+
+const envelope = {
+  from: "Me <me@example.com>",
+  to: ["sender@example.com"],
+  cc: ["Carol <carol@example.com>"],
+  bcc: ["hidden@example.com"],
+  subject: "Re: Subject",
+};
+
+function reply(
+    messageId: string, submittedAt: number, threadId = "thread"): GmailOutboundOverlayAction {
+  return {type: "send", spec: {...envelope, messageId}, threadId, submittedAt};
+}
+
+const everyPending = () => true;
 
 function mutation(
     operation: GmailMutationOperation, messageIds: string[],
@@ -51,8 +80,11 @@ const labelsOf = (
     overlay: GmailOverlay, info: GmailMessageInfoRaw, labels: GmailLabelResource[] = []) =>
   overlayMessageInfo(overlay, info, labels).labelIds;
 
-const summarize = (overlay: GmailOverlay, messages: GmailMessageInfoRaw[]) =>
-  summarizeGmailThread("thread", undefined, overlayThreadMessages(overlay, messages, []));
+const summarize = (
+    overlay: GmailOverlay, messages: GmailMessageInfoRaw[],
+    admitsPending: (sent: PendingSentMessage) => boolean = everyPending) =>
+  summarizeGmailThread(
+    "thread", undefined, overlayThreadMessages(overlay, "thread", messages, [], admitsPending));
 
 const filterFor = (...queries: string[]) => compileListFilter({queries, includeSpamTrash: true});
 
@@ -217,6 +249,273 @@ describe("thread summaries over patched messages", () => {
       {target: {kind: "messages", messageIds: ["m2"]}, add: ["STARRED"], remove: []});
     expect(summarize(overlay, messages)).toMatchObject({
       unread: false, labelIds: ["STARRED"], messageCount: 2, latestMessageId: "m2",
+    });
+  });
+});
+
+describe("pending Gmail sends", () => {
+  it("shows a queued message under the ID its send returned, sent when it was submitted", () => {
+    const {sent, hiddenMessageIds} = outboundOverlay([reply("<reply@gadgets.invalid>", 5000, "t1")]);
+
+    expect(sent).toEqual([{
+      actionId: 1,
+      rfcMessageId: "<reply@gadgets.invalid>",
+      threadId: "t1",
+      info: {
+        id: "<reply@gadgets.invalid>",
+        from: {address: "me@example.com", name: "Me"},
+        to: [{address: "sender@example.com"}],
+        cc: [{address: "carol@example.com", name: "Carol"}],
+        bcc: [{address: "hidden@example.com"}],
+        subject: "Re: Subject",
+        timestamp: new Date(5000),
+        labelIds: ["SENT"],
+      },
+    }]);
+    expect(hiddenMessageIds.size).toBe(0);
+  });
+
+  it("gives new mail and forwards no thread", () => {
+    const [sent] = outboundOverlay([
+      {type: "send", spec: {...envelope, messageId: "<new@gadgets.invalid>"}, submittedAt: 1},
+    ]).sent;
+    expect(sent).not.toHaveProperty("threadId");
+  });
+
+  it("dates a send stored before sends recorded their submission at the time of the read", () => {
+    const [sent] = outboundOverlay(
+      [{type: "send", spec: {...envelope, messageId: "<old@gadgets.invalid>"}}], {now: 9000}).sent;
+    expect(sent.info.timestamp).toEqual(new Date(9000));
+  });
+
+  it("puts a sent draft in the draft's thread and hides the draft's message", () => {
+    const {sent, hiddenMessageIds} = outboundOverlay([{
+      type: "draftSend",
+      approved: {...envelope, threadId: "t1", messageId: "draft-message"},
+      messageId: "<draft@gadgets.invalid>",
+      expectedProviderMessageId: "draft-message",
+      submittedAt: 7000,
+    }]);
+
+    expect(sent).toMatchObject([{
+      rfcMessageId: "<draft@gadgets.invalid>",
+      threadId: "t1",
+      supersedesMessageId: "draft-message",
+      info: {id: "<draft@gadgets.invalid>", timestamp: new Date(7000), labelIds: ["SENT"]},
+    }]);
+    expect([...hiddenMessageIds]).toEqual(["draft-message"]);
+  });
+
+  it("hides the message Gmail gave the draft after the send was submitted", () => {
+    // Approving the write queued ahead of the send replaces the draft's message, and only
+    // `expectedProviderMessageId` is brought up to date.
+    const {sent, hiddenMessageIds} = outboundOverlay([{
+      type: "draftSend",
+      approved: {...envelope, threadId: "t1", messageId: "first-revision"},
+      messageId: "<draft@gadgets.invalid>",
+      expectedProviderMessageId: "second-revision",
+      dependsOn: [4],
+    }], {decisions: [[4, "applied"]]});
+
+    expect(sent[0].supersedesMessageId).toBe("second-revision");
+    expect([...hiddenMessageIds]).toEqual(["second-revision"]);
+  });
+
+  it("hides nothing for a draft Gmail does not have yet", () => {
+    const {sent, hiddenMessageIds} = outboundOverlay([{
+      type: "draftSend",
+      approved: {...envelope, threadId: "t1"},
+      messageId: "<draft@gadgets.invalid>",
+      dependsOn: [4],
+    }]);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toHaveProperty("supersedesMessageId");
+    expect(hiddenMessageIds.size).toBe(0);
+  });
+
+  it("hides the message of a draft that is being deleted, once Gmail's ID for it is known", () => {
+    const {sent, hiddenMessageIds} = outboundOverlay([
+      {type: "draftDelete", expectedProviderMessageId: "draft-message"},
+      {type: "draftDelete", dependsOn: [4]},
+    ]);
+
+    expect(sent).toEqual([]);
+    expect([...hiddenMessageIds]).toEqual(["draft-message"]);
+  });
+
+  it("skips a draft action whose prerequisite was rejected", () => {
+    const actions: GmailOutboundOverlayAction[] = [
+      {
+        type: "draftSend",
+        approved: {...envelope, messageId: "draft-message"},
+        messageId: "<draft@gadgets.invalid>",
+        dependsOn: [4],
+      },
+      {type: "draftDelete", expectedProviderMessageId: "other-draft-message", dependsOn: [4]},
+    ];
+
+    const rejected = outboundOverlay(actions, {decisions: [[4, "rejected"]]});
+    expect(rejected.sent).toEqual([]);
+    expect(rejected.hiddenMessageIds.size).toBe(0);
+    expect(outboundOverlay(actions, {decisions: [[4, "applied"]]}).sent).toHaveLength(1);
+  });
+
+  it("hides the draft of a send that returned no ID, without a message to open", () => {
+    const {sent, hiddenMessageIds} = outboundOverlay([
+      {type: "draftSend", approved: {...envelope, messageId: "draft-message"}},
+    ]);
+
+    expect(sent).toEqual([]);
+    expect([...hiddenMessageIds]).toEqual(["draft-message"]);
+  });
+});
+
+describe("thread messages with pending sends", () => {
+  const original = message("m1", ["INBOX", "UNREAD"]);
+  const ids = (overlay: GmailOverlay, messages: GmailMessageInfoRaw[], threadId = "thread") =>
+    overlayThreadMessages(overlay, threadId, messages, [], everyPending).map(item => item.id);
+
+  it("appends a pending reply after the thread's messages", () => {
+    const overlay = outboundOverlay([reply("<reply@gadgets.invalid>", 5000)]);
+
+    expect(overlayThreadMessages(overlay, "thread", [original], [], everyPending)).toEqual([
+      original,
+      {
+        id: "<reply@gadgets.invalid>",
+        threadId: "thread",
+        from: {address: "me@example.com", name: "Me"},
+        to: [{address: "sender@example.com"}],
+        cc: [{address: "carol@example.com", name: "Carol"}],
+        bcc: [{address: "hidden@example.com"}],
+        subject: "Re: Subject",
+        timestamp: new Date(5000),
+        labelIds: ["SENT"],
+      },
+    ]);
+  });
+
+  it("leaves out mail sent into another thread, and new mail with no thread", () => {
+    const overlay = outboundOverlay([
+      reply("<elsewhere@gadgets.invalid>", 5000, "other"),
+      {type: "send", spec: {...envelope, messageId: "<new@gadgets.invalid>"}, submittedAt: 6000},
+    ]);
+    expect(ids(overlay, [original])).toEqual(["m1"]);
+  });
+
+  it("orders pending replies by when they were submitted", () => {
+    const overlay = outboundOverlay([
+      reply("<second@gadgets.invalid>", 7000), reply("<first@gadgets.invalid>", 6000),
+    ]);
+    expect(ids(overlay, [original]))
+      .toEqual(["m1", "<first@gadgets.invalid>", "<second@gadgets.invalid>"]);
+  });
+
+  it("shows only the pending mail the reading capability admits", () => {
+    const overlay = outboundOverlay([
+      reply("<mine@gadgets.invalid>", 5000), reply("<other@gadgets.invalid>", 6000),
+    ]);
+    const admitted = overlayThreadMessages(
+      overlay, "thread", [original], [], sent => sent.rfcMessageId === "<mine@gadgets.invalid>");
+
+    expect(admitted.map(item => item.id)).toEqual(["m1", "<mine@gadgets.invalid>"]);
+    expect(overlayThreadMessages(overlay, "thread", [original], [], () => false))
+      .toEqual([original]);
+  });
+
+  it("replaces a draft's message with the message it is being sent as", () => {
+    const draft = {...message("draft-message", ["DRAFT"]), timestamp: new Date(2000)};
+    const overlay = outboundOverlay([{
+      type: "draftSend",
+      approved: {...envelope, threadId: "thread", messageId: "draft-message"},
+      messageId: "<draft@gadgets.invalid>",
+      submittedAt: 5000,
+    }]);
+
+    expect(ids(overlay, [original, draft])).toEqual(["m1", "<draft@gadgets.invalid>"]);
+    // The draft is hidden wherever it turns up, though the sent message joins one thread only.
+    expect(ids(overlay, [{...draft, threadId: "other"}], "other")).toEqual([]);
+  });
+
+  it("patches labels on Gmail's messages next to a pending reply", () => {
+    const overlay = {
+      ...outboundOverlay([reply("<reply@gadgets.invalid>", 5000)]),
+      labelChanges: overlayOf(
+        {target: {kind: "messages", messageIds: ["m1"]}, add: [], remove: ["INBOX", "UNREAD"]},
+      ).labelChanges,
+    };
+    expect(overlayThreadMessages(overlay, "thread", [original], [], everyPending)
+      .map(item => item.labelIds)).toEqual([[], ["SENT"]]);
+  });
+});
+
+describe("thread summaries with pending sends", () => {
+  const original = {...message("m1", ["INBOX", "UNREAD"]), timestamp: new Date(1000)};
+  const draft = {...message("draft-message", ["DRAFT"]), timestamp: new Date(2000)};
+
+  it("counts a pending reply as the thread's newest message", () => {
+    const overlay = {
+      ...outboundOverlay([reply("<reply@gadgets.invalid>", 5000)]),
+      labelChanges: overlayOf(
+        {target: {kind: "messages", messageIds: ["m1"]}, add: [], remove: ["UNREAD"]},
+      ).labelChanges,
+    };
+
+    expect(summarize(overlay, [original])).toEqual({
+      id: "thread",
+      subject: "Subject",
+      messageCount: 2,
+      latestMessageId: "<reply@gadgets.invalid>",
+      timestamp: new Date(5000),
+      participants: [
+        {address: "sender@example.com"},
+        {address: "me@example.com"},
+        {address: "carol@example.com", name: "Carol"},
+        {address: "hidden@example.com"},
+      ],
+      unread: false,
+      labelIds: ["INBOX", "SENT"],
+    });
+  });
+
+  it("keeps a message that arrived after the reply was submitted as the newest", () => {
+    const overlay = outboundOverlay([reply("<reply@gadgets.invalid>", 5000)]);
+    const later = {...message("m2", ["INBOX", "UNREAD"]), timestamp: new Date(6000)};
+
+    expect(summarize(overlay, [original, later])).toMatchObject({
+      messageCount: 3, latestMessageId: "m2", timestamp: new Date(6000),
+    });
+  });
+
+  it("summarizes a sent draft in place of the draft's message", () => {
+    const overlay = outboundOverlay([{
+      type: "draftSend",
+      approved: {...envelope, threadId: "thread", messageId: "draft-message"},
+      messageId: "<draft@gadgets.invalid>",
+      submittedAt: 5000,
+    }]);
+
+    expect(summarize(overlay, [original, draft])).toMatchObject({
+      messageCount: 2,
+      latestMessageId: "<draft@gadgets.invalid>",
+      labelIds: ["INBOX", "UNREAD", "SENT"],
+    });
+  });
+
+  it("drops a draft that is being deleted from the summary", () => {
+    const overlay = outboundOverlay(
+      [{type: "draftDelete", expectedProviderMessageId: "draft-message"}]);
+
+    expect(summarize(overlay, [original, draft])).toMatchObject({
+      messageCount: 1, latestMessageId: "m1", labelIds: ["INBOX", "UNREAD"],
+    });
+  });
+
+  it("leaves a pending reply out of a summary whose capability does not admit it", () => {
+    const overlay = outboundOverlay([reply("<reply@gadgets.invalid>", 5000)]);
+
+    expect(summarize(overlay, [original], () => false)).toMatchObject({
+      messageCount: 1, latestMessageId: "m1", labelIds: ["INBOX", "UNREAD"],
     });
   });
 });

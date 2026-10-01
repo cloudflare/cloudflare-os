@@ -609,11 +609,69 @@ testGmailPrototype.runTestOperation = async function(
       }
       return {before, pending, after: await message.getMetadata()};
     });
+  case "message.getContent":
+    return await withMessage(session, id as string, message => message.getContent());
+  case "message.attachments":
+    return await withMessage(session, id as string, async message => {
+      const entries = await message.attachments();
+      try {
+        return await Promise.all(entries.map(async entry => ({
+          info: entry.info,
+          content: entry.info.readable ? await entry.attachment.getContent() : undefined,
+        })));
+      } finally {
+        for (const entry of entries) disposeRpc(entry.attachment);
+      }
+    });
+  case "message.readAcrossDecision":
+    // One message capability, read before and after the action that sends it is decided.
+    return await withMessage(session, id as string, async message => {
+      const before = await message.getMetadata();
+      if (extra === "reject") {
+        await this.rejectAction(value as number);
+      } else {
+        const cache = new RpcStub(new TestGitCache());
+        try {
+          await this.applyAction(value as number, cache);
+        } finally {
+          cache[Symbol.dispose]();
+        }
+      }
+      try {
+        return {before, after: await message.getMetadata()};
+      } catch (error) {
+        return {before, error: error instanceof Error ? error.message : String(error)};
+      }
+    });
   case "message.thread":
     return await withMessage(session, id as string, async message => {
       const thread = await message.thread();
       try {
         return await thread.getMetadata();
+      } finally {
+        disposeRpc(thread);
+      }
+    });
+  case "message.threadMessages":
+    // The thread capability a message opens, which is not the one getThread() returns.
+    return await withMessage(session, id as string, async message => {
+      const thread = await message.thread();
+      try {
+        const messages = await thread.messages();
+        try {
+          return await Promise.all(messages.map(member => member.getMetadata()));
+        } finally {
+          for (const member of messages) disposeRpc(member);
+        }
+      } finally {
+        disposeRpc(thread);
+      }
+    });
+  case "message.threadArchive":
+    return await withMessage(session, id as string, async message => {
+      const thread = await message.thread();
+      try {
+        return await thread.archive(value as string | undefined);
       } finally {
         disposeRpc(thread);
       }

@@ -1,18 +1,21 @@
 // Pending Gmail message state and the read-time overlay that simulates it.
 //
-// A label change submitted for approval is not sent to Gmail until applyAction() runs, but every
-// read through this gatekeeper reflects it: a message shows its labels as they will be, a thread
-// summary is recomputed from its patched messages, and a list drops entries the change moved out
-// of it. The draft and label-definition overlays live in gmail-state.ts; this is message and
-// thread state.
+// A label change or a send submitted for approval does not reach Gmail until applyAction() runs,
+// but every read through this gatekeeper reflects it: a message shows its labels as they will be,
+// a thread summary is recomputed from its patched messages, a list drops entries the change moved
+// out of it, and mail waiting to be sent can be opened and appears in the thread it replies to.
+// The draft and label-definition overlays live in gmail-state.ts; this is message and thread
+// state.
 //
 // The overlay is computed at read time from the pending actions, so approving or rejecting an
 // action needs no cleanup: the next read sees Gmail's real state, or stops adjusting for it. It
-// changes or hides what Gmail returned and never adds a message Gmail did not return, so a
-// restricted binding can only see less than Gmail would show it, never more.
+// changes or hides what Gmail returned and never adds a message of Gmail's that Gmail did not
+// return, so a restricted binding can only see less than Gmail would show it, never more. The one
+// thing it adds is mail the binding is sending itself, which the binding wrote.
 //
 // Every function here is pure, which lets the simulation be tested without a Durable Object.
 
+import {emailRecipientToAddress} from "./google-api";
 import type {GmailMessageInfoRaw} from "./google-api";
 import type {GmailMutationTarget} from "./gmail-scope";
 import type {GmailDecision, GmailLabelResource, PendingOverlayAction} from "./gmail-state";
@@ -64,12 +67,38 @@ export type PendingLabelChange = {
   remove: readonly string[];
 };
 
+/**
+ * A message this binding has queued for sending, as reads show it until Gmail has it. Reads never
+ * build the email to show this much: it comes from the stored action alone.
+ */
+export type PendingSentMessage = {
+  actionId: number;
+  /** The `GmailMessageId` the outbound method returned. It names the message until Gmail does. */
+  rfcMessageId: string;
+  /**
+   * The thread the message will join: a reply's source thread, or a draft's own. New mail and
+   * forwards have none, because Gmail assigns their thread when it sends them.
+   */
+  threadId?: string;
+  /** For a draft send: the draft's message in Gmail, which the sent message replaces. */
+  supersedesMessageId?: string;
+  /** Its `id` is `rfcMessageId`, its only label `SENT`, its timestamp when it was submitted. */
+  info: Omit<GmailMessageInfoRaw, "threadId">;
+};
+
 /** The pending actions that message and thread reads reflect. */
 export type GmailOverlay = {
   /** `store.actionGeneration()` when this overlay was loaded. */
   generation: number;
   /** In submission order, which is the approval order the simulation predicts. */
   labelChanges: readonly PendingLabelChange[];
+  /** In submission order. */
+  sent: readonly PendingSentMessage[];
+  /**
+   * Gmail's messages that pending actions do away with, which reads leave out: the message of a
+   * draft that is being sent or deleted.
+   */
+  hiddenMessageIds: ReadonlySet<string>;
 };
 
 /**
@@ -106,6 +135,92 @@ export function pendingLabelChanges(
   return changes;
 }
 
+type OutboundEnvelope = {
+  from: string;
+  to: readonly string[];
+  cc: readonly string[];
+  bcc: readonly string[];
+  subject: string;
+};
+
+/** The stored actions that send mail or dispose of a draft, reduced to what the overlay reads. */
+export type GmailOutboundOverlayAction =
+  | {
+      type: "send";
+      spec: OutboundEnvelope & {messageId: string};
+      /** A reply's source thread. */
+      threadId?: string;
+      submittedAt?: number;
+    }
+  | {
+      type: "draftSend";
+      /** The draft as it was when its send was submitted; `messageId` is its message in Gmail. */
+      approved: OutboundEnvelope & {threadId?: string; messageId?: string};
+      /** The `GmailMessageId` the send returned. */
+      messageId?: string;
+      expectedProviderMessageId?: string;
+      submittedAt?: number;
+      dependsOn?: number[];
+    }
+  | {type: "draftDelete"; expectedProviderMessageId?: string; dependsOn?: number[]};
+
+/**
+ * Reduce pending actions, in submission order, to the mail reads should show as sent and the
+ * draft messages they should stop showing.
+ *
+ * An action whose prerequisite was rejected can never be applied, and is left out, as it is from
+ * the draft overlay. `now` is the timestamp of a send stored before sends recorded their own.
+ *
+ * A draft's message is known by the ID Gmail gave it, and Gmail gives it a new one each time the
+ * draft is written. `approved.messageId` is the ID from when the send was submitted and is never
+ * updated; `expectedProviderMessageId` is brought up to date when the write queued directly ahead
+ * of this action is applied. So the latter wins, and a draft Gmail does not have yet hides
+ * nothing.
+ */
+export function pendingOutbound(
+    pending: readonly PendingOverlayAction<GmailOutboundOverlayAction>[],
+    decisions: ReadonlyMap<number, GmailDecision>,
+    now: number): Pick<GmailOverlay, "sent" | "hiddenMessageIds"> {
+  const sent: PendingSentMessage[] = [];
+  const hiddenMessageIds = new Set<string>();
+  for (const {id, action} of pending) {
+    if (action.type !== "send" &&
+        (action.dependsOn ?? []).some(dependency => decisions.get(dependency) === "rejected")) {
+      continue;
+    }
+    if (action.type === "draftDelete") {
+      if (action.expectedProviderMessageId) hiddenMessageIds.add(action.expectedProviderMessageId);
+      continue;
+    }
+    const supersedesMessageId = action.type === "draftSend"
+      ? action.expectedProviderMessageId ?? action.approved.messageId
+      : undefined;
+    if (supersedesMessageId) hiddenMessageIds.add(supersedesMessageId);
+    const rfcMessageId = action.type === "send" ? action.spec.messageId : action.messageId;
+    // A draft send queued before sends returned an ID has none to be opened by.
+    if (rfcMessageId === undefined) continue;
+    const envelope = action.type === "send" ? action.spec : action.approved;
+    const threadId = action.type === "send" ? action.threadId : action.approved.threadId;
+    sent.push({
+      actionId: id,
+      rfcMessageId,
+      ...(threadId !== undefined ? {threadId} : {}),
+      ...(supersedesMessageId ? {supersedesMessageId} : {}),
+      info: {
+        id: rfcMessageId,
+        from: emailRecipientToAddress(envelope.from),
+        to: envelope.to.map(emailRecipientToAddress),
+        cc: envelope.cc.map(emailRecipientToAddress),
+        bcc: envelope.bcc.map(emailRecipientToAddress),
+        subject: envelope.subject,
+        timestamp: new Date(action.submittedAt ?? now),
+        labelIds: ["SENT"],
+      },
+    });
+  }
+  return {sent, hiddenMessageIds};
+}
+
 /**
  * A message's metadata with each pending change that names it applied, in submission order.
  *
@@ -115,9 +230,9 @@ export function pendingLabelChanges(
  * overlay is loaded before that fetch, and a label created during it must not be patched under
  * its old provisional ID next to the provider ID Gmail just returned.
  */
-export function overlayMessageInfo(
-    overlay: GmailOverlay, info: GmailMessageInfoRaw,
-    labels: readonly GmailLabelResource[]): GmailMessageInfoRaw {
+export function overlayMessageInfo<
+    Info extends {id: string; threadId?: string; labelIds: string[]}>(
+    overlay: GmailOverlay, info: Info, labels: readonly GmailLabelResource[]): Info {
   const providerId = (logicalId: string) =>
     labels.find(label => label.logicalId === logicalId)?.providerId ?? logicalId;
   let labelIds = info.labelIds;
@@ -133,11 +248,34 @@ export function overlayMessageInfo(
   return labelIds === info.labelIds ? info : {...info, labelIds};
 }
 
-/** A thread's messages as reads should show them; its summary is computed from these. */
+/**
+ * The mail waiting to be sent into a thread, oldest first. `admitsPending` says which of it the
+ * reading capability may show.
+ */
+export function pendingThreadMessages(
+    overlay: GmailOverlay, threadId: string,
+    admitsPending: (sent: PendingSentMessage) => boolean): PendingSentMessage[] {
+  return overlay.sent
+    .filter(sent => sent.threadId === threadId && admitsPending(sent))
+    .toSorted((a, b) => a.info.timestamp.getTime() - b.info.timestamp.getTime());
+}
+
+/**
+ * A thread's messages as reads should show them; its summary is computed from these.
+ *
+ * `messages` are Gmail's, in thread order. The ones a pending action does away with are left
+ * out. The mail waiting to be sent into the thread follows them, which is where Gmail will put
+ * it once it is sent.
+ */
 export function overlayThreadMessages(
-    overlay: GmailOverlay, messages: readonly GmailMessageInfoRaw[],
-    labels: readonly GmailLabelResource[]): GmailMessageInfoRaw[] {
-  return messages.map(message => overlayMessageInfo(overlay, message, labels));
+    overlay: GmailOverlay, threadId: string, messages: readonly GmailMessageInfoRaw[],
+    labels: readonly GmailLabelResource[],
+    admitsPending: (sent: PendingSentMessage) => boolean): GmailMessageInfoRaw[] {
+  return [
+    ...messages.filter(message => !overlay.hiddenMessageIds.has(message.id)),
+    ...pendingThreadMessages(overlay, threadId, admitsPending)
+      .map(sent => ({...sent.info, threadId})),
+  ].map(message => overlayMessageInfo(overlay, message, labels));
 }
 
 /** A label condition a list's results must satisfy, from the filters Gmail was asked for. */
