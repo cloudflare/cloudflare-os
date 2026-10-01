@@ -2,7 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatSubscriber, Overseer,
@@ -15,6 +15,8 @@ vi.stubGlobal('ResizeObserver', class {
 // jsdom lays nothing out; the message list scrolls itself to the bottom on every render.
 Element.prototype.scrollTo = () => {}
 
+const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
+
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
   const Pass = ({ children }: { children?: React.ReactNode }) => children ?? null
@@ -22,7 +24,7 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const parts = new Proxy(Pass, {
     get: (_target, property) => property === 'Root' ? Null : Pass,
   })
-  const toasts = { add: vi.fn<(options: unknown) => void>() }
+  const toasts = { add: addToast }
   return {
     ...actual,
     Dialog: parts,
@@ -288,4 +290,111 @@ describe('action fields', () => {
       expect(document.body.textContent).toContain('Send the following email to alice@example.com:')
     })
   }
+})
+
+// The server's refusal for a chat whose model an administrator disabled.
+const disabledModel = 'The "Kimi K3" model is disabled on this deployment by an administrator.'
+
+const openChat = { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() }
+
+// Types into the composer on screen and submits it with Enter.
+async function sendFromComposer(text: string) {
+  const textarea = document.querySelector<HTMLTextAreaElement>('textarea[role="combobox"]')
+  if (!textarea) throw new Error('No composer rendered')
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, text)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  })
+  return textarea
+}
+
+describe('send and retry failures', () => {
+  beforeEach(() => {
+    addToast.mockClear()
+    // Each failure is logged as well as shown.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'debug').mockImplementation(() => {})
+  })
+
+  it('says why a message could not be sent and keeps it in the composer', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [openChat])
+    Object.assign(server.overseer as object, {
+      sendChatMessage: async () => { throw new Error(disabledModel) },
+    })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+
+    const textarea = await sendFromComposer('Summarize the report')
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        { title: 'Failed to send message', description: disabledModel, variant: 'error' })
+    expect(textarea.value).toBe('Summarize the report')
+  })
+
+  it('says why a conversation could not be started', async () => {
+    const server = makeOverseer()
+    withChatApi(server)
+    Object.assign(server.overseer as object, {
+      newChat: async () => { throw new Error(disabledModel) },
+    })
+    await renderChat(server.overseer)
+
+    const textarea = await sendFromComposer('Summarize the report')
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        { title: 'Failed to start conversation', description: disabledModel, variant: 'error' })
+    expect(textarea.value).toBe('Summarize the report')
+  })
+
+  it('raises no toast for a send the connection dropped', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [openChat])
+    const sendChatMessage = vi.fn<() => Promise<void>>(async () => {
+      throw new Error('Peer closed WebSocket: 1006 ')
+    })
+    Object.assign(server.overseer as object, { sendChatMessage })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+
+    const textarea = await sendFromComposer('Summarize the report')
+
+    expect(sendChatMessage).toHaveBeenCalledOnce()
+    expect(addToast).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('Summarize the report')
+  })
+
+  // Renders chat 1 ending in an agent error, then presses its Retry.
+  async function retryAfterError(retryAgent: () => Promise<void>) {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    Object.assign(server.overseer as object, { retryAgent })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    chat.emitMessage({
+      chatId: 1,
+      sequence: 0,
+      timestamp: new Date(),
+      author: { type: 'agent', id: 'model', name: 'Model' },
+      type: 'error',
+      message: 'The model request failed.',
+    })
+    const retry = [...document.querySelectorAll('button')].find(b => b.textContent === 'Retry')
+    if (!retry) throw new Error('No Retry button rendered')
+    await act(async () => retry.click())
+  }
+
+  it('says why a retry failed', async () => {
+    await retryAfterError(async () => { throw new Error(disabledModel) })
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        { title: 'Failed to retry agent', description: disabledModel, variant: 'error' })
+  })
+
+  it('reports a retry the connection dropped without the transport message', async () => {
+    await retryAfterError(async () => { throw new Error('Peer closed WebSocket: 1006 ') })
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        { title: 'Failed to retry agent', description: undefined, variant: 'error' })
+  })
 })

@@ -1,4 +1,4 @@
-import { classifyRpcError, logRpcFailure } from "../rpcErrors";
+import { classifyRpcError, logRpcFailure, rpcFailureDescription } from "../rpcErrors";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
@@ -130,7 +130,11 @@ export function HomePageContent({ prompt }: HomeSearch) {
           provisionalOverseerRef.current = null;
         }
         if (!transient) {
-          toasts.add({ title: "Failed to create workspace", variant: "error" });
+          toasts.add({
+            title: "Failed to create workspace",
+            description: rpcFailureDescription(err),
+            variant: "error",
+          });
         }
         throw err;
       }
