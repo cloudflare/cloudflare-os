@@ -19,7 +19,8 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const GATEWAY_PROVIDERS: ReadonlySet<string> =
     new Set<AiModelProvider>(["anthropic", "openai", "google", "cloudflare"]);
 
-function isCatalogModel(modelId: string): boolean {
+/** Whether SUGGESTED_MODELS lists `modelId`, under any provider. */
+export function isCatalogModel(modelId: string): boolean {
   return Object.values(SUGGESTED_MODELS).some(models => Object.hasOwn(models, modelId));
 }
 
@@ -131,10 +132,15 @@ export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null 
 export class GatewayModels {
   /** Every model, in any mode, in listing order. */
   readonly all: readonly AdminModel[];
+  /** The providers a model may be added under: the ones the gateway both enables and serves. */
+  readonly addableProviders: AiModelProvider[] = [];
   readonly #byId = new Map<string, AdminModel>();
+  /** The stored added models, including the ones this table leaves out. */
+  readonly #added: readonly GatewayModel[];
 
   constructor(readonly gateway: AiGatewayConfig,
               config: Pick<AdminConfig, "modelModes" | "addedModels">) {
+    this.#added = config.addedModels;
     let add = (model: GatewayModel, defaultMode: GatewayModelMode, added: boolean) => {
       if (this.#byId.has(model.id)) return;
       // Object.hasOwn, so that an ID like "constructor" does not find an inherited mode.
@@ -149,6 +155,7 @@ export class GatewayModels {
             model.hidden ? "hidden" : "enabled", false);
       }
       if (!GATEWAY_PROVIDERS.has(provider)) continue;
+      this.addableProviders.push(provider as AiModelProvider);
       for (let model of config.addedModels) {
         // A gateway model is looked up by ID alone, so the catalog wins an ID it lists under any
         // provider, whether or not the gateway enables that one.
@@ -199,6 +206,24 @@ export class GatewayModels {
     if (model?.mode === "disabled") {
       throw new Error(
           `The "${model.name}" model is disabled on this deployment by an administrator.`);
+    }
+  }
+
+  /**
+   * Throws unless `model`, already well-formed (see sanitizeAddedModel), may join the added
+   * models: the gateway serves and enables its provider, and its ID is free. An ID the catalog
+   * lists under any provider is taken, as is that of a stored added model this table leaves out.
+   */
+  assertAddable(model: GatewayModel): void {
+    if (!GATEWAY_PROVIDERS.has(model.provider)) {
+      throw new Error(`Provider "${model.provider}" is not served through AI Gateway.`);
+    }
+    if (!this.gateway.providers.has(model.provider)) {
+      throw new Error(`Provider "${model.provider}" is not enabled on this deployment.`);
+    }
+    if (isCatalogModel(model.id)) throw new Error(`"${model.id}" is already a suggested model.`);
+    if (this.#added.some(added => added.id === model.id)) {
+      throw new Error(`"${model.id}" is already an added model.`);
     }
   }
 }

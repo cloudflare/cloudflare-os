@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -6,8 +6,9 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
+import { AiGatewayConfig, GatewayModels, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -16,6 +17,13 @@ import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bu
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
+
+// The entries of `modes` other than `modelId`'s. Callers rebuild the record with
+// Object.fromEntries, which defines own properties: assigning into a copy would lose the mode of a
+// model whose ID is "__proto__".
+function modeEntriesWithout(modes: AdminConfig["modelModes"], modelId: string) {
+  return Object.entries(modes).filter(([id]) => id !== modelId);
+}
 
 /**
  * Deployment-wide admin settings singleton.
@@ -291,6 +299,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
+      gatewayModels: this.#listGatewayModels(config),
     };
   }
 
@@ -391,6 +400,81 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   async setFormatOrder(blueprintIds: string[]): Promise<void> {
     await this.#mutateFormats(formats => reorderFormats(formats, blueprintIds));
+  }
+
+  // --- AI Gateway models ---
+
+  // The gateway's configuration. Throws outside AI Gateway mode, which has no models to manage.
+  #requireGateway(): AiGatewayConfig {
+    let gateway = getAiGatewayConfig(this.env);
+    if (!gateway) throw new Error("This deployment does not provide models through AI Gateway.");
+    return gateway;
+  }
+
+  // Admin view of the gateway models, or undefined outside AI Gateway mode. A gateway the
+  // environment misconfigures reads the same way, so that it can't take the admin panel down.
+  #listGatewayModels(config: AdminConfig): AdminSettingsView["gatewayModels"] {
+    try {
+      let gateway = getAiGatewayConfig(this.env);
+      if (!gateway) return undefined;
+      let models = new GatewayModels(gateway, config);
+      return { providers: models.addableProviders, models: [...models.all] };
+    } catch (error) {
+      logger.error("failed to read the AI Gateway models", {
+        event: "gateway.models.read.failed", error,
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Set how a gateway model is offered, atomically (read-modify-write within the DO). The model's
+   * default mode is stored as absence, so setting it forgets the override.
+   */
+  async setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      // Built from the config the mutation is handed, which is authoritative; the KV mirror the
+      // user-facing paths read can trail it.
+      let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
+      if (!model) throw new Error(`No such model: ${modelId}`);
+      let modes = modeEntriesWithout(config.modelModes, modelId);
+      if (mode !== model.defaultMode) modes.push([modelId, mode]);
+      return { ...config, modelModes: Object.fromEntries(modes) };
+    });
+  }
+
+  /**
+   * Add a gateway model. Whether its ID is free is decided within the mutation, so that two
+   * concurrent calls can't both add the same one.
+   */
+  async addGatewayModel(model: GatewayModel): Promise<void> {
+    let added = sanitizeAddedModel(model);
+    if (!added) {
+      throw new Error(
+          "Invalid model: it needs an ID and a name, neither over-long, and token limits that " +
+          "are positive integers.");
+    }
+    await this.#mutateAdminConfig(config => {
+      new GatewayModels(this.#requireGateway(), config).assertAddable(added);
+      // The ID was free, so a mode stored under it belonged to a model that has since left.
+      let modelModes = Object.fromEntries(modeEntriesWithout(config.modelModes, added.id));
+      return { ...config, addedModels: [...config.addedModels, added], modelModes };
+    });
+  }
+
+  /** Remove an added gateway model, and with it the mode it was given. */
+  async removeGatewayModel(modelId: string): Promise<void> {
+    this.#requireGateway();
+    await this.#mutateAdminConfig(config => {
+      let addedModels = config.addedModels.filter(model => model.id !== modelId);
+      if (addedModels.length === config.addedModels.length) {
+        throw new Error(`No such added model: ${modelId}`);
+      }
+      // The catalog wins an ID it lists, so a mode stored under one is the suggested model's.
+      let modelModes = isCatalogModel(modelId)
+          ? config.modelModes : Object.fromEntries(modeEntriesWithout(config.modelModes, modelId));
+      return { ...config, addedModels, modelModes };
+    });
   }
 
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
@@ -530,8 +614,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // when the capability is minted in server.ts, so these methods don't re-check. This is a thin
 // validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
 // gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
-// stub to the DO's internal methods. Covers branding, agent instructions, signups, and gatekeeper
-// connector/resource availability; authentication config stays env-var driven.
+// stub to the DO's internal methods. Covers branding, agent instructions, signups, gatekeeper
+// connector/resource availability, and AI Gateway models; authentication config stays env-var
+// driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   /**
@@ -630,5 +715,17 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setFormatOrder(blueprintIds: string[]): Promise<void> {
     return this.admin.setFormatOrder(blueprintIds);
+  }
+
+  setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void> {
+    return this.admin.setGatewayModelMode(modelId, mode);
+  }
+
+  addGatewayModel(model: GatewayModel): Promise<void> {
+    return this.admin.addGatewayModel(model);
+  }
+
+  removeGatewayModel(modelId: string): Promise<void> {
+    return this.admin.removeGatewayModel(modelId);
   }
 }

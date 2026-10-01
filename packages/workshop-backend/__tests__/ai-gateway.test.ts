@@ -315,6 +315,56 @@ describe("GatewayModels", () => {
     expect(added.resolve(id)?.profile).toEqual({ type: "agent", id, name: "Odd" });
   });
 
+  it("names the providers a model may be added under, in catalog order", () => {
+    // The gateway enables ollama here, but does not serve it.
+    const models = gatewayModels({}, "openai,ollama,anthropic,mistral");
+    expect(models.addableProviders).toEqual(
+        Object.keys(SUGGESTED_MODELS).filter(p => p === "openai" || p === "anthropic"));
+    expect(models.addableProviders).toHaveLength(2);
+  });
+
+  describe("assertAddable", () => {
+    const NEW: GatewayModel =
+        { provider: "anthropic", id: "claude-new", name: "Claude New", contextWindow: 1000 };
+    // openai is not enabled on the gateway these are checked against.
+    const models = gatewayModels({ addedModels: [
+      ADDED[0]!,
+      { provider: "openai", id: "gpt-parked", name: "Parked", contextWindow: 1000 },
+    ] }, "anthropic,cloudflare,ollama");
+
+    it("accepts a free ID on a provider the gateway serves and enables", () => {
+      expect(() => models.assertAddable(NEW)).not.toThrow();
+      expect(() => models.assertAddable({ ...NEW, provider: "cloudflare" })).not.toThrow();
+      // Not the name of a model: only an ID has to be free.
+      expect(() => models.assertAddable({ ...NEW, name: "Claude Opus 5.5" })).not.toThrow();
+    });
+
+    it.each([
+      ["an unknown provider", { ...NEW, provider: "mistral" },
+        'Provider "mistral" is not served through AI Gateway.'],
+      ["an inherited provider name", { ...NEW, provider: "__proto__" },
+        'Provider "__proto__" is not served through AI Gateway.'],
+      ["a provider the gateway enables but can't serve", { ...NEW, provider: "ollama" },
+        'Provider "ollama" is not served through AI Gateway.'],
+      ["a provider the gateway does not enable", { ...NEW, provider: "openai" },
+        'Provider "openai" is not enabled on this deployment.'],
+      ["an ID the catalog already has", { ...NEW, provider: "cloudflare", id: "claude-opus-5-5" },
+        '"claude-opus-5-5" is already a suggested model.'],
+      ["an ID the catalog has under a provider that is not enabled", { ...NEW, id: "gpt-6-luna" },
+        '"gpt-6-luna" is already a suggested model.'],
+      ["an ID added already", { ...NEW, provider: "cloudflare", id: "claude-test" },
+        '"claude-test" is already an added model.'],
+      ["an ID added already under a provider that is not enabled", { ...NEW, id: "gpt-parked" },
+        '"gpt-parked" is already an added model.'],
+    ])("refuses %s", (_, model, message) => {
+      expect(() => models.assertAddable(model as GatewayModel)).toThrow(new Error(message));
+    });
+
+    it.each(["__proto__", "constructor", "toString"])("accepts %s as an ID", (id) => {
+      expect(() => models.assertAddable({ ...NEW, id })).not.toThrow();
+    });
+  });
+
   // The table keeps its own list of the providers getModel can route through the gateway, so an
   // added model it offers is one that can run. This holds the two in step.
   it.each(Object.keys(SUGGESTED_MODELS) as AiModelProvider[])(
@@ -333,6 +383,15 @@ describe("GatewayModels", () => {
     }, provider);
     expect(models.get("test-model")?.provider).toBe(unroutable ? undefined : provider);
     expect(models.resolve("test-model")?.config.provider).toBe(unroutable ? undefined : provider);
+
+    expect(models.addableProviders).toEqual(unroutable ? [] : [provider]);
+    const add = () => gatewayModels({}, provider).assertAddable(
+        { provider, id: "test-model", name: "Test", contextWindow: 1000 });
+    if (unroutable) {
+      expect(add).toThrow(`Provider "${provider}" is not served through AI Gateway.`);
+    } else {
+      expect(add).not.toThrow();
+    }
   });
 });
 
