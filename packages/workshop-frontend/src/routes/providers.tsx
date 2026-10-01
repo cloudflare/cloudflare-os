@@ -2,12 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
-import {
-  AiChatAuthorInfo,
-  AiGatewayInfo,
-  AiModelProvider,
-  SUGGESTED_MODELS,
-} from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, AiGatewayInfo } from '@gadgets/workshop-shared/api'
 import {
   Plus,
   Trash,
@@ -24,8 +19,6 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuSty
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
 // ─── constants ────────────────────────────────────────────────────────────────
-
-const PROVIDER_ORDER = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
 const PRIMARY_BTN =
   'press inline-flex h-9 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-kumo-brand px-3.5 text-[13px] font-medium tracking-[-0.25px] text-white transition-colors hover:bg-kumo-brand-hover'
@@ -185,11 +178,8 @@ function ProvidersPage() {
 
   const gatewayMode = aiConfig?.enabled === true
 
-  const isBuiltIn = (modelId: string): boolean => {
-    if (!aiConfig?.enabled) return false
-    const enabled = new Set((aiConfig as Extract<AiGatewayInfo, { enabled: true }>).enabledProviders)
-    return PROVIDER_ORDER.some((p) => enabled.has(p) && modelId in SUGGESTED_MODELS[p])
-  }
+  const isBuiltIn = (modelId: string): boolean =>
+    aiConfig?.enabled === true && aiConfig.builtInModelIds.includes(modelId)
 
   // Bumped whenever the user opens a dialog, so a configuration that finishes loading after a later
   // click doesn't open its editor over the dialog the user chose.
