@@ -460,8 +460,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       result.push(...models.list());
     }
 
-    // Also include user-configured models, skipping any that a gateway model shadows, whatever
-    // its mode (see #resolveModel()).
+    // Also include user-configured models, where users may add their own, skipping any that a
+    // gateway model shadows, whatever its mode (see #resolveModel()).
+    if (models && !models.userModels) return result;
     for (let model of this.storage.aiModels.list()) {
       if (!models?.get(model.profile.id)) {
         result.push(model.profile);
@@ -473,6 +474,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
                  copySecretsFrom?: string): Promise<void> {
     let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
     let source: AiModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
       source = this.#getHandAddedModel(copySecretsFrom, models).config;
@@ -490,7 +492,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
-    let stored = this.#getHandAddedModel(profile.id, await getGatewayModels(this.env)).config;
+    let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
+    let stored = this.#getHandAddedModel(profile.id, models).config;
     if (config.provider !== stored.provider || config.model !== stored.model) {
       throw new Error("A model's provider and model ID can't be changed.");
     }
@@ -662,6 +666,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       result.aiModel = this.#resolveModel(modelId, models);
       if (!result.aiModel) {
         models?.refuseDisabled(modelId);
+        // No gateway model has the ID, so a stored model with it is one the deployment keeps
+        // users from running.
+        let stored = this.storage.aiModels.get(modelId);
+        if (stored) models?.refuseUserModel(stored.profile.name);
         throw new Error(`No such model: ${modelId}`);
       }
     }
@@ -699,10 +707,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Resolve a model ID the way chats do: a gateway model shadows a stored model with the same ID
-   * whatever its mode, so a disabled one resolves to nothing rather than to the stored model.
+   * whatever its mode, so a disabled one resolves to nothing rather than to the stored model. No
+   * stored model resolves on a gateway deployment whose users may not add their own.
    */
   #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
-    return models?.get(id) ? models.resolve(id) : this.storage.aiModels.get(id);
+    if (models?.get(id)) return models.resolve(id);
+    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {

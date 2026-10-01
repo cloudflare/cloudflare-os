@@ -73,9 +73,12 @@ const ADDED: GatewayModel = {
 };
 const disabledMessage = (name: string) =>
     `The "${name}" model is disabled on this deployment by an administrator.`;
+const ADDING_REFUSED = "Adding your own models is disabled on this deployment by an administrator.";
+const cantBeUsedMessage = (name: string) => `The "${name}" model can't be used: ` +
+    "adding your own models is disabled on this deployment by an administrator.";
 const ids = (models: readonly { id: string }[]) => models.map(candidate => candidate.id);
 
-it("an admin's modes and added models decide which gateway models users can run", async () => {
+it("an admin's modes, added models and say over users' own decide which models run", async () => {
   using adminPublic = connect(harness.url);
   using adminUser = await signUp(adminPublic, ADMIN_USERNAME);
   using admin = await adminUser.getAdminApi();
@@ -121,6 +124,7 @@ it("an admin's modes and added models decide which gateway models users can run"
       enabled: true,
       enabledProviders: ["cloudflare"],
       builtInModelIds: [...ids(before.models), ADDED.id],
+      userModelsEnabled: true,
     });
     const withMode = (id: string, mode: GatewayModelMode) => (candidate: typeof scripted) =>
         candidate.id === id ? { ...candidate, mode } : candidate;
@@ -130,6 +134,7 @@ it("an admin's modes and added models decide which gateway models users can run"
         ...before.models.map(withMode(SCRIPTED_MODEL_ID, "disabled")).map(withMode(other.id, "hidden")),
         { ...ADDED, mode: "enabled", defaultMode: "enabled", added: true },
       ],
+      userModelsEnabled: true,
     });
 
     // Disabled: nothing resolves it, the binding minted earlier included, and its ID stays taken.
@@ -189,8 +194,36 @@ it("an admin's modes and added models decide which gateway models users can run"
     expect(await gatewayModels()).toEqual(before);
     expect(ids(await api.listModels())).toEqual(offered);
     (await binding.openSession())[Symbol.dispose]();
+
+    // A model a user adds runs through the deployment's gateway too, until the admin makes the
+    // gateway's models the only ones.
+    const mine = { type: "agent" as const, id: "gatewaymodes-mine", name: "Mine" };
+    const mineConfig = { provider: "cloudflare" as const, model: "@cf/test/mine", apiToken: "" };
+    await api.addModel(mine, mineConfig);
+    expect(ids(await api.listModels())).toEqual([...offered, mine.id]);
+    using mineBinding = await ws.newAiModelGatekeeper(mine.id);
+    (await mineBinding.openSession())[Symbol.dispose]();
+
+    await admin.setUserModelsEnabled(false);
+    expect(await gatewayModels()).toEqual({ ...before, userModelsEnabled: false });
+    expect(await api.getAiConfig()).toMatchObject({ enabled: true, userModelsEnabled: false });
+    expect(ids(await api.listModels())).toEqual(offered);
+    await expect(ws.newChat("Is anyone there?", mine.id))
+        .rejects.toThrow(cantBeUsedMessage(mine.name));
+    await expect(mineBinding.openSession()).rejects.toThrow(cantBeUsedMessage(mine.name));
+    await expect(api.addModel({ ...mine, id: "gatewaymodes-another" }, mineConfig))
+        .rejects.toThrow(ADDING_REFUSED);
+    (await binding.openSession())[Symbol.dispose]();
+
+    // Nothing was deleted, so the model is back as soon as users may add their own again.
+    await admin.setUserModelsEnabled(true);
+    expect(await gatewayModels()).toEqual(before);
+    expect(await api.getAiConfig()).toMatchObject({ enabled: true, userModelsEnabled: true });
+    expect(ids(await api.listModels())).toEqual([...offered, mine.id]);
+    (await mineBinding.openSession())[Symbol.dispose]();
   } finally {
     try {
+      await admin.setUserModelsEnabled(true);
       await admin.setGatewayModelMode(SCRIPTED_MODEL_ID, "enabled");
       await admin.setGatewayModelMode(other.id, "enabled");
     } finally {

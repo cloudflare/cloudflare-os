@@ -716,10 +716,13 @@ export class LanguageModelGatekeeper
       : Promise<LanguageModelBinding> {
     let config = this.ctx.props.config;
     // A session starts on each call of the binding, so a binding minted before an admin disabled
-    // its gateway model stops working at its next call.
+    // its gateway model stops working at its next call. While users may not add their own models,
+    // so does a binding for any other model: one a user added, or one the admin added and removed.
     let models = await getGatewayModels(this.env);
     if (models?.get(config.model)?.provider === config.provider) {
       models.refuseDisabled(config.model);
+    } else {
+      models?.refuseUserModel(this.ctx.props.displayName);
     }
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,

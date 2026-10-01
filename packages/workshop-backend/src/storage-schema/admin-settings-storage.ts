@@ -72,6 +72,13 @@ export type AdminConfig = {
   modelModes: Record<string, GatewayModelMode>;
   /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
   addedModels: GatewayModel[];
+  /**
+   * Whether users may add models of their own (default true), which in AI Gateway mode run through
+   * the deployment's gateway. While false, the gateway's models are the only ones a user can list
+   * or run; the models users stored are kept. Only meaningful in AI Gateway mode (see GatewayModels
+   * in ai-gateway.ts).
+   */
+  userModelsEnabled: boolean;
 };
 
 /**
@@ -112,6 +119,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   formats: [],
   modelModes: {},
   addedModels: [],
+  userModelsEnabled: true,
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {

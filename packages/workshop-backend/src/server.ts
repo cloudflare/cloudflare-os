@@ -241,6 +241,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
         enabled: true,
         enabledProviders: [...models.gateway.providers] as AiModelProvider[],
         builtInModelIds: models.all.map(model => model.id),
+        userModelsEnabled: models.userModels,
       };
     } else {
       return { enabled: false };

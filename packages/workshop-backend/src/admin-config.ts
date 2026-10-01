@@ -288,6 +288,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     formats: parseFormats(p.formats),
     modelModes,
     addedModels: parseAddedModels(p.addedModels),
+    userModelsEnabled: typeof p.userModelsEnabled === "boolean"
+      ? p.userModelsEnabled
+      : DEFAULT_ADMIN_CONFIG.userModelsEnabled,
   };
 }
 

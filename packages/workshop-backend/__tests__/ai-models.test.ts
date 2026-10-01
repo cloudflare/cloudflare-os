@@ -681,13 +681,15 @@ describe("getModel direct routing (no gateway)", () => {
 
 describe("LanguageModelGatekeeper.startSession", () => {
   const MODEL_ID = "claude-opus-5-5";
-  const DISABLED: AdminConfig["modelModes"] = { [MODEL_ID]: "disabled" };
+  const DISABLED: Partial<AdminConfig> = { modelModes: { [MODEL_ID]: "disabled" } };
+  const DISABLED_MESSAGE =
+      'The "Claude Opus 5.5" model is disabled on this deployment by an administrator.';
 
-  // The session of a binding minted for `config`, on a deployment whose admin set `modelModes`.
-  function startSession(config: AiModelConfig, modelModes: AdminConfig["modelModes"],
+  // The session of a binding minted for `config`, on a deployment whose admin config is `admin`.
+  function startSession(config: AiModelConfig, admin: Partial<AdminConfig>,
                         overrides: Partial<Cloudflare.Env> = {}) {
     const getConfig = vi.fn(
-        async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, modelModes }));
+        async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, ...admin }));
     const gatekeeper = Object.create(LanguageModelGatekeeper.prototype) as LanguageModelGatekeeper;
     Object.assign(gatekeeper, {
       env: env({ BLUEPRINTS: { get: getConfig } as unknown as KVNamespace, ...overrides }),
@@ -699,27 +701,72 @@ describe("LanguageModelGatekeeper.startSession", () => {
 
   it("refuses a gateway model the admin disabled", async () => {
     const config = { provider: "anthropic" as const, model: MODEL_ID, apiToken: "" };
-    await expect(startSession(config, DISABLED).session).rejects.toThrow(new Error(
-        'The "Claude Opus 5.5" model is disabled on this deployment by an administrator.'));
+    await expect(startSession(config, DISABLED).session).rejects.toThrow(
+        new Error(DISABLED_MESSAGE));
   });
 
   it.each([
     ["an enabled model", "anthropic", {}],
-    ["a hidden model", "anthropic", { [MODEL_ID]: "hidden" }],
+    ["a hidden model", "anthropic", { modelModes: { [MODEL_ID]: "hidden" } }],
     // A model a user added by hand on another provider, whose model name happens to match.
     ["the disabled model's ID under another provider", "openai", DISABLED],
-  ] as const)("starts a session for %s", async (_, provider, modelModes) => {
-    const binding = await startSession({ provider, model: MODEL_ID, apiToken: "" }, modelModes)
+  ] as const)("starts a session for %s", async (_, provider, admin) => {
+    const binding = await startSession({ provider, model: MODEL_ID, apiToken: "" }, admin)
         .session;
     expect(binding.run).toBeTypeOf("function");
   });
 
   it("does not read the admin config outside AI Gateway mode", async () => {
     const { session, getConfig } = startSession(
-        { provider: "anthropic", model: MODEL_ID, apiToken: "direct-api-token" }, DISABLED,
-        { CF_AI_GATEWAY: undefined });
+        { provider: "anthropic", model: MODEL_ID, apiToken: "direct-api-token" },
+        { ...DISABLED, userModelsEnabled: false }, { CF_AI_GATEWAY: undefined });
     expect((await session).run).toBeTypeOf("function");
     expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  describe("where users' own models are concerned", () => {
+    const ADDED = {
+      provider: "anthropic" as const, id: "claude-test", name: "Claude Test", contextWindow: 1000,
+    };
+    const OFF: Partial<AdminConfig> = { userModelsEnabled: false, addedModels: [ADDED] };
+    // Bindings for a model that is not the gateway's.
+    const BINDINGS = [
+      // No gateway model has the ID: a user added the model, or the admin added and removed it.
+      ["a model the user added", "anthropic", "my-model"],
+      ["a gateway model's ID under another provider", "openai", MODEL_ID],
+      ["an added model's ID under another provider", "openai", ADDED.id],
+    ] as const;
+
+    it.each(BINDINGS)("starts a session for %s while users may add their own",
+        async (_, provider, model) => {
+      const binding = await startSession(
+          { provider, model, apiToken: "" }, { addedModels: [ADDED] }).session;
+      expect(binding.run).toBeTypeOf("function");
+    });
+
+    it.each(BINDINGS)("refuses %s once users may not", async (_, provider, model) => {
+      await expect(startSession({ provider, model, apiToken: "" }, OFF).session).rejects.toThrow(
+          new Error('The "Model" model can\'t be used: adding your own models is disabled on ' +
+              "this deployment by an administrator."));
+    });
+
+    it.each([
+      ["an enabled model", MODEL_ID, {}],
+      ["a hidden model", MODEL_ID, { [MODEL_ID]: "hidden" }],
+      ["a model the admin added", ADDED.id, {}],
+      ["a hidden model the admin added", ADDED.id, { [ADDED.id]: "hidden" }],
+    ] as const)("starts a session for %s of the gateway's once users may not",
+        async (_, model, modelModes) => {
+      const binding = await startSession(
+          { provider: "anthropic", model, apiToken: "" }, { ...OFF, modelModes }).session;
+      expect(binding.run).toBeTypeOf("function");
+    });
+
+    it("refuses a disabled gateway model as disabled once users may not", async () => {
+      const config = { provider: "anthropic" as const, model: MODEL_ID, apiToken: "" };
+      await expect(startSession(config, { ...OFF, ...DISABLED }).session)
+          .rejects.toThrow(new Error(DISABLED_MESSAGE));
+    });
   });
 });
 

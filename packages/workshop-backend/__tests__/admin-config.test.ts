@@ -221,4 +221,16 @@ describe("admin config gateway models", () => {
     expect(config.modelModes).toStrictEqual({ a: "disabled" });
     expect(config.addedModels).toStrictEqual([added]);
   });
+
+  it("lets users add their own models unless that is stored as off", () => {
+    expect(DEFAULT_ADMIN_CONFIG.userModelsEnabled).toBe(true);
+    expect(parseAdminConfig(null).userModelsEnabled).toBe(true);
+    for (let stored of ["{}", '{"userModelsEnabled":null}', '{"userModelsEnabled":"false"}',
+        '{"userModelsEnabled":0}', '{"userModelsEnabled":true}']) {
+      expect(parseAdminConfig(stored).userModelsEnabled, stored).toBe(true);
+    }
+    expect(parseAdminConfig('{"userModelsEnabled":false}').userModelsEnabled).toBe(false);
+    expect(parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, userModelsEnabled: false })).userModelsEnabled).toBe(false);
+  });
 });

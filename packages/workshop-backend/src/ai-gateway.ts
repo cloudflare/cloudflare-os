@@ -134,13 +134,19 @@ export class GatewayModels {
   readonly all: readonly AdminModel[];
   /** The providers a model may be added under: the ones the gateway both enables and serves. */
   readonly addableProviders: AiModelProvider[] = [];
+  /**
+   * Whether users may add models of their own, which run through the gateway like these. When
+   * false, these are the only models a user can list or run.
+   */
+  readonly userModels: boolean;
   readonly #byId = new Map<string, AdminModel>();
   /** The stored added models, including the ones this table leaves out. */
   readonly #added: readonly GatewayModel[];
 
   constructor(readonly gateway: AiGatewayConfig,
-              config: Pick<AdminConfig, "modelModes" | "addedModels">) {
+              config: Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled">) {
     this.#added = config.addedModels;
+    this.userModels = config.userModelsEnabled;
     let add = (model: GatewayModel, defaultMode: GatewayModelMode, added: boolean) => {
       if (this.#byId.has(model.id)) return;
       // Object.hasOwn, so that an ID like "constructor" does not find an inherited mode.
@@ -207,6 +213,18 @@ export class GatewayModels {
       throw new Error(
           `The "${model.name}" model is disabled on this deployment by an administrator.`);
     }
+  }
+
+  /**
+   * Throws unless users may add models of their own. `name` is that of the model being run, when
+   * the refusal is of one a user added rather than of adding one.
+   */
+  refuseUserModel(name?: string): void {
+    if (this.userModels) return;
+    throw new Error(name === undefined
+        ? "Adding your own models is disabled on this deployment by an administrator."
+        : `The "${name}" model can't be used: adding your own models is disabled on this ` +
+          "deployment by an administrator.");
   }
 
   /**

@@ -477,6 +477,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * holding the secrets. The rules of `updateModel()` for keeping a secret apply to copying one.
    * Without it, `config` must contain no `null` secrets. With it, `profile.id` must also not name
    * a model provided by the deployment's AI Gateway configuration.
+   *
+   * Throws on a deployment whose users may not add their own models (see
+   * `AiGatewayInfo.userModelsEnabled`), as `updateModel()` does.
    */
   addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
            copySecretsFrom?: string): Promise<void>;
@@ -1013,6 +1016,8 @@ export type AdminSettingsView = {
     providers: AiModelProvider[];
     /** Every gateway model, in any mode, in listing order. */
     models: AdminModel[];
+    /** Whether users may add models of their own (see AdminApi.setUserModelsEnabled). */
+    userModelsEnabled: boolean;
   };
 };
 
@@ -1199,10 +1204,22 @@ export interface AdminApi {
    *
    * Removing frees the ID rather than reserving it. The chats, spawners and preferences that name
    * the model resolve again if a model is later added under the same ID. A gadget model binding
-   * minted for it carries its own provider and model, so it runs once the model is removed, even
-   * if the model was disabled. To shut a model off, disable it instead.
+   * minted for it carries its own provider and model, so while users may add their own models
+   * (see setUserModelsEnabled) it runs once the model is removed, even if the model was disabled.
+   * To shut a model off, disable it instead.
    */
   removeGatewayModel(modelId: string): Promise<void>;
+
+  /**
+   * Set whether users may add models of their own, which run through the deployment's gateway
+   * like the models it provides. On by default.
+   *
+   * Off makes the deployment's models the only ones: a user can't add or edit a model, and the
+   * models users added are neither listed nor resolved. A gadget model binding stops at its next
+   * call unless a gateway model has its provider and model. Nothing stored is deleted, so the
+   * models users added work again once this is back on.
+   */
+  setUserModelsEnabled(enabled: boolean): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1338,6 +1355,12 @@ export type AiGatewayInfo = {
    * GatewayModelMode). A user can't edit or delete these, nor add a model under one of these IDs.
    */
   builtInModelIds: string[];
+  /**
+   * Whether users may add models of their own (see AdminApi.setUserModelsEnabled). When false,
+   * addModel() and updateModel() refuse, and the models the user added are neither listed nor
+   * resolved.
+   */
+  userModelsEnabled: boolean;
 } | {
   enabled: false;
 };

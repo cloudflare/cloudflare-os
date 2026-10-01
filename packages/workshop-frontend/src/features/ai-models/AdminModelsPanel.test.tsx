@@ -38,6 +38,7 @@ const ADDED: AdminModel = {
 const GATEWAY_MODELS: GatewayModels = {
   providers: ['anthropic', 'openai'],
   models: [SONNET, LEGACY, ADDED],
+  userModelsEnabled: true,
 }
 
 const deferred = () => {
@@ -376,7 +377,7 @@ describe('AdminModelsPanel', () => {
     })
 
     it('offers no form when the gateway enables no provider a model can be added under', async () => {
-      await render({ gatewayModels: { providers: [], models: [SONNET] } })
+      await render({ gatewayModels: { ...GATEWAY_MODELS, providers: [], models: [SONNET] } })
 
       expect(document.body.querySelector('form')).toBeNull()
       expect(document.body.textContent).toContain('No model can be added')
@@ -384,7 +385,7 @@ describe('AdminModelsPanel', () => {
   })
 
   it('renders with no models at all', async () => {
-    await render({ gatewayModels: { providers: ['anthropic'], models: [] } })
+    await render({ gatewayModels: { ...GATEWAY_MODELS, providers: ['anthropic'], models: [] } })
 
     expect(document.body.querySelectorAll('[role="radio"]')).toHaveLength(0)
     expect(document.body.textContent).toContain('No models added.')

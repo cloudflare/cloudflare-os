@@ -418,7 +418,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       let gateway = getAiGatewayConfig(this.env);
       if (!gateway) return undefined;
       let models = new GatewayModels(gateway, config);
-      return { providers: models.addableProviders, models: [...models.all] };
+      return {
+        providers: models.addableProviders,
+        models: [...models.all],
+        userModelsEnabled: models.userModels,
+      };
     } catch (error) {
       logger.error("failed to read the AI Gateway models", {
         event: "gateway.models.read.failed", error,
@@ -475,6 +479,12 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           ? config.modelModes : Object.fromEntries(modeEntriesWithout(config.modelModes, modelId));
       return { ...config, addedModels, modelModes };
     });
+  }
+
+  /** Set whether users may add models of their own to the ones the gateway provides. */
+  async setUserModelsEnabled(enabled: boolean): Promise<void> {
+    this.#requireGateway();
+    await this.updateAdminConfig({ userModelsEnabled: enabled });
   }
 
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
@@ -727,5 +737,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   removeGatewayModel(modelId: string): Promise<void> {
     return this.admin.removeGatewayModel(modelId);
+  }
+
+  setUserModelsEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setUserModelsEnabled(enabled);
   }
 }

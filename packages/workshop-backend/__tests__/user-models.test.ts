@@ -135,6 +135,9 @@ describe("UserDurableObject model editing", () => {
 
 const listedIds = async (user: UserDurableObject) =>
     (await user.listModels()).map(model => model.id);
+const storedModel = (user: UserDurableObject, id: string) =>
+    (user as unknown as { storage: { aiModels: { get(id: string): unknown } } })
+        .storage.aiModels.get(id);
 
 describe("UserDurableObject gateway model modes", () => {
   const ENABLED_ID = "claude-opus-5-5";
@@ -265,4 +268,112 @@ describe("UserDurableObject gateway model modes", () => {
     expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
         .toBe("claude-haiku-4-5");
   }, DISABLED));
+
+  describe("once users may not add their own models", () => {
+    const MINE = { ...PROFILE, id: "mine", name: "Mine" };
+    const MINE_CONFIG: AiModelConfig = { ...CONFIG, provider: "anthropic", model: "mine" };
+    const ADDING_REFUSED =
+        "Adding your own models is disabled on this deployment by an administrator.";
+    const MINE_REFUSED = 'The "Mine" model can\'t be used: adding your own models is disabled ' +
+        "on this deployment by an administrator.";
+
+    // Runs `f` for a user who added MINE and made it their preference while users still could.
+    // `admin` is the deployment's admin config, which `f` may change as an admin would.
+    function withStoredModel(
+        f: (user: UserDurableObject, admin: Partial<AdminConfig>, offered: string[]) =>
+            Promise<void>,
+        config: Partial<AdminConfig> = {}) {
+      const admin: Partial<AdminConfig> = { ...config };
+      return inGatewayUser(async user => {
+        const offered = await listedIds(user);
+        await user.addModel(MINE, MINE_CONFIG);
+        await user.setPreferredModel(MINE.id);
+        expect(await listedIds(user)).toEqual([...offered, MINE.id]);
+        admin.userModelsEnabled = false;
+        await f(user, admin, offered);
+      }, admin);
+    }
+
+    it("neither lists nor resolves a stored model",
+        () => withStoredModel(async (user, _, offered) => {
+      expect(await listedIds(user)).toEqual(offered);
+      await expect(user.getChatContext(MINE.id)).rejects.toThrow(new Error(MINE_REFUSED));
+      await expect(user.setPreferredModel(MINE.id)).rejects.toThrow(`No such model: ${MINE.id}`);
+      // An ID that names nothing is still reported as such.
+      await expect(user.getChatContext("nope")).rejects.toThrow(new Error("No such model: nope"));
+    }));
+
+    it("refuses to add or edit a model, whatever else is wrong with the request",
+        () => withStoredModel(async user => {
+      const refused = new Error(ADDING_REFUSED);
+      const other = { ...MINE, id: "other" };
+      const otherConfig = { ...MINE_CONFIG, model: "other" };
+      await expect(user.addModel(other, otherConfig)).rejects.toThrow(refused);
+      await expect(user.addModel(other, otherConfig, "nope")).rejects.toThrow(refused);
+      await expect(user.addModel(MINE, MINE_CONFIG)).rejects.toThrow(refused);
+      await expect(user.addModel({ ...MINE, id: ENABLED_ID }, MINE_CONFIG))
+          .rejects.toThrow(refused);
+      expect(storedModel(user, "other")).toBeUndefined();
+
+      await expect(user.updateModel({ ...MINE, name: "Renamed" }, MINE_CONFIG))
+          .rejects.toThrow(refused);
+      await expect(user.updateModel(MINE, { ...MINE_CONFIG, model: "changed" }))
+          .rejects.toThrow(refused);
+      await expect(user.updateModel(other, MINE_CONFIG)).rejects.toThrow(refused);
+      expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
+    }));
+
+    it("moves a conversation off a stored model",
+        () => withStoredModel(async (user, _, offered) => {
+      // The preference is the stored model too, so neither an existing chat nor a new one keeps it.
+      expect(await user.getPreferredModel()).toBe(MINE.id);
+      for (let chatModel of [MINE.id, null]) {
+        expect((await user.getExternalMessageChatContext(chatModel)).aiModel?.profile.id)
+            .toBe(offered[0]);
+      }
+    }));
+
+    it("keeps a stored model, which still reads, until its user deletes it",
+        () => withStoredModel(async user => {
+      expect(storedModel(user, MINE.id)).toEqual({ profile: MINE, config: MINE_CONFIG });
+      expect((await user.getModelConfig(MINE.id)).profile).toEqual(MINE);
+      await expect(user.deleteModel(ENABLED_ID))
+          .rejects.toThrow(new Error('Cannot delete built-in model "Claude Opus 5.5".'));
+
+      await user.deleteModel(MINE.id);
+      expect(storedModel(user, MINE.id)).toBeUndefined();
+      await expect(user.getChatContext(MINE.id))
+          .rejects.toThrow(new Error(`No such model: ${MINE.id}`));
+    }));
+
+    it("restores a stored model as it was once users may again",
+        () => withStoredModel(async (user, admin, offered) => {
+      await expect(user.getChatContext(MINE.id)).rejects.toThrow(new Error(MINE_REFUSED));
+      admin.userModelsEnabled = true;
+      expect(await listedIds(user)).toEqual([...offered, MINE.id]);
+      expect((await user.getChatContext(MINE.id)).aiModel)
+          .toEqual({ profile: MINE, config: MINE_CONFIG });
+      expect(await user.getPreferredModel()).toBe(MINE.id);
+      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(MINE);
+      await user.updateModel({ ...MINE, name: "Renamed" }, MINE_CONFIG);
+      expect(storedModel(user, MINE.id)).toMatchObject({ profile: { name: "Renamed" } });
+    }));
+
+    it("leaves the gateway's models as they are",
+        () => withStoredModel(async (user, _, offered) => {
+      expect(await listedIds(user)).toEqual(offered);
+      expect(offered).not.toContain(HIDDEN_ID);
+      expect((await user.getChatContext(HIDDEN_ID)).aiModel?.profile.id).toBe(HIDDEN_ID);
+      await user.setPreferredModel(HIDDEN_ID);
+      expect((await user.getExternalMessageChatContext(HIDDEN_ID)).aiModel?.profile.id)
+          .toBe(HIDDEN_ID);
+
+      // A stored model that a gateway model shadows gets that model's answer, not its own.
+      storeModel(user, ENABLED_ID);
+      storeModel(user, "claude-haiku-4-5");
+      await expect(user.getChatContext(ENABLED_ID)).rejects.toThrow(new Error(DISABLED_MESSAGE));
+      expect((await user.getChatContext("claude-haiku-4-5")).aiModel?.profile.name)
+          .toBe("Claude Haiku 4.5");
+    }, DISABLED));
+  });
 });

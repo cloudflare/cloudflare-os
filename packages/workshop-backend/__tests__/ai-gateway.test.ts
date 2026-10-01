@@ -156,9 +156,10 @@ describe("GatewayModels", () => {
     CF_AI_GATEWAY_PROVIDERS: providers,
   });
   const gatewayModels = (
-      config: Partial<Pick<AdminConfig, "modelModes" | "addedModels">> = {}, providers?: string) =>
+      config: Partial<Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled">> = {},
+      providers?: string) =>
       new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)),
-          { modelModes: {}, addedModels: [], ...config });
+          { modelModes: {}, addedModels: [], userModelsEnabled: true, ...config });
 
   it("offers each catalog model in its default mode, on enabled providers only", () => {
     const models = gatewayModels();
@@ -221,6 +222,24 @@ describe("GatewayModels", () => {
     expect(() => models.refuseDisabled("claude-opus-5-5")).not.toThrow();
     expect(() => models.refuseDisabled("gpt-6-sol")).not.toThrow();
     expect(() => models.refuseDisabled("not-a-gateway-model")).not.toThrow();
+  });
+
+  it("refuses users' own models only when the admin turned them off", () => {
+    const on = gatewayModels({ userModelsEnabled: true });
+    expect(on.userModels).toBe(true);
+    expect(() => on.refuseUserModel()).not.toThrow();
+    expect(() => on.refuseUserModel("My Model")).not.toThrow();
+
+    const off = gatewayModels({ userModelsEnabled: false });
+    expect(off.userModels).toBe(false);
+    expect(() => off.refuseUserModel()).toThrow(new Error(
+        "Adding your own models is disabled on this deployment by an administrator."));
+    expect(() => off.refuseUserModel("My Model")).toThrow(new Error(
+        'The "My Model" model can\'t be used: adding your own models is disabled on this ' +
+        "deployment by an administrator."));
+    // The gateway's own models are as they were.
+    expect(ids(off.list())).toEqual(ids(on.list()));
+    expect(off.resolve("gpt-6-sol")).toStrictEqual(on.resolve("gpt-6-sol"));
   });
 
   it("lists added models after their provider's catalog models, in stored order", () => {
@@ -412,6 +431,20 @@ describe("getGatewayModels", () => {
     expect(models!.gateway.gateway).toBe("platform-gateway");
     expect(models!.resolve("claude-fable-5-1")).toBeUndefined();
     expect(ids(models!.list())).toContain("claude-test");
+    expect(models!.userModels).toBe(true);
+  });
+
+  it.each([
+    ["off when the admin config stores false", false, false],
+    ["on when the admin config stores a value that is not a boolean", "false", true],
+  ])("reads users' own models as %s", async (_, userModelsEnabled, expected) => {
+    const models = await getGatewayModels(env({
+      CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+      CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+      BLUEPRINTS: adminConfigKv({ userModelsEnabled } as Partial<AdminConfig>) as unknown as
+          KVNamespace,
+    }));
+    expect(models!.userModels).toBe(expected);
   });
 
   // A deployment outside AI Gateway mode has no gateway models, and must not pay a KV read to
