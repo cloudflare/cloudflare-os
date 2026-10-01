@@ -11,6 +11,7 @@ import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   DEFAULT_BANNER_COLOR,
   type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput, type BlueprintPublicInfo,
+  type GatewayModel, type GatewayModelMode,
 } from "@gadgets/workshop-shared/api";
 
 export type AdminConfig = {
@@ -61,6 +62,16 @@ export type AdminConfig = {
    * the deployment offers.
    */
   formats: FormatCuration[];
+
+  /**
+   * How each AI Gateway model is offered: model id -> mode, for the models an admin changed.
+   * Absent ⇒ the model's default (SUGGESTED_MODELS' for a suggested model, "enabled" for an added
+   * one), so an untouched model follows the catalog across upgrades. Only meaningful in AI Gateway
+   * mode (see GatewayModels in ai-gateway.ts).
+   */
+  modelModes: Record<string, GatewayModelMode>;
+  /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
+  addedModels: GatewayModel[];
 };
 
 /**
@@ -99,6 +110,8 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   formats: [],
+  modelModes: {},
+  addedModels: [],
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {

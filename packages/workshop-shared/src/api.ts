@@ -1290,8 +1290,71 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
 export type AiGatewayInfo = {
   enabled: true;
   enabledProviders: AiModelProvider[];
+  /**
+   * The ID of every model the deployment provides through AI Gateway, in any mode (see
+   * GatewayModelMode). A user can't edit or delete these, nor add a model under one of these IDs.
+   */
+  builtInModelIds: string[];
 } | {
   enabled: false;
+};
+
+/**
+ * How a deployment offers one of the models it provides through AI Gateway:
+ *   - 'enabled':  offered in model pickers.
+ *   - 'hidden':   left out of pickers but still resolves, so the chats, spawners, preferences and
+ *                 gadget model bindings that already name it keep working.
+ *   - 'disabled': left out of pickers and does not resolve: a chat or spawner that names it is
+ *                 refused, and a gadget model binding minted for it fails at its next call. Its ID
+ *                 stays reserved, so a user can't add a model of their own under it.
+ */
+export const GATEWAY_MODEL_MODES = ['enabled', 'hidden', 'disabled'] as const;
+
+/** One of GATEWAY_MODEL_MODES. */
+export type GatewayModelMode = typeof GATEWAY_MODEL_MODES[number];
+
+/** Whether `value` is a GatewayModelMode. */
+export function isGatewayModelMode(value: unknown): value is GatewayModelMode {
+  return GATEWAY_MODEL_MODES.includes(value as GatewayModelMode);
+}
+
+/**
+ * The description of a model a deployment provides through AI Gateway. Its admin supplies one to
+ * add a model beside the SUGGESTED_MODELS of the providers the gateway enables.
+ */
+export type GatewayModel = {
+  /** Which AI provider hosts the model. */
+  provider: AiModelProvider;
+
+  /**
+   * Name of the model as specified to the provider's API, which is also the ID chats and
+   * preferences refer to it by.
+   */
+  id: string;
+
+  /** Display name. */
+  name: string;
+
+  /** The maximum tokens one request may total. */
+  contextWindow: number;
+
+  /** When present, both the requested response cap and the space reserved for it. */
+  outputLimit?: number;
+};
+
+/** A model a deployment provides through AI Gateway, as its admin sees it. */
+export type AdminModel = GatewayModel & {
+  /** How the deployment offers the model. */
+  mode: GatewayModelMode;
+
+  /**
+   * The mode the model has while the admin leaves it alone: SUGGESTED_MODELS decides it for a
+   * suggested model, and an added model's is 'enabled'.
+   */
+  defaultMode: GatewayModelMode;
+
+  /** Whether the admin added the model, rather than SUGGESTED_MODELS listing it. */
+  added: boolean;
 };
 
 /** Configuration specifying how to connect to an AI model provider. */
@@ -1383,8 +1446,10 @@ type SuggestedModel = {
   compactionInputBudget?: number;
 
   /**
-   * Still resolvable for stored references, not offered in pickers. Set on models superseded by
-   * a newer one, which chats, spawners, and preferences created earlier may still name.
+   * Makes the model's default mode 'hidden' rather than 'enabled' (see GatewayModelMode): still
+   * resolvable for stored references, not offered in pickers. Set on models superseded by a newer
+   * one, which chats, spawners, and preferences created earlier may still name. A deployment's
+   * admin can override the default for its AI Gateway.
    */
   hidden?: true;
 };
@@ -1459,7 +1524,10 @@ const SUGGESTED_MODEL_CATALOG = {
   },
 } satisfies Record<AiModelProvider, Record<string, SuggestedModel>>;
 
-/** Models built into the Workshop, by provider and model id; pickers skip the hidden ones. */
+/**
+ * Models built into the Workshop, by provider and model id. Pickers skip the hidden ones, unless
+ * the admin of an AI Gateway deployment enabled them there.
+ */
 export const SUGGESTED_MODELS: Record<AiModelProvider, Record<string, SuggestedModel>> =
     SUGGESTED_MODEL_CATALOG;
 

@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig,
 } from "@gadgets/workshop-shared/api";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
-import { getModel, type ModelHandle } from "../src/ai-models.js";
+import { serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
+import { getModel, LanguageModelGatekeeper, type ModelHandle } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
 // the returned handle's model descriptor (baseUrl/id/api) and log route, and request-level
@@ -674,6 +676,50 @@ describe("getModel direct routing (no gateway)", () => {
       }, INITIATOR);
       expect(handle.model.baseUrl).toBe("http://my-ollama:11434/v1");
     }
+  });
+});
+
+describe("LanguageModelGatekeeper.startSession", () => {
+  const MODEL_ID = "claude-opus-5-5";
+  const DISABLED: AdminConfig["modelModes"] = { [MODEL_ID]: "disabled" };
+
+  // The session of a binding minted for `config`, on a deployment whose admin set `modelModes`.
+  function startSession(config: AiModelConfig, modelModes: AdminConfig["modelModes"],
+                        overrides: Partial<Cloudflare.Env> = {}) {
+    const getConfig = vi.fn(
+        async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, modelModes }));
+    const gatekeeper = Object.create(LanguageModelGatekeeper.prototype) as LanguageModelGatekeeper;
+    Object.assign(gatekeeper, {
+      env: env({ BLUEPRINTS: { get: getConfig } as unknown as KVNamespace, ...overrides }),
+      ctx: { props: { displayName: "Model", config, initiator: GADGET_INITIATOR } },
+    });
+    // The binding implements no actions, so a session never touches its approval queue.
+    return { session: gatekeeper.startSession(undefined as never), getConfig };
+  }
+
+  it("refuses a gateway model the admin disabled", async () => {
+    const config = { provider: "anthropic" as const, model: MODEL_ID, apiToken: "" };
+    await expect(startSession(config, DISABLED).session).rejects.toThrow(new Error(
+        'The "Claude Opus 5.5" model is disabled on this deployment by an administrator.'));
+  });
+
+  it.each([
+    ["an enabled model", "anthropic", {}],
+    ["a hidden model", "anthropic", { [MODEL_ID]: "hidden" }],
+    // A model a user added by hand on another provider, whose model name happens to match.
+    ["the disabled model's ID under another provider", "openai", DISABLED],
+  ] as const)("starts a session for %s", async (_, provider, modelModes) => {
+    const binding = await startSession({ provider, model: MODEL_ID, apiToken: "" }, modelModes)
+        .session;
+    expect(binding.run).toBeTypeOf("function");
+  });
+
+  it("does not read the admin config outside AI Gateway mode", async () => {
+    const { session, getConfig } = startSession(
+        { provider: "anthropic", model: MODEL_ID, apiToken: "direct-api-token" }, DISABLED,
+        { CF_AI_GATEWAY: undefined });
+    expect((await session).run).toBeTypeOf("function");
+    expect(getConfig).not.toHaveBeenCalled();
   });
 });
 

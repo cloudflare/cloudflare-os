@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import type { GatewayModel } from "@gadgets/workshop-shared/api";
+import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -130,5 +131,94 @@ describe("admin config site logo", () => {
     let config = parseAdminConfig('{"siteLogoConfigured":true}');
     expect(config.siteLogoConfigured).toBe(true);
     expect(parseAdminConfig(serializeAdminConfig(config))).toEqual(config);
+  });
+});
+
+describe("admin config gateway models", () => {
+  let added: GatewayModel =
+      { provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000 };
+
+  it("defaults to no mode overrides and no added models", () => {
+    for (let stored of ["{}", '{"modelModes":"hidden","addedModels":{"id":"x"}}',
+        '{"modelModes":null,"addedModels":null}']) {
+      let config = parseAdminConfig(stored);
+      expect(config.modelModes).toStrictEqual({});
+      expect(config.addedModels).toStrictEqual([]);
+    }
+  });
+
+  it("drops mode overrides that are not modes", () => {
+    let config = parseAdminConfig(JSON.stringify({
+      modelModes: { a: "hidden", b: "disabled", c: "enabled", d: "optional", e: 3, f: null, g: {} },
+    }));
+    expect(config.modelModes).toStrictEqual({ a: "hidden", b: "disabled", c: "enabled" });
+  });
+
+  // A mode assigned to `__proto__` on an ordinary object is silently lost, and an object assigned
+  // there would become the prototype every lookup falls through to.
+  it("keeps a __proto__ override as an ordinary entry", () => {
+    let config = parseAdminConfig(
+        '{"modelModes":{"__proto__":"disabled","a":"hidden","constructor":"disabled"}}');
+    expect(Object.getPrototypeOf(config.modelModes)).toBe(Object.prototype);
+    expect(Object.entries(config.modelModes)).toEqual(
+        [["__proto__", "disabled"], ["a", "hidden"], ["constructor", "disabled"]]);
+    expect(parseAdminConfig(serializeAdminConfig(config)).modelModes)
+        .toStrictEqual(config.modelModes);
+
+    let polluted = parseAdminConfig('{"modelModes":{"__proto__":{"a":"disabled"}}}');
+    expect(Object.getPrototypeOf(polluted.modelModes)).toBe(Object.prototype);
+    expect(polluted.modelModes.a).toBeUndefined();
+  });
+
+  it("drops malformed added models rather than the whole list", () => {
+    let config = parseAdminConfig(JSON.stringify({
+      addedModels: [
+        { ...added, id: "  claude-test  ", name: "  Claude Test  " },
+        "nonsense",
+        null,
+        { ...added, id: "no-provider", provider: undefined },
+        { ...added, id: "unknown-provider", provider: "mistral" },
+        { ...added, id: "inherited-provider", provider: "constructor" },
+        { ...added, id: " " },
+        { ...added, id: "x".repeat(201) },
+        { ...added, id: "numeric-name", name: 5 },
+        { ...added, id: "blank-name", name: "" },
+        { ...added, id: "no-window", contextWindow: undefined },
+        { ...added, id: "fractional-window", contextWindow: 1.5 },
+        { ...added, id: "string-window", contextWindow: "1000" },
+        { ...added, id: "zero-output", outputLimit: 0 },
+        { ...added, id: "with-output", provider: "cloudflare", outputLimit: 8000 },
+      ],
+    }));
+
+    expect(config.addedModels).toStrictEqual([
+      added,
+      { ...added, id: "with-output", provider: "cloudflare", outputLimit: 8000 },
+    ]);
+  });
+
+  // Gateway models are looked up by id alone, so a second entry under one id could never be used.
+  it("keeps only the first added model under an id", () => {
+    let config = parseAdminConfig(JSON.stringify({
+      addedModels: [
+        added,
+        { ...added, id: "other" },
+        { ...added, id: " claude-test ", provider: "openai", name: "Second" },
+      ],
+    }));
+    expect(config.addedModels).toStrictEqual([added, { ...added, id: "other" }]);
+  });
+
+  it("builds an added model from its own fields only", () => {
+    expect(sanitizeAddedModel({ ...added, outputLimit: 8000, apiToken: "secret", mode: "hidden" }))
+        .toStrictEqual({ ...added, outputLimit: 8000 });
+    expect(sanitizeAddedModel([added])).toBeUndefined();
+  });
+
+  it("round-trips modes and added models", () => {
+    let config = parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, modelModes: { a: "disabled" }, addedModels: [added] }));
+    expect(config.modelModes).toStrictEqual({ a: "disabled" });
+    expect(config.addedModels).toStrictEqual([added]);
   });
 });

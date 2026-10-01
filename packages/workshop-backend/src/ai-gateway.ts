@@ -1,6 +1,9 @@
 import {
-  AiChatAuthorInfo, AiModelConfig, HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
+  AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel, GatewayModelMode,
+  HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
 } from "@gadgets/workshop-shared/api";
+import { readAdminConfig } from "./admin-config.js";
+import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
@@ -8,6 +11,22 @@ import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 // This 70B model is quite fast and cheap and produces pretty good titles. The cost is insignificant
 // compared to the actual coding model so there's not much reason to use a smaller model.
 const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+/**
+ * Providers AI Gateway serves: the ones gatewayNativeModel() in ai-models.ts has a route for.
+ * Ollama has none, so a model added under it could never run.
+ */
+const GATEWAY_PROVIDERS: ReadonlySet<string> =
+    new Set<AiModelProvider>(["anthropic", "openai", "google", "cloudflare"]);
+
+function isCatalogModel(modelId: string): boolean {
+  return Object.values(SUGGESTED_MODELS).some(models => Object.hasOwn(models, modelId));
+}
+
+function tokenLimits({ contextWindow, outputLimit }
+    : Pick<GatewayModel, "contextWindow" | "outputLimit">) {
+  return outputLimit === undefined ? { contextWindow } : { contextWindow, outputLimit };
+}
 
 export class AiGatewayConfig {
   readonly gateway: string;
@@ -82,46 +101,6 @@ export class AiGatewayConfig {
   }
 
   /**
-   * Get the list of models offered through AI Gateway, as AiChatAuthorInfo entries. Hidden models
-   * are left out but still resolve (see resolveModel), so stored references to them keep working.
-   */
-  getModelList(): AiChatAuthorInfo[] {
-    let result: AiChatAuthorInfo[] = [];
-    for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-      if (this.providers.has(provider)) {
-        for (let [id, model] of Object.entries(models)) {
-          if (model.hidden) continue;
-          result.push({ type: "agent", id, name: model.name });
-        }
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Look up an AI Gateway model by ID. Returns a UserAiModelRecord if the model is a
-   * SUGGESTED_MODEL for an enabled gateway provider, or undefined otherwise.
-   */
-  resolveModel(modelId: string): UserAiModelRecord | undefined {
-    for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-      if (this.providers.has(provider) && modelId in models) {
-        return {
-          profile: { type: "agent", id: modelId, name: models[modelId].name },
-          config: {
-            provider: provider as AiModelConfig["provider"],
-            model: modelId,
-            // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
-            // reads the real values from env. We set them to empty strings here to satisfy
-            // the type.
-            apiToken: "",
-          },
-        };
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Get the AiModelConfig for the quick model (used for title generation).
    */
   getQuickModelConfig(): AiModelConfig | undefined {
@@ -141,6 +120,97 @@ export class AiGatewayConfig {
 export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null {
   if (!env.CF_AI_GATEWAY) return null;
   return new AiGatewayConfig(env);
+}
+
+/**
+ * The models a deployment provides through AI Gateway (`gateway`), each in the mode its admin
+ * gave it (see GatewayModelMode): the suggested models of every provider the gateway enables, each
+ * provider's followed by the models the admin added under it. Listing and resolving a gateway
+ * model both go through here, so neither can happen without the admin's modes.
+ */
+export class GatewayModels {
+  /** Every model, in any mode, in listing order. */
+  readonly all: readonly AdminModel[];
+  readonly #byId = new Map<string, AdminModel>();
+
+  constructor(readonly gateway: AiGatewayConfig,
+              config: Pick<AdminConfig, "modelModes" | "addedModels">) {
+    let add = (model: GatewayModel, defaultMode: GatewayModelMode, added: boolean) => {
+      if (this.#byId.has(model.id)) return;
+      // Object.hasOwn, so that an ID like "constructor" does not find an inherited mode.
+      let mode = Object.hasOwn(config.modelModes, model.id)
+          ? config.modelModes[model.id] : defaultMode;
+      this.#byId.set(model.id, { ...model, mode, defaultMode, added });
+    };
+    for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
+      if (!gateway.providers.has(provider)) continue;
+      for (let [id, model] of Object.entries(catalog)) {
+        add({ provider: provider as AiModelProvider, id, name: model.name, ...tokenLimits(model) },
+            model.hidden ? "hidden" : "enabled", false);
+      }
+      if (!GATEWAY_PROVIDERS.has(provider)) continue;
+      for (let model of config.addedModels) {
+        // A gateway model is looked up by ID alone, so the catalog wins an ID it lists under any
+        // provider, whether or not the gateway enables that one.
+        if (model.provider === provider && !isCatalogModel(model.id)) add(model, "enabled", true);
+      }
+    }
+    this.all = [...this.#byId.values()];
+  }
+
+  /** The gateway model with this ID, in any mode: even a disabled model's ID stays reserved. */
+  get(id: string): AdminModel | undefined {
+    return this.#byId.get(id);
+  }
+
+  /** The models offered in pickers, i.e. the enabled ones, as AiChatAuthorInfo entries. */
+  list(): AiChatAuthorInfo[] {
+    return this.all.filter(model => model.mode === "enabled")
+        .map(({ id, name }) => ({ type: "agent", id, name }));
+  }
+
+  /**
+   * Look up a gateway model by ID in order to run it. Hidden models resolve, so stored references
+   * to them keep working. Returns undefined for a disabled model and for an ID that names no
+   * gateway model.
+   */
+  resolve(id: string): UserAiModelRecord | undefined {
+    let model = this.#byId.get(id);
+    if (!model || model.mode === "disabled") return undefined;
+    return {
+      profile: { type: "agent", id, name: model.name },
+      config: {
+        provider: model.provider,
+        model: id,
+        // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
+        // reads the real values from env. We set them to empty strings here to satisfy
+        // the type.
+        apiToken: "",
+        // An added model's limits travel in the config, which token budgeting reads ahead of the
+        // catalog. A suggested model's are the catalog's own.
+        ...(model.added ? tokenLimits(model) : {}),
+      },
+    };
+  }
+
+  /** Throws if `id` names a gateway model that an admin disabled. */
+  refuseDisabled(id: string): void {
+    let model = this.#byId.get(id);
+    if (model?.mode === "disabled") {
+      throw new Error(
+          `The "${model.name}" model is disabled on this deployment by an administrator.`);
+    }
+  }
+}
+
+/**
+ * The deployment's AI Gateway models, or null if AI Gateway mode is not enabled. Only a gateway
+ * deployment reads the admin config for them.
+ */
+export async function getGatewayModels(env: Cloudflare.Env): Promise<GatewayModels | null> {
+  let gateway = getAiGatewayConfig(env);
+  if (!gateway) return null;
+  return new GatewayModels(gateway, await readAdminConfig(env));
 }
 
 /** Identifies the Gateway and credentials needed to retrieve an inference log. */

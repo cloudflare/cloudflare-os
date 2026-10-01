@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiModelConfig } from "@gadgets/workshop-shared/api";
+import { serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
+import type { UserAiModelRecord } from "../src/storage-schema/user-storage.js";
 import type { UserDurableObject } from "../src/user.js";
 
 declare module "cloudflare:workers" {
@@ -35,7 +38,7 @@ async function userWithModel() {
   const stored = (id: string) => inDo(async u =>
       (u as unknown as { storage: { aiModels: { get(id: string): unknown } } }).storage.aiModels.get(id));
   await user.addModel(PROFILE, CONFIG);
-  return { user, stored };
+  return { user, stored, inDo };
 }
 
 describe("UserDurableObject model editing", () => {
@@ -114,25 +117,67 @@ describe("UserDurableObject model editing", () => {
     const clone = { type: "agent" as const, id: "clone", name: "Clone" };
     await expect(user.addModel(clone, { ...CONFIG, apiToken: null })).rejects.toThrow("required");
   });
+
+  // Only AI Gateway mode consults the admin config for models. This pool binds no BLUEPRINTS
+  // namespace, so a read of it here would throw.
+  it("lists and resolves models without the admin config outside AI Gateway mode", async () => {
+    const { inDo } = await userWithModel();
+    await inDo(async user => {
+      expect(await user.listModels()).toEqual([PROFILE]);
+      await user.setPreferredModel(PROFILE.id);
+      expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toEqual(CONFIG);
+      expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
+      await user.deleteModel(PROFILE.id);
+      expect(await user.listModels()).toEqual([]);
+    });
+  });
 });
 
-describe("UserDurableObject hidden gateway models", () => {
+const listedIds = async (user: UserDurableObject) =>
+    (await user.listModels()).map(model => model.id);
+
+describe("UserDurableObject gateway model modes", () => {
+  const ENABLED_ID = "claude-opus-5-5";
   const HIDDEN_ID = "claude-opus-5";
+  const DISABLED_MESSAGE =
+      'The "Claude Opus 5.5" model is disabled on this deployment by an administrator.';
+  const DISABLED: Partial<AdminConfig> = { modelModes: { [ENABLED_ID]: "disabled" } };
 
   // Every call runs in one invocation, since the gateway env is only overridden on this instance.
-  function inGatewayUser<T>(f: (user: UserDurableObject) => Promise<T>) {
+  // `config` is the deployment's admin config, which gateway models are read through.
+  function inGatewayUser<T>(f: (user: UserDurableObject) => Promise<T>,
+                            config: Partial<AdminConfig> = {}) {
     const stub = env.TEST_USER.getByName(`user-models-${++userCounter}`);
-    return runInDurableObject(stub, user => {
+    return runInDurableObject(stub, async user => {
       const impl = user as unknown as { env: Cloudflare.Env };
+      const original = impl.env;
       impl.env = {
-        ...impl.env,
+        ...original,
         CF_AI_GATEWAY: "platform-gateway",
         CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
         CF_AI_GATEWAY_API_TOKEN: "gateway-token",
         CF_AI_GATEWAY_PROVIDERS: "anthropic",
+        BLUEPRINTS: {
+          get: async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, ...config }),
+        } as unknown as KVNamespace,
       };
-      return f(user);
+      try {
+        return await f(user);
+      } finally {
+        impl.env = original;
+      }
     });
+  }
+
+  // A model stored under a gateway model's ID, as one added before the deployment provided that
+  // model would be.
+  function storeModel(user: UserDurableObject, id: string) {
+    const record: UserAiModelRecord = {
+      profile: { ...PROFILE, id, name: "Stale" },
+      config: { ...CONFIG, provider: "anthropic", model: id },
+    };
+    (user as unknown as { storage: { aiModels: { put(record: UserAiModelRecord): void } } })
+        .storage.aiModels.put(record);
   }
 
   it("refuses to add a model that a hidden gateway model would shadow", () => inGatewayUser(async user => {
@@ -153,4 +198,71 @@ describe("UserDurableObject hidden gateway models", () => {
     const context = await user.getExternalMessageChatContext(null);
     expect(context.aiModel?.profile.id).toBe(first.id);
   }));
+
+  it("stops listing a model the admin hid, which still resolves", () => inGatewayUser(async user => {
+    expect(await listedIds(user)).not.toContain(ENABLED_ID);
+    expect((await user.getChatContext(ENABLED_ID)).aiModel?.profile.id).toBe(ENABLED_ID);
+    await user.setPreferredModel(ENABLED_ID);
+    expect(await user.getPreferredModel()).toBe(ENABLED_ID);
+  }, { modelModes: { [ENABLED_ID]: "hidden" } }));
+
+  it("lists a superseded model the admin enabled", () => inGatewayUser(async user => {
+    expect(await listedIds(user)).toContain(HIDDEN_ID);
+    await user.setPreferredModel(HIDDEN_ID);
+    const context = await user.getExternalMessageChatContext(null);
+    expect(context.aiModel?.profile.id).toBe(HIDDEN_ID);
+  }, { modelModes: { [HIDDEN_ID]: "enabled" } }));
+
+  it("refuses a disabled model with the administrator's message", () => inGatewayUser(async user => {
+    expect(await listedIds(user)).not.toContain(ENABLED_ID);
+    await expect(user.getChatContext(ENABLED_ID)).rejects.toThrow(new Error(DISABLED_MESSAGE));
+    await expect(user.setPreferredModel(ENABLED_ID)).rejects.toThrow(`No such model: ${ENABLED_ID}`);
+    expect(await user.getPreferredModel()).toBeNull();
+    await expect(user.addModel({ ...PROFILE, id: ENABLED_ID }, { ...CONFIG, model: ENABLED_ID }))
+        .rejects.toThrow("already exists");
+    // A model that is merely unknown is still reported as such.
+    await expect(user.getChatContext("nope")).rejects.toThrow(new Error("No such model: nope"));
+  }, DISABLED));
+
+  // The ID stays reserved, or the stored model would take the disabled one's place in every
+  // chat, spawner and preference that names it.
+  it("keeps a stored model sharing a disabled model's ID out of reach", () => inGatewayUser(async user => {
+    storeModel(user, ENABLED_ID);
+    expect(await listedIds(user)).not.toContain(ENABLED_ID);
+    await expect(user.getChatContext(ENABLED_ID)).rejects.toThrow(new Error(DISABLED_MESSAGE));
+    await expect(user.setPreferredModel(ENABLED_ID)).rejects.toThrow("No such model");
+    await expect(user.getModelConfig(ENABLED_ID)).rejects.toThrow("No such hand-added model");
+    await expect(user.updateModel({ ...PROFILE, id: ENABLED_ID },
+        { ...CONFIG, provider: "anthropic", model: ENABLED_ID }))
+        .rejects.toThrow("No such hand-added model");
+    await expect(user.addModel({ ...PROFILE, id: "clone" }, { ...CONFIG, apiToken: null }, ENABLED_ID))
+        .rejects.toThrow("No such hand-added model");
+  }, DISABLED));
+
+  it("refuses to delete a gateway model in any mode, naming it", () => inGatewayUser(async user => {
+    storeModel(user, "claude-test");
+    await expect(user.deleteModel("claude-test"))
+        .rejects.toThrow(new Error('Cannot delete built-in model "Claude Test".'));
+    await expect(user.deleteModel(ENABLED_ID))
+        .rejects.toThrow(new Error('Cannot delete built-in model "Claude Opus 5.5".'));
+    const stored = (user as unknown as { storage: { aiModels: { get(id: string): unknown } } })
+        .storage.aiModels.get("claude-test");
+    expect(stored).toMatchObject({ profile: { name: "Stale" } });
+  }, {
+    addedModels: [
+      { provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000 },
+    ],
+    modelModes: { [ENABLED_ID]: "disabled", "claude-test": "hidden" },
+  }));
+
+  it("moves an existing chat off a disabled model", () => inGatewayUser(async user => {
+    const [first] = await user.listModels();
+    expect(first.id).not.toBe(ENABLED_ID);
+    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
+        .toBe(first.id);
+
+    await user.setPreferredModel("claude-haiku-4-5");
+    expect((await user.getExternalMessageChatContext(ENABLED_ID)).aiModel?.profile.id)
+        .toBe("claude-haiku-4-5");
+  }, DISABLED));
 });

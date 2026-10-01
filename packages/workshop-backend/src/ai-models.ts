@@ -19,7 +19,9 @@ import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
   from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
-import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
+import {
+  AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+} from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import { splitSystemPrompt } from "./system-prompt-blocks.js";
@@ -712,7 +714,14 @@ export class LanguageModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<LanguageModelBinding> {
-    let model = getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
+    let config = this.ctx.props.config;
+    // A session starts on each call of the binding, so a binding minted before an admin disabled
+    // its gateway model stops working at its next call.
+    let models = await getGatewayModels(this.env);
+    if (models?.get(config.model)?.provider === config.provider) {
+      models.refuseDisabled(config.model);
+    }
+    let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
     return new LanguageModelBindingImpl(model);
