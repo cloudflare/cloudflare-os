@@ -18,8 +18,8 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "isomorphic-git": "^1.41.9",
-    "yaml": "^2.9.0",
+    "isomorphic-git": "^1.42.2",
+    "yaml": "^2.9.1",
     "zod": "catalog:"
   },
   "devDependencies": {

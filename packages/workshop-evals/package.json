@@ -14,7 +14,7 @@
     "@gadgets/integration-tests": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
-    "vitest-evals": "0.16.1",
+    "vitest-evals": "0.17.0",
     "zod": "catalog:"
   },
   "devDependencies": {
