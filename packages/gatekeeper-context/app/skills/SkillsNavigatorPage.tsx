@@ -37,7 +37,9 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
     collections,
     collectionMetadata,
     documents,
+    failedDocumentCollectionIds,
     manageableCollectionIds,
+    retryDocumentCollection,
     writableCollectionIds,
     viewerInfo,
     status,
@@ -152,6 +154,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
             <SkillsNavigatorTree
               navigator={navigator}
               collectionMetadata={collectionMetadata}
+              failedDocumentCollectionIds={failedDocumentCollectionIds}
               manageableCollectionIds={manageableCollectionIds}
               writableCollectionIds={writableCollectionIds}
               supportsGitCollections={viewerInfo.supportsGitCollections}
@@ -160,6 +163,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               onAddSkill={startAdd}
               onEditCollection={setPendingEditCollection}
               onDelete={setPendingRemove}
+              onRetryCollection={retryDocumentCollection}
               onChanged={reload}
             />
           ) : (

@@ -41,6 +41,7 @@ import { formatSkillUpdatedAt, skillUpdatedAtLabel } from "./skillUpdatedAt";
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
   collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
+  failedDocumentCollectionIds: ReadonlySet<string>;
   manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
   supportsGitCollections: boolean;
@@ -49,6 +50,7 @@ type SkillsNavigatorTreeProps = {
   onAddSkill: (target: AddSkillTarget) => void;
   onEditCollection: (collection: ContextCollectionMetadata) => void;
   onDelete: (target: NavigatorDeleteTarget) => void;
+  onRetryCollection: (collectionId: string) => Promise<void>;
   onChanged: () => void;
 };
 
@@ -139,6 +141,7 @@ const toListItem = (
 export const SkillsNavigatorTree = ({
   navigator,
   collectionMetadata,
+  failedDocumentCollectionIds,
   manageableCollectionIds,
   writableCollectionIds,
   supportsGitCollections,
@@ -147,6 +150,7 @@ export const SkillsNavigatorTree = ({
   onAddSkill,
   onEditCollection,
   onDelete,
+  onRetryCollection,
   onChanged,
 }: SkillsNavigatorTreeProps) => {
   const context = useContextApi();
@@ -160,6 +164,7 @@ export const SkillsNavigatorTree = ({
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
   const [refreshingCollectionId, setRefreshingCollectionId] = useState<string | null>(null);
+  const [retryingCollectionId, setRetryingCollectionId] = useState<string | null>(null);
   const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
   const actionDrawerPresentation = usePresentWhileOpen(actionDrawerOpen);
   const [now, setNow] = useState(Date.now);
@@ -170,6 +175,7 @@ export const SkillsNavigatorTree = ({
   const moveSourcesById = new Map<string, SkillNavigatorMoveSource>();
   const moveTargetsById = new Map<string, SkillNavigatorMoveTarget>();
   const collectionIdsByItemId = new Map<string, string>();
+  const failedCollectionIdsByItemId = new Map<string, string>();
   const items: HierarchicalListItem[] = navigator.map(({ collection, children }) => {
     const id = `${collection.id}:collection`;
     const writable = writableCollectionIds.has(collection.id) && !moving;
@@ -177,9 +183,40 @@ export const SkillsNavigatorTree = ({
     collectionsById.set(id, { collection, children });
     if (writable) moveTargetsById.set(id, { collectionId: collection.id, directoryPath: "" });
     const metadata = collectionMetadata.get(collection.id);
+    const documentsFailed = failedDocumentCollectionIds.has(collection.id);
     const updatedAt = metadata?.content.source === "git"
       ? metadata.content.lastRefreshedAt
       : metadata?.lastUpdated;
+    let listChildren: HierarchicalListItem[];
+    if (documentsFailed) {
+      const failureId = `${collection.id}:load-error`;
+      failedCollectionIdsByItemId.set(failureId, collection.id);
+      listChildren = [{
+        id: failureId,
+        name: "Couldn't load contents, click to try again",
+        appearance: "message",
+        interactive: true,
+      }];
+    } else if (children.length === 0) {
+      listChildren = [{
+        id: `${collection.id}:empty`,
+        name: "No contents",
+        appearance: "message",
+      }];
+    } else {
+      listChildren = children.map((child) => toListItem(
+        collection.id,
+        child,
+        skillsById,
+        directoriesById,
+        moveSourcesById,
+        moveTargetsById,
+        collectionIdsByItemId,
+        writable,
+        renamedSkill,
+        now,
+      ));
+    }
     return {
       id,
       name: collection.title,
@@ -211,18 +248,7 @@ export const SkillsNavigatorTree = ({
         </span>
       ) : undefined,
       droppable: writable,
-      children: children.map((child) => toListItem(
-        collection.id,
-        child,
-        skillsById,
-        directoriesById,
-        moveSourcesById,
-        moveTargetsById,
-        collectionIdsByItemId,
-        writable,
-        renamedSkill,
-        now,
-      )),
+      children: listChildren,
     };
   });
 
@@ -323,6 +349,21 @@ export const SkillsNavigatorTree = ({
     }
   };
 
+  const handleRetry = async (collectionId: string) => {
+    if (retryingCollectionId) return;
+    setRetryingCollectionId(collectionId);
+    try {
+      await onRetryCollection(collectionId);
+    } catch {
+      toasts.add({
+        title: "Couldn't load collection contents",
+        variant: "error",
+      });
+    } finally {
+      setRetryingCollectionId(null);
+    }
+  };
+
   const renderContextMenu = (item: HierarchicalListItem) => {
     const collectionId = collectionIdsByItemId.get(item.id);
     if (!collectionId) return null;
@@ -365,17 +406,19 @@ export const SkillsNavigatorTree = ({
               Edit
             </DropdownMenu.Item>
           )}
-          <DropdownMenu.Item
-            icon={<TrashIcon size={13} className="mr-2" />}
-            variant="danger"
-            onClick={() => onDelete({
-              type: "collection",
-              collectionId,
-              name: collectionInfo.collection.title,
-            })}
-          >
-            Delete
-          </DropdownMenu.Item>
+          {!failedDocumentCollectionIds.has(collectionId) && (
+            <DropdownMenu.Item
+              icon={<TrashIcon size={13} className="mr-2" />}
+              variant="danger"
+              onClick={() => onDelete({
+                type: "collection",
+                collectionId,
+                name: collectionInfo.collection.title,
+              })}
+            >
+              Delete
+            </DropdownMenu.Item>
+          )}
         </>
       );
     }
@@ -468,6 +511,10 @@ export const SkillsNavigatorTree = ({
         onMove: handleMove,
       }}
       onItemClick={(item) => {
+        if (failedCollectionIdsByItemId.has(item.id)) {
+          void handleRetry(failedCollectionIdsByItemId.get(item.id)!);
+          return;
+        }
         const skill = skillsById.get(item.id);
         if (skill) onSelectSkill(skill.collectionId, skill.manifestPath);
       }}

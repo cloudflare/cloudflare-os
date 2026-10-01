@@ -10,6 +10,7 @@ type SkillsNavigatorData = {
   collections: EnabledCollectionInfo[];
   collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
   documents: Map<string, ContextDocumentSummary[]>;
+  failedDocumentCollectionIds: ReadonlySet<string>;
   manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
   viewerInfo: { isAdmin: boolean; supportsGitCollections: boolean };
@@ -20,11 +21,12 @@ type SkillsNavigatorData = {
 export const useSkillsNavigatorData = (
   context: ContextApi,
   reloadKey: number,
-): SkillsNavigatorData => {
+): SkillsNavigatorData & { retryDocumentCollection: (collectionId: string) => Promise<void> } => {
   const [data, setData] = useState<SkillsNavigatorData>({
     collections: [],
     collectionMetadata: new Map(),
     documents: new Map(),
+    failedDocumentCollectionIds: new Set(),
     manageableCollectionIds: new Set(),
     writableCollectionIds: new Set(),
     viewerInfo: { isAdmin: false, supportsGitCollections: false },
@@ -73,15 +75,14 @@ export const useSkillsNavigatorData = (
           collections,
           collectionMetadata,
           documents: new Map(loadedDocuments),
+          failedDocumentCollectionIds: failedCollectionIds,
           manageableCollectionIds,
           writableCollectionIds: new Set(accessResults.flatMap(({ id, canWrite, metadata }) =>
             canWrite && metadata?.content.source === "web" && !failedCollectionIds.has(id)
               ? [id]
               : [])),
           viewerInfo,
-          // Individual document load failures are represented by empty documents and exclusion
-          // from writableCollectionIds. Keep successful collections visible instead of failing
-          // the whole navigator.
+          // Keep successful collections visible instead of failing the whole navigator.
           status: "ready",
         });
       } catch {
@@ -94,5 +95,27 @@ export const useSkillsNavigatorData = (
     };
   }, [context, reloadKey]);
 
-  return data;
+  const retryDocumentCollection = async (collectionId: string) => {
+    const documents = await context.listContextDocuments(collectionId);
+    setData((current) => {
+      const loadedDocuments = new Map(current.documents);
+      loadedDocuments.set(collectionId, documents);
+      const failedDocumentCollectionIds = new Set(current.failedDocumentCollectionIds);
+      failedDocumentCollectionIds.delete(collectionId);
+      const writableCollectionIds = new Set(current.writableCollectionIds);
+      const metadata = current.collectionMetadata.get(collectionId);
+      if (
+        current.manageableCollectionIds.has(collectionId)
+        && metadata?.content.source === "web"
+      ) writableCollectionIds.add(collectionId);
+      return {
+        ...current,
+        documents: loadedDocuments,
+        failedDocumentCollectionIds,
+        writableCollectionIds,
+      };
+    });
+  };
+
+  return { ...data, retryDocumentCollection };
 };

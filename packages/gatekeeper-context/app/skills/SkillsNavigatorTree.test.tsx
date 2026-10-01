@@ -73,12 +73,16 @@ describe("SkillsNavigatorTree", () => {
     writable,
     manageable = writable,
     metadataAvailable = true,
+    documentsFailed = false,
+    retryFails = false,
     source = "web",
     visibility = "private",
   }: {
     writable: boolean;
     manageable?: boolean;
     metadataAvailable?: boolean;
+    documentsFailed?: boolean;
+    retryFails?: boolean;
     source?: "web" | "git";
     visibility?: ContextCollectionMetadata["visibility"];
   }) => {
@@ -89,6 +93,9 @@ describe("SkillsNavigatorTree", () => {
       ContextApi["syncContextCollectionArtifactSource"]
     >(async () => {});
     const onDelete = vi.fn<(target: NavigatorDeleteTarget) => void>();
+    const onRetryCollection = vi.fn<(collectionId: string) => Promise<void>>(async () => {
+      if (retryFails) throw new Error("unavailable");
+    });
     const api = {
       renameContextSkill: async () => {},
       syncContextCollectionArtifactSource,
@@ -101,6 +108,7 @@ describe("SkillsNavigatorTree", () => {
             collectionMetadata={metadataAvailable
               ? new Map([["collection", metadata(source, visibility)]])
               : new Map()}
+            failedDocumentCollectionIds={documentsFailed ? new Set(["collection"]) : new Set()}
             manageableCollectionIds={manageable ? new Set(["collection"]) : new Set()}
             writableCollectionIds={writable ? new Set(["collection"]) : new Set()}
             supportsGitCollections
@@ -109,12 +117,13 @@ describe("SkillsNavigatorTree", () => {
             onAddSkill={() => {}}
             onEditCollection={() => {}}
             onDelete={onDelete}
+            onRetryCollection={onRetryCollection}
             onChanged={() => {}}
           />
         </Toasty>
       </ContextApiProvider>,
     ));
-    return { onDelete, syncContextCollectionArtifactSource };
+    return { onDelete, onRetryCollection, syncContextCollectionArtifactSource };
   };
 
   const row = (name: string) => [...container!.querySelectorAll<HTMLElement>(
@@ -198,6 +207,44 @@ describe("SkillsNavigatorTree", () => {
       collectionId: "collection",
       name: "collection",
     });
+  });
+
+  it("shows document load failures with retry and withholds collection deletion", () => {
+    const { onRetryCollection } = renderTree({
+      writable: false,
+      manageable: true,
+      documentsFailed: true,
+    });
+
+    const retryRow = row("click to try again");
+    expect(retryRow?.textContent).toBe("Couldn't load contents, click to try again");
+
+    act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    })));
+    const menu = document.querySelector<HTMLElement>("[role=menu]");
+    expect([...menu!.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .map((item) => item.textContent)).toEqual(["Edit"]);
+
+    act(() => retryRow?.click());
+    expect(onRetryCollection).toHaveBeenCalledWith("collection");
+  });
+
+  it("shows a toast when retrying a document load fails", async () => {
+    renderTree({
+      writable: false,
+      manageable: true,
+      documentsFailed: true,
+      retryFails: true,
+    });
+
+    await act(async () => {
+      row("click to try again")?.click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("Couldn't load collection contents");
   });
 
   it("shows collection actions in the narrow-layout drawer", () => {

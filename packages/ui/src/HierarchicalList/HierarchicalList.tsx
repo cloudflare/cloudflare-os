@@ -119,6 +119,7 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
+  const passiveMessage = item.appearance === "message" && !item.interactive;
   const renameRequested = rename?.isRenaming(item) ?? false;
   const renaming = renameRequested && !actionsOpen && !actionsClosing;
   const handleActionsOpenChange = (open: boolean) => {
@@ -178,51 +179,64 @@ const StyledRow = ({
   }, [actionsOpen, useActionDrawer]);
   const contents = (
     <>
-      {itemIcon(item)}
-      {collapsible && (
-        <CaretDownIcon
-          aria-hidden="true"
-          size={14}
-          className={cn(
-            "shrink-0 text-kumo-inactive transition-transform duration-100 ease-out motion-reduce:transition-none",
-            !expanded && "-rotate-90",
-          )}
-        />
-      )}
-      {renaming ? (
-        <span className="min-w-0 flex-1">
-          {rename!.renderInput(item)}
-        </span>
-      ) : item.description ? (
-        <span className="flex min-w-0 flex-1 items-center gap-2">
-          <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink">
-            {item.name}
-          </Text>
-          <Text
-            as="span"
-            size="sm"
-            variant="secondary"
-            truncate
-            DANGEROUS_className="min-w-0 flex-1 font-normal"
-          >
-            {item.description}
-          </Text>
-        </span>
-      ) : (
-        <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
-          {item.name}
-        </Text>
-      )}
-      {item.metadata !== null && item.metadata !== undefined && (
+      {item.appearance === "message" ? (
         <Text
           as="span"
-          size="xs"
+          size="sm"
           variant="secondary"
-          truncate
-          DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap font-normal tabular-nums"
+          DANGEROUS_className="min-w-0 flex-1 text-left font-normal"
         >
-          {item.metadata}
+          {item.name}
         </Text>
+      ) : (
+        <>
+          {itemIcon(item)}
+          {collapsible && (
+            <CaretDownIcon
+              aria-hidden="true"
+              size={14}
+              className={cn(
+                "shrink-0 text-kumo-inactive transition-transform duration-100 ease-out motion-reduce:transition-none",
+                !expanded && "-rotate-90",
+              )}
+            />
+          )}
+          {renaming ? (
+            <span className="min-w-0 flex-1">
+              {rename!.renderInput(item)}
+            </span>
+          ) : item.description ? (
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink">
+                {item.name}
+              </Text>
+              <Text
+                as="span"
+                size="sm"
+                variant="secondary"
+                truncate
+                DANGEROUS_className="min-w-0 flex-1 font-normal"
+              >
+                {item.description}
+              </Text>
+            </span>
+          ) : (
+            <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
+              {item.name}
+            </Text>
+          )}
+          {item.metadata !== null && item.metadata !== undefined && (
+            <Text
+              as="span"
+              size="xs"
+              variant="secondary"
+              truncate
+              DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap font-normal tabular-nums"
+            >
+              {item.metadata}
+            </Text>
+          )}
+        </>
       )}
       <AnimatePresence>
         {state.insideDropTarget && (
@@ -254,7 +268,7 @@ const StyledRow = ({
     rowProps.className,
     "group relative focus-visible:z-20",
     "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
-    !renaming && "active:!bg-kumo-recessed",
+    !renaming && !passiveMessage && "active:!bg-kumo-recessed",
     !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
     !renaming && state.draggable && showTouchDragHandle && "[@media(any-pointer:coarse)]:pr-11",
     highlighted && "bg-kumo-recessed",
@@ -264,7 +278,7 @@ const StyledRow = ({
         : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
     ),
   );
-  const row = renaming ? (
+  const row = renaming || passiveMessage ? (
     <div
       data-hierarchical-list-row=""
       data-depth={depth}
