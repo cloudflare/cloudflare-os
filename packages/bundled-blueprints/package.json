@@ -20,7 +20,7 @@
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
-    "esbuild": "^0.28.1",
+    "esbuild": "^0.28.2",
     "jsdom": "^26.1.0",
     "typescript": "catalog:",
     "typescript6": "catalog:",
