@@ -28,7 +28,7 @@
     "isomorphic-git": "^1.41.9",
     "jose": "^6.2.12",
     "pako": "^2.1.0",
-    "yjs": "^13.6.32",
+    "yjs": "^13.6.33",
     "zod": "catalog:"
   },
   "devDependencies": {
