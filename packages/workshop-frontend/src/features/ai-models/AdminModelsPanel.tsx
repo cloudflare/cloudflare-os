@@ -1,10 +1,10 @@
 // Admin panel for the models a deployment provides through AI Gateway.
 //
-// The list is the server's: every write is followed by a re-read, and each control shows the mode
-// the server reported rather than the one just chosen.
+// The list is the server's: every write is followed by a re-read, and each control shows what the
+// server reported rather than what was just chosen.
 
-import { useState } from 'react'
-import { Badge, Button, Radio, useKumoToastManager } from '@cloudflare/kumo'
+import { useId, useState } from 'react'
+import { Badge, Button, Radio, Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
 import type {
   AdminApi,
@@ -35,6 +35,7 @@ const MODES: Record<GatewayModelMode, { label: string; meaning: string }> = {
 
 const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
+const USER_MODELS_LABEL = 'Users may add their own models'
 
 const tokenCount = (tokens: number) => `${tokens.toLocaleString()} tokens`
 
@@ -105,6 +106,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState(false)
   const [pendingRemoval, setPendingRemoval] = useState<AdminModel | null>(null)
+  const userModelsHelp = useId()
 
   if (!gatewayModels) {
     return (
@@ -141,6 +143,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     write(() => admin.setGatewayModelMode(model.id, mode))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
 
+  const changeUserModels = (enabled: boolean) =>
+    write(() => admin.setUserModelsEnabled(enabled))
+      .catch((err) => reportFailure(`Couldn’t update “${USER_MODELS_LABEL}”`, err))
+
   const confirmRemoval = async () => {
     if (!pendingRemoval) return
     await write(() => admin.removeGatewayModel(pendingRemoval.id))
@@ -156,6 +162,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     else catalogByProvider.set(model.provider, [model])
   }
   const added = gatewayModels.models.filter((model) => model.added)
+  const { userModelsEnabled } = gatewayModels
 
   return (
     <div className={CARD}>
@@ -165,6 +172,25 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         the providers the gateway enables, plus the models this deployment added. A model left on
         its default follows the catalog when the deployment is upgraded.
       </p>
+
+      <div className="mb-4 flex items-center gap-4 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
+        <div className="min-w-0 flex-1 text-sm">
+          <p className="font-medium text-kumo-default">{USER_MODELS_LABEL}</p>
+          <p id={userModelsHelp} className="mt-0.5 text-kumo-subtle">
+            When on, users can add models under their own IDs on their Providers page, and those
+            run through this deployment’s gateway. When off, only the models listed here can be
+            used, and the models users already added stop working until this is turned back on.
+            Nothing is deleted.
+          </p>
+        </div>
+        <Switch
+          aria-label={USER_MODELS_LABEL}
+          aria-describedby={userModelsHelp}
+          checked={userModelsEnabled}
+          disabled={busy}
+          onCheckedChange={changeUserModels}
+        />
+      </div>
 
       <dl className="mb-6 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
         {GATEWAY_MODEL_MODES.map((mode) => (
@@ -217,7 +243,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
               </ul>
               <p className="mt-2 text-xs leading-4 text-kumo-subtle">
                 To shut a model off, disable it. Removing a model frees its ID instead: gadget
-                model bindings made for it then run, even if the model was disabled.
+                model bindings made for it{' '}
+                {userModelsEnabled
+                  ? 'then run, even if the model was disabled.'
+                  : 'then stay stopped for as long as users may not add their own models.'}
               </p>
             </>
           )}
@@ -244,9 +273,12 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         description={
           <>
             Removing frees the ID <span className="break-all font-mono">{pendingRemoval?.id}</span>
-            : gadget model bindings made for the model then run, even if it was disabled, and a
-            model added under the same ID takes its place in the chats that name it. To shut a
-            model off, disable it instead.
+            : gadget model bindings made for the model{' '}
+            {userModelsEnabled
+              ? 'then run, even if it was disabled'
+              : 'then stay stopped for as long as users may not add their own models'}
+            , and a model added under the same ID takes its place in the chats that name it. To
+            shut a model off, disable it instead.
           </>
         }
         confirmLabel="Remove"

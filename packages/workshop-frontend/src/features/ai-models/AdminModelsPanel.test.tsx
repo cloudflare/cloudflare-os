@@ -97,6 +97,20 @@ const button = (name: string, within: ParentNode = document.body) => {
 
 const confirmation = () => document.body.querySelector<HTMLElement>('[role="dialog"]')
 
+const userModelsSwitch = () => {
+  const element = button('Users may add their own models')
+  if (element.getAttribute('role') !== 'switch') throw new Error('Not a switch')
+  return element
+}
+
+// The checkbox the switch forwards its clicks to. jsdom has no PointerEvent, which the switch
+// forwards them with.
+const userModelsCheckbox = () => {
+  const input = userModelsSwitch().nextElementSibling
+  if (!(input instanceof HTMLInputElement)) throw new Error('No checkbox behind the switch')
+  return input
+}
+
 const type = (element: HTMLInputElement, value: string) => act(() => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
   element.dispatchEvent(new Event('input', { bubbles: true }))
@@ -129,14 +143,17 @@ describe('AdminModelsPanel', () => {
     const setGatewayModelMode = vi.fn<AdminApi['setGatewayModelMode']>(async () => {})
     const addGatewayModel = vi.fn<AdminApi['addGatewayModel']>(async () => {})
     const removeGatewayModel = vi.fn<AdminApi['removeGatewayModel']>(async () => {})
+    const setUserModelsEnabled = vi.fn<AdminApi['setUserModelsEnabled']>(async () => {})
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
-    const admin = { setGatewayModelMode, addGatewayModel, removeGatewayModel } as unknown as RpcStub<AdminApi>
+    const admin = {
+      setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
+    } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
     await act(async () => root!.render(
       <AdminModelsPanel admin={admin} gatewayModels={gatewayModels} onChanged={onChanged} />))
-    return { setGatewayModelMode, addGatewayModel, removeGatewayModel, onChanged }
+    return { setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled, onChanged }
   }
 
   describe('outside AI Gateway mode', () => {
@@ -146,6 +163,98 @@ describe('AdminModelsPanel', () => {
       expect(document.body.textContent).toContain('only when the deployment provides them through AI Gateway')
       expect(document.body.textContent).toContain('each user adds their own models')
       expect(document.body.querySelectorAll('button, input, [role="radio"]')).toHaveLength(0)
+    })
+  })
+
+  describe('whether users may add their own models', () => {
+    it.each([true, false])('shows %s as the server reported it, with what it means', async (enabled) => {
+      await render({ gatewayModels: { ...GATEWAY_MODELS, userModelsEnabled: enabled } })
+
+      expect(userModelsSwitch().getAttribute('aria-checked')).toBe(String(enabled))
+      const meaning = document.getElementById(userModelsSwitch().getAttribute('aria-describedby')!)
+      expect(meaning?.textContent).toContain('When off, only the models listed here can be used')
+      expect(meaning?.textContent).toContain('Nothing is deleted.')
+    })
+
+    it.each([true, false])('sets the opposite of %s, then re-reads the settings', async (enabled) => {
+      const { setUserModelsEnabled, onChanged } = await render({
+        gatewayModels: { ...GATEWAY_MODELS, userModelsEnabled: enabled },
+      })
+
+      await click(userModelsCheckbox())
+
+      expect(setUserModelsEnabled).toHaveBeenCalledExactlyOnceWith(!enabled)
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(setUserModelsEnabled.mock.invocationCallOrder[0])
+        .toBeLessThan(onChanged.mock.invocationCallOrder[0])
+      // The re-read is what moves the switch.
+      expect(userModelsSwitch().getAttribute('aria-checked')).toBe(String(enabled))
+    })
+
+    it('reports a refused change with the server’s message and keeps showing the server’s value', async () => {
+      const { setUserModelsEnabled, onChanged } = await render()
+      setUserModelsEnabled.mockRejectedValueOnce(
+        new Error('This deployment does not provide models through AI Gateway.'))
+
+      await click(userModelsCheckbox())
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        description: 'This deployment does not provide models through AI Gateway.',
+        variant: 'error',
+      }))
+      expect(onChanged).not.toHaveBeenCalled()
+      expect(userModelsSwitch().getAttribute('aria-checked')).toBe('true')
+      expect(userModelsSwitch().disabled).toBe(false)
+    })
+
+    it('cannot be changed twice while the change is in flight, and locks the other controls', async () => {
+      const { setUserModelsEnabled, setGatewayModelMode } = await render()
+      const call = deferred()
+      setUserModelsEnabled.mockReturnValueOnce(call.promise)
+
+      await click(userModelsCheckbox())
+
+      expect(userModelsSwitch().disabled).toBe(true)
+      await click(userModelsCheckbox())
+      await click(modeOption('Claude Sonnet', 'Hidden'))
+      expect(setUserModelsEnabled).toHaveBeenCalledOnce()
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+      expect(button('Add model').disabled).toBe(true)
+
+      await act(async () => call.resolve())
+
+      expect(userModelsSwitch().disabled).toBe(false)
+    })
+
+    it('is disabled while another change is in flight', async () => {
+      const { setGatewayModelMode, setUserModelsEnabled } = await render()
+      const call = deferred()
+      setGatewayModelMode.mockReturnValueOnce(call.promise)
+
+      await click(modeOption('Claude Sonnet', 'Hidden'))
+
+      expect(userModelsSwitch().disabled).toBe(true)
+      await click(userModelsCheckbox())
+      expect(setUserModelsEnabled).not.toHaveBeenCalled()
+
+      await act(async () => call.resolve())
+
+      expect(userModelsSwitch().disabled).toBe(false)
+    })
+
+    // A binding made for a removed model runs only as a model of the user's own does.
+    it.each([
+      [true, 'then run, even if the model was disabled.', 'then run, even if it was disabled,'],
+      [false, 'then stay stopped for as long as users may not add their own models.',
+        'then stay stopped for as long as users may not add their own models,'],
+    ])('when %s, says what removing a model does to its bindings', async (enabled, inList, inDialog) => {
+      await render({ gatewayModels: { ...GATEWAY_MODELS, userModelsEnabled: enabled } })
+
+      expect(row('GPT Custom').closest('section')?.textContent)
+        .toContain(`gadget model bindings made for it ${inList}`)
+      await click(button('Remove GPT Custom'))
+      expect(confirmation()?.textContent)
+        .toContain(`gpt-custom: gadget model bindings made for the model ${inDialog} and a model`)
     })
   })
 
