@@ -216,7 +216,7 @@ function describe(error: unknown): string {
 // Whether the UI signs in through Cloudflare Access or with a password is a build-time flag
 // (workshop-frontend/src/useAuth.ts), so a preview needs the same one build-release.ts sets:
 // otherwise it serves a password form the backend rejects every password from. The frontend's
-// `build` task already declares `env: ['VITE_*']`.
+// `build` task already declares `cache: { env: ['VITE_*'] }`.
 function buildWorkspace(): Promise<void> {
   return runAsync("pnpm", ["run", "build"],
       { cwd: ROOT, env: { ...process.env, VITE_CF_ACCESS_MODE: "true" } });

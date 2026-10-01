@@ -166,6 +166,16 @@ export default defineConfig({
         },
       },
       {
+        // Hook tests capture the hook's return value from a throwaway probe component into a `let`
+        // in the enclosing `describe` -- reassigning an outer variable during render is the whole
+        // point there, not the production side effect this rule guards against.
+        files: ['packages/workshop-frontend/**/*.test.tsx'],
+        plugins: ['typescript', 'unicorn', 'oxc', 'import', 'react', 'jsx-a11y', 'vitest'],
+        rules: {
+          'react/globals': 'off',
+        },
+      },
+      {
         files: ['scripts/**/*.ts'],
         env: {
           node: true,

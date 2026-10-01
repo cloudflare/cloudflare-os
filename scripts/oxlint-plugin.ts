@@ -1,4 +1,4 @@
-import type { Comment, Diagnostic, ESTree, Plugin, Rule } from "@oxlint/plugins";
+import type { Comment, Diagnostic, ESTree, Plugin, Rule } from "vite-plus/lint/plugins";
 
 const preferJsdoc: Rule = {
   meta: {

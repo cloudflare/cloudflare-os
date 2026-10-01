@@ -18,7 +18,7 @@ const HAND_DECLARED_CONFIGS = [
 
 const [DISABLE_VAR] = TESTS_WITH_TIMEOUT_ENV;
 
-type Task = { command: string | string[]; cache?: boolean; env?: string[] };
+type Task = { command: string | string[]; cache?: boolean | { env?: string[] } };
 
 /** Every task in a config whose command -- or any element of an array command -- is watchdogged. */
 async function watchdoggedTasksIn(config: string): Promise<[string, Task][]> {
@@ -69,8 +69,8 @@ describe("withTestTimeout", () => {
 });
 
 describe("the watchdog off switch", () => {
-  it("is declared in env on every generated test task", () => {
-    assert.ok(vitestTask("vitest run").env.includes(DISABLE_VAR));
+  it("is declared in cache.env on every generated test task", () => {
+    assert.ok(vitestTask("vitest run").cache.env.includes(DISABLE_VAR));
   });
 
   it("reaches every hand-declared cached task that wraps the watchdog", async () => {
@@ -79,9 +79,10 @@ describe("the watchdog off switch", () => {
       for (const [name, task] of await watchdoggedTasksIn(config)) {
         seen++;
         assert.ok(
-          task.cache === false || task.env?.includes(DISABLE_VAR),
+          task.cache === false ||
+            (typeof task.cache === "object" && task.cache.env?.includes(DISABLE_VAR)),
           `${config} task "${name}" wraps gadgets-with-timeout but is cached without declaring ` +
-            `${DISABLE_VAR} in env, so a cached run strips the switch.`);
+            `${DISABLE_VAR} in cache.env, so a cached run strips the switch.`);
       }
     }
     // A config that stopped exporting its tasks would otherwise pass vacuously.

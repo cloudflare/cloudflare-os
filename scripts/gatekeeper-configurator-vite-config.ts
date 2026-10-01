@@ -53,24 +53,26 @@ const gatekeeperConfiguratorConfig = {
       "build:configurator": {
         command: "gadgets-build-configurator .",
         dependsOn: ["clean:error-reporting-artifacts"],
-        input: [
-          { auto: true },
-          // The builder reads its own outputs back to skip no-op writes (writeFileIfChanged), so
-          // automatic tracking would otherwise fingerprint them and any run that changed them
-          // would refuse to cache ("modified its input").
-          //
-          // Annotated so a mistyped `base` is a compile error rather than an exclusion that
-          // silently never matches -- the one thing being TS buys this file directly.
-          { pattern: "!**/src/generated/**", base: "workspace" } satisfies GlobWithBase,
-        ],
-        output: ["src/generated/**"],
-        // Read via `loadEnv` in build-gatekeeper-configurator.ts and baked into the generated
-        // HTML, so it belongs in the fingerprint.
-        env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        cache: {
+          input: [
+            { auto: true },
+            // The builder reads its own outputs back to skip no-op writes (writeFileIfChanged), so
+            // automatic tracking would otherwise fingerprint them and any run that changed them
+            // would refuse to cache ("modified its input").
+            //
+            // Annotated so a mistyped `base` is a compile error rather than an exclusion that
+            // silently never matches -- the one thing being TS buys this file directly.
+            { pattern: "!**/src/generated/**", base: "workspace" } satisfies GlobWithBase,
+          ],
+          output: ["src/generated/**"],
+          // Read via `loadEnv` in build-gatekeeper-configurator.ts and baked into the generated
+          // HTML, so it belongs in the fingerprint.
+          env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        },
       },
       // Just the type check: the codegen it used to run with `&&` is `build:configurator` above, so
       // the two cache separately and a run that only touched types replays the generated HTML.
-      // No `env` of its own -- `tsc` reads none, and the variable reaches the step that does.
+      // No `cache.env` of its own -- `tsc` reads none, and the variable reaches the step that does.
       build: {
         command: "tsc",
         dependsOn: ["build:configurator"],

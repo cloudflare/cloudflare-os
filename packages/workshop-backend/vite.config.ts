@@ -17,8 +17,9 @@ export default {
        * `src/generated/bundled-blueprints.ts` depends on it -- `cache: false` is per-task, so running
        * the generator inside a cached task strips the override however its siblings are declared.
        *
-       * `cache: false` rather than `env: ['BUNDLED_BLUEPRINTS_DIR']`: `env` fingerprints the value,
-       * not the contents of the directory it names, so edits inside it would replay a stale module.
+       * `cache: false` rather than `cache: { env: ['BUNDLED_BLUEPRINTS_DIR'] }`: `env` fingerprints
+       * the value, not the contents of the directory it names, so edits inside it would replay a
+       * stale module.
        *
        * The generator itself, and the blueprints it bundles by default, are `@gadgets/bundled-blueprints`;
        * the script here is the command line around it, because the module it writes is this package's.
@@ -35,9 +36,9 @@ export default {
        * Builds the validated entrypoint shared by integration-test file workers.
        *
        * Cached with the `build:app` shape: the build writes `.wrangler/validate/` back into the
-       * package automatic tracking treats as input, so without dropping that tree from `input`
+       * package automatic tracking treats as input, so without dropping that tree from `cache.input`
        * nothing ever caches. Workspace-wide, since tracking reaches past this package and any
-       * sibling that ran `wrangler dev` would otherwise guarantee a miss. The explicit `output`
+       * sibling that ran `wrangler dev` would otherwise guarantee a miss. The explicit `cache.output`
        * matters as much: a cache hit has to leave the tree on disk, because
        * `@gadgets/integration-tests` reads it rather than rebuilding it.
        *
@@ -54,12 +55,14 @@ export default {
        */
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
-        env: TESTS_WITH_TIMEOUT_ENV,
         dependsOn: [
           '@gadgets/typed-storage#build', 'build:bundled-blueprints', 'build:browser-runtime',
         ],
-        input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
-        output: ['.wrangler/validate/**'],
+        cache: {
+          env: TESTS_WITH_TIMEOUT_ENV,
+          input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
+          output: ['.wrangler/validate/**'],
+        },
       },
       /**
        * Two programs: this package's `src/` under its generated Workers types, and `browser/` under

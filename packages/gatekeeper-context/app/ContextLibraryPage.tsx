@@ -972,7 +972,7 @@ export default function ContextLibraryPage() {
             c.title.toLowerCase().includes(searchLower) ||
             c.description.toLowerCase().includes(searchLower),
         )
-        .sort((a, b) => {
+        .toSorted((a, b) => {
           if (a.source !== b.source) return a.source === "public" ? -1 : 1;
           return a.title.localeCompare(b.title);
         }),

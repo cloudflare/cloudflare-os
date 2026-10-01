@@ -24,10 +24,15 @@ catalog:
   typescript: 7.0.2
   # Exact: the JS compiler API ("typescript" 7 no longer ships it), aliased so it can sit beside tsgo.
   typescript6: npm:typescript@6.0.3
-  # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
-  # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
+  # Exact, not ranged: the test transform has to stay on esbuild. Vite 8's Oxc does not lower the
+  # Stage-3 decorators capnweb-validate's `@validateRpc()` rewrites to (oxc-project/oxc#9170), so the
+  # raw `@` reaches workerd and every suite importing a decorated class fails to load with
+  # "SyntaxError: Invalid or unexpected token" (cloudflare/workers-sdk#12626; re-verified on 8.3.1).
+  # Oxc's `decorator: { legacy: true }` does load them, but with TypeScript-legacy semantics that
+  # differ from the Stage-3 lowering wrangler deploys, so it only works while capnweb-validate's
+  # decorators ignore their `context` argument.
   vite: 7.3.6
-  vite-plus: ^0.2.8
+  vite-plus: ^1.0.0
   vitest: ^4.1.11
   wrangler: ^4.138.0
   zod: ^4.6.5
@@ -39,7 +44,10 @@ overrides:
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
   # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
   # manifest declares itself, and the override is what reaches vite as somebody else's peer.
-  vite: "catalog:"
+  # Selected by range, not bare `vite`: vite-plus 1.0 depends on `vite` as an alias for
+  # `npm:@voidzero-dev/vite-plus-core`, which a semver selector does not match, so `vp` keeps the
+  # core it was built against instead of having vite 7 substituted under it.
+  vite@*: "catalog:"
   # minimumReleaseAge gates direct deps but not these two, so pin them to the last
   # mature release (CI verifies every lockfile entry against the release-age policy):
   # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.

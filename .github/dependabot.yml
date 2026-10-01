@@ -64,9 +64,6 @@ updates:
       # 0.0.4 has a known issue; stay on 0.0.3 but still accept any later release.
       - dependency-name: "diff3"
         versions: ["0.0.4"]
-      # Types-only; must equal the version vite-plus pins (scripts/oxlint-plugin.test.ts), so
-      # it moves by hand with vite-plus.
-      - dependency-name: "@oxlint/plugins"
     groups:
       # Families whose majors have to land as a single pull request.
       cloudflare-toolchain-major:
