@@ -54,6 +54,6 @@
   "devDependencies": {
     "@oxlint/plugins": "1.73.0",
     "@types/node": "26.1.0",
-    "jsdom": "^26.1.0"
+    "jsdom": "^30.1.0"
   }
 }
