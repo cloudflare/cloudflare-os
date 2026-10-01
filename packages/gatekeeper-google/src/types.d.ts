@@ -244,6 +244,10 @@ export interface GmailScopedSession {
    * Search for threads with Gmail's native query syntax. Useful operators
    * include `from:`, `to:`, `after:`, `before:`, `is:unread`, and `label:`.
    * Any search or label restriction on the binding is also applied.
+   *
+   * Note that search results may not reflect label changes you have made
+   * recently, since such changes are sometimes held for approval and this
+   * search function is currently unable to simulate pending labels.
    */
   searchThreads(query: string): Promise<Cursor<GmailThreadEntry>>;
 
@@ -262,6 +266,10 @@ export interface GmailScopedSession {
    * search or label restriction on the binding is also applied. Gmail may
    * briefly omit newly-sent mail from search results; retry a query such as
    * `in:sent ...` instead of treating the first empty result as a send failure.
+   *
+   * Note that search results may not reflect label changes you have made
+   * recently, since such changes are sometimes held for approval and this
+   * search function is currently unable to simulate pending labels.
    */
   searchMessages(query: string): Promise<Cursor<GmailMessageEntry>>;
 

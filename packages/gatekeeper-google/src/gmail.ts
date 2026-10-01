@@ -16,8 +16,8 @@ import {
   MAX_GMAIL_FORWARD_SOURCE_BYTES,
   extractRfc822Attachments, gmailMessageIdQueryValue, newGmailMessageId, normalizeAggregateRecipients,
   normalizeContentId, normalizeEmailRecipients, normalizeMessageIdHeader, normalizeReferencesHeader,
-  normalizeTextBody, parseGmailDraft, parseGmailMessageMetadata, GmailThreadInfoRaw,
-  summarizeGmailThread,
+  normalizeTextBody, parseGmailDraft, parseGmailMessageMetadata, GmailThreadMetadataRaw,
+  shouldIncludeSpamTrash, summarizeGmailThread,
 } from "./google-api";
 import type {
   EmailAddress, EmailContent, GmailAttachment, GmailAttachmentEntry, GmailAttachmentInfo, GmailComposeOptions,
@@ -47,6 +47,11 @@ import {
   PendingOverlayAction,
 } from "./gmail-state";
 import {
+  compileListFilter, GmailLabelChangeAction, GmailMutationOperation, GmailOverlay, LabelPredicate,
+  messageMayMatch, mutationLabelChanges, overlayMessageInfo, overlayThreadMessages,
+  pendingLabelChanges, threadMayMatch,
+} from "./gmail-overlay";
+import {
   ActionDescriptionBuilder, buildDescription, RenderedDescription, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import {AccessTokenCache, AccessTokenRequest} from "./auth-retry";
@@ -71,10 +76,6 @@ export type GmailGatekeeperImplProps = {
   searchQuery?: string;
   labelName?: string;
 };
-
-type GmailMutationOperation =
-  | "archive" | "trash" | "markRead" | "markUnread" | "star" | "unstar"
-  | "applyLabel" | "removeLabel";
 
 type GmailSourceAttachment = GmailForwardSnapshotReference & {
   messageId: string;
@@ -986,6 +987,30 @@ function labelPending(store: GmailStore): PendingOverlayAction<GmailLabelOverlay
     PendingOverlayAction<GmailLabelOverlayAction>[];
 }
 
+function labelChangePending(store: GmailStore): PendingOverlayAction<GmailLabelChangeAction>[] {
+  return store.listActions().flatMap(({id, action}) =>
+    action.type === "messageMutation" || action.type === "archive" || action.type === "trash" ||
+        action.type === "markRead" || action.type === "markUnread"
+      ? [{id, action}]
+      : []);
+}
+
+/**
+ * The pending actions message and thread reads must reflect. An action being applied stays in:
+ * Gmail has made its label change or is about to, and patching a label Gmail already changed
+ * does nothing.
+ *
+ * Load this before fetching what it will patch. Loaded afterwards, it would miss an action that
+ * finished applying during the fetch, and show the fetched state without it.
+ */
+function loadGmailOverlay(store: GmailStore): GmailOverlay {
+  return {
+    generation: store.actionGeneration(),
+    labelChanges: pendingLabelChanges(
+      labelChangePending(store), store.decisions(), id => store.getLabel(id)),
+  };
+}
+
 // Every header and body the approver reads, as the fields `buildEncodedEmail` writes them from.
 type DescribedMessage = {
   from: string;
@@ -1510,9 +1535,6 @@ async function submitAction(
     ctx: GmailContext, action: GmailAction,
     description: {title: string; awaitDecision?: boolean} & RenderedDescription,
     onFailure?: () => void): Promise<number> {
-  if (ctx.store.listActions().length >= 100) {
-    throw new Error("Too many pending Gmail actions. Resolve existing actions before adding more.");
-  }
   const id = ctx.store.submit(action);
   try {
     await ctx.approvalQueue.submitAction(id, {
@@ -1543,15 +1565,14 @@ async function currentLabels(ctx: GmailContext): Promise<GmailLabelSnapshot> {
   };
 }
 
-async function resolveLabels(
-    ctx: GmailContext, ids: string[], snapshot?: GmailLabelSnapshot): Promise<GmailLabel[]> {
-  const current = snapshot ?? await currentLabels(ctx);
-  return publicLabels(ids, current.labels, current.resources);
-}
-
+// Every message's metadata is returned through here, so no read can skip the pending changes.
+// They are applied with the same label resources the result is rendered from, so a label names
+// one thing in both even when its creation was applied while this read was fetching.
 async function messageInfo(
-    ctx: GmailContext, raw: GmailMessageInfoRaw,
-    labels?: GmailLabelSnapshot): Promise<GmailMessageInfo> {
+    ctx: GmailContext, provider: GmailMessageInfoRaw, overlay: GmailOverlay,
+    snapshot?: GmailLabelSnapshot): Promise<GmailMessageInfo> {
+  const current = snapshot ?? await currentLabels(ctx);
+  const raw = overlayMessageInfo(overlay, provider, current.resources);
   return {
     id: raw.id,
     threadId: raw.threadId,
@@ -1561,16 +1582,24 @@ async function messageInfo(
     ...(raw.bcc.length ? {bcc: raw.bcc} : {}),
     subject: raw.subject,
     timestamp: raw.timestamp,
-    labels: await resolveLabels(ctx, raw.labelIds, labels),
+    labels: publicLabels(raw.labelIds, current.labels, current.resources),
   };
 }
 
+// Every thread summary is built here. A thread has no labels of its own, so its `labels` and
+// `unread` are recomputed from its messages once the pending changes are applied to them.
 async function threadInfo(
-    ctx: GmailContext, raw: GmailThreadInfoRaw,
-    labels?: GmailLabelSnapshot): Promise<GmailThreadInfo> {
-  const {labelIds, ...info} = raw;
-  return {...info, labels: await resolveLabels(ctx, labelIds, labels)};
+    ctx: GmailContext, provider: GmailThreadMetadataRaw, overlay: GmailOverlay,
+    snapshot?: GmailLabelSnapshot): Promise<GmailThreadInfo> {
+  const current = snapshot ?? await currentLabels(ctx);
+  const {labelIds, ...info} = summarizeGmailThread(
+    provider.id, provider.snippet,
+    overlayThreadMessages(overlay, provider.messages, current.resources));
+  return {...info, labels: publicLabels(labelIds, current.labels, current.resources)};
 }
+
+/** A thread summary, and the `GmailOverlay.generation` it was computed against. */
+type GmailThreadSummary = {info: GmailThreadInfo; generation: number};
 
 function admitReturnedLabels(ctx: GmailContext, labels: readonly GmailLabel[]): void {
   if (!ctx.restricted) return;
@@ -1844,6 +1873,35 @@ function listLabelIds(ctx: GmailContext, defaultInbox: boolean): string[] | unde
   return undefined;
 }
 
+/** What a list asks Gmail for, and the label conditions its results must hold to stay listed. */
+type GmailListRequest = {
+  query: string | undefined;
+  labelIds: string[] | undefined;
+  /**
+   * Checked against every entry once pending changes are applied, so a list drops what the caller
+   * moved out of it. That also drops a stale entry from Gmail's search index, which lags behind
+   * label changes. Entries are only ever dropped: one moved into the list appears once Gmail
+   * returns it.
+   */
+  predicates: LabelPredicate[];
+};
+
+function listRequest(
+    ctx: GmailContext, defaultInbox: boolean, callerQuery?: string): GmailListRequest {
+  const query = effectiveListQuery(ctx, callerQuery);
+  const labelIds = listLabelIds(ctx, defaultInbox);
+  return {
+    query,
+    labelIds,
+    predicates: compileListFilter({
+      labelIds,
+      // Kept apart, not as the combined query, so each is checked as its own list of terms.
+      queries: [ctx.searchQuery, callerQuery].filter(part => part !== undefined),
+      includeSpamTrash: shouldIncludeSpamTrash(query, labelIds),
+    }),
+  };
+}
+
 function disposeEntryTargets<Entry>(
     entries: readonly Entry[], target: (entry: Entry) => ApprovalQueueRpcTarget): void {
   for (const entry of entries) {
@@ -1855,6 +1913,16 @@ function disposeEntryTargets<Entry>(
   }
 }
 
+// A cursor page's Gmail reads, five at a time.
+async function fetchInBatches<Item, Result>(
+    items: readonly Item[], fetch: (item: Item) => Promise<Result>): Promise<Result[]> {
+  const results: Result[] = [];
+  for (let i = 0; i < items.length; i += 5) {
+    results.push(...await Promise.all(items.slice(i, i + 5).map(fetch)));
+  }
+  return results;
+}
+
 type OwnedGmailMessageEntry = Omit<GmailMessageEntry, "message"> & {message: GmailMessageStub};
 type OwnedGmailThreadEntry = Omit<GmailThreadEntry, "thread"> & {thread: GmailThreadStub};
 type OwnedGmailDraftEntry = Omit<GmailDraftEntry, "draft"> & {draft: GmailDraftStub};
@@ -1863,7 +1931,7 @@ type OwnedGmailAttachmentEntry = Omit<GmailAttachmentEntry, "attachment"> & {
 };
 
 function gmailMessageCursor(
-    ctx: GmailContext, query: string | undefined, labelIds: string[] | undefined,
+    ctx: GmailContext, request: GmailListRequest,
     capabilityScope: GmailCapabilityScope): Cursor<GmailMessageEntry> {
   return new RpcCursor(new CursorPager<{
     id: string;
@@ -1872,27 +1940,32 @@ function gmailMessageCursor(
     }, OwnedGmailMessageEntry>({
     provider: "Gmail",
     async fetchPage(pageToken) {
-      const page = await ctx.api.listMessages(20, query, pageToken, labelIds);
+      const page = await ctx.api.listMessages(20, request.query, pageToken, request.labelIds);
       return {items: page.messages, nextPageToken: page.nextPageToken};
     },
     async buildEntries(messages) {
       const entries: OwnedGmailMessageEntry[] = [];
       try {
         if (messages.length === 0) return entries;
+        const overlay = loadGmailOverlay(ctx.store);
+        const fetched = await fetchInBatches(messages, async ref => ({
+          ref,
+          provider: parseGmailMessageMetadata(await ctx.api.getMessageMetadata(ref.id)),
+        }));
+        // One label snapshot filters and renders the whole page. It is taken once the page's
+        // metadata is in, as overlayMessageInfo() requires; the overlay was loaded before it.
         const labels = await currentLabels(ctx);
-        for (let i = 0; i < messages.length; i += 5) {
-          const enriched = await Promise.all(messages.slice(i, i + 5).map(async ref => {
-            const metadata = await ctx.api.getMessageMetadata(ref.id);
-            const info = await messageInfo(ctx, parseGmailMessageMetadata(metadata), labels);
-            const scope = capabilityScope.kind === "mailbox"
-              ? capabilityScope
-              : gmailRestrictedScope([ref.id]);
-            return {ref, info, scope};
-          }));
-          entries.push(...enriched.map(({ref, info, scope}) => ({
-            info,
-            message: new GmailMessageStub(ctx, ref.id, ref.threadId, scope),
-          })));
+        for (const {ref, provider} of fetched) {
+          if (!messageMayMatch(
+              overlayMessageInfo(overlay, provider, labels.resources).labelIds,
+              request.predicates)) {
+            continue;
+          }
+          const info = await messageInfo(ctx, provider, overlay, labels);
+          const scope = capabilityScope.kind === "mailbox"
+            ? capabilityScope
+            : gmailRestrictedScope([ref.id]);
+          entries.push({info, message: new GmailMessageStub(ctx, ref.id, ref.threadId, scope)});
         }
         return entries;
       } catch (error) {
@@ -1913,34 +1986,39 @@ function gmailMessageCursor(
 }
 
 function gmailFullThreadCursor(
-    ctx: GmailContext, query: string | undefined, labelIds: string[] | undefined): Cursor<GmailThreadEntry> {
+    ctx: GmailContext, request: GmailListRequest): Cursor<GmailThreadEntry> {
   return new RpcCursor(new CursorPager<{id: string; snippet?: string}, OwnedGmailThreadEntry>({
     provider: "Gmail",
     async fetchPage(pageToken) {
-      const page = await ctx.api.listThreads(20, query, pageToken, labelIds);
+      const page = await ctx.api.listThreads(20, request.query, pageToken, request.labelIds);
       return {items: page.threads, nextPageToken: page.nextPageToken};
     },
     async buildEntries(threads) {
       const entries: OwnedGmailThreadEntry[] = [];
       try {
         if (threads.length === 0) return entries;
+        const overlay = loadGmailOverlay(ctx.store);
+        const fetched = await fetchInBatches(threads, async thread => ({
+          thread,
+          provider: await ctx.api.getThreadMetadata(thread.id),
+        }));
+        // After the page's metadata, as in gmailMessageCursor().
         const labels = await currentLabels(ctx);
-        for (let i = 0; i < threads.length; i += 5) {
-          const enriched = await Promise.all(threads.slice(i, i + 5).map(async thread => {
-            const metadata = await threadInfo(
-              ctx, await ctx.api.getThreadInfo(thread.id), labels);
-            return {
-              thread,
-              info: {
-                ...metadata,
-                ...(thread.snippet !== undefined ? {snippet: thread.snippet} : {}),
-              },
-            };
-          }));
-          entries.push(...enriched.map(({thread, info}) => ({
+        for (const {thread, provider} of fetched) {
+          if (!threadMayMatch(
+              overlayThreadMessages(overlay, provider.messages, labels.resources),
+              request.predicates)) {
+            continue;
+          }
+          const info = {
+            ...await threadInfo(ctx, provider, overlay, labels),
+            ...(thread.snippet !== undefined ? {snippet: thread.snippet} : {}),
+          };
+          entries.push({
             info,
-            thread: new GmailThreadStub(ctx, thread.id, GMAIL_MAILBOX_SCOPE, info),
-          })));
+            thread: new GmailThreadStub(
+              ctx, thread.id, GMAIL_MAILBOX_SCOPE, {info, generation: overlay.generation}),
+          });
         }
         return entries;
       } catch (error) {
@@ -1994,10 +2072,12 @@ async function collectRestrictedThreadGroups(
 }
 
 function gmailRestrictedThreadCursor(
-    ctx: GmailContext, query: string | undefined, labelIds: string[] | undefined): Cursor<GmailThreadEntry> {
+    ctx: GmailContext, request: GmailListRequest): Cursor<GmailThreadEntry> {
   let pendingGroups: Promise<Array<{threadId: string; messages: GmailMessageRef[]}>> | undefined;
   const getGroups = async () => {
-    if (!pendingGroups) pendingGroups = collectRestrictedThreadGroups(ctx, query, labelIds);
+    if (!pendingGroups) {
+      pendingGroups = collectRestrictedThreadGroups(ctx, request.query, request.labelIds);
+    }
     const current = pendingGroups;
     try {
       return await current;
@@ -2028,21 +2108,38 @@ function gmailRestrictedThreadCursor(
       const entries: OwnedGmailThreadEntry[] = [];
       try {
         if (groups.length === 0) return entries;
-        const labels = await currentLabels(ctx);
+        const overlay = loadGmailOverlay(ctx.store);
+        const fetched: Array<{
+          group: typeof groups[number];
+          metadata: Array<{ref: GmailMessageRef; info: GmailMessageInfoRaw}>;
+        }> = [];
         for (const group of groups) {
-          const metadata: Array<{ref: typeof group.messages[number]; info: GmailMessageInfoRaw}> = [];
-          for (let i = 0; i < group.messages.length; i += 5) {
-            metadata.push(...await Promise.all(group.messages.slice(i, i + 5).map(async ref => ({
-              ref,
-              info: parseGmailMessageMetadata(await ctx.api.getMessageMetadata(ref.id)),
-            }))));
-          }
-          const first = metadata[0];
+          fetched.push({group, metadata: await fetchInBatches(group.messages, async ref => ({
+            ref,
+            info: parseGmailMessageMetadata(await ctx.api.getMessageMetadata(ref.id)),
+          }))});
+        }
+        // After the page's metadata, as in gmailMessageCursor().
+        const labels = await currentLabels(ctx);
+        for (const {group, metadata} of fetched) {
+          // The group is the messages Gmail matched, so each is checked on its own. Narrowing the
+          // thread's scope to the ones still listed is always safe.
+          const listed = metadata.filter(item => messageMayMatch(
+            overlayMessageInfo(overlay, item.info, labels.resources).labelIds,
+            request.predicates));
+          const first = listed[0];
           if (!first) continue;
-          const info = await threadInfo(ctx, summarizeGmailThread(
-            group.threadId, first.ref.snippet, metadata.map(item => item.info)), labels);
-          const scope = gmailRestrictedScope(metadata.map(item => item.info.id));
-          entries.push({info, thread: new GmailThreadStub(ctx, group.threadId, scope, info)});
+          const info = await threadInfo(ctx, {
+            id: group.threadId,
+            snippet: first.ref.snippet,
+            messages: listed.map(item => item.info),
+          }, overlay, labels);
+          const scope = gmailRestrictedScope(listed.map(item => item.info.id));
+          entries.push({
+            info,
+            thread: new GmailThreadStub(
+              ctx, group.threadId, scope, {info, generation: overlay.generation}),
+          });
         }
         return entries;
       } catch (error) {
@@ -2081,19 +2178,17 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   // Cursor creation discloses nothing; each page authorizes its own observation when fetched.
   async listThreads(): Promise<Cursor<GmailThreadEntry>> {
-    const query = effectiveListQuery(this.#ctx);
-    const labels = listLabelIds(this.#ctx, true);
+    const request = listRequest(this.#ctx, true);
     return this.#ctx.restricted
-      ? gmailRestrictedThreadCursor(this.#ctx, query, labels)
-      : gmailFullThreadCursor(this.#ctx, query, labels);
+      ? gmailRestrictedThreadCursor(this.#ctx, request)
+      : gmailFullThreadCursor(this.#ctx, request);
   }
 
   async searchThreads(query: string): Promise<Cursor<GmailThreadEntry>> {
-    const effective = effectiveListQuery(this.#ctx, query);
-    const labels = listLabelIds(this.#ctx, false);
+    const request = listRequest(this.#ctx, false, query);
     return this.#ctx.restricted
-      ? gmailRestrictedThreadCursor(this.#ctx, effective, labels)
-      : gmailFullThreadCursor(this.#ctx, effective, labels);
+      ? gmailRestrictedThreadCursor(this.#ctx, request)
+      : gmailFullThreadCursor(this.#ctx, request);
   }
 
   async search(query: string): Promise<Cursor<GmailThreadEntry>> {
@@ -2102,14 +2197,13 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async listMessages(): Promise<Cursor<GmailMessageEntry>> {
     return gmailMessageCursor(
-      this.#ctx, effectiveListQuery(this.#ctx), listLabelIds(this.#ctx, true),
+      this.#ctx, listRequest(this.#ctx, true),
       this.#ctx.restricted ? gmailRestrictedScope([]) : GMAIL_MAILBOX_SCOPE);
   }
 
   async searchMessages(query: string): Promise<Cursor<GmailMessageEntry>> {
-    const effective = effectiveListQuery(this.#ctx, query);
     return gmailMessageCursor(
-      this.#ctx, effective, listLabelIds(this.#ctx, false),
+      this.#ctx, listRequest(this.#ctx, false, query),
       this.#ctx.restricted ? gmailRestrictedScope([]) : GMAIL_MAILBOX_SCOPE);
   }
 
@@ -2159,8 +2253,10 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   async getThread(id: string): Promise<GmailThread> {
     if (!GMAIL_PROVIDER_ID_RE.test(id)) throw new Error("Invalid Gmail thread ID.");
     if (!this.#ctx.restricted) {
-      const info = await threadInfo(this.#ctx, await this.#ctx.api.getThreadInfo(id));
-      return new GmailThreadStub(this.#ctx, id, GMAIL_MAILBOX_SCOPE, info);
+      const overlay = loadGmailOverlay(this.#ctx.store);
+      const info = await threadInfo(this.#ctx, await this.#ctx.api.getThreadMetadata(id), overlay);
+      return new GmailThreadStub(
+        this.#ctx, id, GMAIL_MAILBOX_SCOPE, {info, generation: overlay.generation});
     }
     const admitted = await restrictedThreadMessageIds(this.#ctx, id);
     if (!admitted.length) {
@@ -2454,8 +2550,6 @@ async function submitMutation(
   }, {
     title: sanitizeTitle(title),
     ...describeMutationTarget(description, target, resolved?.id).finish(),
-    // Message label mutations are not overlaid into provider message reads.
-    awaitDecision: true,
   });
 }
 
@@ -2464,26 +2558,28 @@ class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
   #ctx: GmailContext;
   #threadId: string;
   #scope: GmailCapabilityScope;
-  #cachedInfo?: GmailThreadInfo;
+  #cachedSummary?: GmailThreadSummary;
 
   constructor(
       ctx: GmailContext, threadId: string, scope: GmailCapabilityScope,
-      cachedInfo?: GmailThreadInfo) {
+      cachedSummary?: GmailThreadSummary) {
     super(ctx.approvalQueue);
     this.#ctx = ctx;
     this.#threadId = threadId;
     this.#scope = scope;
-    this.#cachedInfo = cachedInfo;
+    this.#cachedSummary = cachedSummary;
   }
 
   async #loadInfo(): Promise<GmailThreadInfo> {
-    if (this.#cachedInfo) {
-      const info = this.#cachedInfo;
-      this.#cachedInfo = undefined;
-      return info;
-    }
+    const cached = this.#cachedSummary;
+    this.#cachedSummary = undefined;
+    // The summary computed when this capability was created serves its first read, unless an
+    // action has been submitted, applied or rejected since: it would not reflect that.
+    if (cached?.generation === this.#ctx.store.actionGeneration()) return cached.info;
+    const overlay = loadGmailOverlay(this.#ctx.store);
     if (this.#scope.kind === "mailbox") {
-      return threadInfo(this.#ctx, await this.#ctx.api.getThreadInfo(this.#threadId));
+      return threadInfo(
+        this.#ctx, await this.#ctx.api.getThreadMetadata(this.#threadId), overlay);
     }
     const admitted = this.#scope.admittedMessageIds;
     if (!admitted.length) throw new Error("This restricted Gmail thread admits no messages.");
@@ -2492,9 +2588,11 @@ class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
       metadata.push(...await Promise.all(
         admitted.slice(i, i + 5).map(id => this.#ctx.api.getMessageMetadata(id))));
     }
-    const parsed = metadata.map(parseGmailMessageMetadata);
-    return threadInfo(this.#ctx, summarizeGmailThread(
-      this.#threadId, metadata[0]?.snippet, parsed));
+    return threadInfo(this.#ctx, {
+      id: this.#threadId,
+      snippet: metadata[0]?.snippet,
+      messages: metadata.map(parseGmailMessageMetadata),
+    }, overlay);
   }
 
   async #messageIds(): Promise<string[]> {
@@ -2551,7 +2649,10 @@ class GmailThreadStub extends ApprovalQueueRpcTarget implements GmailThread {
   async #mutate(
       operation: GmailMutationOperation, lastMessageId: string | undefined,
       label?: GmailMutableLabel): Promise<void> {
-    const info = await this.#loadInfo();
+    // Only the subject is needed, for the approval title, and no pending action changes it. So
+    // the summary from when this capability was created still serves, without a fetch for every
+    // thread of a list the caller is working through.
+    const info = this.#cachedSummary?.info ?? await this.#loadInfo();
     const canonical = label ? await resolveMutableLabel(this.#ctx, label) : undefined;
     // Fix the exact messages now, so mail arriving before approval is never reached.
     const thread = await this.#ctx.api.getThread(this.#threadId);
@@ -2675,7 +2776,8 @@ class GmailMessageStub extends ApprovalQueueRpcTarget implements GmailMessage {
   }
 
   async getMetadata(): Promise<GmailMessageInfo> {
-    const info = await messageInfo(this.#ctx, await this.#info());
+    const overlay = loadGmailOverlay(this.#ctx.store);
+    const info = await messageInfo(this.#ctx, await this.#info(), overlay);
     await this.#ctx.approvalQueue.authorizeObservation({
       title: sanitizeTitle(`Gmail message: ${info.subject}`),
       description: "Read sender, recipients, timestamp, subject, and labels for this message.",
@@ -3546,21 +3648,6 @@ async function sentMessageFingerprint(
     raw,
   });
   return gmailDraftFingerprint(parsed, threadId);
-}
-
-/** Every mutation is a label change; trash and untrash add and remove the `TRASH` label. */
-function mutationLabelChanges(
-    operation: GmailMutationOperation, labelId: string | undefined): {add: string[]; remove: string[]} {
-  switch (operation) {
-    case "archive": return {add: [], remove: ["INBOX"]};
-    case "trash": return {add: ["TRASH"], remove: []};
-    case "markRead": return {add: [], remove: ["UNREAD"]};
-    case "markUnread": return {add: ["UNREAD"], remove: []};
-    case "star": return {add: ["STARRED"], remove: []};
-    case "unstar": return {add: [], remove: ["STARRED"]};
-    case "applyLabel": return {add: [labelId!], remove: []};
-    case "removeLabel": return {add: [], remove: [labelId!]};
-  }
 }
 
 /** Actions queued before mutations named exact messages still apply to the whole thread. */

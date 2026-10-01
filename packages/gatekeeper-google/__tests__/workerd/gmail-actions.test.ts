@@ -233,10 +233,12 @@ class TestMessage {
 
   markReadAndRefresh(actionId: number): Promise<{
     before: GmailMessageInfo;
+    pending: GmailMessageInfo;
     after: GmailMessageInfo;
   }> {
     return this.call("message.markReadAndRefresh", [this.id, actionId]) as Promise<{
       before: GmailMessageInfo;
+      pending: GmailMessageInfo;
       after: GmailMessageInfo;
     }>;
   }
@@ -259,6 +261,10 @@ class TestMessage {
   }
 
   archive(): Promise<void> { return this.call("message.archive", [this.id]) as Promise<void>; }
+
+  mutate(operation: string): Promise<void> {
+    return this.call("message.mutate", [this.id, operation]) as Promise<void>;
+  }
 
   async createReplyDraft(body: string, options?: GmailReplyOptions): Promise<TestDraft> {
     const info = await this.call("message.createReplyDraft", [this.id, body, options]) as GmailDraftInfo;
@@ -332,6 +338,28 @@ class TestSession {
       const infos = await this.call("session.listMessages") as GmailMessageInfo[] | null;
       return infos?.map(info => ({info, message: new TestMessage(this.call, info.id, info)})) ?? null;
     }));
+  }
+
+  searchThreads(query: string): Promise<TestCursor<{info: GmailThreadInfo; thread: TestThread}>> {
+    return Promise.resolve(new TestCursor(async () => {
+      const infos = await this.call("session.searchThreads", [query]) as GmailThreadInfo[] | null;
+      return infos?.map(info => ({info, thread: new TestThread(this.call, info.id)})) ?? null;
+    }));
+  }
+
+  searchMessages(query: string): Promise<TestCursor<{info: GmailMessageInfo; message: TestMessage}>> {
+    return Promise.resolve(new TestCursor(async () => {
+      const infos = await this.call("session.searchMessages", [query]) as GmailMessageInfo[] | null;
+      return infos?.map(info => ({info, message: new TestMessage(this.call, info.id, info)})) ?? null;
+    }));
+  }
+
+  listedThreadAfterArchivingMessage(id: string): Promise<{
+    listed: GmailThreadInfo; afterwards: GmailThreadInfo;
+  }> {
+    return this.call("session.listedThreadAfterArchivingMessage", [id]) as Promise<{
+      listed: GmailThreadInfo; afterwards: GmailThreadInfo;
+    }>;
   }
 
   getThreadMetadataTwice(id: string): Promise<{first: GmailThreadInfo; second: GmailThreadInfo}> {
@@ -940,6 +968,10 @@ describe("Gmail auto-approval eligibility", () => {
       {actionKind: {tag: "labelRename", label: "Rename labels"}, autoApprovable: true},
       {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: true},
     ]);
+    // Later reads simulate each of these, so none stops the caller to wait for a decision.
+    for (const description of descriptions) {
+      expect(description).not.toHaveProperty("awaitDecision");
+    }
   });
 
   it("records no observations for reads that only prepare an action", async () => {
@@ -1147,7 +1179,7 @@ describe("Gmail forward action snapshots", () => {
         }
         return json({
           id: "source-message", threadId: "source-thread", internalDate: "1",
-          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: [],
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: ["INBOX"],
           payload: {headers: [
             {name: "From", value: "source@example.com"},
             {name: "To", value: "me@example.com"},
@@ -1228,7 +1260,7 @@ describe("Gmail forward action snapshots", () => {
         }
         return json({
           id: "source-message", threadId: "source-thread", internalDate: "1",
-          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: [],
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: ["INBOX"],
           payload: {headers: [
             {name: "From", value: "source@example.com"},
             {name: "To", value: "me@example.com"},
@@ -1464,7 +1496,7 @@ describe("Gmail forward action snapshots", () => {
         }
         return json({
           id: "source-message", threadId: "source-thread", internalDate: "1", sizeEstimate: 100,
-          labelIds: [], payload: {headers: [
+          labelIds: ["INBOX"], payload: {headers: [
             {name: "From", value: "source@example.com"},
             {name: "To", value: "me@example.com"},
             {name: "Subject", value: "Source subject"},
@@ -1978,7 +2010,7 @@ describe("Gmail forward action snapshots", () => {
           threadId,
           internalDate: "1",
           sizeEstimate: 100,
-          labelIds: [],
+          labelIds: ["INBOX"],
           payload: {headers: [
             {name: "From", value: "sender@example.com"},
             {name: "To", value: "me@example.com"},
@@ -2723,14 +2755,14 @@ describe("Gmail message lookup", () => {
         }
         const messageIndex = ids.indexOf(url.pathname.split("/").at(-1) ?? "");
         if (kind === "message" && messageIndex >= 0 && !init.method) {
-          return json(messageMetadata(ids[messageIndex], threadId, null, ["Label_1"]));
+          return json(messageMetadata(ids[messageIndex], threadId, null, ["INBOX", "Label_1"]));
         }
         const threadIndex = ids.indexOf(url.pathname.split("/").at(-1) ?? "");
         if (kind === "thread" && threadIndex >= 0 && !init.method) {
           return json({
             id: ids[threadIndex],
             messages: [messageMetadata(
-              `1a03a1e31ecc5e8${threadIndex}`, ids[threadIndex], null, ["Label_1"])],
+              `1a03a1e31ecc5e8${threadIndex}`, ids[threadIndex], null, ["INBOX", "Label_1"])],
           });
         }
         if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
@@ -2746,10 +2778,11 @@ describe("Gmail message lookup", () => {
         : await (await session.listThreads()).next();
 
       expect(entries).toHaveLength(2);
-      expect(entries?.map(entry => entry.info.labels)).toEqual([
-        [{id: "Label_1", name: "Page label", type: "custom"}],
-        [{id: "Label_1", name: "Page label", type: "custom"}],
-      ]);
+      const labels = [
+        {id: "INBOX", name: "INBOX", type: "system"},
+        {id: "Label_1", name: "Page label", type: "custom"},
+      ];
+      expect(entries?.map(entry => entry.info.labels)).toEqual([labels, labels]);
       expect(labelReads).toBe(1);
     },
   );
@@ -2871,7 +2904,7 @@ describe("Gmail message lookup", () => {
     expect(await headerObservations()).toHaveLength(1);
   });
 
-  it("refreshes metadata on one message capability after an approved mark-read", async () => {
+  it("shows a mark-read on one message capability before and after it is approved", async () => {
     let unread = true;
     let metadataReads = 0;
     const {gatekeeper} = actionHarness((url, init) => {
@@ -2892,11 +2925,12 @@ describe("Gmail message lookup", () => {
     const session = await gatekeeper.startSession(approvalQueue());
     const message = await session.getMessage(messageId);
 
-    const {before, after} = await message.markReadAndRefresh(1);
+    const {before, pending, after} = await message.markReadAndRefresh(1);
 
     expect(before.labels).toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
+    expect(pending.labels).not.toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
     expect(after.labels).not.toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
-    expect(metadataReads).toBe(4);
+    expect(metadataReads).toBe(5);
   });
 
   it("refreshes externally renamed provider labels on one production session capability", async () => {
@@ -2953,7 +2987,7 @@ describe("Gmail message lookup", () => {
         return json({messages: [{id: messageId, threadId}]});
       }
       if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
-        return json(messageMetadata(messageId, threadId));
+        return json(messageMetadata(messageId, threadId, undefined, ["INBOX"]));
       }
       if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
         return json({labels: []});
@@ -2978,7 +3012,7 @@ describe("Gmail message lookup", () => {
         return json({messages: [{id: messageId, threadId}]});
       }
       if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
-        return json(messageMetadata(messageId, threadId));
+        return json(messageMetadata(messageId, threadId, undefined, ["INBOX"]));
       }
       if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
         return json({labels: []});
@@ -3751,6 +3785,436 @@ describe("Gmail message mutations", () => {
     expect(batches).toEqual([["aaa", "bbb"], ["bbb"]]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
+  });
+});
+
+const systemLabel = (id: string) => ({id, name: id, type: "system"});
+
+const entryIds = (entries: Array<{info: {id: string}}> | null) =>
+  entries?.map(entry => entry.info.id) ?? null;
+
+describe("Gmail pending label changes", () => {
+  type FakeMessage = {id: string; threadId: string; labelIds: string[]};
+  const teamLabel = {id: "Label_1", name: "Team", type: "custom"};
+
+  // A mailbox that answers every read from its own labels, as Gmail does. Nothing in it changes
+  // until an action is applied, so whatever a read shows beyond it is the simulation.
+  function mailboxHarness(
+      mailbox: FakeMessage[], options: {
+        searchQuery?: string;
+        labelName?: string;
+        /** Runs ahead of each request, which waits for it. */
+        beforeRequest?: (url: URL, init: RequestInit) => Promise<void>;
+        /** Runs once the mailbox has acted on a request, which waits for it before answering. */
+        beforeResponse?: (url: URL, init: RequestInit) => Promise<void>;
+      } = {}) {
+    const userLabels = [{id: "Label_1", name: "Team", type: "user"}];
+    const metadata = (message: FakeMessage) => ({
+      ...messageMetadata(message.id, message.threadId, null, message.labelIds),
+      internalDate: String(mailbox.indexOf(message) + 1),
+    });
+    const listed = (url: URL) => {
+      const labelIds = url.searchParams.getAll("labelIds");
+      const query = url.searchParams.get("q") ?? "";
+      const spamTrash = url.searchParams.get("includeSpamTrash") === "true";
+      return mailbox.filter(message =>
+        labelIds.every(id => message.labelIds.includes(id)) &&
+        (spamTrash || !message.labelIds.some(id => id === "TRASH" || id === "SPAM")) &&
+        (!query.includes("is:unread") || message.labelIds.includes("UNREAD")));
+    };
+    const respond = (url: URL, init: RequestInit): Response => {
+      const [collection, id] = url.pathname.replace("/gmail/v1/users/me/", "").split("/");
+      if (collection === "labels" && !init.method) {
+        return json({labels: [
+          ...["INBOX", "UNREAD", "STARRED", "TRASH"].map(systemLabel), ...userLabels,
+        ]});
+      }
+      if (collection === "labels" && init.method === "POST") {
+        const {name} = JSON.parse(String(init.body)) as {name: string};
+        userLabels.push({id: `Label_${userLabels.length + 1}`, name, type: "user"});
+        return json(userLabels.at(-1));
+      }
+      if (collection === "messages" && id === "batchModify" && init.method === "POST") {
+        const body = JSON.parse(String(init.body)) as {
+          ids: string[]; addLabelIds: string[]; removeLabelIds: string[];
+        };
+        for (const message of mailbox.filter(candidate => body.ids.includes(candidate.id))) {
+          message.labelIds = [
+            ...message.labelIds.filter(label =>
+              !body.removeLabelIds.includes(label) && !body.addLabelIds.includes(label)),
+            ...body.addLabelIds,
+          ];
+        }
+        return new Response(null, {status: 204});
+      }
+      if (init.method) throw new Error(`Unexpected request: ${init.method} ${url}`);
+      if (collection === "messages" && id === undefined) {
+        return json({messages: listed(url).map(message => ({
+          id: message.id, threadId: message.threadId,
+        }))});
+      }
+      if (collection === "threads" && id === undefined) {
+        return json({threads: [...new Set(listed(url).map(message => message.threadId))]
+          .map(threadId => ({id: threadId}))});
+      }
+      const message = mailbox.find(candidate => candidate.id === id);
+      if (collection === "messages" && message) return json(metadata(message));
+      const thread = mailbox.filter(candidate => candidate.threadId === id);
+      if (collection === "threads" && thread.length) {
+        return json(url.searchParams.get("format") === "minimal"
+          ? threadMinimal(id, thread.map(candidate => candidate.id))
+          : {id, messages: thread.map(metadata)});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    return actionHarness(async (url, init) => {
+      await options.beforeRequest?.(url, init);
+      const response = respond(url, init);
+      await options.beforeResponse?.(url, init);
+      return response;
+    }, options);
+  }
+
+  it("shows a pending mark-read in message and thread metadata until it is decided", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const read = async () => ({
+      message: await (await session.getMessage("a1")).getMetadata(),
+      thread: await (await session.getThread("aa")).getMetadata(),
+    });
+
+    await (await session.getMessage("a1")).mutate("markRead");
+
+    // Gmail still has the message unread; only the reads have moved on.
+    expect(mailbox[0].labelIds).toEqual(["INBOX", "UNREAD"]);
+    let shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX")]);
+    expect(shown.thread).toMatchObject({unread: false, labels: [systemLabel("INBOX")]});
+
+    await gatekeeper.rejectAction(1);
+    shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX"), systemLabel("UNREAD")]);
+    expect(shown.thread).toMatchObject({unread: true, labels: [systemLabel("INBOX"), systemLabel("UNREAD")]});
+
+    await (await session.getMessage("a1")).mutate("markRead");
+    await gatekeeper.applyAction(2);
+    expect(mailbox[0].labelIds).toEqual(["INBOX"]);
+    shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX")]);
+    expect(shown.thread).toMatchObject({unread: false, labels: [systemLabel("INBOX")]});
+  });
+
+  it("applies opposing pending changes in the order they were submitted", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const message = await session.getMessage("a1");
+
+    await message.mutate("star");
+    await message.mutate("unstar");
+    await expect(message.getMetadata()).resolves.toMatchObject({labels: [systemLabel("INBOX")]});
+
+    await message.mutate("star");
+    await expect(message.getMetadata()).resolves.toMatchObject({
+      labels: [systemLabel("INBOX"), systemLabel("STARRED")],
+    });
+  });
+
+  it.each([
+    ["shows the label once", false],
+    ["honors a removal queued behind them", true],
+  ])("%s when a label's creation and application are approved during a read", async (_, removal) => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    // Holds one metadata fetch open while actions apply. Flags rather than promises, because
+    // workerd refuses to resume a promise resolved by another Durable Object.
+    const pause = {countdown: 0, reached: false, released: false};
+    const {gatekeeper} = mailboxHarness(mailbox, {
+      async beforeRequest(url, init) {
+        if (url.pathname.endsWith("/messages/a1") && !init.method && pause.countdown > 0 &&
+            --pause.countdown === 0) {
+          pause.reached = true;
+          await until(() => pause.released);
+        }
+      },
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const label = await session.createLabel("New");
+    const message = await session.getMessage("a1");
+    await message.applyLabel(label);
+    if (removal) await message.removeLabel(label);
+
+    // The read opens the message, loads the pending actions, then fetches its metadata again.
+    // Gmail answers that second fetch only after it has the label and has put it on the message.
+    pause.countdown = 2;
+    const read = message.getMetadata();
+    await until(() => pause.reached);
+    await gatekeeper.applyAction(1);
+    await gatekeeper.applyAction(2);
+    expect(mailbox[0].labelIds).toEqual(["INBOX", "Label_2"]);
+    pause.released = true;
+
+    expect((await read).labels).toEqual(removal
+      ? [systemLabel("INBOX")]
+      : [systemLabel("INBOX"), {id: label.id, name: "New", type: "custom"}]);
+  });
+
+  it.each([
+    ["message", false], ["message", true], ["thread", false], ["thread", true],
+  ] as const)(
+    "renders a %s page consistently when a label's creation lands mid-read (removal queued: %s)",
+    async (kind, removal) => {
+      const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+      // Flags rather than promises, as above.
+      const creation = {reached: false, released: false};
+      const metadata = {armed: false, reached: false, released: false};
+      const metadataPath = kind === "message" ? "/messages/a1" : "/threads/aa";
+      const {gatekeeper} = mailboxHarness(mailbox, {
+        async beforeRequest(url, init) {
+          if (metadata.armed && !init.method && url.pathname.endsWith(metadataPath)) {
+            metadata.armed = false;
+            metadata.reached = true;
+            await until(() => metadata.released);
+          }
+        },
+        async beforeResponse(url, init) {
+          if (init.method === "POST" && url.pathname.endsWith("/labels")) {
+            creation.reached = true;
+            await until(() => creation.released);
+          }
+        },
+      });
+      const session = await gatekeeper.startSession(approvalQueue());
+      const label = await session.createLabel("New");
+      const message = await session.getMessage("a1");
+      await message.applyLabel(label);
+      if (removal) await message.removeLabel(label);
+
+      // Gmail now has the label, but the gatekeeper has yet to learn the ID Gmail gave it. A
+      // label list read here names the label twice: Gmail's record, and the provisional one.
+      const creating = gatekeeper.applyAction(1);
+      await until(() => creation.reached);
+      // The page's read starts in that state, and is held at its metadata fetch while the
+      // creation and the application finish. Gmail answers with the label on the message.
+      metadata.armed = true;
+      const page = kind === "message"
+        ? (await session.listMessages()).next()
+        : (await session.listThreads()).next();
+      await until(() => metadata.reached);
+      creation.released = true;
+      await creating;
+      await gatekeeper.applyAction(2);
+      expect(mailbox[0].labelIds).toEqual(["INBOX", "Label_2"]);
+      metadata.released = true;
+
+      expect((await page)?.map(entry => entry.info.labels)).toEqual([removal
+        ? [systemLabel("INBOX")]
+        : [systemLabel("INBOX"), {id: label.id, name: "New", type: "custom"}]]);
+    },
+  );
+
+  it("recomputes a listed thread's summary after an action changes one of its messages", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const {listed, afterwards} = await session.listedThreadAfterArchivingMessage("aa");
+
+    expect(listed.labels).toEqual([systemLabel("INBOX"), systemLabel("UNREAD")]);
+    // The capability carried the summary from the list, which predates the archive.
+    expect(afterwards.labels).toEqual([systemLabel("UNREAD")]);
+  });
+
+  it("accepts more than 100 pending label changes", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    const {gatekeeper, storage, values} = mailboxHarness(mailbox);
+    for (let id = 1; id <= 100; id++) {
+      storage.kv.put(`pending:action:${id}`, {
+        type: "messageMutation",
+        operation: id % 2 ? "star" : "unstar",
+        target: {kind: "messages", messageIds: ["a1"]},
+      });
+    }
+    storage.kv.put("pending:nextActionId", 101);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const message = await session.getMessage("a1");
+
+    await message.mutate("archive");
+
+    const pending = (await values.keys()).filter(key => key.startsWith("pending:action:"));
+    expect(pending).toHaveLength(101);
+    // All of them show: the hundredth unstarred the message, the newest archived it.
+    await expect(message.getMetadata()).resolves.toMatchObject({labels: []});
+  });
+
+  it("drops archived mail from the inbox lists", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX"]},
+      {id: "b2", threadId: "bb", labelIds: ["INBOX"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threads = async () => (await session.listThreads()).next();
+    const messages = async () => entryIds(await (await session.listMessages()).next());
+    expect(entryIds(await threads())).toEqual(["aa", "bb"]);
+
+    await (await session.getThread("aa")).mutate("archive");
+    expect(entryIds(await threads())).toEqual(["bb"]);
+    expect(await messages()).toEqual(["b1", "b2"]);
+
+    // A thread stays listed while any of its messages is still in the inbox.
+    await (await session.getMessage("b1")).mutate("archive");
+    expect(await threads()).toMatchObject([{info: {id: "bb", labels: [systemLabel("INBOX")]}}]);
+    expect(await messages()).toEqual(["b2"]);
+
+    await (await session.getMessage("b2")).mutate("archive");
+    expect(await threads()).toBeNull();
+    expect(await messages()).toBeNull();
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops trashed mail from search results unless the search includes trash", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: []},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const query = "from:sender@example.com";
+    expect(entryIds(await (await session.searchMessages(query)).next())).toEqual(["a1", "b1"]);
+
+    await (await session.getMessage("a1")).mutate("trash");
+
+    expect(entryIds(await (await session.searchMessages(query)).next())).toEqual(["b1"]);
+    expect(entryIds(await (await session.searchThreads(query)).next())).toEqual(["bb"]);
+    expect(await (await session.searchMessages(`in:anywhere ${query}`)).next()).toMatchObject([
+      {info: {id: "a1", labels: [systemLabel("INBOX"), systemLabel("TRASH")]}},
+      {info: {id: "b1", labels: []}},
+    ]);
+  });
+
+  it("empties an is:unread search once each result has been marked read", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]},
+      {id: "a2", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX", "UNREAD"]},
+      {id: "b2", threadId: "bb", labelIds: ["INBOX", "UNREAD"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const unread = async () => (await session.searchThreads("is:unread")).next();
+
+    // A thread matches while any of its messages still does.
+    await (await session.getMessage("b1")).mutate("markRead");
+    expect(await unread()).toMatchObject([
+      {info: {id: "aa", unread: true}}, {info: {id: "bb", unread: true}},
+    ]);
+    expect(entryIds(await (await session.searchMessages("is:unread")).next())).toEqual(["a1", "b2"]);
+
+    // An agent working through unread mail: search, mark each result read, search again.
+    let rounds = 0;
+    for (let page = await unread(); page; page = await unread()) {
+      expect(++rounds).toBe(1);
+      for (const {thread} of page) await thread.mutate("markRead");
+    }
+    expect(rounds).toBe(1);
+    expect((await queue.read!()).submissions).toHaveLength(3);
+    expect(await (await session.searchMessages("is:unread")).next()).toBeNull();
+    expect(await (await session.searchMessages("-is:read")).next()).toBeNull();
+
+    // A query the gatekeeper cannot evaluate keeps Gmail's results, with their labels patched.
+    expect(await (await session.searchThreads("is:unread OR is:starred")).next()).toMatchObject([
+      {info: {id: "aa", unread: false}}, {info: {id: "bb", unread: false}},
+    ]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops a message from a label binding's lists once the label is removed from it", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["Label_1"]},
+      {id: "a2", threadId: "aa", labelIds: ["Label_1"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX", "Label_1"]},
+      {id: "c1", threadId: "cc", labelIds: ["INBOX"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox, {labelName: "Team"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threads = async () => (await session.listThreads()).next();
+    const messages = async () => entryIds(await (await session.listMessages()).next());
+    expect(await messages()).toEqual(["a1", "a2", "b1"]);
+
+    await (await session.getMessage("a1")).removeLabel(teamLabel);
+    expect(await messages()).toEqual(["a2", "b1"]);
+    // The thread narrows to the messages still carrying the label.
+    expect(await threads()).toMatchObject([
+      {info: {id: "aa", messageCount: 1, latestMessageId: "a2"}},
+      {info: {id: "bb", messageCount: 1}},
+    ]);
+
+    await (await session.getMessage("a2")).removeLabel(teamLabel);
+    expect(await messages()).toEqual(["b1"]);
+    expect(entryIds(await threads())).toEqual(["bb"]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops a message from a search binding's lists once it no longer matches", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]},
+      {id: "b1", threadId: "bb", labelIds: ["UNREAD"]},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox, {searchQuery: "is:unread"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1", "b1"]);
+
+    await (await session.getMessage("a1")).mutate("markRead");
+
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["b1"]);
+    expect(entryIds(await (await session.listThreads()).next())).toEqual(["bb"]);
+    expect(entryIds(await (await session.searchMessages("from:sender@example.com")).next()))
+      .toEqual(["b1"]);
+  });
+
+  it("shows a label moved onto a message without adding the message to a list", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: []},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const archived = await session.getMessage("b1");
+
+    await archived.applyLabel(systemLabel("INBOX"));
+
+    await expect(archived.getMetadata()).resolves.toMatchObject({labels: [systemLabel("INBOX")]});
+    // Gmail does not list it in the inbox yet, and the gatekeeper never adds to Gmail's results.
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1"]);
+    expect(entryIds(await (await session.listThreads()).next())).toEqual(["aa"]);
+  });
+
+  it("drops a result Gmail's index returns after it stopped matching", async () => {
+    // No pending action: the listed message's own labels already contradict the list.
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: "a1", threadId: "aa"}, {id: "b1", threadId: "bb"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/a1" && !init.method) {
+        return json(messageMetadata("a1", "aa", null, ["INBOX"]));
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/b1" && !init.method) {
+        return json(messageMetadata("b1", "bb", null, []));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [systemLabel("INBOX")]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1"]);
   });
 });
 
