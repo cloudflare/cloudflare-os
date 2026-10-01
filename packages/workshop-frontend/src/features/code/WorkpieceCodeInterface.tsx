@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
-import { useKumoToastManager } from '@cloudflare/kumo'
+import { Banner, useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
   FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
@@ -1043,6 +1043,8 @@ export default function WorkpieceCodeInterface({
   // while an agent turn is active (its edits stream into the same file), and until the chat's
   // content has loaded.
   const isEditingLocked = !branchMode || isAgentActive || !clientReady
+  // Outside a chat nothing on screen says why the code is read-only, so say how to unlock it.
+  const lockedHint = branchMode ? undefined : 'Select or start a conversation to edit'
 
   // Apply whole-file operations (create / delete / rename) as local changes. `set` and `remove`
   // need no base text; the seeding call matters for an unpinned gadget, which it makes part of
@@ -1401,6 +1403,7 @@ export default function WorkpieceCodeInterface({
             streamingActiveFile={streamingActiveFile}
             isDiffMode={isDiffMode}
             editLocked={isEditingLocked}
+            lockedHint={lockedHint}
             workpieceNoun={workpieceNoun}
             initialExpanded={expandedDirsByWorkpieceRef.current.get(workpieceId)}
             onExpandedChange={expanded => expandedDirsByWorkpieceRef.current.set(workpieceId, expanded)}
@@ -1463,6 +1466,9 @@ export default function WorkpieceCodeInterface({
               </WorkshopIconButton>
             )}
           </div>
+          {lockedHint && stableDisplayedFiles.length > 0 && (
+            <Banner size="sm" title={lockedHint} className="m-2 w-auto shrink-0" />
+          )}
           <div className="min-h-0 flex-1">
             {stableDisplayedFiles.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center bg-kumo-base px-6 text-center">

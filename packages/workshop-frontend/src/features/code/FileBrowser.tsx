@@ -43,6 +43,8 @@ interface FileBrowserProps {
   streamingActiveFile?: string | null
   isDiffMode: boolean
   editLocked: boolean
+  // Why editing is unavailable, when the user can act on it: titles the disabled New file button.
+  lockedHint?: string
   // What the workpiece is called in dialog copy: "gadget" or "worktree".
   workpieceNoun: string
   // The directories the user has explicitly opened or closed, by path, as last reported through
@@ -87,6 +89,7 @@ export default function FileBrowser({
   streamingActiveFile,
   isDiffMode,
   editLocked,
+  lockedHint,
   workpieceNoun,
   initialExpanded,
   onExpandedChange,
@@ -264,7 +267,7 @@ export default function FileBrowser({
             onClick={() => setIsCreateModalOpen(true)}
             disabled={editLocked}
             aria-label="New file"
-            title="New file"
+            title={lockedHint ?? 'New file'}
             className="!h-8 !w-8 text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default md:!h-6 md:!w-6"
           >
             <Plus size={14} weight="bold" />
