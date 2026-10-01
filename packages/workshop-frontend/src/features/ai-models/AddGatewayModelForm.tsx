@@ -1,21 +1,39 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { Button, Input, Select } from '@cloudflare/kumo'
+import { Autocomplete, Button, Input, Select } from '@cloudflare/kumo'
 import { Plus } from '@phosphor-icons/react'
 import type { AiModelProvider, GatewayModel } from '@gadgets/workshop-shared/api'
 import { PROVIDER_LABELS, parseTokenLimit } from './modelForm'
+import type { ModelSuggestion } from './modelsDev'
 
 const TOKEN_LIMIT_ERROR = 'Enter a positive whole number of tokens'
+const MODEL_ID = {
+  label: 'Model ID',
+  description:
+    'The model’s name in the provider’s API. Chats and preferences refer to the model by it.',
+}
 
 /**
  * The form an admin describes a new gateway model with. It checks only what the server would
  * refuse outright as malformed; whether the ID is free and the provider usable is the server's to
  * say, and its refusal is shown as it is, beside the values that caused it.
  */
-export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
+export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }: {
   /** The providers a model may be added under. Not empty. */
   providers: readonly AiModelProvider[]
   /** Whether the form is locked, because a write to the models is in flight. */
   disabled: boolean
+  /**
+   * Present while the Model ID field suggests models. Picking one only fills the form in: what is
+   * added is what the form holds when it is submitted.
+   */
+  suggestions?: {
+    /** The models to suggest, each under the provider it belongs to. */
+    models: readonly ModelSuggestion[]
+    /** Whether the suggestions could not be loaded. */
+    unavailable: boolean
+    /** Called whenever the Model ID field is turned to, which is when suggestions are wanted. */
+    onEngage: () => void
+  }
   /** Adds the model. Rejects with the server's refusal. */
   onAdd: (model: GatewayModel) => Promise<void>
 }) => {
@@ -30,6 +48,9 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
   // A field error that focus could not announce, with the attempt that found it so that finding
   // the same error again says it again.
   const [unannounced, setUnannounced] = useState<{ error: string; attempt: number } | null>(null)
+  // The ID a picked suggestion filled the form in with.
+  const [pickedId, setPickedId] = useState<string | null>(null)
+  const [listOpen, setListOpen] = useState(false)
 
   const idRef = useRef<HTMLInputElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -37,6 +58,11 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
   const outputLimitRef = useRef<HTMLInputElement>(null)
 
   const provider = providers.includes(chosenProvider) ? chosenProvider : providers[0]
+  // The chosen provider's suggestions whose ID holds what is typed. Matched here rather than by
+  // the field, which would report itself expanded over a list with nothing in it.
+  const typed = id.trim().toLowerCase()
+  const offered = suggestions?.models.filter((suggestion) =>
+    suggestion.provider === provider && suggestion.id.toLowerCase().includes(typed)) ?? []
   const contextWindowTokens = parseTokenLimit(contextWindow)
   const outputLimitTokens = parseTokenLimit(outputLimit)
   const fields = [
@@ -67,6 +93,15 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
     setUnannounced(null)
   }
 
+  const clear = () => {
+    setId('')
+    setName('')
+    setContextWindow('')
+    setOutputLimit('')
+    setSubmitAttempted(false)
+    setPickedId(null)
+  }
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (disabled) return
@@ -91,11 +126,7 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
       setRefusal(err instanceof Error && err.message ? err.message : 'The model could not be added.')
       return
     }
-    setId('')
-    setName('')
-    setContextWindow('')
-    setOutputLimit('')
-    setSubmitAttempted(false)
+    clear()
   }
 
   return (
@@ -106,8 +137,12 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
         disabled={disabled}
         value={provider}
         onValueChange={(value) => {
-          if (value) setChosenProvider(value)
           setRefusal(null)
+          if (!value || value === provider) return
+          setChosenProvider(value)
+          // A suggested model belongs to the provider it was suggested under, so it does not
+          // follow the form to another one.
+          if (pickedId !== null && pickedId === id.trim()) clear()
         }}
         renderValue={(value) => PROVIDER_LABELS[value]}
       >
@@ -117,16 +152,72 @@ export const AddGatewayModelForm = ({ providers, disabled, onAdd }: {
           </Select.Option>
         ))}
       </Select>
-      <Input
-        ref={idRef}
-        label="Model ID"
-        description="The model’s name in the provider’s API. Chats and preferences refer to the model by it."
-        value={id}
-        disabled={disabled}
-        onChange={edit(setId)}
-        error={idError}
-        aria-invalid={idError !== undefined}
-      />
+      {suggestions ? (
+        // Kumo's Autocomplete hands out no ref to its input, and takes neither a focus handler nor
+        // aria-invalid for it, so all three go through this wrapper.
+        <div
+          ref={(wrapper) => {
+            idRef.current = wrapper?.querySelector<HTMLInputElement>('[role="combobox"]') ?? null
+            idRef.current?.setAttribute('aria-invalid', String(idError !== undefined))
+          }}
+          className="grid content-start gap-2"
+          onFocus={suggestions.onEngage}
+        >
+          <Autocomplete<ModelSuggestion>
+            label={MODEL_ID.label}
+            description={MODEL_ID.description}
+            error={idError}
+            items={offered}
+            filter={null}
+            open={listOpen && offered.length > 0}
+            onOpenChange={(open) => setListOpen(open)}
+            itemToStringValue={(suggestion) => suggestion.id}
+            value={id}
+            disabled={disabled}
+            onValueChange={(value, { reason }) => {
+              suggestions.onEngage()
+              // With the list closed, Escape asks to empty the field. What was typed stays.
+              if (reason === 'escape-key') return
+              edit(setId)({ target: { value } })
+              const picked =
+                reason === 'item-press' && offered.find((suggestion) => suggestion.id === value)
+              if (!picked) return
+              setPickedId(picked.id)
+              setName(picked.name)
+              setContextWindow(String(picked.contextWindow))
+              setOutputLimit(String(picked.outputLimit ?? ''))
+            }}
+          >
+            <Autocomplete.InputGroup />
+            <Autocomplete.Content>
+              <Autocomplete.List>
+                {(suggestion: ModelSuggestion) => (
+                  <Autocomplete.Item key={suggestion.id} value={suggestion}>
+                    <span className="block break-all font-mono text-sm">{suggestion.id}</span>
+                    <span className="block text-xs text-kumo-subtle">{suggestion.name}</span>
+                  </Autocomplete.Item>
+                )}
+              </Autocomplete.List>
+            </Autocomplete.Content>
+          </Autocomplete>
+          {suggestions.unavailable && (
+            <p role="status" className="text-sm leading-snug text-kumo-subtle">
+              Suggestions from models.dev couldn’t be loaded. Enter the model’s details by hand.
+            </p>
+          )}
+        </div>
+      ) : (
+        <Input
+          ref={idRef}
+          label={MODEL_ID.label}
+          description={MODEL_ID.description}
+          value={id}
+          disabled={disabled}
+          onChange={edit(setId)}
+          error={idError}
+          aria-invalid={idError !== undefined}
+        />
+      )}
       <Input
         ref={nameRef}
         label="Display name"

@@ -3,7 +3,7 @@
 // The list is the server's: every write is followed by a re-read, and each control shows what the
 // server reported rather than what was just chosen.
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Badge, Button, Radio, Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
 import type {
@@ -18,6 +18,7 @@ import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { AddGatewayModelForm } from './AddGatewayModelForm'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { PROVIDER_LABELS } from './modelForm'
+import { fetchModelsDev, suggestModels } from './modelsDev'
 
 const MODES: Record<GatewayModelMode, { label: string; meaning: string }> = {
   enabled: { label: 'Enabled', meaning: 'Offered in model pickers.' },
@@ -36,6 +37,7 @@ const MODES: Record<GatewayModelMode, { label: string; meaning: string }> = {
 const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
 const USER_MODELS_LABEL = 'Users may add their own models'
+const MODELS_DEV_LABEL = 'Suggest models from models.dev'
 
 const tokenCount = (tokens: number) => `${tokens.toLocaleString()} tokens`
 
@@ -96,6 +98,32 @@ const ModelRow = ({ model, busy, onModeChange, onRemove }: {
   </li>
 )
 
+const SettingSwitch = ({ label, checked, disabled, onChange, children }: {
+  label: string
+  checked: boolean
+  disabled: boolean
+  onChange: (checked: boolean) => void
+  /** What the setting does, which also describes the switch. */
+  children: ReactNode
+}) => {
+  const help = useId()
+  return (
+    <div className="mb-4 flex items-center gap-4 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
+      <div className="min-w-0 flex-1 text-sm">
+        <p className="font-medium text-kumo-default">{label}</p>
+        <p id={help} className="mt-0.5 text-kumo-subtle">{children}</p>
+      </div>
+      <Switch
+        aria-label={label}
+        aria-describedby={help}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onChange}
+      />
+    </div>
+  )
+}
+
 export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   admin: RpcStub<AdminApi>
   /** What the server last reported. Absent when the deployment isn't in AI Gateway mode. */
@@ -106,7 +134,11 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState(false)
   const [pendingRemoval, setPendingRemoval] = useState<AdminModel | null>(null)
-  const userModelsHelp = useId()
+  // What this panel's one request for the models.dev list settled with: the list, or undefined
+  // when the request failed. Null until then.
+  const [modelsDev, setModelsDev] = useState<{ list: unknown } | null>(null)
+  const modelsDevRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => modelsDevRequest.current?.abort(), [])
 
   if (!gatewayModels) {
     return (
@@ -147,6 +179,26 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     write(() => admin.setUserModelsEnabled(enabled))
       .catch((err) => reportFailure(`Couldn’t update “${USER_MODELS_LABEL}”`, err))
 
+  const changeModelsDevSuggestions = (enabled: boolean) =>
+    write(() => admin.setModelsDevSuggestions(enabled))
+      .catch((err) => reportFailure(`Couldn’t update “${MODELS_DEV_LABEL}”`, err))
+
+  // Runs when the add form's Model ID field is first turned to, and at most once for as long as
+  // the panel is mounted: the list is several megabytes, and a failure only costs the suggestions.
+  const loadModelsDev = () => {
+    if (modelsDevRequest.current) return
+    const request = new AbortController()
+    modelsDevRequest.current = request
+    fetchModelsDev(request.signal).then(
+      (list) => setModelsDev({ list }),
+      (err) => {
+        if (request.signal.aborted) return
+        console.error('Failed to load the models.dev list:', err)
+        setModelsDev({ list: undefined })
+      },
+    )
+  }
+
   const confirmRemoval = async () => {
     if (!pendingRemoval) return
     await write(() => admin.removeGatewayModel(pendingRemoval.id))
@@ -163,6 +215,17 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   }
   const added = gatewayModels.models.filter((model) => model.added)
   const { userModelsEnabled } = gatewayModels
+  const suggestions = gatewayModels.modelsDevSuggestions
+    ? {
+        models: suggestModels(
+          modelsDev?.list, gatewayModels.providers, gatewayModels.models.map((model) => model.id)),
+        // Nothing to suggest even counting the models already here: the request failed, or what
+        // it returned is not the list.
+        unavailable: modelsDev !== null
+          && suggestModels(modelsDev.list, gatewayModels.providers, []).length === 0,
+        onEngage: loadModelsDev,
+      }
+    : undefined
 
   return (
     <div className={CARD}>
@@ -173,24 +236,17 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         its default follows the catalog when the deployment is upgraded.
       </p>
 
-      <div className="mb-4 flex items-center gap-4 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
-        <div className="min-w-0 flex-1 text-sm">
-          <p className="font-medium text-kumo-default">{USER_MODELS_LABEL}</p>
-          <p id={userModelsHelp} className="mt-0.5 text-kumo-subtle">
-            When on, users can add models under their own IDs on their Providers page, and those
-            run through this deployment’s gateway. When off, only the models listed here can be
-            used, and the models users already added stop working until this is turned back on.
-            Nothing is deleted.
-          </p>
-        </div>
-        <Switch
-          aria-label={USER_MODELS_LABEL}
-          aria-describedby={userModelsHelp}
-          checked={userModelsEnabled}
-          disabled={busy}
-          onCheckedChange={changeUserModels}
-        />
-      </div>
+      <SettingSwitch
+        label={USER_MODELS_LABEL}
+        checked={userModelsEnabled}
+        disabled={busy}
+        onChange={changeUserModels}
+      >
+        When on, users can add models under their own IDs on their Providers page, and those run
+        through this deployment’s gateway. When off, only the models listed here can be used, and
+        the models users already added stop working until this is turned back on. Nothing is
+        deleted.
+      </SettingSwitch>
 
       <dl className="mb-6 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
         {GATEWAY_MODEL_MODES.map((mode) => (
@@ -258,11 +314,24 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
               through (<code className="font-mono text-xs">CF_AI_GATEWAY_PROVIDERS</code>).
             </p>
           ) : (
-            <AddGatewayModelForm
-              providers={gatewayModels.providers}
-              disabled={busy}
-              onAdd={(model) => write(() => admin.addGatewayModel(model))}
-            />
+            <>
+              <SettingSwitch
+                label={MODELS_DEV_LABEL}
+                checked={gatewayModels.modelsDevSuggestions}
+                disabled={busy}
+                onChange={changeModelsDevSuggestions}
+              >
+                While you add a model, your browser downloads models.dev’s public model list to
+                suggest model IDs, names and limits. A suggestion only fills in the form: nothing
+                is added until you select “Add model”.
+              </SettingSwitch>
+              <AddGatewayModelForm
+                providers={gatewayModels.providers}
+                disabled={busy}
+                suggestions={suggestions}
+                onAdd={(model) => write(() => admin.addGatewayModel(model))}
+              />
+            </>
           )}
         </section>
       </div>
