@@ -185,7 +185,12 @@ export function parseSkillManifest(path: string, source: string): SkillManifestM
   };
 }
 
-/** Rewrites a valid skill manifest's name while preserving its remaining frontmatter and body. */
+/**
+ * Rewrites a direct scalar name while preserving the rest of the manifest byte-for-byte.
+ * This intentionally edits the source instead of serializing the parsed document, which would
+ * reformat unrelated YAML. Aliases are not supported: replacing one would require deciding whether
+ * to change its shared anchor or only this reference.
+ */
 export function updateSkillManifestName(source: string, newName: string): string {
   let {frontmatter} = splitFrontmatter(source);
   if (frontmatter === null) throw new Error("Skill manifest must start with YAML frontmatter.");
@@ -196,6 +201,12 @@ export function updateSkillManifestName(source: string, newName: string): string
   if (!isScalar(name) || !name.range) throw new Error("Skill name is required.");
   let [start, end] = name.range;
   let replacement = JSON.stringify(newName);
+  // Unlike other scalars, a block scalar's range includes its terminating line break.
+  if (frontmatter[end - 1] === "\n") {
+    let header = frontmatter.slice(start, end).split(/\r?\n/, 1)[0] ?? "";
+    replacement += header.match(/[ \t]+#.*$/)?.[0] ?? "";
+    end -= frontmatter[end - 2] === "\r" ? 2 : 1;
+  }
   let frontmatterStart = source.indexOf(frontmatter);
   return source.slice(0, frontmatterStart + start) + replacement
     + source.slice(frontmatterStart + end);
