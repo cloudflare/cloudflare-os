@@ -71,6 +71,7 @@ function rejectUserCalls(impl: any, error: unknown): string[] {
     syncWorkspaceOutputs: reject("syncWorkspaceOutputs"),
     listProvidedAccounts: reject("listProvidedAccounts"),
     updatePinned: reject("updatePinned"),
+    getChatContext: reject("getChatContext"),
   };
   impl.users = { idFromString: (id: string) => id, get: () => user };
   return calls;
@@ -155,6 +156,29 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
 
     expect(calls).toEqual(["updatePinned"]);
     expect(restarts).toEqual([RESTART_REASON]);
+  }));
+
+  it("a refused pending-agent-call drain restarts the workspace",
+      () => withImpl(async (impl, restarts) => {
+    let errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    let calls = rejectUserCalls(impl, new Error(LOOP_LIMIT_MESSAGE));
+    // A call recorded but not yet drained. With no model to fall back from, the drain asks the
+    // initiator's user object for its chat context once.
+    const CHAT_ID = 1;
+    impl.storage.pendingAgentCalls.put({
+      chatId: CHAT_ID, callId: 0, methodName: "refused", args: [], argsSummary: "",
+      initiatorUserId: OWNER_ID, initiatorModelId: null,
+    });
+    impl.storage.nextAgentCallId.put(1);
+
+    await impl.drainPendingAgentCalls(CHAT_ID);
+
+    expect(calls).toEqual(["getChatContext"]);
+    expect(restarts).toEqual([RESTART_REASON]);
+    // The drain still logs its own failure and leaves the call recorded for the retry.
+    expect(logged(errors, "agent.callback.start.failed")).toHaveLength(1);
+    expect([...impl.storage.pendingAgentCalls.list()].map(call => call.methodName))
+        .toEqual(["refused"]);
   }));
 
   it("no other rejection restarts the workspace", () => withImpl(async (impl, restarts) => {
