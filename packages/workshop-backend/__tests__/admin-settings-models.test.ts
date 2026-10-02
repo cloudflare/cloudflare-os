@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { GatewayModel } from "@gadgets/workshop-shared/api";
+import { SUGGESTED_MODELS, type GatewayModel } from "@gadgets/workshop-shared/api";
 import { parseAdminConfig } from "../src/admin-config.js";
 import type { AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import { AdminSettings } from "../src/admin-settings.js";
@@ -807,6 +807,253 @@ describe("AdminSettings gateway providers", () => {
   });
 });
 
+// The first of Workers AI's suggested models, which is the one a test of that provider asks.
+const KIMI = "@cf/moonshotai/kimi-k2.7-code";
+
+// One event of a Workers AI chat completion, as the gateway streams it.
+const chunk = (choice: object, rest: object = {}) => `data: ${JSON.stringify({
+  id: "completion", object: "chat.completion.chunk", created: 0, model: KIMI,
+  choices: [{ index: 0, ...choice }], ...rest,
+})}\n\n`;
+function completion(text: string): Response {
+  return new Response(
+      chunk({ delta: { role: "assistant", content: text }, finish_reason: null }) +
+      chunk({ delta: {}, finish_reason: "stop" },
+          { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) +
+      "data: [DONE]\n\n",
+      { headers: { "content-type": "text/event-stream" } });
+}
+const refusal = (status: number, said: string) => () => new Response(said, { status });
+
+/**
+ * An AdminSettings whose gateway rides a Workers AI binding that answers each request with
+ * `respond`, beside the HTTPS token unless `vars` says otherwise. `test` runs one provider
+ * test and returns its result with the entries it logged.
+ */
+function tested(respond: (request: Request) => Response | Promise<Response>,
+                vars: object = {}) {
+  const requests: { url: string, headers: Headers, body: Record<string, unknown> }[] = [];
+  const fetch = vi.fn(async (input: Request | string | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    requests.push({
+      url: request.url, headers: request.headers, body: await request.clone().json(),
+    });
+    return respond(request);
+  });
+  const settings = adminSettings({ ...GATEWAY, WORKERS_AI: { fetch }, ...vars });
+  const test = async (provider: Parameters<AdminSettings["testGatewayProvider"]>[0]) => {
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const result = await settings.inDo(
+          admin => admin.testGatewayProvider(provider, "admin@example.com"));
+      const entries = logged.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+          .filter(entry => entry?.event === "gateway.provider.test");
+      return { result, entries };
+    } finally {
+      logged.mockRestore();
+    }
+  };
+  return { ...settings, fetch, requests, test };
+}
+
+describe("AdminSettings.testGatewayProvider", () => {
+  const TIMED_OUT = "The model did not answer within 15 seconds.";
+  const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
+      "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
+
+  it("asks the provider's first suggested model for a few tokens, as the admin", async () => {
+    const { test, requests, put, inDo } = tested(() => completion("OK"));
+    const before = await inDo(admin => admin.getAdminConfig());
+    const { result, entries } = await test("cloudflare");
+
+    expect(KIMI).toBe(Object.keys(SUGGESTED_MODELS.cloudflare)[0]);
+    expect(result).toStrictEqual({ model: KIMI, ok: true });
+    expect(requests).toHaveLength(1);
+    const [{ url, headers, body }] = requests;
+    expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+        "workers-ai/v1/chat/completions");
+    expect(JSON.parse(headers.get("cf-aig-metadata")!))
+        .toStrictEqual({ user: "admin@example.com" });
+    // Every test sends the same request, which a caching gateway must not answer itself.
+    expect(headers.get("cf-aig-skip-cache")).toBe("true");
+    expect(body.model).toBe(KIMI);
+    expect(body.max_completion_tokens ?? body.max_tokens).toBe(16);
+
+    expect(entries).toEqual([{
+      component: "workshop.admin.settings", event: "gateway.provider.test",
+      message: "tested an AI Gateway provider", modelId: KIMI, outcome: "ok",
+      durationMs: expect.any(Number),
+    }]);
+    // Nothing is stored.
+    expect(await inDo(admin => admin.getAdminConfig())).toStrictEqual(before);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused request with its status, and logs neither its message nor the prompt",
+      async () => {
+    const { test, requests } = tested(refusal(401, "Incorrect API key provided."));
+    const { result, entries } = await test("cloudflare");
+    expect(result).toStrictEqual(
+        { model: KIMI, ok: false, status: 401, message: "401 Incorrect API key provided." });
+
+    expect(entries).toEqual([{
+      component: "workshop.admin.settings", event: "gateway.provider.test",
+      message: "tested an AI Gateway provider", modelId: KIMI, outcome: "error", statusCode: 401,
+      durationMs: expect.any(Number),
+    }]);
+    const prompt = (requests[0]!.body.messages as { content: string }[]).at(-1)!.content;
+    expect(prompt).toBeTypeOf("string");
+    expect(JSON.stringify(entries)).not.toContain(prompt);
+    expect(JSON.stringify(entries)).not.toContain("Incorrect API key");
+  });
+
+  // pi's OpenAI adapter words a refusal differently from the provider SDKs.
+  it("reports the status of a refused OpenAI request", async () => {
+    const [model] = Object.keys(SUGGESTED_MODELS.openai);
+    const { test, requests } = tested(() => Response.json(
+        { error: { message: "Incorrect API key provided.", code: "invalid_api_key" } },
+        { status: 401 }));
+    const { result, entries } = await test("openai");
+    expect(requests.map(({ url }) => url)).toEqual(
+        ["https://workers-binding.ai/ai-gateway/gateways/platform-gateway/openai/responses"]);
+    expect(result).toStrictEqual({
+      model, ok: false, status: 401,
+      message: 'OpenAI API error (401): ' +
+          '{"message":"Incorrect API key provided.","code":"invalid_api_key"}',
+    });
+    expect(entries).toEqual([{
+      component: "workshop.admin.settings", event: "gateway.provider.test",
+      message: "tested an AI Gateway provider", modelId: model, outcome: "error", statusCode: 401,
+      durationMs: expect.any(Number),
+    }]);
+  });
+
+  // pi's Google adapter reports a refusal as the response body alone, which names no status.
+  it("reports a refused Google request without a status", async () => {
+    const { test, fetch: binding } = tested(() => completion("OK"));
+    const urls: string[] = [];
+    const skipCache: (string | null)[] = [];
+    const fetched = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      urls.push(request.url);
+      skipCache.push(request.headers.get("cf-aig-skip-cache"));
+      return Response.json(
+          { error: { code: 401, message: "API key not valid.", status: "UNAUTHENTICATED" } },
+          { status: 401 });
+    });
+    try {
+      const { result, entries } = await test("google");
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("/platform-gateway/google-ai-studio/v1beta/models/");
+      // Over HTTPS too, a gateway that caches responses is told to ask the provider.
+      expect(skipCache).toEqual(["true"]);
+      expect(result).toStrictEqual({
+        model: "gemini-3.6-flash", ok: false,
+        message: '{"error":{"code":401,"message":"API key not valid.","status":"UNAUTHENTICATED"}}',
+      });
+      expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
+      expect(entries[0]!.statusCode).toBeUndefined();
+    } finally {
+      fetched.mockRestore();
+    }
+    expect(binding).not.toHaveBeenCalled();
+  });
+
+  it("reports a provider that needs a token the deployment lacks, without a request",
+      async () => {
+    const { test, fetch } = tested(() => completion("OK"), { CF_AI_GATEWAY_API_TOKEN: undefined });
+    const { result, entries } = await test("google");
+    expect(result).toStrictEqual({ model: "gemini-3.6-flash", ok: false, message: NO_TOKEN });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(entries).toMatchObject([{ modelId: "gemini-3.6-flash", outcome: "error" }]);
+    expect(entries[0]!.statusCode).toBeUndefined();
+  });
+
+  it("reports a model that does not answer in time", async () => {
+    // Fifteen seconds, shortened for the test. The transport answers only by failing once the
+    // request is aborted.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(20));
+    try {
+      const { test, requests } = tested(request => new Promise<Response>((_, reject) => {
+        request.signal.addEventListener("abort", () => reject(request.signal.reason));
+      }));
+      const { result, entries } = await test("cloudflare");
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      expect(requests).toHaveLength(1);
+      expect(result).toStrictEqual({ model: KIMI, ok: false, message: TIMED_OUT });
+      expect(entries).toMatchObject([{ modelId: KIMI, outcome: "error" }]);
+      expect(entries[0]!.statusCode).toBeUndefined();
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it("tests a provider that is off, and leaves it off", async () => {
+    const { test, inDo } = tested(
+        () => completion("OK"), { CF_AI_GATEWAY_PROVIDERS: "anthropic" });
+    expect((await test("cloudflare")).result).toStrictEqual({ model: KIMI, ok: true });
+    const { stored, view } = await providers(inDo);
+    expect(stored).toStrictEqual([]);
+    expect(view[0]).toStrictEqual({ provider: "cloudflare", needsApiToken: false });
+  });
+
+  it("throws for a provider AI Gateway does not serve", async () => {
+    const { inDo, fetch } = tested(() => completion("OK"));
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(inDo(admin => admin.testGatewayProvider("ollama", "admin@example.com")))
+          .rejects.toThrow(new Error('Provider "ollama" is not served through AI Gateway.'));
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("puts a failure's message on one line, cuts it short, and keeps the token out of it",
+      async () => {
+    const said = `bad\n\n  key:\tgateway-token was\r\nrefused ${"x".repeat(400)}`;
+    const { test } = tested(refusal(403, said));
+    const { result, entries } = await test("cloudflare");
+    expect(result).toStrictEqual({
+      model: KIMI, ok: false, status: 403,
+      message: `403 bad key: [redacted] was refused ${"x".repeat(400)}`.slice(0, 300),
+    });
+    expect(JSON.stringify(entries)).not.toContain("gateway-token");
+    expect(JSON.stringify(entries)).not.toContain("refused");
+
+    // A token the cut would otherwise leave the start of.
+    const straddling = tested(refusal(403, `${"y".repeat(292)}gateway-token`));
+    const { message } = (await straddling.test("cloudflare")).result as { message: string };
+    expect(message).toBe(`403 ${"y".repeat(292)}[red`);
+  });
+
+  // The request is out for as long as fifteen seconds, which no other admin call waits for.
+  it("lets the config be read and changed while the request is out", async () => {
+    const requested = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<Response>();
+    const { inDo } = tested(() => {
+      requested.resolve();
+      return answer.promise;
+    });
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await inDo(async admin => {
+        const test = admin.testGatewayProvider("cloudflare", "admin@example.com");
+        await requested.promise;
+        await admin.setGatewayModelMode("claude-fable-5-1", "hidden");
+        const view = (await admin.getSettings("admin")).gatewayModels!;
+        expect(view.models.find(model => model.id === "claude-fable-5-1")?.mode).toBe("hidden");
+        answer.resolve(completion("OK"));
+        expect(await test).toStrictEqual({ model: KIMI, ok: true });
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
+
 describe("AdminSettings outside AI Gateway mode", () => {
   it("has no gateway models to show, and refuses to change any", async () => {
     const { inDo, stored, settings, put } = adminSettings({});
@@ -824,6 +1071,8 @@ describe("AdminSettings outside AI Gateway mode", () => {
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setDefaultReasoning("low"))).rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setGatewayProviderEnabled("openai", true)))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.testGatewayProvider("anthropic", "admin")))
         .rejects.toThrow(NOT_GATEWAY);
     expect(await inDo(admin => admin.getAdminConfig().addedProviders)).toStrictEqual([]);
     expect(await settings()).toStrictEqual({});

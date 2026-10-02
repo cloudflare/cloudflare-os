@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { GatewayModel, GatewayModelMode } from "@gadgets/workshop-shared/api";
+import {
+  SUGGESTED_MODELS, type GatewayModel, type GatewayModelMode,
+} from "@gadgets/workshop-shared/api";
 import { ADMIN_USERNAME, startHarness, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedChatCompletions } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
@@ -10,10 +12,11 @@ import {
 const LOG_URL = "https://api.cloudflare.com/client/v4/accounts/gateway-account-id/ai-gateway/gateways/" +
     "platform-gateway/logs/scripted-log-id";
 
-// One reply for each chat turn the cases below run, in order.
+// One reply for each chat turn the cases below run, in order, then one for each provider test.
 const model = scriptedChatCompletions([
   { text: "Charged reply." }, { text: "Built-in reply." }, { text: "Default-level reply." },
   { text: "Own-level reply." },
+  { text: "OK" }, { error: { status: 401, message: "Invalid gateway credentials." } },
 ]);
 let logReads = 0;
 const network = new NetworkInterceptor({
@@ -90,6 +93,8 @@ const ADDING_REFUSED = "Adding your own models is disabled on this deployment by
 const cantBeUsedMessage = (name: string) => `The "${name}" model can't be used: ` +
     "adding your own models is disabled on this deployment by an administrator.";
 const ids = (models: readonly { id: string }[]) => models.map(candidate => candidate.id);
+// A provider the gateway serves, as the admin is shown it while it is off.
+const offProvider = (provider: string) => ({ provider, needsApiToken: false });
 
 // The cases below share one deployment, whose admin signs up once and logs in after that.
 let adminSignedUp = false;
@@ -325,4 +330,93 @@ it("an admin's reasoning levels reach a model's chat turns, its own ahead of the
     }
   }
   expect(await scripted()).toEqual(before);
+});
+
+it("an admin turns on a provider beside the environment's, and tests what one answers",
+    async () => {
+  using adminPublic = connect(harness.url);
+  using adminUser = await adminSession(adminPublic);
+  using admin = await adminUser.getAdminApi();
+  if (admin === null) throw new Error("The deployment admin API was unavailable");
+  const gatewayModels = async () => {
+    const view = (await admin.getSettings()).gatewayModels;
+    if (view === undefined) throw new Error("The admin settings listed no gateway models");
+    return view;
+  };
+
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, nextUsernames("gatewayproviders")[0]!);
+  const mine = { type: "agent" as const, id: "gatewayproviders-mine", name: "Mine" };
+  const mineConfig = { provider: "anthropic" as const, model: "claude-mine", apiToken: "" };
+
+  // The environment lists Workers AI alone. Every other provider the gateway serves is off.
+  const before = await gatewayModels();
+  expect(before.providerSettings).toEqual([
+    { provider: "cloudflare", enabledBy: "environment", needsApiToken: false },
+    offProvider("anthropic"), offProvider("openai"), offProvider("google"),
+  ]);
+  expect(await api.getAiConfig()).toMatchObject({ enabledProviders: ["cloudflare"] });
+  await expect(api.addModel(mine, mineConfig))
+      .rejects.toThrow('Provider "anthropic" is not available in AI Gateway mode.');
+
+  try {
+    // On, a provider is as one the environment lists: its catalog's models in their default
+    // modes, and open to the admin's and the users' own.
+    await admin.setGatewayProviderEnabled("anthropic", true);
+    const on = await gatewayModels();
+    expect(on).toEqual({
+      ...before,
+      providers: ["cloudflare", "anthropic"],
+      providerSettings: [
+        before.providerSettings[0],
+        { provider: "anthropic", enabledBy: "admin", needsApiToken: false },
+        offProvider("openai"), offProvider("google"),
+      ],
+      models: on.models,
+    });
+    const added = on.models.slice(before.models.length);
+    expect(on.models.slice(0, before.models.length)).toEqual(before.models);
+    expect(ids(added)).toEqual(Object.keys(SUGGESTED_MODELS.anthropic));
+    expect(added.filter(candidate => candidate.provider !== "anthropic" || candidate.added ||
+        candidate.mode !== candidate.defaultMode)).toEqual([]);
+    expect(await api.getAiConfig()).toEqual({
+      enabled: true,
+      enabledProviders: ["cloudflare", "anthropic"],
+      builtInModelIds: ids(on.models),
+      userModelsEnabled: true,
+    });
+    expect(ids(await api.listModels()))
+        .toEqual(ids(on.models.filter(candidate => candidate.mode === "enabled")));
+    await api.addModel(mine, mineConfig);
+
+    // What the admin may not do. None of it changes anything.
+    await expect(admin.setGatewayProviderEnabled("cloudflare", false)).rejects.toThrow(
+        'Provider "cloudflare" is enabled by CF_AI_GATEWAY_PROVIDERS and can only be turned ' +
+        "off there.");
+    await expect(admin.setGatewayProviderEnabled("ollama", true))
+        .rejects.toThrow('Provider "ollama" is not served through AI Gateway.');
+    await expect(admin.testGatewayProvider("ollama"))
+        .rejects.toThrow('Provider "ollama" is not served through AI Gateway.');
+    expect(await gatewayModels()).toEqual(on);
+
+    // A test asks the provider's first suggested model, and reports what the gateway answered.
+    const [first] = Object.keys(SUGGESTED_MODELS.cloudflare);
+    const sent = model.requests.length;
+    expect(await admin.testGatewayProvider("cloudflare")).toEqual({ model: first, ok: true });
+    expect(await admin.testGatewayProvider("cloudflare")).toEqual({
+      model: first, ok: false, status: 401, message: "401 Invalid gateway credentials.",
+    });
+    expect(model.requests.slice(sent).map(request => (request as { model?: string }).model))
+        .toEqual([first, first]);
+    expect(await gatewayModels()).toEqual(on);
+
+    // Off again, the deployment is as it was. The model a user added meanwhile is still theirs.
+    await admin.setGatewayProviderEnabled("anthropic", false);
+    expect(await gatewayModels()).toEqual(before);
+    expect(await api.getAiConfig()).toMatchObject({ enabledProviders: ["cloudflare"] });
+    expect(ids(await api.listModels())).toContain(mine.id);
+  } finally {
+    await admin.setGatewayProviderEnabled("anthropic", false);
+  }
+  expect(model.remainingSteps()).toBe(0);
 });

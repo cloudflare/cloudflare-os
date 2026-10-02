@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayProviderTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -10,7 +10,8 @@ import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAd
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
-import { gatewayReasoningLevels, isRuntimeModel } from './ai-models.js';
+import { AgentTurnError, completeText } from './ai-invoke.js';
+import { gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -36,6 +37,16 @@ function compactionBudgetRange(model: AdminModel): { builtIn: number, max: numbe
     // A budget is capped at that room, so an unbounded one reads it back.
     max: getModelTokenLimits({ ...config, compactionInputBudget: Infinity }).inputBudget,
   };
+}
+
+// How long a provider test waits for its model to answer.
+const PROVIDER_TEST_TIMEOUT_MS = 15_000;
+
+// What a failed provider test tells the admin: the provider's or the gateway's own words with the
+// deployment's gateway token cut out, should they repeat it, on one line and cut short.
+function providerTestMessage(text: string, apiToken: string | undefined): string {
+  if (apiToken) text = text.replaceAll(apiToken, "[redacted]");
+  return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
 /**
@@ -577,6 +588,53 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     });
   }
 
+  /**
+   * Ask the first suggested model of a provider for a few tokens through the gateway, on behalf
+   * of the admin `adminUserId`, and report what happened. A request that fails is a result. The
+   * environment alone decides how the request is routed, so a provider that is off can be tested.
+   *
+   * Nothing is stored and the config mutation queue is not joined, so the other admin calls run
+   * while the request is out.
+   */
+  async testGatewayProvider(provider: AiModelProvider, adminUserId: string)
+      : Promise<GatewayProviderTest> {
+    let gateway = this.#requireGateway();
+    assertGatewayProvider(provider);
+    let [model] = Object.keys(SUGGESTED_MODELS[provider]);
+    if (model === undefined) {
+      throw new Error(`Provider "${provider}" has no suggested model to test.`);
+    }
+    let signal = AbortSignal.timeout(PROVIDER_TEST_TIMEOUT_MS);
+    let startedAt = Date.now();
+    let failure: { status?: number, message: string } | undefined;
+    try {
+      let handle = getModel(this.env, { provider, model, apiToken: "" },
+          { type: "user", id: adminUserId, name: adminUserId });
+      await completeText(handle, {
+        prompt: "Reply with OK.", maxTokens: 16, signal,
+        // The request is the same every time, which a gateway that caches responses would
+        // answer without asking the provider.
+        headers: { "cf-aig-skip-cache": "true" },
+      });
+    } catch (error) {
+      // The signal is this call's own, so nothing but the timeout aborts it.
+      let message = signal.aborted
+          ? `The model did not answer within ${PROVIDER_TEST_TIMEOUT_MS / 1000} seconds.`
+          : error instanceof Error ? error.message : String(error);
+      let status = error instanceof AgentTurnError ? error.statusCode : undefined;
+      failure = {
+        ...(status !== undefined && { status }),
+        message: providerTestMessage(message, gateway.apiToken),
+      };
+    }
+    // The failure message stays out of the log: a provider words it.
+    logger.info("tested an AI Gateway provider", {
+      event: "gateway.provider.test", modelId: model, outcome: failure ? "error" : "ok",
+      statusCode: failure?.status, durationMs: Date.now() - startedAt,
+    });
+    return failure ? { model, ok: false, ...failure } : { model, ok: true };
+  }
+
   /** Set whether users may add models of their own to the ones the gateway provides. */
   async setUserModelsEnabled(enabled: boolean): Promise<void> {
     this.#requireGateway();
@@ -859,5 +917,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
     return this.admin.setGatewayProviderEnabled(provider, enabled);
+  }
+
+  testGatewayProvider(provider: AiModelProvider): Promise<GatewayProviderTest> {
+    return this.admin.testGatewayProvider(provider, this.adminUserId);
   }
 }

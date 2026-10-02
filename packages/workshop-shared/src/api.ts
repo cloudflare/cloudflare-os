@@ -1276,6 +1276,18 @@ export interface AdminApi {
    * minted for one of its models, which setUserModelsEnabled(false) does.
    */
   setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void>;
+
+  /**
+   * Send one small request to the first of a provider's SUGGESTED_MODELS through the gateway, as
+   * the admin, and report what happened within 15 seconds: the Workshop can't see which provider
+   * keys the gateway holds. It works on a provider that is off, and changes nothing. Throws for
+   * a provider the gateway does not serve; a request that fails is a result (see
+   * GatewayProviderTest).
+   *
+   * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
+   * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models.
+   */
+  testGatewayProvider(provider: AiModelProvider): Promise<GatewayProviderTest>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1585,6 +1597,16 @@ export type AdminGatewayProvider = {
    */
   needsApiToken: boolean;
 };
+
+/**
+ * What AdminApi.testGatewayProvider() found: the model it asked, and whether the model answered.
+ * A failure carries a message on one line, cut short: what the provider or the gateway answered,
+ * or why no answer came. It carries the HTTP status of the response only when the model runtime
+ * reports one, which it does not for every provider (a failed Google request has none): the
+ * message then says what there is.
+ */
+export type GatewayProviderTest = { model: string } &
+    ({ ok: true } | { ok: false; status?: number; message: string });
 
 /** Configuration specifying how to connect to an AI model provider. */
 export type AiModelConfig = {
