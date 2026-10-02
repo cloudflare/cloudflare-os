@@ -138,6 +138,50 @@ describe("compaction trigger", () => {
     })).toEqual({inputBudget: 245_760, maxOutputTokens: 16_384});
   });
 
+  it("takes the config's compaction budget ahead of the model's own", () => {
+    let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
+    // Below the suggested 272K, and above it.
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 100_000}))
+        .toEqual({inputBudget: 100_000, maxOutputTokens: 128_000});
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 500_000}))
+        .toEqual({inputBudget: 500_000, maxOutputTokens: 128_000});
+
+    // A model that declares no budget of its own sizes against its window.
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "", compactionInputBudget: 200_000,
+    })).toEqual({inputBudget: 200_000, maxOutputTokens: undefined});
+
+    // Absent and undefined are the same.
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: undefined}))
+        .toEqual(getModelTokenLimits(gpt));
+  });
+
+  it("caps the config's compaction budget at what the window leaves for a prompt", () => {
+    // 1,050,000 less the 128,000 reserved for the response.
+    let gpt = {provider: "openai" as const, model: "gpt-6-sol", apiToken: ""};
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 922_000}).inputBudget)
+        .toBe(922_000);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: 922_001}).inputBudget)
+        .toBe(922_000);
+    expect(getModelTokenLimits({...gpt, compactionInputBudget: Infinity}).inputBudget)
+        .toBe(922_000);
+
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-opus-5-5", apiToken: "",
+      compactionInputBudget: 2_000_000,
+    }).inputBudget).toBe(1_000_000);
+    expect(getModelTokenLimits({
+      provider: "cloudflare", model: "@cf/moonshotai/kimi-k2.7-code", apiToken: "",
+      compactionInputBudget: 262_144,
+    })).toEqual({inputBudget: 229_376, maxOutputTokens: 32_768});
+
+    // The config's own window and output limit decide the room.
+    expect(getModelTokenLimits({
+      provider: "anthropic", model: "claude-unlisted", apiToken: "",
+      contextWindow: 100_000, outputLimit: 20_000, compactionInputBudget: 90_000,
+    }).inputBudget).toBe(80_000);
+  });
+
   it("recognizes /compact as the newest message, and only there", () => {
     let compact = record(1, user, {
       type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},

@@ -1,5 +1,7 @@
-import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiModelConfig}
-  from "@gadgets/workshop-shared/api";
+import {
+  COMPACTION_TRIGGER_RATIO, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage,
+  type AiModelConfig,
+} from "@gadgets/workshop-shared/api";
 import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
@@ -8,9 +10,6 @@ import {zeroUsage} from "./ai-invoke";
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a
 // boundary and stores their replay state in a checkpoint. Canonical history keeps every message, so
 // the UI can still page back through them, but agent replay starts at the boundary.
-
-// Compact when the prompt reaches this share of the input budget, leaving room for the response.
-const COMPACTION_TRIGGER_RATIO = 0.85;
 
 // Target this share of the input budget for retained messages, leaving room for the summary and
 // the turns that follow.
@@ -24,18 +23,20 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
  * How the turn divides the model's window. The reserved response capacity is both withheld from the
  * prompt's budget and sent as the response cap. A model may declare a smaller `compactionInputBudget`
  * when prompts near its full window are priced or paced worse; compaction then sizes against that
- * instead of the window. A Cloudflare model configured by hand has no SUGGESTED_MODELS entry to
- * declare its reservation, so the provider's applies.
+ * instead of the window. The config's own `compactionInputBudget` comes ahead of the model's, and
+ * either is capped at what the window leaves for a prompt. A Cloudflare model configured by hand
+ * has no SUGGESTED_MODELS entry to declare its reservation, so the provider's applies.
  */
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
   let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
+  let inputLimit = (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
+      (maxOutputTokens ?? 0);
   return {
-    inputBudget: model?.compactionInputBudget ??
-        (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
-            (maxOutputTokens ?? 0),
+    inputBudget: Math.min(
+        config.compactionInputBudget ?? model?.compactionInputBudget ?? inputLimit, inputLimit),
     maxOutputTokens,
   };
 }

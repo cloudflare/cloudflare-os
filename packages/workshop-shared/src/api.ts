@@ -1401,6 +1401,29 @@ export function isGatewayModelMode(value: unknown): value is GatewayModelMode {
 }
 
 /**
+ * How much reasoning a model is asked for on an agent's turns, least to most. The values are the
+ * model runtime's own (pi's ModelThinkingLevel). Each model takes some of them. One it lacks is
+ * fitted to the next higher one it has, or else the next lower, so 'off' on a model that cannot
+ * stop reasoning asks for its lowest level. A model that does no reasoning is sent none.
+ */
+export const REASONING_LEVELS =
+    ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/** One of REASONING_LEVELS. */
+export type ReasoningLevel = typeof REASONING_LEVELS[number];
+
+/** Whether `value` is a ReasoningLevel. */
+export function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return REASONING_LEVELS.includes(value as ReasoningLevel);
+}
+
+/**
+ * The share of its compaction budget a chat's prompt may reach before the chat compacts, leaving
+ * room for the response.
+ */
+export const COMPACTION_TRIGGER_RATIO = 0.85;
+
+/**
  * The description of a model a deployment provides through AI Gateway. Its admin supplies one to
  * add a model beside the SUGGESTED_MODELS of the providers the gateway enables.
  */
@@ -1487,6 +1510,24 @@ export type AiModelConfig = {
    * table, it is both the requested response cap and the space reserved for it in the window.
    */
   outputLimit?: number;
+
+  /**
+   * The reasoning level of an agent's turns on the model. Absent gives the model's built-in
+   * behaviour. Set only on a deployment's AI Gateway models (see GatewayModelSettings).
+   */
+  reasoning?: ReasoningLevel;
+
+  /**
+   * Overrides the model's built-in compaction budget, up to the room its window leaves for a
+   * prompt. Set only on a deployment's AI Gateway models (see GatewayModelSettings).
+   */
+  compactionInputBudget?: number;
+
+  /**
+   * The model whose runtime flags this one borrows (see GatewayModel.behavesLike). Set only on
+   * the models a deployment's admin added to its AI Gateway.
+   */
+  behavesLike?: string;
 };
 
 /**
@@ -1494,9 +1535,10 @@ export type AiModelConfig = {
  * and edited without the client ever receiving its secrets. As returned by
  * `AuthenticatedApi.getModelConfig()`, a `null` secret is a non-empty value that was withheld. As
  * passed to `AuthenticatedApi.updateModel()` or `addModel()`, a `null` secret keeps (or copies)
- * the stored value.
+ * the stored value. It has none of the fields that only a deployment sets on its own models.
  */
-export type RedactedAiModelConfig = Omit<AiModelConfig, "apiToken" | "extraHeaders"> & {
+export type RedactedAiModelConfig = Omit<AiModelConfig,
+    "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike"> & {
   /** `AiModelConfig.apiToken`, or null if withheld. */
   apiToken: string | null;
 

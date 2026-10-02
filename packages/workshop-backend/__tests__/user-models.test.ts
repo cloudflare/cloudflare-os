@@ -112,6 +112,21 @@ describe("UserDurableObject model editing", () => {
     expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
   });
 
+  // The validated RPC boundary lets through properties the argument's type omits.
+  it("stores none of the fields that only a deployment sets on its own models", async () => {
+    const { user, stored } = await userWithModel();
+    const smuggled = { reasoning: "max", compactionInputBudget: 5, behavesLike: "gpt-6-sol" };
+    const other = { type: "agent" as const, id: "other", name: "Other" };
+    await user.addModel(other, { ...CONFIG, model: "other", ...smuggled } as typeof CONFIG);
+    expect(await stored("other")).toStrictEqual(
+        { profile: other, config: { ...CONFIG, model: "other" } });
+
+    await user.updateModel(PROFILE, { ...CONFIG, contextWindow: 200000, ...smuggled } as
+        typeof CONFIG);
+    expect(await stored(PROFILE.id)).toStrictEqual(
+        { profile: PROFILE, config: { ...CONFIG, contextWindow: 200000 } });
+  });
+
   it("requires every secret when adding without a source", async () => {
     const { user } = await userWithModel();
     const clone = { type: "agent" as const, id: "clone", name: "Clone" };
