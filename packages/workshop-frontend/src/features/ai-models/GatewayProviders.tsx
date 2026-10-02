@@ -1,25 +1,19 @@
-import { useEffect, useId, useRef, useState } from 'react'
-import { Banner, Button, Switch } from '@cloudflare/kumo'
+import { useId } from 'react'
+import { Banner, Switch } from '@cloudflare/kumo'
 import type {
   AdminGatewayProvider,
   AiModelProvider,
   GatewayProviderTest,
 } from '@gadgets/workshop-shared/api'
-import { rpcFailureDescription } from '../../rpcErrors'
+import { GatewayTestButton, GatewayTestStatus } from './GatewayTest'
 import { PROVIDER_LABELS } from './modelForm'
-
-// Where a provider's test stands: in flight, answered by the server (a request that failed is an
-// answer too), or not run, because the call for it failed.
-type ProviderTest =
-  | { state: 'testing' }
-  | { state: 'answered'; result: GatewayProviderTest }
-  | { state: 'not-run'; reason: string | undefined }
+import { useGatewayTests, type GatewayTestState } from './useGatewayTests'
 
 const ProviderRow = ({ entry, busy, test, onEnabledChange, onTest }: {
   entry: AdminGatewayProvider
   busy: boolean
   /** Where the provider's last test stands. Absent until one is run. */
-  test: ProviderTest | undefined
+  test: GatewayTestState | undefined
   onEnabledChange: (enabled: boolean) => void
   onTest: () => void
 }) => {
@@ -27,7 +21,6 @@ const ProviderRow = ({ entry, busy, test, onEnabledChange, onTest }: {
   const tokenWarning = useId()
   const label = PROVIDER_LABELS[entry.provider]
   const locked = entry.enabledBy === 'environment'
-  const testing = test?.state === 'testing'
   const described = [locked && lockedNote, entry.needsApiToken && tokenWarning].filter(Boolean)
 
   return (
@@ -41,18 +34,7 @@ const ProviderRow = ({ entry, busy, test, onEnabledChange, onTest }: {
             </p>
           )}
         </div>
-        {/* A test in flight leaves the button enabled, because a browser takes focus from a
-            button that becomes disabled. A press is ignored until the test answers. */}
-        <Button
-          variant="secondary"
-          size="sm"
-          className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-          aria-label={testing ? `Testing ${label}…` : `Test ${label}`}
-          aria-disabled={testing}
-          onClick={onTest}
-        >
-          {testing ? 'Testing…' : 'Test'}
-        </Button>
+        <GatewayTestButton name={label} testing={test?.state === 'testing'} onTest={onTest} />
         <Switch
           aria-label={label}
           aria-describedby={described.join(' ') || undefined}
@@ -75,33 +57,7 @@ const ProviderRow = ({ entry, busy, test, onEnabledChange, onTest }: {
           }
         />
       )}
-      {/* Always here, and empty until a test answers, so that the answer is announced. */}
-      <div role="status" className="break-words text-xs leading-4">
-        {test?.state === 'answered' && (test.result.ok ? (
-          <p className="mt-2 text-kumo-success">
-            <span className="font-mono">{test.result.model}</span> answered through the gateway.
-          </p>
-        ) : (
-          <>
-            <p className="mt-2 text-kumo-danger">
-              Failed{test.result.status !== undefined && ` (${test.result.status})`}:{' '}
-              {test.result.message}
-            </p>
-            {(test.result.status === 401 || test.result.status === 403) && (
-              <p className="mt-1 text-kumo-subtle">
-                The gateway may hold no key or credits for this provider, or{' '}
-                <code className="font-mono">CF_AI_GATEWAY_API_TOKEN</code> may not be allowed to
-                run models.
-              </p>
-            )}
-          </>
-        ))}
-        {test?.state === 'not-run' && (
-          <p className="mt-2 text-kumo-danger">
-            Couldn’t run the test{test.reason === undefined ? '.' : `: ${test.reason}`}
-          </p>
-        )}
-      </div>
+      <GatewayTestStatus test={test} />
     </li>
   )
 }
@@ -123,29 +79,7 @@ export const GatewayProviders = ({ providers, busy, onEnabledChange, onTest }: {
    */
   onTest: (provider: AiModelProvider) => Promise<GatewayProviderTest>
 }) => {
-  const [tests, setTests] = useState<Partial<Record<AiModelProvider, ProviderTest>>>({})
-  // A test that fails once the list is gone is not reported. Leaving the admin page disposes of
-  // the capability the test was asked through, so such a test often fails for that reason alone.
-  const mounted = useRef(false)
-  useEffect(() => {
-    mounted.current = true
-    return () => { mounted.current = false }
-  }, [])
-
-  // One test per provider at a time, so an earlier test can't answer over a later one.
-  const runTest = async (provider: AiModelProvider) => {
-    if (tests[provider]?.state === 'testing') return
-    const show = (test: ProviderTest) => setTests((shown) => ({ ...shown, [provider]: test }))
-    show({ state: 'testing' })
-    try {
-      const result = await onTest(provider)
-      show({ state: 'answered', result })
-    } catch (err) {
-      if (!mounted.current) return
-      console.error(`Failed to test ${provider} through the gateway:`, err)
-      show({ state: 'not-run', reason: rpcFailureDescription(err) })
-    }
-  }
+  const { tests, startTest } = useGatewayTests(onTest)
 
   return (
     <>
@@ -161,9 +95,9 @@ export const GatewayProviders = ({ providers, busy, onEnabledChange, onTest }: {
             key={entry.provider}
             entry={entry}
             busy={busy}
-            test={tests[entry.provider]}
+            test={tests.get(entry.provider)}
             onEnabledChange={(enabled) => onEnabledChange(entry.provider, enabled)}
-            onTest={() => { void runTest(entry.provider) }}
+            onTest={() => startTest(entry.provider)}
           />
         ))}
       </ul>
