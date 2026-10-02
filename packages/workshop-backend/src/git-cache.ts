@@ -217,6 +217,26 @@ export class WorkspaceGitCache {
     return record === undefined ? undefined : decodeLooseObject(record.data);
   }
 
+  /**
+   * Stores objects that came from no gatekeeper -- a blueprint release's -- in one storage
+   * transaction. Each goes under the oid computed here from its content, so nothing a caller
+   * passes can poison the store. No `gitObjectMetadata` is written: like commits authored here,
+   * the objects are attributed to no remote, so no gatekeeper's scoped view answers for them.
+   * An object already held is left as it is, along with whatever metadata it has.
+   *
+   * There is no size cap; the caller bounds what it imports.
+   */
+  async importObjects(objects: Iterable<PackableObject>): Promise<void> {
+    let entries = await Promise.all(Array.from(objects, async object =>
+        ({ ...object, oid: await gitObjectOid(object.type, object.payload) })));
+    this.storage.transaction(() => {
+      for (let { oid, type, payload } of entries) {
+        if (this.hasLocalObject(oid)) continue;
+        this.storage.gitObjects.put({ oid, data: encodeLooseObject(type, payload) });
+      }
+    });
+  }
+
   // -------------------------------------------------------------------------------------
   // Gatekeeper writes
 
@@ -977,6 +997,51 @@ export class WorkspaceGitCache {
       stack.push(...parseGitCommitRefs(local.payload, oid).parents);
     }
     return false;
+  }
+
+  /**
+   * The best common ancestors of two commits, as `git merge-base --all` defines them: every
+   * commit reachable from both (a commit reaches itself) that is not reachable from another
+   * such commit, in no particular order. Usually there is one, the base for a three-way merge
+   * of the two. A criss-cross history has several, and unrelated histories have none.
+   *
+   * Like `isAncestor()`, this walks locally cached commits and never pulls. A parent chain that
+   * leaves the cache stops at the first commit not held: that commit still counts as an
+   * ancestor, since a held commit names it, but its own ancestors go unseen. So the answer is
+   * exact wherever both histories are wholly held, as a gadget's and a blueprint release's are.
+   * Throws if either commit is not itself a locally cached commit.
+   */
+  mergeBases(a: GitOid, b: GitOid): GitOid[] {
+    let ancestryOfA = this.#cachedAncestry(a);
+    let ancestryOfB = this.#cachedAncestry(b);
+    let common = [...ancestryOfA.keys()].filter(oid => ancestryOfB.has(oid));
+    // Every parent of a common ancestor is a common ancestor too, so one of them is reachable
+    // from another exactly when it is the parent of one.
+    let reachable = new Set(common.flatMap(oid => ancestryOfA.get(oid)!));
+    return common.filter(oid => !reachable.has(oid));
+  }
+
+  // Every commit reachable from `start`, itself included, over cached history, each with its
+  // parents -- or with none, if it is not a locally cached commit and the walk stops there.
+  #cachedAncestry(start: GitOid): Map<GitOid, GitOid[]> {
+    validateGitOid(start);
+    let ancestry = new Map<GitOid, GitOid[]>();
+    let stack = [start];
+    while (stack.length > 0) {
+      let oid = stack.pop()!;
+      if (ancestry.has(oid)) continue;
+      let local = this.readLocalObject(oid);
+      let parents: GitOid[] = [];
+      if (local?.type === "commit") {
+        parents = parseGitCommitRefs(local.payload, oid).parents;
+      } else if (oid === start) {
+        throw new Error(
+            `Cannot find merge bases: ${start} is not a commit in the workspace's git cache.`);
+      }
+      ancestry.set(oid, parents);
+      stack.push(...parents);
+    }
+    return ancestry;
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   MAX_GIT_OBJECT_SIZE,
   WorkspaceGitCache,
 } from "../src/git-cache";
+import { buildSnapshotRelease } from "../src/blueprint-release";
 import { GitStore, blobOid } from "../src/git-store";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import {
@@ -107,6 +108,24 @@ function commitPayload(tree: GitOid, parents: GitOid[], message: string): Uint8A
     `${message}\n`,
   ].join("\n");
   return new TextEncoder().encode(text);
+}
+
+// Stores a commit locally, distinguished from every other by its message.
+async function storeCommit(t: TestCache, message: string, parents: GitOid[] = [])
+    : Promise<GitOid> {
+  return await storeLocal(
+      t.storage, { type: "commit", payload: commitPayload(TREE_1, parents, message) });
+}
+
+// Counts the object records written from here on.
+function countPuts(t: TestCache): { count: number } {
+  let puts = { count: 0 };
+  let put = t.storage.gitObjects.put.bind(t.storage.gitObjects);
+  t.storage.gitObjects.put = record => {
+    puts.count++;
+    put(record);
+  };
+  return puts;
 }
 
 function treePayload(entries: { mode: string, name: string, oid: GitOid }[]): Uint8Array {
@@ -605,6 +624,92 @@ describe("isAncestor", () => {
 
 // =======================================================================================
 
+describe("mergeBases", () => {
+  it("is the older of two commits on one line of history", async () => {
+    let t = makeCache();
+    let root = await storeCommit(t, "root");
+    let mid = await storeCommit(t, "mid", [root]);
+    let head = await storeCommit(t, "head", [mid]);
+    expect(t.cache.mergeBases(mid, head)).toStrictEqual([mid]);
+    expect(t.cache.mergeBases(head, mid)).toStrictEqual([mid]);
+    expect(t.cache.mergeBases(head, head)).toStrictEqual([head]);
+  });
+
+  it("is where two histories forked, not what came before", async () => {
+    let t = makeCache();
+    let root = await storeCommit(t, "root");
+    let fork = await storeCommit(t, "fork", [root]);
+    let left = await storeCommit(t, "left 2", [await storeCommit(t, "left 1", [fork])]);
+    let right = await storeCommit(t, "right", [fork]);
+    expect(t.cache.mergeBases(left, right)).toStrictEqual([fork]);
+  });
+
+  it("finds the release two lineages share, then the one a merge recorded", async () => {
+    // The git-blueprints plan's picture. Carol's gadget took Alice's a3 and switches to Bob's
+    // blueprint, whose b1 was built on a2.
+    let t = makeCache();
+    let a1 = await storeCommit(t, "a1");
+    let a2 = await storeCommit(t, "a2", [a1]);
+    let a3 = await storeCommit(t, "a3", [a2]);
+    let b1 = await storeCommit(t, "b1", [await storeCommit(t, "b0"), a2]);
+    let instantiated = await storeCommit(t, "i", [await storeCommit(t, "e"), a3]);
+    let c1 = await storeCommit(t, "c1", [instantiated]);
+    expect(t.cache.mergeBases(c1, b1)).toStrictEqual([a2]);
+
+    // Her accept writes [c1, b1], so the next update from Bob is based on b1.
+    let merged = await storeCommit(t, "m", [c1, b1]);
+    let b2 = await storeCommit(t, "b2", [b1]);
+    expect(t.cache.mergeBases(merged, b2)).toStrictEqual([b1]);
+    // And b1 itself is now simply an ancestor.
+    expect(t.cache.mergeBases(merged, b1)).toStrictEqual([b1]);
+  });
+
+  it("returns every best common ancestor of a criss-cross", async () => {
+    let t = makeCache();
+    let root = await storeCommit(t, "root");
+    let x1 = await storeCommit(t, "x1", [root]);
+    let y1 = await storeCommit(t, "y1", [root]);
+    let x2 = await storeCommit(t, "x2", [x1, y1]);
+    let y2 = await storeCommit(t, "y2", [y1, x1]);
+    expect(t.cache.mergeBases(x2, y2).toSorted()).toStrictEqual([x1, y1].toSorted());
+  });
+
+  it("returns nothing for histories with no commit in common", async () => {
+    let t = makeCache();
+    let left = await storeCommit(t, "left", [await storeCommit(t, "left root")]);
+    let right = await storeCommit(t, "right", [await storeCommit(t, "right root")]);
+    expect(t.cache.mergeBases(left, right)).toStrictEqual([]);
+  });
+
+  it("stops where a chain leaves the cache, and never pulls", async () => {
+    let t = makeCache();
+    // Both sides name a parent that is not held, though G1 advertises it.
+    let absent = "d".repeat(40);
+    t.cache.advertiseCommit(G1, absent);
+    let left = await storeCommit(t, "left", [absent]);
+    let right = await storeCommit(t, "right", [absent]);
+    expect(t.cache.mergeBases(left, right)).toStrictEqual([absent]);
+    // What lies beyond it is unseen, so nothing connects these two.
+    let other = await storeCommit(t, "other", ["e".repeat(40)]);
+    expect(t.cache.mergeBases(left, other)).toStrictEqual([]);
+    expect(t.pulls).toHaveLength(0);
+  });
+
+  it("throws when either commit is not a locally cached commit", async () => {
+    let t = makeCache();
+    let head = await storeCommit(t, "head");
+    let blob = await storeLocal(t.storage, { type: "blob", payload: new Uint8Array() });
+    for (let other of ["a".repeat(40), blob]) {
+      expect(() => t.cache.mergeBases(head, other))
+          .toThrow(`${other} is not a commit in the workspace's git cache`);
+      expect(() => t.cache.mergeBases(other, head))
+          .toThrow(`${other} is not a commit in the workspace's git cache`);
+    }
+  });
+});
+
+// =======================================================================================
+
 describe("the marking walk", () => {
   it("marks the closure, skipping remote-known objects without descending", async () => {
     let t = await setupCrossRemote();
@@ -838,6 +943,75 @@ describe("consumePack", () => {
     let meta = t.storage.gitObjectMetadata.get(bigOid)!;
     expect(meta.size).toBe(MAX_GIT_OBJECT_SIZE + 5);
     expect(meta.onRemote).toStrictEqual([G1]);
+  });
+});
+
+// =======================================================================================
+
+describe("importObjects", () => {
+  const FILES = new Map([["client.js", "render();\n"], ["lib/util.js", "export {};\n"]]);
+
+  it("stores a release's objects, invisible to every gatekeeper's scoped view", async () => {
+    let t = makeCache();
+    let { commitId, objects } = await buildSnapshotRelease(FILES);
+    await t.cache.importObjects(objects.values());
+
+    for (let [oid, object] of objects) {
+      expect(t.cache.readLocalObject(oid)).toStrictEqual(object);
+      for (let gatekeeperId of [G1, G2]) {
+        let stub = new GitCacheImpl(t.cache, gatekeeperId);
+        expect(await stub.get(oid)).toBeNull();
+        expect(await stub.has(oid)).toBe(false);
+        expect(await stub.stat(oid)).toBeNull();
+      }
+    }
+    expect(Array.from(t.storage.gitObjectMetadata.list())).toStrictEqual([]);
+    // The workspace's own reads see them like any commit authored here.
+    expect(await t.cache.readFileAtCommit(commitId, "lib/util.js")).toBe("export {};\n");
+    expect(t.pulls).toHaveLength(0);
+  });
+
+  it("leaves an object already held, and its metadata, as they are", async () => {
+    let t = makeCache();
+    let { objects } = await buildSnapshotRelease(FILES);
+    let shared = await t.cache.putFromGatekeeper(
+        G1, "blob", new TextEncoder().encode("render();\n"));
+    expect(objects.has(shared)).toBe(true);
+    let metadata = Array.from(t.storage.gitObjectMetadata.list());
+
+    let puts = countPuts(t);
+    await t.cache.importObjects(objects.values());
+    expect(puts.count).toBe(objects.size - 1);
+    expect(Array.from(t.storage.gitObjectMetadata.list())).toStrictEqual(metadata);
+    expect(await new GitCacheImpl(t.cache, G1).has(shared)).toBe(true);
+    expect(await new GitCacheImpl(t.cache, G2).has(shared)).toBe(false);
+
+    // Importing it all again, each object twice over, writes nothing.
+    await t.cache.importObjects([...objects.values(), ...objects.values()]);
+    expect(puts.count).toBe(objects.size - 1);
+  });
+
+  it("stores each object under the oid of its content", async () => {
+    let t = makeCache();
+    let payload = new TextEncoder().encode("hello world\n");
+    await t.cache.importObjects([{ type: "blob", payload }]);
+    // `echo 'hello world' | git hash-object --stdin`
+    expect(Array.from(t.storage.gitObjects.list(), record => record.oid))
+        .toStrictEqual(["3b18e512dba79e4c8300dd08aeb37f8e728b8dad"]);
+  });
+
+  it("imports everything or nothing", async () => {
+    let t = makeCache();
+    let { objects } = await buildSnapshotRelease(FILES);
+    let puts = countPuts(t);
+    let put = t.storage.gitObjects.put;
+    t.storage.gitObjects.put = record => {
+      if (puts.count === objects.size - 1) throw new Error("storage refused the record");
+      put(record);
+    };
+    await expect(t.cache.importObjects(objects.values())).rejects.toThrow(/storage refused/);
+    expect(puts.count).toBe(objects.size - 1);
+    expect(Array.from(t.storage.gitObjects.list())).toStrictEqual([]);
   });
 });
 
