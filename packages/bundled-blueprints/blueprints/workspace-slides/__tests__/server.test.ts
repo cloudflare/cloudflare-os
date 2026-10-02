@@ -22,6 +22,27 @@ const deck = () => ({ themeVersion: "workspace.1", slides: [{ id: "s1", backgrou
 
 describe("Workspace Slides blocks", () => {
 
+  it("seeds bottom brand bars as editable shapes", async () => {
+    const seeded = await inMemoryGadget(undefined).getDeck();
+    const bars = seeded.slides.flatMap(slide => slide.blocks).filter(block =>
+      block.x === 0 && block.y === 663 && block.w === 1200 && block.h === 12);
+
+    expect(bars).toHaveLength(3);
+    for (const bar of bars) {
+      expect(bar).toMatchObject({
+        type: "shape",
+        props: {
+          kind: "rect",
+          fill: "#F6821F",
+          stroke: "",
+          strokeWidth: 0,
+          radius: 0,
+          opacity: 1,
+        },
+      });
+    }
+  });
+
   it("adds a block to a slide and returns its id", async () => {
     const gadget = inMemoryGadget(deck());
     const id = await gadget.addBlock("s1", { type: "text", x: 10, y: 20, props: { text: "hi" } });

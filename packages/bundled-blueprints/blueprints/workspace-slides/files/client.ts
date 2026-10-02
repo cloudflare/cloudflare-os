@@ -972,8 +972,6 @@ const COMP_ICON: Record<string, string> = {
 const COVER_ORANGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675"><defs><linearGradient id="b" x2="1" y2="1"><stop stop-color="#ff5115"/><stop offset=".56" stop-color="#ff861f"/><stop offset="1" stop-color="#ffc02c"/></linearGradient><linearGradient id="a" x2="1" y2=".8"><stop stop-color="#ff5a16"/><stop offset="1" stop-color="#ffad25"/></linearGradient></defs><rect width="1200" height="675" fill="url(#b)"/><path d="M-42-50C374-81 699-4 886 185c171 172 157 399-13 490H0V0z" fill="#ff5a17" opacity=".64"/><path d="M7 675C126 389 380 208 694 198c256-8 427 90 506 169v308z" fill="url(#a)" opacity=".66"/><path d="M1199 98c-29 282-237 494-518 558-192 44-413 37-675 19" fill="none" stroke="#ffbe20" stroke-width="2.2" opacity=".92"/></svg>`;
 const COVER_ORANGE_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(COVER_ORANGE_SVG)}`;
 
-/* Bottom brand bar: left→right Ruby → Tangerine → Mango gradient. */
-const BOTTOM_BAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none"><defs><linearGradient id="cfbar"><stop stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/><stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#cfbar)"/></svg>`;
 
 /* =====================================================================
  *  Slide templates
@@ -1026,8 +1024,9 @@ function makeContentSlide(): SlideTemplate {
         props: { text: "Replace this with one or two short paragraphs of supporting evidence. Keep body copy to roughly 40–60 words and leave generous white space on the right.",
           fontSize: 19, weight: "400", color: "#000000",
           family: "sans", align: "left", lineHeight: 1.6 } },
-      { type: "svg", x: 0, y: 663, w: 1200, h: 12,
-        props: { markup: BOTTOM_BAR_SVG, fit: "stretch", background: "" } },
+      { type: "shape", x: 0, y: 663, w: 1200, h: 12,
+        props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0,
+          radius: 0, opacity: 1 } },
     ],
   };
 }
