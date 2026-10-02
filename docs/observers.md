@@ -109,11 +109,11 @@ The check works as follows:
 | `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
-| Gatekeeper storage record | `overseer.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
+| Gatekeeper storage record | `overseer-storage.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
 | `GatekeeperCreationSpec` | `packages/workshop-shared/src/api.ts` |
 | Gatekeeper facet access | `overseer.ts` `getGatekeeperFacet()` |
-| Overseer storage collections | `overseer.ts` (`gatekeepers`, with `byBindingName` index — template for a new collection) |
-| Connected accounts (User DO) | `packages/workshop-backend/src/user.ts` `ConnectedAccountRecord` (`account: Fetcher<GatekeeperUser>`, `vendorId`) |
+| Overseer storage collections | `overseer-storage.ts` (`gatekeepers`, with `byBindingName` index — template for a new collection) |
+| Connected accounts (User DO) | `packages/workshop-backend/src/storage-schema/user-storage.ts` `ConnectedAccountRecord` (`account: Fetcher<GatekeeperUser>`, `vendorId`) |
 | List connected accounts | `user.ts` `subscribeConnectedAccounts()`; subscriber type in `api.ts` |
 | Account → gatekeeper class | `user.ts` `getGatekeeperClassFor()` |
 
@@ -149,7 +149,7 @@ The check works as follows:
 ### New overseer storage collection: `observers`
 
 Add an `observers` collection to `OverseerStorage` (mirror the `gatekeepers` collection in
-`overseer.ts`, including a secondary index for reverse lookup):
+`overseer-storage.ts`, including a secondary index for reverse lookup):
 
 ```ts
 type ObserverRecord = {

@@ -21,7 +21,8 @@ The defence is that finishing the flow activates nothing. `GatekeeperConnectCall
 
 - `ticket` is a fresh 256-bit secret (`newSecretToken()`), rendered as 64 lowercase hex characters.
   Only its SHA-256 hash is stored, and only in the initiating user's Durable Object
-  (`pendingHandoffs` in `user.ts`, written by `#stagePendingHandoff`) or, for sign-in, in the
+  (`pendingHandoffs` in `user-storage.ts`, written by
+  `#stagePendingHandoff` in `user.ts`) or, for sign-in, in the
   `PendingLogin` DO (`deliver()` in `login-flow.ts`). It is single-use and valid for
   `PENDING_HANDOFF_LIFETIME_MS` (two minutes).
 - `targetOrigin` is the Workshop's origin, from deployment configuration only:
