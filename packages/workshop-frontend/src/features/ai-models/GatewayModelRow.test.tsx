@@ -9,9 +9,11 @@ import type {
   BuiltInReasoning,
   GatewayModelMode,
   GatewayModelSettings,
+  GatewayModelTest,
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import { GatewayModelRow } from './GatewayModelRow'
+import type { GatewayTestState } from './useGatewayTests'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -40,6 +42,9 @@ const ADDED: AdminModelView = {
 const tokens = (count: number) => `${count.toLocaleString()} tokens`
 
 const SMALL_BUDGET_WARNING = `A budget under ${tokens(100000)} makes a chat compact very often.`
+const AUTH_HINT =
+  'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN may not ' +
+  'be allowed to run models.'
 
 const button = (name: string) => {
   const element = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
@@ -119,6 +124,28 @@ const pressEnter = (field: HTMLInputElement) => act(async () => {
 const alerts = () =>
   Array.from(document.body.querySelectorAll('[role="alert"]')).map((alert) => alert.textContent)
 
+// The Test button, which names the model while the test is in flight too.
+const testButton = (modelName = 'Claude Sonnet') => {
+  const element = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+    .find((b) => [`Test ${modelName}`, `Testing ${modelName}…`].includes(b.getAttribute('aria-label') ?? ''))
+  if (!element) throw new Error(`No Test button for ${modelName}`)
+  return element
+}
+
+const testStatus = () => {
+  const regions = document.body.querySelectorAll<HTMLElement>('li [role="status"]')
+  if (regions.length !== 1) throw new Error(`${regions.length} status regions`)
+  return regions[0]
+}
+
+const answered = (result: GatewayModelTest): GatewayTestState => ({ state: 'answered', result })
+
+/** What the row's status region says, one entry for each paragraph of it. */
+const testSaid = () => Array.from(testStatus().querySelectorAll('p')).map((p) => p.textContent)
+
+const follows = (earlier: Node, later: Node) =>
+  Boolean(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING)
+
 describe('GatewayModelRow', () => {
   let root: Root | undefined
 
@@ -133,18 +160,22 @@ describe('GatewayModelRow', () => {
     behavesLikeName?: string
     busy?: boolean
     removable?: boolean
+    test?: GatewayTestState
   }
 
   /** Render the row with its settings open, unless `collapsed`. */
   const render = async (shown: Shown, { collapsed = false } = {}) => {
     const onModeChange = vi.fn<(mode: GatewayModelMode) => void>()
     const onSettingsChange = vi.fn<(settings: GatewayModelSettings) => void>()
+    const onTest = vi.fn<() => void>()
     const onRemove = vi.fn<() => void>()
     const container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
     // Shows the row as a re-read of the settings reported it.
-    const show = ({ model, defaultReasoning = null, behavesLikeName, busy = false, removable }: Shown) =>
+    const show = (
+      { model, defaultReasoning = null, behavesLikeName, busy = false, removable, test }: Shown,
+    ) =>
       act(async () => root!.render(
         <ul>
           <GatewayModelRow
@@ -152,14 +183,16 @@ describe('GatewayModelRow', () => {
             defaultReasoning={defaultReasoning}
             behavesLikeName={behavesLikeName}
             busy={busy}
+            test={test}
             onModeChange={onModeChange}
             onSettingsChange={onSettingsChange}
+            onTest={onTest}
             onRemove={removable ? onRemove : undefined}
           />
         </ul>))
     await show(shown)
     if (!collapsed) await click(button(`Settings for ${shown.model.name}`))
-    return { onModeChange, onSettingsChange, show }
+    return { onModeChange, onSettingsChange, onTest, onRemove, show }
   }
 
   describe('the settings disclosure', () => {
@@ -675,6 +708,174 @@ describe('GatewayModelRow', () => {
       expect(behavesLikeLine()).toEqual([
         'Behaves like claude-retired. This version no longer knows that model, so nothing is borrowed.',
       ])
+    })
+  })
+
+  describe('the test', () => {
+    it('is run from a button named after the model, without the settings being opened', async () => {
+      const { onTest, onModeChange, onSettingsChange } = await render({ model: SONNET }, { collapsed: true })
+      const disclosure = button('Settings for Claude Sonnet')
+
+      expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+      expect(testButton().textContent).toBe('Test')
+      expect(testButton().getAttribute('aria-label')).toBe('Test Claude Sonnet')
+      expect(testButton().disabled).toBe(false)
+      expect(testButton().getAttribute('aria-disabled')).toBe('false')
+      // Among the row's controls: after the modes, and before the disclosure.
+      const modes = Array.from(document.body.querySelectorAll<HTMLElement>('[role="radio"]'))
+      expect(modes).toHaveLength(3)
+      expect(follows(modes[2], testButton())).toBe(true)
+      expect(follows(testButton(), disclosure)).toBe(true)
+
+      await click(testButton())
+
+      expect(onTest).toHaveBeenCalledExactlyOnceWith()
+      expect(onModeChange).not.toHaveBeenCalled()
+      expect(onSettingsChange).not.toHaveBeenCalled()
+      expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    })
+
+    it('stays outside the settings when they are open', async () => {
+      await render({ model: SONNET })
+      const settings = document.getElementById(
+        button('Settings for Claude Sonnet').getAttribute('aria-controls')!)!
+
+      expect(settings.contains(levelSelect())).toBe(true)
+      expect(settings.contains(testButton())).toBe(false)
+      expect(settings.contains(testStatus())).toBe(false)
+    })
+
+    it('comes before Remove in the row of a model that can be removed', async () => {
+      const { onTest, onRemove } = await render({ model: ADDED, removable: true }, { collapsed: true })
+
+      expect(testButton('Claude Next').getAttribute('aria-label')).toBe('Test Claude Next')
+      expect(follows(testButton('Claude Next'), button('Remove Claude Next'))).toBe(true)
+
+      await click(testButton('Claude Next'))
+
+      expect(onTest).toHaveBeenCalledOnce()
+      expect(onRemove).not.toHaveBeenCalled()
+    })
+
+    it.each<GatewayModelMode>(['hidden', 'disabled'])('is offered for a %s model', async (mode) => {
+      const { onTest } = await render({ model: { ...SONNET, mode } }, { collapsed: true })
+
+      expect(testButton().disabled).toBe(false)
+      expect(testButton().getAttribute('aria-disabled')).toBe('false')
+      expect(testStatus().childNodes).toHaveLength(0)
+
+      await click(testButton())
+
+      expect(onTest).toHaveBeenCalledOnce()
+    })
+
+    it('is not locked while a write is in flight', async () => {
+      const { onTest } = await render({ model: SONNET, busy: true, removable: true })
+
+      // The controls that write are.
+      expect(levelSelect().disabled).toBe(true)
+      expect(button('Remove Claude Sonnet').disabled).toBe(true)
+      expect(testButton().disabled).toBe(false)
+      expect(testButton().getAttribute('aria-disabled')).toBe('false')
+
+      await click(testButton())
+
+      expect(onTest).toHaveBeenCalledOnce()
+    })
+
+    it('says that it is in flight on the button, which keeps focus and is not disabled', async () => {
+      const { show } = await render({ model: SONNET }, { collapsed: true })
+      const pressed = testButton()
+      const region = testStatus()
+      await act(async () => { pressed.focus() })
+
+      await show({ model: SONNET, test: { state: 'testing' } })
+
+      expect(testButton()).toBe(pressed)
+      expect(pressed.textContent).toBe('Testing…')
+      expect(pressed.getAttribute('aria-label')).toBe('Testing Claude Sonnet…')
+      expect(pressed.getAttribute('aria-disabled')).toBe('true')
+      // A browser takes focus from a button that is disabled, which jsdom does not.
+      expect(pressed.disabled).toBe(false)
+      expect(document.activeElement).toBe(pressed)
+      expect(region.childNodes).toHaveLength(0)
+
+      await show({ model: SONNET, test: answered({ model: 'claude-sonnet', ok: true }) })
+
+      expect(testButton()).toBe(pressed)
+      expect(pressed.textContent).toBe('Test')
+      expect(pressed.getAttribute('aria-label')).toBe('Test Claude Sonnet')
+      expect(pressed.getAttribute('aria-disabled')).toBe('false')
+      expect(document.activeElement).toBe(pressed)
+      // The region that was there all along is the one that says the result.
+      expect(testStatus()).toBe(region)
+      expect(region.textContent).toBe('Answered through the gateway.')
+    })
+
+    it('has an empty status region before any test, on a line above the disclosure', async () => {
+      await render({ model: SONNET }, { collapsed: true })
+      const disclosure = button('Settings for Claude Sonnet')
+
+      expect(testStatus().childNodes).toHaveLength(0)
+      expect(follows(testButton(), testStatus())).toBe(true)
+      expect(follows(testStatus(), disclosure)).toBe(true)
+      // On a full-width line of its own. jsdom lays nothing out, so the line is known by its class.
+      expect(testStatus().parentElement!.className.split(' ')).toContain('basis-full')
+      expect(testStatus().parentElement!.contains(testButton())).toBe(false)
+    })
+
+    it.each<[string, GatewayTestState, string[]]>([
+      // The row is the model, so a pass does not name it again.
+      ['a pass', answered({ model: 'claude-sonnet', ok: true }), ['Answered through the gateway.']],
+      [
+        'a failure with a status',
+        answered({ model: 'claude-sonnet', ok: false, status: 500, message: 'The server had an error.' }),
+        ['Failed (500): The server had an error.'],
+      ],
+      [
+        'a failure without a status',
+        answered({ model: 'claude-sonnet', ok: false, message: 'API key not valid.' }),
+        ['Failed: API key not valid.'],
+      ],
+      [
+        'a 401, with what it may mean',
+        answered({ model: 'claude-sonnet', ok: false, status: 401, message: 'invalid x-api-key' }),
+        ['Failed (401): invalid x-api-key', AUTH_HINT],
+      ],
+      [
+        'a 403, with what it may mean',
+        answered({ model: 'claude-sonnet', ok: false, status: 403, message: 'Forbidden' }),
+        ['Failed (403): Forbidden', AUTH_HINT],
+      ],
+      [
+        'a test that could not be run, with the reason',
+        { state: 'not-run', reason: 'No such model: claude-sonnet' },
+        ['Couldn’t run the test: No such model: claude-sonnet'],
+      ],
+      [
+        'a test that could not be run, without one',
+        { state: 'not-run', reason: undefined },
+        ['Couldn’t run the test.'],
+      ],
+    ])('reports %s in the status region', async (_case, test, expected) => {
+      const { show } = await render({ model: SONNET }, { collapsed: true })
+      const region = testStatus()
+
+      await show({ model: SONNET, test })
+
+      expect(testStatus()).toBe(region)
+      expect(testSaid()).toEqual(expected)
+      expect(testButton().textContent).toBe('Test')
+    })
+
+    it('empties the status region when the test is forgotten', async () => {
+      const { show } = await render(
+        { model: SONNET, test: answered({ model: 'claude-sonnet', ok: true }) }, { collapsed: true })
+      expect(testSaid()).toEqual(['Answered through the gateway.'])
+
+      await show({ model: SONNET })
+
+      expect(testStatus().childNodes).toHaveLength(0)
     })
   })
 

@@ -24,6 +24,7 @@ import { GatewayProviders } from './GatewayProviders'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { PROVIDER_LABELS, REASONING_LEVEL_LABELS } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
+import { useGatewayTests } from './useGatewayTests'
 
 const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
@@ -138,6 +139,9 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState(false)
   const [pendingRemoval, setPendingRemoval] = useState<AdminModel | null>(null)
+  // The models' tests, by model ID. Like a provider's test, one neither takes nor waits for the
+  // lock. A write to a model forgets its test, and a write to the default level forgets them all.
+  const modelTests = useGatewayTests((modelId: string) => admin.testGatewayModel(modelId))
   // What this panel's one request for the models.dev list settled with: the list, or undefined
   // when the request failed. Null until then.
   const [modelsDev, setModelsDev] = useState<{ list: unknown } | null>(null)
@@ -186,17 +190,28 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     }
   }
 
+  // A write to one model. Its test was of the model as it was, so a write that goes through
+  // forgets it, before the re-read and whatever comes of that.
+  const writeModel = (model: AdminModel, op: () => Promise<void>) =>
+    write(async () => {
+      await op()
+      modelTests.clearTest(model.id)
+    })
+
   const changeMode = (model: AdminModel, mode: GatewayModelMode) =>
-    write(() => admin.setGatewayModelMode(model.id, mode))
+    writeModel(model, () => admin.setGatewayModelMode(model.id, mode))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
 
   const changeSettings = (model: AdminModel, settings: GatewayModelSettings) =>
-    write(() => admin.setGatewayModelSettings(model.id, settings))
+    writeModel(model, () => admin.setGatewayModelSettings(model.id, settings))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
 
+  // The default is the level of every model that has none of its own, so every test is forgotten.
   const changeDefaultReasoning = (level: ReasoningLevel | null) =>
-    write(() => admin.setDefaultReasoning(level))
-      .catch((err) => reportFailure(`Couldn’t update “${DEFAULT_REASONING_LABEL}”`, err))
+    write(async () => {
+      await admin.setDefaultReasoning(level)
+      modelTests.clearTests()
+    }).catch((err) => reportFailure(`Couldn’t update “${DEFAULT_REASONING_LABEL}”`, err))
 
   const changeUserModels = (enabled: boolean) =>
     write(() => admin.setUserModelsEnabled(enabled))
@@ -228,7 +243,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
 
   const confirmRemoval = async () => {
     if (!pendingRemoval) return
-    await write(() => admin.removeGatewayModel(pendingRemoval.id))
+    await writeModel(pendingRemoval, () => admin.removeGatewayModel(pendingRemoval.id))
       .catch((err) => reportFailure(`Couldn’t remove ${pendingRemoval.name}`, err))
     setPendingRemoval(null)
   }
@@ -292,7 +307,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         />
       </section>
 
-      <dl className="mb-6 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
+      <dl className="mb-3 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
         {GATEWAY_MODEL_MODES.map((mode) => (
           <div key={mode} className="contents">
             <dt className="font-medium text-kumo-default">{MODES[mode].label}</dt>
@@ -300,6 +315,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
           </div>
         ))}
       </dl>
+      <p className="mb-6 text-sm text-kumo-subtle">
+        Test sends a model one request the way a chat turn would, with the reasoning level in
+        effect for it, and shows what came back. A test can use up to 2,048 output tokens.
+      </p>
 
       <div className="flex flex-col gap-6">
         {catalogByProvider.size === 0 && (
@@ -318,8 +337,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                   model={model}
                   defaultReasoning={defaultReasoning}
                   busy={busy}
+                  test={modelTests.tests.get(model.id)}
                   onModeChange={(mode) => changeMode(model, mode)}
                   onSettingsChange={(settings) => changeSettings(model, settings)}
+                  onTest={() => modelTests.startTest(model.id)}
                 />
               ))}
             </ul>
@@ -341,8 +362,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                     behavesLikeName={catalogByProvider.get(model.provider)
                       ?.find((listed) => listed.id === model.behavesLike)?.name}
                     busy={busy}
+                    test={modelTests.tests.get(model.id)}
                     onModeChange={(mode) => changeMode(model, mode)}
                     onSettingsChange={(settings) => changeSettings(model, settings)}
+                    onTest={() => modelTests.startTest(model.id)}
                     onRemove={() => setPendingRemoval(model)}
                   />
                 ))}

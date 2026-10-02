@@ -151,6 +151,61 @@ is under that room, which in this version's catalog is the OpenAI models, whose 
 272000 is there to stay under OpenAI's long-context pricing. A model whose window leaves a prompt
 no room has no budget field.
 
+Each model's row also has a **Test** button, beside its modes and outside **Settings**, that finds
+out whether the model answers the request its chats send. Above the lists the tab notes `Test sends
+a model one request the way a chat turn would, with the reasoning level in effect for it, and shows
+what came back. A test can use up to 2,048 output tokens.` The request goes to the model of the
+row, as the admin who pressed the button, through the deployment's Gateway (also for an admin
+whose own Cloudflare account pays for their chats):
+
+- It asks for the reasoning level in effect for the model: the model's own, else the deployment's
+  default, else what the model is asked for while neither sets one, as described above.
+- An added model is asked in the request format of the model it behaves like, where **Behaves
+  like** (described below) lends it one.
+- The prompt is `Reply with OK.`, and the response is capped at 2,048 tokens, or at the model's own
+  response cap where that is lower.
+- It tells the Gateway not to answer from its cache (`cf-aig-skip-cache`), and waits up to 30
+  seconds.
+
+A test reads the settings as they are stored when it runs, and it changes none. It works on a model
+in any mode, **Hidden** and **Disabled** included, so a model can be tried before it is enabled. A
+model whose provider is off is not listed, so it has no **Test**: the provider's own **Test**
+(described below) works on a provider that is off. Several models can be tested at once, and a test
+does not hold up the rest of the tab. The result is shown in the row, above **Settings**:
+
+- `Answered through the gateway.` when the model answered.
+- `Failed (<status>): <message>` when the request failed and the model runtime reported the HTTP
+  status of the response.
+- `Failed: <message>` when it failed and no status was reported.
+- `Couldn’t run the test: <reason>`, or `Couldn’t run the test.` with no reason to give, when the
+  test could not be run at all.
+
+The message and the status are what a provider's **Test** shows (described below): the message on
+one line, cut at 300 characters, and no status for a failed Google request. A model that does not
+answer in time gives `Failed: The model did not answer within 30 seconds.`, and a model of a
+provider whose row has the token warning gives the refusal quoted below without sending a request.
+The status is that of the response, so a request that fails after the gateway answered 200, while
+the answer is streaming, shows as `Failed (200): <message>`. When the status is 401 or 403, the row
+adds `The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN may not
+be allowed to run models.`, and as with a provider's **Test** it cannot tell the two apart.
+
+The result stays in the row for as long as the tab stays open, until the model is tested again or
+a change clears it. A change to the model, its mode or its settings, clears that model's result,
+and a change to **Default reasoning level** clears every model's. A test that is still running
+when such a change goes through keeps running, but its answer is not shown when it arrives; that
+includes a test started while the change was being saved. Other changes on the tab leave the
+results where they are, and none of this touches a provider's result.
+
+A pass proves that the model answered that one request, once, with the settings stored at the
+time. Any answer counts, since the test does not read what the model wrote. The request is one
+short prompt in text with no tools, so a pass does not prove that tool calls, images or long
+prompts work, or that a later request will. A Claude model that takes its reasoning level as a
+token budget (Claude Haiku 4.5 in this version's catalog, and an added Anthropic model in the
+older budget format described below) has the budget come out of the response cap, with 1,024
+tokens of the cap left for the answer. Under the test's cap of 2,048 tokens every level but **Off**
+is therefore sent as a budget of 1,024 tokens, which on Claude Haiku 4.5 is less than a chat sends
+for every level above **Minimal**.
+
 **Add a model**, under **Added by this deployment**, provides a model the catalog doesn't list. It
 takes a provider (one that is on, of the ones AI Gateway serves: `anthropic`, `openai`, `google`
 or `cloudflare`), the model ID as the provider's API names it, a display name, the context
@@ -271,6 +326,11 @@ holds. A failed Google test has no status, so it never shows the hint. A pass pr
 answered once, not that the provider's other models work or that a later request will. Each press
 is a real request and costs a few tokens.
 
+The two tests differ in what they ask. A provider's **Test** asks the provider's first catalog
+model, with a quick request that takes none of the model's settings, for at most 16 output tokens
+within 15 seconds. A model's **Test** asks the model of its row, with the request a chat turn would
+send under the model's settings, for up to 2,048 output tokens within 30 seconds, so it costs more.
+
 This applies in AI Gateway mode only. Without `CF_AI_GATEWAY` each user adds their own models on
 their **Providers** page, and the tab holds a notice saying so; it holds the same notice when the
 gateway's environment settings are invalid. The Gateway's transport and credentials stay
@@ -296,6 +356,11 @@ The modes, the providers and the switch decide what the deployment offers, and h
   session, a stolen one included, can turn on `anthropic`, `openai`, `google` or `cloudflare` and
   spend on the keys or credits the gateway holds for it. Sign-in settings (`AUTH_GATEKEEPERS`,
   `DISABLE_PASSWORD_AUTH`) stay environment settings, which no admin session can change.
+- **Nothing limits tests but the admin check.** Each **Test** is a real request, paid from the
+  keys or credits the gateway holds, and a model's can use up to 2,048 output tokens. Only an
+  admin can run one, and the tab ignores a press of a button that reads **Testing…**, but the
+  server sets no rate limit: whoever holds an admin session can send tests one after another, of
+  any listed model in any mode and of any provider the Gateway serves, on or off.
 - **Turning “Users may add their own models” off also applies to users who pay for their own
   usage.** With `ENABLE_CLOUDFLARE_LIMITS`, a user whose connected Cloudflare account is funded is
   billed through that account instead of the deployment's Gateway (see

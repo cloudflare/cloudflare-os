@@ -94,6 +94,7 @@ const withProvider = (provider: 'google' | 'openai', enabled: boolean): GatewayM
 
 const TEST_PASSED: GatewayModelTest = { model: 'claude-sonnet', ok: true }
 const TEST_PASSED_TEXT = 'claude-sonnet answered through the gateway.'
+const MODEL_TEST_PASSED_TEXT = 'Answered through the gateway.'
 
 const SUGGESTIONS_LABEL = 'Suggest models from models.dev'
 const SUGGESTING: GatewayModels = { ...GATEWAY_MODELS, modelsDevSuggestions: true }
@@ -246,6 +247,21 @@ const testButton = (label: string) => button(`Test ${label}`, providersSection()
 const testResult = (label: string) =>
   providerSwitch(label).closest('li')!.querySelector('[role="status"]')!.textContent
 
+// The Test button of a model's row, which names the model while the test is in flight too.
+const modelTestButton = (modelName: string) => {
+  const element = Array.from(row(modelName).querySelectorAll<HTMLButtonElement>('button'))
+    .find((b) => [`Test ${modelName}`, `Testing ${modelName}…`].includes(b.getAttribute('aria-label') ?? ''))
+  if (!element) throw new Error(`No Test button for ${modelName}`)
+  return element
+}
+
+/** What the status region of the model's row says. */
+const modelTestResult = (modelName: string) => {
+  const regions = row(modelName).querySelectorAll('[role="status"]')
+  if (regions.length !== 1) throw new Error(`${regions.length} status regions for ${modelName}`)
+  return regions[0].textContent
+}
+
 // As typing reports itself: suggestions open for typed text, not for a value filled in some other way.
 const type = (element: HTMLInputElement, value: string) => act(() => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
@@ -340,6 +356,7 @@ describe('AdminModelsPanel', () => {
     document.body.innerHTML = ''
     addToast.mockReset()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   const render = async (
@@ -354,11 +371,13 @@ describe('AdminModelsPanel', () => {
     const setDefaultReasoning = vi.fn<AdminApi['setDefaultReasoning']>(async () => {})
     const setGatewayProviderEnabled = vi.fn<AdminApi['setGatewayProviderEnabled']>(async () => {})
     const testGatewayProvider = vi.fn<AdminApi['testGatewayProvider']>(async () => TEST_PASSED)
+    const testGatewayModel = vi.fn<AdminApi['testGatewayModel']>(
+      async (modelId) => ({ model: modelId, ok: true }))
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider,
+      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -371,7 +390,7 @@ describe('AdminModelsPanel', () => {
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider, onChanged, show,
+      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, onChanged, show,
     }
   }
 
@@ -878,6 +897,348 @@ describe('AdminModelsPanel', () => {
     })
   })
 
+  describe('model tests', () => {
+    const NOTE =
+      'Test sends a model one request the way a chat turn would, with the reasoning level in ' +
+      'effect for it, and shows what came back. A test can use up to 2,048 output tokens.'
+    const FAILED: GatewayModelTest =
+      { model: 'claude-opus', ok: false, status: 500, message: 'The server had an error.' }
+
+    const TESTED = ['Claude Opus', 'GPT Main', 'GPT Custom']
+    // What the rows of the tested models say, then what the tested provider's row says.
+    const results = () => [...TESTED.map(modelTestResult), testResult('OpenAI')]
+    const ALL_PASSED = [...TESTED.map(() => MODEL_TEST_PASSED_TEXT), TEST_PASSED_TEXT]
+
+    // A model with settings, another of the catalog, an added one and a provider, each tested.
+    const renderTested = async () => {
+      const rendered = await render({ gatewayModels: RUNTIME_MODELS })
+      for (const name of TESTED) await click(modelTestButton(name))
+      await click(testButton('OpenAI'))
+      expect(results()).toEqual(ALL_PASSED)
+      return rendered
+    }
+
+    // The writes to one model: what each is, its method, which of the tested models it is made
+    // to, and the presses that make it.
+    const MODEL_WRITES = [
+      ['a change of its mode', 'setGatewayModelMode', 'Claude Opus',
+        () => click(modeOption('Claude Opus', 'Hidden'))],
+      ['a change of its reasoning level', 'setGatewayModelSettings', 'Claude Opus', async () => {
+        await openSettings('Claude Opus')
+        await choose('Reasoning level for Claude Opus', 'High')
+      }],
+      ['a compaction budget saved for it', 'setGatewayModelSettings', 'Claude Opus', async () => {
+        await openSettings('Claude Opus')
+        await type(budgetField(), '150000')
+        await click(button('Save the compaction budget of Claude Opus'))
+      }],
+      ['its removal', 'removeGatewayModel', 'GPT Custom', async () => {
+        await click(button('Remove GPT Custom'))
+        await click(button('Remove', confirmation()!))
+      }],
+    ] as const
+
+    it('says what a test sends and can use, between the modes’ meanings and the models', async () => {
+      await render()
+
+      const note = Array.from(document.body.querySelectorAll('p'))
+        .find((p) => p.textContent === NOTE)
+      expect(note).toBeDefined()
+      // Read in the page's flow, and not spoken as a result is.
+      expect(note!.closest('[role="status"], [role="alert"], [aria-live]')).toBeNull()
+      expect(document.body.querySelector('dl')!.compareDocumentPosition(note!)
+        & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(note!.compareDocumentPosition(row('Claude Sonnet'))
+        & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('tests the model whose Test is pressed, in any mode, and shows the answer in its row only', async () => {
+      const { testGatewayModel, testGatewayProvider, onChanged } = await render()
+      for (const name of ['Claude Sonnet', 'Claude Legacy', 'GPT Custom']) {
+        expect(modelTestButton(name).getAttribute('aria-label')).toBe(`Test ${name}`)
+        expect(modelTestResult(name)).toBe('')
+      }
+      expect(selectedMode('Claude Legacy')).toEqual(['Disabled'])
+
+      await click(modelTestButton('Claude Legacy'))
+
+      expect(testGatewayModel).toHaveBeenCalledExactlyOnceWith('claude-legacy')
+      expect(modelTestResult('Claude Legacy')).toBe(MODEL_TEST_PASSED_TEXT)
+      expect(modelTestResult('Claude Sonnet')).toBe('')
+      expect(modelTestResult('GPT Custom')).toBe('')
+      expect(providersSection().querySelectorAll('[role="status"]:not(:empty)')).toHaveLength(0)
+      expect(testGatewayProvider).not.toHaveBeenCalled()
+      expect(onChanged).not.toHaveBeenCalled()
+      expect(addToast).not.toHaveBeenCalled()
+    })
+
+    it('tests two models at once, and keeps each one’s result in its own row', async () => {
+      const { testGatewayModel } = await render()
+      const sonnet = deferred<GatewayModelTest>()
+      const custom = deferred<GatewayModelTest>()
+      testGatewayModel.mockReturnValueOnce(sonnet.promise).mockReturnValueOnce(custom.promise)
+
+      await click(modelTestButton('Claude Sonnet'))
+      await click(modelTestButton('GPT Custom'))
+
+      expect(testGatewayModel.mock.calls).toEqual([['claude-sonnet'], ['gpt-custom']])
+      expect(modelTestButton('Claude Sonnet').textContent).toBe('Testing…')
+      expect(modelTestButton('GPT Custom').getAttribute('aria-label')).toBe('Testing GPT Custom…')
+      expect(modelTestButton('Claude Legacy').textContent).toBe('Test')
+      // A second press of a test in flight asks for nothing.
+      await click(modelTestButton('Claude Sonnet'))
+      expect(testGatewayModel).toHaveBeenCalledTimes(2)
+
+      await act(async () => custom.resolve(
+        { model: 'gpt-custom', ok: false, status: 429, message: 'Rate limit reached.' }))
+
+      expect(modelTestResult('GPT Custom')).toBe('Failed (429): Rate limit reached.')
+      expect(modelTestButton('GPT Custom').textContent).toBe('Test')
+      expect(modelTestResult('Claude Sonnet')).toBe('')
+      expect(modelTestButton('Claude Sonnet').textContent).toBe('Testing…')
+
+      await act(async () => sonnet.resolve({ model: 'claude-sonnet', ok: true }))
+
+      expect(modelTestResult('Claude Sonnet')).toBe(MODEL_TEST_PASSED_TEXT)
+      expect(modelTestResult('GPT Custom')).toBe('Failed (429): Rate limit reached.')
+      expect(modelTestResult('Claude Legacy')).toBe('')
+    })
+
+    it('runs a test without locking a control or re-reading the settings', async () => {
+      const { testGatewayModel, setUserModelsEnabled, onChanged } = await render()
+      const call = deferred<GatewayModelTest>()
+      testGatewayModel.mockReturnValueOnce(call.promise)
+
+      await click(modelTestButton('Claude Sonnet'))
+
+      expect(userModelsSwitch().disabled).toBe(false)
+      expect(button('Add model').disabled).toBe(false)
+      expect(button('Remove GPT Custom').disabled).toBe(false)
+      expect(modesDisabled('Claude Sonnet')).toBe(false)
+      expect(providerSwitches().map((toggle) => toggle.disabled)).toEqual([true, false, false, false])
+      expect(onChanged).not.toHaveBeenCalled()
+
+      // A write goes through meanwhile.
+      await click(userModelsCheckbox())
+      expect(setUserModelsEnabled).toHaveBeenCalledExactlyOnceWith(false)
+      expect(onChanged).toHaveBeenCalledOnce()
+
+      await act(async () => call.resolve({
+        model: 'claude-sonnet', ok: false, status: 401, message: 'invalid x-api-key',
+      }))
+
+      expect(modelTestResult('Claude Sonnet')).toBe(
+        'Failed (401): invalid x-api-key' +
+        'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN ' +
+        'may not be allowed to run models.')
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(addToast).not.toHaveBeenCalled()
+    })
+
+    it('can be run while a write is in flight', async () => {
+      const { setUserModelsEnabled, testGatewayModel } = await render()
+      const call = deferred()
+      setUserModelsEnabled.mockReturnValueOnce(call.promise)
+      await click(userModelsCheckbox())
+      expect(modesDisabled('GPT Custom')).toBe(true)
+      expect(button('Remove GPT Custom').disabled).toBe(true)
+
+      expect(modelTestButton('GPT Custom').disabled).toBe(false)
+      expect(modelTestButton('GPT Custom').getAttribute('aria-disabled')).toBe('false')
+      await click(modelTestButton('GPT Custom'))
+
+      expect(testGatewayModel).toHaveBeenCalledExactlyOnceWith('gpt-custom')
+      expect(modelTestResult('GPT Custom')).toBe(MODEL_TEST_PASSED_TEXT)
+      // The test did not end the write's lock either.
+      expect(modesDisabled('GPT Custom')).toBe(true)
+
+      await act(async () => call.resolve())
+
+      expect(modesDisabled('GPT Custom')).toBe(false)
+      expect(modelTestResult('GPT Custom')).toBe(MODEL_TEST_PASSED_TEXT)
+    })
+
+    it('shows a test that could not be run in the model’s row, and not as a toast', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { testGatewayModel } = await render()
+      const failure = new Error('No such model: claude-sonnet')
+      testGatewayModel.mockRejectedValueOnce(failure)
+
+      await click(modelTestButton('Claude Sonnet'))
+
+      expect(modelTestResult('Claude Sonnet'))
+        .toBe('Couldn’t run the test: No such model: claude-sonnet')
+      expect(modelTestButton('Claude Sonnet').textContent).toBe('Test')
+      expect(modelTestResult('Claude Legacy')).toBe('')
+      expect(addToast).not.toHaveBeenCalled()
+      expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), failure)
+    })
+
+    // The row of a removed model stays until a re-read reports the model gone.
+    it.each(MODEL_WRITES)('forgets a model’s result after %s, and no other result', async (
+      _case, method, written, change,
+    ) => {
+      const rendered = await renderTested()
+
+      await change()
+
+      expect(rendered[method]).toHaveBeenCalledOnce()
+      expect(rendered.onChanged).toHaveBeenCalledOnce()
+      expect(addToast).not.toHaveBeenCalled()
+      expect(results()).toEqual(
+        ALL_PASSED.map((result, index) => (TESTED[index] === written ? '' : result)))
+    })
+
+    it.each(MODEL_WRITES)('keeps a model’s result after %s that the server refused', async (
+      _case, method, _written, change,
+    ) => {
+      const rendered = await renderTested()
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      rendered[method].mockRejectedValueOnce(
+        new Error('This deployment does not provide models through AI Gateway.'))
+
+      await change()
+
+      expect(rendered[method]).toHaveBeenCalledOnce()
+      expect(addToast).toHaveBeenCalledOnce()
+      expect(rendered.onChanged).not.toHaveBeenCalled()
+      expect(results()).toEqual(ALL_PASSED)
+    })
+
+    it('forgets every model’s result after a change of the default reasoning level, and no provider’s', async () => {
+      const { setDefaultReasoning, onChanged } = await renderTested()
+
+      await choose('Default reasoning level', 'High')
+
+      expect(setDefaultReasoning).toHaveBeenCalledExactlyOnceWith('high')
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(results()).toEqual([...TESTED.map(() => ''), TEST_PASSED_TEXT])
+    })
+
+    it('keeps every result after a change of the default reasoning level that the server refused', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { setDefaultReasoning } = await renderTested()
+      setDefaultReasoning.mockRejectedValueOnce(
+        new Error('This deployment does not provide models through AI Gateway.'))
+
+      await choose('Default reasoning level', 'High')
+
+      expect(setDefaultReasoning).toHaveBeenCalledOnce()
+      expect(addToast).toHaveBeenCalledOnce()
+      expect(results()).toEqual(ALL_PASSED)
+    })
+
+    it.each([
+      ['a change of another model’s mode', 'setGatewayModelMode',
+        () => click(modeOption('Claude Haiku', 'Hidden'))],
+      ['a change of another model’s settings', 'setGatewayModelSettings', async () => {
+        await openSettings('Claude Haiku')
+        await choose('Reasoning level for Claude Haiku', 'High')
+      }],
+      ['a provider turned on', 'setGatewayProviderEnabled', () => click(providerCheckbox('Google'))],
+      ['users’ own models turned off', 'setUserModelsEnabled', () => click(userModelsCheckbox())],
+      ['models.dev suggestions turned on', 'setModelsDevSuggestions',
+        () => click(settingCheckbox(SUGGESTIONS_LABEL))],
+      ['a model added', 'addGatewayModel', async () => {
+        await fillAddForm({ id: 'gpt-next', name: 'GPT Next', contextWindow: '128000' })
+        await click(button('Add model'))
+      }],
+    ] as const)('keeps every result after %s', async (_case, method, change) => {
+      const rendered = await renderTested()
+
+      await change()
+
+      expect(rendered[method]).toHaveBeenCalledOnce()
+      expect(rendered.onChanged).toHaveBeenCalledOnce()
+      expect(addToast).not.toHaveBeenCalled()
+      expect(results()).toEqual(ALL_PASSED)
+    })
+
+    it('keeps every result when the settings are re-read', async () => {
+      const { show } = await renderTested()
+
+      await show({
+        ...RUNTIME_MODELS,
+        defaultReasoning: 'high',
+        models: RUNTIME_MODELS.models.map((model) => ({ ...model, mode: 'hidden' })),
+      })
+
+      expect(selectedMode('Claude Opus')).toEqual(['Hidden'])
+      expect(results()).toEqual(ALL_PASSED)
+    })
+
+    it('forgets a result once the write has gone through, without waiting for the re-read', async () => {
+      const { onChanged, testGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+      const reread = deferred()
+      onChanged.mockReturnValueOnce(reread.promise)
+      testGatewayModel.mockResolvedValueOnce(FAILED)
+      await click(modelTestButton('Claude Opus'))
+      expect(modelTestResult('Claude Opus')).toBe('Failed (500): The server had an error.')
+
+      await click(modeOption('Claude Opus', 'Hidden'))
+
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(modesDisabled('Claude Opus')).toBe(true)
+      expect(modelTestResult('Claude Opus')).toBe('')
+
+      // A test asked from here on is of the model as the write left it, so its result stays.
+      await click(modelTestButton('Claude Opus'))
+      await act(async () => reread.resolve())
+
+      expect(modesDisabled('Claude Opus')).toBe(false)
+      expect(testGatewayModel).toHaveBeenCalledTimes(2)
+      expect(modelTestResult('Claude Opus')).toBe(MODEL_TEST_PASSED_TEXT)
+    })
+
+    it('forgets a result although the re-read after the write failed', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { onChanged, setGatewayModelMode } = await render({ gatewayModels: RUNTIME_MODELS })
+      onChanged.mockRejectedValueOnce(new Error('Peer closed WebSocket: 1006 '))
+      await click(modelTestButton('Claude Opus'))
+      await click(modelTestButton('GPT Main'))
+
+      await click(modeOption('Claude Opus', 'Hidden'))
+
+      expect(setGatewayModelMode).toHaveBeenCalledExactlyOnceWith('claude-opus', 'hidden')
+      expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ title: 'Saved, but couldn’t reload the models' }))
+      expect(modelTestResult('Claude Opus')).toBe('')
+      expect(modelTestResult('GPT Main')).toBe(MODEL_TEST_PASSED_TEXT)
+    })
+
+    it.each([
+      ['a write to the model', () => click(modeOption('Claude Opus', 'Hidden'))],
+      ['a change of the default reasoning level', () => choose('Default reasoning level', 'High')],
+    ])('shows nothing of an answer that arrives after %s, and tests the model again at once', async (
+      _case, change,
+    ) => {
+      const { testGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+      const earlier = deferred<GatewayModelTest>()
+      const later = deferred<GatewayModelTest>()
+      testGatewayModel.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(later.promise)
+      await click(modelTestButton('Claude Opus'))
+      expect(modelTestButton('Claude Opus').textContent).toBe('Testing…')
+
+      await change()
+
+      expect(modelTestButton('Claude Opus').textContent).toBe('Test')
+      expect(modelTestResult('Claude Opus')).toBe('')
+
+      await click(modelTestButton('Claude Opus'))
+      expect(testGatewayModel.mock.calls).toEqual([['claude-opus'], ['claude-opus']])
+      await act(async () => earlier.resolve(FAILED))
+
+      // The earlier answer neither shows nor ends the later test.
+      expect(modelTestButton('Claude Opus').textContent).toBe('Testing…')
+      expect(modelTestResult('Claude Opus')).toBe('')
+
+      await act(async () => later.resolve({ model: 'claude-opus', ok: true }))
+
+      expect(modelTestButton('Claude Opus').textContent).toBe('Test')
+      expect(modelTestResult('Claude Opus')).toBe(MODEL_TEST_PASSED_TEXT)
+    })
+  })
+
   // Every control is disabled for as long as a write takes, and a disabled control loses focus.
   describe('focus across a write', () => {
     const BUDGETED: GatewayModels = {
@@ -1016,6 +1377,51 @@ describe('AdminModelsPanel', () => {
 
       expect(document.activeElement).toBe(pressed)
       expect(pressed?.textContent).toBe('Test')
+    })
+
+    it('leaves focus on a model’s Test button that was pressed while the write was in flight', async () => {
+      const { setGatewayModelMode, testGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelMode.mockReturnValueOnce(call.promise)
+      const answer = deferred<GatewayModelTest>()
+      testGatewayModel.mockReturnValueOnce(answer.promise)
+      await focus(modeOptions('Claude Haiku').find(({ text }) => text === 'Hidden')!.radio)
+      await click(modeOption('Claude Haiku', 'Hidden'))
+      await dropFocus()
+
+      await focus(modelTestButton('Claude Opus'))
+      await click(modelTestButton('Claude Opus'))
+      const pressed = document.activeElement
+      await act(async () => call.resolve())
+
+      expect(pressed?.textContent).toBe('Testing…')
+      expect(document.activeElement).toBe(pressed)
+
+      await act(async () => answer.resolve({ model: 'claude-opus', ok: true }))
+
+      expect(document.activeElement).toBe(pressed)
+      expect(pressed?.textContent).toBe('Test')
+    })
+
+    it('returns to the control a write was made from although a model’s test answered meanwhile', async () => {
+      const { setGatewayModelMode } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelMode.mockReturnValueOnce(call.promise)
+      const hidden = modeOptions('Claude Haiku').find(({ text }) => text === 'Hidden')!.radio
+      await focus(hidden)
+      await click(modeOption('Claude Haiku', 'Hidden'))
+      await dropFocus()
+
+      // Pressed without taking focus, as a pointer does in some browsers.
+      await click(modelTestButton('Claude Opus'))
+
+      expect(modelTestResult('Claude Opus')).toBe(MODEL_TEST_PASSED_TEXT)
+      expect(modesDisabled('Claude Haiku')).toBe(true)
+      expect(document.activeElement).toBe(document.body)
+
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(hidden)
     })
 
     it('leaves focus where it was moved to while the write was in flight', async () => {

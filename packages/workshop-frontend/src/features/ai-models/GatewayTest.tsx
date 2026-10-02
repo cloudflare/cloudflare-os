@@ -18,7 +18,7 @@ export const GatewayTestButton = ({ name, testing, onTest }: {
     className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
     aria-label={testing ? `Testing ${name}…` : `Test ${name}`}
     aria-disabled={testing}
-    onClick={onTest}
+    onClick={() => onTest()}
   >
     {testing ? 'Testing…' : 'Test'}
   </Button>
@@ -28,14 +28,23 @@ export const GatewayTestButton = ({ name, testing, onTest }: {
  * What a gateway test answered. The region is rendered before any test is run, and is empty until
  * one answers, so that the answer is announced.
  */
-export const GatewayTestStatus = ({ test }: {
+export const GatewayTestStatus = ({ test, subject }: {
   /** Where the last test stands. Absent until one is run. */
   test: GatewayTestState | undefined
+  /**
+   * What the test is of. A provider's test asks one of the provider's models, which a pass names;
+   * a model's test asks the model whose row the result is in.
+   */
+  subject: 'provider' | 'model'
 }) => (
   <div role="status" className="break-words text-xs leading-4">
     {test?.state === 'answered' && (test.result.ok ? (
       <p className="mt-2 text-kumo-success">
-        <span className="font-mono">{test.result.model}</span> answered through the gateway.
+        {subject === 'provider' ? (
+          <><span className="font-mono">{test.result.model}</span> answered through the gateway.</>
+        ) : (
+          'Answered through the gateway.'
+        )}
       </p>
     ) : (
       <>

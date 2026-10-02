@@ -57,7 +57,7 @@ const ProviderRow = ({ entry, busy, test, onEnabledChange, onTest }: {
           }
         />
       )}
-      <GatewayTestStatus test={test} />
+      <GatewayTestStatus test={test} subject="provider" />
     </li>
   )
 }

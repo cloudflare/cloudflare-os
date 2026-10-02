@@ -7,6 +7,7 @@ import type {
   GatewayModelSettings,
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
+import { GatewayTestButton, GatewayTestStatus } from './GatewayTest'
 import {
   PROVIDER_LABELS,
   REASONING_LEVEL_LABELS,
@@ -14,6 +15,7 @@ import {
   parseTokenLimit,
 } from './modelForm'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
+import type { GatewayTestState } from './useGatewayTests'
 
 /** Each mode's name and what it does to a model, as the Models tab words them. */
 export const MODES: Record<GatewayModelMode, { label: string; meaning: string }> = {
@@ -57,7 +59,8 @@ const settingsWith = (
 
 /** One gateway model in the Models tab: what it is, and the controls that change it. */
 export const GatewayModelRow = ({
-  model, defaultReasoning, behavesLikeName, busy, onModeChange, onSettingsChange, onRemove,
+  model, defaultReasoning, behavesLikeName, busy, test, onModeChange, onSettingsChange, onTest,
+  onRemove,
 }: {
   model: AdminModelView
   /** The deployment's default reasoning level, or null while it sets none. */
@@ -65,9 +68,13 @@ export const GatewayModelRow = ({
   /** The catalog's name for the model that `model.behavesLike` names, where the catalog has it. */
   behavesLikeName?: string
   busy: boolean
+  /** Where the model's last test stands. Absent until one is run. */
+  test: GatewayTestState | undefined
   onModeChange: (mode: GatewayModelMode) => void
   /** Called with the whole of the model's settings, as a change to one of them leaves them. */
   onSettingsChange: (settings: GatewayModelSettings) => void
+  /** Asks for the model to be tested. A test is not a write, so `busy` does not hold it back. */
+  onTest: () => void
   /** Present for a model that can be removed, whose row then also names its provider. */
   onRemove?: () => void
 }) => {
@@ -182,6 +189,8 @@ export const GatewayModelRow = ({
         ))}
       </Radio.Group>
 
+      <GatewayTestButton name={model.name} testing={test?.state === 'testing'} onTest={onTest} />
+
       {onRemove && (
         <Button
           variant="secondary"
@@ -194,104 +203,109 @@ export const GatewayModelRow = ({
         </Button>
       )}
 
-      <Collapsible.Root className="basis-full">
-        <Collapsible.DefaultTrigger className="w-fit text-sm">
-          Settings<span className="sr-only"> for {model.name}</span>
-        </Collapsible.DefaultTrigger>
-        <Collapsible.DefaultPanel>
-          <div className="grid items-start gap-4 sm:grid-cols-2">
-            {/* A level stored for a model that takes none can still be cleared. */}
-            {takesLevels || ownLevel !== undefined ? (
-              <Select<ReasoningLevel | typeof DEPLOYMENT_DEFAULT>
-                label="Reasoning level"
-                aria-label={`Reasoning level for ${model.name}`}
-                description={levelNote}
-                className="w-full"
-                disabled={busy}
-                value={ownLevel ?? DEPLOYMENT_DEFAULT}
-                onValueChange={(level, { reason }) => {
-                  // Only a pick is the admin's. The select also reports changes of its own: to
-                  // the value it started with, when its options change under a level that is
-                  // not one of them, and to an option whose first letter is typed while it is
-                  // closed.
-                  if (reason !== 'item-press') return
-                  if (!level || level === (ownLevel ?? DEPLOYMENT_DEFAULT)) return
-                  onSettingsChange(settingsWith(model, {
-                    reasoning: level === DEPLOYMENT_DEFAULT ? undefined : level,
-                  }))
-                }}
-                renderValue={(level) =>
-                  level === DEPLOYMENT_DEFAULT ? deploymentDefault : REASONING_LEVEL_LABELS[level]}
-              >
-                <Select.Option value={DEPLOYMENT_DEFAULT}>{deploymentDefault}</Select.Option>
-                {model.reasoningLevels.map((level) => (
-                  <Select.Option key={level} value={level}>
-                    {REASONING_LEVEL_LABELS[level]}
-                  </Select.Option>
-                ))}
-              </Select>
-            ) : (
-              <p className="text-sm leading-snug text-kumo-subtle">{levelNote}</p>
-            )}
-
-            {maxBudget > 0 && (
-              <form noValidate onSubmit={saveBudget} className="grid content-start gap-2">
-                <Input
-                  ref={budgetRef}
-                  label={<>Compaction budget<span className="sr-only"> for {model.name}</span></>}
-                  inputMode="numeric"
-                  placeholder={`${model.builtInCompactionInputBudget.toLocaleString()} (built-in)`}
-                  value={budgetText}
+      {/* The test's result brings its own space above it, so this line takes margins in place of
+          the row's gap: an empty status then takes no room above the Settings. */}
+      <div className="-mt-2 min-w-0 basis-full">
+        <GatewayTestStatus test={test} subject="model" />
+        <Collapsible.Root className="mt-2">
+          <Collapsible.DefaultTrigger className="w-fit text-sm">
+            Settings<span className="sr-only"> for {model.name}</span>
+          </Collapsible.DefaultTrigger>
+          <Collapsible.DefaultPanel>
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              {/* A level stored for a model that takes none can still be cleared. */}
+              {takesLevels || ownLevel !== undefined ? (
+                <Select<ReasoningLevel | typeof DEPLOYMENT_DEFAULT>
+                  label="Reasoning level"
+                  aria-label={`Reasoning level for ${model.name}`}
+                  description={levelNote}
+                  className="w-full"
                   disabled={busy}
-                  onChange={(event) => editBudget(event.target.value)}
-                  error={budgetError}
-                  aria-invalid={budgetError !== undefined}
-                  aria-describedby={budgetFacts}
-                />
-                {/* The warning is part of the description, and not a live region that would
-                    speak while the budget is being typed. */}
-                <div id={budgetFacts} className="grid gap-2 text-sm leading-snug text-kumo-subtle">
-                  <p>
-                    Leave blank for the built-in budget of{' '}
-                    {tokenCount(model.builtInCompactionInputBudget)}. The maximum is{' '}
-                    {tokenCount(maxBudget)}. A chat on this model compacts at about{' '}
-                    {tokenCount(Math.round(COMPACTION_TRIGGER_RATIO * budgetInEffect))}.
-                  </p>
-                  {smallBudget && (
-                    <p className="text-kumo-warning">
-                      A budget under {tokenCount(SMALL_BUDGET)} makes a chat compact very often.
-                    </p>
-                  )}
-                </div>
-                {budgetAlert.alert}
-                <div className="flex gap-2">
-                  <Button
-                    type="submit"
-                    variant="secondary"
-                    size="sm"
+                  value={ownLevel ?? DEPLOYMENT_DEFAULT}
+                  onValueChange={(level, { reason }) => {
+                    // Only a pick is the admin's. The select also reports changes of its own: to
+                    // the value it started with, when its options change under a level that is
+                    // not one of them, and to an option whose first letter is typed while it is
+                    // closed.
+                    if (reason !== 'item-press') return
+                    if (!level || level === (ownLevel ?? DEPLOYMENT_DEFAULT)) return
+                    onSettingsChange(settingsWith(model, {
+                      reasoning: level === DEPLOYMENT_DEFAULT ? undefined : level,
+                    }))
+                  }}
+                  renderValue={(level) =>
+                    level === DEPLOYMENT_DEFAULT ? deploymentDefault : REASONING_LEVEL_LABELS[level]}
+                >
+                  <Select.Option value={DEPLOYMENT_DEFAULT}>{deploymentDefault}</Select.Option>
+                  {model.reasoningLevels.map((level) => (
+                    <Select.Option key={level} value={level}>
+                      {REASONING_LEVEL_LABELS[level]}
+                    </Select.Option>
+                  ))}
+                </Select>
+              ) : (
+                <p className="text-sm leading-snug text-kumo-subtle">{levelNote}</p>
+              )}
+
+              {maxBudget > 0 && (
+                <form noValidate onSubmit={saveBudget} className="grid content-start gap-2">
+                  <Input
+                    ref={budgetRef}
+                    label={<>Compaction budget<span className="sr-only"> for {model.name}</span></>}
+                    inputMode="numeric"
+                    placeholder={`${model.builtInCompactionInputBudget.toLocaleString()} (built-in)`}
+                    value={budgetText}
                     disabled={busy}
-                    aria-label={`Save the compaction budget of ${model.name}`}
-                  >
-                    Save
-                  </Button>
-                  {ownBudget !== undefined && (
+                    onChange={(event) => editBudget(event.target.value)}
+                    error={budgetError}
+                    aria-invalid={budgetError !== undefined}
+                    aria-describedby={budgetFacts}
+                  />
+                  {/* The warning is part of the description, and not a live region that would
+                      speak while the budget is being typed. */}
+                  <div id={budgetFacts} className="grid gap-2 text-sm leading-snug text-kumo-subtle">
+                    <p>
+                      Leave blank for the built-in budget of{' '}
+                      {tokenCount(model.builtInCompactionInputBudget)}. The maximum is{' '}
+                      {tokenCount(maxBudget)}. A chat on this model compacts at about{' '}
+                      {tokenCount(Math.round(COMPACTION_TRIGGER_RATIO * budgetInEffect))}.
+                    </p>
+                    {smallBudget && (
+                      <p className="text-kumo-warning">
+                        A budget under {tokenCount(SMALL_BUDGET)} makes a chat compact very often.
+                      </p>
+                    )}
+                  </div>
+                  {budgetAlert.alert}
+                  <div className="flex gap-2">
                     <Button
-                      type="button"
-                      variant="ghost"
+                      type="submit"
+                      variant="secondary"
                       size="sm"
                       disabled={busy}
-                      aria-label={`Reset the compaction budget of ${model.name}`}
-                      onClick={resetBudget}
+                      aria-label={`Save the compaction budget of ${model.name}`}
                     >
-                      Reset
+                      Save
                     </Button>
-                  )}
-                </div>
-              </form>
-            )}
-          </div>
-        </Collapsible.DefaultPanel>
-      </Collapsible.Root>
+                    {ownBudget !== undefined && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={busy}
+                        aria-label={`Reset the compaction budget of ${model.name}`}
+                        onClick={resetBudget}
+                      >
+                        Reset
+                      </Button>
+                    )}
+                  </div>
+                </form>
+              )}
+            </div>
+          </Collapsible.DefaultPanel>
+        </Collapsible.Root>
+      </div>
     </li>
   )
 }
