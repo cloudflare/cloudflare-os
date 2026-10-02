@@ -164,6 +164,36 @@ describe("AdminSettings added gateway models", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
+  // A response is reserved out of the window: the model's output limit, or the 32,768 tokens of
+  // Workers AI for a Cloudflare model that gives none.
+  const TINY: GatewayModel =
+      { provider: "cloudflare", id: "@cf/test/tiny", name: "Tiny", contextWindow: 32768 };
+
+  it.each<[string, GatewayModel, number]>([
+    ["an output limit that fills its window", { ...ADDED, contextWindow: 8000, outputLimit: 8000 },
+      8000],
+    ["an output limit over its window", { ...ADDED, contextWindow: 8000, outputLimit: 9000 }, 9000],
+    ["a window that the Workers AI reservation fills", TINY, 32768],
+  ])("refuses a model with %s, which leaves a prompt no room", async (_, model, reserved) => {
+    const { inDo, stored, put } = adminSettings();
+    await expect(inDo(admin => admin.addGatewayModel(model))).rejects.toThrow(
+        `The "${model.name}" model's context window leaves no room for a prompt: ${reserved} ` +
+        "tokens of it are reserved for the response. Give the model an output limit under its " +
+        "context window.");
+    expect((await stored()).addedModels).toEqual([]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("adds a model whose reservation leaves a prompt a token", async () => {
+    const { inDo, stored } = adminSettings();
+    const models = [
+      { ...ADDED, contextWindow: 8000, outputLimit: 7999 },
+      { ...TINY, outputLimit: 32767 },
+    ];
+    for (let model of models) await inDo(admin => admin.addGatewayModel(model));
+    expect((await stored()).addedModels).toEqual(models);
+  });
+
   it("refuses an ID that an added model already has, under any provider", async () => {
     const { inDo, stored } = adminSettings();
     await inDo(admin => admin.addGatewayModel(ADDED));
@@ -525,11 +555,13 @@ describe("AdminSettings gateway model settings", () => {
     expect(put).not.toHaveBeenCalled();
   });
 
-  // Workers AI reserves 32,768 tokens for the response, which is more than this window.
+  // Workers AI reserves 32,768 tokens for the response, which is more than this window. Such a
+  // model can't be added, so this is one that was stored.
   it("refuses any compaction budget for a model whose window leaves no room", async () => {
     const { inDo, settings } = adminSettings();
-    await inDo(admin => admin.addGatewayModel(
-        { provider: "cloudflare", id: "@cf/test/tiny", name: "Tiny", contextWindow: 1000 }));
+    await inDo(admin => admin.updateAdminConfig({ addedModels: [
+      { provider: "cloudflare", id: "@cf/test/tiny", name: "Tiny", contextWindow: 1000 },
+    ] }));
     await expect(inDo(admin => admin.setGatewayModelSettings(
         "@cf/test/tiny", { compactionInputBudget: 1 }))).rejects.toThrow(
         'The "Tiny" model\'s context window leaves no room for a compaction budget.');

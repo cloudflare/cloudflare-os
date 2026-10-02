@@ -549,6 +549,15 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         throw new Error(`"${added.behavesLike}" is not a model the runtime knows under ` +
             `provider "${added.provider}", so "${added.id}" can't behave like it.`);
       }
+      // A response is reserved out of the window, so a reservation that fills it would leave
+      // every chat on the model with no prompt to send.
+      let { inputBudget, maxOutputTokens } = getModelTokenLimits(gatewayModelConfig(
+          { ...added, mode: "enabled", defaultMode: "enabled", added: true }));
+      if (inputBudget <= 0) {
+        throw new Error(`The "${added.name}" model's context window leaves no room for a ` +
+            `prompt: ${maxOutputTokens} tokens of it are reserved for the response. Give the ` +
+            "model an output limit under its context window.");
+      }
       // The ID was free, so a mode or settings stored under it belonged to a model that has since
       // left.
       return {

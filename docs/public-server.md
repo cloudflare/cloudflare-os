@@ -210,7 +210,11 @@ for every level above **Minimal**.
 takes a provider (one that is on, of the ones AI Gateway serves: `anthropic`, `openai`, `google`
 or `cloudflare`), the model ID as the provider's API names it, a display name, the context
 window in tokens, and optionally an output limit — both the response cap and the space reserved
-for it in the window (Workers AI models default to 32768). The ID and the name may each be up to
+for it in the window (Workers AI models default to 32768). That reservation has to leave a prompt
+some room: a model whose output limit is not under its context window, or a Workers AI model with
+a window of 32768 tokens or fewer and no output limit, is refused with `The "<name>" model's
+context window leaves no room for a prompt: <n> tokens of it are reserved for the response. Give
+the model an output limit under its context window.` The ID and the name may each be up to
 200 characters, and the ID must be one that neither the catalog, under any provider, nor another
 added model has. An added model starts **Enabled**, takes the three modes like a catalog model, and
 is listed in pickers after its provider's catalog models. Users can't edit or delete a model the

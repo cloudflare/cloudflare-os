@@ -1206,8 +1206,9 @@ export interface AdminApi {
    * and 'enabled' by default. Throws if the model is malformed (an empty or over-long ID or name,
    * an over-long `behavesLike`, a token limit that isn't a positive integer), if the gateway does
    * not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or
-   * added model already has its ID, or if the model runtime does not know its `behavesLike` under
-   * its provider.
+   * added model already has its ID, if the model runtime does not know its `behavesLike` under
+   * its provider, or if what its context window reserves for the response (its output limit, or
+   * WORKERS_AI_OUTPUT_LIMIT for a Cloudflare model that gives none) leaves a prompt no room.
    */
   addGatewayModel(model: GatewayModel): Promise<void>;
 
