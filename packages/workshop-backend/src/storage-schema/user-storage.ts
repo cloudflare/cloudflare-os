@@ -174,6 +174,10 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       preferredModel: <string | null>null,
       onboardingCompleted: false,
 
+      // Opaque account id understood only by the install-local notification proxy. Neither the
+      // central subscription id nor the APNs device token enters Workshop core storage.
+      notificationAccountId: <string | null>null,
+
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.
       outputsBackfilled: false,

@@ -79,6 +79,9 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
+import type {
+  PermissionRequestedDelivery, TaskCompletedDelivery,
+} from "@gadgets/workshop-shared/notification-delivery";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
@@ -1038,7 +1041,8 @@ class OverseerImpl implements AgentHooks {
     }
 
     await this.#runAgentTurn(
-        record.chatId, aiModel, record.initiator, record.callbackInitiated, liveChat);
+        record.chatId, aiModel, record.initiator, record.initiatorUserId,
+        record.notificationId ?? crypto.randomUUID(), record.callbackInitiated, liveChat);
   }
 
   // The hand-off once a chat's turn is over and its running-agent state has been torn down: drop
@@ -6492,21 +6496,26 @@ class OverseerImpl implements AgentHooks {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
+    let notificationId = crypto.randomUUID();
     this.storage.activeAgents.put({
       chatId,
       initiatorUserId,
       modelId: aiModel.profile.id,
       initiator,
       callbackInitiated,
+      notificationId,
     });
 
     let liveChat = this.#getLiveChat(chatId);
-    let turn = this.#runAgentTurn(chatId, aiModel, initiator, callbackInitiated, liveChat);
+    let turn = this.#runAgentTurn(
+        chatId, aiModel, initiator, initiatorUserId, notificationId, callbackInitiated, liveChat);
     if (keepAlive) this.ctx.waitUntil(turn);
   }
 
   #runAgentTurn(chatId: number, aiModel: UserAiModelRecord,
                 initiator: AiChatAuthorInfo,
+                initiatorUserId: string,
+                notificationId: string,
                 callbackInitiated: boolean,
                 liveChat: LiveChatContext): Promise<void> {
     return obsContext.with({
@@ -6515,17 +6524,22 @@ class OverseerImpl implements AgentHooks {
       chatId,
       modelId: aiModel.profile.id,
     }, () => this.#runAgentTurnWithContext(
-        chatId, aiModel, initiator, callbackInitiated, liveChat));
+        chatId, aiModel, initiator, initiatorUserId, notificationId,
+        callbackInitiated, liveChat));
   }
 
   async #runAgentTurnWithContext(chatId: number, aiModel: UserAiModelRecord,
                                  initiator: AiChatAuthorInfo,
+                                 initiatorUserId: string,
+                                 notificationId: string,
                                  callbackInitiated: boolean,
                                  liveChat: LiveChatContext): Promise<void> {
     // When this turn is billed to the user's own Cloudflare account, we refresh their cached credit
     // balance once the turn completes (see the `finally` below) so the next billing decision
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
+    let completedDelivery: TaskCompletedDelivery | undefined;
+    let permissionDelivery: PermissionRequestedDelivery | undefined;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -6595,8 +6609,23 @@ class OverseerImpl implements AgentHooks {
         let controller = liveChat.cancelController;
         controller.signal.throwIfAborted();
 
-        await runAgent(
+        let disposition = await runAgent(
             this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
+        let meta = this.storage.chatMeta.get(chatId);
+        if (meta) {
+          let delivery = {
+            id: notificationId,
+            workspaceId: this.ctx.id.toString(),
+            chatId,
+            workspaceTitle: this.storage.title.get(),
+            chatTitle: meta.title,
+          };
+          if (disposition === "completed") {
+            completedDelivery = { ...delivery, completedAt: new Date() };
+          } else {
+            permissionDelivery = { ...delivery, requestedAt: new Date() };
+          }
+        }
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "ok",
           durationMs: Date.now() - startedAt,
@@ -6667,6 +6696,22 @@ class OverseerImpl implements AgentHooks {
       // stale records of this agent linger. If pending calls below restart the agent, it'll
       // re-register everything consistently.
       this.#unregisterRunningAgent(chatId);
+
+      let user = this.users.get(this.users.idFromString(initiatorUserId));
+      if (completedDelivery) {
+        this.ctx.waitUntil(user.publishTaskCompletedNotification(completedDelivery).catch(error => {
+          turnLogger.warn("task completion notification failed", {
+            event: "notification.task.completed.failed", error,
+          });
+        }));
+      } else if (permissionDelivery) {
+        this.ctx.waitUntil(user.publishPermissionRequestedNotification(permissionDelivery)
+            .catch(error => {
+              turnLogger.warn("permission request notification failed", {
+                event: "notification.permission.requested.failed", error,
+              });
+            }));
+      }
 
       this.#finishAgentTurn(chatId);
     }
