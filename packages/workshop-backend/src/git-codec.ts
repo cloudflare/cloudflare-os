@@ -9,8 +9,9 @@
 //   so it must bound allocations and fail loudly. isomorphic-git's pack machinery is not
 //   reachable from its exports map in 1.40 (verified), and the public `indexPack` route both
 //   silently *skips* objects whose delta chain fails to resolve and trusts claimed sizes.
-// isomorphic-git remains the engine for the existing full-materialization reads and all tree/
-// commit *writes* (git-store.ts); tests cross-verify the two codecs over the same store.
+// isomorphic-git remains the engine for the existing full-materialization reads and for
+// GitStore's tree/commit *writes* (git-store.ts); tests cross-verify the two codecs over the same
+// store. The tree and commit encoders here serve writers with no object store to hand it.
 //
 // Everything here is pure computation over byte arrays: no storage, no RPC. zlib comes from pako
 // (the same library isomorphic-git bundles) because pack entries are concatenated zlib streams
@@ -19,6 +20,7 @@
 
 import { Inflate, deflate, inflate } from "pako";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { CommitSignature } from "./worktree-binding";
 
 const ENCODER = new TextEncoder();
 
@@ -44,6 +46,12 @@ export function validateGitObjectType(type: string): GitObjectType {
 function toHex(bytes: Uint8Array): string {
   let out = "";
   for (let byte of bytes) out += byte.toString(16).padStart(2, "0");
+  return out;
+}
+
+function fromHex(hex: string): Uint8Array {
+  let out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 
@@ -192,6 +200,50 @@ export function parseGitTree(payload: Uint8Array, treeOid?: GitOid): GitTreeEntr
   });
 }
 
+/**
+ * Encodes a tree payload: the inverse of `parseGitTree()`. Entries may be given in any order and
+ * are written in git's canonical one, which compares names bytewise as if a directory's name
+ * ended in `/` -- so the file `a.b` precedes the directory `a`, which precedes the file `a0`. Any
+ * other order is a different object with a different oid, and one real git rejects.
+ *
+ * Throws rather than write a tree that would not parse back to these entries: on a name git
+ * cannot represent (empty, `.`, `..`, or containing `/` or NUL), on a name that is not
+ * well-formed Unicode (it would not survive encoding, and could alias another entry), and on a
+ * name given twice.
+ */
+export function encodeGitTree(entries: readonly GitTreeEntry[]): Uint8Array {
+  let names = new Set<string>();
+  let encoded = entries.map(({ mode, name, oid }) => {
+    if (!TREE_ENTRY_MODES.includes(mode)) {
+      throw new Error(`cannot encode tree: unsupported entry mode ${mode}`);
+    }
+    if (name === "" || name === "." || name === ".." || /[/\0]/.test(name) ||
+        !name.isWellFormed()) {
+      throw new Error(`cannot encode tree: invalid entry name ${JSON.stringify(name)}`);
+    }
+    if (names.has(name)) {
+      throw new Error(`cannot encode tree: duplicate entry name ${JSON.stringify(name)}`);
+    }
+    names.add(name);
+    return {
+      sortKey: ENCODER.encode(mode === "40000" ? `${name}/` : name),
+      bytes: concatBytes([ENCODER.encode(`${mode} ${name}\0`), fromHex(validateGitOid(oid))]),
+    };
+  });
+  encoded.sort((a, b) => compareBytes(a.sortKey, b.sortKey));
+  return concatBytes(encoded.map(entry => entry.bytes));
+}
+
+// Lexicographic order over unsigned bytes, a prefix sorting first: C's memcmp, extended to
+// unequal lengths.
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  let length = Math.min(a.byteLength, b.byteLength);
+  for (let i = 0; i < length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.byteLength - b.byteLength;
+}
+
 // =======================================================================================
 // Commit objects
 
@@ -229,6 +281,63 @@ export function parseGitCommitRefs(payload: Uint8Array, commitOid?: GitOid): Git
   }
   if (tree === undefined) throw new Error(`corrupt commit object ${where}: missing tree header`);
   return { tree, parents };
+}
+
+/** A whole commit, as `encodeGitCommit()` writes it. */
+export interface GitCommit extends GitCommitRefs {
+  /** Who wrote the change, and when. */
+  author: CommitSignature;
+
+  /** Who created the commit, and when. */
+  committer: CommitSignature;
+
+  /**
+   * The commit message. Normalized exactly as `GitStore` normalizes one, so that the same
+   * message yields the same oid through either writer: carriage returns are removed, leading
+   * newlines dropped, and the result ends with exactly one newline.
+   */
+  message: string;
+}
+
+/**
+ * Encodes a commit payload. Parents are written in the order given, which is part of the
+ * commit's identity.
+ *
+ * Throws rather than write a commit that would not parse back to these fields: on a name or
+ * email containing `<`, `>`, a newline or NUL (which would end the field early, and could forge
+ * the headers after it), and on a timestamp or UTC offset git's format cannot hold.
+ */
+export function encodeGitCommit(commit: GitCommit): Uint8Array {
+  let lines = [`tree ${validateGitOid(commit.tree)}`];
+  for (let parent of commit.parents) lines.push(`parent ${validateGitOid(parent)}`);
+  lines.push(`author ${formatCommitSignature(commit.author)}`);
+  lines.push(`committer ${formatCommitSignature(commit.committer)}`);
+
+  let message = commit.message.replaceAll("\r", "");
+  let start = 0;
+  let end = message.length;
+  while (start < end && message[start] === "\n") start++;
+  while (end > start && message[end - 1] === "\n") end--;
+  return ENCODER.encode(`${lines.join("\n")}\n\n${message.slice(start, end)}\n`);
+}
+
+// Formats an author or committer header's value: `<name> <<email>> <seconds> <+hhmm|-hhmm>`.
+function formatCommitSignature(signature: CommitSignature): string {
+  let { name, email, utcOffsetMinutes } = signature;
+  if (/[<>\n\0]/.test(name) || /[<>\n\0]/.test(email)) {
+    throw new Error(
+        "cannot encode commit: a name or email contains '<', '>', a newline or NUL");
+  }
+  let seconds = Math.floor(signature.timestamp.getTime() / 1000);
+  if (!Number.isSafeInteger(seconds) || seconds < 0) {
+    throw new Error("cannot encode commit: timestamp is invalid or precedes 1970");
+  }
+  let zone = Math.abs(utcOffsetMinutes);
+  if (!Number.isInteger(zone) || zone >= 100 * 60) {
+    throw new Error(`cannot encode commit: invalid UTC offset ${utcOffsetMinutes}`);
+  }
+  let hhmm = String(Math.floor(zone / 60)).padStart(2, "0") + String(zone % 60).padStart(2, "0");
+  return `${name} <${email}> ${seconds} ${utcOffsetMinutes < 0 ? "-" : "+"}${hhmm}`;
 }
 
 // =======================================================================================

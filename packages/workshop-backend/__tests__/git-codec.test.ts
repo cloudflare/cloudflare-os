@@ -6,14 +6,21 @@ import {
   concatBytes,
   decodeLooseObject,
   decodePackBytes,
+  encodeGitCommit,
+  encodeGitTree,
   encodeLooseObject,
   gitObjectOid,
   parseGitCommitRefs,
   parseGitTree,
   scanGitTree,
   validateGitOid,
+  type GitCommit,
+  type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
+import { GitStore } from "../src/git-store";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
+import { makeMockStorage } from "./mock-storage";
 import {
   BAD_NAME_TREE,
   COMMIT_1,
@@ -34,6 +41,53 @@ function fixture(oid: string): PackableObject {
   let object = FIXTURE_OBJECTS.find(o => o.oid === oid);
   if (!object) throw new Error(`no fixture object ${oid}`);
   return { type: object.type, payload: b64Bytes(object.payload) };
+}
+
+function newGitStore(): GitStore {
+  return new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
+}
+
+const ALICE = { name: "Alice Example", email: "alice@example.com" };
+const BOB = { name: "Bob Builder", email: "bob@localhost" };
+
+/** `echo x | git hash-object --stdin` */
+const X_BLOB = "587be6b4c3f93f93c489c0111bba5596147a26cb";
+
+/** `git mktree </dev/null` */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** A tree entry for a file named `file`, but for the fields given. */
+function entry(fields: Partial<GitTreeEntry>): GitTreeEntry {
+  return { mode: "100644", name: "file", oid: X_BLOB, ...fields };
+}
+
+/** The when of a commit signature. */
+function at(seconds: number, utcOffsetMinutes = 0) {
+  return { timestamp: new Date(seconds * 1000), utcOffsetMinutes };
+}
+
+/**
+ * Encodes a `path -> text` map as nested trees, laid out as `GitStore.writeFilesAsCommit()`
+ * lays them out, and returns the root tree's oid.
+ */
+async function fileTreeOid(files: ReadonlyMap<string, string>): Promise<string> {
+  let entries: GitTreeEntry[] = [];
+  let directories = new Map<string, Map<string, string>>();
+  for (let [path, text] of files) {
+    let slash = path.indexOf("/");
+    if (slash < 0) {
+      let oid = await gitObjectOid("blob", new TextEncoder().encode(text));
+      entries.push({ mode: "100644", name: path, oid });
+    } else {
+      let name = path.slice(0, slash);
+      let directory = directories.get(name) ?? new Map<string, string>();
+      directories.set(name, directory.set(path.slice(slash + 1), text));
+    }
+  }
+  for (let [name, directory] of directories) {
+    entries.push({ mode: "40000", name, oid: await fileTreeOid(directory) });
+  }
+  return await gitObjectOid("tree", encodeGitTree(entries));
 }
 
 describe("loose object codec", () => {
@@ -110,6 +164,85 @@ describe("tree parser", () => {
   });
 });
 
+describe("tree encoder", () => {
+  it("re-encodes every real-git fixture tree byte-identically, whatever the input order", () => {
+    // Between them these cover all five entry modes and a non-ASCII name.
+    let trees = FIXTURE_OBJECTS.filter(o => o.type === "tree" && o.oid !== BAD_NAME_TREE);
+    expect(trees.length).toBeGreaterThan(1);
+    for (let tree of trees) {
+      let payload = b64Bytes(tree.payload);
+      let entries = parseGitTree(payload, tree.oid);
+      expect(encodeGitTree(entries)).toStrictEqual(payload);
+      expect(encodeGitTree(entries.toReversed())).toStrictEqual(payload);
+    }
+  });
+
+  it("encodes no entries as git's empty tree", async () => {
+    expect(await gitObjectOid("tree", encodeGitTree([]))).toBe(EMPTY_TREE);
+  });
+
+  it("sorts a directory as if its name ended in a slash", async () => {
+    // As plain names these sort foo, foo-bar, foo.txt, foo0. Oids from real `git mktree`.
+    let inner = encodeGitTree([{ mode: "100644", name: "inner.js", oid: X_BLOB }]);
+    expect(await gitObjectOid("tree", inner)).toBe("64be24e236917bb0d154adf86bd899d5d182716c");
+    let payload = encodeGitTree([
+      { mode: "40000", name: "foo", oid: "64be24e236917bb0d154adf86bd899d5d182716c" },
+      { mode: "100644", name: "foo-bar", oid: X_BLOB },
+      { mode: "100644", name: "foo.txt", oid: X_BLOB },
+      { mode: "100644", name: "foo0", oid: X_BLOB },
+    ]);
+    expect(parseGitTree(payload).map(e => e.name))
+        .toStrictEqual(["foo-bar", "foo.txt", "foo", "foo0"]);
+    expect(await gitObjectOid("tree", payload)).toBe("6174f963cab6a6776c96ce52ec8faca7462a54f1");
+  });
+
+  it("sorts names by their UTF-8 bytes, not their UTF-16 code units", async () => {
+    // U+1F600 is f0 9f 98 80 in UTF-8 but the surrogates d83d de00 in UTF-16, so it follows
+    // U+FF5E (ef bd 9e) in git's order and precedes it in JavaScript's. isomorphic-git sorts by
+    // the latter, so GitStore writes this tree in an order real git rejects: the one input for
+    // which the two encoders are not meant to agree. Oid from real `git mktree`.
+    let payload = encodeGitTree([
+      { mode: "100644", name: "\u{1F600}", oid: X_BLOB },
+      { mode: "100644", name: "\uFF5E", oid: X_BLOB },
+    ]);
+    expect(parseGitTree(payload).map(e => e.name)).toStrictEqual(["\uFF5E", "\u{1F600}"]);
+    expect(await gitObjectOid("tree", payload)).toBe("bb40f9cf9c37cab4cee8cbe15ff5dd0df3ddbb9e");
+  });
+
+  it("writes the same tree ids as GitStore", async () => {
+    let files = new Map([
+      ["README.md", "# Test Gadget\n"],
+      // Names that sort differently as files and as directories, at two depths.
+      ["foo/inner.js", "inner\n"],
+      ["foo-bar", "dash\n"],
+      ["foo.txt", "dot\n"],
+      ["foo0", "zero\n"],
+      ["lib/a/deep/leaf.js", "leaf\n"],
+      ["lib/a-b.js", "dash\n"],
+      ["lib/a.js", "dot\n"],
+      ["lib/a_b.js", "underscore\n"],
+      ["docs/na\u00efve.md", "caf\u00e9\n"],
+      ["empty.txt", ""],
+    ]);
+    let store = newGitStore();
+    let commit = await store.writeFilesAsCommit(
+        files, { parents: [], author: ALICE, message: "files", timestamp: new Date(0) });
+    expect(await fileTreeOid(files)).toBe(await store.commitTree(commit));
+  });
+
+  it("rejects entries that would not parse back as given", () => {
+    for (let name of ["", ".", "..", "a/b", "a\0b", "\ud83d"]) {
+      expect(() => encodeGitTree([entry({ name })])).toThrow(/invalid entry name/);
+    }
+    // A file and a directory cannot share a name either, though they do not sort together.
+    expect(() => encodeGitTree([entry({}), entry({ name: "file.txt" }), entry({ mode: "40000" })]))
+        .toThrow(/duplicate entry name "file"/);
+    expect(() => encodeGitTree([entry({ oid: X_BLOB.slice(1) })])).toThrow(/Invalid git object id/);
+    expect(() => encodeGitTree([entry({ mode: "040000" as GitTreeEntry["mode"] })]))
+        .toThrow(/unsupported entry mode 040000/);
+  });
+});
+
 describe("commit parser", () => {
   it("extracts tree and parents from real-git commits", () => {
     expect(parseGitCommitRefs(fixture(COMMIT_1).payload, COMMIT_1)).toStrictEqual({
@@ -130,6 +263,102 @@ describe("commit parser", () => {
   it("rejects a commit without a tree header", () => {
     let payload = new TextEncoder().encode("author A <a@b> 1 +0000\n\nmessage\n");
     expect(() => parseGitCommitRefs(payload, "0".repeat(40))).toThrow(/missing tree header/);
+  });
+});
+
+describe("commit encoder", () => {
+  it("re-encodes real-git fixture commits byte-identically", () => {
+    let alice = { ...ALICE, ...at(1700000000) };
+    expect(encodeGitCommit({
+      tree: TREE_1, parents: [], author: alice, committer: alice, message: "initial commit",
+    })).toStrictEqual(fixture(COMMIT_1).payload);
+
+    let later = { ...ALICE, ...at(1700000200) };
+    expect(encodeGitCommit({
+      ...parseGitCommitRefs(fixture(COMMIT_3).payload),
+      author: later, committer: later, message: "third commit\n",
+    })).toStrictEqual(fixture(COMMIT_3).payload);
+  });
+
+  it("encodes a merge with a distinct committer and UTC offsets as real git does", async () => {
+    // Oid from real `git commit-tree -p <first> -p <second>`, with GIT_AUTHOR_DATE
+    // "1700000100 -0500" and GIT_COMMITTER_DATE "1700000200 +0530".
+    let commit: GitCommit = {
+      tree: "6174f963cab6a6776c96ce52ec8faca7462a54f1",
+      parents: [
+        "eac7a4244b9bcd6c151d155b5c51bcd83ad0741a",
+        "6963e2d1831aa09174f34fbfbdb6429f9691ef63",
+      ],
+      author: { ...ALICE, ...at(1700000100, -300) },
+      committer: { ...BOB, ...at(1700000200, 330) },
+      message: "Merge things\n\nBody line.\n",
+    };
+    let payload = encodeGitCommit(commit);
+    expect(await gitObjectOid("commit", payload)).toBe("e5173d47b86cd826a08d49f1c8b6795726ad1967");
+    expect(parseGitCommitRefs(payload))
+        .toStrictEqual({ tree: commit.tree, parents: commit.parents });
+
+    // Parent order is part of the commit's identity.
+    let swapped = encodeGitCommit({ ...commit, parents: commit.parents.toReversed() });
+    expect(await gitObjectOid("commit", swapped)).not.toBe(await gitObjectOid("commit", payload));
+  });
+
+  it("writes the same commit ids as GitStore", async () => {
+    let store = newGitStore();
+    let timestamp = new Date(1700000000_999);  // recorded in whole seconds, rounded down
+    let cases: { parents: string[], message: string, committer?: typeof BOB }[] = [
+      { parents: [], message: "root" },
+      { parents: [COMMIT_1], message: "one parent\n" },
+      { parents: [COMMIT_2, COMMIT_1], message: "two parents", committer: BOB },
+      { parents: [COMMIT_1, COMMIT_2, COMMIT_3], message: "subject\n\nbody one\nbody two\n" },
+      // Every way a message is normalized.
+      { parents: [], message: "" },
+      { parents: [], message: "\n\n" },
+      { parents: [], message: "trailing blank lines\n\n\n" },
+      { parents: [], message: "\n\nleading blank lines" },
+      { parents: [], message: "windows\r\n\r\nline endings\r\n" },
+      { parents: [], message: "  spaces and a \t tab are kept  \n" },
+      { parents: [], message: "caf\u00e9 \u{1F600}" },
+    ];
+    for (let { parents, message, committer } of cases) {
+      let viaStore = await store.writeCommitForTree(
+          TREE_1, { parents, author: ALICE, committer, message, timestamp });
+      let payload = encodeGitCommit({
+        tree: TREE_1,
+        parents,
+        author: { ...ALICE, timestamp, utcOffsetMinutes: 0 },
+        committer: { ...(committer ?? ALICE), timestamp, utcOffsetMinutes: 0 },
+        message,
+      });
+      expect(await gitObjectOid("commit", payload), JSON.stringify(message)).toBe(viaStore);
+    }
+  });
+
+  it("rejects fields that would not parse back as given", () => {
+    let alice = { ...ALICE, ...at(1700000000) };
+    let commit: GitCommit =
+        { tree: TREE_1, parents: [COMMIT_1], author: alice, committer: alice, message: "m" };
+    expect(() => encodeGitCommit({ ...commit, tree: "HEAD" })).toThrow(/Invalid git object id/);
+    expect(() => encodeGitCommit({ ...commit, parents: [COMMIT_1, ""] }))
+        .toThrow(/Invalid git object id/);
+
+    // A newline in a name would otherwise let it write headers of its own.
+    let forged = `Mallory <m@example.com> 1 +0000\nparent ${COMMIT_2}\nauthor Mallory`;
+    for (let name of [forged, "a<b", "a>b", "a\0b"]) {
+      expect(() => encodeGitCommit({ ...commit, author: { ...alice, name } }))
+          .toThrow(/name or email contains/);
+      expect(() => encodeGitCommit({ ...commit, committer: { ...alice, email: name } }))
+          .toThrow(/name or email contains/);
+    }
+
+    for (let timestamp of [new Date(NaN), new Date(-1)]) {
+      expect(() => encodeGitCommit({ ...commit, author: { ...alice, timestamp } }))
+          .toThrow(/timestamp is invalid/);
+    }
+    for (let utcOffsetMinutes of [0.5, NaN, 6000, -6000]) {
+      expect(() => encodeGitCommit({ ...commit, committer: { ...alice, utcOffsetMinutes } }))
+          .toThrow(/invalid UTC offset/);
+    }
   });
 });
 
