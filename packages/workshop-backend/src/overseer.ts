@@ -6381,7 +6381,7 @@ class OverseerImpl implements AgentHooks {
       // so a human sees them and the alarm isn't retrying forever. For that we need the profile
       // alone; if even that fails, the user DO itself is the problem, which is transient -- the
       // calls stay recorded and the alarm retries.
-      let user = this.users.get(this.users.idFromString(first.initiatorUserId));
+      let user = this.wrapUserDo(this.users.get(this.users.idFromString(first.initiatorUserId)));
       let userMeta: UserChatContext;
       let modelError: unknown;
       try {
