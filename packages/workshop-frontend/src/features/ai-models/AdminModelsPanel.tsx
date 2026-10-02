@@ -20,6 +20,7 @@ import type { RpcStub } from 'capnweb'
 import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { AddGatewayModelForm } from './AddGatewayModelForm'
 import { GatewayModelRow, MODES } from './GatewayModelRow'
+import { GatewayProviders } from './GatewayProviders'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { PROVIDER_LABELS, REASONING_LEVEL_LABELS } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
@@ -203,6 +204,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     write(() => admin.setModelsDevSuggestions(enabled))
       .catch((err) => reportFailure(`Couldn’t update “${MODELS_DEV_LABEL}”`, err))
 
+  const changeProviderEnabled = (provider: AiModelProvider, enabled: boolean) =>
+    write(() => admin.setGatewayProviderEnabled(provider, enabled))
+      .catch((err) => reportFailure(`Couldn’t update ${PROVIDER_LABELS[provider]}`, err))
+
   // Runs when the add form's Model ID field is first turned to, and at most once for as long as
   // the panel is mounted: the list is several megabytes, and a failure only costs the suggestions.
   const loadModelsDev = () => {
@@ -252,7 +257,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
       <h2 className="mb-1 text-lg font-semibold text-kumo-strong">Models</h2>
       <p className="mb-4 text-sm text-kumo-subtle">
         The models this deployment provides through AI Gateway: the catalog this version ships for
-        the providers the gateway enables, plus the models this deployment added. A model left on
+        the providers that are on, plus the models this deployment added. A model left on
         its default follows the catalog when the deployment is upgraded.
       </p>
 
@@ -274,6 +279,17 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         onChange={changeDefaultReasoning}
       />
 
+      <section className="mb-6">
+        <h3 className={GROUP_HEADING}>Providers</h3>
+        {/* A test is not a write: it changes nothing, so it neither takes nor waits for the lock. */}
+        <GatewayProviders
+          providers={gatewayModels.providerSettings}
+          busy={busy}
+          onEnabledChange={changeProviderEnabled}
+          onTest={(provider) => admin.testGatewayProvider(provider)}
+        />
+      </section>
+
       <dl className="mb-6 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
         {GATEWAY_MODEL_MODES.map((mode) => (
           <div key={mode} className="contents">
@@ -286,7 +302,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
       <div className="flex flex-col gap-6">
         {catalogByProvider.size === 0 && (
           <p className="text-sm text-kumo-subtle">
-            This version’s catalog has no models for the providers the gateway enables.
+            This version’s catalog has no models for the providers that are on.
           </p>
         )}
 
@@ -342,8 +358,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
           <h4 className="mb-2 mt-5 text-sm font-medium text-kumo-default">Add a model</h4>
           {gatewayModels.providers.length === 0 ? (
             <p className="text-sm text-kumo-subtle">
-              No model can be added, because the gateway enables no provider it can serve one
-              through (<code className="font-mono text-xs">CF_AI_GATEWAY_PROVIDERS</code>).
+              No model can be added, because no provider is on. Turn one on under Providers.
             </p>
           ) : (
             <>

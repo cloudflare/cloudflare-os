@@ -38,6 +38,7 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 
 # Platform AI Gateway used for the free tier:
 CF_AI_GATEWAY=your-gateway
+# The providers that are always on. An admin can turn on others on the Models tab of /admin:
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
@@ -65,8 +66,9 @@ routes through the same Gateway.
 
 Which models the Gateway offers is not an environment setting: a deployment admin manages it on the
 **Models** tab of `/admin`. The tab lists the catalog this version ships (`SUGGESTED_MODELS` in
-`packages/workshop-shared/src/api.ts`) for the providers in `CF_AI_GATEWAY_PROVIDERS`, plus the
-models the deployment added, and gives each model one of three modes:
+`packages/workshop-shared/src/api.ts`) for the providers that are on, which are the ones in
+`CF_AI_GATEWAY_PROVIDERS` and the ones an admin turned on in the tab's **Providers** section
+(described below), plus the models the deployment added, and gives each model one of three modes:
 
 | Mode | Model pickers | Chats and gadget model bindings that already use the model |
 | --- | --- | --- |
@@ -122,8 +124,8 @@ is under that room, which in this version's catalog is the OpenAI models, whose 
 no room has no budget field.
 
 **Add a model**, under **Added by this deployment**, provides a model the catalog doesn't list. It
-takes a provider (one in `CF_AI_GATEWAY_PROVIDERS` that AI Gateway serves: `anthropic`, `openai`,
-`google` or `cloudflare`), the model ID as the provider's API names it, a display name, the context
+takes a provider (one that is on, of the ones AI Gateway serves: `anthropic`, `openai`, `google`
+or `cloudflare`), the model ID as the provider's API names it, a display name, the context
 window in tokens, and optionally an output limit — both the response cap and the space reserved
 for it in the window (Workers AI models default to 32768). The ID and the name may each be up to
 200 characters, and the ID must be one that neither the catalog, under any provider, nor another
@@ -132,8 +134,8 @@ is listed in pickers after its provider's catalog models. Users can't edit or de
 deployment provides, in any mode. **Remove** takes an added model out again, along with its mode
 and settings, and a chat that names it then fails with `No such model: <id>` until a model is added
 under that ID again; a catalog model can't be removed, only hidden or disabled. An added model whose
-provider leaves `CF_AI_GATEWAY_PROVIDERS` is neither offered nor listed on the tab, but it stays
-stored and keeps its ID, and it returns when the provider does.
+provider is off is neither offered nor listed on the tab, but it stays stored and keeps its ID, and
+it returns when the provider is on again.
 
 The form's optional **Behaves like** field is for a model that this version's model runtime has no
 entry for. Such a model otherwise runs with generic defaults for its provider, which a newer model
@@ -178,22 +180,99 @@ gadget model binding for a model that is not on the list, whether a user added i
 added and since removed it, fails with the same error at its next call. Nothing is deleted: the
 models users added work again, configured as they were, once the switch is back on.
 
+The tab's **Providers** section, above the lists of models, decides which providers are on. It has
+a row with a switch for each provider AI Gateway serves: Cloudflare Workers AI, Anthropic, OpenAI
+and Google. `CF_AI_GATEWAY_PROVIDERS` is a floor, which the section adds to and takes nothing from.
+A provider the variable lists is always on: its switch is locked, with the note `Set by
+CF_AI_GATEWAY_PROVIDERS`, and the server refuses to turn it off with `Provider "<provider>" is
+enabled by CF_AI_GATEWAY_PROVIDERS and can only be turned off there.` An admin can turn any other
+provider on, and off again. The variable may be empty, which leaves every provider to the section.
+A provider that an admin turned on stays on when the variable later lists it and then drops it.
+
+Turning a provider on does what listing it in the variable does: its catalog models appear, in
+their default modes unless modes were stored for them earlier, models can be added under it, and
+users can add their own under it while **Users may add their own models** is on. Turning it off
+takes its models off the tab and out of the model pickers, and deletes nothing: the modes and
+settings of its models, and the models added under it, stay stored and return with it. While it is
+off, a chat that names one of those models fails with `No such model: <id>`, except that a chat an
+external message continues moves to another model, as it does for a disabled one. Adding or
+editing a user's own model under the provider is refused with `Provider "<provider>" is not
+available in AI Gateway mode.` Off does not stop what users already have: a model a user already
+added under the provider still runs, and so does a gadget model binding already made for one of
+the provider's models. **Users may add their own models** is the switch that stops them.
+
+A row warns `Needs CF_AI_GATEWAY_API_TOKEN: requests to this provider fail until the deployment
+sets it.` while the provider's requests need the token and the deployment has none, whether the
+provider is on or off. In this version that can only be Google's row: Google's requests cannot ride
+the `WORKERS_AI` binding, so they need the token even where the binding carries every other
+provider's traffic. Listing `google` in `CF_AI_GATEWAY_PROVIDERS` without the token is an invalid
+environment setting, and the tab then holds its notice instead of the models. Turning Google on in
+the section without the token is allowed: the row warns, and each request to a Google model
+through the deployment's Gateway fails with `Provider "google" cannot use the Workers AI binding
+transport, and no CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.` A turn billed to a
+user's own Cloudflare account does not go through the deployment's Gateway, so it needs no such
+token. The warning is about the token alone, and says nothing of the provider keys.
+
+Provider keys or credits are stored in the gateway, where the Worker cannot see them, so each row
+has a **Test** button that finds out whether the provider answers. A test sends one small request
+to the provider's first catalog model, as the admin who pressed the button, through the
+deployment's Gateway (also for an admin whose own Cloudflare account pays for their chats). It asks
+for at most 16 output tokens, tells the Gateway not to answer from its cache (`cf-aig-skip-cache`),
+and waits up to 15 seconds. It works on a provider that is off, whatever mode the model has, and it
+changes no setting. Several providers can be tested at once, and a test does not hold up the rest
+of the tab. The result stays in the row until the provider is tested again, for as long as the tab
+stays open:
+
+- `<model> answered through the gateway.` when the model answered, `<model>` being its ID.
+- `Failed (<status>): <message>` when the request failed and the model runtime reported the HTTP
+  status of the response.
+- `Failed: <message>` when it failed and no status was reported.
+
+The message is what the provider or the gateway answered, or why no answer came, on one line and
+cut at 300 characters. A model that does not answer in time gives `Failed: The model did not answer
+within 15 seconds.`, and a row with the token warning gives the refusal quoted above without
+sending a request. The model runtime reports no status for a failed Google request, so a failed
+Google test always takes the `Failed: <message>` form, whatever status the message itself names. If
+the test could not be run at all, the row says so, as `Couldn’t run the test: <reason>` when there
+is a reason to give.
+
+When the status is 401 or 403, the row adds `The gateway may hold no key or credits for this
+provider, or CF_AI_GATEWAY_API_TOKEN may not be allowed to run models.` A test cannot tell the two
+apart: in gateway mode the Worker sends no provider key of its own and cannot list what the gateway
+holds. A failed Google test has no status, so it never shows the hint. A pass proves that one model
+answered once, not that the provider's other models work or that a later request will. Each press
+is a real request and costs a few tokens.
+
 This applies in AI Gateway mode only. Without `CF_AI_GATEWAY` each user adds their own models on
 their **Providers** page, and the tab holds a notice saying so; it holds the same notice when the
-gateway's environment settings are invalid. The Gateway's transport, its credentials and
-`CF_AI_GATEWAY_PROVIDERS` stay environment settings.
+gateway's environment settings are invalid. The Gateway's transport and credentials stay
+environment and gateway settings: `CF_AI_GATEWAY`, `CF_AI_GATEWAY_ACCOUNT_ID`,
+`CF_AI_GATEWAY_API_TOKEN` and `CF_AI_GATEWAY_USE_BINDING` are set in the environment, and the
+provider keys or credits are stored in the gateway. Of the providers, the environment sets only
+the floor: the ones `CF_AI_GATEWAY_PROVIDERS` lists are always on, and an admin can turn on the
+rest.
 
-The modes decide what the deployment offers, and have limits:
+The modes, the providers and the switch decide what the deployment offers, and have limits:
 
 - **Disabled alone is not a spend control while users may add their own models.** A user can still
-  add a model of their own from one of the Gateway's providers, under any ID the deployment's
-  models don't have, and it runs through the deployment's Gateway as the deployment's own models
-  do. Turn **Users may add their own models** off to make the listed models the only ones.
-- **The switch also applies to users who pay for their own usage.** With
-  `ENABLE_CLOUDFLARE_LIMITS`, a user whose connected Cloudflare account is funded is billed through
-  that account instead of the deployment's Gateway (see
-  [docs/ai-gateway-billing.md](ai-gateway-billing.md)). With the switch off they too can add no
-  model of their own and can run only the listed ones.
+  add a model of their own from any provider that is on, under any ID the deployment's models
+  don't have, and it runs through the deployment's Gateway as the deployment's own models do. Turn
+  **Users may add their own models** off to make the listed models the only ones.
+- **Turning a provider off is not a spend control either, while users may add their own models.**
+  The models users already added under the provider still run, and so do the gadget model bindings
+  already made for its models, even for a model that was disabled: a binding carries its own
+  provider and model name, and while the provider is off no listed model has them. Turn **Users
+  may add their own models** off to stop both.
+- **An admin session can turn on any provider the Gateway serves.** `CF_AI_GATEWAY_PROVIDERS`
+  names the providers that are always on and does not limit the others, so whoever holds an admin
+  session, a stolen one included, can turn on `anthropic`, `openai`, `google` or `cloudflare` and
+  spend on the keys or credits the gateway holds for it. Sign-in settings (`AUTH_GATEKEEPERS`,
+  `DISABLE_PASSWORD_AUTH`) stay environment settings, which no admin session can change.
+- **Turning “Users may add their own models” off also applies to users who pay for their own
+  usage.** With `ENABLE_CLOUDFLARE_LIMITS`, a user whose connected Cloudflare account is funded is
+  billed through that account instead of the deployment's Gateway (see
+  [docs/ai-gateway-billing.md](ai-gateway-billing.md)). With it off they too can add no model of
+  their own and can run only the listed ones.
 - **Disabling does not interrupt a turn in progress.** A model is checked when a turn starts and
   when a gadget's model binding is called, so an agent turn already running on the model finishes
   on it.

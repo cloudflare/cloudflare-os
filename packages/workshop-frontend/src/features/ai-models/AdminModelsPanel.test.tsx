@@ -5,7 +5,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AdminApi, AdminModelView, AdminSettingsView } from '@gadgets/workshop-shared/api'
+import type {
+  AdminApi,
+  AdminModelView,
+  AdminSettingsView,
+  GatewayProviderTest,
+} from '@gadgets/workshop-shared/api'
 
 const { addToast } = vi.hoisted(() => ({
   addToast: vi.fn<(toast: { title: string; description?: string; variant: string }) => void>(),
@@ -77,6 +82,19 @@ const KNOWN_ADDED: AdminModelView = { ...OPUS, id: 'claude-added', name: 'Claude
 // An added model with settings to change.
 const LEVELLED_ADDED: AdminModelView = { ...ADDED, reasoningLevels: ['low', 'high'] }
 
+// What a re-read reports once an admin has turned `provider` on or off.
+const withProvider = (provider: 'google' | 'openai', enabled: boolean): GatewayModels => ({
+  ...GATEWAY_MODELS,
+  providerSettings: GATEWAY_MODELS.providerSettings.map((entry) => {
+    if (entry.provider !== provider) return entry
+    const { enabledBy: _enabledBy, ...off } = entry
+    return enabled ? { ...off, enabledBy: 'admin' } : off
+  }),
+})
+
+const TEST_PASSED: GatewayProviderTest = { model: 'claude-sonnet', ok: true }
+const TEST_PASSED_TEXT = 'claude-sonnet answered through the gateway.'
+
 const SUGGESTIONS_LABEL = 'Suggest models from models.dev'
 const SUGGESTING: GatewayModels = { ...GATEWAY_MODELS, modelsDevSuggestions: true }
 
@@ -126,9 +144,9 @@ const stubModelsDev = (
   return stub
 }
 
-const deferred = () => {
-  let resolve!: () => void
-  const promise = new Promise<void>((r) => { resolve = r })
+const deferred = <T = void,>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => { resolve = r })
   return { promise, resolve }
 }
 
@@ -198,6 +216,35 @@ const settingCheckbox = (label: string) => {
 
 const userModelsSwitch = () => settingSwitch('Users may add their own models')
 const userModelsCheckbox = () => settingCheckbox('Users may add their own models')
+
+const providersSection = () => {
+  const heading = Array.from(document.body.querySelectorAll('h3'))
+    .find((element) => element.textContent === 'Providers')
+  if (!heading) throw new Error('No Providers section')
+  return heading.closest('section')!
+}
+
+const providerSwitches = () =>
+  Array.from(providersSection().querySelectorAll<HTMLButtonElement>('[role="switch"]'))
+
+const providerSwitch = (label: string) => {
+  const element = providerSwitches().find((toggle) => toggle.getAttribute('aria-label') === label)
+  if (!element) throw new Error(`No provider switch ${label}`)
+  return element
+}
+
+// As settingCheckbox: the checkbox the switch forwards its clicks to.
+const providerCheckbox = (label: string) => {
+  const input = providerSwitch(label).nextElementSibling
+  if (!(input instanceof HTMLInputElement)) throw new Error('No checkbox behind the switch')
+  return input
+}
+
+const testButton = (label: string) => button(`Test ${label}`, providersSection())
+
+/** What the status region of the provider's row says. */
+const testResult = (label: string) =>
+  providerSwitch(label).closest('li')!.querySelector('[role="status"]')!.textContent
 
 // As typing reports itself: suggestions open for typed text, not for a value filled in some other way.
 const type = (element: HTMLInputElement, value: string) => act(() => {
@@ -270,8 +317,10 @@ const suggestionOptions = () => {
 
 const suggested = () => suggestionOptions().map((option) => option.textContent)
 
+// What the add form says of its suggestions. Each provider's row has a status region of its own.
 const suggestionNote = () =>
-  Array.from(document.body.querySelectorAll('[role="status"]')).map((note) => note.textContent)
+  Array.from(button('Add model').closest('form')!.querySelectorAll('[role="status"]'))
+    .map((note) => note.textContent)
 
 const fillAddForm = async (fields: { id: string; name: string; contextWindow: string; outputLimit?: string }) => {
   await type(labeledInput('Model ID'), fields.id)
@@ -303,10 +352,13 @@ describe('AdminModelsPanel', () => {
     const setModelsDevSuggestions = vi.fn<AdminApi['setModelsDevSuggestions']>(async () => {})
     const setGatewayModelSettings = vi.fn<AdminApi['setGatewayModelSettings']>(async () => {})
     const setDefaultReasoning = vi.fn<AdminApi['setDefaultReasoning']>(async () => {})
+    const setGatewayProviderEnabled = vi.fn<AdminApi['setGatewayProviderEnabled']>(async () => {})
+    const testGatewayProvider = vi.fn<AdminApi['testGatewayProvider']>(async () => TEST_PASSED)
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
+      setGatewayProviderEnabled, testGatewayProvider,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -318,7 +370,8 @@ describe('AdminModelsPanel', () => {
       <AdminModelsPanel admin={admin} gatewayModels={gatewayModels} onChanged={onChanged} />))
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
-      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning, onChanged, show,
+      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
+      setGatewayProviderEnabled, testGatewayProvider, onChanged, show,
     }
   }
 
@@ -421,6 +474,149 @@ describe('AdminModelsPanel', () => {
       await click(button('Remove GPT Custom'))
       expect(confirmation()?.textContent)
         .toContain(`gpt-custom: gadget model bindings made for the model ${inDialog} and a model`)
+    })
+  })
+
+  describe('providers', () => {
+    it('lists every provider the server reported, as the server reported it', async () => {
+      await render()
+
+      expect(providerSwitches().map((toggle) => [
+        toggle.getAttribute('aria-label'), toggle.getAttribute('aria-checked'), toggle.disabled,
+      ])).toEqual([
+        ['Anthropic', 'true', true],
+        ['OpenAI', 'true', false],
+        ['Google', 'false', false],
+        ['Cloudflare Workers AI', 'false', false],
+      ])
+      expect(describedBy(providerSwitch('Anthropic'))).toBe('Set by CF_AI_GATEWAY_PROVIDERS')
+      expect(describedBy(providerSwitch('Google'))).toBe(
+        'Needs CF_AI_GATEWAY_API_TOKEN: requests to this provider fail until the deployment sets it.')
+      // Above the models.
+      expect(providersSection().compareDocumentPosition(row('Claude Sonnet'))
+        & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it.each([
+      ['on', 'Google', 'google', true],
+      ['off', 'OpenAI', 'openai', false],
+    ] as const)('turns a provider %s, then re-reads the settings', async (
+      _case, label, provider, enabled,
+    ) => {
+      const { setGatewayProviderEnabled, onChanged, show } = await render()
+
+      await click(providerCheckbox(label))
+
+      expect(setGatewayProviderEnabled).toHaveBeenCalledExactlyOnceWith(provider, enabled)
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(setGatewayProviderEnabled.mock.invocationCallOrder[0])
+        .toBeLessThan(onChanged.mock.invocationCallOrder[0])
+      // The re-read is what moves the switch.
+      expect(providerSwitch(label).getAttribute('aria-checked')).toBe(String(!enabled))
+
+      await show(withProvider(provider, enabled))
+
+      expect(providerSwitch(label).getAttribute('aria-checked')).toBe(String(enabled))
+    })
+
+    it('reports a refused change with the server’s message and keeps showing the server’s value', async () => {
+      const { setGatewayProviderEnabled, onChanged } = await render()
+      setGatewayProviderEnabled.mockRejectedValueOnce(
+        new Error('Provider "google" is not served through AI Gateway.'))
+
+      await click(providerCheckbox('Google'))
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith({
+        title: 'Couldn’t update Google',
+        description: 'Provider "google" is not served through AI Gateway.',
+        variant: 'error',
+      })
+      expect(onChanged).not.toHaveBeenCalled()
+      expect(providerSwitch('Google').getAttribute('aria-checked')).toBe('false')
+      expect(providerSwitch('Google').disabled).toBe(false)
+    })
+
+    it('locks every control but the tests while a change is in flight', async () => {
+      const { setGatewayProviderEnabled, setGatewayModelMode, testGatewayProvider } = await render()
+      const call = deferred()
+      setGatewayProviderEnabled.mockReturnValueOnce(call.promise)
+
+      await click(providerCheckbox('Google'))
+
+      expect(providerSwitches().map((toggle) => toggle.disabled)).toEqual([true, true, true, true])
+      expect(userModelsSwitch().disabled).toBe(true)
+      expect(button('Add model').disabled).toBe(true)
+      await click(providerCheckbox('OpenAI'))
+      await click(modeOption('Claude Sonnet', 'Hidden'))
+      expect(setGatewayProviderEnabled).toHaveBeenCalledOnce()
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+
+      expect(testButton('Google').disabled).toBe(false)
+      await click(testButton('Google'))
+      expect(testGatewayProvider).toHaveBeenCalledExactlyOnceWith('google')
+      expect(testResult('Google')).toBe(TEST_PASSED_TEXT)
+
+      await act(async () => call.resolve())
+
+      expect(providerSwitches().map((toggle) => toggle.disabled)).toEqual([true, false, false, false])
+      expect(userModelsSwitch().disabled).toBe(false)
+    })
+
+    it('runs a test without locking a control or re-reading the settings', async () => {
+      const { testGatewayProvider, setGatewayModelMode, onChanged } = await render()
+      const call = deferred<GatewayProviderTest>()
+      testGatewayProvider.mockReturnValueOnce(call.promise)
+
+      await click(testButton('OpenAI'))
+
+      expect(testGatewayProvider).toHaveBeenCalledExactlyOnceWith('openai')
+      expect(providerSwitches().map((toggle) => toggle.disabled)).toEqual([true, false, false, false])
+      expect(userModelsSwitch().disabled).toBe(false)
+      expect(button('Add model').disabled).toBe(false)
+      expect(modesDisabled('Claude Sonnet')).toBe(false)
+
+      // A write goes through meanwhile.
+      await click(modeOption('Claude Sonnet', 'Hidden'))
+      expect(setGatewayModelMode).toHaveBeenCalledExactlyOnceWith('claude-sonnet', 'hidden')
+      expect(onChanged).toHaveBeenCalledOnce()
+
+      await act(async () => call.resolve(
+        { model: 'gpt-main', ok: false, status: 401, message: 'Incorrect API key provided.' }))
+
+      expect(testResult('OpenAI')).toBe(
+        'Failed (401): Incorrect API key provided.' +
+        'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN ' +
+        'may not be allowed to run models.')
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(addToast).not.toHaveBeenCalled()
+    })
+
+    it('shows a test that could not be run in the provider’s row, and not as a toast', async () => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { testGatewayProvider } = await render()
+      testGatewayProvider.mockRejectedValueOnce(
+        new Error('This deployment does not provide models through AI Gateway.'))
+
+      await click(testButton('OpenAI'))
+
+      const errors = logged.mock.calls.length
+      logged.mockRestore()
+      expect(testResult('OpenAI')).toBe(
+        'Couldn’t run the test: This deployment does not provide models through AI Gateway.')
+      expect(addToast).not.toHaveBeenCalled()
+      expect(errors).toBe(1)
+    })
+
+    it('keeps a test’s result when the settings are re-read', async () => {
+      const { show } = await render()
+      await click(testButton('Google'))
+      expect(testResult('Google')).toBe(TEST_PASSED_TEXT)
+
+      await click(providerCheckbox('Google'))
+      await show(withProvider('google', true))
+
+      expect(providerSwitch('Google').getAttribute('aria-checked')).toBe('true')
+      expect(testResult('Google')).toBe(TEST_PASSED_TEXT)
     })
   })
 
@@ -760,6 +956,47 @@ describe('AdminModelsPanel', () => {
 
       expect(removeGatewayModel).toHaveBeenCalledWith('gpt-custom')
       expect(focused).not.toHaveBeenCalled()
+    })
+
+    it('returns to the provider switch that was turned', async () => {
+      const { setGatewayProviderEnabled } = await render()
+      const call = deferred()
+      setGatewayProviderEnabled.mockReturnValueOnce(call.promise)
+      const toggle = providerSwitch('Google')
+
+      await focus(toggle)
+      await click(providerCheckbox('Google'))
+      await dropFocus()
+      expect(toggle.disabled).toBe(true)
+      expect(document.activeElement).toBe(document.body)
+
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(providerSwitch('Google'))
+    })
+
+    it('leaves focus on a Test button that was pressed while the write was in flight', async () => {
+      const { setGatewayProviderEnabled, testGatewayProvider } = await render()
+      const call = deferred()
+      setGatewayProviderEnabled.mockReturnValueOnce(call.promise)
+      const answer = deferred<GatewayProviderTest>()
+      testGatewayProvider.mockReturnValueOnce(answer.promise)
+      await focus(providerSwitch('Google'))
+      await click(providerCheckbox('Google'))
+      await dropFocus()
+
+      await focus(testButton('OpenAI'))
+      await click(testButton('OpenAI'))
+      const pressed = document.activeElement
+      await act(async () => call.resolve())
+
+      expect(pressed?.textContent).toBe('Testing…')
+      expect(document.activeElement).toBe(pressed)
+
+      await act(async () => answer.resolve(TEST_PASSED))
+
+      expect(document.activeElement).toBe(pressed)
+      expect(pressed?.textContent).toBe('Test')
     })
 
     it('leaves focus where it was moved to while the write was in flight', async () => {
@@ -1152,11 +1389,12 @@ describe('AdminModelsPanel', () => {
       })
     })
 
-    it('offers no form when the gateway enables no provider a model can be added under', async () => {
+    it('offers no form while no provider that a model can be added under is on', async () => {
       await render({ gatewayModels: { ...GATEWAY_MODELS, providers: [], models: [SONNET] } })
 
       expect(document.body.querySelector('form')).toBeNull()
-      expect(document.body.textContent).toContain('No model can be added')
+      expect(document.body.textContent)
+        .toContain('No model can be added, because no provider is on. Turn one on under Providers.')
     })
   })
 
