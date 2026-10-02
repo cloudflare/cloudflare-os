@@ -13,6 +13,7 @@ packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
   s_d16787129ca3ae::t_cb17304f44b380 47-52
 packages/workshop-backend/src/admin-config.ts
   s_d16787129ca3ae::t_cb17304f44b380 202-206,219,324-326
+  s_c2ca47a7bbff41::t_c1039cba8054d6 12
 packages/workshop-backend/__tests__/admin-config.test.ts
   s_d16787129ca3ae::t_cb17304f44b380 306-322
 packages/workshop-backend/__tests__/user-models.test.ts
@@ -29,6 +30,8 @@ packages/workshop-backend/__tests__/ai-models.test.ts
   s_d16787129ca3ae::t_cb17304f44b380 248-254
 packages/integration-tests/__tests__/ai-gateway-cost.test.ts
   s_d16787129ca3ae::t_cb17304f44b380 155
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_c2ca47a7bbff41::t_c1039cba8054d6 13-15,74-79,144
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -36,6 +39,14 @@ packages/integration-tests/__tests__/ai-gateway-cost.test.ts
   "base_commit_sha": "589b91a3355bcc5e8526866d62415abe1592db1c",
   "prompts": {},
   "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_d16787129ca3ae": {
       "agent_id": {
         "tool": "claude",
