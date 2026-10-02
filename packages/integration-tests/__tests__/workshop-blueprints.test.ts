@@ -1,11 +1,12 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { Overseer, TreeNode, WorkpieceId } from "@gadgets/workshop-shared/api";
+import type { GadgetClient, Overseer, TreeNode, WorkpieceId } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
   startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, type Harness,
 } from "../src/harness.js";
+import { scriptedModelRouter } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, stubFor, waitFor,
@@ -13,7 +14,8 @@ import {
 } from "../src/rpc-client.js";
 
 let harness: Harness | undefined;
-const network = new NetworkInterceptor();
+const models = scriptedModelRouter();
+const network = new NetworkInterceptor({ handlers: [models.handler] });
 
 beforeAll(async () => {
   network.install();
@@ -78,6 +80,21 @@ const CSV_EXPORT_SERVER =
     `    return new Response("a,b\\n1,2\\n").body;\n` +
     `  }\n` +
     `}\n`;
+
+const LLM_SERVER =
+    `import { DurableObject } from "cloudflare:workers";\n` +
+    `export class Gadget extends DurableObject {\n` +
+    `  async ask(prompt) { return await this.env.LLM.run({ prompt }); }\n` +
+    `}\n`;
+
+/** Ask an `LLM_SERVER` gadget's mainline server. */
+async function ask(gadget: RpcStub<GadgetClient>, prompt: string): Promise<string> {
+  using facet = await gadget.connectToGadget() as RpcStub<{ ask(prompt: string): string }>;
+  return await facet.ask(prompt);
+}
+
+const userPrompt = (content: string) =>
+  expect.objectContaining({ messages: [{ role: "user", content }] });
 
 /** Merge a one-file edit into mainline through a human-only chat; returns the new head. */
 async function commitText(ws: RpcStub<Overseer>, workpieces: WorkpieceRecorder,
@@ -371,4 +388,50 @@ it.concurrent("a gadget's ExportHandler lists and streams its format", async () 
   expect(await new Response(await app.export("csv")).text()).toBe("a,b\n1,2\n");
 
   await ws.deleteSelf();
+});
+
+// Both users register the same model ID, backed by different scripted accounts, so only the
+// installer's own configuration can produce the installer's reply.
+it.concurrent("a gadget's LLM binding runs on its bound model, and an install uses the installer's",
+    async () => {
+  const [publisher, installer] = nextUsernames("llmpublisher", "llminstaller");
+  if (!publisher || !installer) throw new Error("Failed to allocate test usernames");
+  const publisherModel = models.script([{ text: "Publisher's summary." }]);
+  const installerModel = models.script([{ text: "Installer's summary." }]);
+
+  using publisherPublic = connect(requireHarness().url);
+  using publisherApi = await signUp(publisherPublic, publisher);
+  await publisherApi.addModel(publisherModel.userModel.profile, publisherModel.userModel.config);
+  using source = await publisherApi.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _subscription = await source.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using app = source.createGadget("Summarizer", undefined, "APP");
+  const gadgetId = await app.getId();
+  await commitText(source, workpieces, gadgetId, await headOf(workpieces, gadgetId),
+      "server.js", undefined, LLM_SERVER);
+  using llm = await source.newAiModelGatekeeper(publisherModel.userModel.profile.id);
+  await app.bind("LLM", await llm.getId());
+
+  expect(await ask(app, "Summarize the publisher's notes.")).toBe("Publisher's summary.");
+  expect(publisherModel.requests).toEqual([userPrompt("Summarize the publisher's notes.")]);
+  const blueprint = await app.createBlueprint("Summarizer", "Summarizes with an LLM");
+
+  using installerPublic = connect(requireHarness().url);
+  using installerApi = await signUp(installerPublic, installer);
+  await installerApi.addModel(installerModel.userModel.profile, installerModel.userModel.config);
+  using installed = await installerApi.newGadgetFromBlueprint(blueprint.id, {
+    LLM: { type: "aiModel", modelId: installerModel.userModel.profile.id },
+  });
+  const { defaultGadgetId } = await installed.getMetadata();
+  if (defaultGadgetId === undefined) throw new Error("Installed workspace has no default Gadget");
+  using installedApp = await installed.getGadget(defaultGadgetId);
+
+  expect(await ask(installedApp, "Summarize the installer's notes.")).toBe("Installer's summary.");
+  expect(installerModel.requests).toEqual([userPrompt("Summarize the installer's notes.")]);
+  expect(publisherModel.requests).toHaveLength(1);
+
+  await installed.deleteSelf();
+  await source.deleteSelf();
 });

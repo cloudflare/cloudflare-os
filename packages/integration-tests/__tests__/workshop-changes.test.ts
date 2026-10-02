@@ -99,8 +99,8 @@ function reopen<T>(
   }, fn);
 }
 
-const toolCall = (name: string, args: Record<string, unknown>): ChatCompletionStep =>
-  ({ toolCall: { id: `call-${name}`, name, arguments: args } });
+const toolCall = (name: string, args: Record<string, unknown>, id = name): ChatCompletionStep =>
+  ({ toolCall: { id: `call-${id}`, name, arguments: args } });
 
 const files = (gadgetId: number, path: string, text?: string): CodeContent =>
   new Map([[gadgetId, new Map(text === undefined ? [] : [[path, text]])]]);
@@ -191,6 +191,68 @@ it.concurrent("accepting agent changes makes the gadget, its code and its bindin
     const data = (await gadget.listBindings()).find(binding => binding.name === "DATA");
     expect(data).toMatchObject({ target });
     expect(data?.chatId).toBeUndefined();
+  });
+});
+
+it.concurrent("one accept commits both gadgets a chat built, each with only its own code",
+    async () => {
+  const built = [{ name: "A", path: "a.txt", text: "made for A\n" },
+                 { name: "B", path: "b.txt", text: "made for B\n" }];
+  const model = models.script([
+    ...built.map(({ name }) =>
+      toolCall("createGadget", { title: name, bindingName: name }, `create-${name}`)),
+    ...built.map(({ name, path, text }) =>
+      toolCall("writeFile", { workpiece: name, filename: path, content: text }, `write-${name}`)),
+    ...built.map(({ name }) => toolCall("setGadgetBinding",
+      { gadget: name, source: "TEST_AMBIENT", name: "DATA" }, `bind-${name}`)),
+    { text: "Done." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
+  });
+  const { outcome, history } = await session.runTurn("Build two apps bound to the test data.");
+  expect(outcome).toEqual({ status: "completed" });
+  expect(model.remainingSteps()).toBe(0);
+  const chatId = history[0]!.chatId;
+  const changes = history.flatMap(message => message.type === "changes" ? [message] : []);
+  const created = changes.flatMap(message => message.createdGadgets ?? []);
+  const gadgets = built.map(gadget => ({ ...gadget,
+    gadgetId: created.find(({ bindingName }) => bindingName === gadget.name)!.gadgetId }));
+  const [a, b] = gadgets.map(({ gadgetId }) => gadgetId) as [WorkpieceId, WorkpieceId];
+  const [{ target }] = changes.flatMap(message => message.addedBindings ?? []);
+
+  const [headA, headB] = await reopen(session.username, async ({ ws, workpieces }) => {
+    expect((await ws.listChats()).find(chat => chat.id === chatId)?.proposedChangeWorkpieces
+        ?.toSorted()).toEqual([a, b].toSorted());
+    expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+    const heads = [];
+    for (const { gadgetId, path, text } of gadgets) {
+      const head = await headOf(workpieces, gadgetId);
+      expect(await ws.listTree(head)).toEqual([{ name: path, kind: "file" }]);
+      await expectText(ws, head, path, text);
+      using gadget = await ws.getGadget(gadgetId);
+      expect(await gadget.listBindings())
+          .toContainEqual(expect.objectContaining({ name: "DATA", target }));
+      heads.push(head);
+    }
+    return heads as [string, string];
+  });
+
+  await reopen(session.username, async ({ ws, workpieces }) => {
+    const editA = await ws.newChat("Edit A", null);
+    await ws.submitCodeChange(editA, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1,
+      pins: [{ gadgetId: a, baseCommit: headA }],
+      change: edit(a, "a.txt", built[0]!.text, "edited A\n"),
+    });
+    expect(await ws.mergeChanges(editA)).toEqual({ outcome: "merged" });
+    const head = await headOf(workpieces, a, headA);
+    await expectText(ws, head, "a.txt", "edited A\n");
+    expect((await ws.getCommitLog(head, 2)).map(commit => commit.oid)).toEqual([head, headA]);
+  });
+  // A fresh snapshot, so a stray update to B can't still be in flight.
+  await reopen(session.username, async ({ workpieces }) => {
+    expect(workpieces.summaries.get(b)).toMatchObject({ commitId: headB });
   });
 });
 

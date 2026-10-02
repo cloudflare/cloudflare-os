@@ -146,7 +146,7 @@ it.concurrent("grants and revokes a use-only collaborator", async () => {
       id,
       role: "use",
     });
-    await expect(collaboratorWorkspace.setTitle("Forbidden rename")).rejects.toThrow();
+    await expect(collaboratorWorkspace.setTitle("Forbidden rename")).rejects.toThrow(USE_ONLY);
     return {
       workspaceId: id,
       affected: await workspace.removeCollaborator(added.profile.id, []),
