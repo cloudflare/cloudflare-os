@@ -29,22 +29,22 @@ import type {
   ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_MESSAGE_BYTES,
+  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_MESSAGE_BYTES, isChatNoAccessError,
   chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
   chatMessagesSearchFilter,
   chatSpaceId, chatSpaceNameFromIdOrUrl, chatThreadParts, chatUserName, validateChatEmoji,
   validateChatSpaceId, validateChatThreadId, validateChatWindow,
 } from "./chat-api";
 import {
-  ChatAction, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
+  ChatAction, ChatNewConversation, ChatSendMessageAction, PendingChatAction, chatActionSpaceName,
   overlayMessage, overlayMessageList, overlayReactions, pendingMessageActionId,
-  pendingMessageInfo, pendingThreadActionId,
+  pendingMessageInfo, pendingSpaceName, pendingSpaceRequestId, pendingThreadActionId,
 } from "./chat-state";
 import type {
   Cursor, ChatAttachment, ChatAttachmentInfo,
   ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessage, ChatMessageEntry, ChatMessageInfo,
-  ChatMessageSearch, ChatReaction, ChatSession, ChatSpaceMessageSearch,
+  ChatMessageSearch, ChatPerson, ChatReaction, ChatSession, ChatSpaceMessageSearch,
   ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatUser, ChatThread, ChatThreadEntry, ChatThreadInfo,
   ChatWindow,
 } from "./chat-types";
@@ -54,7 +54,7 @@ import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import CHAT_TYPES_CODE from "./chat-types.txt";
-import { describeConversation, needsDescription } from "./chat-names";
+import { describeConversation, needsDescription, participantNames } from "./chat-names";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
@@ -70,12 +70,18 @@ export type GoogleChatGatekeeperImplProps = {
 };
 
 const SEND_MESSAGE_ACTION: ActionKind = { tag: "chatSendMessage", label: "Send Chat messages" };
+const START_CONVERSATION_ACTION: ActionKind = {
+  tag: "chatStartConversation", label: "Start Chat conversations",
+};
 const EDIT_MESSAGE_ACTION: ActionKind = { tag: "chatEditMessage", label: "Edit Chat messages" };
 const REACTION_ACTION: ActionKind = { tag: "chatReaction", label: "Chat reactions" };
 
-/** The kinds a user may opt into auto-approving. */
+/**
+ * The kinds a user may opt into auto-approving. Starting a conversation is its own kind, so
+ * replying where the user already talks can be trusted without trusting cold outreach.
+ */
 const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
-  SEND_MESSAGE_ACTION, EDIT_MESSAGE_ACTION, REACTION_ACTION,
+  SEND_MESSAGE_ACTION, START_CONVERSATION_ACTION, EDIT_MESSAGE_ACTION, REACTION_ACTION,
 ];
 
 /** What an applied action needs in order to be undone. */
@@ -132,10 +138,14 @@ class ChatStore {
       .toSorted((left, right) => left.id - right.id);
   }
 
-  /** Pending actions affecting one conversation, which is all a space capability may simulate. */
+  /**
+   * Pending actions affecting one conversation, which is all a space capability may simulate. A
+   * conversation a send created is the same one as the temporary name it was queued under.
+   */
   listForSpace(spaceName: string): PendingChatAction[] {
+    spaceName = this.spaceName(spaceName);
     return this.list().filter(({ action }) => {
-      if (chatActionSpaceName(action) !== spaceName) return false;
+      if (this.spaceName(chatActionSpaceName(action)) !== spaceName) return false;
       if (action.type === "sendMessage" && action.threadName) {
         const root = pendingThreadActionId(this.threadName(action.threadName));
         if (root !== undefined && this.get(root)?.type !== "sendMessage") return false;
@@ -226,6 +236,30 @@ class ChatStore {
   threadName(name: string): string {
     const id = pendingThreadActionId(name);
     return id === undefined ? name : this.#kv.get<string>(`chat:thread:${id}`) ?? name;
+  }
+
+  /**
+   * Remember the conversation a send created, so its temporary name resolves to it and later
+   * sends to the same `people` (everyone else in it, by sorted id) reuse it.
+   */
+  setConversation(pendingName: string, people: string, spaceName: string): void {
+    this.#kv.put(`chat:conversation:${pendingSpaceRequestId(pendingName)}`, spaceName);
+    this.#kv.put(`chat:with:${people}`, spaceName);
+  }
+
+  /** The conversation an earlier send set up with these `people`, which Google's lookup may not see yet. */
+  conversationWith(people: string): string | undefined {
+    return this.#kv.get<string>(`chat:with:${people}`);
+  }
+
+  forgetConversationWith(people: string): void {
+    this.#kv.delete(`chat:with:${people}`);
+  }
+
+  /** A temporary conversation name continues to identify its conversation once it is created. */
+  spaceName(name: string): string {
+    const requestId = pendingSpaceRequestId(name);
+    return requestId === undefined ? name : this.#kv.get<string>(`chat:conversation:${requestId}`) ?? name;
   }
 }
 
@@ -621,9 +655,134 @@ async function queueChatMessage(
   return pendingMessageInfo(id, action, ctx.self);
 }
 
+/** Most people besides the caller that a direct message or group chat can be set up with. */
+const MAX_CONVERSATION_PEOPLE = 49;
+
+const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
+
+/**
+ * Queue a message to exactly these people, in their existing direct message or group chat, or
+ * else in one created when the message is approved. Only people in the connected account's
+ * directory can be put in a new conversation: an agent that reads the owner's mail must not be
+ * able to open a channel to an outsider of its choosing.
+ */
+async function queueDirectMessage(
+  ctx: ChatContext, people: readonly string[], text: string,
+): Promise<ChatMessageInfo> {
+  const body = validateMessageText(text);
+  // Chat matches email addresses case-insensitively, so naming someone twice must not count twice.
+  const users = [...new Set(people.map(person => {
+    const name = chatUserName(person.trim());
+    return name.includes("@") ? name.toLowerCase() : name;
+  }))];
+  if (users.length === 0 || users.length > MAX_CONVERSATION_PEOPLE) {
+    throw new Error(`Name between 1 and ${MAX_CONVERSATION_PEOPLE} people.`);
+  }
+  if (users.some(user => user === "users/me" || user === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
+
+  const kind = users.length === 1 ? "direct message" : "group chat";
+  const existing = users.length === 1
+    ? (await ctx.api.findDirectMessage(users[0]))?.id
+    : await ctx.api.findGroupChat(users);
+  await observe(ctx, "Find a Google Chat conversation", existing
+    ? `Found the ${kind} with ${users.join(", ")} (${existing}).`
+    : `No ${kind} exists with exactly ${users.join(", ")}.`);
+  if (existing) return queueChatMessage(ctx, existing, body);
+
+  const emails = users.map(user => user.slice("users/".length));
+  const unnamed = emails.find(email => !email.includes("@"));
+  if (unnamed !== undefined) {
+    throw new Error(`To start a new conversation, name each person by email address, which ${unnamed} ` +
+      "is not. searchPeople() finds them.");
+  }
+  const members: ChatPerson[] = [];
+  const outside: string[] = [];
+  // One at a time: up to 49 concurrent lookups would burst the People API's per-user quota.
+  for (const email of emails) {
+    const person = await ctx.api.findDirectoryPerson(email);
+    if (!person) outside.push(email);
+    else if (!members.some(member => member.id === person.id)) members.push(person);
+  }
+  await observe(ctx, "Look up people in the Google Workspace directory",
+    `Checked whether ${emails.length} email address(es) belong to people in the organization's ` +
+    `directory; ${outside.length} did not.`);
+  if (outside.length > 0) {
+    throw new Error(`${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not in your organization's ` +
+      "directory, and new Google Chat conversations can only include people who are.");
+  }
+  if (members.some(member => member.id === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
+
+  const requestId = crypto.randomUUID();
+  const action: ChatSendMessageAction = {
+    type: "sendMessage",
+    spaceName: pendingSpaceName(requestId),
+    text: body,
+    // Whether the new conversation is threaded is only known once it exists.
+    startsThread: false,
+    requestId: crypto.randomUUID(),
+    newConversation: { members, requestId },
+    submittedAt: Date.now(),
+  };
+  const one = members.length === 1;
+  const id = await submitChatAction(ctx, action, {
+    title: sanitizeTitle(`Start a Google Chat conversation with ${
+      participantNames(members.map(member => member.name ?? member.email))}`),
+    ...buildDescription(
+      `Create a ${one ? "direct message" : "group chat"} between ${userLabel(ctx.self)} and ` +
+      `${one ? "this person" : `these ${members.length} people`}, and post this message in it.`)
+      .list("People", members.map(member => member.name ? `${member.name} <${member.email}>` : member.email))
+      .verbatim("Message", body)
+      .finish(),
+    implementsRevert: true,
+    actionKind: START_CONVERSATION_ACTION,
+    autoApprovable: true,
+  });
+  return pendingMessageInfo(id, action, ctx.self);
+}
+
+/**
+ * The conversation with exactly the connected user and `members`: the one an earlier send set up,
+ * or else the one Google's lookup finds, or else a new one.
+ */
+async function openConversation(
+  api: ChatApi, store: ChatStore, actionId: number, people: string, { members, requestId }: ChatNewConversation,
+): Promise<string> {
+  const ids = members.map(member => member.id);
+  const known = store.conversationWith(people);
+  if (known !== undefined) {
+    // Unless it is gone, or someone has joined or left it since.
+    const present = await api.peopleIn(known).catch((error: unknown) => {
+      if (isChatNoAccessError(error)) return new Set<string>();
+      throw error;
+    });
+    if (present.size === ids.length + 1 && ids.every(id => present.has(id))) return known;
+    store.forgetConversationWith(people);
+  }
+  // spaces.setup returns an existing direct message itself, but would add a second group chat.
+  const spaceName = (ids.length > 1 ? await api.findGroupChat(ids) : null) ??
+    await store.attemptWrite(actionId, () => api.setupConversation(ids, requestId));
+  // Google leaves out of a group chat anyone who blocks the caller, and posting would then reach
+  // fewer people than were approved.
+  const present = await api.peopleIn(spaceName);
+  const missing = members.filter(member => !present.has(member.id));
+  if (missing.length > 0) {
+    store.clearAttempt(actionId);
+    throw new Error(`Google Chat left ${participantNames(missing.map(member => member.name ?? member.email))} ` +
+      "out of the new conversation, perhaps because they block you, so nothing was posted. Reject this message.");
+  }
+  return spaceName;
+}
+
 /** Pair a just-queued message with its capability. */
 function postedEntry(ctx: ChatContext, info: ChatMessageInfo): ChatMessageEntry {
   return { info, message: new ChatMessageImpl(ctx, info.id) };
+}
+
+/** A message still creating its conversation has no thread yet: the conversation doesn't exist. */
+function requireCreatedConversation(info: ChatMessageInfo): void {
+  if (pendingSpaceRequestId(info.spaceId) !== undefined) {
+    throw new Error("This message's conversation doesn't exist until the message is committed, so it has no thread yet.");
+  }
 }
 
 // ── Account session ─────────────────────────────────────────────────
@@ -676,6 +835,21 @@ class ChatSessionImpl extends ChatRpcTarget implements ChatSession {
   async searchMessages(query: ChatMessageSearch): Promise<Cursor<ChatMessageEntry>> {
     return searchCursor(this.ctx, chatMessagesSearchFilter(query),
       "the conversations this account can see");
+  }
+
+  async searchPeople(query: string): Promise<Cursor<ChatPerson>> {
+    const text = query.trim();
+    if (!text) throw new Error("A name or email address to search for is required.");
+    return chatCursor(this.ctx, {
+      fetchPage: pageToken => this.ctx.api.searchDirectory(text, pageToken ? { pageToken } : {}),
+      buildEntries: async items => items,
+      authorize: entries => observe(this.ctx, "Search the Google Workspace directory",
+        `Read the names and email addresses of ${entries.length} people in the organization's directory.`),
+    });
+  }
+
+  async sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry> {
+    return postedEntry(this.ctx, await queueDirectMessage(this.ctx, people, text));
   }
 }
 
@@ -915,6 +1089,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 
   async getThread(): Promise<ChatThreadEntry> {
     const info = await this.#info();
+    requireCreatedConversation(info);
     if (info.threadId === undefined) {
       throw new Error("This conversation does not support threads. Use listMessages() instead.");
     }
@@ -938,6 +1113,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 
   async reply(text: string): Promise<ChatMessageEntry> {
     const info = await this.#read();
+    requireCreatedConversation(info);
     if (info.threadId === undefined) {
       throw new Error(
         "This conversation does not support threaded replies; send a new message instead.");
@@ -1106,6 +1282,8 @@ export class GoogleChatGatekeeperImpl
   #self?: ChatUser;
   /** Actions whose apply or undo is in flight: a reject then could not stop a write already sent. */
   #inFlight = new Set<number>();
+  /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
+  #settingUp = new Map<string, Promise<string>>();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1260,6 +1438,30 @@ export class GoogleChatGatekeeperImpl
     }
   }
 
+  /**
+   * The conversation a send that starts one posts in, created on its first apply. A retry reuses
+   * what an earlier attempt created whether or not its response arrived, and sends to the same
+   * people share one conversation.
+   */
+  async #createConversation(
+    api: ChatApi, store: ChatStore, actionId: number, pendingName: string, conversation: ChatNewConversation,
+  ): Promise<string> {
+    const created = store.spaceName(pendingName);
+    if (created !== pendingName) return created;
+    const people = conversation.members.map(member => member.id).toSorted().join(",");
+    let settingUp = this.#settingUp.get(people);
+    if (!settingUp) {
+      settingUp = openConversation(api, store, actionId, people, conversation)
+        .finally(() => this.#settingUp.delete(people));
+      this.#settingUp.set(people, settingUp);
+    }
+    const spaceName = await settingUp;
+    store.setConversation(pendingName, people, spaceName);
+    // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
+    store.clearAttempt(actionId);
+    return spaceName;
+  }
+
   /** Send one action to Google, returning what a later revert needs to know. */
   async #perform(
     store: ChatStore,
@@ -1289,10 +1491,13 @@ export class GoogleChatGatekeeperImpl
         if (threadName && pendingThreadActionId(threadName) !== undefined) {
           throw new Error("Send the thread's root message before its replies.");
         }
+        const spaceName = action.newConversation
+          ? await this.#createConversation(api, store, actionId, action.spaceName, action.newConversation)
+          : action.spaceName;
         const needsThread = threadName !== undefined || action.startsThread === true;
         // The request id makes Chat itself idempotent, so a retry after a lost response returns
         // the message the first attempt created rather than posting a second one.
-        const { id } = await store.attemptWrite(actionId, () => api.createMessage(action.spaceName, {
+        const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
           text: action.text,
           ...(threadName !== undefined ? { threadName } : {}),
         }, { requestId: action.requestId }));
@@ -1321,7 +1526,7 @@ export class GoogleChatGatekeeperImpl
           throw error;
         }
         store.setSentMessage(actionId, created);
-        store.rebaseEdits(action.spaceName, created.id, action.text, created.text);
+        store.rebaseEdits(spaceName, created.id, action.text, created.text);
         return { type: "sentMessage", messageName: created.id };
       }
       case "updateMessage": {
