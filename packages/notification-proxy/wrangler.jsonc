@@ -1,0 +1,29 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
+{
+  "name": "notification-proxy",
+  "main": ".wrangler/validate/src/worker.ts",
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": [
+    "nodejs_als"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": [
+        "NotificationAccountState"
+      ]
+    }
+  ]
+}

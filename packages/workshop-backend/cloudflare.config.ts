@@ -31,7 +31,8 @@ export default defineGadgetsWorker({
   ],
 
   // Gatekeeper service bindings and the Workers AI binding are added by run-dev-server.ts in dev
-  // and by the release manifest (scripts/release/manifest-lib.ts) in production.
+  // and by the release manifest (scripts/release/manifest-lib.ts) in production. Platform-private
+  // system services are explicit so they cannot enter generic gatekeeper discovery.
   env: {
     // Wrangler will launch a Chrome instance locally to emulate the Browser Run API during
     // local development. Add `remote: true` to use a remote browser running on Cloudflare instead.
@@ -43,6 +44,7 @@ export default defineGadgetsWorker({
     AVATARS: bindings.kv(),
     BLUEPRINT_CONTENT: bindings.r2({ name: "gadgets-blueprint-content" }),
     LOADER: bindings.workerLoader(),
+    NOTIFICATION_DELIVERY: bindings.worker({ worker: "notification-proxy" }),
   },
 
   // When deploying to prod, you may want to bundle the frontend as assets on the backend, like so.
