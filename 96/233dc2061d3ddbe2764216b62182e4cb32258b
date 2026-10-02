@@ -1,0 +1,30 @@
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_9ea298d7998a10 185-199
+  s_544ac41f1d93fd::t_a7175a65e10410 20,46-94,151-152,159-160,165-168,171,176-184,200-212,230,240,244,249-251,254-257,597-1065
+docs/public-server.md
+  s_544ac41f1d93fd::t_48594a6b122cef 105-119,157-159
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_544ac41f1d93fd::t_964ac25fe1e270 2,6,9-13,20,25-36,51-53,61-65,96-104,129,141-145,155-220
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_544ac41f1d93fd::t_61635737fde4e0 6,21,40,101-126,137-141,182-201,218-228,239-249,317-334
+packages/workshop-frontend/src/features/ai-models/modelsDev.test.ts
+  s_544ac41f1d93fd::t_442b03125dca54 1-521
+packages/workshop-frontend/src/features/ai-models/modelsDev.ts
+  s_544ac41f1d93fd::t_083778c679a405 1-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "96233dc2061d3ddbe2764216b62182e4cb32258b",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
