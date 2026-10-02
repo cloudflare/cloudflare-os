@@ -7763,6 +7763,10 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  getWorkspaceId(): string {
+    return this.ctx.id.toString();
+  }
+
   async listConnectableVendors(): Promise<{id: string, displayName: string}[]> {
     try {
       let vendors = await this.#listGatekeeperVendorsCached();

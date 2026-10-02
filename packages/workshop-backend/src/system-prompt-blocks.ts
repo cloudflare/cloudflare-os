@@ -35,7 +35,7 @@ export function splitSystemPrompt(
   switch (model.api) {
     case "anthropic-messages": return splitAnthropicSystem(payload, staticText);
     case "openai-responses":
-      return supportsExplicitBreakpoints(model)
+      return hasGpt56PromptCaching(model)
           ? splitOpenAiResponsesInstructions(payload, staticText)
           : undefined;
     default: return undefined;
@@ -47,8 +47,8 @@ export function splitSystemPrompt(
 const continuesPast = (text: unknown, staticText: string): text is string =>
     typeof text === "string" && text.length > staticText.length && text.startsWith(staticText);
 
-// Per pi's catalog, only GPT-5.6 and later accept prompt cache options.
-function supportsExplicitBreakpoints(model: Model<Api>): boolean {
+/** Per pi's catalog, only GPT-5.6 and later accept prompt cache options. */
+export function hasGpt56PromptCaching(model: Model<Api>): boolean {
   const compat = model.compat;
   return compat !== undefined && "supportsExplicitPromptCacheMode" in compat &&
       compat.supportsExplicitPromptCacheMode === true;

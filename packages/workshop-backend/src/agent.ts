@@ -536,6 +536,9 @@ export interface AgentHooks {
    */
   getInstanceInstructions(): Promise<string>;
 
+  /** The workspace's Durable Object id, which only the deployment knows. */
+  getWorkspaceId(): string;
+
   /**
    * Connection-request hooks for the agent.
    *
@@ -2687,8 +2690,12 @@ async function runAgentPass(
   if (instanceInstructions) {
     systemPromptSlots[0] += `\n\n${instanceInstructions}`;
   }
+  // Prompt caches are shared across the provider account, so anyone on it could probe for a cached
+  // prefix. The workspace's unguessable id leads the project-specific part, so none of that part,
+  // or the chat after it, can be probed from outside the deployment.
   let systemMessage: SystemMessage = {
-    role: "system", content: systemPromptSlots[0], sections: {environment: systemPromptSlots[1]},
+    role: "system", content: systemPromptSlots[0],
+    sections: {environment: `Workspace ID: ${hooks.getWorkspaceId()}\n\n${systemPromptSlots[1]}`},
     timestamp: 0,
   };
 
