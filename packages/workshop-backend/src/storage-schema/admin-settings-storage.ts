@@ -3,8 +3,9 @@
 //
 // Everything the AdminSettings object persists is declared in this one file, so that a change to
 // the stored shape of the deployment's settings shows up as a change here. See
-// overseer-storage.ts for the conventions. `AdminConfig` is additionally mirrored to KV as JSON;
-// the code that normalizes, serializes and reads it lives in admin-config.ts.
+// overseer-storage.ts for the conventions. `AdminConfig` is additionally mirrored to KV as JSON
+// (see blueprints-kv.ts); the code that normalizes, serializes and reads it lives in
+// admin-config.ts.
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {

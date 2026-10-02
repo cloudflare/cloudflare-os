@@ -11,7 +11,8 @@
 // with none installed simply has no standard formats.
 
 import { BlueprintMetadata, BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
-import { BlueprintKvRecord, parseBlueprintArchive } from "./blueprint-archive.js";
+import { parseBlueprintArchive } from "./blueprint-archive.js";
+import type { BlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { BundledBlueprint, BUNDLED_BLUEPRINTS } from "./generated/bundled-blueprints.js";
 import { fingerprint } from "./admin-config.js";
 import { createWorkshopLogger } from "./observability";

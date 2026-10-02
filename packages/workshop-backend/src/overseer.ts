@@ -51,7 +51,10 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
-import { listFeaturedBlueprintsFromKv, readBlueprintContent, readBlueprintKvRecord, sanitizeBlueprintOutput } from "./blueprint-archive";
+import { readBlueprintContent, sanitizeBlueprintOutput } from "./blueprint-archive";
+import {
+  listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
+} from "./storage-schema/blueprints-kv";
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
@@ -327,13 +330,6 @@ function connectionTypeFromCreationSpec(
     case undefined: return undefined;
   }
 }
-
-// KV record type for the BLUEPRINTS namespace.
-type BlueprintKvRecord = {
-  metadata: BlueprintMetadata;
-  ownerId: string;
-  gadgetId: string;
-};
 
 // The agent-facing section of the worktree binding's type definitions: worktree-binding.txt is
 // a symlink to worktree-binding.d.ts shipped as a text module (the agent-spawner-binding.txt

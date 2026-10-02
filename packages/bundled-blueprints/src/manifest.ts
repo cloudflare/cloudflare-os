@@ -6,7 +6,7 @@
 const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flowArrow",
     "kanban", "chartBar", "table", "notebook", "listChecks"];
 
-// Must match isReservedBlueprintKey() in src/blueprint-archive.ts.
+// Must match isReservedBlueprintKey() in workshop-backend's src/storage-schema/blueprints-kv.ts.
 const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
 
 export type BundledBlueprintManifest = {

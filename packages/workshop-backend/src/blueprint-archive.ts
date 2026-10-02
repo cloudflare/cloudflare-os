@@ -1,18 +1,12 @@
 // Helpers around managing blueprints and encoding/decoding blueprint downloads (`.gadget` files).
+// (What the BLUEPRINTS KV namespace stores is declared in storage-schema/blueprints-kv.ts.)
 //
 // `.gadget` archives are streamed as a 24-byte prefix (magic, version, metadata byte length,
 // content byte length), followed by UTF-8 JSON metadata and the gzip-compressed Yjs snapshot.
 // See docs/blueprints.md for the full format description.
 
-import { BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, isOutputIcon } from '@gadgets/workshop-shared/api';
-
-export const FEATURED_BLUEPRINTS_KEY = '.featured';
-
-/**
- * Reserved key in the BLUEPRINTS KV namespace holding the deployment-wide admin config (a single
- * JSON object). AdminSettings already owns this namespace; see admin-config.ts.
- */
-export const ADMIN_CONFIG_KEY = '.adminConfig';
+import { BlueprintMetadata, BlueprintOutput, isOutputIcon } from '@gadgets/workshop-shared/api';
+import { reviveBlueprintMetadata } from './storage-schema/blueprints-kv.js';
 
 const BLUEPRINT_ARCHIVE_MAGIC = 0xec2e2d3a2300e317n;
 const BLUEPRINT_ARCHIVE_VERSION = 1;
@@ -22,27 +16,6 @@ const MAX_BLUEPRINT_CONTENT_BYTES = 32 * 1024 * 1024;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-
-export type BlueprintKvRecord = {
-  metadata: BlueprintMetadata;
-  /**
-   * The User DO that published or uploaded this blueprint, and which owns the authoritative
-   * "featured" bit for it. Undefined for a blueprint the deployment installed itself, which
-   * has no owning user.
-   */
-  ownerId?: string;
-  gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
-};
-
-export function isReservedBlueprintKey(id: string): boolean {
-  return id === FEATURED_BLUEPRINTS_KEY || id === ADMIN_CONFIG_KEY;
-}
-
-export function reviveBlueprintMetadata(metadata: BlueprintMetadata): BlueprintMetadata {
-  metadata.created = new Date(metadata.created);
-  metadata.lastUpdated = new Date(metadata.lastUpdated);
-  return metadata;
-}
 
 // Longest accepted output slug/noun. Display strings shown in tabs and chips, so this keeps the
 // UI intact rather than being a safety limit.
@@ -69,57 +42,6 @@ export function sanitizeBlueprintOutput(output: unknown): BlueprintOutput | unde
   let cleanPlural = outputString(plural);
   if (!cleanId || !cleanNoun || !cleanPlural || !isOutputIcon(icon)) return undefined;
   return {id: cleanId, noun: cleanNoun, plural: cleanPlural, icon};
-}
-
-export function parseBlueprintKvRecord(raw: string): BlueprintKvRecord {
-  let kvRecord = JSON.parse(raw) as BlueprintKvRecord;
-  kvRecord.metadata = reviveBlueprintMetadata(kvRecord.metadata);
-  return kvRecord;
-}
-
-export function parseFeaturedBlueprints(raw: string): BlueprintPublicInfo[] {
-  let featured = JSON.parse(raw) as BlueprintPublicInfo[];
-  for (let entry of featured) {
-    entry.metadata = reviveBlueprintMetadata(entry.metadata);
-  }
-  return featured;
-}
-
-export function serializeFeaturedBlueprints(featured: BlueprintPublicInfo[]): string {
-  return JSON.stringify(featured);
-}
-
-/**
- * The env a blueprint KV read needs. Narrowed to the one binding so helpers that only read
- * blueprints can be called from anywhere holding it, without passing a whole env around.
- */
-export type BlueprintKvEnv = Pick<Cloudflare.Env, 'BLUEPRINTS'>;
-
-export async function readBlueprintKvRecord(
-  env: BlueprintKvEnv,
-  blueprintId: string,
-): Promise<BlueprintKvRecord | null> {
-  if (isReservedBlueprintKey(blueprintId)) {
-    return null;
-  }
-
-  let raw = await env.BLUEPRINTS.get(blueprintId);
-  if (!raw) {
-    return null;
-  }
-
-  return parseBlueprintKvRecord(raw);
-}
-
-export async function listFeaturedBlueprintsFromKv(
-  env: BlueprintKvEnv,
-): Promise<BlueprintPublicInfo[]> {
-  let raw = await env.BLUEPRINTS.get(FEATURED_BLUEPRINTS_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  return parseFeaturedBlueprints(raw);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { parseBlueprintArchive, parseBlueprintKvRecord, sanitizeBlueprintOutput } from "../src/blueprint-archive.js";
+import { parseBlueprintArchive, sanitizeBlueprintOutput } from "../src/blueprint-archive.js";
+import { parseBlueprintKvRecord } from "../src/storage-schema/blueprints-kv.js";
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from "../src/bundled-blueprints.js";
 import { BUNDLED_BLUEPRINTS } from "../src/generated/bundled-blueprints.js";
 
