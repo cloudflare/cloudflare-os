@@ -36,6 +36,14 @@ packages/integration-tests/__tests__/ai-gateway-cost.test.ts
   "base_commit_sha": "5d3ec854858a92c2039ac2740c866866a7527492",
   "prompts": {},
   "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
     "s_d16787129ca3ae": {
       "agent_id": {
         "tool": "claude",
