@@ -17,7 +17,7 @@
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "mimetext": "^3.0.28",
-    "postal-mime": "^2.7.6"
+    "postal-mime": "^3.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
