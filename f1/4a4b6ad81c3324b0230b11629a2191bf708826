@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_d16787129ca3ae::t_70d60d7bd509fd 1-79
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_d16787129ca3ae::t_c87340d49eba55 7,19,200,219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f14a4b6ad81c3324b0230b11629a2191bf708826",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

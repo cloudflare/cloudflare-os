@@ -1,0 +1,48 @@
+packages/workshop-backend/src/ai-models.ts
+  s_d16787129ca3ae::t_cb17304f44b380 608
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 137-143,167-179,498-608
+  s_d16787129ca3ae::t_1e9cf3bb0e927a 609-610
+packages/workshop-backend/src/admin-settings.ts
+  s_d16787129ca3ae::t_cb17304f44b380 1,11,465,588-608,888-891
+packages/workshop-backend/src/server.ts
+  s_d16787129ca3ae::t_cb17304f44b380 241
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 663-808,825-827
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_d16787129ca3ae::t_cb17304f44b380 47-52
+packages/workshop-backend/src/admin-config.ts
+  s_d16787129ca3ae::t_cb17304f44b380 12,72-77,142,334-338,351,456-458
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 305-321
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 151-152,228-264
+  s_d16787129ca3ae::t_a7b50d3950c0c6 265
+packages/workshop-backend/src/user.ts
+  s_d16787129ca3ae::t_cb17304f44b380 10,694,709,722-723
+packages/workshop-backend/src/ai-gateway.ts
+  s_d16787129ca3ae::t_cb17304f44b380 2-3,21-27,77,120-121,151-154,157-161,178-183,198,214-227,288-289
+packages/workshop-shared/src/api.ts
+  s_d16787129ca3ae::t_cb17304f44b380 1017-1018,1265-1278,1408-1412,1570-1586
+  s_d16787129ca3ae::t_429c957b1e53c3 1587-1588
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 247-253
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_d16787129ca3ae::t_cb17304f44b380 155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5d3ec854858a92c2039ac2740c866866a7527492",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

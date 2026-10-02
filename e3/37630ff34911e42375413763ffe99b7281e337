@@ -1,0 +1,44 @@
+packages/workshop-frontend/src/AdminPage.tsx
+  s_544ac41f1d93fd::t_13dfeb848882bf 96-98,454-458
+  s_544ac41f1d93fd::t_ee3a03b1c867d8 6,12,93-95,99,120,435,449-453
+  s_544ac41f1d93fd::t_c49b3e1d869795 459-461
+packages/workshop-frontend/src/routes/providers.tsx
+  s_544ac41f1d93fd::t_99a7da233d4564 181-182
+  s_544ac41f1d93fd::t_98e57af93503aa 5
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_36aee7af618b16 5-6,8,10-13,16,22-58,60-63,66-68,70-75,79-124,128-142,144-200,202-301,320-365,369-378,380-386,389-392
+  s_544ac41f1d93fd::t_dc475c0cba09e4 59,64-65,69,76-78,201,366
+  s_544ac41f1d93fd::t_d720c6ec83a3fd 1-4,7,9,14-15,17-21,388,393
+  s_544ac41f1d93fd::t_35383d55fdc1db 302-319,367-368
+  s_544ac41f1d93fd::t_5f66ba84841408 125-127,143,379,387
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_544ac41f1d93fd::t_0f74e1c87a209f 1-16,18-29,33-41,43-51,63-66,68-71,73,76,85-87,89-105,107-124,126-134,136-145,147-157,159-163,169-180
+  s_544ac41f1d93fd::t_4aa0dd4db38e84 42,52-56,58-62,72,88
+  s_544ac41f1d93fd::t_13dfeb848882bf 17,30-32,67,74-75,77-84,106,125,135,146,158,164-168
+  s_544ac41f1d93fd::t_1cdf3ba2781bd1 57
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_544ac41f1d93fd::t_13dfeb848882bf 19,73,124
+  s_544ac41f1d93fd::t_6d2dc8a79ef8de 219-220,247
+  s_544ac41f1d93fd::t_ee3a03b1c867d8 39-72,74-97,243
+  s_544ac41f1d93fd::t_62a5df6a771435 1-18,20-38,98-123,125-218,221-242,244-246,248-260
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_544ac41f1d93fd::t_7ec14f993b8f1c 11
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_544ac41f1d93fd::t_91119efba90a37 1-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e337630ff34911e42375413763ffe99b7281e337",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
