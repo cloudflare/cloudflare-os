@@ -22,8 +22,8 @@ import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } 
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import {
-  AiChatAuthorInfo, AiModelConfig, AiModelProvider, ReasoningLevel, SUGGESTED_MODELS,
-  WORKERS_AI_OUTPUT_LIMIT,
+  AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, ReasoningLevel,
+  SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
@@ -312,6 +312,42 @@ export function gatewayReasoningLevels(
   return model?.reasoning ? getSupportedThinkingLevels(model) : [];
 }
 
+// What a handle with no reasoning level asks `model` for on an agent's turn. makeHandle builds
+// the request's options from the answer.
+// - Anthropic: adaptive thinking (the model decides when/how much to think) -- but only for
+//   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). Other Anthropic
+//   models (e.g. Haiku 4.5, which rejects the adaptive format) are asked for nothing, so pi omits
+//   the `thinking` field and the provider default (no extended thinking) applies.
+// - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
+//   when no effort is passed; effort selection also makes pi request encrypted reasoning
+//   content, which -- with pi's unconditional `store: false` -- keeps requests stateless (ZDR)
+//   with reasoning carried between tool steps. pi sends a model that does no reasoning none of
+//   it, so such a model is asked for nothing.
+// - Everything else: nothing, which leaves the provider's defaults.
+function builtInReasoning(model: Model<Api>): BuiltInReasoning {
+  switch (model.api) {
+    case "anthropic-messages":
+      return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true
+          ? "adaptive" : null;
+    case "openai-responses":
+      return model.reasoning ? "medium" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * What a gateway model is asked for on an agent's turns while its config carries no reasoning
+ * level: the answer for the descriptor that getModel() builds for it through AI Gateway, which
+ * is the same over either transport. Null too for a provider AI Gateway cannot serve, whose
+ * models get no handle.
+ */
+export function gatewayBuiltInReasoning(
+    provider: AiModelProvider, modelId: string, behavesLike?: string): BuiltInReasoning {
+  let model = gatewayNativeModel({ provider, model: modelId, apiToken: "", behavesLike }, "");
+  return model ? builtInReasoning(model) : null;
+}
+
 // The per-API options that ask `model` for a reasoning level on a request whose response cap is
 // `maxTokens`. This is the mapping of pi's streamSimple(), which is not called because it would
 // also give every request a response cap. A level the model lacks is clamped to one it has, so
@@ -383,7 +419,7 @@ type HandleArgs = {
   // A per-call options.fetch still wins, which tests rely on to capture requests.
   fetch?: FetchFunction;
   // The reasoning level of main turns, and the ID of the pi entry the model's flags come from
-  // (see reasoningOptions). No level gives each API the defaults in makeHandle.
+  // (see reasoningOptions). No level gives the model its built-in request (see builtInReasoning).
   reasoning?: ReasoningLevel;
   formatId?: string;
 };
@@ -394,22 +430,13 @@ function makeHandle(args: HandleArgs): ModelHandle {
     throw new Error(`Unsupported model API "${args.model.api}".`);
   }
 
-  // Per-API extras for a handle with no reasoning level of its own:
-  // - Anthropic: adaptive thinking (the model decides when/how much to think)` -- but only for
-  //   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). For other
-  //   Anthropic models (e.g. Haiku 4.5, which rejects the adaptive format) we pass nothing, so pi
-  //   omits the `thinking` field and the provider default (no extended thinking) applies --
-  //   matching the pre-pi quick-model behavior.
-  // - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
-  //   when no effort is passed; effort selection also makes pi request encrypted reasoning
-  //   content, which -- with pi's unconditional `store: false` -- preserves the old stateless
-  //   ZDR behavior with reasoning carried between tool steps.
-  // - Everything else: provider defaults.
+  // Per-API extras for a handle with no reasoning level of its own: the options that ask for
+  // what builtInReasoning() says. A built-in level is an OpenAI effort, sent as it is.
   const anthropicCompat = args.model.compat as AnthropicMessagesCompat | undefined;
+  const builtIn = builtInReasoning(args.model);
   const apiExtras: Record<string, unknown> =
-      args.model.api === "anthropic-messages"
-          ? (anthropicCompat?.forceAdaptiveThinking === true ? { thinkingEnabled: true } : {}) :
-      args.model.api === "openai-responses" ? { reasoningEffort: "medium" } : {};
+      builtIn === "adaptive" ? { thinkingEnabled: true } :
+      builtIn !== null ? { reasoningEffort: builtIn } : {};
 
   const handle: ModelHandle = {
     model: args.model,

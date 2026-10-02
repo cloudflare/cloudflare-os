@@ -29,7 +29,7 @@ import { MODELS_DEV_URL } from './modelsDev'
 type GatewayModels = NonNullable<AdminSettingsView['gatewayModels']>
 
 // A model that takes no reasoning level and that the runtime has no entry for.
-const NO_SETTINGS = { reasoningLevels: [], runtimeKnown: false }
+const NO_SETTINGS = { reasoningLevels: [], builtInReasoning: null, runtimeKnown: false }
 
 const SONNET: AdminModelView = {
   provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet', contextWindow: 200000,
@@ -65,15 +65,15 @@ const GATEWAY_MODELS: GatewayModels = {
 const OPUS: AdminModelView = {
   provider: 'anthropic', id: 'claude-opus', name: 'Claude Opus', contextWindow: 264000,
   outputLimit: 64000, mode: 'enabled', defaultMode: 'enabled', added: false,
-  reasoningLevels: ['off', 'low', 'high'], builtInCompactionInputBudget: 200000,
-  maxCompactionInputBudget: 200000, runtimeKnown: true,
+  reasoningLevels: ['off', 'low', 'high'], builtInReasoning: 'adaptive',
+  builtInCompactionInputBudget: 200000, maxCompactionInputBudget: 200000, runtimeKnown: true,
 }
 const HAIKU: AdminModelView = { ...OPUS, id: 'claude-haiku', name: 'Claude Haiku' }
 const GPT: AdminModelView = {
   provider: 'openai', id: 'gpt-main', name: 'GPT Main', contextWindow: 400000, outputLimit: 128000,
   mode: 'enabled', defaultMode: 'enabled', added: false,
-  reasoningLevels: ['minimal', 'low', 'medium', 'high'], builtInCompactionInputBudget: 180000,
-  maxCompactionInputBudget: 272000, runtimeKnown: true,
+  reasoningLevels: ['minimal', 'low', 'medium', 'high'], builtInReasoning: 'medium',
+  builtInCompactionInputBudget: 180000, maxCompactionInputBudget: 272000, runtimeKnown: true,
 }
 // The catalog models above, and a catalog model and an added one that the runtime has no entry for.
 const RUNTIME_MODELS: GatewayModels = { ...GATEWAY_MODELS, models: [OPUS, HAIKU, SONNET, GPT, ADDED] }

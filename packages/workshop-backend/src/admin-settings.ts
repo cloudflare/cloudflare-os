@@ -11,7 +11,7 @@ import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, 
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { AgentTurnError, completeText } from './ai-invoke.js';
-import { gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
+import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -450,6 +450,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           return {
             ...model,
             reasoningLevels: gatewayReasoningLevels(model.provider, model.id, model.behavesLike),
+            builtInReasoning: gatewayBuiltInReasoning(model.provider, model.id, model.behavesLike),
             builtInCompactionInputBudget: budget.builtIn,
             maxCompactionInputBudget: budget.max,
             runtimeKnown: isRuntimeModel(model.provider, model.id),

@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig,
+  SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig, type BuiltInReasoning,
 } from "@gadgets/workshop-shared/api";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import {
-  gatewayReasoningLevels, getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
+  gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel,
+  LanguageModelGatekeeper, type ModelHandle,
 } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
@@ -688,6 +689,16 @@ describe("getModel direct routing (no gateway)", () => {
   });
 });
 
+// The parts of a request body that ask for reasoning, and what they are for each answer of
+// gatewayBuiltInReasoning(). The effort pi gives a Claude whose effort it manages is pi's own.
+const reasoningAsked = (body: Record<string, unknown>) => ({
+  thinking: (body.thinking as { type: string } | undefined)?.type,
+  effort: (body.reasoning as { effort: string } | undefined)?.effort ?? body.reasoning_effort,
+});
+const builtInRequest = (builtIn: BuiltInReasoning) => builtIn === "adaptive"
+    ? { thinking: "adaptive", effort: undefined }
+    : { thinking: undefined, effort: builtIn ?? undefined };
+
 describe("gateway model reasoning levels", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
@@ -969,6 +980,118 @@ describe("gateway model reasoning levels", () => {
     ["ollama", "qwen3:8b", []],
   ] as const)("lists the levels %s model %s can be sent", (provider, model, levels) => {
     expect(gatewayReasoningLevels(provider, model)).toEqual(levels);
+  });
+
+  // What an agent's turn asks each catalog model for while no level is set.
+  const BUILT_IN: [AiModelConfig["provider"], string, BuiltInReasoning][] = [
+    ["anthropic", "claude-opus-5-5", "adaptive"],
+    ["anthropic", "claude-sonnet-5-5", "adaptive"],
+    ["anthropic", "claude-fable-5-1", "adaptive"],
+    ["anthropic", "claude-opus-5", "adaptive"],
+    ["anthropic", "claude-sonnet-5", "adaptive"],
+    ["anthropic", "claude-haiku-4-5", null],
+    ["openai", "gpt-6.1-sol", "medium"],
+    ["openai", "gpt-6-sol", "medium"],
+    ["openai", "gpt-6-luna", "medium"],
+    ["openai", "gpt-6-astra", "medium"],
+    ["openai", "gpt-5.6-sol", "medium"],
+    ["openai", "gpt-5.6-luna", "medium"],
+    ["openai", "gpt-5.6-terra", "medium"],
+    ["google", "gemini-3.6-flash", null],
+    ["cloudflare", "@cf/moonshotai/kimi-k2.7-code", null],
+    ["cloudflare", "@cf/zai-org/glm-5.2", null],
+    ["cloudflare", "@cf/zai-org/glm-5.3-flash", null],
+    ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],
+  ];
+  it.each(BUILT_IN)("says what %s model %s is asked for while no level is set",
+      (provider, model, builtIn) => {
+    expect(gatewayBuiltInReasoning(provider, model)).toBe(builtIn);
+  });
+
+  it("says so for every model of the catalog", () => {
+    const catalog = Object.entries(SUGGESTED_MODELS).flatMap(
+        ([provider, models]) => Object.keys(models).map(model => `${provider} ${model}`));
+    expect(BUILT_IN.map(([provider, model]) => `${provider} ${model}`).toSorted())
+        .toEqual(catalog.toSorted());
+  });
+
+  it.each([
+    // Models pi does not know. An Anthropic one is taken for a model that is not adaptive, and
+    // an OpenAI one for a model that reasons.
+    ["anthropic", "claude-next", undefined, null],
+    ["anthropic", "claude-next", "claude-opus-5-5", "adaptive"],
+    ["anthropic", "claude-next", "claude-haiku-4-5", null],
+    // pi does not know this one either, so there is nothing to borrow.
+    ["anthropic", "claude-next", "claude-nope", null],
+    ["openai", "gpt-next", undefined, "medium"],
+    ["openai", "gpt-next", "gpt-6.1-sol", "medium"],
+    // pi marks GPT-4o as a model that does no reasoning, which it sends no effort.
+    ["openai", "gpt-4o", undefined, null],
+    ["openai", "gpt-next", "gpt-4o", null],
+    ["cloudflare", "@cf/test/next", undefined, null],
+    ["cloudflare", "@cf/test/next", "@cf/zai-org/glm-5.2", null],
+    ["google", "gemini-next", undefined, null],
+    ["google", "gemini-next", "gemini-3.6-flash", null],
+    // A model pi knows borrows nothing.
+    ["anthropic", "claude-haiku-4-5", "claude-opus-5-5", null],
+    ["anthropic", "claude-opus-5-5", "claude-haiku-4-5", "adaptive"],
+    // AI Gateway serves no such provider.
+    ["ollama", "qwen3:8b", undefined, null],
+  ] as const)("says what %s model %s behaving like %s is asked for while no level is set",
+      (provider, model, behavesLike, builtIn) => {
+    expect(gatewayBuiltInReasoning(provider, model, behavesLike)).toBe(builtIn);
+  });
+
+  // Every route getModel() has through an AI Gateway: the platform's over HTTPS and over the
+  // Workers AI binding (whose requests the injected fetch takes), and a connected user's.
+  const GATEWAY_ROUTES = [
+    ["gateway.ai.cloudflare.com", gatewayEnv, {}],
+    ["workers-binding.ai", env({
+      CF_AI_GATEWAY_API_TOKEN: undefined, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare",
+      WORKERS_AI: {} as Ai,
+    }), {}],
+    ["gateway.ai.cloudflare.com", gatewayEnv,
+      { userGateway: { accountId: "user-account-id", apiKey: "user-token" } }],
+  ] as const;
+
+  // DeepSeek V4 Pro is left out: it is asked for nothing, and pi's format for it then turns
+  // thinking off (see its built-in request above).
+  it.each<[string, GatewayConfig, BuiltInReasoning]>([
+    ["a Claude whose effort pi manages", OPUS, "adaptive"],
+    ["an adaptive Claude", SONNET_5, "adaptive"],
+    ["a model that behaves like an adaptive Claude",
+      { provider: "anthropic", model: "claude-next", behavesLike: OPUS.model }, "adaptive"],
+    ["Haiku", HAIKU, null],
+    ["an Anthropic model pi does not know", { provider: "anthropic", model: "claude-next" }, null],
+    ["an OpenAI model", GPT, "medium"],
+    ["an OpenAI model pi does not know", { provider: "openai", model: "gpt-next" }, "medium"],
+    ["an OpenAI model that does no reasoning", { provider: "openai", model: "gpt-4o" }, null],
+    ["GLM 5.2", GLM, null],
+    ["a Workers AI model that does no reasoning", LLAMA, null],
+  ])("sends %s what its built-in reasoning says, on every route", async (_, config, builtIn) => {
+    expect(gatewayBuiltInReasoning(config.provider, config.model, config.behavesLike))
+        .toBe(builtIn);
+    for (const [host, gateway, routing] of GATEWAY_ROUTES) {
+      capturedRequests.length = 0;
+      const handle = getModel(gateway, { ...config, apiToken: "" }, INITIATOR, routing);
+      expect(new URL(handle.model.baseUrl).host).toBe(host);
+      const body = JSON.parse((await captureRequest(handle)).body) as Record<string, unknown>;
+      expect(reasoningAsked(body)).toEqual(builtInRequest(builtIn));
+    }
+  });
+
+  // pi leaves the effort out of a request to an OpenAI model that does no reasoning, so one
+  // that is asked for none is sent the request it would be sent with an effort.
+  it("sends an OpenAI model that does no reasoning a request with no effort", async () => {
+    const gpt4o: GatewayConfig = { provider: "openai", model: "gpt-4o" };
+    expect(await requestBody(gpt4o)).toBe(JSON.stringify(gptBody(gpt4o, {})));
+  });
+
+  // Google's requests go over HTTPS alone.
+  it.each(["gemini-3.6-flash", "gemini-2.5-flash", "gemini-next"])(
+      "sends Gemini model %s nothing, as its built-in reasoning says", async (model) => {
+    expect(gatewayBuiltInReasoning("google", model)).toBeNull();
+    expect(await googleThinking(model)).toBeUndefined();
   });
 
   it("knows a model by an entry of its own, under its own provider", () => {

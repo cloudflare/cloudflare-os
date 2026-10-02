@@ -1475,6 +1475,13 @@ export function isReasoningLevel(value: unknown): value is ReasoningLevel {
 }
 
 /**
+ * What a model is asked for while no reasoning level is set for it: 'adaptive' when the model
+ * itself decides whether and how much to reason, a level when the Workshop asks for that effort,
+ * and null when no level is sent.
+ */
+export type BuiltInReasoning = ReasoningLevel | 'adaptive' | null;
+
+/**
  * The share of its compaction budget a chat's prompt may reach before the chat compacts, leaving
  * room for the response.
  */
@@ -1555,6 +1562,12 @@ export type AdminModel = GatewayModel & {
 export type AdminModelView = AdminModel & {
   /** The reasoning levels the model can be sent, least to most. Empty when it takes none. */
   reasoningLevels: ReasoningLevel[];
+
+  /**
+   * What the model is asked for while neither its settings nor the deployment's default give it
+   * a reasoning level.
+   */
+  builtInReasoning: BuiltInReasoning;
 
   /** The compaction budget the model has while GatewayModelSettings sets none. */
   builtInCompactionInputBudget: number;

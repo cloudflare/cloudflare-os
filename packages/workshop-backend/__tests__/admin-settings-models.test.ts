@@ -353,7 +353,7 @@ describe("AdminSettings.getSettings gateway models", () => {
     expect(byId.get("claude-opus-5")).toMatchObject({ mode: "hidden", defaultMode: "hidden" });
     expect(byId.get("claude-test")).toStrictEqual({
       ...ADDED, mode: "enabled", defaultMode: "enabled", added: true,
-      reasoningLevels: ["off", "minimal", "low", "medium", "high"],
+      reasoningLevels: ["off", "minimal", "low", "medium", "high"], builtInReasoning: null,
       builtInCompactionInputBudget: 500000, maxCompactionInputBudget: 500000,
       runtimeKnown: false,
     });
@@ -409,6 +409,28 @@ describe("AdminSettings.getSettings gateway models", () => {
     });
     expect(gatewayModels!.models.find(model => model.id === "claude-opus-5-5"))
         .not.toHaveProperty("settings");
+  });
+
+  it("says what each model is asked for while no reasoning level is set", async () => {
+    const { inDo } = adminSettings(
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" });
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, behavesLike: "claude-opus-5-5" }));
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, id: "claude-plain" }));
+    // Neither a level of the model's own nor the deployment's default is its built-in request.
+    await inDo(admin => admin.setGatewayModelSettings("claude-opus-5-5", { reasoning: "low" }));
+    await inDo(admin => admin.setDefaultReasoning("high"));
+
+    const { models } = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    const builtIn = (id: string) => models.find(model => model.id === id)!.builtInReasoning;
+    // The model decides.
+    expect(builtIn("claude-opus-5-5")).toBe("adaptive");
+    expect(builtIn("claude-sonnet-5")).toBe("adaptive");
+    // An added model takes the answer of the model it behaves like, and has none without one.
+    expect(builtIn("claude-test")).toBe("adaptive");
+    expect(builtIn("claude-plain")).toBeNull();
+    expect(builtIn("claude-haiku-4-5")).toBeNull();
+    expect(builtIn("gpt-6-sol")).toBe("medium");
+    expect(builtIn("@cf/zai-org/glm-5.2")).toBeNull();
   });
 
   it("lists the providers in catalog order", async () => {

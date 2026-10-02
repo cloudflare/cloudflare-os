@@ -84,8 +84,8 @@ const ADDED: GatewayModel = {
 // does no reasoning, with the prompt budget its own limits leave.
 const ADDED_VIEW = {
   ...ADDED, mode: "enabled", defaultMode: "enabled", added: true,
-  reasoningLevels: [], builtInCompactionInputBudget: 92000, maxCompactionInputBudget: 92000,
-  runtimeKnown: false,
+  reasoningLevels: [], builtInReasoning: null, builtInCompactionInputBudget: 92000,
+  maxCompactionInputBudget: 92000, runtimeKnown: false,
 };
 const disabledMessage = (name: string) =>
     `The "${name}" model is disabled on this deployment by an administrator.`;

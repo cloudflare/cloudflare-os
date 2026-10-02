@@ -18,22 +18,22 @@ import { GatewayModelRow } from './GatewayModelRow'
 const SONNET: AdminModelView = {
   provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet', contextWindow: 264000,
   outputLimit: 64000, mode: 'enabled', defaultMode: 'enabled', added: false,
-  reasoningLevels: ['off', 'low', 'high'], builtInCompactionInputBudget: 200000,
-  maxCompactionInputBudget: 200000, runtimeKnown: true,
+  reasoningLevels: ['off', 'low', 'high'], builtInReasoning: 'adaptive',
+  builtInCompactionInputBudget: 200000, maxCompactionInputBudget: 200000, runtimeKnown: true,
 }
 // A catalog model whose built-in budget is under what its window has room for.
 const GPT: AdminModelView = {
   provider: 'openai', id: 'gpt-next', name: 'GPT Next', contextWindow: 400000, outputLimit: 128000,
   mode: 'enabled', defaultMode: 'enabled', added: false,
-  reasoningLevels: ['minimal', 'low', 'medium', 'high'], builtInCompactionInputBudget: 180000,
-  maxCompactionInputBudget: 272000, runtimeKnown: true,
+  reasoningLevels: ['minimal', 'low', 'medium', 'high'], builtInReasoning: 'medium',
+  builtInCompactionInputBudget: 180000, maxCompactionInputBudget: 272000, runtimeKnown: true,
 }
 // An added model that the runtime has no entry for.
 const ADDED: AdminModelView = {
   provider: 'anthropic', id: 'claude-next', name: 'Claude Next', contextWindow: 200000,
   mode: 'enabled', defaultMode: 'enabled', added: true,
-  reasoningLevels: ['off', 'low', 'high'], builtInCompactionInputBudget: 200000,
-  maxCompactionInputBudget: 200000, runtimeKnown: false,
+  reasoningLevels: ['off', 'low', 'high'], builtInReasoning: null,
+  builtInCompactionInputBudget: 200000, maxCompactionInputBudget: 200000, runtimeKnown: false,
 }
 
 const tokens = (count: number) => `${count.toLocaleString()} tokens`
