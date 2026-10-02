@@ -4,27 +4,62 @@
 // server reported rather than what was just chosen.
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { Switch, useKumoToastManager } from '@cloudflare/kumo'
-import { GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
+import { Select, Switch, useKumoToastManager } from '@cloudflare/kumo'
+import { GATEWAY_MODEL_MODES, REASONING_LEVELS } from '@gadgets/workshop-shared/api'
 import type {
   AdminApi,
   AdminModel,
+  AdminModelView,
   AdminSettingsView,
   AiModelProvider,
   GatewayModelMode,
+  GatewayModelSettings,
+  ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import type { RpcStub } from 'capnweb'
 import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { AddGatewayModelForm } from './AddGatewayModelForm'
 import { GatewayModelRow, MODES } from './GatewayModelRow'
 import { rpcFailureDescription } from '../../rpcErrors'
-import { PROVIDER_LABELS } from './modelForm'
+import { PROVIDER_LABELS, REASONING_LEVEL_LABELS } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
 
 const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
 const USER_MODELS_LABEL = 'Users may add their own models'
 const MODELS_DEV_LABEL = 'Suggest models from models.dev'
+const DEFAULT_REASONING_LABEL = 'Default reasoning level'
+
+// The default-level select's value while the deployment sets no level.
+const BUILT_IN = 'built-in'
+
+// The control that has focus, for a write to give focus back to. A pick in a select is made with
+// focus on an option in its list, which closes on the pick, so the select stands in for the option.
+// A dialog places focus itself as it closes, so a control in one is left to it.
+const focusedControl = () => {
+  const focused = document.activeElement
+  if (focused?.closest('[role="dialog"]')) return null
+  const list = focused?.closest('[role="listbox"]')
+  const select = list && Array.from(document.querySelectorAll<HTMLElement>('[aria-controls]'))
+    .find((control) => control.getAttribute('aria-controls') === list.id)
+  return select ?? (focused instanceof HTMLElement ? focused : null)
+}
+
+/** A deployment-wide setting: its name and what it does, beside the control that changes it. */
+const SettingRow = ({ label, help, children }: {
+  label: string
+  /** What the setting does, under the ID that the control is described by. */
+  help: { id: string; text: ReactNode }
+  children: ReactNode
+}) => (
+  <div className="mb-4 flex items-center gap-4 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
+    <div className="min-w-0 flex-1 text-sm">
+      <p className="font-medium text-kumo-default">{label}</p>
+      <p id={help.id} className="mt-0.5 text-kumo-subtle">{help.text}</p>
+    </div>
+    {children}
+  </div>
+)
 
 const SettingSwitch = ({ label, checked, disabled, onChange, children }: {
   label: string
@@ -36,11 +71,7 @@ const SettingSwitch = ({ label, checked, disabled, onChange, children }: {
 }) => {
   const help = useId()
   return (
-    <div className="mb-4 flex items-center gap-4 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3">
-      <div className="min-w-0 flex-1 text-sm">
-        <p className="font-medium text-kumo-default">{label}</p>
-        <p id={help} className="mt-0.5 text-kumo-subtle">{children}</p>
-      </div>
+    <SettingRow label={label} help={{ id: help, text: children }}>
       <Switch
         aria-label={label}
         aria-describedby={help}
@@ -48,7 +79,49 @@ const SettingSwitch = ({ label, checked, disabled, onChange, children }: {
         disabled={disabled}
         onCheckedChange={onChange}
       />
-    </div>
+    </SettingRow>
+  )
+}
+
+const DefaultReasoningSetting = ({ level, disabled, onChange }: {
+  /** The deployment's default level, or null while it sets none. */
+  level: ReasoningLevel | null
+  disabled: boolean
+  onChange: (level: ReasoningLevel | null) => void
+}) => {
+  const help = useId()
+  return (
+    <SettingRow
+      label={DEFAULT_REASONING_LABEL}
+      help={{
+        id: help,
+        text:
+          'The reasoning level of the agent’s turns on every model listed here that has no level ' +
+          'of its own. A level that a model lacks is fitted to the nearest one it has. One-shot ' +
+          'calls (titles, summaries, gadget model bindings) are not affected, and neither are ' +
+          'the models users added.',
+      }}
+    >
+      <Select<ReasoningLevel | typeof BUILT_IN>
+        aria-label={DEFAULT_REASONING_LABEL}
+        // Kumo's Select hands its trigger a name and nothing else, so the help reaches it here.
+        render={<button aria-describedby={help} />}
+        className="w-36 shrink-0"
+        disabled={disabled}
+        value={level ?? BUILT_IN}
+        onValueChange={(value, { reason }) => {
+          // Only a pick sets the level, and not a letter typed while the select is closed.
+          if (reason !== 'item-press' || !value || value === (level ?? BUILT_IN)) return
+          onChange(value === BUILT_IN ? null : value)
+        }}
+        renderValue={(value) => (value === BUILT_IN ? 'Built-in' : REASONING_LEVEL_LABELS[value])}
+      >
+        <Select.Option value={BUILT_IN}>Built-in</Select.Option>
+        {REASONING_LEVELS.map((option) => (
+          <Select.Option key={option} value={option}>{REASONING_LEVEL_LABELS[option]}</Select.Option>
+        ))}
+      </Select>
+    </SettingRow>
   )
 }
 
@@ -67,6 +140,16 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const [modelsDev, setModelsDev] = useState<{ list: unknown } | null>(null)
   const modelsDevRequest = useRef<AbortController | null>(null)
   useEffect(() => () => modelsDevRequest.current?.abort(), [])
+  // A write disables every control, and a browser takes focus from a control that becomes disabled
+  // without giving it back. So the control that had focus when the write began gets it again once
+  // the controls are enabled, unless focus has gone elsewhere since. A control that left the
+  // document in the meantime takes no focus.
+  const focusBeforeWrite = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    if (busy) return
+    if (document.activeElement === document.body) focusBeforeWrite.current?.focus()
+    focusBeforeWrite.current = null
+  }, [busy])
 
   if (!gatewayModels) {
     return (
@@ -90,6 +173,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   // Rejects with the write's own failure; a failed re-read is reported here instead, because the
   // write before it went through.
   const write = async (op: () => Promise<void>) => {
+    focusBeforeWrite.current = focusedControl()
     setBusy(true)
     try {
       await op()
@@ -102,6 +186,14 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const changeMode = (model: AdminModel, mode: GatewayModelMode) =>
     write(() => admin.setGatewayModelMode(model.id, mode))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
+
+  const changeSettings = (model: AdminModel, settings: GatewayModelSettings) =>
+    write(() => admin.setGatewayModelSettings(model.id, settings))
+      .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
+
+  const changeDefaultReasoning = (level: ReasoningLevel | null) =>
+    write(() => admin.setDefaultReasoning(level))
+      .catch((err) => reportFailure(`Couldn’t update “${DEFAULT_REASONING_LABEL}”`, err))
 
   const changeUserModels = (enabled: boolean) =>
     write(() => admin.setUserModelsEnabled(enabled))
@@ -134,7 +226,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     setPendingRemoval(null)
   }
 
-  const catalogByProvider = new Map<AiModelProvider, AdminModel[]>()
+  const catalogByProvider = new Map<AiModelProvider, AdminModelView[]>()
   for (const model of gatewayModels.models) {
     if (model.added) continue
     const group = catalogByProvider.get(model.provider)
@@ -142,7 +234,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     else catalogByProvider.set(model.provider, [model])
   }
   const added = gatewayModels.models.filter((model) => model.added)
-  const { userModelsEnabled } = gatewayModels
+  const { userModelsEnabled, defaultReasoning } = gatewayModels
   const suggestions = gatewayModels.modelsDevSuggestions
     ? {
         models: suggestModels(
@@ -176,6 +268,12 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         deleted.
       </SettingSwitch>
 
+      <DefaultReasoningSetting
+        level={defaultReasoning}
+        disabled={busy}
+        onChange={changeDefaultReasoning}
+      />
+
       <dl className="mb-6 grid gap-x-3 gap-y-1 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 text-sm sm:grid-cols-[auto_1fr]">
         {GATEWAY_MODEL_MODES.map((mode) => (
           <div key={mode} className="contents">
@@ -200,8 +298,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                 <GatewayModelRow
                   key={model.id}
                   model={model}
+                  defaultReasoning={defaultReasoning}
                   busy={busy}
                   onModeChange={(mode) => changeMode(model, mode)}
+                  onSettingsChange={(settings) => changeSettings(model, settings)}
                 />
               ))}
             </ul>
@@ -219,8 +319,12 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                   <GatewayModelRow
                     key={model.id}
                     model={model}
+                    defaultReasoning={defaultReasoning}
+                    behavesLikeName={catalogByProvider.get(model.provider)
+                      ?.find((listed) => listed.id === model.behavesLike)?.name}
                     busy={busy}
                     onModeChange={(mode) => changeMode(model, mode)}
+                    onSettingsChange={(settings) => changeSettings(model, settings)}
                     onRemove={() => setPendingRemoval(model)}
                   />
                 ))}
@@ -255,6 +359,8 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
               </SettingSwitch>
               <AddGatewayModelForm
                 providers={gatewayModels.providers}
+                behavesLikeOptions={
+                  gatewayModels.models.filter((model) => !model.added && model.runtimeKnown)}
                 disabled={busy}
                 suggestions={suggestions}
                 onAdd={(model) => write(() => admin.addGatewayModel(model))}

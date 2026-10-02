@@ -1,4 +1,4 @@
-import type { AiModelProvider } from '@gadgets/workshop-shared/api'
+import type { AiModelProvider, ReasoningLevel } from '@gadgets/workshop-shared/api'
 
 /** Each provider's name as the model forms and lists show it. */
 export const PROVIDER_LABELS: Record<AiModelProvider, string> = {
@@ -7,6 +7,17 @@ export const PROVIDER_LABELS: Record<AiModelProvider, string> = {
   google: 'Google',
   cloudflare: 'Cloudflare Workers AI',
   ollama: 'Ollama',
+}
+
+/** Each reasoning level's name as the Models tab shows it. */
+export const REASONING_LEVEL_LABELS: Record<ReasoningLevel, string> = {
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
 }
 
 /** Parse a token-limit field: undefined when blank, null when not a positive whole number. */

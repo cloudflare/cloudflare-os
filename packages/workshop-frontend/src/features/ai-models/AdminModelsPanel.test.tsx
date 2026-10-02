@@ -23,7 +23,7 @@ import { MODELS_DEV_URL } from './modelsDev'
 
 type GatewayModels = NonNullable<AdminSettingsView['gatewayModels']>
 
-// What the server reports of a model's settings, which this panel does not show.
+// A model that takes no reasoning level and that the runtime has no entry for.
 const NO_SETTINGS = { reasoningLevels: [], runtimeKnown: false }
 
 const SONNET: AdminModelView = {
@@ -55,6 +55,27 @@ const GATEWAY_MODELS: GatewayModels = {
   userModelsEnabled: true,
   modelsDevSuggestions: false,
 }
+
+// Catalog models that the runtime knows, each with levels of its own.
+const OPUS: AdminModelView = {
+  provider: 'anthropic', id: 'claude-opus', name: 'Claude Opus', contextWindow: 264000,
+  outputLimit: 64000, mode: 'enabled', defaultMode: 'enabled', added: false,
+  reasoningLevels: ['off', 'low', 'high'], builtInCompactionInputBudget: 200000,
+  maxCompactionInputBudget: 200000, runtimeKnown: true,
+}
+const HAIKU: AdminModelView = { ...OPUS, id: 'claude-haiku', name: 'Claude Haiku' }
+const GPT: AdminModelView = {
+  provider: 'openai', id: 'gpt-main', name: 'GPT Main', contextWindow: 400000, outputLimit: 128000,
+  mode: 'enabled', defaultMode: 'enabled', added: false,
+  reasoningLevels: ['minimal', 'low', 'medium', 'high'], builtInCompactionInputBudget: 180000,
+  maxCompactionInputBudget: 272000, runtimeKnown: true,
+}
+// The catalog models above, and a catalog model and an added one that the runtime has no entry for.
+const RUNTIME_MODELS: GatewayModels = { ...GATEWAY_MODELS, models: [OPUS, HAIKU, SONNET, GPT, ADDED] }
+// An added model that the runtime knows, as one is after an upgrade.
+const KNOWN_ADDED: AdminModelView = { ...OPUS, id: 'claude-added', name: 'Claude Added', added: true }
+// An added model with settings to change.
+const LEVELLED_ADDED: AdminModelView = { ...ADDED, reasoningLevels: ['low', 'high'] }
 
 const SUGGESTIONS_LABEL = 'Suggest models from models.dev'
 const SUGGESTING: GatewayModels = { ...GATEWAY_MODELS, modelsDevSuggestions: true }
@@ -195,13 +216,22 @@ const press = async (element: HTMLElement, key: string) => {
   return event.defaultPrevented
 }
 
+/** The options of the list that the select named `name` opens, which is left open. */
+const openOptions = async (name: string) => {
+  const select = button(name)
+  if (select.getAttribute('aria-expanded') !== 'true') await click(select)
+  const list = document.getElementById(select.getAttribute('aria-controls') ?? '')
+  return Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
+}
+
+const optionLabels = async (name: string) =>
+  (await openOptions(name)).map((option) => option.textContent)
+
 // By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom lacks,
 // so the window has a stand-in for as long as the choice takes.
-const chooseProvider = async (label: string) => {
-  await click(button('Provider'))
-  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
-    .find((element) => element.textContent === label)
-  if (!option) throw new Error(`No provider ${label}`)
+const choose = async (name: string, label: string) => {
+  const option = (await openOptions(name)).find((element) => element.textContent === label)
+  if (!option) throw new Error(`No ${label} option in ${name}`)
   const view: { PointerEvent?: typeof MouseEvent } = window
   view.PointerEvent = MouseEvent
   try {
@@ -211,6 +241,26 @@ const chooseProvider = async (label: string) => {
     delete view.PointerEvent
   }
 }
+
+const chooseProvider = (label: string) => choose('Provider', label)
+
+const describedBy = (element: HTMLElement) =>
+  (element.getAttribute('aria-describedby') ?? '').split(' ')
+    .map((id) => document.getElementById(id)?.textContent ?? '').join(' ')
+
+const openSettings = (modelName: string) => click(button(`Settings for ${modelName}`))
+
+const budgetField = (modelName = 'Claude Opus') =>
+  labeledInput(`Compaction budget for ${modelName}`)
+
+// What a browser does to a control with focus that a write disables. jsdom leaves focus on such a
+// control and won't blur it either, so focus leaves by way of a button that takes it and goes.
+const dropFocus = () => act(async () => {
+  const elsewhere = document.body.appendChild(document.createElement('button'))
+  elsewhere.focus()
+  elsewhere.blur()
+  elsewhere.remove()
+})
 
 // The options of the list the Model ID field says it controls.
 const suggestionOptions = () => {
@@ -251,10 +301,12 @@ describe('AdminModelsPanel', () => {
     const removeGatewayModel = vi.fn<AdminApi['removeGatewayModel']>(async () => {})
     const setUserModelsEnabled = vi.fn<AdminApi['setUserModelsEnabled']>(async () => {})
     const setModelsDevSuggestions = vi.fn<AdminApi['setModelsDevSuggestions']>(async () => {})
+    const setGatewayModelSettings = vi.fn<AdminApi['setGatewayModelSettings']>(async () => {})
+    const setDefaultReasoning = vi.fn<AdminApi['setDefaultReasoning']>(async () => {})
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
-      setModelsDevSuggestions,
+      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -266,7 +318,7 @@ describe('AdminModelsPanel', () => {
       <AdminModelsPanel admin={admin} gatewayModels={gatewayModels} onChanged={onChanged} />))
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
-      setModelsDevSuggestions, onChanged, show,
+      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning, onChanged, show,
     }
   }
 
@@ -369,6 +421,364 @@ describe('AdminModelsPanel', () => {
       await click(button('Remove GPT Custom'))
       expect(confirmation()?.textContent)
         .toContain(`gpt-custom: gadget model bindings made for the model ${inDialog} and a model`)
+    })
+  })
+
+  describe('the default reasoning level', () => {
+    const LABEL = 'Default reasoning level'
+
+    it.each([
+      [null, 'Built-in'],
+      ['xhigh', 'Extra high'],
+    ] as const)('shows %s as the server reported it, with what it applies to', async (level, shown) => {
+      await render({ gatewayModels: { ...RUNTIME_MODELS, defaultReasoning: level } })
+
+      expect(button(LABEL).textContent).toBe(shown)
+      expect(describedBy(button(LABEL))).toBe(
+        'The reasoning level of the agent’s turns on every model listed here that has no level ' +
+        'of its own. A level that a model lacks is fitted to the nearest one it has. One-shot ' +
+        'calls (titles, summaries, gadget model bindings) are not affected, and neither are the ' +
+        'models users added.')
+      expect(await optionLabels(LABEL))
+        .toEqual(['Built-in', 'Off', 'Minimal', 'Low', 'Medium', 'High', 'Extra high', 'Max'])
+    })
+
+    it('tells each model’s row what the default is', async () => {
+      const { show } = await render({ gatewayModels: { ...RUNTIME_MODELS, defaultReasoning: 'high' } })
+      await openSettings('Claude Opus')
+
+      expect(button('Reasoning level for Claude Opus').textContent).toBe('Deployment default (High)')
+
+      await show(RUNTIME_MODELS)
+
+      expect(button('Reasoning level for Claude Opus').textContent)
+        .toBe('Deployment default (built-in)')
+    })
+
+    it.each([
+      [null, 'High', 'high'],
+      ['high', 'Built-in', null],
+    ] as const)('from %s, sets the level chosen as %s, then re-reads the settings', async (
+      level, chosen, sent,
+    ) => {
+      const { setDefaultReasoning, onChanged } = await render({
+        gatewayModels: { ...RUNTIME_MODELS, defaultReasoning: level },
+      })
+      const shown = button(LABEL).textContent
+
+      await choose(LABEL, chosen)
+
+      expect(setDefaultReasoning).toHaveBeenCalledExactlyOnceWith(sent)
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(setDefaultReasoning.mock.invocationCallOrder[0])
+        .toBeLessThan(onChanged.mock.invocationCallOrder[0])
+      // The re-read is what changes the select.
+      expect(button(LABEL).textContent).toBe(shown)
+    })
+
+    it('sets nothing when the level it already shows is chosen', async () => {
+      const { setDefaultReasoning } = await render({
+        gatewayModels: { ...RUNTIME_MODELS, defaultReasoning: 'low' },
+      })
+
+      await choose(LABEL, 'Low')
+
+      expect(setDefaultReasoning).not.toHaveBeenCalled()
+    })
+
+    it('sets nothing for a letter typed while the select is closed', async () => {
+      const { setDefaultReasoning } = await render()
+      // A focused select learns its options a moment later, and matches letters against them.
+      await focus(button(LABEL))
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+      await press(button(LABEL), 'm')
+
+      expect(button(LABEL).getAttribute('aria-expanded')).toBe('false')
+      expect(setDefaultReasoning).not.toHaveBeenCalled()
+    })
+
+    it('reports a refused change with the server’s message and keeps showing the server’s level', async () => {
+      const { setDefaultReasoning, onChanged } = await render()
+      setDefaultReasoning.mockRejectedValueOnce(
+        new Error('This deployment does not provide models through AI Gateway.'))
+
+      await choose(LABEL, 'Max')
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        title: 'Couldn’t update “Default reasoning level”',
+        description: 'This deployment does not provide models through AI Gateway.',
+        variant: 'error',
+      }))
+      expect(onChanged).not.toHaveBeenCalled()
+      expect(button(LABEL).textContent).toBe('Built-in')
+      expect(button(LABEL).disabled).toBe(false)
+    })
+
+    it('is locked while a change is in flight, and locks the other controls', async () => {
+      const { setDefaultReasoning, setGatewayModelMode } = await render()
+      const call = deferred()
+      setDefaultReasoning.mockReturnValueOnce(call.promise)
+
+      await choose(LABEL, 'High')
+
+      expect(button(LABEL).disabled).toBe(true)
+      expect(userModelsSwitch().disabled).toBe(true)
+      await click(modeOption('Claude Sonnet', 'Hidden'))
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+
+      await act(async () => call.resolve())
+
+      expect(button(LABEL).disabled).toBe(false)
+    })
+  })
+
+  describe('model settings', () => {
+    const LEVEL = 'Reasoning level for Claude Opus'
+
+    it('sets the level chosen for a model, then re-reads the settings', async () => {
+      const { setGatewayModelSettings, onChanged, show } = await render({ gatewayModels: RUNTIME_MODELS })
+      await openSettings('Claude Opus')
+
+      await choose(LEVEL, 'High')
+
+      expect(setGatewayModelSettings).toHaveBeenCalledExactlyOnceWith('claude-opus', { reasoning: 'high' })
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(setGatewayModelSettings.mock.invocationCallOrder[0])
+        .toBeLessThan(onChanged.mock.invocationCallOrder[0])
+      expect(row('Claude Opus').textContent).not.toContain('Changed')
+
+      await show({
+        ...RUNTIME_MODELS,
+        models: [{ ...OPUS, settings: { reasoning: 'high' } }, HAIKU, SONNET, GPT, ADDED],
+      })
+
+      // Still open, on what the re-read reported.
+      expect(button(LEVEL).textContent).toBe('High')
+      expect(row('Claude Opus').textContent).toContain('Changed')
+      expect(row('Claude Haiku').textContent).not.toContain('Changed')
+    })
+
+    it('saves a model’s compaction budget beside the level it has', async () => {
+      const { setGatewayModelSettings, onChanged } = await render({
+        gatewayModels: {
+          ...RUNTIME_MODELS,
+          models: [{ ...OPUS, settings: { reasoning: 'low' } }, HAIKU, SONNET, GPT, ADDED],
+        },
+      })
+      await openSettings('Claude Opus')
+      await type(budgetField(), '150000')
+
+      await click(button('Save the compaction budget of Claude Opus'))
+
+      expect(setGatewayModelSettings).toHaveBeenCalledExactlyOnceWith(
+        'claude-opus', { reasoning: 'low', compactionInputBudget: 150000 })
+      expect(onChanged).toHaveBeenCalledOnce()
+    })
+
+    it('reports a refused change with the server’s message and keeps showing the server’s values', async () => {
+      const { setGatewayModelSettings, onChanged } = await render({ gatewayModels: RUNTIME_MODELS })
+      setGatewayModelSettings.mockRejectedValue(new Error('No such model: claude-opus'))
+      await openSettings('Claude Opus')
+
+      await choose(LEVEL, 'High')
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith({
+        title: 'Couldn’t update Claude Opus',
+        description: 'No such model: claude-opus',
+        variant: 'error',
+      })
+      expect(button(LEVEL).textContent).toBe('Deployment default (built-in)')
+      expect(button(LEVEL).disabled).toBe(false)
+
+      await type(budgetField(), '150000')
+      await click(button('Save the compaction budget of Claude Opus'))
+
+      expect(addToast).toHaveBeenCalledTimes(2)
+      expect(budgetField().value).toBe('')
+      expect(budgetField().disabled).toBe(false)
+      expect(onChanged).not.toHaveBeenCalled()
+      expect(row('Claude Opus').textContent).not.toContain('Changed')
+    })
+
+    it('locks every control while a change is in flight', async () => {
+      const { setGatewayModelSettings, setGatewayModelMode } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelSettings.mockReturnValueOnce(call.promise)
+      await openSettings('Claude Opus')
+      await openSettings('GPT Main')
+
+      await choose(LEVEL, 'High')
+
+      expect(button(LEVEL).disabled).toBe(true)
+      expect(budgetField().disabled).toBe(true)
+      expect(button('Save the compaction budget of Claude Opus').disabled).toBe(true)
+      expect(button('Reasoning level for GPT Main').disabled).toBe(true)
+      expect(button('Default reasoning level').disabled).toBe(true)
+      await click(modeOption('Claude Opus', 'Hidden'))
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+
+      await act(async () => call.resolve())
+
+      expect(button(LEVEL).disabled).toBe(false)
+      expect(button('Reasoning level for GPT Main').disabled).toBe(false)
+    })
+
+    it('sets an added model’s level and budget under its ID, and tells its row the default', async () => {
+      const { setGatewayModelSettings } = await render({
+        gatewayModels: { ...RUNTIME_MODELS, models: [OPUS, LEVELLED_ADDED], defaultReasoning: 'medium' },
+      })
+      await openSettings('GPT Custom')
+
+      expect(button('Reasoning level for GPT Custom').textContent).toBe('Deployment default (Medium)')
+
+      await choose('Reasoning level for GPT Custom', 'High')
+
+      expect(setGatewayModelSettings).toHaveBeenLastCalledWith('gpt-custom', { reasoning: 'high' })
+
+      await type(budgetField('GPT Custom'), '100000')
+      await click(button('Save the compaction budget of GPT Custom'))
+
+      expect(setGatewayModelSettings)
+        .toHaveBeenLastCalledWith('gpt-custom', { compactionInputBudget: 100000 })
+      expect(setGatewayModelSettings).toHaveBeenCalledTimes(2)
+    })
+
+    it('names the catalog model that an added model behaves like, or else gives its ID', async () => {
+      const { show } = await render({
+        gatewayModels: {
+          ...RUNTIME_MODELS,
+          models: [OPUS, GPT, { ...ADDED, provider: 'anthropic', behavesLike: 'claude-opus', behavesLikeKnown: true }],
+        },
+      })
+
+      expect(row('GPT Custom').textContent).toContain('Behaves like Claude Opus')
+
+      await show({
+        ...RUNTIME_MODELS,
+        models: [GPT, { ...ADDED, provider: 'anthropic', behavesLike: 'claude-opus', behavesLikeKnown: true }],
+      })
+
+      expect(row('GPT Custom').textContent).toContain('Behaves like claude-opus')
+    })
+  })
+
+  // Every control is disabled for as long as a write takes, and a disabled control loses focus.
+  describe('focus across a write', () => {
+    const BUDGETED: GatewayModels = {
+      ...RUNTIME_MODELS,
+      models: [{ ...OPUS, settings: { compactionInputBudget: 150000 } }, HAIKU, SONNET, GPT, ADDED],
+    }
+
+    it.each([
+      ['a model’s reasoning level', 'Reasoning level for Claude Opus', 'setGatewayModelSettings'],
+      ['the default reasoning level', 'Default reasoning level', 'setDefaultReasoning'],
+    ] as const)('returns to the select that %s was picked in', async (_case, select, method) => {
+      const rendered = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      rendered[method].mockReturnValueOnce(call.promise)
+      await openSettings('Claude Opus')
+
+      await choose(select, 'High')
+      await dropFocus()
+      expect(button(select).disabled).toBe(true)
+      expect(document.activeElement).toBe(document.body)
+
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(button(select))
+    })
+
+    it('returns to the button that saved a budget', async () => {
+      const { setGatewayModelSettings } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelSettings.mockReturnValueOnce(call.promise)
+      await openSettings('Claude Opus')
+      await type(budgetField(), '150000')
+      const save = button('Save the compaction budget of Claude Opus')
+
+      await focus(save)
+      await click(save)
+      await dropFocus()
+      expect(save.disabled).toBe(true)
+      expect(document.activeElement).toBe(document.body)
+
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(save)
+    })
+
+    it('returns to the budget field after a reset, whose button is gone by then', async () => {
+      const { setGatewayModelSettings, show } = await render({ gatewayModels: BUDGETED })
+      const call = deferred()
+      setGatewayModelSettings.mockReturnValueOnce(call.promise)
+      await openSettings('Claude Opus')
+      const reset = button('Reset the compaction budget of Claude Opus')
+
+      await focus(reset)
+      await click(reset)
+      await dropFocus()
+      expect(document.activeElement).toBe(document.body)
+      // The re-read arrives before the controls are enabled.
+      await show(RUNTIME_MODELS)
+      await act(async () => call.resolve())
+
+      expect(reset.isConnected).toBe(false)
+      expect(document.activeElement).toBe(budgetField())
+    })
+
+    it('returns to the mode that was chosen', async () => {
+      const { setGatewayModelMode } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelMode.mockReturnValueOnce(call.promise)
+      const hidden = modeOptions('Claude Opus').find(({ text }) => text === 'Hidden')!.radio
+
+      await focus(hidden)
+      await click(modeOption('Claude Opus', 'Hidden'))
+      await dropFocus()
+      expect(modesDisabled('Claude Opus')).toBe(true)
+      expect(document.activeElement).toBe(document.body)
+
+      await act(async () => call.resolve())
+
+      expect(document.activeElement).toBe(hidden)
+    })
+
+    it('leaves a confirmed removal’s focus to the dialog that is closing', async () => {
+      const { removeGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      removeGatewayModel.mockReturnValueOnce(call.promise)
+      await click(button('Remove GPT Custom'))
+      const confirm = button('Remove', confirmation()!)
+      const focused = vi.spyOn(confirm, 'focus')
+
+      await focus(confirm)
+      focused.mockClear()
+      await click(confirm)
+      await dropFocus()
+      await act(async () => call.resolve())
+
+      expect(removeGatewayModel).toHaveBeenCalledWith('gpt-custom')
+      expect(focused).not.toHaveBeenCalled()
+    })
+
+    it('leaves focus where it was moved to while the write was in flight', async () => {
+      const { setGatewayModelSettings } = await render({ gatewayModels: RUNTIME_MODELS })
+      const call = deferred()
+      setGatewayModelSettings.mockReturnValueOnce(call.promise)
+      await openSettings('Claude Opus')
+      await type(budgetField(), '150000')
+      const save = button('Save the compaction budget of Claude Opus')
+      await focus(save)
+      await click(save)
+      await dropFocus()
+
+      // A disclosure stays enabled throughout.
+      await focus(button('Settings for GPT Main'))
+      await act(async () => call.resolve())
+
+      expect(save.disabled).toBe(false)
+      expect(document.activeElement).toBe(button('Settings for GPT Main'))
     })
   })
 
@@ -597,6 +1007,149 @@ describe('AdminModelsPanel', () => {
 
       await act(async () => call.resolve())
       expect(button('Add model').disabled).toBe(false)
+    })
+
+    describe('behaving like another model', () => {
+      const LABEL = 'Behaves like'
+      const TOOLTIP =
+        'The model chosen here lends the new one its thinking format, its reasoning levels and ' +
+        'its image input, until this version knows the new model itself. From then on the choice ' +
+        'is not used. The name, the limits and the cost are never borrowed.'
+
+      it('offers none, then the chosen provider’s catalog models that the runtime knows', async () => {
+        await render({
+          gatewayModels: { ...RUNTIME_MODELS, models: [...RUNTIME_MODELS.models, KNOWN_ADDED] },
+        })
+
+        expect(button(LABEL).textContent).toBe('None')
+        // Neither Claude Sonnet, which the runtime has no entry for, nor Claude Added, which it
+        // knows but the catalog doesn't list.
+        expect(await optionLabels(LABEL)).toEqual(['None', 'Claude Opus', 'Claude Haiku'])
+
+        await chooseProvider('OpenAI')
+
+        expect(await optionLabels(LABEL)).toEqual(['None', 'GPT Main'])
+      })
+
+      it('is not offered under a provider with no such model', async () => {
+        await render()
+
+        expect(() => button(LABEL)).toThrow('No button')
+      })
+
+      it('adds the model with the one chosen, and has none chosen for the next', async () => {
+        const { addGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+        await fillAddForm(VALID)
+
+        await choose(LABEL, 'Claude Haiku')
+        expect(button(LABEL).textContent).toBe('Claude Haiku')
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
+          provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+          behavesLike: 'claude-haiku',
+        })
+        expect(button(LABEL).textContent).toBe('None')
+      })
+
+      it('adds the model with none once the choice is taken back', async () => {
+        const { addGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+        await fillAddForm(VALID)
+        await choose(LABEL, 'Claude Haiku')
+
+        await choose(LABEL, 'None')
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).not.toHaveProperty('behavesLike')
+      })
+
+      it('has none chosen after the provider changes, also once it changes back', async () => {
+        const { addGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+        await fillAddForm(VALID)
+        await choose(LABEL, 'Claude Haiku')
+
+        await chooseProvider('OpenAI')
+        expect(button(LABEL).textContent).toBe('None')
+        await chooseProvider('Anthropic')
+        expect(button(LABEL).textContent).toBe('None')
+        await click(button('Add model'))
+
+        // What was typed by hand is kept, and the choice alone is dropped.
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toEqual({
+          provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+        })
+        expect(addGatewayModel.mock.calls[0][0]).not.toHaveProperty('behavesLike')
+      })
+
+      // With no select to say so, the choice is dropped by the provider change alone.
+      it('has none chosen after a change to a provider with no model to behave like, and back', async () => {
+        const { addGatewayModel } = await render({
+          gatewayModels: { ...RUNTIME_MODELS, models: [OPUS, HAIKU, ADDED] },
+        })
+        await fillAddForm(VALID)
+        await choose(LABEL, 'Claude Haiku')
+
+        await chooseProvider('OpenAI')
+        expect(() => button(LABEL)).toThrow('No button')
+        await chooseProvider('Anthropic')
+
+        expect(button(LABEL).textContent).toBe('None')
+        await click(button('Add model'))
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+        })
+      })
+
+      it('is left as it is by a picked suggestion', async () => {
+        stubModelsDev()
+        const { addGatewayModel } = await render({
+          gatewayModels: { ...RUNTIME_MODELS, modelsDevSuggestions: true },
+        })
+        await focus(labeledInput('Model ID'))
+        await type(labeledInput('Model ID'), 'opus-4')
+
+        await click(suggestionOptions()[0])
+        expect(button(LABEL).textContent).toBe('None')
+
+        await choose(LABEL, 'Claude Opus')
+        await type(labeledInput('Model ID'), 'haiku-4')
+        await click(suggestionOptions()[0])
+        expect(button(LABEL).textContent).toBe('Claude Opus')
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
+          provider: 'anthropic', id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5 (latest)',
+          contextWindow: 200000, outputLimit: 64000, behavesLike: 'claude-opus',
+        })
+      })
+
+      it('explains itself from an information button in its label', async () => {
+        await render({ gatewayModels: RUNTIME_MODELS })
+        const information = button('More information')
+
+        expect(information.parentElement?.textContent).toContain(LABEL)
+        expect(document.body.textContent).not.toContain(TOOLTIP)
+
+        await focus(information)
+
+        expect(document.body.textContent).toContain(TOOLTIP)
+      })
+
+      it('is locked while a write is in flight', async () => {
+        const { addGatewayModel } = await render({ gatewayModels: RUNTIME_MODELS })
+        const call = deferred()
+        addGatewayModel.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+
+        await click(button('Add model'))
+        expect(button(LABEL).disabled).toBe(true)
+
+        await act(async () => call.resolve())
+        expect(button(LABEL).disabled).toBe(false)
+      })
     })
 
     it('offers no form when the gateway enables no provider a model can be added under', async () => {

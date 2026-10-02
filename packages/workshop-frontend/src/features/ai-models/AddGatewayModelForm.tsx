@@ -4,8 +4,13 @@ import { Plus } from '@phosphor-icons/react'
 import type { AiModelProvider, GatewayModel } from '@gadgets/workshop-shared/api'
 import { PROVIDER_LABELS, parseTokenLimit } from './modelForm'
 import type { ModelSuggestion } from './modelsDev'
+import { useFieldErrorAlert } from './useFieldErrorAlert'
 
 const TOKEN_LIMIT_ERROR = 'Enter a positive whole number of tokens'
+const BEHAVES_LIKE_HELP =
+  'The model chosen here lends the new one its thinking format, its reasoning levels and its ' +
+  'image input, until this version knows the new model itself. From then on the choice is not ' +
+  'used. The name, the limits and the cost are never borrowed.'
 const MODEL_ID = {
   label: 'Model ID',
   description:
@@ -17,9 +22,13 @@ const MODEL_ID = {
  * refuse outright as malformed; whether the ID is free and the provider usable is the server's to
  * say, and its refusal is shown as it is, beside the values that caused it.
  */
-export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }: {
+export const AddGatewayModelForm = ({
+  providers, behavesLikeOptions, disabled, suggestions, onAdd,
+}: {
   /** The providers a model may be added under. Not empty. */
   providers: readonly AiModelProvider[]
+  /** The models, of any provider, that a new model of the same provider may behave like. */
+  behavesLikeOptions: readonly GatewayModel[]
   /** Whether the form is locked, because a write to the models is in flight. */
   disabled: boolean
   /**
@@ -42,12 +51,11 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
   const [name, setName] = useState('')
   const [contextWindow, setContextWindow] = useState('')
   const [outputLimit, setOutputLimit] = useState('')
+  const [chosenBehavesLike, setChosenBehavesLike] = useState<string | null>(null)
   // Field errors stay out of sight until a submit is attempted, so an untouched form isn't red.
   const [submitAttempted, setSubmitAttempted] = useState(false)
   const [refusal, setRefusal] = useState<string | null>(null)
-  // A field error that focus could not announce, with the attempt that found it so that finding
-  // the same error again says it again.
-  const [unannounced, setUnannounced] = useState<{ error: string; attempt: number } | null>(null)
+  const fieldError = useFieldErrorAlert()
   // The ID a picked suggestion filled the form in with.
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [listOpen, setListOpen] = useState(false)
@@ -58,6 +66,8 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
   const outputLimitRef = useRef<HTMLInputElement>(null)
 
   const provider = providers.includes(chosenProvider) ? chosenProvider : providers[0]
+  const behavesLikeOffered = behavesLikeOptions.filter((option) => option.provider === provider)
+  const behavesLike = behavesLikeOffered.find((option) => option.id === chosenBehavesLike)
   // The chosen provider's suggestions whose ID holds what is typed. Matched here rather than by
   // the field, which would report itself expanded over a list with nothing in it.
   const typed = id.trim().toLowerCase()
@@ -84,13 +94,14 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
           name: name.trim(),
           contextWindow: contextWindowTokens,
           ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
+          ...(behavesLike && { behavesLike: behavesLike.id }),
         }
       : null
 
   const edit = (setValue: (value: string) => void) => (event: { target: { value: string } }) => {
     setValue(event.target.value)
     setRefusal(null)
-    setUnannounced(null)
+    fieldError.clear()
   }
 
   const clear = () => {
@@ -98,6 +109,7 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
     setName('')
     setContextWindow('')
     setOutputLimit('')
+    setChosenBehavesLike(null)
     setSubmitAttempted(false)
     setPickedId(null)
   }
@@ -109,14 +121,7 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
     const invalid = fields.find((field) => field.error)
     if (!model || invalid) {
       setSubmitAttempted(true)
-      // Each error describes its field, so landing on the field announces it. A field that
-      // already has focus fires no focus event, and its error is not a live region.
-      const input = invalid?.ref.current
-      if (input && input === document.activeElement) {
-        setUnannounced((last) => ({ error: invalid.error!, attempt: (last?.attempt ?? 0) + 1 }))
-      } else {
-        input?.focus()
-      }
+      if (invalid?.error) fieldError.pointAt(invalid.ref.current, invalid.error)
       return
     }
     try {
@@ -140,6 +145,7 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
           setRefusal(null)
           if (!value || value === provider) return
           setChosenProvider(value)
+          setChosenBehavesLike(null)
           // A suggested model belongs to the provider it was suggested under, so it does not
           // follow the form to another one.
           if (pickedId !== null && pickedId === id.trim()) clear()
@@ -251,12 +257,29 @@ export const AddGatewayModelForm = ({ providers, disabled, suggestions, onAdd }:
         error={outputLimitError}
         aria-invalid={outputLimitError !== undefined}
       />
+      {behavesLikeOffered.length > 0 && (
+        <Select<string | null>
+          label="Behaves like"
+          labelTooltip={BEHAVES_LIKE_HELP}
+          required={false}
+          className="w-full"
+          placeholder="None"
+          disabled={disabled}
+          value={behavesLike?.id ?? null}
+          onValueChange={(value) => {
+            setRefusal(null)
+            setChosenBehavesLike(value)
+          }}
+          renderValue={() => behavesLike?.name}
+        >
+          <Select.Option value={null}>None</Select.Option>
+          {behavesLikeOffered.map((option) => (
+            <Select.Option key={option.id} value={option.id}>{option.name}</Select.Option>
+          ))}
+        </Select>
+      )}
       <div className="flex flex-col items-start gap-2 sm:col-span-2">
-        {unannounced && (
-          <p key={unannounced.attempt} role="alert" className="sr-only">
-            {unannounced.error}
-          </p>
-        )}
+        {fieldError.alert}
         {refusal && (
           <p role="alert" className="text-sm leading-snug text-kumo-danger">
             {refusal}

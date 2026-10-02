@@ -84,9 +84,42 @@ user can't add a model of their own under it.
 
 Each model starts in its default mode, which the tab marks `(default)`: the catalog's for a catalog
 model (**Hidden** for the ones a newer model supersedes, otherwise **Enabled**) and **Enabled** for
-an added one. Only a mode that differs from the default is stored, and the tab marks that model
-`Changed`. A model left on its default therefore follows the catalog when the deployment is
-upgraded, and choosing the default option again drops the override.
+an added one. Only a mode that differs from the default is stored. A model left on its default
+therefore follows the catalog when the deployment is upgraded, and choosing the default option
+again drops the override. The tab marks a model `Changed` while its mode differs from the default
+or it has a setting of its own.
+
+Each model's row has a **Settings** section, closed until it is selected, with two settings for
+that model alone. A setting that is left alone is not stored.
+
+**Reasoning level** is how much reasoning the model is asked for on the agent's turns: **Off**,
+**Minimal**, **Low**, **Medium**, **High**, **Extra high** or **Max**. The list has **Deployment
+default (…)** and then the levels the model takes. **Deployment default** clears the model's own
+level, and its parentheses name what applies instead: the deployment's default level, or `built-in`
+while there is none. The level in effect can be one the model lacks, the deployment's default for
+instance. Each request is then sent the next higher level the model has, or else the next lower
+one, so **Off** on a model that cannot stop reasoning asks for its lowest level. The fit is made
+when a request is made, so the row says that a level is missing without naming the one that is
+sent. A model that takes no levels is offered none and is sent none. The level applies to the
+agent's main turns only: one-shot calls (chat titles, compaction summaries and what a gadget's
+model binding asks) ask for no level either way.
+
+**Default reasoning level**, above the list of modes, is the level of every listed model that has
+none of its own. It starts as **Built-in**, which sets no level, so that each such model is asked
+as it is with no setting at all. A level a model lacks is fitted as above. It never applies to a
+model a user added.
+
+**Compaction budget** is the prompt size, in tokens, that a chat on the model compacts against: the
+chat compacts once its prompt reaches 85% of the budget. Left blank, the model has its built-in
+budget, which the field names, and **Reset** returns to it. A budget is a positive whole number, at
+most the room the model's context window leaves for a prompt, which is the window less the space
+reserved for the response. The tab refuses anything else, and so does the server, with `The
+compaction budget of the "<name>" model must be a whole number of tokens from 1 to <maximum>.`
+There is no lower bound: under 100,000 tokens the tab warns that a small budget makes a chat
+compact very often, and saves it all the same. A budget can be raised only where the built-in one
+is under that room, which in this version's catalog is the OpenAI models, whose built-in budget of
+272000 is there to stay under OpenAI's long-context pricing. A model whose window leaves a prompt
+no room has no budget field.
 
 **Add a model**, under **Added by this deployment**, provides a model the catalog doesn't list. It
 takes a provider (one in `CF_AI_GATEWAY_PROVIDERS` that AI Gateway serves: `anthropic`, `openai`,
@@ -96,11 +129,26 @@ for it in the window (Workers AI models default to 32768). The ID and the name m
 200 characters, and the ID must be one that neither the catalog, under any provider, nor another
 added model has. An added model starts **Enabled**, takes the three modes like a catalog model, and
 is listed in pickers after its provider's catalog models. Users can't edit or delete a model the
-deployment provides, in any mode. **Remove** takes an added model out again, along with its mode,
-and a chat that names it then fails with `No such model: <id>` until a model is added under that ID
-again; a catalog model can't be removed, only hidden or disabled. An added model whose provider
-leaves `CF_AI_GATEWAY_PROVIDERS` is neither offered nor listed on the tab, but it stays stored and
-keeps its ID, and it returns when the provider does.
+deployment provides, in any mode. **Remove** takes an added model out again, along with its mode
+and settings, and a chat that names it then fails with `No such model: <id>` until a model is added
+under that ID again; a catalog model can't be removed, only hidden or disabled. An added model whose
+provider leaves `CF_AI_GATEWAY_PROVIDERS` is neither offered nor listed on the tab, but it stays
+stored and keeps its ID, and it returns when the provider does.
+
+The form's optional **Behaves like** field is for a model that this version's model runtime has no
+entry for. Such a model otherwise runs with generic defaults for its provider, which a newer model
+may not accept: an Anthropic model that takes only the adaptive thinking format is asked for a
+reasoning level in the older budget format. The field lists the chosen provider's catalog models
+that the runtime knows, after **None**, and is absent where there are none. The new model borrows
+the chosen model's thinking format, its reasoning levels and the kinds of input it takes, such as
+images. Its name, limits and cost are never borrowed, and its row names the model it behaves like.
+The runtime's own entry always wins: once the deployment runs a version whose runtime knows the
+model itself, the choice is no longer used, and the row says `Not used: this version knows this
+model itself.` If instead a version stops knowing the chosen model, nothing is borrowed, and the
+row says `This version no longer knows that model, so nothing is borrowed.` The choice is the
+admin's claim. The server checks only that the runtime knows the chosen model under the same
+provider, not that the two models take the same requests, so try the model after adding it.
+Changing the provider clears the choice, and picking a suggestion does not make one.
 
 The **Suggest models from models.dev** switch above the form makes the form's **Model ID** field
 suggest models. It is off by default. While it is on, the admin's browser downloads the public model
