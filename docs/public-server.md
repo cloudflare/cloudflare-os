@@ -97,19 +97,47 @@ that model alone. A setting that is left alone is not stored.
 **Reasoning level** is how much reasoning the model is asked for on the agent's turns: **Off**,
 **Minimal**, **Low**, **Medium**, **High**, **Extra high** or **Max**. The list has **Deployment
 default (…)** and then the levels the model takes. **Deployment default** clears the model's own
-level, and its parentheses name what applies instead: the deployment's default level, or `built-in`
-while there is none. The level in effect can be one the model lacks, the deployment's default for
-instance. Each request is then sent the next higher level the model has, or else the next lower
-one, so **Off** on a model that cannot stop reasoning asks for its lowest level. The fit is made
-when a request is made, so the row says that a level is missing without naming the one that is
-sent. A model that takes no levels is offered none and is sent none. The level applies to the
-agent's main turns only: one-shot calls (chat titles, compaction summaries and what a gadget's
-model binding asks) ask for no level either way.
+level, and its parentheses name what applies instead: the deployment's default level, as in
+**Deployment default (High)**, or, while the deployment sets none, what the model is then asked
+for, as in **Deployment default (built-in: Adaptive)**. The level in effect can be one the model
+lacks, the deployment's default for instance. Each request is then sent the next higher level the
+model has, or else the next lower one, so **Off** on a model that cannot stop reasoning asks for
+its lowest level. The fit is made when a request is made, so the row says that a level is missing
+without naming the one that is sent. A model that takes no levels is offered none and is sent
+none. The level applies to the agent's main turns only: one-shot calls (chat titles, compaction
+summaries and what a gadget's model binding asks) ask for no level either way.
 
 **Default reasoning level**, above the list of modes, is the level of every listed model that has
-none of its own. It starts as **Built-in**, which sets no level, so that each such model is asked
-as it is with no setting at all. A level a model lacks is fitted as above. It never applies to a
-model a user added.
+none of its own. It starts as **Built-in**, which sets no level: each such model is then asked the
+way the Workshop asks it by default, which is not the same for every model. A level a model lacks
+is fitted as above. It never applies to a model a user added.
+
+While the default is **Built-in**, the **Settings** of each model that takes levels name what the
+model is asked for while it has no level of its own, in the first option of its **Reasoning level**
+list. The option reads one of three ways:
+
+- **Deployment default (built-in: Adaptive)**: the request turns adaptive thinking on, and the
+  model decides whether and how much to reason. This is how the Claude models that take adaptive
+  thinking are asked, which in this version's catalog is every Claude model but Claude Haiku 4.5.
+- **Deployment default (built-in: Medium)**: the request asks for the effort `medium`. This is how
+  the OpenAI models that reason are asked, which is every OpenAI model in this version's catalog.
+- **Deployment default (built-in: no level sent)**: the request names no level, and the provider's
+  default applies. This is how every other model is asked: Claude Haiku 4.5, the Gemini models and
+  the Workers AI models.
+
+An added model that the model runtime knows is asked as the runtime describes it, so an added
+OpenAI model that does no reasoning is sent no level; it takes no levels either, so it is offered
+none. An added model that the runtime does not know is asked as the model it behaves like, where
+**Behaves like** (described below) names one the runtime knows, and otherwise as an unknown model
+of its provider. An unknown Anthropic model is not taken for one that takes adaptive thinking, so
+it is sent no level. An unknown OpenAI model is taken for one that reasons, so it is asked for the
+effort `medium`. A Google or a Workers AI model is sent no level whatever it behaves like.
+
+The option says what the Workshop asks for, not what the model runtime adds to the request or
+what the provider then does with it. DeepSeek V4 Pro is sent no level, and the runtime's request
+format for that model then turns its thinking off. A Claude model whose effort the runtime
+manages, Claude Opus 5.5 for one, is asked with adaptive thinking, and the runtime adds the effort
+`high`: the request is then the one the level **High** sends.
 
 **Compaction budget** is the prompt size, in tokens, that a chat on the model compacts against: the
 chat compacts once its prompt reaches 85% of the budget. Left blank, the model has its built-in

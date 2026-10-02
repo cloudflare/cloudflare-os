@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AdminModelView,
+  BuiltInReasoning,
   GatewayModelMode,
   GatewayModelSettings,
   ReasoningLevel,
@@ -70,6 +71,11 @@ const openOptions = async (select: HTMLElement) => {
   const list = document.getElementById(select.getAttribute('aria-controls') ?? '')
   return Array.from(list?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
 }
+
+// What the level select shows for the deployment default, and its first option.
+const deploymentDefaultShown = async () => [
+  levelSelect().textContent, (await openOptions(levelSelect()))[0].textContent,
+]
 
 // By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom lacks,
 // so the window has a stand-in for as long as the choice takes.
@@ -202,15 +208,49 @@ describe('GatewayModelRow', () => {
   })
 
   describe('the reasoning level', () => {
-    it.each<[ReasoningLevel | null, string]>([
-      [null, 'Deployment default (built-in)'],
-      ['xhigh', 'Deployment default (Extra high)'],
-    ])('offers the deployment default of %s, then the model’s own levels', async (level, label) => {
-      await render({ model: SONNET, defaultReasoning: level })
+    it.each<[BuiltInReasoning, string]>([
+      ['adaptive', 'Deployment default (built-in: Adaptive)'],
+      ['medium', 'Deployment default (built-in: Medium)'],
+      ['xhigh', 'Deployment default (built-in: Extra high)'],
+      [null, 'Deployment default (built-in: no level sent)'],
+    ])('with no deployment default, offers what a model whose built-in is %s is then asked for, ' +
+      'then the model’s own levels', async (builtInReasoning, label) => {
+      await render({ model: { ...SONNET, builtInReasoning } })
 
       expect(levelSelect().textContent).toBe(label)
       expect((await openOptions(levelSelect())).map((option) => option.textContent))
         .toEqual([label, 'Off', 'Low', 'High'])
+    })
+
+    it.each<[BuiltInReasoning, ReasoningLevel, string]>([
+      ['adaptive', 'xhigh', 'Deployment default (Extra high)'],
+      ['medium', 'low', 'Deployment default (Low)'],
+      [null, 'off', 'Deployment default (Off)'],
+    ])('for a model whose built-in is %s, offers the deployment default of %s by its name, ' +
+      'then the model’s own levels', async (builtInReasoning, level, label) => {
+      await render({ model: { ...SONNET, builtInReasoning }, defaultReasoning: level })
+
+      expect(levelSelect().textContent).toBe(label)
+      expect((await openOptions(levelSelect())).map((option) => option.textContent))
+        .toEqual([label, 'Off', 'Low', 'High'])
+    })
+
+    it('follows the built-in the server reports for the model, and the deployment default over it', async () => {
+      const { show } = await render({ model: SONNET })
+      const reads: [Shown, string][] = [
+        [{ model: SONNET }, 'Deployment default (built-in: Adaptive)'],
+        [{ model: { ...SONNET, builtInReasoning: 'medium' } }, 'Deployment default (built-in: Medium)'],
+        [{ model: { ...SONNET, builtInReasoning: null } }, 'Deployment default (built-in: no level sent)'],
+        [{ model: { ...SONNET, builtInReasoning: null }, defaultReasoning: 'high' },
+          'Deployment default (High)'],
+        [{ model: SONNET }, 'Deployment default (built-in: Adaptive)'],
+      ]
+
+      for (const [shown, label] of reads) {
+        await show(shown)
+
+        expect(await deploymentDefaultShown()).toEqual([label, label])
+      }
     })
 
     it('shows the level the server holds for the model', async () => {
@@ -239,7 +279,7 @@ describe('GatewayModelRow', () => {
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(sent)
       expect(Object.keys(onSettingsChange.mock.calls[0][0])).toEqual(Object.keys(sent))
       // The server's value is what the select shows, and the re-read is what changes it.
-      expect(levelSelect().textContent).toBe('Deployment default (built-in)')
+      expect(levelSelect().textContent).toBe('Deployment default (built-in: Adaptive)')
     })
 
     it('replaces the model’s level', async () => {
@@ -259,7 +299,7 @@ describe('GatewayModelRow', () => {
     ])('clears the level by choosing the deployment default, %s', async (_case, settings, sent) => {
       const { onSettingsChange } = await render({ model: { ...SONNET, settings } })
 
-      await choose(levelSelect(), 'Deployment default (built-in)')
+      await choose(levelSelect(), 'Deployment default (built-in: Adaptive)')
 
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith(sent)
       expect(Object.keys(onSettingsChange.mock.calls[0][0])).toEqual(Object.keys(sent))
@@ -342,16 +382,18 @@ describe('GatewayModelRow', () => {
 
     it('still lets a level stored for a model that takes none be cleared', async () => {
       const { onSettingsChange } = await render({
-        model: { ...SONNET, reasoningLevels: [], settings: { reasoning: 'high' } },
+        model: {
+          ...SONNET, reasoningLevels: [], builtInReasoning: null, settings: { reasoning: 'high' },
+        },
       })
 
       expect(levelSelect().textContent).toBe('High')
       expect(describedBy(levelSelect()))
         .toBe('This model takes no reasoning levels, so none is sent to it.')
       expect((await openOptions(levelSelect())).map((option) => option.textContent))
-        .toEqual(['Deployment default (built-in)'])
+        .toEqual(['Deployment default (built-in: no level sent)'])
 
-      await choose(levelSelect(), 'Deployment default (built-in)')
+      await choose(levelSelect(), 'Deployment default (built-in: no level sent)')
 
       expect(onSettingsChange).toHaveBeenCalledExactlyOnceWith({})
     })
@@ -574,7 +616,7 @@ describe('GatewayModelRow', () => {
     it('offers no budget for a model whose window leaves a prompt no room', async () => {
       await render({ model: { ...SONNET, builtInCompactionInputBudget: 0, maxCompactionInputBudget: 0 } })
 
-      expect(levelSelect().textContent).toBe('Deployment default (built-in)')
+      expect(levelSelect().textContent).toBe('Deployment default (built-in: Adaptive)')
       expect(() => budgetField()).toThrow('No budget field')
       expect(buttons()).not.toContain('Save the compaction budget of Claude Sonnet')
     })

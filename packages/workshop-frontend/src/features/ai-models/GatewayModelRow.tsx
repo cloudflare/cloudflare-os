@@ -7,7 +7,12 @@ import type {
   GatewayModelSettings,
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
-import { PROVIDER_LABELS, REASONING_LEVEL_LABELS, parseTokenLimit } from './modelForm'
+import {
+  PROVIDER_LABELS,
+  REASONING_LEVEL_LABELS,
+  builtInReasoningLabel,
+  parseTokenLimit,
+} from './modelForm'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
 
 /** Each mode's name and what it does to a model, as the Models tab words them. */
@@ -81,8 +86,12 @@ export const GatewayModelRow = ({
       ? `This model has no “${REASONING_LEVEL_LABELS[levelInEffect]}” level. A request asks for ` +
         'the nearest level it has, which is decided when the request is made.'
       : undefined
-  const deploymentDefault =
-    `Deployment default (${defaultReasoning ? REASONING_LEVEL_LABELS[defaultReasoning] : 'built-in'})`
+  // With no deployment default, the option names what the model is then asked for.
+  const deploymentDefault = `Deployment default (${
+    defaultReasoning
+      ? REASONING_LEVEL_LABELS[defaultReasoning]
+      : `built-in: ${builtInReasoningLabel(model.builtInReasoning)}`
+  })`
 
   const maxBudget = model.maxCompactionInputBudget
   const ownBudget = model.settings?.compactionInputBudget

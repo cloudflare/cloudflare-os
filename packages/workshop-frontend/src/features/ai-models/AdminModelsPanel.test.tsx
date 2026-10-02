@@ -632,9 +632,11 @@ describe('AdminModelsPanel', () => {
       expect(button(LABEL).textContent).toBe(shown)
       expect(describedBy(button(LABEL))).toBe(
         'The reasoning level of the agent’s turns on every model listed here that has no level ' +
-        'of its own. A level that a model lacks is fitted to the nearest one it has. One-shot ' +
-        'calls (titles, summaries, gadget model bindings) are not affected, and neither are the ' +
-        'models users added.')
+        'of its own. Built-in sets none: each model is then asked the way the Workshop asks it ' +
+        'by default, which the model’s Settings name. That is Adaptive, where the model decides ' +
+        'how much to reason, a fixed level, or no level sent. A level that a model lacks is ' +
+        'fitted to the nearest one it has. One-shot calls (titles, summaries, gadget model ' +
+        'bindings) are not affected, and neither are the models users added.')
       expect(await optionLabels(LABEL))
         .toEqual(['Built-in', 'Off', 'Minimal', 'Low', 'Medium', 'High', 'Extra high', 'Max'])
     })
@@ -648,7 +650,24 @@ describe('AdminModelsPanel', () => {
       await show(RUNTIME_MODELS)
 
       expect(button('Reasoning level for Claude Opus').textContent)
-        .toBe('Deployment default (built-in)')
+        .toBe('Deployment default (built-in: Adaptive)')
+    })
+
+    it('names each model’s built-in in its row until the server reports a default', async () => {
+      const models = [OPUS, GPT, LEVELLED_ADDED]
+      const { show } = await render({ gatewayModels: { ...RUNTIME_MODELS, models } })
+      for (const model of models) await openSettings(model.name)
+      const shown = () => models.map((model) => button(`Reasoning level for ${model.name}`).textContent)
+
+      expect(shown()).toEqual([
+        'Deployment default (built-in: Adaptive)',
+        'Deployment default (built-in: Medium)',
+        'Deployment default (built-in: no level sent)',
+      ])
+
+      await show({ ...RUNTIME_MODELS, models, defaultReasoning: 'xhigh' })
+
+      expect(shown()).toEqual(Array(3).fill('Deployment default (Extra high)'))
     })
 
     it.each([
@@ -784,7 +803,7 @@ describe('AdminModelsPanel', () => {
         description: 'No such model: claude-opus',
         variant: 'error',
       })
-      expect(button(LEVEL).textContent).toBe('Deployment default (built-in)')
+      expect(button(LEVEL).textContent).toBe('Deployment default (built-in: Adaptive)')
       expect(button(LEVEL).disabled).toBe(false)
 
       await type(budgetField(), '150000')
