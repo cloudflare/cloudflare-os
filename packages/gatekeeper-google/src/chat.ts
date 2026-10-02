@@ -24,6 +24,7 @@ import { validateRpc } from "capnweb-validate";
 import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
+import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type {
   ActionDescription, ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier,
   ResourceDescription,
@@ -1289,7 +1290,7 @@ export class GoogleChatGatekeeperImpl
   /** Actions whose apply or undo is in flight: a reject then could not stop a write already sent. */
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
-  #settingUp = new Map<string, Promise<string>>();
+  #settingUp = new SingleFlight();
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
@@ -1456,13 +1457,8 @@ export class GoogleChatGatekeeperImpl
     const created = store.spaceName(pendingName);
     if (created !== pendingName) return created;
     const people = conversation.members.map(member => member.id).toSorted().join(",");
-    let settingUp = this.#settingUp.get(people);
-    if (!settingUp) {
-      settingUp = openConversation(api, store, actionId, people, conversation)
-        .finally(() => this.#settingUp.delete(people));
-      this.#settingUp.set(people, settingUp);
-    }
-    const spaceName = await settingUp;
+    const spaceName = await this.#settingUp.run(people,
+      () => openConversation(api, store, actionId, people, conversation));
     store.setConversation(pendingName, people, spaceName);
     // A send that joined another's setup still carries any mark from its own earlier attempt.
     store.clearAttempt(actionId);

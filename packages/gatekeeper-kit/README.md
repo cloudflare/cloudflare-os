@@ -78,6 +78,7 @@ import {
 | `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
 | `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |
 | `./cache` | Authority-partitioned Durable Object TTL caching. | Provider reads repeat and reconnects must fence stale fills. |
+| `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
 | `./cursors` | Array, page-number, offset, and continuation-token cursors. | A session returns more rows than one RPC reply should carry. |
 | `./actions` | Action declaration, approval, application, retention, and journaling. | An operation has an externally visible side effect. |
 | `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
@@ -92,9 +93,8 @@ import {
 
 ## Internal modules
 
-The package does not export `kv`, `positive-int`, `per-storage`, `serial-queue`, `single-flight`,
-`action-journal`, or `observer-tracker`. The last two are re-exported through `./actions` and
-`./observers`.
+The package does not export `kv`, `positive-int`, `per-storage`, `serial-queue`, `action-journal`,
+or `observer-tracker`. The last two are re-exported through `./actions` and `./observers`.
 
 ## More documentation
 
