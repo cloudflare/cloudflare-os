@@ -240,22 +240,32 @@ export class GatewayModels {
   /**
    * Look up a gateway model by ID in order to run it. Hidden models resolve, so stored references
    * to them keep working. Returns undefined for a disabled model and for an ID that names no
-   * gateway model. The config carries what the admin set and nothing for what is unset, so that
-   * an untouched model runs exactly as it does with no admin settings at all.
+   * gateway model.
    */
   resolve(id: string): UserAiModelRecord | undefined {
     let model = this.#byId.get(id);
-    if (!model || model.mode === "disabled") return undefined;
+    let config = this.runConfig(id);
+    if (!model || !config || model.mode === "disabled") return undefined;
+    return { profile: { type: "agent", id, name: model.name }, config };
+  }
+
+  /**
+   * The config a gateway model runs with, whatever its mode: a disabled model has one too, for
+   * an admin to test it with, and whether a model may run is for resolve() and refuseDisabled()
+   * to say. Returns undefined for an ID that names no gateway model. The config carries what the
+   * admin set and nothing for what is unset, so that an untouched model runs exactly as it does
+   * with no admin settings at all.
+   */
+  runConfig(id: string): AiModelConfig | undefined {
+    let model = this.#byId.get(id);
+    if (!model) return undefined;
     let reasoning = model.settings?.reasoning ?? this.#defaultReasoning;
     let budget = model.settings?.compactionInputBudget;
     return {
-      profile: { type: "agent", id, name: model.name },
-      config: {
-        ...gatewayModelConfig(model),
-        ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
-        ...(reasoning !== null ? { reasoning } : {}),
-        ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
-      },
+      ...gatewayModelConfig(model),
+      ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
+      ...(reasoning !== null ? { reasoning } : {}),
+      ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
     };
   }
 

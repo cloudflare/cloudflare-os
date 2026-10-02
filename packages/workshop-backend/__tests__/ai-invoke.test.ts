@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AiModelConfig } from "@gadgets/workshop-shared/api";
 import { completeText, httpStatusFromError } from "../src/ai-invoke.js";
 import { getModel } from "../src/ai-models.js";
 
@@ -41,15 +42,18 @@ describe("completeText", () => {
   const MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
   // A handle on a gateway whose Workers AI binding answers every request with "OK", and the
-  // headers of the requests it received.
-  function answering() {
+  // headers and bodies of the requests it received.
+  function answering(config: Partial<AiModelConfig> = {}) {
     const sent: Headers[] = [];
+    const bodies: Record<string, unknown>[] = [];
     const event = (choice: object) => `data: ${JSON.stringify({
       id: "completion", object: "chat.completion.chunk", created: 0, model: MODEL,
       choices: [{ index: 0, ...choice }],
     })}\n\n`;
     const fetch = vi.fn(async (input: Request | string | URL, init?: RequestInit) => {
-      sent.push(new Request(input, init).headers);
+      const request = new Request(input, init);
+      sent.push(request.headers);
+      bodies.push(await request.json());
       return new Response(
           event({ delta: { role: "assistant", content: "OK" }, finish_reason: null }) +
           event({ delta: {}, finish_reason: "stop" }) + "data: [DONE]\n\n",
@@ -60,9 +64,10 @@ describe("completeText", () => {
       CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
       CF_AI_GATEWAY_PROVIDERS: "cloudflare",
       WORKERS_AI: { fetch },
-    } as unknown as Cloudflare.Env, { provider: "cloudflare", model: MODEL, apiToken: "" },
+    } as unknown as Cloudflare.Env,
+        { provider: "cloudflare", model: MODEL, apiToken: "", ...config },
         { type: "user", id: "user-123", name: "User" });
-    return { handle, sent };
+    return { handle, sent, bodies };
   }
 
   it("sends a request's own headers beside the handle's", async () => {
@@ -83,5 +88,15 @@ describe("completeText", () => {
     expect(sent[0]!.has("cf-aig-skip-cache")).toBe(false);
     expect(JSON.parse(sent[0]!.get("cf-aig-metadata")!)).toStrictEqual({ user: "user-123" });
     expect(sent[0]!.get("cf-aig-authorization")).toMatch(/^Bearer /);
+  });
+
+  // A handle with a reasoning level names that level on the requests that ask for thinking. On
+  // the others, pi names the effort GLM 5.2 calls no reasoning.
+  it("asks for thinking only when told to", async () => {
+    const { handle, bodies } = answering({ model: "@cf/zai-org/glm-5.2", reasoning: "high" });
+    expect(await completeText(handle, { prompt: "hello" })).toBe("OK");
+    expect(await completeText(handle, { prompt: "hello", thinking: false })).toBe("OK");
+    expect(await completeText(handle, { prompt: "hello", thinking: true })).toBe("OK");
+    expect(bodies.map(body => body.reasoning_effort)).toEqual(["none", "none", "high"]);
   });
 });

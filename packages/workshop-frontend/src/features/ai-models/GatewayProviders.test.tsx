@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AdminGatewayProvider,
   AiModelProvider,
-  GatewayProviderTest,
+  GatewayModelTest,
 } from '@gadgets/workshop-shared/api'
 import { GatewayProviders } from './GatewayProviders'
 
@@ -34,7 +34,7 @@ const AUTH_HINT =
   'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN may not ' +
   'be allowed to run models.'
 
-const PASSED: GatewayProviderTest = { model: 'claude-sonnet-4-5', ok: true }
+const PASSED: GatewayModelTest = { model: 'claude-sonnet-4-5', ok: true }
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
@@ -102,7 +102,7 @@ describe('GatewayProviders', () => {
 
   const render = async (shown: Shown = {}) => {
     const onEnabledChange = vi.fn<(provider: AiModelProvider, enabled: boolean) => void>()
-    const onTest = vi.fn<(provider: AiModelProvider) => Promise<GatewayProviderTest>>(
+    const onTest = vi.fn<(provider: AiModelProvider) => Promise<GatewayModelTest>>(
       async () => PASSED)
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -239,7 +239,7 @@ describe('GatewayProviders', () => {
 
     it('says that it is in flight, ignores a second press, and keeps focus on its button', async () => {
       const { onTest } = await render()
-      const call = deferred<GatewayProviderTest>()
+      const call = deferred<GatewayModelTest>()
       onTest.mockReturnValueOnce(call.promise)
       const pressed = testButton('Anthropic')
       const region = status('Anthropic')
@@ -274,7 +274,7 @@ describe('GatewayProviders', () => {
       expect(onTest).toHaveBeenCalledTimes(2)
     })
 
-    it.each<[string, GatewayProviderTest, string[]]>([
+    it.each<[string, GatewayModelTest, string[]]>([
       ['a model that answered', PASSED, ['claude-sonnet-4-5 answered through the gateway.']],
       [
         'a failure with a status',
@@ -345,7 +345,7 @@ describe('GatewayProviders', () => {
         { model: 'claude-sonnet-4-5', ok: false, status: 401, message: 'invalid x-api-key' })
       await click(testButton('Anthropic'))
       expect(said('Anthropic')).toEqual(['Failed (401): invalid x-api-key', AUTH_HINT])
-      const call = deferred<GatewayProviderTest>()
+      const call = deferred<GatewayModelTest>()
       onTest.mockReturnValueOnce(call.promise)
 
       await click(testButton('Anthropic'))
@@ -359,8 +359,8 @@ describe('GatewayProviders', () => {
 
     it('tests two providers at once, and keeps each one’s result in its own row', async () => {
       const { onTest } = await render()
-      const anthropic = deferred<GatewayProviderTest>()
-      const openai = deferred<GatewayProviderTest>()
+      const anthropic = deferred<GatewayModelTest>()
+      const openai = deferred<GatewayModelTest>()
       onTest.mockReturnValueOnce(anthropic.promise).mockReturnValueOnce(openai.promise)
 
       await click(testButton('Anthropic'))
@@ -414,7 +414,7 @@ describe('GatewayProviders', () => {
     it('says nothing of a test that fails once the list is gone', async () => {
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
       const { onTest } = await render()
-      const call = deferred<GatewayProviderTest>()
+      const call = deferred<GatewayModelTest>()
       onTest.mockReturnValueOnce(call.promise)
       await click(testButton('Anthropic'))
 

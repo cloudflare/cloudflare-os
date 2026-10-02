@@ -12,10 +12,12 @@ import {
 const LOG_URL = "https://api.cloudflare.com/client/v4/accounts/gateway-account-id/ai-gateway/gateways/" +
     "platform-gateway/logs/scripted-log-id";
 
-// One reply for each chat turn the cases below run, in order, then one for each provider test.
+// One reply for each chat turn the cases below run, in order, then one for each model test and
+// one for each provider test.
 const model = scriptedChatCompletions([
   { text: "Charged reply." }, { text: "Built-in reply." }, { text: "Default-level reply." },
   { text: "Own-level reply." },
+  { text: "OK" }, { error: { status: 401, message: "Invalid gateway credentials." } },
   { text: "OK" }, { error: { status: 401, message: "Invalid gateway credentials." } },
 ]);
 let logReads = 0;
@@ -330,6 +332,39 @@ it("an admin's reasoning levels reach a model's chat turns, its own ahead of the
     }
   }
   expect(await scripted()).toEqual(before);
+});
+
+it("an admin tests a model with the request its chats send, whatever the model's mode",
+    async () => {
+  using adminPublic = connect(harness.url);
+  using adminUser = await adminSession(adminPublic);
+  using admin = await adminUser.getAdminApi();
+  if (admin === null) throw new Error("The deployment admin API was unavailable");
+
+  await expect(admin.testGatewayModel("no-such-model"))
+      .rejects.toThrow("No such model: no-such-model");
+
+  try {
+    await admin.setGatewayModelSettings(SCRIPTED_MODEL_ID, { reasoning: "max" });
+    // No chat can run a disabled model, which an admin can still test.
+    await admin.setGatewayModelMode(SCRIPTED_MODEL_ID, "disabled");
+    const sent = model.requests.length;
+    expect(await admin.testGatewayModel(SCRIPTED_MODEL_ID))
+        .toEqual({ model: SCRIPTED_MODEL_ID, ok: true });
+    expect(await admin.testGatewayModel(SCRIPTED_MODEL_ID)).toEqual({
+      model: SCRIPTED_MODEL_ID, ok: false, status: 401,
+      message: "401 Invalid gateway credentials.",
+    });
+    // Each request names the level set for the model, under the test's response cap.
+    const request = { model: SCRIPTED_MODEL_ID, reasoning_effort: "max", max_tokens: 2048 };
+    expect(model.requests.slice(sent)).toMatchObject([request, request]);
+  } finally {
+    try {
+      await admin.setGatewayModelMode(SCRIPTED_MODEL_ID, "enabled");
+    } finally {
+      await admin.setGatewayModelSettings(SCRIPTED_MODEL_ID, {});
+    }
+  }
 });
 
 it("an admin turns on a provider beside the environment's, and tests what one answers",

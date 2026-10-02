@@ -9,7 +9,7 @@ import type {
   AdminApi,
   AdminModelView,
   AdminSettingsView,
-  GatewayProviderTest,
+  GatewayModelTest,
 } from '@gadgets/workshop-shared/api'
 
 const { addToast } = vi.hoisted(() => ({
@@ -92,7 +92,7 @@ const withProvider = (provider: 'google' | 'openai', enabled: boolean): GatewayM
   }),
 })
 
-const TEST_PASSED: GatewayProviderTest = { model: 'claude-sonnet', ok: true }
+const TEST_PASSED: GatewayModelTest = { model: 'claude-sonnet', ok: true }
 const TEST_PASSED_TEXT = 'claude-sonnet answered through the gateway.'
 
 const SUGGESTIONS_LABEL = 'Suggest models from models.dev'
@@ -564,7 +564,7 @@ describe('AdminModelsPanel', () => {
 
     it('runs a test without locking a control or re-reading the settings', async () => {
       const { testGatewayProvider, setGatewayModelMode, onChanged } = await render()
-      const call = deferred<GatewayProviderTest>()
+      const call = deferred<GatewayModelTest>()
       testGatewayProvider.mockReturnValueOnce(call.promise)
 
       await click(testButton('OpenAI'))
@@ -979,7 +979,7 @@ describe('AdminModelsPanel', () => {
       const { setGatewayProviderEnabled, testGatewayProvider } = await render()
       const call = deferred()
       setGatewayProviderEnabled.mockReturnValueOnce(call.promise)
-      const answer = deferred<GatewayProviderTest>()
+      const answer = deferred<GatewayModelTest>()
       testGatewayProvider.mockReturnValueOnce(answer.promise)
       await focus(providerSwitch('Google'))
       await click(providerCheckbox('Google'))

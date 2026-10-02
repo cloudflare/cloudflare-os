@@ -430,6 +430,35 @@ describe("GatewayModels", () => {
       expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
     });
 
+    it("gives a model in any mode the config it runs with", () => {
+      const models = gatewayModels({
+        addedModels: [{ ...ADDED[0]!, behavesLike: "claude-opus-5-5" }],
+        defaultReasoning: "high",
+        modelModes: { "claude-test": "hidden", "claude-fable-5-1": "disabled" },
+        modelSettings: {
+          "claude-opus-5-5": { reasoning: "low", compactionInputBudget: 300000 },
+          "claude-fable-5-1": { reasoning: "max" },
+        },
+      });
+      // An enabled model and a hidden one run with what resolve() gives them.
+      expect(models.runConfig("claude-opus-5-5"))
+          .toStrictEqual({ ...OPUS, reasoning: "low", compactionInputBudget: 300000 });
+      expect(models.runConfig("claude-test")).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        behavesLike: "claude-opus-5-5", reasoning: "high",
+      });
+      for (let id of ["claude-opus-5-5", "claude-test"]) {
+        expect(models.resolve(id)!.config, id).toStrictEqual(models.runConfig(id));
+      }
+      // A disabled one has a config too, which nothing resolves.
+      expect(models.resolve("claude-fable-5-1")).toBeUndefined();
+      expect(models.runConfig("claude-fable-5-1")).toStrictEqual({ ...FABLE, reasoning: "max" });
+      // The second is a suggested model of a provider this gateway does not enable.
+      for (let id of ["claude-fable-9", "gemini-3.6-flash", "constructor"]) {
+        expect(models.runConfig(id), id).toBeUndefined();
+      }
+    });
+
     it("describes a model as it runs before its settings", () => {
       const models = gatewayModels({
         addedModels: ADDED,

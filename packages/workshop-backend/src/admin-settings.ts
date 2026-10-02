@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayProviderTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -39,12 +39,24 @@ function compactionBudgetRange(model: AdminModel): { builtIn: number, max: numbe
   };
 }
 
-// How long a provider test waits for its model to answer.
-const PROVIDER_TEST_TIMEOUT_MS = 15_000;
+// One of the tests an admin runs through the gateway: the event and the message of its log line,
+// the response cap of its request (the model's own, where that is lower), whether the request
+// asks for what an agent's turn would (see completeText), and how long the model has to answer.
+type GatewayTest = {
+  event: string, logged: string, maxTokens: number, thinking: boolean, timeoutMs: number,
+};
+const PROVIDER_TEST: GatewayTest = {
+  event: "gateway.provider.test", logged: "tested an AI Gateway provider",
+  maxTokens: 16, thinking: false, timeoutMs: 15_000,
+};
+const MODEL_TEST: GatewayTest = {
+  event: "gateway.model.test", logged: "tested an AI Gateway model",
+  maxTokens: 2048, thinking: true, timeoutMs: 30_000,
+};
 
-// What a failed provider test tells the admin: the provider's or the gateway's own words with the
+// What a failed test tells the admin: the provider's or the gateway's own words with the
 // deployment's gateway token cut out, should they repeat it, on one line and cut short.
-function providerTestMessage(text: string, apiToken: string | undefined): string {
+function testFailureMessage(text: string, apiToken: string | undefined): string {
   if (apiToken) text = text.replaceAll(apiToken, "[redacted]");
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
@@ -598,21 +610,47 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * while the request is out.
    */
   async testGatewayProvider(provider: AiModelProvider, adminUserId: string)
-      : Promise<GatewayProviderTest> {
+      : Promise<GatewayModelTest> {
     let gateway = this.#requireGateway();
     assertGatewayProvider(provider);
     let [model] = Object.keys(SUGGESTED_MODELS[provider]);
     if (model === undefined) {
       throw new Error(`Provider "${provider}" has no suggested model to test.`);
     }
-    let signal = AbortSignal.timeout(PROVIDER_TEST_TIMEOUT_MS);
+    return this.#runTest(gateway, { provider, model, apiToken: "" }, adminUserId, PROVIDER_TEST);
+  }
+
+  /**
+   * Ask a gateway model for an answer the way a chat turn would, on behalf of the admin
+   * `adminUserId`, and report what happened: the request goes out with the config the model runs
+   * with, so with the reasoning level in effect for it, under the response cap of a test (see
+   * AdminApi.testGatewayModel). A request that fails is a result. A model in any mode can be
+   * tested, so that an admin can try one before enabling it.
+   *
+   * Like testGatewayProvider(), it stores nothing and stays out of the config mutation queue. The
+   * config is the authoritative one, which the KV mirror the chats read can trail.
+   */
+  async testGatewayModel(modelId: string, adminUserId: string): Promise<GatewayModelTest> {
+    let gateway = this.#requireGateway();
+    let config = new GatewayModels(gateway, this.#config()).runConfig(modelId);
+    if (!config) throw new Error(`No such model: ${modelId}`);
+    return this.#runTest(gateway, config, adminUserId, MODEL_TEST);
+  }
+
+  // Send the model `config` describes one prompt through the gateway, as `test` says to and on
+  // behalf of the admin `adminUserId`, and report what happened.
+  async #runTest(gateway: AiGatewayConfig, config: AiModelConfig, adminUserId: string,
+                 test: GatewayTest): Promise<GatewayModelTest> {
+    let model = config.model;
+    let signal = AbortSignal.timeout(test.timeoutMs);
     let startedAt = Date.now();
     let failure: { status?: number, message: string } | undefined;
     try {
-      let handle = getModel(this.env, { provider, model, apiToken: "" },
+      let handle = getModel(this.env, config,
           { type: "user", id: adminUserId, name: adminUserId });
       await completeText(handle, {
-        prompt: "Reply with OK.", maxTokens: 16, signal,
+        prompt: "Reply with OK.", maxTokens: Math.min(test.maxTokens, handle.model.maxTokens),
+        thinking: test.thinking, signal,
         // The request is the same every time, which a gateway that caches responses would
         // answer without asking the provider.
         headers: { "cf-aig-skip-cache": "true" },
@@ -620,17 +658,17 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     } catch (error) {
       // The signal is this call's own, so nothing but the timeout aborts it.
       let message = signal.aborted
-          ? `The model did not answer within ${PROVIDER_TEST_TIMEOUT_MS / 1000} seconds.`
+          ? `The model did not answer within ${test.timeoutMs / 1000} seconds.`
           : error instanceof Error ? error.message : String(error);
       let status = error instanceof AgentTurnError ? error.statusCode : undefined;
       failure = {
         ...(status !== undefined && { status }),
-        message: providerTestMessage(message, gateway.apiToken),
+        message: testFailureMessage(message, gateway.apiToken),
       };
     }
     // The failure message stays out of the log: a provider words it.
-    logger.info("tested an AI Gateway provider", {
-      event: "gateway.provider.test", modelId: model, outcome: failure ? "error" : "ok",
+    logger.info(test.logged, {
+      event: test.event, modelId: model, outcome: failure ? "error" : "ok",
       statusCode: failure?.status, durationMs: Date.now() - startedAt,
     });
     return failure ? { model, ok: false, ...failure } : { model, ok: true };
@@ -920,7 +958,11 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     return this.admin.setGatewayProviderEnabled(provider, enabled);
   }
 
-  testGatewayProvider(provider: AiModelProvider): Promise<GatewayProviderTest> {
+  testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest> {
     return this.admin.testGatewayProvider(provider, this.adminUserId);
+  }
+
+  testGatewayModel(modelId: string): Promise<GatewayModelTest> {
+    return this.admin.testGatewayModel(modelId, this.adminUserId);
   }
 }

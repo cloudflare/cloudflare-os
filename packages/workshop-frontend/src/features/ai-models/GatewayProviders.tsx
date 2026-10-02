@@ -3,7 +3,7 @@ import { Banner, Switch } from '@cloudflare/kumo'
 import type {
   AdminGatewayProvider,
   AiModelProvider,
-  GatewayProviderTest,
+  GatewayModelTest,
 } from '@gadgets/workshop-shared/api'
 import { GatewayTestButton, GatewayTestStatus } from './GatewayTest'
 import { PROVIDER_LABELS } from './modelForm'
@@ -77,7 +77,7 @@ export const GatewayProviders = ({ providers, busy, onEnabledChange, onTest }: {
    * Asks one of the provider's models through the gateway. A request that fails is a result;
    * rejects when the test could not be run at all.
    */
-  onTest: (provider: AiModelProvider) => Promise<GatewayProviderTest>
+  onTest: (provider: AiModelProvider) => Promise<GatewayModelTest>
 }) => {
   const { tests, startTest } = useGatewayTests(onTest)
 

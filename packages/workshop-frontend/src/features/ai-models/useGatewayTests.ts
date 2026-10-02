@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GatewayProviderTest } from '@gadgets/workshop-shared/api'
+import type { GatewayModelTest } from '@gadgets/workshop-shared/api'
 import { rpcFailureDescription } from '../../rpcErrors'
 
 /**
@@ -8,7 +8,7 @@ import { rpcFailureDescription } from '../../rpcErrors'
  */
 export type GatewayTestState =
   | { state: 'testing' }
-  | { state: 'answered'; result: GatewayProviderTest }
+  | { state: 'answered'; result: GatewayModelTest }
   | { state: 'not-run'; reason: string | undefined }
 
 /**
@@ -18,7 +18,7 @@ export type GatewayTestState =
  */
 export const useGatewayTests = <Key extends string>(
   /** Runs one test. A request that fails is a result; rejects when it could not be run at all. */
-  runTest: (key: Key) => Promise<GatewayProviderTest>,
+  runTest: (key: Key) => Promise<GatewayModelTest>,
 ) => {
   const [tests, setTests] = useState<ReadonlyMap<Key, GatewayTestState>>(() => new Map())
   // A test that fails once the list is gone is not reported. Leaving the admin page disposes of

@@ -1282,12 +1282,30 @@ export interface AdminApi {
    * the admin, and report what happened within 15 seconds: the Workshop can't see which provider
    * keys the gateway holds. It works on a provider that is off, and changes nothing. Throws for
    * a provider the gateway does not serve; a request that fails is a result (see
-   * GatewayProviderTest).
+   * GatewayModelTest).
    *
    * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
-   * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models.
+   * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a
+   * quick one that takes none of a model's settings: testGatewayModel() sends a model the
+   * request its chats would.
    */
-  testGatewayProvider(provider: AiModelProvider): Promise<GatewayProviderTest>;
+  testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest>;
+
+  /**
+   * Send one request to a gateway model the way a chat turn would, through the gateway, as the
+   * admin, and report what happened within 30 seconds. The request asks for the reasoning level
+   * in effect for the model (its own, else the deployment's default, else what BuiltInReasoning
+   * describes), with the flags of the model it behaves like, under a response cap of at most
+   * 2,048 tokens. A level that a model takes as a token budget comes out of that cap, so it is
+   * cut to the room the cap leaves and is smaller than a chat's. It works on a model in any
+   * mode, hidden and disabled included, and changes nothing. Throws outside AI Gateway mode and
+   * for an ID that names no gateway model; a request that fails is a result (see
+   * GatewayModelTest).
+   *
+   * A pass says that the model answered that one request. It costs more than
+   * testGatewayProvider(), whose quick request is capped at a few tokens.
+   */
+  testGatewayModel(modelId: string): Promise<GatewayModelTest>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1612,13 +1630,13 @@ export type AdminGatewayProvider = {
 };
 
 /**
- * What AdminApi.testGatewayProvider() found: the model it asked, and whether the model answered.
- * A failure carries a message on one line, cut short: what the provider or the gateway answered,
- * or why no answer came. It carries the HTTP status of the response only when the model runtime
- * reports one, which it does not for every provider (a failed Google request has none): the
- * message then says what there is.
+ * What AdminApi.testGatewayProvider() and AdminApi.testGatewayModel() found: the model asked, and
+ * whether it answered. A failure carries a message on one line, cut short: what the provider or
+ * the gateway answered, or why no answer came. It carries the HTTP status of the response only
+ * when the model runtime reports one, which it does not for every provider (a failed Google
+ * request has none): the message then says what there is.
  */
-export type GatewayProviderTest = { model: string } &
+export type GatewayModelTest = { model: string } &
     ({ ok: true } | { ok: false; status?: number; message: string });
 
 /** Configuration specifying how to connect to an AI model provider. */
