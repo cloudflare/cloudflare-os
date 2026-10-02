@@ -139,6 +139,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState(false)
   const [pendingRemoval, setPendingRemoval] = useState<AdminModel | null>(null)
+  const [pendingDisable, setPendingDisable] = useState<AdminModel | null>(null)
   // The models' tests, by model ID. Like a provider's test, one neither takes nor waits for the
   // lock. A write to a model forgets its test, and a write to the default level forgets them all.
   const modelTests = useGatewayTests((modelId: string) => admin.testGatewayModel(modelId))
@@ -202,6 +203,12 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     writeModel(model, () => admin.setGatewayModelMode(model.id, mode))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
 
+  // Disabling breaks what runs on the model with nobody there to see it fail, so it is confirmed.
+  const requestMode = (model: AdminModel, mode: GatewayModelMode) => {
+    if (mode === 'disabled') setPendingDisable(model)
+    else void changeMode(model, mode)
+  }
+
   const changeSettings = (model: AdminModel, settings: GatewayModelSettings) =>
     writeModel(model, () => admin.setGatewayModelSettings(model.id, settings))
       .catch((err) => reportFailure(`Couldn’t update ${model.name}`, err))
@@ -246,6 +253,12 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     await writeModel(pendingRemoval, () => admin.removeGatewayModel(pendingRemoval.id))
       .catch((err) => reportFailure(`Couldn’t remove ${pendingRemoval.name}`, err))
     setPendingRemoval(null)
+  }
+
+  const confirmDisable = async () => {
+    if (!pendingDisable) return
+    await changeMode(pendingDisable, 'disabled')
+    setPendingDisable(null)
   }
 
   const catalogByProvider = new Map<AiModelProvider, AdminModelView[]>()
@@ -338,7 +351,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                   defaultReasoning={defaultReasoning}
                   busy={busy}
                   test={modelTests.tests.get(model.id)}
-                  onModeChange={(mode) => changeMode(model, mode)}
+                  onModeChange={(mode) => requestMode(model, mode)}
                   onSettingsChange={(settings) => changeSettings(model, settings)}
                   onTest={() => modelTests.startTest(model.id)}
                 />
@@ -363,7 +376,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                       ?.find((listed) => listed.id === model.behavesLike)?.name}
                     busy={busy}
                     test={modelTests.tests.get(model.id)}
-                    onModeChange={(mode) => changeMode(model, mode)}
+                    onModeChange={(mode) => requestMode(model, mode)}
                     onSettingsChange={(settings) => changeSettings(model, settings)}
                     onTest={() => modelTests.startTest(model.id)}
                     onRemove={() => setPendingRemoval(model)}
@@ -429,6 +442,24 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         isDeleting={busy}
         onOpenChange={(open) => { if (!open) setPendingRemoval(null) }}
         onConfirm={() => { void confirmRemoval() }}
+      />
+
+      <DeleteConfirmationDialog
+        open={pendingDisable !== null}
+        title={`Disable “${pendingDisable?.name ?? ''}”?`}
+        description={
+          <>
+            Everything that uses this model stops working until it is enabled or hidden again:
+            chats, gadgets that call it, and scheduled tasks. A scheduled task that keeps failing
+            is eventually stopped for good, and enabling the model again won’t restart it. To take
+            the model out of the pickers without breaking anything, hide it instead.
+          </>
+        }
+        confirmLabel="Disable"
+        confirmingLabel="Disabling…"
+        isDeleting={busy}
+        onOpenChange={(open) => { if (!open) setPendingDisable(null) }}
+        onConfirm={() => { void confirmDisable() }}
       />
     </div>
   )

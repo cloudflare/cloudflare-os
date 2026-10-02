@@ -1482,12 +1482,52 @@ describe('AdminModelsPanel', () => {
       expect(setGatewayModelMode).toHaveBeenCalledExactlyOnceWith('claude-legacy', 'hidden')
     })
 
+    it('disables a model only once that is confirmed', async () => {
+      const { setGatewayModelMode, onChanged } = await render()
+
+      await click(modeOption('Claude Sonnet', 'Disabled'))
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+      expect(confirmation()?.textContent).toContain('Claude Sonnet')
+      expect(confirmation()?.textContent).toContain('scheduled tasks')
+      expect(confirmation()?.textContent).toContain('hide it instead.')
+
+      await click(button('Disable', confirmation()!))
+      expect(setGatewayModelMode).toHaveBeenCalledExactlyOnceWith('claude-sonnet', 'disabled')
+      expect(onChanged).toHaveBeenCalledOnce()
+      expect(confirmation()).toBeNull()
+    })
+
+    it('leaves the model’s mode alone when disabling is cancelled', async () => {
+      const { setGatewayModelMode } = await render()
+
+      await click(modeOption('Claude Sonnet', 'Disabled'))
+      await click(button('Cancel', confirmation()!))
+
+      expect(setGatewayModelMode).not.toHaveBeenCalled()
+      expect(confirmation()).toBeNull()
+      expect(selectedMode('Claude Sonnet')).toEqual(['Enabled (default)'])
+    })
+
+    it.each([
+      ['Claude Sonnet', 'Hidden', 'claude-sonnet', 'hidden'],
+      ['Claude Legacy', 'Enabled', 'claude-legacy', 'enabled'],
+    ])('sets %s to %s without asking', async (name, label, id, mode) => {
+      const { setGatewayModelMode } = await render()
+
+      await click(modeOption(name, label))
+
+      expect(confirmation()).toBeNull()
+      expect(setGatewayModelMode).toHaveBeenCalledExactlyOnceWith(id, mode)
+    })
+
     it('reports a refused change with the server’s message and keeps showing the server’s mode', async () => {
       const { setGatewayModelMode, onChanged } = await render()
       setGatewayModelMode.mockRejectedValueOnce(new Error('No such model: claude-sonnet'))
 
       await click(modeOption('Claude Sonnet', 'Disabled'))
+      await click(button('Disable', confirmation()!))
 
+      expect(confirmation()).toBeNull()
       expect(addToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         description: 'No such model: claude-sonnet',
         variant: 'error',
@@ -1507,6 +1547,7 @@ describe('AdminModelsPanel', () => {
       await click(modeOption('Claude Sonnet', 'Disabled'))
       await click(modeOption('Claude Legacy', 'Enabled'))
       expect(setGatewayModelMode).toHaveBeenCalledOnce()
+      expect(confirmation()).toBeNull()
       expect(button('Remove GPT Custom').disabled).toBe(true)
       expect(button('Add model').disabled).toBe(true)
 
