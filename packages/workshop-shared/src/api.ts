@@ -3773,12 +3773,21 @@ export type SlashCommandChoice = {
  *
  * At most one provisional stream is active per chat at a time. The client should not persist
  * these events. Instead, it should display them temporarily and discard them as soon as the
- * corresponding durable `message()` and/or `changes` message arrives, or when the agent stops
- * running (`activeAgent` becomes unset in the chat metadata).
+ * corresponding durable `message()` and/or `changes` message arrives, when the agent stops
+ * running (`activeAgent` becomes unset in the chat metadata), or when a `streamReset` event
+ * arrives.
  */
 export type AiChatStreamEvent = {
   /** The turn is summarizing older context before it can continue, or before `/compact` ends. */
   type: "compacting";
+} | {
+  /**
+   * The in-progress model request failed transiently and will be retried. Nothing it streamed
+   * will become durable, so the client should discard the step's provisional state -- streamed
+   * text and reasoning, tool-call cards, the active-file marker and all edit previews -- as it
+   * would for an error message. The retry then streams afresh.
+   */
+  type: "streamReset";
 } | {
   /**
    * The compaction attempt ended, whether it compacted, failed, was cancelled, or found nothing to

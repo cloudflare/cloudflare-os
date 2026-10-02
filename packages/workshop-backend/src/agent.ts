@@ -4,7 +4,9 @@ import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type Code
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
-import { Type, getSystemMessageText, toToolDeclaration } from "@earendil-works/pi-ai";
+import {
+  Type, getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
+} from "@earendil-works/pi-ai";
 import type {
   AssistantMessage, ImageContent, Message, SystemMessage, TSchema, TextContent, ToolCall, Usage,
 } from "@earendil-works/pi-ai";
@@ -200,7 +202,8 @@ export type ChatHistory = {
 type AgentPassOutcome =
   | {type: "finished"}
   | {type: "reloadForCompaction"}
-  | {type: "compacted"; checkpoint: CompactionCheckpoint};
+  | {type: "compacted"; checkpoint: CompactionCheckpoint}
+  | {type: "transientFailure"; error: AgentTurnError};
 
 /**
  * Summary of one of the workspace's gadgets, as needed by the agent: identity and its named
@@ -1159,13 +1162,17 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
   return def as unknown as AgentTool;
 }
 
+/** How many times one agent turn retries a model request that failed transiently. */
+const TRANSIENT_FAILURE_RETRIES = 2;
+
 /**
  * Runs one agent turn against the chat's history, compacting as needed. A pass over the history
  * may compact instead of prompting the model, or end after a persisted tool step because the next
  * request would cross the compaction trigger; either way the loop reloads the durable history,
  * which the next pass compacts first, and goes again. Each compaction moves the boundary strictly
  * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
- * it has compacted; the model is never prompted.
+ * it has compacted; the model is never prompted. A pass whose model request failed transiently is
+ * also run again, a bounded number of times.
  */
 export async function runAgent(
     hooks: AgentHooks,
@@ -1175,10 +1182,15 @@ export async function runAgent(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig): Promise<void> {
+  let retries = 0;
   while (true) {
     let history = hooks.loadChatHistory(chatId);
     let outcome = await runAgentPass(
         hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
+    if (outcome.type === "transientFailure") {
+      if (++retries > TRANSIENT_FAILURE_RETRIES) throw outcome.error;
+      await scheduler.wait(1000 * retries);
+    }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
     if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
     abortSignal.throwIfAborted();
@@ -3496,11 +3508,11 @@ async function runAgentPass(
   let executedToolCalls = new Set<string>();
   let toolList = Object.values(tools).map(tool => traceTool(tool, executedToolCalls));
 
-  // Records a turn that ended with a provider error, so it can be rethrown for the overseer's
-  // error triage after the loop settles. (pi never throws for provider failures; the loop
-  // reports them as a final assistant message with stopReason "error"/"aborted".) Nothing from a
-  // failed turn is persisted.
-  let turnFailure: {message: string} | undefined;
+  // Records a turn that ended with a provider error, so it can be retried or rethrown for the
+  // overseer's error triage after the loop settles. (pi never throws for provider failures; the
+  // loop reports them as a final assistant message with stopReason "error"/"aborted".) Nothing
+  // from a failed turn is persisted.
+  let turnFailure: AssistantMessage | undefined;
 
   // Set when the next provider request would cross the preferred compaction budget. The
   // turn_end barrier persists this step before the caller reloads durable history.
@@ -3585,9 +3597,9 @@ async function runAgentPass(
         // the model has seen.
         let message = event.message as AssistantMessage;
         if (message.stopReason === "error" || message.stopReason === "aborted") {
-          // Persist nothing from a failed or cancelled model request; rethrown after the loop
-          // returns.
-          turnFailure = {message: message.errorMessage ?? "The model request failed."};
+          // Persist nothing from a failed or cancelled model request; retried or rethrown after
+          // the loop returns.
+          turnFailure = message;
           break;
         }
         // Note: a turn the model completed is persisted even if the user cancelled while its
@@ -3781,8 +3793,18 @@ async function runAgentPass(
   if (turnFailure) {
     // Other failures become an AgentTurnError carrying the failing request's HTTP status (when
     // it can be determined) for the overseer's triage.
-    throw new AgentTurnError(
-        turnFailure.message, httpStatusFromError(turnFailure.message, handle.lastResponse));
+    let message = turnFailure.errorMessage ?? "The model request failed.";
+    let error = new AgentTurnError(message, httpStatusFromError(message, handle.lastResponse));
+    // A transient failure can simply run again, even if the request already streamed some
+    // output: the request persisted nothing, so the retry starts from the last saved step. What
+    // it streamed was only ever provisional, so tell clients to discard it -- otherwise the
+    // retry's output would be appended to the failed attempt's partial text, reasoning, tool
+    // cards and edit previews.
+    if (isRetryableAssistantError(turnFailure)) {
+      emitStreamEvent({type: "streamReset"});
+      return {type: "transientFailure", error};
+    }
+    throw error;
   }
 
   return {type: reloadForCompaction ? "reloadForCompaction" : "finished"};

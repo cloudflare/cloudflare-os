@@ -70,11 +70,33 @@ async function recordFirstTurn(username: string, model: RoutedScriptedModel) {
   return { chatId, generation, lastSeen, seen, workspaceId };
 }
 
+it.concurrent("a transient provider failure is retried, and the turn answers without an error",
+    async () => {
+  const model = models.script([
+    { error: { status: 503, message: "scripted provider outage" } },
+    { text: "Answered after a retry." },
+  ]);
+  const [owner] = nextUsernames("transientowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+
+  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
+  await waitFor("the retried model request", async () => model.requests.length === 2 || null);
+  await waitForIdleChat(ws, chatId);
+  const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(history.filter(message => message.type === "error")).toEqual([]);
+  expect(messageTexts(history)).toEqual(["Prompt once", "Answered after a retry."]);
+});
+
 it.concurrent(
     "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses messages",
     async () => {
+  const outage = { error: { status: 500, message: "scripted provider outage" } };
+  // The turn retries the failed request twice before it reports the error.
   const model = models.script([
-    { error: { status: 500, message: "scripted provider outage" } },
+    outage, outage, outage,
     { text: "Retry succeeded." },
     { pending: true },
   ]);
@@ -85,7 +107,7 @@ it.concurrent(
   using ws = await api.newGadget();
 
   const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
-  await waitFor("the failed model request", async () => model.requests.length === 1 || null);
+  await waitFor("the failed model requests", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   let history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   expect(history.filter(message =>
@@ -96,7 +118,7 @@ it.concurrent(
     .toHaveLength(1);
 
   await ws.retryAgent(chatId, SCRIPTED_MODEL_ID);
-  await waitFor("the retry model request", async () => model.requests.length === 2 || null);
+  await waitFor("the retry model request", async () => model.requests.length === 4 || null);
   await waitForIdleChat(ws, chatId);
   history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   expect(history.filter(message =>
@@ -109,11 +131,11 @@ it.concurrent(
     type: "error",
     message: expect.stringContaining("scripted provider outage"),
   }));
-  expect(JSON.stringify(model.requests[1])).toContain("Prompt once");
+  expect(JSON.stringify(model.requests[3])).toContain("Prompt once");
 
   try {
     await ws.sendChatMessage(chatId, "Hold open", SCRIPTED_MODEL_ID);
-    await waitFor("the pending model request", async () => model.requests.length === 3 || null);
+    await waitFor("the pending model request", async () => model.requests.length === 5 || null);
     await expect(ws.sendChatMessage(chatId, "Rejected", SCRIPTED_MODEL_ID))
       .rejects.toThrow("Agent is running, wait for it to finish.");
     history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
@@ -304,10 +326,8 @@ it.concurrent("a chat over its context budget compacts, and history pages across
 
 it.concurrent("switching models keeps history, refuses a deleted model, and recovers with another",
     async () => {
-  const modelA = models.script([
-    { text: "A's first reply." },
-    { error: { status: 500, message: "scripted provider outage" } },
-  ]);
+  const outage = { error: { status: 500, message: "scripted provider outage" } };
+  const modelA = models.script([{ text: "A's first reply." }, outage, outage, outage]);
   const modelB = models.script([{ text: "B saw model A's history." }, { text: "B retried the chat." }]);
   // Every script shares SCRIPTED_MODEL_ID; B keeps its routed accountId under its own model id.
   const MODEL_B_ID = "scripted-model-b";
@@ -339,7 +359,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   }
   // The user switches back to A, whose provider fails, and deletes it.
   await ws.sendChatMessage(chatId, "Ask model A again.", SCRIPTED_MODEL_ID);
-  await settled(modelA, 2);
+  await settled(modelA, 4);
 
   await api.deleteModel(SCRIPTED_MODEL_ID);
   expect(await api.getQuickModel()).toBeNull();
@@ -348,7 +368,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   await expect(ws.sendChatMessage(chatId, "This must not be saved.", SCRIPTED_MODEL_ID))
     .rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
   expect(await history()).toEqual(beforeRefused);
-  expect(modelA.requests).toHaveLength(2);
+  expect(modelA.requests).toHaveLength(4);
 
   // Retry answers the failed turn's message; after a completed reply it would have nothing to do.
   await ws.retryAgent(chatId, MODEL_B_ID);
