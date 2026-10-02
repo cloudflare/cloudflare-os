@@ -9,9 +9,9 @@ import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig,
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type {
-  ActionRecord, AutoApproveTagRecord, OverseerDurableObject,
-} from "../src/overseer.js";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import type { ActionRecord, AutoApproveTagRecord }
+  from "../src/storage-schema/overseer-storage.js";
 
 // The OverseerImpl members these tests drive; the class itself is private to overseer.ts.
 interface OverseerInternals {

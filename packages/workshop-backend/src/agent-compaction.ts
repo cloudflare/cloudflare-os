@@ -2,7 +2,7 @@ import {SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage, type AiMo
   from "@gadgets/workshop-shared/api";
 import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
-import type {ChatBindingEntry, CompactionCheckpoint} from "./agent";
+import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
 
 // Context compaction keeps long chats within the model's limit. It summarizes the messages before a

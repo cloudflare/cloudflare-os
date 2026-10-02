@@ -3,10 +3,10 @@ import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
 import { validateRpc } from 'capnweb-validate';
-import { collection, createTypedStorage } from '@gadgets/typed-storage';
 import { createWorkshopLogger } from "./observability";
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, sanitizeBlueprintOutput, serializeFeaturedBlueprints } from './blueprint-archive.js';
-import { AdminConfig, DEFAULT_ADMIN_CONFIG, FormatCuration, MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -15,36 +15,6 @@ import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bu
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
-
-function makeAdminSettingsStorage(storage: DurableObjectStorage) {
-  return createTypedStorage(storage, {
-    collections: {
-      // Mirror of the currently-featured blueprint public records. The user DO owns the
-      // authoritative featured bit; this DO keeps the publishable deployment-wide copy.
-      featuredBlueprints: collection<BlueprintPublicInfo>()({
-        primaryKey: 'id',
-      }),
-    },
-    singletons: {
-      // Authoritative deployment admin config. Mirrored to BLUEPRINTS KV (ADMIN_CONFIG_KEY) so the
-      // connect/login/agent hot paths can read it without touching this singleton DO.
-      adminConfig: DEFAULT_ADMIN_CONFIG as AdminConfig,
-
-      // Which set of bundled blueprints has been installed (see
-      // bundledBlueprintsManifestVersion). Empty means none yet; a mismatch means the repo shipped
-      // new or updated ones and they should be reinstalled.
-      installedFormatBlueprints: "",
-
-      // Bundled blueprint ids that have already been offered for promotion into
-      // AdminConfig.formats. Tracked separately from the install stamp so that promotion happens
-      // exactly once per blueprint: an admin who then removes a format keeps it removed, while a
-      // deployment that installed before curation existed still gets promoted.
-      promotedFormatBlueprints: <string[]>[],
-    },
-  });
-}
-
-type AdminSettingsStorage = ReturnType<typeof makeAdminSettingsStorage>;
 
 /**
  * Deployment-wide admin settings singleton.

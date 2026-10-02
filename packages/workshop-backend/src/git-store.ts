@@ -49,31 +49,9 @@ import {
   type TreeEntry,
 } from "isomorphic-git";
 import diff3Merge from "diff3";
-import { collection, type Collection } from "@gadgets/typed-storage";
+import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
-
-// =======================================================================================
-// Storage schema
-
-/**
- * One git loose object: `data` is the zlib-deflated object exactly as git would store it under
- * `.git/objects/xx/yyyy...`, and `oid` is its 40-hex SHA-1 name. Content-addressed, hence
- * immutable and idempotent to rewrite.
- */
-export interface GitObjectRecord {
-  oid: string;
-  data: Uint8Array;
-}
-
-/**
- * Typed-storage schema for a git object store collection. Shared between `makeOverseerStorage()`
- * and tests so both bind the identical schema.
- */
-export function gitObjectsCollection() {
-  return collection<GitObjectRecord>()({
-    primaryKey: "oid",
-  });
-}
+import type { GitObjectRecord } from "./storage-schema/overseer-storage";
 
 // =======================================================================================
 // fs shim

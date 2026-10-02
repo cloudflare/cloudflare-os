@@ -6,7 +6,7 @@
 import { tracing } from "cloudflare:workers";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessageEventStream, Model, Usage } from "@earendil-works/pi-ai";
-import type { AiChatAgentContext } from "./agent";
+import type { AiChatAgentContext } from "./storage-schema/overseer-storage";
 import { AgentTurnError, httpStatusFromError } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { obsContext } from "./observability";

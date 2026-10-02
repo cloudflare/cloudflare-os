@@ -6,8 +6,8 @@ import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { Overseer } from "@gadgets/workshop-shared/api";
-import { OverseerDurableObject, makeOverseerStorage } from "../src/overseer.js";
-import type { ActionRecord } from "../src/overseer.js";
+import { OverseerDurableObject } from "../src/overseer.js";
+import { makeOverseerStorage, type ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 /**

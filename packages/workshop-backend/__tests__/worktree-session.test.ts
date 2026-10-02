@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { createTypedStorage } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type CodeChange, type CodeContent }
   from "@gadgets/workshop-shared/code-change";
@@ -10,8 +9,9 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { WorktreeSessionImpl, type WorktreeSessionHost } from "../src/worktree-session";
 import type { WorktreeTurnAccess } from "../src/agent";
 import { formatUnifiedDiff } from "../src/agent";
-import { WorkspaceGitCache, gitObjectMetadataCollection } from "../src/git-cache";
-import { GitStore, gitObjectsCollection } from "../src/git-store";
+import { WorkspaceGitCache } from "../src/git-cache";
+import { GitStore } from "../src/git-store";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { concatBytes } from "../src/git-codec";
 import { makeMockStorage } from "./mock-storage";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
@@ -162,12 +162,7 @@ async function commitFiles(
 // `pinBase` -- so tests can observe or fail pulls precisely.
 function makeLocalHarness(
     pull: (cache: WorkspaceGitCache, oids: GitOid[], hints: GitPullHints) => Promise<void>) {
-  let storage = createTypedStorage(makeMockStorage(), {
-    collections: {
-      gitObjects: gitObjectsCollection(),
-      gitObjectMetadata: gitObjectMetadataCollection(),
-    },
-  });
+  let storage = makeOverseerStorage(makeMockStorage());
   let cache: WorkspaceGitCache = new WorkspaceGitCache(storage, {
     pull: (_gatekeeperId, oids, hints) => pull(cache, oids, hints),
   });

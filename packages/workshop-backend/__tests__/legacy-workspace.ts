@@ -13,7 +13,8 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { makeMockStorage } from "./mock-storage";
-import { makeOverseerStorage, type GadgetRecord, type OverseerStorage } from "../src/overseer";
+import { makeOverseerStorage, type GadgetRecord, type OverseerStorage }
+  from "../src/storage-schema/overseer-storage";
 import { GitStore } from "../src/git-store";
 import type { GitMigrationHost } from "../src/git-migration";
 
@@ -106,7 +107,7 @@ export class LegacyWorkspace {
     return sequence;
   }
 
-  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer.ts). */
+  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer-storage.ts). */
   addDraft(chatId: number, update: Uint8Array): void {
     this.storage.chatDraftUpdates.put({
       chatId, timestamp: new Date(T0 + ++this.#timestamp), author: USER, update,

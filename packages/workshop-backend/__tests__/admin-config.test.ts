@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ADMIN_CONFIG, defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
   it("backfills fields missing from a config persisted before they existed", () => {

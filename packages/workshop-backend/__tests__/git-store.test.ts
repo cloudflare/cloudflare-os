@@ -1,19 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { deserialize, serialize } from "capnweb";
-import { createTypedStorage } from "@gadgets/typed-storage";
 import {
-  GITDIR, GitStore, blobOid, commitIdentityForAuthor, gitObjectsCollection, makeGitObjectsFs,
-  threeWayMerge,
+  GITDIR, GitStore, blobOid, commitIdentityForAuthor, makeGitObjectsFs, threeWayMerge,
 } from "../src/git-store";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
 import { decodeLooseObject, encodeLooseObject, parseGitCommitRefs, parseGitTree }
   from "../src/git-codec";
 import { COMMIT_1, COMMIT_3, FIXTURE_OBJECTS, b64Bytes } from "./git-cache-fixtures";
 
 function makeObjects() {
-  return createTypedStorage(makeMockStorage(), {
-    collections: { gitObjects: gitObjectsCollection() },
-  }).gitObjects;
+  return makeOverseerStorage(makeMockStorage()).gitObjects;
 }
 
 // ---------------------------------------------------------------------------------------

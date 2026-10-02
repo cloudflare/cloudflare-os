@@ -8,7 +8,7 @@ import {
 } from "../src/agent-compaction";
 import {applyCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, AssistantMessage, Message, Model} from "@earendil-works/pi-ai";
-import type {ChatBindingEntry} from "../src/agent";
+import type {ChatBindingEntry} from "../src/storage-schema/overseer-storage";
 
 const user: AiChatAuthorInfo = {type: "user", id: "user", name: "User"};
 const agent: AiChatAuthorInfo = {type: "agent", id: "model", name: "Agent"};

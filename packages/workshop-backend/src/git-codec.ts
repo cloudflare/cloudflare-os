@@ -62,9 +62,10 @@ export function concatBytes(parts: Uint8Array[]): Uint8Array {
 // Loose objects
 //
 // A loose object is zlib(`<type> <size>\0` + payload); its oid is the SHA-1 of the *inflated*
-// whole. These helpers are the raw codec behind GitObjectRecord.data (see git-store.ts) --
-// byte-compatible with what isomorphic-git reads and writes there, though the compressed bytes
-// need not be bit-identical (the store is keyed by oid; readers inflate).
+// whole. These helpers are the raw codec behind GitObjectRecord.data (see
+// storage-schema/overseer-storage.ts) -- byte-compatible with what isomorphic-git reads and
+// writes there, though the compressed bytes need not be bit-identical (the store is keyed by
+// oid; readers inflate).
 
 /** Computes the oid of an object from its type and headerless payload. */
 export async function gitObjectOid(type: GitObjectType, payload: Uint8Array): Promise<GitOid> {

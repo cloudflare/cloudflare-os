@@ -5,10 +5,9 @@
 // including the recursive TreeNode return shape.
 
 import { describe, expect, it } from "vitest";
-import { createTypedStorage } from "@gadgets/typed-storage";
 import { MAX_READ_FILES_PER_CALL } from "@gadgets/workshop-shared/api";
-import { WorkspaceGitCache, gitObjectMetadataCollection } from "../src/git-cache";
-import { gitObjectsCollection } from "../src/git-store";
+import { WorkspaceGitCache } from "../src/git-cache";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
 import { openFakeOverseer } from "./fixtures";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
@@ -16,12 +15,7 @@ import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fi
 // A real git cache over the fixture repo (fully local, so nothing pulls), forged into the fake
 // overseer's impl -- the only member the reads dereference.
 async function openWithFixtureRepo() {
-  let storage = createTypedStorage(makeMockStorage(), {
-    collections: {
-      gitObjects: gitObjectsCollection(),
-      gitObjectMetadata: gitObjectMetadataCollection(),
-    },
-  });
+  let storage = makeOverseerStorage(makeMockStorage());
   let gitCache = new WorkspaceGitCache(storage, {
     pull: async () => { throw new Error("test: nothing should pull"); },
   });

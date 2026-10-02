@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createTypedStorage } from "@gadgets/typed-storage";
 import type { GitPullHints, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage";
@@ -9,9 +8,9 @@ import {
   GitObjectTooLargeError,
   MAX_GIT_OBJECT_SIZE,
   WorkspaceGitCache,
-  gitObjectMetadataCollection,
 } from "../src/git-cache";
-import { GitStore, blobOid, gitObjectsCollection } from "../src/git-store";
+import { GitStore, blobOid } from "../src/git-store";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import {
   buildPackBytes,
   concatBytes,
@@ -47,12 +46,7 @@ function fixture(oid: string): PackableObject {
 }
 
 function makeStorage() {
-  return createTypedStorage(makeMockStorage(), {
-    collections: {
-      gitObjects: gitObjectsCollection(),
-      gitObjectMetadata: gitObjectMetadataCollection(),
-    },
-  });
+  return makeOverseerStorage(makeMockStorage());
 }
 
 type TestStorage = ReturnType<typeof makeStorage>;

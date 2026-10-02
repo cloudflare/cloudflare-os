@@ -1,11 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
-import {
-  SharingManager,
-  SharingStorage,
-  CollaboratorRecord,
-  ShareKeyRecord,
-} from "../src/sharing.js";
+import { SharingManager, SharingStorage } from "../src/sharing.js";
+import type { CollaboratorRecord, ShareKeyRecord } from "../src/storage-schema/overseer-storage.js";
 import {
   AiChatAuthorInfo, PermissionEdge, CollaboratorRole, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES,
 } from "@gadgets/workshop-shared/api";

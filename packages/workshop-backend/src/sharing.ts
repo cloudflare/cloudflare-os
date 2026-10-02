@@ -25,6 +25,8 @@
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
     createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from "@gadgets/workshop-shared/api";
 import { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
+import type { CollaboratorRecord, ShareKeyRecord, ShareLinkRecord }
+    from "./storage-schema/overseer-storage";
 
 /**
  * Roles are totally ordered: build > use. Higher rank means strictly more access. Exported so
@@ -68,60 +70,6 @@ async function hashShareKey(rawKey: string): Promise<string> {
       "HMAC", hmacKey, Uint8Array.fromHex(rawKey)));
   return sig.toHex();
 }
-
-/** Each gadget stores its collaborator list. */
-export type CollaboratorRecord = {
-  /** Denormalized profile snapshot for display without hitting the user's DO. */
-  profile: AiChatAuthorInfo;
-
-  /** How this collaborator got access. Multiple edges are possible. */
-  addedBy: PermissionEdge[];
-};
-
-/**
- * A share link. This is what the management UI shows and operates on, and it owns all of a link's
- * metadata. A link may have one or more keys (see ShareKeyAliasRecord): creating a link mints its
- * first key, and copying it later mints another for the same link.
- */
-export type ShareLinkRecord = {
-  id: string;        // HMAC-SHA-256 hex of the raw key; also the link id
-
-  /** Never set on a link; present only on aliases, which discriminates the union. */
-  alias?: never;
-
-  note?: string;
-  created: Date;
-  createdBy: string; // profile.id of the creator
-
-  /**
-   * The role granted to anyone who redeems the link. Absent on links created before roles were
-   * introduced; treated as "build".
-   */
-  role?: CollaboratorRole;
-
-  /**
-   * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
-   * permission graph keeps its `shareKey` edges intact (no dangling references) and access could
-   * be restored in the future. A revoked link contributes nothing to the permission graph and its
-   * keys can no longer be redeemed.
-   */
-  revoked?: boolean;
-};
-
-/**
- * Another key for an existing link, minted when the user copies it. Carries no metadata of its
- * own: redeeming it resolves to the link record, so all of a link's keys behave identically.
- */
-export type ShareKeyAliasRecord = {
-  id: string;        // HMAC-SHA-256 hex of the raw key
-  alias: string;     // id of the link this key is a copy of
-};
-
-/**
- * A row of the share keys table: either a link or a copy of one. Because a link is itself a key
- * record, keys written before copies existed are already valid links -- no migration needed.
- */
-export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
 
 /**
  * The slice of Overseer storage this module operates on. Satisfied by the real OverseerStorage

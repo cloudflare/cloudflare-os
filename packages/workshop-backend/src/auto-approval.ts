@@ -7,7 +7,7 @@ import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-stora
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
-import type { ActionRecord, AutoApproveTagRecord } from "./overseer.js";
+import type { ActionRecord, AutoApproveTagRecord } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
 

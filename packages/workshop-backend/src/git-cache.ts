@@ -34,7 +34,7 @@
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import { collection, type Collection, type NonUniqueIndex } from "@gadgets/typed-storage";
+import type { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 import type {
   GitCache,
   GitObjectType,
@@ -47,7 +47,7 @@ import {
   type TreeNode,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { GitObjectRecord } from "./git-store";
+import type { GitObjectMetadataRecord, GitObjectRecord } from "./storage-schema/overseer-storage";
 import {
   buildPackBytes,
   concatBytes,
@@ -98,82 +98,7 @@ export const MAX_GIT_PACK_BYTES = 64 << 20;
 export const EAGER_BLOB_LIMIT = 64 * 1024;
 
 // =======================================================================================
-// Storage schema
-
-/**
- * Per-oid metadata relating a git object to gatekeepers' remotes. One row per oid with source
- * *arrays* (rather than one row per pair, the idiomatic typed-storage shape); a row may exist
- * for an object the store does not hold.
- */
-export interface GitObjectMetadataRecord {
-  oid: GitOid;
-
-  /**
-   * The object's type. Always known at write time: *measured* from hash-verified bytes
-   * (put/consumePack, including oversize rejections), or *asserted* by the referencing context
-   * that introduced the oid (a tree entry's mode, a commit's tree/parent headers, an
-   * advertisement) -- which is how it can exist for objects never fetched. The two grades are
-   * distinguished by `size`: measured writers always record both together, so `size !==
-   * undefined` iff the type is proof-grade. Conflicting claims (always a forged object or a
-   * gatekeeper bug) are reconciled by `#metaFor`: measured wins unconditionally, an assertion
-   * never overrides a measured type, and among assertions "commit" wins, otherwise first claim
-   * kept. Readers must never hard-reject an operation based on an assertion-grade type --
-   * decode local bytes or pull first; asserted types only shape advisory pull hints.
-   */
-  type: GitObjectType;
-
-  /**
-   * The payload byte size. Recorded ONLY from bytes actually measured: a stored put(), or a
-   * put()/pack entry rejected for exceeding MAX_GIT_OBJECT_SIZE (the content was in hand, so
-   * the measurement is proof-grade and lets later reads fail fast). Never inferred from an
-   * object's *absence* -- an omitted blob's size is unknowable, and an absence-based record
-   * would durably trust gatekeeper behavior as if it were a measurement. Doubles as `type`'s
-   * evidentiary grade (see its doc).
-   */
-  size?: number;
-
-  /**
-   * Gatekeepers whose remote *provably* possesses this object: entered only by a hash-verified
-   * put() from that gatekeeper or by a successfully applied push to it. This is what the scoped
-   * read view serves, what push ancestry verification terminates on, and what the marking walk
-   * skips.
-   */
-  onRemote: WorkpieceId[];
-
-  /**
-   * Unproven pull-routing hints: gatekeepers that advertised this commit or put() an object
-   * referencing this one. Used to route pulls and to bound the marking walk; grants no reads.
-   * A wrong claim only misroutes a pull (the next recorded source is tried).
-   */
-  pullableFrom: WorkpieceId[];
-
-  /**
-   * Queued pushes that include this object, written by the marking walk at submitAction and
-   * keyed to the action (via the `byPendingPushAction` index) for cleanup. This is the read
-   * grant that lets the destination gatekeeper simulate a queued push as if it had already
-   * landed.
-   */
-  pendingPush: { gatekeeperId: WorkpieceId, actionId: number }[];
-}
-
-/**
- * Typed-storage schema for the `gitObjectMetadata` collection. Shared with tests.
- *
- * `byPendingPushAction` is the pending-push marks index: one entry per `pendingPush` element,
- * keyed by action id, so an action's lifecycle transitions (apply-converts, reject-cleans)
- * iterate exactly its marked oids without re-walking the object graph. Being derived from the
- * record at write time, it can never disagree with the `pendingPush` arrays.
- */
-export function gitObjectMetadataCollection() {
-  return collection<GitObjectMetadataRecord>()({
-    primaryKey: "oid",
-    nonUniqueIndexes: {
-      byPendingPushAction(record: GitObjectMetadataRecord) {
-        return record.pendingPush.map(entry => entry.actionId);
-      },
-    },
-  });
-}
+// Storage
 
 /** The slice of the Overseer's typed storage the git cache operates on. */
 export interface GitCacheStorage {

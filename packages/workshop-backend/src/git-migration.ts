@@ -65,8 +65,8 @@ import type {
   AiChatMessage, AiChatMetadata, ChatGadgetPin, ChatGadgetPinState, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import type { CompactionCheckpoint } from "./agent";
-import type { GadgetRecord, OverseerStorage } from "./overseer";
+import type { CompactionCheckpoint, GadgetRecord, OverseerStorage }
+  from "./storage-schema/overseer-storage";
 import { chatChangeStatuses, legacyChatBaseVersion } from "./agent-compaction";
 import { GitStore, filesEqual } from "./git-store";
 import { createWorkshopLogger } from "./observability";

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
     from "../src/auto-approval.js";
-import type { ActionRecord } from "../src/overseer.js";
+import type { ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { makeMockStorage } from "./mock-storage.js";

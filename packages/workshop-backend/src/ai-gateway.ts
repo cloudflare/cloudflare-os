@@ -1,7 +1,7 @@
 import {
   AiChatAuthorInfo, AiModelConfig, HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
 } from "@gadgets/workshop-shared/api";
-import { UserAiModelRecord } from "./user.js";
+import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
 //
