@@ -11,6 +11,7 @@ import { diffFiles, type CodeChange, type CodeContent, type FileChange }
 import { keyString } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import { buildCompactionState } from "../src/agent-compaction";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { CodePreviewManager } from "../src/code-preview";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
 
@@ -185,7 +186,7 @@ describe("the version 3 -> 4 workpiece-type migration", () => {
     await abortAllDurableObjects();
 
     await withImpl(async impl => {
-      expect(impl.storage.version.get()).toBe(4);
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
       expect(impl.storage.gadgets.get(1)!.type).toBe("gadget");
       expect(impl.storage.gadgets.get(2)!.type).toBe("gadget");
       // Pending survives the stamp, and the unique index still resolves both names.

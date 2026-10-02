@@ -747,7 +747,7 @@ describe("revert and draft discard", () => {
     expect(codeBase).toMatchObject({ generation: 2, revision: 0 });
   }));
 
-  // Seeds the shape the git-storage migration leaves behind (see git-migration.ts): legacy
+  // Seeds the shape the git-storage migration leaves behind (see overseer-git-migration.ts): legacy
   // pre-conversion messages (optionally including a surviving "changes" message, which
   // post-conversion is a content-less proposed marker -- its Yjs payload is retired and its
   // content lives in the boundary's collapsed change), then the conversion boundary carrying

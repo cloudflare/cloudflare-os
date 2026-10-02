@@ -64,6 +64,25 @@ export type GatekeeperRecord = {
 };
 
 /**
+ * The props of an agent-spawner gatekeeper's `GatekeeperRecord.class` stub. They are baked into
+ * the stored stub, so this is a stored shape like any other record here: they cannot be edited
+ * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does).
+ */
+export type AgentSpawnerBindingProps = {
+  /** ID of the overseer under which this agent should run. */
+  overseerId: string,
+
+  config: AgentSpawnerConfig,
+
+  /**
+   * DO ID of the user who created this binding. When agents are spawned, the model is
+   * resolved from this user's account. Falls back to the gadget owner for bindings
+   * created before collaborator support was added.
+   */
+  creatorUserId?: string,
+};
+
+/**
  * A binding edge from one gadget to a target workpiece (today always a gatekeeper), stored in
  * GadgetRecord.bindings keyed by binding name.
  */
@@ -242,7 +261,7 @@ export type WorktreeRecord = {
  * The unified workpiece registry record: the `gadgets` collection (named before worktrees
  * existed) stores both variants, discriminated by `type`. One table so a WorkpieceId resolves
  * in one lookup and content-handling code can be shared; rows written before schema version 4
- * lack the discriminant on disk and are stamped `type: "gadget"` by #migrateToWorkpieceTypes.
+ * lack the discriminant on disk and are stamped `type: "gadget"` by migrateToWorkpieceTypes.
  */
 export type WorkpieceRecord = GadgetRecord | WorktreeRecord;
 
@@ -804,7 +823,7 @@ type ChatDraftUpdateRecord = {
  * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
  * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
  * leaving it as the internal record type of the retired log, whose one remaining reader is the
- * git-storage migration's replay (git-migration.ts).
+ * git-storage migration's replay (overseer-git-migration.ts).
  */
 type CodeUpdate = {
   /** Version number of the code AFTER this update has been applied. */
@@ -963,9 +982,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       `env: Record<name, WorkpieceId>` form (old `env?: string[]` allowlists rewritten,
       //       in both the creationSpec and the class stub's baked-in props).
       //   2 = git-backed code: mainline code lives in `gitObjects` as commits synthesized from
-      //       the legacy `code` log (see git-migration.ts); gadget records carry a `commitId`,
-      //       blueprint records reference commits, historical merge messages carry `commits`,
-      //       and every live chat was converted to the commit-pinned change stream (a
+      //       the legacy `code` log (see overseer-git-migration.ts); gadget records carry a
+      //       `commitId`, blueprint records reference commits, historical merge messages carry
+      //       `commits`, and every live chat was converted to the commit-pinned change stream (a
       //       `conversionBoundary` changes message plus a `codeBase`). The `code`/`snapshots`
       //       collections are dead stored data from this version on.
       //   3 = the actions collection's indexes (pendingByGatekeeper, byHistoryFilter,
@@ -1037,9 +1056,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage
-      // migration (git-migration.ts), which collapses each pre-git chat's uncommitted state into
-      // a conversion change; deletion is a later cleanup change. Workspaces initialized after git
-      // storage never write it at all.
+      // migration (overseer-git-migration.ts), which collapses each pre-git chat's uncommitted
+      // state into a conversion change; deletion is a later cleanup change. Workspaces initialized
+      // after git storage never write it at all.
       code: collection<CodeUpdate>()({
         primaryKey: "version"
       }),

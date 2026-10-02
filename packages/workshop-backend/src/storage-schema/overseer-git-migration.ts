@@ -41,7 +41,7 @@
 // but nothing can apply them (delivery strips them; see hydrateChatMessageForClient).
 //
 // One repair predates all of that: the multi-gadget migration (version 0 -> 1, see
-// OverseerImpl.#migrateStorage) counted only *mainline* code as gadget content, so a workspace
+// migrateToMultiGadget) counted only *mainline* code as gadget content, so a workspace
 // whose only code was proposed-but-unaccepted chat changes migrated to zero gadgets -- leaving
 // that content orphaned in the legacy root "", which no gadget record owns (and which the
 // conversion would otherwise silently drop, since the registry is its enumeration source of
@@ -52,7 +52,7 @@
 // chat then converts like any other: pinned at the empty tree with its files as proposed sets.
 //
 // The migration runs in the Overseer constructor under blockConcurrencyWhile, gated by the
-// `version` singleton (see OverseerImpl.#migrateToGitStorage). It is re-runnable: object writes
+// `version` singleton (see migrateToGitStorage). It is re-runnable: object writes
 // are content-addressed (recommitting identical history yields identical oids), every record
 // rewrite is deterministic from storage state, and all record writes (chat conversion included)
 // happen in one synchronous tail, so a crashed run is simply redone. (Defensively, a chat that
@@ -65,11 +65,12 @@ import type {
   AiChatMessage, AiChatMetadata, ChatGadgetPin, ChatGadgetPinState, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import type { CompactionCheckpoint, GadgetRecord, OverseerStorage }
-  from "./storage-schema/overseer-storage";
-import { chatChangeStatuses, legacyChatBaseVersion } from "./agent-compaction";
-import { GitStore, filesEqual } from "./git-store";
-import { createWorkshopLogger } from "./observability";
+import {
+  compactionKey, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage,
+} from "./overseer-storage";
+import { chatChangeStatuses } from "../agent-compaction";
+import { GitStore, filesEqual } from "../git-store";
+import { createWorkshopLogger } from "../observability";
 
 const logger = createWorkshopLogger("workshop.overseer.git-migration");
 
@@ -87,8 +88,8 @@ export const HISTORY_COMMIT_GAP_MS = 60 * 60 * 1000;
 export interface GitMigrationHost {
   /** The workspace's storage. Only the listed collections are read or written. */
   storage: Pick<OverseerStorage,
-      "code" | "gadgets" | "chats" | "chatMeta" | "chatDraftUpdates" | "nextChatSequences" |
-      "blueprints">;
+      "code" | "gadgets" | "chats" | "chatMeta" | "chatCompactions" | "chatDraftUpdates" |
+      "nextChatSequences" | "blueprints">;
 
   /** The workspace's git object store, which receives the synthesized commits. */
   gitStore: GitStore;
@@ -96,7 +97,10 @@ export interface GitMigrationHost {
   /** Commit author/committer for every synthesized commit: the workspace owner's identity. */
   ownerIdentity: CommitIdentity;
 
-  /** The workspace's default gadget, which legacy records reference by omission. */
+  /**
+   * The workspace's default gadget, which legacy records reference by omission and whose files
+   * the legacy code doc held in its unnamed root "" (see the `defaultGadgetId` singleton).
+   */
   defaultGadgetId: WorkpieceId | undefined;
 
   /**
@@ -104,16 +108,10 @@ export interface GitMigrationHost {
    * its id. Called at most once, only when `defaultGadgetId` is undefined and a live chat still
    * proposes content in the legacy root "" (see the module comment). The record is created
    * head-less: the migration roots it at the version-0 empty tree and assigns its head like any
-   * other permanent gadget's, before the migration's critical section ends. After the call,
-   * `gadgetRootName` must map the returned id to "".
+   * other permanent gadget's, before the migration's critical section ends. The migration
+   * treats the returned id as the default gadget from then on.
    */
   createDefaultGadget(): WorkpieceId;
-
-  /** Maps a gadget to its legacy Y.Doc root name (the default gadget's is ""). */
-  gadgetRootName(id: WorkpieceId): string;
-
-  /** The checkpoint named by the chat's `compactedTo`, for the chat's anchor computation. */
-  getActiveChatCompaction(chatId: number): CompactionCheckpoint | undefined;
 
   /**
    * A unique, monotonic chat-message timestamp (the chats collection's byTimestamp index is
@@ -158,6 +156,45 @@ function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> {
     files.set(name, text.toString());
   }
   return files;
+}
+
+/**
+ * The code-log version a legacy (pre-git-storage) chat's Yjs doc base is anchored to: the
+ * maximum over every version the chat's history references -- the active compaction checkpoint's
+ * stamp, `observedCodeVersion` on tool calls and "changes" messages, and legacy merge messages'
+ * `version`. A chat that references no version reads the legacy log's tip ("current"), which is
+ * stable now that the log is read-only.
+ *
+ * The *maximum* matters, not the first stamp (the agent's own version-lock latch): a Yjs update
+ * applies cleanly to any doc state that includes the state it was built against, and every update
+ * in the log was built against the doc at *some* referenced version, so the max is the smallest
+ * base that can represent them all. Anchoring lower silently loses content: a user draft
+ * materialized while mainline was ahead of the agent's latch (its stamp is the then-current
+ * version) can reference Yjs items the lower-anchored doc lacks, which Yjs then parks as pending
+ * structs -- the edits just vanish from the flattened files. Merge versions are included so a
+ * chat whose own accept was the last mainline movement anchors at the tip it created, keeping
+ * the conversion's pins fast-forwardable without a spurious update-from-mainline round.
+ *
+ * This is the conversion's anchor: the version its conversion change's pins resolve at.
+ * Exported for tests.
+ */
+export function legacyChatBaseVersion(
+    checkpoint: CompactionCheckpoint | undefined,
+    messages: Iterable<AiChatMessage>): number | "current" {
+  let anchor = checkpoint?.observedCodeVersion;
+  let bump = (version: number | undefined) => {
+    if (version !== undefined && (anchor === undefined || version > anchor)) anchor = version;
+  };
+  for (let msg of messages) {
+    if (msg.type === "message") {
+      for (let call of msg.toolCalls ?? []) bump(call.observedCodeVersion);
+    } else if (msg.type === "changes") {
+      bump(msg.observedCodeVersion);
+    } else if (msg.type === "merge") {
+      bump(msg.version);
+    }
+  }
+  return anchor ?? "current";
 }
 
 /**
@@ -224,7 +261,10 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
         if (logVersions.has(msg.version)) points.add(msg.version);
       }
     }
-    let anchor = legacyChatBaseVersion(host.getActiveChatCompaction(meta.id), messages);
+    // The checkpoint named by the chat's `compactedTo`, whose stamp is part of the anchor.
+    let checkpoint = meta.compactedTo === undefined
+        ? undefined : storage.chatCompactions.get(compactionKey(meta.id, meta.compactedTo));
+    let anchor = legacyChatBaseVersion(checkpoint, messages);
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
     if (resolved > 0) points.add(resolved);
     if (meta.codeBase === undefined) {
@@ -248,11 +288,13 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   }
 
   // Blueprint pins. Tracks the referenced gadget even when it has since been deleted from the
-  // registry: the blueprint's snapshot must remain reconstructable from its commit.
+  // registry: the blueprint's snapshot must remain reconstructable from its commit. (A gadget's
+  // legacy root is its decimal workpiece ID, except the default gadget's, which is "".)
   let tracked = new Map<WorkpieceId, GadgetSynthesis>();
   let track = (id: WorkpieceId) => {
     if (!tracked.has(id)) {
-      tracked.set(id, { root: host.gadgetRootName(id), files: new Map(), chain: [] });
+      let root = id === defaultGadgetId ? "" : `${id}`;
+      tracked.set(id, { root, files: new Map(), chain: [] });
     }
   };
   for (let gadget of storage.gadgets.list()) {
@@ -464,7 +506,7 @@ function convertLegacyChat(
   let carriedPending: WorkpieceId[] = [];
   for (let gadget of storage.gadgets.list()) {
     if (gadget.pending !== undefined && gadget.pending.chatId !== meta.id) continue;
-    let root = host.gadgetRootName(gadget.id);
+    let { root } = tracked.get(gadget.id)!;
     let anchorFiles = readDocFiles(anchorDoc, root);
     let chatFiles = readDocFiles(chatDoc, root);
     if (filesEqual(anchorFiles, chatFiles)) continue;

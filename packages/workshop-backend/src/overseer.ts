@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitIdentity, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -13,7 +13,8 @@ import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, compactionKey, makeOverseerStorage,
-  type ActionRecord, type ActiveAgentRecord, type AiChatAgentContext, type BindingRecord,
+  type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
+  type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
@@ -23,7 +24,10 @@ import {
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
-import { migrateCodeLogToGit } from "./git-migration";
+import {
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToGitStorage, migrateToMultiGadget,
+  migrateToWorkpieceTypes,
+} from "./storage-schema/overseer-migrations";
 import * as Y from "yjs";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1049,12 +1053,13 @@ class OverseerImpl implements AgentHooks {
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
-    // Run any pending storage migration before anything else can touch storage. This must happen
-    // in the constructor (not just open()) because the DO also wakes via constructor-driven
-    // agent-turn restoration below, hook deliveries, and [restore]()-based persistent callbacks.
-    // This migration is fully synchronous, so nothing can observe pre-migration state; the
-    // git-storage migration below is the asynchronous one, shielded by blockConcurrencyWhile.
-    this.#migrateStorage();
+    // Run any pending storage migration (see storage-schema/overseer-migrations.ts) before
+    // anything else can touch storage. This must happen in the constructor (not just open())
+    // because the DO also wakes via constructor-driven agent-turn restoration below, hook
+    // deliveries, and [restore]()-based persistent callbacks. This migration is fully
+    // synchronous, so nothing can observe pre-migration state; the git-storage migration below
+    // is the asynchronous one, shielded by blockConcurrencyWhile.
+    migrateToMultiGadget(this);
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
@@ -1086,13 +1091,13 @@ class OverseerImpl implements AgentHooks {
       // to do -- blockConcurrencyWhile has already aborted the DO -- but the rejection must be
       // consumed so it doesn't also surface as an unhandled rejection.
       this.ctx.blockConcurrencyWhile(async () => {
-        await this.#migrateToGitStorage();
-        this.#migrateToActionIndexes();
-        this.#migrateToWorkpieceTypes();
+        await migrateToGitStorage(this);
+        migrateToActionIndexes(this);
+        migrateToWorkpieceTypes(this);
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
-      this.#migrateToActionIndexes();
-      this.#migrateToWorkpieceTypes();
+      migrateToActionIndexes(this);
+      migrateToWorkpieceTypes(this);
       this.#resumeInterruptedAgents();
     }
   }
@@ -1136,195 +1141,8 @@ class OverseerImpl implements AgentHooks {
     this.drainAllPendingAgentCalls();
   }
 
-  // Runs the git-storage migration (see git-migration.ts) and stamps schema version 2. The
-  // version stamp is written last: storage writes persist in order, so a crash mid-migration
-  // leaves the version at 1 and the next construction redoes the whole (re-runnable) migration.
-  async #migrateToGitStorage(): Promise<void> {
-    let startedAt = Date.now();
-    let { commits } = await migrateCodeLogToGit({
-      storage: this.storage,
-      gitStore: this.gitStore,
-      ownerIdentity: await this.#ownerCommitIdentity(),
-      defaultGadgetId: this.defaultGadgetId,
-      createDefaultGadget: () => this.ensureDefaultGadget(undefined),
-      gadgetRootName: (id) => this.gadgetRootName(id),
-      getActiveChatCompaction: (chatId) => this.getActiveChatCompaction(chatId),
-      getChatTimestamp: () => this.getChatTimestamp(),
-    });
-    this.storage.version.put(2);
-    this.logger.info("migrated workspace code to git storage", {
-      event: "storage.migration.git.completed",
-      durationMs: Date.now() - startedAt, commitCount: commits,
-    });
-  }
-
-  // Version 2 -> 3: backfill the actions indexes. Indexes are only maintained at write time, so
-  // over records that predate their declaration they start empty -- and updating a pre-existing
-  // action would then throw on the index update. Runs synchronously in the constructor (chained
-  // after the git-storage migration when that one is still pending), so nothing can observe
-  // pre-migration state; transactionSync makes rebuilds-plus-stamp atomic, so a crash
-  // mid-rebuild retries whole. The `!== 2` guard keeps never-initialized DOs write-free (they
-  // stamp the current version at first initialization).
-  #migrateToActionIndexes(): void {
-    if (this.storage.version.get() !== 2) return;
-    this.ctx.storage.transactionSync(() => {
-      this.storage.actions.pendingByGatekeeper.rebuild();
-      this.storage.actions.byHistoryFilter.rebuild();
-      this.storage.actions.byLastChanged.rebuild();
-      this.storage.version.put(3);
-    });
-    this.logger.info("backfilled the action-log indexes", {
-      event: "storage.migration.action-indexes.completed",
-    });
-  }
-
-  // Version 3 -> 4: stamp every pre-existing `gadgets` row with the WorkpieceRecord `type`
-  // discriminant (all such rows are gadgets; worktrees postdate this version). Required rather
-  // than an absent-means-gadget default, so consumers dispatch on `type` without carrying
-  // undefined-handling forever. Runs synchronously in the constructor, chained after
-  // #migrateToActionIndexes in both branches so a v1 workspace runs 1→2, 2→3, 3→4 in one wake;
-  // transactionSync makes rewrite-plus-stamp atomic, so a crash mid-rewrite retries whole; and
-  // the `!== 3` guard keeps never-initialized DOs write-free. No byBindingName rebuild is
-  // needed: every pre-existing row carries a bindingName, so the keys the index already holds
-  // are exactly what its `?? null` function computes for them.
-  #migrateToWorkpieceTypes(): void {
-    if (this.storage.version.get() !== 3) return;
-    this.ctx.storage.transactionSync(() => {
-      for (let record of Array.from(this.storage.gadgets.list())) {
-        // Pre-v4 rows lack the discriminant at runtime (whatever the type says), and all of
-        // them are gadgets.
-        this.storage.gadgets.put({...(record as GadgetRecord), type: "gadget"});
-      }
-      this.storage.version.put(4);
-    });
-    this.logger.info("stamped workpiece record types", {
-      event: "storage.migration.workpiece-types.completed",
-    });
-  }
-
-  // The workspace owner's commit identity, for commits synthesized by the git-storage migration.
-  // A transient user-DO reset is retried once (pure read on a fresh-stub helper); anything past
-  // that degrades to a placeholder rather than failing: identity on synthesized history is
-  // cosmetic, and blocking the migration on the owner's User DO would leave the workspace
-  // unusable for as long as that DO is unreachable (or its account gone).
-  async #ownerCommitIdentity(): Promise<CommitIdentity> {
-    try {
-      if (this.ownerId !== undefined) {
-        let profile = await retryOnDoReset(
-            () => this.#ownerUserDo().whoamiIfExists(), this.logger);
-        if (profile) return commitIdentityForAuthor(profile);
-      }
-    } catch (err) {
-      this.logger.warn("failed to resolve owner identity for history import", {
-        event: "storage.migration.git.owner-identity.failed", error: err,
-      });
-    }
-    return { name: "Workspace owner", email: "owner@localhost" };
-  }
-
   // =======================================================================================
-  // Multi-gadget workspace helpers: storage migration, the gadget registry, and
-  // defaultGadgetId resolution.
-
-  // Migrate storage to the current schema version. Runs synchronously in the constructor.
-  #migrateStorage(): void {
-    if (this.storage.version.get() !== 0) return;
-    if (this.ownerId === undefined) {
-      // Brand-new (or never-initialized) DO: there is nothing to migrate. We deliberately avoid
-      // writing anything here, so that probing a nonexistent DO leaves no storage behind; the
-      // version singleton is set when the workspace is first initialized (see
-      // OverseerDurableObject.open() / receiveExternalMessage()).
-      return;
-    }
-
-    // Run the whole migration in one transaction so that a mid-migration error can't leave the
-    // workspace half-migrated.
-    let startedAt = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      // Version 0 -> 1: the workspace predates multi-gadget support. If it has any gadget content
-      // (code beyond the initial empty snapshot, or named bindings), register that content as the
-      // workspace's single gadget and record it as the default gadget; binding names and blueprint
-      // annotations move from the gatekeeper records onto the gadget's binding edges. (The stale
-      // originals are left on the gatekeeper records; see GatekeeperRecord.) A workspace with no
-      // gadget content migrates to zero gadgets.
-      let hasCode = [...this.storage.code.list({limit: 1, start: 2})].length > 0;
-      let allGatekeepers = [...this.storage.gatekeepers.list()];
-      let namedGatekeepers = allGatekeepers.filter(gk => gk.bindingName !== undefined);
-
-      // The legacy flat env's named entries: each named gatekeeper, plus `GADGET -> the legacy
-      // gadget` when one is created below. Used to resolve spawner allowlists further down.
-      // (The workspace default binding list itself needs no migration step: it is derived on
-      // demand from the gadget record created below, whose bindingName and binding edges yield
-      // exactly this map -- so chats in old workspaces keep seeing `env.GADGET` and the same
-      // named bindings they always did.)
-      let legacyEnv: Record<string, WorkpieceId> = {};
-      for (let gk of namedGatekeepers) {
-        legacyEnv[gk.bindingName!] = gk.id;
-      }
-
-      if (hasCode || namedGatekeepers.length > 0) {
-        let id = this.allocateWorkpieceId();
-        // Set defaultGadgetId before putting the record so that gadgetRootName() (used by
-        // workpiece subscribers) resolves the legacy names.
-        this.storage.defaultGadgetId.put(id);
-        let bindings: Record<string, BindingRecord> = {};
-        for (let gk of namedGatekeepers) {
-          bindings[gk.bindingName!] = {
-            target: gk.id,
-            ...(gk.blueprintAnnotation ? {blueprintAnnotation: gk.blueprintAnnotation} : {}),
-          };
-        }
-        this.storage.gadgets.put({
-          type: "gadget",
-          id,
-          title: this.storage.title.get(),
-          created: new Date(),
-          bindingName: "GADGET",
-          bindings,
-        });
-        legacyEnv["GADGET"] = id;
-      }
-
-      // Rewrite each agent-spawner gatekeeper's config from the old `env?: string[]` binding-name
-      // allowlist to the new `env: Record<name, WorkpieceId>` form (see AgentSpawnerConfig). The
-      // config lives in two places and both must be updated: the record's `creationSpec`, and the
-      // props baked into the record's `class` stub. Props can't be edited in place, so the stub
-      // is recreated the same way newAgentSpawnerGatekeeper() creates it -- except that
-      // `creatorUserId` isn't recoverable from the record, so it is omitted, relying on the
-      // documented legacy fallback to the workspace owner.
-      for (let gk of allGatekeepers) {
-        if (gk.creationSpec?.type !== "agentSpawner") continue;
-        // The stored (pre-migration) shape is derived from the real type, differing only in
-        // `env`; the conflicting `env` types force the cast through `unknown`.
-        let {env: legacyAllowlist, ...restConfig} = gk.creationSpec.config as
-            unknown as Omit<AgentSpawnerConfig, "env"> & {env?: string[]};
-        let env: Record<string, WorkpieceId>;
-        if (legacyAllowlist !== undefined) {
-          // Resolve each allowlisted name against the gatekeepers' binding names, dropping any
-          // that no longer resolve.
-          env = {};
-          for (let name of legacyAllowlist) {
-            if (Object.hasOwn(legacyEnv, name)) env[name] = legacyEnv[name];
-          }
-        } else {
-          // An absent allowlist historically meant "unrestricted": the spawned agent saw every
-          // named binding plus GADGET -- exactly the legacy env map built above.
-          env = {...legacyEnv};
-        }
-        let config: AgentSpawnerConfig = {...restConfig, env};
-        gk.creationSpec = {...gk.creationSpec, config};
-        let props: AgentSpawnerBindingProps = {overseerId: this.ctx.id.toString(), config};
-        gk.class = this.ctx.exports.AgentSpawnerGatekeeper({props});
-        this.storage.gatekeepers.put(gk);
-      }
-
-      this.storage.version.put(1);
-    });
-
-    this.logger.info("migrated workspace storage", {
-      event: "storage.migration.completed", durationMs: Date.now() - startedAt,
-    });
-  }
+  // Multi-gadget workspace helpers: the gadget registry and defaultGadgetId resolution.
 
   // Allocate a workpiece ID from the shared counter. (The counter is named `nextGatekeeperId`
   // for historical reasons; see makeOverseerStorage.)
@@ -1376,13 +1194,6 @@ class OverseerImpl implements AgentHooks {
   // Whether the id names a live worktree record (a deleted workpiece is not a worktree here).
   isWorktree(id: WorkpieceId): boolean {
     return this.storage.gadgets.get(id)?.type === "worktree";
-  }
-
-  // Name of the legacy Y.Doc root map that held the given gadget's files in the retired
-  // pre-git code log. The default gadget used the unnamed root ""; all others the decimal
-  // workpiece ID. Only the git-storage migration still resolves roots (git-migration.ts).
-  gadgetRootName(id: WorkpieceId): string {
-    return this.defaultGadgetId === id ? "" : `${id}`;
   }
 
   // Facet name for the given gadget. The facet name is a storage key, so the default gadget
@@ -1630,7 +1441,8 @@ class OverseerImpl implements AgentHooks {
   ensureDefaultGadget(commitId: string | undefined): WorkpieceId {
     if (this.defaultGadgetId !== undefined) return this.defaultGadgetId;
     let id = this.allocateWorkpieceId();
-    // Set defaultGadgetId first so subscribers computing gadgetRootName() see the legacy names.
+    // Set defaultGadgetId first, so that workpiece subscribers never see the gadget without its
+    // legacy names (see the `defaultGadgetId` singleton).
     this.storage.defaultGadgetId.put(id);
     this.defaultGadgetId = id;
     this.storage.gadgets.put({
@@ -4713,7 +4525,7 @@ class OverseerImpl implements AgentHooks {
   async #gitAuthorFor(caller: GatekeeperCaller): Promise<AiChatAuthorInfo> {
     let turn = caller.from === "agent" ? this.#activeWorktreeTurns.get(caller.chatId) : undefined;
     if (turn !== undefined) return turn.initiator;
-    return this.gadgetAuthorFor(await retryOnDoReset(() => this.#ownerUserDo().whoami(), this.logger));
+    return this.gadgetAuthorFor(await retryOnDoReset(() => this.ownerUserDo().whoami(), this.logger));
   }
 
   // The author of work this workspace's gadgets do on `user`'s behalf -- spawned agent turns,
@@ -4850,8 +4662,8 @@ class OverseerImpl implements AgentHooks {
   // Prepare a stored chat message for delivery to a client: inline image attachment bytes
   // (non-image attachments are fetched on demand via getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
-  // rollback insurance (see git-migration.ts) but nothing can apply it, so it must not ship as
-  // dead weight on the wire (it is not part of the message's API type).
+  // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
+  // ship as dead weight on the wire (it is not part of the message's API type).
   hydrateChatMessageForClient(msg: AiChatMessage): AiChatMessage {
     if (msg.type === "changes" && "update" in msg) {
       let {update: _, ...rest} = msg as AiChatMessage & {update?: Uint8Array};
@@ -6663,7 +6475,8 @@ class OverseerImpl implements AgentHooks {
   // Singleton gatekeepers (e.g. the Context Library), provisioned as ambient capsules
   // =======================================================================================
 
-  #ownerUserDo() {
+  // A fresh stub to the workspace owner's user DO.
+  ownerUserDo() {
     if (!this.ownerId) throw new Error("Workspace is not initialized.");
     return wrapDoStubForTelemetry(
         this.users.get(this.users.idFromString(this.ownerId)), this.logger);
@@ -6682,7 +6495,7 @@ class OverseerImpl implements AgentHooks {
   async ensureAmbientCapsules(): Promise<void> {
     let ownerId = this.ownerId;
     if (!ownerId) return;
-    let ownerDo = this.#ownerUserDo();
+    let ownerDo = this.ownerUserDo();
     // listProvidedAccounts ensures the owner's auto-provisioned singleton accounts exist first, so this
     // single round trip both provisions them and reads them back before we wire up capsules.
     let accounts = (await ownerDo.listProvidedAccounts())
@@ -6862,7 +6675,7 @@ class OverseerImpl implements AgentHooks {
     try {
       // Pure read on a fresh-stub getter: safe to retry once across a user-DO reset.
       let userMeta = await retryOnDoReset(
-          () => this.#ownerUserDo().getChatContext(null), this.logger);
+          () => this.ownerUserDo().getChatContext(null), this.logger);
       return userMeta.quickModel
           ? {config: userMeta.quickModel, initiator: userMeta.profile}
           : undefined;
@@ -8971,7 +8784,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // A workspace initialized by this version of the code is born at the current schema version;
     // there is nothing to migrate.
-    this.impl.storage.version.put(4);
+    this.impl.storage.version.put(OVERSEER_STORAGE_VERSION);
   }
 
   /**
@@ -12222,18 +12035,6 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 }
 
 // =======================================================================================
-
-type AgentSpawnerBindingProps = {
-  // ID of the overseer under which this agent should run.
-  overseerId: string,
-
-  config: AgentSpawnerConfig,
-
-  // DO ID of the user who created this binding. When agents are spawned, the model is
-  // resolved from this user's account. Falls back to the gadget owner for bindings
-  // created before collaborator support was added.
-  creatorUserId?: string,
-};
 
 import AGENT_SPAWNER_BINDING_TYPES from "./agent-spawner-binding.txt";
 
