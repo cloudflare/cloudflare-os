@@ -754,11 +754,21 @@ export class ChatApi {
     return { ...page, items: page.items.map(entry => entry.person) };
   }
 
-  /** The directory profile with this email address, or null when the organization has none. */
+  /**
+   * The directory profile with this email address, or null when the organization has none.
+   * Throws when more profiles match than one page holds and none of those has it.
+   */
   async findDirectoryPerson(email: string): Promise<ChatPerson | null> {
     const wanted = email.toLowerCase();
-    const { items } = await this.#searchDirectory(email, { pageSize: 10 });
-    return items.find(entry => entry.emails.some(address => address.toLowerCase() === wanted))?.person ?? null;
+    // Google documents a prefix search but not its ordering, so a further page leaves absence unconfirmed.
+    const { items, nextPageToken } = await this.#searchDirectory(email, { pageSize: 10 });
+    const match = items.find(entry => entry.emails.some(address => address.toLowerCase() === wanted));
+    if (match) return match.person;
+    if (nextPageToken) {
+      throw new Error(`Couldn't confirm that ${email} is in your organization's directory: too many ` +
+        "profiles match it.");
+    }
+    return null;
   }
 
   async #searchDirectory(

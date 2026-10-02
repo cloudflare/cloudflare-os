@@ -136,11 +136,16 @@ function chatBackend() {
         ...(sources.includes("DIRECTORY_SOURCE_TYPE_DOMAIN_CONTACT") ? state.externalContacts : []),
       ].filter(person => person.email.startsWith(query) ||
         person.name.toLowerCase().split(" ").some(word => word.startsWith(query)));
-      return json({people: people.map(person => ({
-        resourceName: `people/${person.id}`,
-        names: [{displayName: person.name, metadata: {primary: true}}],
-        emailAddresses: [{value: person.email, metadata: {primary: true}}],
-      }))});
+      const start = Number(url.searchParams.get("pageToken") ?? 0);
+      const end = start + Math.min(Number(url.searchParams.get("pageSize")), state.pageSize);
+      return json({
+        people: people.slice(start, end).map(person => ({
+          resourceName: `people/${person.id}`,
+          names: [{displayName: person.name, metadata: {primary: true}}],
+          emailAddresses: [{value: person.email, metadata: {primary: true}}],
+        })),
+        ...(end < people.length ? {nextPageToken: String(end)} : {}),
+      });
     }
     if (url.hostname === "people.googleapis.com") {
       return json({responses: url.searchParams.getAll("resourceNames").map(requestedResourceName => {
@@ -1644,6 +1649,16 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.setups).toEqual([]);
   });
 
+  it("won't call someone outside the directory when more profiles match than a page holds", async () => {
+    const {backend, chat} = accountChat();
+    backend.state.pageSize = 1;
+    // An address that begins with Bob's, which Google's prefix search can return ahead of his.
+    backend.state.directory.unshift({id: "201", name: "Bob Other", email: "bob@example.com.au"});
+    using account = await chat.account();
+    await expect(Promise.resolve(account.sendDirectMessage([BOB.email], "hi")))
+      .rejects.toThrow(/Couldn't confirm that bob@example\.com is in/);
+  });
+
   // Google silently leaves out of a new group chat anyone who blocks the caller, so a post there
   // would reach a different audience than the one approved.
   it("posts nothing, and stays rejectable, when Google leaves someone out of a new group chat", async () => {
@@ -1732,6 +1747,21 @@ describe("Starting Google Chat conversations", () => {
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
     await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+  });
+
+  it("posts nothing once someone joins the conversation it set up before a refused post", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    backend.state.createFailure = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+    backend.state.createFailure = 0;
+    backend.state.members.push(joined("400"));
+    await expect(chat.applyAction(1)).rejects.toThrow(/have changed since it was set up/);
+    expect(backend.state.creates).toEqual([]);
+    backend.state.members.pop();
+    await chat.applyAction(1);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hi all"]);
   });
 
   it("keeps a send rejectable when Google can't list its new conversation's members", async () => {

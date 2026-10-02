@@ -757,11 +757,11 @@ async function openConversation(
   const known = store.conversationWith(people);
   if (known !== undefined) {
     // Unless it is gone, or someone has joined or left it since.
-    const present = await api.peopleIn(known).catch((error: unknown) => {
-      if (isChatNoAccessError(error)) return new Set<string>();
+    const unchanged = await hasExactly(api, known, ids).catch((error: unknown) => {
+      if (isChatNoAccessError(error)) return false;
       throw error;
     });
-    if (present.size === ids.length + 1 && ids.every(id => present.has(id))) return known;
+    if (unchanged) return known;
     store.forgetConversationWith(people);
   }
   // spaces.setup returns an existing direct message itself, but would add a second group chat.
@@ -778,6 +778,12 @@ async function openConversation(
       "out of the new conversation, perhaps because they block you, so nothing was posted. Reject this message.");
   }
   return spaceName;
+}
+
+/** Whether exactly the connected user and the people with `ids` are in `spaceName`. */
+async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[]): Promise<boolean> {
+  const present = await api.peopleIn(spaceName);
+  return present.size === ids.length + 1 && ids.every(id => present.has(id));
 }
 
 /** Pair a just-queued message with its capability. */
@@ -1453,10 +1459,18 @@ export class GoogleChatGatekeeperImpl
   async #createConversation(
     api: ChatApi, store: ChatStore, actionId: number, pendingName: string, conversation: ChatNewConversation,
   ): Promise<string> {
-    // Once recorded, a retry may follow a post that landed, and must keep the action unrejectable.
+    const ids = conversation.members.map(member => member.id);
     const created = store.spaceName(pendingName);
-    if (created !== pendingName) return created;
-    const people = conversation.members.map(member => member.id).toSorted().join(",");
+    if (created !== pendingName) {
+      // Once recorded, a retry may follow a post that landed, and must keep the action unrejectable.
+      // One that definitely didn't post first checks nobody has joined or left the conversation.
+      if (!store.wasAttempted(actionId) && !await hasExactly(api, created, ids)) {
+        throw new Error("The people in this Google Chat conversation have changed since it was set up, so " +
+          "nothing was posted. Reject this message.");
+      }
+      return created;
+    }
+    const people = ids.toSorted().join(",");
     const spaceName = await this.#settingUp.run(people,
       () => openConversation(api, store, actionId, people, conversation));
     store.setConversation(pendingName, people, spaceName);
