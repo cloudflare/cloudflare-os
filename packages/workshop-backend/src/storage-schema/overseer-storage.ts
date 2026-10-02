@@ -5,8 +5,10 @@
 // to the stored shape of a workspace shows up as a change here. Declare new collections,
 // singletons, and record types here even when the code operating on them lives in another module
 // (git-store.ts, git-cache.ts, sharing.ts, agent.ts, ...). The exception is types that are also
-// part of the wire API (e.g. AiChatMessage): those are defined in workshop-shared and stored
-// as-is.
+// part of the wire API (e.g. BlueprintMetadata): those are defined in workshop-shared and stored
+// as-is. Where old records still hold something the wire type has since dropped, the stored
+// shape is declared here as a `Stored*` type extending it (or a `Legacy*` type, for a shape no
+// longer written at all), so that readers of old data need no ad-hoc casts.
 //
 // This file has no runtime dependency on any other backend module, so any of them may import it
 // without creating a cycle.
@@ -60,8 +62,15 @@ export type GatekeeperRecord = {
    * originals, or they may just be left around, but if so they are stale.)
    */
   bindingName?: string;
-  blueprintAnnotation?: BlueprintBindingAnnotation;
+  blueprintAnnotation?: StoredBlueprintBindingAnnotation;
 };
+
+/**
+ * A stored blueprint annotation. Those written while the UI still offered an exclusion control
+ * may carry `included: false`, which keeps the binding out of blueprints. Nothing writes the
+ * flag anymore, but old binding edges still hold it and collectBindingMetadata honors it.
+ */
+export type StoredBlueprintBindingAnnotation = BlueprintBindingAnnotation & {included?: boolean};
 
 /**
  * The props of an agent-spawner gatekeeper's `GatekeeperRecord.class` stub. They are baked into
@@ -83,6 +92,15 @@ export type AgentSpawnerBindingProps = {
 };
 
 /**
+ * An agent-spawner config as stored before `env` became a name -> workpiece map (see
+ * AgentSpawnerConfig.env): `env` was a binding-name allowlist, and its absence meant
+ * "unrestricted". The version 0 -> 1 migration rewrote the configs held by gatekeeper records
+ * (their `creationSpec` and AgentSpawnerBindingProps), but not the copies frozen into chats that
+ * had already been spawned (see AiChatAgentContext.spawnerConfig).
+ */
+export type LegacyAgentSpawnerConfig = Omit<AgentSpawnerConfig, "env"> & {env?: string[]};
+
+/**
  * A binding edge from one gadget to a target workpiece (today always a gatekeeper), stored in
  * GadgetRecord.bindings keyed by binding name.
  */
@@ -94,7 +112,7 @@ export type BindingRecord = {
    * yet configured. This lives on the edge, not on the gatekeeper: two gadgets binding the same
    * gatekeeper can annotate it differently for their respective blueprints.
    */
-  blueprintAnnotation?: BlueprintBindingAnnotation;
+  blueprintAnnotation?: StoredBlueprintBindingAnnotation;
 
   /**
    * Present while the binding edge is provisional: it was added within the given chat and
@@ -462,6 +480,18 @@ export type AutoApproveTagRecord = {
  */
 export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean};
 
+/**
+ * A stored "changes" message. Those written before git-backed code storage carry the retired
+ * Yjs (V2) `update` payload, which is gone from the wire type but kept on disk as rollback
+ * insurance. The git-storage migration's conversion is the only reader that applies it; agent
+ * replay only tests its presence, and hydrateChatMessageForClient strips it from deliveries.
+ */
+type StoredChangesMessage = Extract<AiChatMessage, {type: "changes"}> & {update?: Uint8Array};
+
+/** A stored chat message: the wire type, except that "changes" messages may be legacy ones. */
+export type StoredChatMessage =
+    Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage;
+
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
   /** Chat ID, corresponds to `chatMeta`. */
@@ -469,9 +499,10 @@ export type AiChatAgentContext = {
 
   /**
    * If present, this chat was spawned using a spawner, and this was the spawner config at the
-   * time.
+   * time. It is frozen, so a chat spawned before the structured env still holds the legacy
+   * form, which is resolved when the chat's bindings are seeded.
    */
-  spawnerConfig?: AgentSpawnerConfig;
+  spawnerConfig?: AgentSpawnerConfig | LegacyAgentSpawnerConfig;
 
   /**
    * If present, this chat was spawned with `spawnCallable()`, and these are the TypeScript
@@ -1224,12 +1255,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "externalChatKey",
       }),
 
-      chats: collection<AiChatMessage>()({
-        primaryKey(msg: AiChatMessage) {
+      chats: collection<StoredChatMessage>()({
+        primaryKey(msg: StoredChatMessage) {
           return `${keyString(msg.chatId)}.${keyString(msg.sequence)}`;
         },
         uniqueIndexes: {
-          byTimestamp(msg: AiChatMessage) { return msg.timestamp.valueOf(); }
+          byTimestamp(msg: StoredChatMessage) { return msg.timestamp.valueOf(); }
         }
       }),
 

@@ -67,6 +67,7 @@ import type {
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
   compactionKey, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage,
+  type StoredChatMessage,
 } from "./overseer-storage";
 import { chatChangeStatuses } from "../agent-compaction";
 import { GitStore, filesEqual } from "../git-store";
@@ -119,14 +120,6 @@ export interface GitMigrationHost {
    */
   getChatTimestamp(): Date;
 }
-
-// A stored pre-conversion "changes" message: the retired Yjs V2 update payload is gone from the
-// wire type but still present on disk. The conversion is the only reader that *applies* it;
-// delivery strips it (hydrateChatMessageForClient) and agent replay only tests its presence
-// (the generic pre-conversion user-edit note).
-type StoredChangesMessage = Extract<AiChatMessage, { type: "changes" }> & {
-  update?: Uint8Array,
-};
 
 // One gadget's synthesis state: its legacy files root, the file map and commit chain synthesized
 // so far (`files` is the content of `chain`'s last entry -- the "previous synthesized commit"
@@ -440,13 +433,13 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
 // updates are the root's only possible source. Size alone decides, mirroring the conversion's
 // own diff-against-empty-anchor condition.
 function chatDocHasLegacyRootContent(
-    storage: GitMigrationHost["storage"], chatId: number, messages: AiChatMessage[]): boolean {
+    storage: GitMigrationHost["storage"], chatId: number, messages: StoredChatMessage[])
+    : boolean {
   let statuses = chatChangeStatuses(messages);
   let doc = new Y.Doc();
   for (let msg of messages) {
     if (msg.type !== "changes" || statuses.get(msg.sequence) === "reverted") continue;
-    let update = (msg as StoredChangesMessage).update;
-    if (update !== undefined) Y.applyUpdateV2(doc, update);
+    if (msg.update !== undefined) Y.applyUpdateV2(doc, msg.update);
   }
   for (let draft of storage.chatDraftUpdates.list({ prefix: `${keyString(chatId)}.` })) {
     Y.applyUpdateV2(doc, draft.update);
@@ -478,8 +471,7 @@ function convertLegacyChat(
   }
   for (let msg of messages) {
     if (msg.type !== "changes" || statuses.get(msg.sequence) === "reverted") continue;
-    let update = (msg as StoredChangesMessage).update;
-    if (update !== undefined) Y.applyUpdateV2(chatDoc, update);
+    if (msg.update !== undefined) Y.applyUpdateV2(chatDoc, msg.update);
   }
 
   // Outstanding drafts fold in (they are strictly newer than every message, and their keys --

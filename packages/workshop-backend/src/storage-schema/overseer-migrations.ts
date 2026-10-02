@@ -15,7 +15,8 @@ import type {
   AgentSpawnerConfig, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type {
-  AgentSpawnerBindingProps, BindingRecord, GadgetRecord, OverseerStorage,
+  AgentSpawnerBindingProps, BindingRecord, GadgetRecord, LegacyAgentSpawnerConfig,
+  OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
@@ -143,10 +144,10 @@ export function migrateToMultiGadget(host: OverseerMigrationHost): void {
     // documented legacy fallback to the workspace owner.
     for (let gk of allGatekeepers) {
       if (gk.creationSpec?.type !== "agentSpawner") continue;
-      // The stored (pre-migration) shape is derived from the real type, differing only in
-      // `env`; the conflicting `env` types force the cast through `unknown`.
-      let {env: legacyAllowlist, ...restConfig} = gk.creationSpec.config as
-          unknown as Omit<AgentSpawnerConfig, "env"> & {env?: string[]};
+      // The stored (pre-migration) shape differs from the real type only in `env`; the
+      // conflicting `env` types force the cast through `unknown`.
+      let {env: legacyAllowlist, ...restConfig} =
+          gk.creationSpec.config as unknown as LegacyAgentSpawnerConfig;
       let env: Record<string, WorkpieceId>;
       if (legacyAllowlist !== undefined) {
         // Resolve each allowlisted name against the gatekeepers' binding names, dropping any

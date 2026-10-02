@@ -24,7 +24,7 @@ import type { ModelHandle } from "./ai-models";
 import { blobOid } from "./git-store";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
-  StoredToolCall,
+  StoredChatMessage, StoredToolCall,
 } from "./storage-schema/overseer-storage";
 import {
   buildCompactionState, buildSummaryPrompt, chatChangeStatuses, COMPACTION_SYSTEM_PROMPT,
@@ -190,7 +190,7 @@ export type SeedBindingInfo = {
  */
 export type ChatHistory = {
   checkpoint?: CompactionCheckpoint;
-  chatMessages: AiChatMessage[];
+  chatMessages: StoredChatMessage[];
   measuredTokens: number;
 };
 
@@ -2215,7 +2215,7 @@ async function runAgentPass(
             }
             if (diff !== undefined) {
               observations.push(diff);
-            } else if ((msg as {update?: Uint8Array}).update !== undefined) {
+            } else if (msg.update !== undefined) {
               // A pre-conversion batch (see AiChatMessageBody.conversionBoundary): its retired
               // Yjs payload -- still on the stored record -- can't be applied or diffed, so the
               // user's edits get a generic note instead of a diff. The conversion boundary

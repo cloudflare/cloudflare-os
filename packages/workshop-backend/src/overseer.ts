@@ -19,7 +19,8 @@ import {
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
-  type StoredAssistantMessage, type StoredChatMetadata, type WorkpieceRecord, type WorktreeRecord,
+  type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
+  type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge } from "./git-store";
@@ -235,10 +236,6 @@ type PreparedChatMessage = {
 // shape to call it — same optional-method-on-a-stub pattern as user.ts's SingletonAccountStub.
 type CatalogGatekeeperFacet =
     Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "getAgentCatalog">>>;
-
-type LegacyBlueprintBindingAnnotation = BlueprintBindingAnnotation & {
-  included?: boolean;
-};
 
 function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: string): string {
   return record.resourceTitle || bindingName || "Connection";
@@ -4664,10 +4661,10 @@ class OverseerImpl implements AgentHooks {
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
-  hydrateChatMessageForClient(msg: AiChatMessage): AiChatMessage {
+  hydrateChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
     if (msg.type === "changes" && "update" in msg) {
-      let {update: _, ...rest} = msg as AiChatMessage & {update?: Uint8Array};
-      msg = rest as AiChatMessage;
+      let {update: _, ...rest} = msg;
+      msg = rest;
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
@@ -6592,7 +6589,7 @@ class OverseerImpl implements AgentHooks {
       // names). This may overclaim relative to eventual seeding -- which drops dangling targets
       // and allowlisted names missing from the default list -- but overclaiming is harmless for
       // the dedupe/validation this set serves.
-      let env = context.spawnerConfig.env as Record<string, WorkpieceId> | string[];
+      let env = context.spawnerConfig.env;
       taken = new Set(Array.isArray(env) ? env : Object.keys(env));
     } else {
       // Unseeded normal chat (or an old-style spawned chat with no allowlist, historically
@@ -6727,8 +6724,7 @@ class OverseerImpl implements AgentHooks {
         // absence meaning "unrestricted" -- in which case it is resolved against the current
         // default binding list, mirroring how the storage migration rewrites stored spawner
         // records.
-        let env = context.spawnerConfig.env as
-            Record<string, WorkpieceId> | string[] | undefined;
+        let env = context.spawnerConfig.env;
         if (env === undefined || Array.isArray(env)) {
           for (let [name, target] of Object.entries(this.defaultBindingList())) {
             if (env === undefined || env.includes(name)) seed[name] = target;
@@ -7055,7 +7051,7 @@ class OverseerImpl implements AgentHooks {
       // description and no resource suggestion. Legacy records may carry an `included:
       // false` flag; honor it for backwards compatibility, but the current UI no longer
       // surfaces an exclusion control.
-      let annotation = edge.blueprintAnnotation as LegacyBlueprintBindingAnnotation | undefined;
+      let annotation = edge.blueprintAnnotation;
       if (annotation?.included === false) continue;
 
       let spec = gk.creationSpec;
@@ -10666,7 +10662,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return msg && this.#getChatMessageForClient(msg);
   }
 
-  #getChatMessageForClient(msg: AiChatMessage): AiChatMessage {
+  #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
     if (msg.type === "action") {
       let record = this.impl.storage.actions.get(msg.actionId);
       if (record) {
