@@ -369,7 +369,9 @@ export interface ChatSession extends RpcTarget {
    * When that conversation already exists the message goes there. Otherwise sending also
    * creates it, so each person must be named by email address and be in your organization's
    * directory (see {@link searchPeople}): conversations with people outside your organization
-   * cannot be started this way.
+   * cannot be started this way. A group chat that also holds anyone else, Chat apps and Google
+   * Groups included, doesn't count, and if anyone joins it before the message is approved,
+   * nothing is posted.
    *
    * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
    * it is committed it can be edited but not replied to.

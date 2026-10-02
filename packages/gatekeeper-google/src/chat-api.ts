@@ -433,6 +433,12 @@ export function chatMembershipFromRaw(raw: ChatMembershipRaw): ChatMembership | 
   return undefined;
 }
 
+/** The `users/{user}` id of a person this membership puts in the conversation, if it does. */
+function personIn(membership: ChatMembership | null): string | undefined {
+  return membership?.kind === "user" && membership.user.type === "human" && membership.state !== "notMember"
+    ? membership.user.id : undefined;
+}
+
 export function chatReactionFromRaw(raw: ChatReactionRaw): ChatReaction {
   if (!raw.name) throw new Error("Google Chat returned a reaction with no resource name.");
   const user = chatUserFromRaw(raw.user);
@@ -695,25 +701,53 @@ export class ChatApi {
   }
 
   /**
-   * The group chat with exactly the connected user and `users`, or null when there is none. With
-   * none, Google offers one without whoever blocks the connected user or is blocked by them, and
-   * a group chat short of people is not the one asked for.
+   * The group chat with exactly the connected user and `users`, and those people's `users/{user}`
+   * ids, or null when there is none. Google matches human members only, so a match may also hold
+   * a Chat app; and with no full match, it offers group chats without whoever blocks the connected
+   * user or is blocked by them. So each match is checked, every page of them.
    */
-  async findGroupChat(users: readonly string[]): Promise<string | null> {
-    const params = new URLSearchParams({ pageSize: "1" });
-    for (const user of users) params.append("users", chatUserName(user));
-    const body = await this.#request<{ spaces?: ChatSpaceRaw[] }>(
-      "spaces.findGroupChats", `/spaces:findGroupChats?${params}`,
-    ).catch((error: unknown): { spaces?: ChatSpaceRaw[] } => {
-      // As in findDirectMessage: a validated reference that names no real account has no chat.
-      if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) return {};
-      throw error;
-    });
-    const name = body.spaces?.[0]?.name;
-    if (name === undefined) return null;
-    // Google only offers those once no group chat has everyone, so the first one decides.
-    const spaceName = `spaces/${chatSpaceId(name)}`;
-    return (await this.peopleIn(spaceName)).size === users.length + 1 ? spaceName : null;
+  async findGroupChat(users: readonly string[]): Promise<{ spaceName: string; ids: string[] } | null> {
+    // A person an email address resolved to in one match is the same person in the next.
+    const resolved = new Map<string, string>();
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({ pageSize: "30", ...(pageToken ? { pageToken } : {}) });
+      for (const user of users) params.append("users", chatUserName(user));
+      type Page = { spaces?: ChatSpaceRaw[]; nextPageToken?: string };
+      const page = await this.#request<Page>("spaces.findGroupChats", `/spaces:findGroupChats?${params}`)
+        .catch((error: unknown): Page => {
+          // As in findDirectMessage: a validated reference that names no real account has no chat.
+          if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) return {};
+          throw error;
+        });
+      for (const { name } of page.spaces ?? []) {
+        if (name === undefined) continue;
+        const spaceName = `spaces/${chatSpaceId(name)}`;
+        const ids = await this.#onlyIn(spaceName, users, resolved);
+        if (ids) return { spaceName, ids };
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return null;
+  }
+
+  /** The `users/{user}` ids of `users`, if they and the connected user are everyone in `spaceName`. */
+  async #onlyIn(
+    spaceName: string, users: readonly string[], resolved: Map<string, string>,
+  ): Promise<string[] | null> {
+    const present = await this.audienceIn(spaceName);
+    if (present.size !== users.length + 1) return null;
+    const ids = new Set<string>();
+    // One at a time: Chat allows 15 reads a second per space.
+    for (const user of users.map(chatUserName)) {
+      const id = present.has(user)
+        ? user : resolved.get(user) ?? personIn(await this.getMembership(spaceName, user));
+      if (id === undefined || !present.has(id)) return null;
+      resolved.set(user, id);
+      ids.add(id);
+    }
+    // Two references to one person would leave room for someone else.
+    return ids.size === users.length ? [...ids] : null;
   }
 
   /**
@@ -863,16 +897,18 @@ export class ChatApi {
    * Create a message as the connected user.
    *
    * `requestId` makes the write idempotent, so a retry after a lost response returns the message
-   * the first attempt created rather than posting a second one.
+   * the first attempt created rather than posting a second one. `messageId` names the message,
+   * which can then be read by that name.
    */
   async createMessage(
     spaceName: string,
     message: { text: string; threadName?: string },
-    options: { requestId?: string } = {},
+    options: { requestId?: string; messageId?: string } = {},
   ): Promise<ChatMessageInfo> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams();
     if (options.requestId) params.set("requestId", options.requestId);
+    if (options.messageId) params.set("messageId", options.messageId);
     // Google documents this as named-space only, but a live DM reply threaded correctly.
     if (message.threadName !== undefined) {
       params.set("messageReplyOption", "REPLY_MESSAGE_OR_FAIL");
@@ -931,13 +967,23 @@ export class ChatApi {
     };
   }
 
-  /** The `users/{user}` ids of the people in a direct message or group chat, the connected user's among them. */
-  async peopleIn(spaceName: string): Promise<Set<string>> {
-    // Neither holds more than 50 people, so the first page has them all.
-    const { items } = await this.listMembers(spaceName);
-    return new Set(items.flatMap(membership =>
-      membership.kind === "user" && membership.user.type === "human" && membership.state !== "notMember"
-        ? [membership.user.id] : []));
+  /**
+   * Everyone a message in a direct message or group chat reaches: the `users/{user}` ids of its
+   * people and Chat apps, the connected user's among them, and the `groups/{group}` name of any
+   * Google Group.
+   */
+  async audienceIn(spaceName: string): Promise<Set<string>> {
+    const audience = new Set<string>();
+    let pageToken: string | undefined;
+    do {
+      const page = await this.listMembers(spaceName, pageToken ? { pageToken } : {});
+      for (const membership of page.items) {
+        if (membership.state === "notMember") continue;
+        audience.add(membership.kind === "group" ? membership.groupId : membership.user.id);
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return audience;
   }
 
   /** Returns null when the named user is not a member of the space or does not exist. */

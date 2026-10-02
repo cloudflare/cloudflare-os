@@ -245,11 +245,12 @@ class ChatStore {
 
   /**
    * Remember the conversation a send created, so its temporary name resolves to it and later
-   * sends to the same `people` (everyone else in it, by sorted id) reuse it.
+   * sends to the same `people` (everyone else in it, by sorted id) reuse it rather than its setup.
    */
   setConversation(pendingName: string, people: string, spaceName: string): void {
     this.#kv.put(`chat:conversation:${pendingSpaceRequestId(pendingName)}`, spaceName);
     this.#kv.put(`chat:with:${people}`, spaceName);
+    this.settleSetupWith(people);
   }
 
   /** The conversation an earlier send set up with these `people`, which Google's lookup may not see yet. */
@@ -259,6 +260,21 @@ class ChatStore {
 
   forgetConversationWith(people: string): void {
     this.#kv.delete(`chat:with:${people}`);
+  }
+
+  /**
+   * The request of a setup with these `people` whose outcome is unknown, or else `requestId`,
+   * claimed in its place: another send replays it rather than setting up a second group chat.
+   */
+  setupRequestWith(people: string, requestId: string): string {
+    const claimed = this.#kv.get<string>(`chat:setup:${people}`);
+    if (claimed !== undefined) return claimed;
+    this.#kv.put(`chat:setup:${people}`, requestId);
+    return requestId;
+  }
+
+  settleSetupWith(people: string): void {
+    this.#kv.delete(`chat:setup:${people}`);
   }
 
   /** A temporary conversation name continues to identify its conversation once it is created. */
@@ -614,21 +630,20 @@ function validateMessageText(text: string): string {
 /**
  * Queue one outgoing text message for approval and return how it reads while pending.
  *
- * Shared by space sends and thread/message replies; the only difference
- * between them is whether a thread is named.
+ * Shared by space sends, thread/message replies, which name a thread, and sends to exactly some
+ * people in their existing group chat, which name those people.
  */
 async function queueChatMessage(
   ctx: ChatContext,
   spaceName: string,
   text: string,
-  destination?: { threadName: string },
+  { threadName, recipients }: { threadName?: string; recipients?: string[] } = {},
 ): Promise<ChatMessageInfo> {
   const body = validateMessageText(text);
-  let threadName = destination?.threadName;
   requireInScope(ctx, spaceName);
   requireThreadInScope(ctx, threadName);
   const info = await ctx.api.getSpace(spaceName);
-  if (destination && !info.supportsThreads) {
+  if (threadName !== undefined && !info.supportsThreads) {
     throw new Error("This conversation does not support threaded replies.");
   }
   if (threadName !== undefined) {
@@ -643,6 +658,7 @@ async function queueChatMessage(
     ...(threadName !== undefined ? { threadName } : {}),
     startsThread: threadName === undefined && info.supportsThreads,
     requestId: crypto.randomUUID(),
+    ...(recipients ? { recipients } : {}),
     submittedAt: Date.now(),
   };
   const recipient = await describeConversation(ctx.api, info, ctx.self.id);
@@ -687,13 +703,17 @@ async function queueDirectMessage(
   if (users.some(user => user === "users/me" || user === ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
 
   const kind = users.length === 1 ? "direct message" : "group chat";
-  const existing = users.length === 1
-    ? (await ctx.api.findDirectMessage(users[0]))?.id
+  // People can join a group chat while a send awaits approval, so the send checks who's there before
+  // posting. Only a Chat app can join a direct message, and a send there doesn't check for one.
+  const existing: { spaceName: string; ids?: string[] } | null = users.length === 1
+    ? await ctx.api.findDirectMessage(users[0]).then(dm => dm && { spaceName: dm.id })
     : await ctx.api.findGroupChat(users);
+  // Your own email address resolves to you, which would leave the group chat's last place to someone unnamed.
+  if (existing?.ids?.includes(ctx.self.id)) throw new Error(LEAVE_YOURSELF_OUT);
   await observe(ctx, "Find a Google Chat conversation", existing
-    ? `Found the ${kind} with ${users.join(", ")} (${existing}).`
+    ? `Found the ${kind} with ${users.join(", ")} (${existing.spaceName}).`
     : `No ${kind} exists with exactly ${users.join(", ")}.`);
-  if (existing) return queueChatMessage(ctx, existing, body);
+  if (existing) return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids });
 
   const emails = users.map(user => user.slice("users/".length));
   const unnamed = emails.find(email => !email.includes("@"));
@@ -765,25 +785,41 @@ async function openConversation(
     store.forgetConversationWith(people);
   }
   // spaces.setup returns an existing direct message itself, but would add a second group chat.
-  const spaceName = (ids.length > 1 ? await api.findGroupChat(ids) : null) ??
-    await store.attemptWrite(actionId, () => api.setupConversation(ids, requestId));
+  const spaceName = (ids.length > 1 ? (await api.findGroupChat(ids))?.spaceName : undefined) ??
+    await store.attemptWrite(actionId, () => api.setupConversation(ids, store.setupRequestWith(people, requestId)));
   // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
   store.clearAttempt(actionId);
-  // Google leaves out of a group chat anyone who blocks the caller, and posting would then reach
-  // fewer people than were approved.
-  const present = await api.peopleIn(spaceName);
+  // Google leaves out of a group chat anyone who blocks the caller, and a replayed setup returns the
+  // group as it is now, so posting could reach other people than were approved.
+  const present = await api.audienceIn(spaceName);
   const missing = members.filter(member => !present.has(member.id));
-  if (missing.length > 0) {
-    throw new Error(`Google Chat left ${participantNames(missing.map(member => member.name ?? member.email))} ` +
-      "out of the new conversation, perhaps because they block you, so nothing was posted. Reject this message.");
+  const wrong = missing.length > 0
+    ? `Google Chat left ${participantNames(missing.map(member => member.name ?? member.email))} out of the new ` +
+      "conversation, perhaps because they block you"
+    : present.size > ids.length + 1 ? "Someone who wasn't approved is already in the new Google Chat conversation"
+    : undefined;
+  if (wrong !== undefined) {
+    // Replaying its setup would return this same conversation.
+    store.settleSetupWith(people);
+    throw new Error(`${wrong}, so nothing was posted. Reject this message.`);
   }
   return spaceName;
 }
 
-/** Whether exactly the connected user and the people with `ids` are in `spaceName`. */
+/** Whether exactly the connected user and the people with `ids` are in `spaceName`, with nobody else. */
 async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[]): Promise<boolean> {
-  const present = await api.peopleIn(spaceName);
+  const present = await api.audienceIn(spaceName);
   return present.size === ids.length + 1 && ids.every(id => present.has(id));
+}
+
+/** The name a send to exactly some people gives its message, so that a retry can find it. */
+const clientMessageId = (action: ChatSendMessageAction) => `client-${action.requestId}`;
+
+/** Once its target is deleted, nothing an earlier attempt wrote remains, so the action may be rejected. */
+function deletedTarget(store: ChatStore, actionId: number, cause: unknown): Error {
+  store.clearAttempt(actionId);
+  return new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
+    "Reject it.", { cause });
 }
 
 /** Pair a just-queued message with its capability. */
@@ -1452,31 +1488,43 @@ export class GoogleChatGatekeeperImpl
   }
 
   /**
-   * The conversation a send that starts one posts in, created on its first apply. A retry reuses
-   * what an earlier attempt created whether or not its response arrived, and sends to the same
-   * people share one conversation.
+   * Where a send to exactly some people posts, and what an earlier attempt posted there, if Google
+   * shows it. A conversation the send creates is created on its first apply: a retry reuses it
+   * whether or not its response arrived, and sends to the same people share one. Otherwise the
+   * send posts only while they are exactly who else is in the conversation.
    */
-  async #createConversation(
-    api: ChatApi, store: ChatStore, actionId: number, pendingName: string, conversation: ChatNewConversation,
-  ): Promise<string> {
-    const ids = conversation.members.map(member => member.id);
-    const created = store.spaceName(pendingName);
-    if (created !== pendingName) {
-      // Once recorded, a retry may follow a post that landed, and must keep the action unrejectable.
-      // One that definitely didn't post first checks nobody has joined or left the conversation.
-      if (!store.wasAttempted(actionId) && !await hasExactly(api, created, ids)) {
-        throw new Error("The people in this Google Chat conversation have changed since it was set up, so " +
-          "nothing was posted. Reject this message.");
-      }
-      return created;
+  async #conversationFor(
+    api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
+  ): Promise<{ spaceName: string; posted?: ChatMessageInfo }> {
+    const spaceName = store.spaceName(action.spaceName);
+    const conversation = action.newConversation;
+    if (conversation && spaceName === action.spaceName) {
+      const people = recipients.toSorted().join(",");
+      const created = await this.#settingUp.run(people,
+        () => openConversation(api, store, actionId, people, conversation));
+      store.setConversation(action.spaceName, people, created);
+      // A send that joined another's setup still carries any mark from its own earlier attempt.
+      store.clearAttempt(actionId);
+      return { spaceName: created };
     }
-    const people = ids.toSorted().join(",");
-    const spaceName = await this.#settingUp.run(people,
-      () => openConversation(api, store, actionId, people, conversation));
-    store.setConversation(pendingName, people, spaceName);
-    // A send that joined another's setup still carries any mark from its own earlier attempt.
-    store.clearAttempt(actionId);
-    return spaceName;
+    const retried = store.wasAttempted(actionId);
+    if (retried) {
+      // A post an earlier attempt made is sent, whoever is in the conversation now.
+      const posted = await api.getMessage(`${spaceName}/messages/${clientMessageId(action)}`)
+        .catch((error: unknown) => {
+          if (error instanceof DeletedChatMessageError) throw deletedTarget(store, actionId, error);
+          // Not finding it doesn't show that the earlier attempt never landed.
+          if (error instanceof ChatApiError && error.status === 404) return undefined;
+          throw error;
+        });
+      if (posted) return { spaceName, posted };
+    }
+    // A retry may follow a post that landed, so it leaves the attempt mark as it is.
+    if (!await hasExactly(api, spaceName, recipients)) {
+      throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
+        `so this attempt posted nothing.${retried ? "" : " Reject this message."}`);
+    }
+    return { spaceName };
   }
 
   /** Send one action to Google, returning what a later revert needs to know. */
@@ -1489,12 +1537,8 @@ export class GoogleChatGatekeeperImpl
     const api = this.#api();
     const scope = { store, boundSpace: this.#boundSpaceName(), boundThread: this.#boundThreadName() };
     const retried = store.wasAttempted(actionId);
-    // Once the target is deleted, nothing an earlier attempt wrote remains, so the action may be rejected.
     const readTarget = (name: string) => api.getMessage(name).catch((error: unknown) => {
-      if (!isChatMessageGone(error)) throw error;
-      store.clearAttempt(actionId);
-      throw new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
-        "Reject it.", { cause: error });
+      throw isChatMessageGone(error) ? deletedTarget(store, actionId, error) : error;
     });
     if (action.type === "addReaction" || action.type === "removeReaction") {
       requireOldestChange(store, actionId, action, other => "emoji" in other &&
@@ -1508,18 +1552,25 @@ export class GoogleChatGatekeeperImpl
         if (threadName && pendingThreadActionId(threadName) !== undefined) {
           throw new Error("Send the thread's root message before its replies.");
         }
-        const spaceName = action.newConversation
-          ? await this.#createConversation(api, store, actionId, action.spaceName, action.newConversation)
-          : action.spaceName;
+        const recipients = action.newConversation?.members.map(member => member.id) ?? action.recipients;
+        const { spaceName, posted } = recipients
+          ? await this.#conversationFor(api, store, actionId, action, recipients)
+          : { spaceName: action.spaceName, posted: undefined };
         const needsThread = threadName !== undefined || action.startsThread === true;
-        // The request id makes Chat itself idempotent, so a retry after a lost response returns
-        // the message the first attempt created rather than posting a second one.
-        const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
-          text: action.text,
-          ...(threadName !== undefined ? { threadName } : {}),
-        }, { requestId: action.requestId }));
-        // A replayed create echoes the request, not the message Chat stored.
-        const created = await readTarget(id);
+        const post = async () => {
+          // The request id makes Chat itself idempotent, so a retry after a lost response returns
+          // the message the first attempt created rather than posting a second one.
+          const { id } = await store.attemptWrite(actionId, () => api.createMessage(spaceName, {
+            text: action.text,
+            ...(threadName !== undefined ? { threadName } : {}),
+          }, {
+            requestId: action.requestId,
+            ...(recipients ? { messageId: clientMessageId(action) } : {}),
+          }));
+          // A replayed create echoes the request, not the message Chat stored.
+          return readTarget(id);
+        };
+        const created = posted ?? await post();
         try {
           if (needsThread && !created.threadId) throw new Error("Google Chat did not return the created message's thread.");
           if (threadName !== undefined && created.threadId !== threadName) {
@@ -1528,13 +1579,13 @@ export class GoogleChatGatekeeperImpl
           requireMessageInScope(scope, created);
         } catch (error) {
           logger.warn("taking back a Google Chat message posted outside its request", {
-            event: "chat.send.taken_back", actionId, messageId: id, error,
+            event: "chat.send.taken_back", actionId, messageId: created.id, error,
           });
           try {
-            await deleteMessageIfPresent(api, id);
+            await deleteMessageIfPresent(api, created.id);
           } catch (deleteError) {
             logger.error("failed to take back a Google Chat message posted outside its request", {
-              event: "chat.send.take_back.failed", actionId, messageId: id, error: deleteError,
+              event: "chat.send.take_back.failed", actionId, messageId: created.id, error: deleteError,
             });
             throw new Error("Google Chat posted this message outside its requested conversation or thread, " +
               "and removing it failed. Delete it in Google Chat.", { cause: deleteError });

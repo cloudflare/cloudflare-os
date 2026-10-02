@@ -32,6 +32,11 @@ export type ChatSendMessageAction = ChatActionBase & {
   requestId: string;
   /** Set when the conversation does not exist yet: applying the send creates it first. */
   newConversation?: ChatNewConversation;
+  /**
+   * For a send to exactly some people in their existing group chat, their `users/{user}` ids: it
+   * posts only while they are still exactly who else is there.
+   */
+  recipients?: string[];
 };
 
 /** A direct message or group chat that a queued send creates. */
