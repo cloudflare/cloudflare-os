@@ -67,7 +67,8 @@ function chatBackend() {
     messages: [] as ChatMessageRaw[],
     members: [] as ChatMembershipRaw[],
     memberRequests: 0,
-    membersFail: false,
+    /** Fail member lists with this status until cleared. */
+    membersFailure: 0,
     /** Whose token Chat refuses the member list to, as a space restricted to managers would. */
     membersRejectedToken: undefined as string | undefined,
     /** How Chat stores submitted text, such as rendering `<users/…>` mentions as `@Name`. */
@@ -196,9 +197,9 @@ function chatBackend() {
     }
     if (url.pathname === `/v1/spaces/${SPACE_ID}/members`) {
       state.memberRequests++;
-      const membersDenied = state.membersFail ||
-        new Headers(init.headers).get("Authorization") === `Bearer ${state.membersRejectedToken}`;
-      return membersDenied ? json({}, 403) : json({memberships: state.members});
+      const rejected = new Headers(init.headers).get("Authorization") === `Bearer ${state.membersRejectedToken}`;
+      if (state.membersFailure || rejected) return json({}, state.membersFailure || 403);
+      return json({memberships: state.members});
     }
     if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
       const name = `${SPACE_NAME}/members/${decodeURIComponent(url.pathname.split("/").at(-1)!)}`;
@@ -468,7 +469,7 @@ describe("Chat identities", () => {
     const backend = directMessage();
     const chat = chatHarness(backend);
     expect(await chat.describe()).toMatchObject({title: "Alice Smith"});
-    backend.state.membersFail = true;
+    backend.state.membersFailure = 403;
     expect(await chat.describe()).toMatchObject({title: "Google Chat direct message"});
     using space = await chat.session();
     using _posted = (await space.post("hi")).message;
@@ -1708,6 +1709,40 @@ describe("Starting Google Chat conversations", () => {
     await chat.applyAction(2);
     expect(backend.state.setups).toHaveLength(2);
     expect(backend.state.creates.map(create => create.body.text)).toEqual(["one", "two"]);
+  });
+
+  it("lists a send in the conversation it set up before its post succeeds", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    backend.state.createFailure = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=403/);
+    using space = (await account.getSpace(SPACE_NAME)).space;
+    using cursor = await space.listMessages();
+    expect((await cursor.next())?.map(({info}) => [info.text, info.spaceId])).toEqual([["hi all", SPACE_NAME]]);
+  });
+
+  it("keeps a send that may have posted in the conversation it set up from being rejected", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    // A later refusal says nothing about the earlier attempt that may have posted.
+    backend.state.createFailure = 403;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+  });
+
+  it("keeps a send rejectable when Google can't list its new conversation's members", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    backend.state.membersFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
+    // Nothing was posted, and an empty conversation shows nobody anything.
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
   });
 
   it("carries an edit queued before the conversation exists into it", async () => {

@@ -152,7 +152,7 @@ export type ChatMessageInfo = {
   /**
    * ID of the containing conversation. A message you sent with
    * `ChatSession.sendDirectMessage()` that is creating its conversation has a temporary
-   * `pending:space:{id}` here until it is committed; read the message again for the real ID.
+   * `pending:space:{id}` here until that conversation exists; read the message again for the real ID.
    */
   spaceId: string;
   /**
@@ -371,8 +371,8 @@ export interface ChatSession extends RpcTarget {
    * directory (see {@link searchPeople}): conversations with people outside your organization
    * cannot be started this way.
    *
-   * Until it is committed, a message that creates its conversation has a temporary `spaceId`
-   * and can be edited but not replied to.
+   * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
+   * it is committed it can be edited but not replied to.
    */
   sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry>;
 }

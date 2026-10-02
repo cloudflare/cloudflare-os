@@ -154,8 +154,12 @@ class ChatStore {
     })
       .map(entry => {
         const { action } = entry;
-        if (action.type === "sendMessage" && action.threadName) {
-          return { ...entry, action: { ...action, threadName: this.threadName(action.threadName) } };
+        if (action.type === "sendMessage") {
+          return { ...entry, action: {
+            ...action,
+            spaceName: this.spaceName(action.spaceName),
+            ...(action.threadName ? { threadName: this.threadName(action.threadName) } : {}),
+          } };
         }
         if (action.type === "updateMessage") {
           const id = pendingMessageActionId(action.messageName);
@@ -420,7 +424,8 @@ function resolveMessage(
   const action = ctx.store.get(queued);
   if (action?.type !== "sendMessage") throw new Error("This message was never created.");
   if (action.threadName) resolveThread(ctx, action.threadName);
-  return { queued, action };
+  // Once the conversation it creates exists, the send belongs to it like any other.
+  return { queued, action: { ...action, spaceName: ctx.store.spaceName(action.spaceName) } };
 }
 
 /** The conversation a message name belongs to, validating the name along the way. */
@@ -761,12 +766,13 @@ async function openConversation(
   // spaces.setup returns an existing direct message itself, but would add a second group chat.
   const spaceName = (ids.length > 1 ? await api.findGroupChat(ids) : null) ??
     await store.attemptWrite(actionId, () => api.setupConversation(ids, requestId));
+  // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
+  store.clearAttempt(actionId);
   // Google leaves out of a group chat anyone who blocks the caller, and posting would then reach
   // fewer people than were approved.
   const present = await api.peopleIn(spaceName);
   const missing = members.filter(member => !present.has(member.id));
   if (missing.length > 0) {
-    store.clearAttempt(actionId);
     throw new Error(`Google Chat left ${participantNames(missing.map(member => member.name ?? member.email))} ` +
       "out of the new conversation, perhaps because they block you, so nothing was posted. Reject this message.");
   }
@@ -1446,6 +1452,7 @@ export class GoogleChatGatekeeperImpl
   async #createConversation(
     api: ChatApi, store: ChatStore, actionId: number, pendingName: string, conversation: ChatNewConversation,
   ): Promise<string> {
+    // Once recorded, a retry may follow a post that landed, and must keep the action unrejectable.
     const created = store.spaceName(pendingName);
     if (created !== pendingName) return created;
     const people = conversation.members.map(member => member.id).toSorted().join(",");
@@ -1457,7 +1464,7 @@ export class GoogleChatGatekeeperImpl
     }
     const spaceName = await settingUp;
     store.setConversation(pendingName, people, spaceName);
-    // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
+    // A send that joined another's setup still carries any mark from its own earlier attempt.
     store.clearAttempt(actionId);
     return spaceName;
   }
