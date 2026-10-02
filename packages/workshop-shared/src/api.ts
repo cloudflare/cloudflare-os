@@ -1015,7 +1015,12 @@ export type AdminSettingsView = {
     /** The providers a model may be added under: the ones the gateway both enables and serves. */
     providers: AiModelProvider[];
     /** Every gateway model, in any mode, in listing order. */
-    models: AdminModel[];
+    models: AdminModelView[];
+    /**
+     * The reasoning level of each gateway model that has none of its own (see
+     * AdminApi.setDefaultReasoning), or null while the deployment sets none.
+     */
+    defaultReasoning: ReasoningLevel | null;
     /** Whether users may add models of their own (see AdminApi.setUserModelsEnabled). */
     userModelsEnabled: boolean;
     /**
@@ -1197,15 +1202,16 @@ export interface AdminApi {
   /**
    * Add a model to the ones the deployment provides, listed after its provider's suggested models
    * and 'enabled' by default. Throws if the model is malformed (an empty or over-long ID or name,
-   * a token limit that isn't a positive integer), if the gateway does not serve and enable its
-   * provider (see AdminSettingsView.gatewayModels), or if a suggested or added model already has
-   * its ID.
+   * an over-long `behavesLike`, a token limit that isn't a positive integer), if the gateway does
+   * not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or
+   * added model already has its ID, or if the model runtime does not know its `behavesLike` under
+   * its provider.
    */
   addGatewayModel(model: GatewayModel): Promise<void>;
 
   /**
-   * Remove a model added with addGatewayModel(), along with its mode. Throws if no added model has
-   * this ID; a suggested model can't be removed, only disabled.
+   * Remove a model added with addGatewayModel(), along with its mode and settings. Throws if no
+   * added model has this ID; a suggested model can't be removed, only disabled.
    *
    * Removing frees the ID rather than reserving it. The chats, spawners and preferences that name
    * the model resolve again if a model is later added under the same ID. A gadget model binding
@@ -1236,6 +1242,24 @@ export interface AdminApi {
    * like any other.
    */
   setModelsDevSuggestions(enabled: boolean): Promise<void>;
+
+  /**
+   * Replace what the deployment sets for one of its gateway models (see GatewayModelSettings):
+   * a field left out of `settings` is unset, and an empty `settings` unsets everything. Throws
+   * if `modelId` is not one of the deployment's gateway models, or if the compaction budget is
+   * not a positive whole number within the model's maximum (see
+   * AdminModelView.maxCompactionInputBudget).
+   *
+   * The reasoning level may be one the model lacks, since it is fitted to the model when a
+   * request is made (see ReasoningLevel).
+   */
+  setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void>;
+
+  /**
+   * Set the reasoning level of every gateway model that has none of its own, or null for each
+   * model's built-in behaviour. It never applies to a model a user added.
+   */
+  setDefaultReasoning(level: ReasoningLevel | null): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1424,6 +1448,27 @@ export function isReasoningLevel(value: unknown): value is ReasoningLevel {
 export const COMPACTION_TRIGGER_RATIO = 0.85;
 
 /**
+ * What a deployment's admin sets for one of its AI Gateway models. A field left out is unset: the
+ * model then has its built-in behaviour, or for `reasoning` the deployment's default level where
+ * one is set.
+ */
+export type GatewayModelSettings = {
+  /**
+   * The reasoning level of the agent's turns on the model, ahead of the deployment's default
+   * (see AdminApi.setDefaultReasoning). One-shot calls, such as titles, compaction summaries
+   * and gadget model bindings, ask for none either way.
+   */
+  reasoning?: ReasoningLevel;
+
+  /**
+   * The prompt budget, in tokens, that a chat on the model compacts against (see
+   * COMPACTION_TRIGGER_RATIO), in place of the model's built-in one. A positive whole number, at
+   * most the model's AdminModelView.maxCompactionInputBudget.
+   */
+  compactionInputBudget?: number;
+};
+
+/**
  * The description of a model a deployment provides through AI Gateway. Its admin supplies one to
  * add a model beside the SUGGESTED_MODELS of the providers the gateway enables.
  */
@@ -1445,6 +1490,14 @@ export type GatewayModel = {
 
   /** When present, both the requested response cap and the space reserved for it. */
   outputLimit?: number;
+
+  /**
+   * The ID of a model of the same provider that the model runtime knows. While the runtime has
+   * no entry for this model's own ID, the model borrows that one's runtime flags: its request
+   * formats, its reasoning levels and the kinds of input it takes. Its name, limits and cost stay
+   * its own.
+   */
+  behavesLike?: string;
 };
 
 /** A model a deployment provides through AI Gateway, as its admin sees it. */
@@ -1460,6 +1513,37 @@ export type AdminModel = GatewayModel & {
 
   /** Whether the admin added the model, rather than SUGGESTED_MODELS listing it. */
   added: boolean;
+
+  /** What the admin set for the model. Absent while nothing is set. */
+  settings?: GatewayModelSettings;
+};
+
+/** An AdminModel with what the admin UI needs in order to offer its settings. */
+export type AdminModelView = AdminModel & {
+  /** The reasoning levels the model can be sent, least to most. Empty when it takes none. */
+  reasoningLevels: ReasoningLevel[];
+
+  /** The compaction budget the model has while GatewayModelSettings sets none. */
+  builtInCompactionInputBudget: number;
+
+  /**
+   * The largest compaction budget the model may be given: the room its context window leaves for
+   * a prompt.
+   */
+  maxCompactionInputBudget: number;
+
+  /**
+   * Whether the model runtime has an entry for the model's own ID. When it has, the runtime's
+   * entry is used and `behavesLike` is not.
+   */
+  runtimeKnown: boolean;
+
+  /**
+   * For a model with a `behavesLike`, whether the model runtime knows the model it names. When
+   * it does not, there is nothing to borrow, and the model runs as one the runtime does not know
+   * for as long as it has no entry for the model's own ID either.
+   */
+  behavesLikeKnown?: boolean;
 };
 
 /** Configuration specifying how to connect to an AI model provider. */

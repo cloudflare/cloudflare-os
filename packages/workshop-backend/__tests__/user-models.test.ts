@@ -217,6 +217,14 @@ describe("UserDurableObject gateway model modes", () => {
     expect(context.aiModel?.profile.id).toBe(first.id);
   }));
 
+  it("gives a model the user added none of the deployment's default reasoning level",
+      () => inGatewayUser(async user => {
+    expect((await user.getChatContext(ENABLED_ID)).aiModel?.config.reasoning).toBe("high");
+    const own = { ...CONFIG, provider: "anthropic" as const, model: "claude-mine" };
+    await user.addModel(PROFILE, own);
+    expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toStrictEqual(own);
+  }, { defaultReasoning: "high" }));
+
   it("stops listing a model the admin hid, which still resolves", () => inGatewayUser(async user => {
     expect(await listedIds(user)).not.toContain(ENABLED_ID);
     expect((await user.getChatContext(ENABLED_ID)).aiModel?.profile.id).toBe(ENABLED_ID);

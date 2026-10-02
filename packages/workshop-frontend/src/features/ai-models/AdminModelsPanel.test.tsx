@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AdminApi, AdminModel, AdminSettingsView } from '@gadgets/workshop-shared/api'
+import type { AdminApi, AdminModelView, AdminSettingsView } from '@gadgets/workshop-shared/api'
 
 const { addToast } = vi.hoisted(() => ({
   addToast: vi.fn<(toast: { title: string; description?: string; variant: string }) => void>(),
@@ -23,22 +23,29 @@ import { MODELS_DEV_URL } from './modelsDev'
 
 type GatewayModels = NonNullable<AdminSettingsView['gatewayModels']>
 
-const SONNET: AdminModel = {
+// What the server reports of a model's settings, which this panel does not show.
+const NO_SETTINGS = { reasoningLevels: [], runtimeKnown: false }
+
+const SONNET: AdminModelView = {
   provider: 'anthropic', id: 'claude-sonnet', name: 'Claude Sonnet', contextWindow: 200000,
   mode: 'enabled', defaultMode: 'enabled', added: false,
+  ...NO_SETTINGS, builtInCompactionInputBudget: 200000, maxCompactionInputBudget: 200000,
 }
 // A catalog model the admin took off its default.
-const LEGACY: AdminModel = {
+const LEGACY: AdminModelView = {
   provider: 'anthropic', id: 'claude-legacy', name: 'Claude Legacy', contextWindow: 100000,
   mode: 'disabled', defaultMode: 'hidden', added: false,
+  ...NO_SETTINGS, builtInCompactionInputBudget: 100000, maxCompactionInputBudget: 100000,
 }
-const ADDED: AdminModel = {
+const ADDED: AdminModelView = {
   provider: 'openai', id: 'gpt-custom', name: 'GPT Custom', contextWindow: 128000, outputLimit: 4096,
   mode: 'enabled', defaultMode: 'enabled', added: true,
+  ...NO_SETTINGS, builtInCompactionInputBudget: 123904, maxCompactionInputBudget: 123904,
 }
 const GATEWAY_MODELS: GatewayModels = {
   providers: ['anthropic', 'openai'],
   models: [SONNET, LEGACY, ADDED],
+  defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
 }

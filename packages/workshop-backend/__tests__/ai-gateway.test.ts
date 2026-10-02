@@ -8,6 +8,7 @@ import {
   AiGatewayConfig,
   AiGatewayLogRetryableError,
   GatewayModels,
+  gatewayModelConfig,
   getAiGatewayLogCost,
   getGatewayModels,
 } from "../src/ai-gateway.js";
@@ -156,10 +157,13 @@ describe("GatewayModels", () => {
     CF_AI_GATEWAY_PROVIDERS: providers,
   });
   const gatewayModels = (
-      config: Partial<Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled">> = {},
+      config: Partial<Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled" |
+          "modelSettings" | "defaultReasoning">> = {},
       providers?: string) =>
-      new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)),
-          { modelModes: {}, addedModels: [], userModelsEnabled: true, ...config });
+      new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), {
+        modelModes: {}, addedModels: [], userModelsEnabled: true, modelSettings: {},
+        defaultReasoning: null, ...config,
+      });
 
   it("offers each catalog model in its default mode, on enabled providers only", () => {
     const models = gatewayModels();
@@ -332,6 +336,100 @@ describe("GatewayModels", () => {
         { addedModels: [{ provider: "anthropic", id, name: "Odd", contextWindow: 1000 }] });
     expect(added.get(id)).toMatchObject({ mode: "enabled", defaultMode: "enabled", added: true });
     expect(added.resolve(id)?.profile).toEqual({ type: "agent", id, name: "Odd" });
+  });
+
+  describe("settings", () => {
+    const OPUS = { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" };
+    const FABLE = { provider: "anthropic", model: "claude-fable-5-1", apiToken: "" };
+
+    it("gives a model the reasoning level set for it, and no other model", () => {
+      const models = gatewayModels({ modelSettings: { "claude-opus-5-5": { reasoning: "low" } } });
+      expect(models.get("claude-opus-5-5")).toStrictEqual({
+        provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5",
+        contextWindow: 1000000, mode: "enabled", defaultMode: "enabled", added: false,
+        settings: { reasoning: "low" },
+      });
+      expect(models.resolve("claude-opus-5-5")?.config)
+          .toStrictEqual({ ...OPUS, reasoning: "low" });
+
+      expect(models.get("claude-fable-5-1")).not.toHaveProperty("settings");
+      expect(models.resolve("claude-fable-5-1")?.config).toStrictEqual(FABLE);
+    });
+
+    it("gives a model the compaction budget set for it", () => {
+      const models = gatewayModels(
+          { modelSettings: { "claude-opus-5-5": { compactionInputBudget: 300000 } } });
+      expect(models.get("claude-opus-5-5")?.settings).toStrictEqual(
+          { compactionInputBudget: 300000 });
+      expect(models.resolve("claude-opus-5-5")?.config)
+          .toStrictEqual({ ...OPUS, compactionInputBudget: 300000 });
+    });
+
+    it("gives every model with no level of its own the deployment's default", () => {
+      const models = gatewayModels({
+        defaultReasoning: "high",
+        addedModels: ADDED,
+        modelSettings: {
+          "claude-opus-5-5": { reasoning: "off" },
+          "claude-haiku-4-5": { compactionInputBudget: 100000 },
+        },
+      });
+      expect(models.resolve("claude-fable-5-1")?.config)
+          .toStrictEqual({ ...FABLE, reasoning: "high" });
+      expect(models.resolve("claude-test")?.config).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        reasoning: "high",
+      });
+      // A level of the model's own comes first, "off" included.
+      expect(models.resolve("claude-opus-5-5")?.config)
+          .toStrictEqual({ ...OPUS, reasoning: "off" });
+      // The default fills in beside a setting that is not a level.
+      expect(models.resolve("claude-haiku-4-5")?.config).toStrictEqual({
+        provider: "anthropic", model: "claude-haiku-4-5", apiToken: "", reasoning: "high",
+        compactionInputBudget: 100000,
+      });
+      // The default is no setting of the model's.
+      expect(models.get("claude-fable-5-1")).not.toHaveProperty("settings");
+    });
+
+    it("looks a model's settings up as an own property", () => {
+      const odd = { provider: "anthropic" as const, name: "Odd", contextWindow: 1000 };
+      const models = gatewayModels({
+        addedModels: [{ ...odd, id: "constructor" }, { ...odd, id: "__proto__" }],
+        modelSettings: Object.fromEntries([["__proto__", { reasoning: "max" }]]),
+      });
+      expect(models.get("constructor")).not.toHaveProperty("settings");
+      expect(models.resolve("constructor")?.config).not.toHaveProperty("reasoning");
+      expect(models.get("__proto__")?.settings).toStrictEqual({ reasoning: "max" });
+      expect(models.resolve("__proto__")?.config.reasoning).toBe("max");
+    });
+
+    it("resolves an added model with the model it behaves like, when it names one", () => {
+      const models = gatewayModels({ addedModels: [
+        { ...ADDED[0]!, behavesLike: "claude-opus-5-5" }, ADDED[2]!,
+      ] });
+      expect(models.get("claude-test")?.behavesLike).toBe("claude-opus-5-5");
+      expect(models.resolve("claude-test")?.config).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        behavesLike: "claude-opus-5-5",
+      });
+      expect(models.resolve("claude-test-2")?.config).toStrictEqual(
+          { provider: "anthropic", model: "claude-test-2", apiToken: "", contextWindow: 200000 });
+      expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
+    });
+
+    it("describes a model as it runs before its settings", () => {
+      const models = gatewayModels({
+        addedModels: ADDED,
+        defaultReasoning: "high",
+        modelSettings: { "claude-opus-5-5": { reasoning: "low", compactionInputBudget: 300000 } },
+      });
+      expect(gatewayModelConfig(models.get("claude-opus-5-5")!)).toStrictEqual(OPUS);
+      expect(gatewayModelConfig(models.get("@cf/test/added")!)).toStrictEqual({
+        provider: "cloudflare", model: "@cf/test/added", apiToken: "",
+        contextWindow: 100000, outputLimit: 8000,
+      });
+    });
   });
 
   it("names the providers a model may be added under, in catalog order", () => {

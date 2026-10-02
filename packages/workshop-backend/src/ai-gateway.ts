@@ -1,6 +1,6 @@
 import {
   AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel, GatewayModelMode,
-  HTTPS_ONLY_PROVIDERS, SUGGESTED_MODELS,
+  HTTPS_ONLY_PROVIDERS, ReasoningLevel, SUGGESTED_MODELS,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
@@ -27,6 +27,21 @@ export function isCatalogModel(modelId: string): boolean {
 function tokenLimits({ contextWindow, outputLimit }
     : Pick<GatewayModel, "contextWindow" | "outputLimit">) {
   return outputLimit === undefined ? { contextWindow } : { contextWindow, outputLimit };
+}
+
+/** The config a gateway model runs with, before what its admin set for it. */
+export function gatewayModelConfig(model: AdminModel): AiModelConfig {
+  return {
+    provider: model.provider,
+    model: model.id,
+    // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
+    // reads the real values from env. We set them to empty strings here to satisfy
+    // the type.
+    apiToken: "",
+    // An added model's limits travel in the config, which token budgeting reads ahead of the
+    // catalog. A suggested model's are the catalog's own.
+    ...(model.added ? tokenLimits(model) : {}),
+  };
 }
 
 export class AiGatewayConfig {
@@ -127,7 +142,7 @@ export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null 
  * The models a deployment provides through AI Gateway (`gateway`), each in the mode its admin
  * gave it (see GatewayModelMode): the suggested models of every provider the gateway enables, each
  * provider's followed by the models the admin added under it. Listing and resolving a gateway
- * model both go through here, so neither can happen without the admin's modes.
+ * model both go through here, so neither can happen without the admin's modes and settings.
  */
 export class GatewayModels {
   /** Every model, in any mode, in listing order. */
@@ -142,17 +157,24 @@ export class GatewayModels {
   readonly #byId = new Map<string, AdminModel>();
   /** The stored added models, including the ones this table leaves out. */
   readonly #added: readonly GatewayModel[];
+  /** The reasoning level of a model whose settings give none. */
+  readonly #defaultReasoning: ReasoningLevel | null;
 
   constructor(readonly gateway: AiGatewayConfig,
-              config: Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled">) {
+              config: Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled" |
+                  "modelSettings" | "defaultReasoning">) {
     this.#added = config.addedModels;
     this.userModels = config.userModelsEnabled;
+    this.#defaultReasoning = config.defaultReasoning;
     let add = (model: GatewayModel, defaultMode: GatewayModelMode, added: boolean) => {
       if (this.#byId.has(model.id)) return;
       // Object.hasOwn, so that an ID like "constructor" does not find an inherited mode.
       let mode = Object.hasOwn(config.modelModes, model.id)
           ? config.modelModes[model.id] : defaultMode;
-      this.#byId.set(model.id, { ...model, mode, defaultMode, added });
+      let settings = Object.hasOwn(config.modelSettings, model.id)
+          ? config.modelSettings[model.id] : undefined;
+      this.#byId.set(
+          model.id, { ...model, mode, defaultMode, added, ...(settings && { settings }) });
     };
     for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
       if (!gateway.providers.has(provider)) continue;
@@ -185,23 +207,21 @@ export class GatewayModels {
   /**
    * Look up a gateway model by ID in order to run it. Hidden models resolve, so stored references
    * to them keep working. Returns undefined for a disabled model and for an ID that names no
-   * gateway model.
+   * gateway model. The config carries what the admin set and nothing for what is unset, so that
+   * an untouched model runs exactly as it does with no admin settings at all.
    */
   resolve(id: string): UserAiModelRecord | undefined {
     let model = this.#byId.get(id);
     if (!model || model.mode === "disabled") return undefined;
+    let reasoning = model.settings?.reasoning ?? this.#defaultReasoning;
+    let budget = model.settings?.compactionInputBudget;
     return {
       profile: { type: "agent", id, name: model.name },
       config: {
-        provider: model.provider,
-        model: id,
-        // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
-        // reads the real values from env. We set them to empty strings here to satisfy
-        // the type.
-        apiToken: "",
-        // An added model's limits travel in the config, which token budgeting reads ahead of the
-        // catalog. A suggested model's are the catalog's own.
-        ...(model.added ? tokenLimits(model) : {}),
+        ...gatewayModelConfig(model),
+        ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
+        ...(reasoning !== null ? { reasoning } : {}),
+        ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
       },
     };
   }

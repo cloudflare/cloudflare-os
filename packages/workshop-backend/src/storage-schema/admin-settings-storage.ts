@@ -11,7 +11,7 @@ import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   DEFAULT_BANNER_COLOR,
   type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput, type BlueprintPublicInfo,
-  type GatewayModel, type GatewayModelMode,
+  type GatewayModel, type GatewayModelMode, type GatewayModelSettings, type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
 
 export type AdminConfig = {
@@ -73,6 +73,17 @@ export type AdminConfig = {
   /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
   addedModels: GatewayModel[];
   /**
+   * What an admin set for each AI Gateway model: model id -> settings, for the models that have
+   * any. Absent ⇒ the model's built-in behaviour, at `defaultReasoning` where that is set. Only
+   * meaningful in AI Gateway mode (see GatewayModels in ai-gateway.ts).
+   */
+  modelSettings: Record<string, GatewayModelSettings>;
+  /**
+   * The reasoning level of every AI Gateway model whose settings give none, or null for each
+   * model's built-in behaviour. Never applies to a model a user added.
+   */
+  defaultReasoning: ReasoningLevel | null;
+  /**
    * Whether users may add models of their own (default true), which in AI Gateway mode run through
    * the deployment's gateway. While false, the gateway's models are the only ones a user can list
    * or run; the models users stored are kept. Only meaningful in AI Gateway mode (see GatewayModels
@@ -124,6 +135,8 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   formats: [],
   modelModes: {},
   addedModels: [],
+  modelSettings: {},
+  defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
 };

@@ -3,12 +3,18 @@ import type { GatewayModel, GatewayModelMode } from "@gadgets/workshop-shared/ap
 import { ADMIN_USERNAME, startHarness, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedChatCompletions } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, nextUsernames, signUp, waitFor, waitForIdleChat } from "../src/rpc-client.js";
+import {
+  connect, logIn, nextUsernames, signUp, waitFor, waitForIdleChat,
+} from "../src/rpc-client.js";
 
 const LOG_URL = "https://api.cloudflare.com/client/v4/accounts/gateway-account-id/ai-gateway/gateways/" +
     "platform-gateway/logs/scripted-log-id";
 
-const model = scriptedChatCompletions([{ text: "Charged reply." }]);
+// One reply for each chat turn the cases below run, in order.
+const model = scriptedChatCompletions([
+  { text: "Charged reply." }, { text: "Built-in reply." }, { text: "Default-level reply." },
+  { text: "Own-level reply." },
+]);
 let logReads = 0;
 const network = new NetworkInterceptor({
   handlers: [async (url, method, headers, request) => {
@@ -71,6 +77,13 @@ const ADDED: GatewayModel = {
   provider: "cloudflare", id: "@cf/test/added", name: "Added (Workers AI)",
   contextWindow: 100000, outputLimit: 8000,
 };
+// As the admin is shown it: a model the runtime has no entry for, which it takes for one that
+// does no reasoning, with the prompt budget its own limits leave.
+const ADDED_VIEW = {
+  ...ADDED, mode: "enabled", defaultMode: "enabled", added: true,
+  reasoningLevels: [], builtInCompactionInputBudget: 92000, maxCompactionInputBudget: 92000,
+  runtimeKnown: false,
+};
 const disabledMessage = (name: string) =>
     `The "${name}" model is disabled on this deployment by an administrator.`;
 const ADDING_REFUSED = "Adding your own models is disabled on this deployment by an administrator.";
@@ -78,9 +91,18 @@ const cantBeUsedMessage = (name: string) => `The "${name}" model can't be used: 
     "adding your own models is disabled on this deployment by an administrator.";
 const ids = (models: readonly { id: string }[]) => models.map(candidate => candidate.id);
 
+// The cases below share one deployment, whose admin signs up once and logs in after that.
+let adminSignedUp = false;
+function adminSession(publicApi: Parameters<typeof signUp>[0]) {
+  const session = adminSignedUp
+      ? logIn(publicApi, ADMIN_USERNAME) : signUp(publicApi, ADMIN_USERNAME);
+  adminSignedUp = true;
+  return session;
+}
+
 it("an admin's modes, added models and say over users' own decide which models run", async () => {
   using adminPublic = connect(harness.url);
-  using adminUser = await signUp(adminPublic, ADMIN_USERNAME);
+  using adminUser = await adminSession(adminPublic);
   using admin = await adminUser.getAdminApi();
   if (admin === null) throw new Error("The deployment admin API was unavailable");
   const gatewayModels = async () => {
@@ -132,8 +154,9 @@ it("an admin's modes, added models and say over users' own decide which models r
       providers: ["cloudflare"],
       models: [
         ...before.models.map(withMode(SCRIPTED_MODEL_ID, "disabled")).map(withMode(other.id, "hidden")),
-        { ...ADDED, mode: "enabled", defaultMode: "enabled", added: true },
+        ADDED_VIEW,
       ],
+      defaultReasoning: null,
       userModelsEnabled: true,
       modelsDevSuggestions: false,
     });
@@ -185,8 +208,7 @@ it("an admin's modes, added models and say over users' own decide which models r
     await expect(ws.newChat("Is anyone there?", ADDED.id))
         .rejects.toThrow(`No such model: ${ADDED.id}`);
     await admin.addGatewayModel(ADDED);
-    expect((await gatewayModels()).models.at(-1))
-        .toEqual({ ...ADDED, mode: "enabled", defaultMode: "enabled", added: true });
+    expect((await gatewayModels()).models.at(-1)).toEqual(ADDED_VIEW);
     await admin.removeGatewayModel(ADDED.id);
 
     // Back in its default mode, a model is as it was before the admin touched it.
@@ -240,4 +262,66 @@ it("an admin's modes, added models and say over users' own decide which models r
       }
     }
   }
+});
+
+it("an admin's reasoning levels reach a model's chat turns, its own ahead of the default",
+    async () => {
+  using adminPublic = connect(harness.url);
+  using adminUser = await adminSession(adminPublic);
+  using admin = await adminUser.getAdminApi();
+  if (admin === null) throw new Error("The deployment admin API was unavailable");
+  // The scripted model as the admin is shown it, beside the deployment's default level.
+  const scripted = async () => {
+    const view = (await admin.getSettings()).gatewayModels;
+    const found = view?.models.find(candidate => candidate.id === SCRIPTED_MODEL_ID);
+    if (view === undefined || found === undefined) {
+      throw new Error("The admin settings did not list the scripted model");
+    }
+    return { ...found, defaultReasoning: view.defaultReasoning };
+  };
+
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, nextUsernames("gatewaylevels")[0]!);
+  using ws = await api.newGadget();
+  // The effort that a new chat's turn on the scripted model asks the provider for.
+  const turnEffort = async () => {
+    const sent = model.requests.length;
+    await waitForIdleChat(ws, await ws.newChat("How hard is this?", SCRIPTED_MODEL_ID));
+    expect(model.requests).toHaveLength(sent + 1);
+    return (model.requests[sent] as { reasoning_effort?: string }).reasoning_effort;
+  };
+
+  const before = await scripted();
+  expect(before).toMatchObject(
+      { reasoningLevels: ["off", "high", "max"], runtimeKnown: true, defaultReasoning: null });
+  expect(before).not.toHaveProperty("settings");
+  // With nothing set, the request names no effort at all.
+  expect(await turnEffort()).toBeUndefined();
+
+  try {
+    await admin.setDefaultReasoning("high");
+    expect(await turnEffort()).toBe("high");
+
+    const settings = { reasoning: "max", compactionInputBudget: 100000 } as const;
+    await admin.setGatewayModelSettings(SCRIPTED_MODEL_ID, settings);
+    expect(await scripted()).toEqual({ ...before, settings, defaultReasoning: "high" });
+    expect(await turnEffort()).toBe("max");
+
+    // What the admin may not set. None of it changes anything.
+    const max = before.maxCompactionInputBudget;
+    await expect(admin.setGatewayModelSettings(
+        SCRIPTED_MODEL_ID, { compactionInputBudget: max + 1 })).rejects.toThrow(
+        `The compaction budget of the "${before.name}" model must be a whole number of tokens ` +
+        `from 1 to ${max}.`);
+    await expect(admin.setGatewayModelSettings("no-such-model", { reasoning: "low" }))
+        .rejects.toThrow("No such model: no-such-model");
+    expect(await scripted()).toEqual({ ...before, settings, defaultReasoning: "high" });
+  } finally {
+    try {
+      await admin.setGatewayModelSettings(SCRIPTED_MODEL_ID, {});
+    } finally {
+      await admin.setDefaultReasoning(null);
+    }
+  }
+  expect(await scripted()).toEqual(before);
 });

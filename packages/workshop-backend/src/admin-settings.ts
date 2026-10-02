@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -6,9 +6,11 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
-import { AiGatewayConfig, GatewayModels, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { getModelTokenLimits } from './agent-compaction.js';
+import { AiGatewayConfig, GatewayModels, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { gatewayReasoningLevels, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -18,11 +20,22 @@ import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
 
-// The entries of `modes` other than `modelId`'s. Callers rebuild the record with
-// Object.fromEntries, which defines own properties: assigning into a copy would lose the mode of a
-// model whose ID is "__proto__".
-function modeEntriesWithout(modes: AdminConfig["modelModes"], modelId: string) {
-  return Object.entries(modes).filter(([id]) => id !== modelId);
+// The entries of a record keyed by model ID (a model's mode, or its settings) other than
+// `modelId`'s. Callers rebuild the record with Object.fromEntries, which defines own properties:
+// assigning into a copy would lose the entry of a model whose ID is "__proto__".
+function entriesWithout<T>(record: Record<string, T>, modelId: string): [string, T][] {
+  return Object.entries(record).filter(([id]) => id !== modelId);
+}
+
+// The compaction budget a gateway model has while its settings give none, and the largest one
+// they may give it: the room its window leaves for a prompt.
+function compactionBudgetRange(model: AdminModel): { builtIn: number, max: number } {
+  let config = gatewayModelConfig(model);
+  return {
+    builtIn: getModelTokenLimits(config).inputBudget,
+    // A budget is capped at that room, so an unbounded one reads it back.
+    max: getModelTokenLimits({ ...config, compactionInputBudget: Infinity }).inputBudget,
+  };
 }
 
 /**
@@ -420,7 +433,19 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       let models = new GatewayModels(gateway, config);
       return {
         providers: models.addableProviders,
-        models: [...models.all],
+        models: models.all.map(model => {
+          let budget = compactionBudgetRange(model);
+          return {
+            ...model,
+            reasoningLevels: gatewayReasoningLevels(model.provider, model.id, model.behavesLike),
+            builtInCompactionInputBudget: budget.builtIn,
+            maxCompactionInputBudget: budget.max,
+            runtimeKnown: isRuntimeModel(model.provider, model.id),
+            ...(model.behavesLike !== undefined &&
+                { behavesLikeKnown: isRuntimeModel(model.provider, model.behavesLike) }),
+          };
+        }),
+        defaultReasoning: config.defaultReasoning,
         userModelsEnabled: models.userModels,
         modelsDevSuggestions: config.modelsDevSuggestions,
       };
@@ -442,10 +467,44 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       // user-facing paths read can trail it.
       let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
       if (!model) throw new Error(`No such model: ${modelId}`);
-      let modes = modeEntriesWithout(config.modelModes, modelId);
+      let modes = entriesWithout(config.modelModes, modelId);
       if (mode !== model.defaultMode) modes.push([modelId, mode]);
       return { ...config, modelModes: Object.fromEntries(modes) };
     });
+  }
+
+  /**
+   * Replace what is set for a gateway model, atomically. Nothing set is stored as absence. The
+   * reasoning level is not held to the model's own levels, since a request clamps it to them; the
+   * compaction budget is held to the room the model's window leaves for a prompt.
+   */
+  async setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
+      if (!model) throw new Error(`No such model: ${modelId}`);
+      let budget = settings.compactionInputBudget;
+      if (budget !== undefined) {
+        let { max } = compactionBudgetRange(model);
+        if (max <= 0) {
+          throw new Error(`The "${model.name}" model's context window leaves no room for a ` +
+              "compaction budget.");
+        }
+        if (!Number.isSafeInteger(budget) || budget <= 0 || budget > max) {
+          throw new Error(`The compaction budget of the "${model.name}" model must be a whole ` +
+              `number of tokens from 1 to ${max}.`);
+        }
+      }
+      let entries = entriesWithout(config.modelSettings, modelId);
+      let clean = sanitizeModelSettings(settings);
+      if (clean) entries.push([modelId, clean]);
+      return { ...config, modelSettings: Object.fromEntries(entries) };
+    });
+  }
+
+  /** Set the reasoning level of the gateway models whose settings give none, or null for none. */
+  async setDefaultReasoning(level: ReasoningLevel | null): Promise<void> {
+    this.#requireGateway();
+    await this.updateAdminConfig({ defaultReasoning: level });
   }
 
   /**
@@ -457,17 +516,26 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (!added) {
       throw new Error(
           "Invalid model: it needs an ID and a name, neither over-long, and token limits that " +
-          "are positive integers.");
+          "are positive integers. The ID of a model it behaves like can't be over-long either.");
     }
     await this.#mutateAdminConfig(config => {
       new GatewayModels(this.#requireGateway(), config).assertAddable(added);
-      // The ID was free, so a mode stored under it belonged to a model that has since left.
-      let modelModes = Object.fromEntries(modeEntriesWithout(config.modelModes, added.id));
-      return { ...config, addedModels: [...config.addedModels, added], modelModes };
+      if (added.behavesLike !== undefined && !isRuntimeModel(added.provider, added.behavesLike)) {
+        throw new Error(`"${added.behavesLike}" is not a model the runtime knows under ` +
+            `provider "${added.provider}", so "${added.id}" can't behave like it.`);
+      }
+      // The ID was free, so a mode or settings stored under it belonged to a model that has since
+      // left.
+      return {
+        ...config,
+        addedModels: [...config.addedModels, added],
+        modelModes: Object.fromEntries(entriesWithout(config.modelModes, added.id)),
+        modelSettings: Object.fromEntries(entriesWithout(config.modelSettings, added.id)),
+      };
     });
   }
 
-  /** Remove an added gateway model, and with it the mode it was given. */
+  /** Remove an added gateway model, and with it the mode and settings it was given. */
   async removeGatewayModel(modelId: string): Promise<void> {
     this.#requireGateway();
     await this.#mutateAdminConfig(config => {
@@ -475,10 +543,15 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       if (addedModels.length === config.addedModels.length) {
         throw new Error(`No such added model: ${modelId}`);
       }
-      // The catalog wins an ID it lists, so a mode stored under one is the suggested model's.
-      let modelModes = isCatalogModel(modelId)
-          ? config.modelModes : Object.fromEntries(modeEntriesWithout(config.modelModes, modelId));
-      return { ...config, addedModels, modelModes };
+      // The catalog wins an ID it lists, so a mode or settings stored under one are the suggested
+      // model's.
+      if (isCatalogModel(modelId)) return { ...config, addedModels };
+      return {
+        ...config,
+        addedModels,
+        modelModes: Object.fromEntries(entriesWithout(config.modelModes, modelId)),
+        modelSettings: Object.fromEntries(entriesWithout(config.modelSettings, modelId)),
+      };
     });
   }
 
@@ -752,5 +825,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setModelsDevSuggestions(enabled: boolean): Promise<void> {
     return this.admin.setModelsDevSuggestions(enabled);
+  }
+
+  setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {
+    return this.admin.setGatewayModelSettings(modelId, settings);
+  }
+
+  setDefaultReasoning(level: ReasoningLevel | null): Promise<void> {
+    return this.admin.setDefaultReasoning(level);
   }
 }

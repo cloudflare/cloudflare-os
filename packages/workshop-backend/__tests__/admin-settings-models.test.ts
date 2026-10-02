@@ -46,7 +46,9 @@ function adminSettings(vars: object = GATEWAY) {
         let { modelModes, addedModels } = admin.getAdminConfig();
         return { modelModes, addedModels };
       });
-  return { inDo, stored, put, mirror };
+  const settings = (): Promise<AdminConfig["modelSettings"]> =>
+      inDo(admin => admin.getAdminConfig().modelSettings);
+  return { inDo, stored, settings, put, mirror };
 }
 
 describe("AdminSettings gateway model modes", () => {
@@ -349,9 +351,64 @@ describe("AdminSettings.getSettings gateway models", () => {
     expect(byId.get("claude-fable-5-1")).toMatchObject(
         { provider: "anthropic", mode: "disabled", defaultMode: "enabled", added: false });
     expect(byId.get("claude-opus-5")).toMatchObject({ mode: "hidden", defaultMode: "hidden" });
-    expect(byId.get("claude-test")).toStrictEqual(
-        { ...ADDED, mode: "enabled", defaultMode: "enabled", added: true });
+    expect(byId.get("claude-test")).toStrictEqual({
+      ...ADDED, mode: "enabled", defaultMode: "enabled", added: true,
+      reasoningLevels: ["off", "minimal", "low", "medium", "high"],
+      builtInCompactionInputBudget: 500000, maxCompactionInputBudget: 500000,
+      runtimeKnown: false,
+    });
     expect(gatewayModels!.models.at(-1)!.id).toBe("claude-test");
+    expect(gatewayModels!.defaultReasoning).toBeNull();
+  });
+
+  it("gives each model its reasoning levels, its compaction budgets and its settings",
+      async () => {
+    const { inDo } = adminSettings(
+        { ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" });
+    const workersAi: GatewayModel = {
+      provider: "cloudflare", id: "@cf/test/added", name: "Added", contextWindow: 100000,
+      outputLimit: 8000,
+    };
+    await inDo(admin => admin.addGatewayModel(workersAi));
+    await inDo(admin => admin.setGatewayModelSettings(
+        "gpt-6-sol", { reasoning: "xhigh", compactionInputBudget: 500000 }));
+    await inDo(admin => admin.setDefaultReasoning("medium"));
+
+    const { gatewayModels } = await inDo(admin => admin.getSettings("admin"));
+    expect(gatewayModels!.defaultReasoning).toBe("medium");
+    const view = (id: string) => {
+      const { reasoningLevels, builtInCompactionInputBudget, maxCompactionInputBudget,
+          runtimeKnown, settings } = gatewayModels!.models.find(model => model.id === id)!;
+      return { reasoningLevels, builtInCompactionInputBudget, maxCompactionInputBudget,
+          runtimeKnown, settings };
+    };
+    // The one built-in budget below what the window leaves: 1,050,000 less a 128,000 response.
+    expect(view("gpt-6-sol")).toStrictEqual({
+      reasoningLevels: ["off", "low", "medium", "high", "xhigh", "max"],
+      builtInCompactionInputBudget: 272000, maxCompactionInputBudget: 922000,
+      runtimeKnown: true, settings: { reasoning: "xhigh", compactionInputBudget: 500000 },
+    });
+    // The deployment's default is no setting of a model's own.
+    expect(view("claude-opus-5-5")).toStrictEqual({
+      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      builtInCompactionInputBudget: 1000000, maxCompactionInputBudget: 1000000,
+      runtimeKnown: true, settings: undefined,
+    });
+    // Workers AI charges the response to the window: 262,144 less 32,768.
+    expect(view("@cf/zai-org/glm-5.2")).toStrictEqual({
+      reasoningLevels: ["off", "high", "max"],
+      builtInCompactionInputBudget: 229376, maxCompactionInputBudget: 229376,
+      runtimeKnown: true, settings: undefined,
+    });
+    // An added model's limits are its own, and the runtime takes it for one that does no
+    // reasoning.
+    expect(view("@cf/test/added")).toStrictEqual({
+      reasoningLevels: [],
+      builtInCompactionInputBudget: 92000, maxCompactionInputBudget: 92000,
+      runtimeKnown: false, settings: undefined,
+    });
+    expect(gatewayModels!.models.find(model => model.id === "claude-opus-5-5"))
+        .not.toHaveProperty("settings");
   });
 
   it("lists the providers in catalog order", async () => {
@@ -377,9 +434,236 @@ describe("AdminSettings.getSettings gateway models", () => {
   });
 });
 
+describe("AdminSettings gateway model settings", () => {
+  const OPUS = "claude-opus-5-5";
+
+  it("stores a model's settings, and mirrors them to KV", async () => {
+    const { inDo, settings, put, mirror } = adminSettings();
+    await inDo(admin => admin.setGatewayModelSettings(
+        OPUS, { reasoning: "low", compactionInputBudget: 300000 }));
+    const stored = { [OPUS]: { reasoning: "low", compactionInputBudget: 300000 } };
+    expect(await settings()).toStrictEqual(stored);
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![0]).toBe(".adminConfig");
+    expect(JSON.parse(mirror.current!).modelSettings).toStrictEqual(stored);
+  });
+
+  it("replaces a model's settings whole, and forgets them once empty", async () => {
+    const { inDo, settings, mirror } = adminSettings();
+    await inDo(admin => admin.setGatewayModelSettings(
+        OPUS, { reasoning: "low", compactionInputBudget: 300000 }));
+    await inDo(admin => admin.setGatewayModelSettings("claude-fable-5-1", { reasoning: "max" }));
+
+    // The budget is not carried over.
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, { reasoning: "high" }));
+    expect(await settings()).toStrictEqual(
+        { "claude-fable-5-1": { reasoning: "max" }, [OPUS]: { reasoning: "high" } });
+
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, {}));
+    expect(await settings()).toStrictEqual({ "claude-fable-5-1": { reasoning: "max" } });
+    expect(JSON.parse(mirror.current!).modelSettings)
+        .toStrictEqual({ "claude-fable-5-1": { reasoning: "max" } });
+  });
+
+  // A request clamps the level to one the model has: Opus 5.5 can't stop thinking.
+  it("stores a level the model does not have", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, { reasoning: "off" }));
+    expect(await settings()).toStrictEqual({ [OPUS]: { reasoning: "off" } });
+  });
+
+  it("accepts a compaction budget up to the room the model's window leaves", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, { compactionInputBudget: 1 }));
+    await inDo(admin => admin.setGatewayModelSettings(
+        "@cf/zai-org/glm-5.2", { compactionInputBudget: 229376 }));
+    expect(await settings()).toStrictEqual({
+      [OPUS]: { compactionInputBudget: 1 },
+      "@cf/zai-org/glm-5.2": { compactionInputBudget: 229376 },
+    });
+  });
+
+  it.each([
+    ["one over the room the window leaves", "@cf/zai-org/glm-5.2", 229377,
+      'The compaction budget of the "GLM 5.2 (Workers AI)" model must be a whole number of ' +
+      "tokens from 1 to 229376."],
+    ["zero", OPUS, 0, 'The compaction budget of the "Claude Opus 5.5" model must be a whole ' +
+      "number of tokens from 1 to 1000000."],
+    ["a negative one", OPUS, -1, "must be a whole number of tokens from 1 to 1000000."],
+    ["a fractional one", OPUS, 1000.5, "must be a whole number of tokens from 1 to 1000000."],
+    ["one that is not a number", OPUS, NaN, "must be a whole number of tokens from 1 to 1000000."],
+  ])("refuses a compaction budget of %s, leaving storage and the mirror alone",
+      async (_, id, compactionInputBudget, message) => {
+    const { inDo, settings, put } = adminSettings();
+    await inDo(admin => admin.setGatewayModelSettings(id, { reasoning: "low" }));
+    put.mockClear();
+    await expect(inDo(admin => admin.setGatewayModelSettings(
+        id, { reasoning: "high", compactionInputBudget }))).rejects.toThrow(message);
+    expect(await settings()).toStrictEqual({ [id]: { reasoning: "low" } });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  // Workers AI reserves 32,768 tokens for the response, which is more than this window.
+  it("refuses any compaction budget for a model whose window leaves no room", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(
+        { provider: "cloudflare", id: "@cf/test/tiny", name: "Tiny", contextWindow: 1000 }));
+    await expect(inDo(admin => admin.setGatewayModelSettings(
+        "@cf/test/tiny", { compactionInputBudget: 1 }))).rejects.toThrow(
+        'The "Tiny" model\'s context window leaves no room for a compaction budget.');
+    // Its level can still be set.
+    await inDo(admin => admin.setGatewayModelSettings("@cf/test/tiny", { reasoning: "high" }));
+    expect(await settings()).toStrictEqual({ "@cf/test/tiny": { reasoning: "high" } });
+  });
+
+  it("refuses an ID that is not a gateway model", async () => {
+    const { inDo, settings, put } = adminSettings();
+    // The second is a suggested model of a provider this gateway does not enable.
+    for (let id of ["claude-fable-9", "gpt-6-luna", "constructor"]) {
+      await expect(inDo(admin => admin.setGatewayModelSettings(id, { reasoning: "low" })))
+          .rejects.toThrow(`No such model: ${id}`);
+    }
+    expect(await settings()).toStrictEqual({});
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("gives a model whose ID is __proto__ settings of its own", async () => {
+    const { inDo, settings, mirror } = adminSettings();
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, id: "__proto__" }));
+    await inDo(admin => admin.setGatewayModelSettings("__proto__", { reasoning: "low" }));
+    expect(Object.entries(await settings())).toEqual([["__proto__", { reasoning: "low" }]]);
+    expect(Object.entries(parseAdminConfig(mirror.current).modelSettings))
+        .toEqual([["__proto__", { reasoning: "low" }]]);
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(view.gatewayModels!.models.find(model => model.id === "__proto__")?.settings)
+        .toStrictEqual({ reasoning: "low" });
+
+    await inDo(admin => admin.setGatewayModelSettings("__proto__", {}));
+    expect(Object.entries(await settings())).toEqual([]);
+  });
+
+  it("removes an added model along with its settings", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(ADDED));
+    await inDo(admin => admin.setGatewayModelSettings("claude-test", { reasoning: "low" }));
+    await inDo(admin => admin.setGatewayModelSettings(OPUS, { reasoning: "max" }));
+
+    await inDo(admin => admin.removeGatewayModel("claude-test"));
+    expect(await settings()).toStrictEqual({ [OPUS]: { reasoning: "max" } });
+
+    // Its ID is free again, with nothing set.
+    await inDo(admin => admin.addGatewayModel(ADDED));
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(view.gatewayModels!.models.find(model => model.id === "claude-test"))
+        .not.toHaveProperty("settings");
+  });
+
+  // Settings outlive their model when the catalog drops a model an admin had changed.
+  it("starts a model with nothing set whatever its ID was left with", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.updateAdminConfig({
+      modelSettings: { "claude-test": { reasoning: "max" }, [OPUS]: { reasoning: "low" } },
+    }));
+    await inDo(admin => admin.addGatewayModel(ADDED));
+    expect(await settings()).toStrictEqual({ [OPUS]: { reasoning: "low" } });
+  });
+
+  it("keeps a suggested model's settings when removing an added model it shadows", async () => {
+    const { inDo, settings } = adminSettings();
+    await inDo(admin => admin.updateAdminConfig({
+      addedModels: [{ ...ADDED, id: OPUS }],
+      modelSettings: { [OPUS]: { reasoning: "low" } },
+    }));
+    await inDo(admin => admin.removeGatewayModel(OPUS));
+    expect(await settings()).toStrictEqual({ [OPUS]: { reasoning: "low" } });
+  });
+
+  it("stores the deployment's default reasoning level, and mirrors it to KV", async () => {
+    const { inDo, put, mirror } = adminSettings();
+    const level = () => inDo(async admin => ({
+      stored: admin.getAdminConfig().defaultReasoning,
+      view: (await admin.getSettings("admin")).gatewayModels!.defaultReasoning,
+    }));
+    expect(await level()).toEqual({ stored: null, view: null });
+
+    await inDo(admin => admin.setDefaultReasoning("high"));
+    expect(await level()).toEqual({ stored: "high", view: "high" });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![0]).toBe(".adminConfig");
+    expect(JSON.parse(mirror.current!).defaultReasoning).toBe("high");
+
+    await inDo(admin => admin.setDefaultReasoning(null));
+    expect(await level()).toEqual({ stored: null, view: null });
+    expect(JSON.parse(mirror.current!).defaultReasoning).toBeNull();
+  });
+});
+
+describe("AdminSettings added models that behave like another", () => {
+  it("stores the model an added model behaves like, trimmed", async () => {
+    const { inDo, stored } = adminSettings();
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, behavesLike: " claude-opus-5-5 " }));
+    expect((await stored()).addedModels)
+        .toStrictEqual([{ ...ADDED, behavesLike: "claude-opus-5-5" }]);
+
+    // The runtime has no entry for the model's own ID, so it takes the other model's levels.
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(view.gatewayModels!.models.find(model => model.id === "claude-test")).toMatchObject({
+      behavesLike: "claude-opus-5-5", runtimeKnown: false, behavesLikeKnown: true,
+      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  });
+
+  // As after an upgrade to a runtime that dropped the other model.
+  it("reports a stored one the runtime does not know, and nothing for a model with none",
+      async () => {
+    const { inDo } = adminSettings();
+    const plain = { ...ADDED, id: "claude-plain" };
+    await inDo(admin => admin.updateAdminConfig(
+        { addedModels: [{ ...ADDED, behavesLike: "claude-nope" }, plain] }));
+    const { models } = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    expect(models.find(model => model.id === ADDED.id)).toMatchObject({
+      behavesLike: "claude-nope", runtimeKnown: false, behavesLikeKnown: false,
+      reasoningLevels: ["off", "minimal", "low", "medium", "high"],
+    });
+    expect(models.find(model => model.id === plain.id)).not.toHaveProperty("behavesLikeKnown");
+  });
+
+  it.each([
+    ["the runtime does not know", "claude-nope"],
+    // A Workers AI model, which this gateway also provides.
+    ["of another provider", "@cf/zai-org/glm-5.2"],
+    ["named by an inherited key", "constructor"],
+  ])("refuses a model %s", async (_, behavesLike) => {
+    const { inDo, stored, put } = adminSettings();
+    await expect(inDo(admin => admin.addGatewayModel({ ...ADDED, behavesLike })))
+        .rejects.toThrow(`"${behavesLike}" is not a model the runtime knows under provider ` +
+            '"anthropic", so "claude-test" can\'t behave like it.');
+    expect((await stored()).addedModels).toEqual([]);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("refuses an over-long one as malformed", async () => {
+    const { inDo, stored } = adminSettings();
+    await expect(inDo(admin => admin.addGatewayModel({ ...ADDED, behavesLike: "x".repeat(201) })))
+        .rejects.toThrow("Invalid model:");
+    expect((await stored()).addedModels).toEqual([]);
+  });
+
+  // The runtime's own entry is used, so the claim is unused rather than wrong.
+  it("accepts one for a model the runtime knows, and reports that it knows the model",
+      async () => {
+    const { inDo } = adminSettings();
+    await inDo(admin => admin.addGatewayModel(
+        { ...ADDED, id: "claude-sonnet-4-5", behavesLike: "claude-opus-5-5" }));
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(view.gatewayModels!.models.find(model => model.id === "claude-sonnet-4-5"))
+        .toMatchObject({ behavesLike: "claude-opus-5-5", runtimeKnown: true });
+  });
+});
+
 describe("AdminSettings outside AI Gateway mode", () => {
   it("has no gateway models to show, and refuses to change any", async () => {
-    const { inDo, stored, put } = adminSettings({});
+    const { inDo, stored, settings, put } = adminSettings({});
     expect((await inDo(admin => admin.getSettings("admin"))).gatewayModels).toBeUndefined();
 
     await expect(inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden")))
@@ -390,6 +674,11 @@ describe("AdminSettings outside AI Gateway mode", () => {
     await expect(inDo(admin => admin.removeGatewayModel("claude-test"))).rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setUserModelsEnabled(false))).rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setModelsDevSuggestions(true))).rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayModelSettings("claude-test", { reasoning: "low" })))
+        .rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setDefaultReasoning("low"))).rejects.toThrow(NOT_GATEWAY);
+    expect(await settings()).toStrictEqual({});
+    expect(await inDo(admin => admin.getAdminConfig().defaultReasoning)).toBeNull();
     expect(await stored()).toEqual({ modelModes: {}, addedModels: [ADDED] });
     expect(await inDo(admin => admin.getAdminConfig().userModelsEnabled)).toBe(true);
     expect(await inDo(admin => admin.getAdminConfig().modelsDevSuggestions)).toBe(false);

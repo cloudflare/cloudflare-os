@@ -9,7 +9,7 @@
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon } from "@gadgets/workshop-shared/api";
+import { AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -199,7 +199,7 @@ export async function listFormatOffers(env: BlueprintKvEnv, config: AdminConfig)
   return offers;
 }
 
-/** Longest id or name an added AI Gateway model may carry. */
+/** Longest id or name an added AI Gateway model may carry, its `behavesLike` id included. */
 const MAX_ADDED_MODEL_TEXT = 200;
 
 /**
@@ -209,7 +209,8 @@ const MAX_ADDED_MODEL_TEXT = 200;
  */
 export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
   if (!value || typeof value !== "object") return undefined;
-  let {provider, id, name, contextWindow, outputLimit} = value as Partial<GatewayModel>;
+  let {provider, id, name, contextWindow, outputLimit, behavesLike} =
+      value as Partial<GatewayModel>;
   if (typeof provider !== "string" || !Object.hasOwn(SUGGESTED_MODELS, provider)) return undefined;
   if (typeof id !== "string" || typeof name !== "string") return undefined;
   id = id.trim();
@@ -219,11 +220,32 @@ export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
   }
   if (!isTokenLimit(contextWindow)) return undefined;
   if (outputLimit !== undefined && !isTokenLimit(outputLimit)) return undefined;
-  return {provider, id, name, contextWindow, ...(outputLimit === undefined ? {} : {outputLimit})};
+  // Blank reads as absent.
+  behavesLike = typeof behavesLike === "string" ? behavesLike.trim() : "";
+  if (behavesLike.length > MAX_ADDED_MODEL_TEXT) return undefined;
+  return {
+    provider, id, name, contextWindow,
+    ...(outputLimit === undefined ? {} : {outputLimit}),
+    ...(behavesLike ? {behavesLike} : {}),
+  };
 }
 
 function isTokenLimit(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+/**
+ * The well-formed part of a gateway model's settings, or undefined if none of it is. Shape only:
+ * how large a compaction budget may be depends on the model (see compactionBudgetRange() in
+ * admin-settings.ts).
+ */
+export function sanitizeModelSettings(value: unknown): GatewayModelSettings | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  let {reasoning, compactionInputBudget} = value as Partial<GatewayModelSettings>;
+  let settings: GatewayModelSettings = {};
+  if (isReasoningLevel(reasoning)) settings.reasoning = reasoning;
+  if (isTokenLimit(compactionInputBudget)) settings.compactionInputBudget = compactionInputBudget;
+  return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
 // Accept a stored added model only if it is well-formed, and only the first under each id.
@@ -265,6 +287,13 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
           ? Object.fromEntries(
               Object.entries(p.modelModes).filter(([, mode]) => isGatewayModelMode(mode)))
           : {};
+  let modelSettings: Record<string, GatewayModelSettings> =
+      p.modelSettings && typeof p.modelSettings === "object"
+          ? Object.fromEntries(Object.entries(p.modelSettings).flatMap(([id, stored]) => {
+              let settings = sanitizeModelSettings(stored);
+              return settings ? [[id, settings]] : [];
+            }))
+          : {};
   let signupsEnabled = typeof p.signupsEnabled === "boolean"
     ? p.signupsEnabled
     : DEFAULT_ADMIN_CONFIG.signupsEnabled;
@@ -288,6 +317,8 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     formats: parseFormats(p.formats),
     modelModes,
     addedModels: parseAddedModels(p.addedModels),
+    modelSettings,
+    defaultReasoning: isReasoningLevel(p.defaultReasoning) ? p.defaultReasoning : null,
     userModelsEnabled: typeof p.userModelsEnabled === "boolean"
       ? p.userModelsEnabled
       : DEFAULT_ADMIN_CONFIG.userModelsEnabled,

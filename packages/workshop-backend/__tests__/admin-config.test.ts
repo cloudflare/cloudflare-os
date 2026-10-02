@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -213,6 +213,87 @@ describe("admin config gateway models", () => {
     expect(sanitizeAddedModel({ ...added, outputLimit: 8000, apiToken: "secret", mode: "hidden" }))
         .toStrictEqual({ ...added, outputLimit: 8000 });
     expect(sanitizeAddedModel([added])).toBeUndefined();
+  });
+
+  it("keeps the model an added model behaves like, trimmed, and reads a blank one as absent",
+      () => {
+    expect(sanitizeAddedModel({ ...added, behavesLike: "  claude-opus-5-5 " }))
+        .toStrictEqual({ ...added, behavesLike: "claude-opus-5-5" });
+    for (let behavesLike of ["", "   ", undefined, null, 5]) {
+      expect(sanitizeAddedModel({ ...added, behavesLike })).toStrictEqual(added);
+    }
+    expect(sanitizeAddedModel({ ...added, behavesLike: "x".repeat(200) })?.behavesLike)
+        .toHaveLength(200);
+    expect(sanitizeAddedModel({ ...added, behavesLike: "x".repeat(201) })).toBeUndefined();
+
+    let config = parseAdminConfig(JSON.stringify(
+        { addedModels: [{ ...added, behavesLike: " claude-opus-5-5 " }] }));
+    expect(config.addedModels).toStrictEqual([{ ...added, behavesLike: "claude-opus-5-5" }]);
+  });
+
+  it("defaults to no model settings and no default reasoning level", () => {
+    expect(DEFAULT_ADMIN_CONFIG.modelSettings).toStrictEqual({});
+    expect(DEFAULT_ADMIN_CONFIG.defaultReasoning).toBeNull();
+    for (let stored of ["{}", '{"modelSettings":"high","defaultReasoning":"extreme"}',
+        '{"modelSettings":null,"defaultReasoning":null}', '{"defaultReasoning":3}',
+        '{"defaultReasoning":["high"]}']) {
+      let config = parseAdminConfig(stored);
+      expect(config.modelSettings, stored).toStrictEqual({});
+      expect(config.defaultReasoning, stored).toBeNull();
+    }
+  });
+
+  it("keeps the well-formed part of each model's settings, and no empty entry", () => {
+    let config = parseAdminConfig(JSON.stringify({
+      modelSettings: {
+        both: { reasoning: "high", compactionInputBudget: 1000 },
+        "bad-level": { reasoning: "extreme", compactionInputBudget: 1000 },
+        "fractional-budget": { reasoning: "low", compactionInputBudget: 1.5 },
+        "foreign-field": { reasoning: "off", mode: "hidden" },
+        "nothing-valid": { reasoning: "nope", compactionInputBudget: 0 },
+        "negative-budget": { compactionInputBudget: -5 },
+        "string-budget": { compactionInputBudget: "1000" },
+        empty: {},
+        nothing: null,
+        text: "high",
+        list: ["high"],
+      },
+    }));
+    expect(config.modelSettings).toStrictEqual({
+      both: { reasoning: "high", compactionInputBudget: 1000 },
+      "bad-level": { compactionInputBudget: 1000 },
+      "fractional-budget": { reasoning: "low" },
+      "foreign-field": { reasoning: "off" },
+    });
+  });
+
+  it("reads a model's settings as their well-formed part, or as nothing", () => {
+    expect(sanitizeModelSettings({ reasoning: "max", compactionInputBudget: 1 }))
+        .toStrictEqual({ reasoning: "max", compactionInputBudget: 1 });
+    expect(sanitizeModelSettings({ reasoning: "max", compactionInputBudget: 2 ** 53 }))
+        .toStrictEqual({ reasoning: "max" });
+    for (let value of [{}, { reasoning: undefined }, { compactionInputBudget: NaN }, null, "max"]) {
+      expect(sanitizeModelSettings(value)).toBeUndefined();
+    }
+  });
+
+  it("keeps a __proto__ model's settings as an ordinary entry", () => {
+    let config = parseAdminConfig(
+        '{"modelSettings":{"__proto__":{"reasoning":"low"},"a":{"reasoning":"high"}}}');
+    expect(Object.getPrototypeOf(config.modelSettings)).toBe(Object.prototype);
+    expect(Object.entries(config.modelSettings)).toEqual(
+        [["__proto__", { reasoning: "low" }], ["a", { reasoning: "high" }]]);
+    expect(parseAdminConfig(serializeAdminConfig(config)).modelSettings)
+        .toStrictEqual(config.modelSettings);
+  });
+
+  it("round-trips model settings and the default reasoning level", () => {
+    let modelSettings = { a: { reasoning: "xhigh" as const }, b: { compactionInputBudget: 5000 } };
+    let config = parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, modelSettings, defaultReasoning: "minimal" }));
+    expect(config.modelSettings).toStrictEqual(modelSettings);
+    expect(config.defaultReasoning).toBe("minimal");
+    expect(parseAdminConfig('{"defaultReasoning":"off"}').defaultReasoning).toBe("off");
   });
 
   it("round-trips modes and added models", () => {
