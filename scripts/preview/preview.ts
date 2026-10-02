@@ -28,7 +28,7 @@
 //
 // Secrets — the backend's admins and the Cloudflare Access application that authenticates the
 // instance, and each gatekeeper's OAuth app credentials where one is configured for previews — are
-// uploaded to the owning worker's Previews settings just before that worker's own tier, and are
+// uploaded to the owning worker's Preview base config just before that worker's own tier, and are
 // never written into a config, because Wrangler prints config values and this workflow's logs are
 // public. See uploadSecrets, and backendSecrets / resolveGatekeeperSecrets in staging-config.ts.
 
@@ -130,21 +130,27 @@ const GATEKEEPER_CONCURRENCY = 8;
 // number — are in flight at once.
 const API_CONCURRENCY = 8;
 
-// Worker Previews are in private beta, and two of the features this script is built on are not in
-// any released Wrangler: per-preview resource auto-provisioning (`previews.kv_namespaces` etc.
-// declared binding-only), and `preview_id` on a `previews.services` entry, which is what points a
-// preview at a *sibling* preview rather than at the baseline worker. Verified 2026-08-16 against
-// the pinned 4.120.0 and the then-latest 4.123.0: both accept a binding-only KV entry in the
-// schema but send `namespace_id: undefined`, and both silently drop `preview_id` from a service
-// binding — which would leave the whole instance wired to the baselines. So the deploy runs on
-// the draft build from https://github.com/cloudflare/workers-sdk/pull/14416 instead, installed
-// into a tmpdir. It pulls matching workers-sdk workspace packages from pkg.pr.new, hence the
-// exotic-subdeps opt-out.
+// Two of the features this script is built on are not in any released Wrangler: per-preview
+// resource auto-provisioning (`previews.kv_namespaces` etc. declared binding-only), and
+// `preview_id` on a `previews.services` entry, which is what points a preview at a *sibling*
+// preview rather than at the baseline worker. Verified 2026-10-02 against the workspace's 4.138.0
+// and the then-latest 4.147.0: both accept a binding-only KV entry in the schema but send
+// `namespace_id: undefined`, and both silently drop `preview_id` from a service binding — which
+// would leave the whole instance wired to the baselines, and which the Previews documentation
+// lists as a limitation. So the deploy runs on the draft build from
+// https://github.com/cloudflare/workers-sdk/pull/14416 instead, installed into a tmpdir. It pulls
+// matching workers-sdk workspace packages from pkg.pr.new, hence the exotic-subdeps opt-out.
 //
 // Drop all of this — and set PREVIEW_WRANGLER=pnpm-exec-wrangler in the meantime to check — once
 // both features ship: `preview_id` appearing in a released `config-schema.json` under
 // `PreviewsConfig.properties.services.items.properties` is the signal.
 const WRANGLER_PACKAGE = "https://pkg.pr.new/wrangler@14416";
+
+// The one command the draft build cannot run. A worker's Preview base config is the
+// `previews_base_config` field of the Workers API, and the draft writes it under a name the API
+// refuses. So the base config is written by the workspace's own Wrangler, which has to stay at
+// 4.135.0 or later for it.
+const RELEASED_WRANGLER = join(ROOT, "node_modules", ".bin", "wrangler");
 
 function parseArgs(argv: string[]): { command: Command; dryRun: boolean } {
   const command = argv[0] as Command;
@@ -329,10 +335,11 @@ async function deployBaselineWorker(
  * workflow's logs are public; `secret bulk` prints only names and `********`, and the values arrive
  * on stdin rather than in argv.
  *
- * `preview secret bulk` writes the *Worker's Previews settings*, which every preview of that worker
- * inherits, so one upload covers every preview and each run refreshes them. The plain `secret bulk`
- * form is for the baseline worker itself, which is a real, publicly reachable instance and needs
- * the same Access application in front of it.
+ * `preview base-config secret bulk` writes the *Worker's Preview base config*, which every preview
+ * of that worker inherits, so one upload covers every preview and each run refreshes them. It runs
+ * on {@link RELEASED_WRANGLER}. The plain `secret bulk` form is for the baseline worker itself,
+ * which is a real, publicly reachable instance and needs the same Access application in front of
+ * it.
  */
 async function uploadSecrets(
   pkg: DeployablePackage,
@@ -340,10 +347,13 @@ async function uploadSecrets(
   secrets: Record<string, string>,
   { previews }: { previews: boolean },
 ): Promise<CommandResult> {
-  const args = [...previews ? ["preview"] : [], "secret", "bulk", "-c", STAGING_CONFIG_NAME];
+  const args = [
+    ...previews ? ["preview", "base-config"] : [], "secret", "bulk", "-c", STAGING_CONFIG_NAME,
+  ];
   console.log(`running in ${pkg.name}: wrangler ${args.join(" ")} ` +
       `(${Object.keys(secrets).join(", ")} on stdin)`);
-  const result = await runWrangler(pkg, wranglerCommand, args, JSON.stringify(secrets));
+  const result = await runWrangler(pkg, previews ? RELEASED_WRANGLER : wranglerCommand, args,
+      JSON.stringify(secrets));
   writeCommandOutput(pkg, result);
   return result;
 }
@@ -352,12 +362,12 @@ async function uploadSecrets(
  * Upload one worker's secrets, creating its baseline worker first if it does not exist yet.
  *
  * This runs before that worker's own preview rather than relying on deployPreview's self-heal,
- * because a worker has no Previews settings to write to until it exists — and a preview created
- * before the settings existed would inherit none of them. For the backend that means no admins and,
- * worse, no Access application, so it would fall back to password signup on a public URL; for a
- * gatekeeper it means a connector that is live but throws on the first click.
+ * because a worker has no Preview base config to write to until it exists — and a preview created
+ * before the secrets were in it would inherit none of them. For the backend that means no admins
+ * and, worse, no Access application, so it would fall back to password signup on a public URL; for
+ * a gatekeeper it means a connector that is live but throws on the first click.
  *
- * The settings belong to the *worker*, so every preview of it shares them and each run overwrites
+ * The base config belongs to the *worker*, so every preview of it shares it and each run overwrites
  * what the last one wrote. That is only sound because these values are the same for every preview —
  * one set of deployment admins, one Access application, one OAuth app per gatekeeper — and a
  * concurrent deploy of another pull request writes the identical bytes.
@@ -380,8 +390,8 @@ async function uploadPreviewSecrets(
     result = await uploadSecrets(pkg, wranglerCommand, secrets, { previews: true });
   }
   if (result.status !== 0) {
-    throw new Error(`wrangler preview secret bulk failed for ${pkg.name} with exit code ` +
-        `${result.status}`);
+    throw new Error(`wrangler preview base-config secret bulk failed for ${pkg.name} with exit ` +
+        `code ${result.status}`);
   }
 }
 
@@ -612,7 +622,8 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     const gatekeeperPreviews = await mapWithConcurrency(gatekeepers, GATEKEEPER_CONCURRENCY,
         async (pkg) => {
           // Before this gatekeeper's preview, not after, and for the same reason the backend's go
-          // before its own: a preview inherits the Previews settings that exist when it is created.
+          // before its own: a preview inherits the Preview base config as it stands when it is
+          // created.
           const oauth = oauthApps.get(pkg.name);
           if (oauth) await uploadPreviewSecrets(pkg, wrangler.command, oauth);
           const preview = await deployPreview(pkg, previewName, wrangler.command);
@@ -623,8 +634,8 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
 
     patchPreviewServiceBindings(backend, gatekeeperIds);
     patchPreviewServiceBindings(router, gatekeeperIds);
-    // Before the backend's preview, not after: a preview inherits the Previews settings that exist
-    // when it is created.
+    // Before the backend's preview, not after: a preview inherits the Preview base config as it
+    // stands when it is created.
     await uploadPreviewSecrets(backend, wrangler.command, secrets);
     const backendPreview = await deployPreview(backend, previewName, wrangler.command);
     assertNoPreviewUrl(backend, backendPreview.url);
