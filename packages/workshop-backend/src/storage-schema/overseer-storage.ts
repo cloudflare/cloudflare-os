@@ -337,9 +337,10 @@ export interface GitObjectMetadataRecord {
   onRemote: WorkpieceId[];
 
   /**
-   * Unproven pull-routing hints: gatekeepers that advertised this commit or put() an object
-   * referencing this one. Used to route pulls and to bound the marking walk; grants no reads.
-   * A wrong claim only misroutes a pull (the next recorded source is tried).
+   * Unproven pull-routing hints: gatekeepers that advertised this commit, or that are recorded
+   * as a source, proven or not, of a stored object referencing this one. Used to route pulls
+   * and to bound the marking walk; grants no reads. A wrong claim only misroutes a pull (the
+   * next recorded source is tried).
    */
   pullableFrom: WorkpieceId[];
 
