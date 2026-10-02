@@ -4,7 +4,7 @@
 // server reported rather than what was just chosen.
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { Badge, Button, Radio, Switch, useKumoToastManager } from '@cloudflare/kumo'
+import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
 import type {
   AdminApi,
@@ -16,87 +16,15 @@ import type {
 import type { RpcStub } from 'capnweb'
 import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { AddGatewayModelForm } from './AddGatewayModelForm'
+import { GatewayModelRow, MODES } from './GatewayModelRow'
 import { rpcFailureDescription } from '../../rpcErrors'
 import { PROVIDER_LABELS } from './modelForm'
 import { fetchModelsDev, suggestModels } from './modelsDev'
-
-const MODES: Record<GatewayModelMode, { label: string; meaning: string }> = {
-  enabled: { label: 'Enabled', meaning: 'Offered in model pickers.' },
-  hidden: {
-    label: 'Hidden',
-    meaning: 'Not offered in model pickers, but still works where it is already in use.',
-  },
-  disabled: {
-    label: 'Disabled',
-    meaning:
-      'Not offered in model pickers, and stops working, including in the chats and gadgets that ' +
-      'already use it.',
-  },
-}
 
 const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
 const USER_MODELS_LABEL = 'Users may add their own models'
 const MODELS_DEV_LABEL = 'Suggest models from models.dev'
-
-const tokenCount = (tokens: number) => `${tokens.toLocaleString()} tokens`
-
-const ModelRow = ({ model, busy, onModeChange, onRemove }: {
-  model: AdminModel
-  busy: boolean
-  onModeChange: (mode: GatewayModelMode) => void
-  /** Present for a model that can be removed, whose row then also names its provider. */
-  onRemove?: () => void
-}) => (
-  <li className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5">
-    <div className="min-w-0 flex-1 basis-56">
-      <p className="flex flex-wrap items-center gap-2">
-        <span className="min-w-0 break-words text-sm font-medium text-kumo-default">{model.name}</span>
-        {model.mode !== model.defaultMode && <Badge variant="outline">Changed</Badge>}
-      </p>
-      <p className="mt-0.5 break-all font-mono text-xs text-kumo-subtle">{model.id}</p>
-      <p className="mt-0.5 text-xs text-kumo-subtle">
-        {onRemove && `${PROVIDER_LABELS[model.provider]} · `}
-        Context window: {tokenCount(model.contextWindow)}
-        {model.outputLimit !== undefined && ` · Output limit: ${tokenCount(model.outputLimit)}`}
-      </p>
-    </div>
-
-    <Radio.Group<GatewayModelMode>
-      orientation="horizontal"
-      value={model.mode}
-      disabled={busy}
-      onValueChange={onModeChange}
-    >
-      <Radio.Legend className="sr-only">How {model.name} is offered</Radio.Legend>
-      {GATEWAY_MODEL_MODES.map((mode) => (
-        <Radio.Item<GatewayModelMode>
-          key={mode}
-          value={mode}
-          disabled={busy}
-          label={
-            <span title={MODES[mode].meaning}>
-              {MODES[mode].label}
-              {mode === model.defaultMode && <span className="text-kumo-subtle"> (default)</span>}
-            </span>
-          }
-        />
-      ))}
-    </Radio.Group>
-
-    {onRemove && (
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={busy}
-        aria-label={`Remove ${model.name}`}
-        onClick={onRemove}
-      >
-        Remove
-      </Button>
-    )}
-  </li>
-)
 
 const SettingSwitch = ({ label, checked, disabled, onChange, children }: {
   label: string
@@ -269,7 +197,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
             <h3 className={GROUP_HEADING}>{PROVIDER_LABELS[provider]}</h3>
             <ul className="flex flex-col gap-2">
               {models.map((model) => (
-                <ModelRow
+                <GatewayModelRow
                   key={model.id}
                   model={model}
                   busy={busy}
@@ -288,7 +216,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
             <>
               <ul className="flex flex-col gap-2">
                 {added.map((model) => (
-                  <ModelRow
+                  <GatewayModelRow
                     key={model.id}
                     model={model}
                     busy={busy}
