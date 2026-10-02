@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_c2ca47a7bbff41::t_497818068b3e70 41,380,388
+packages/workshop-backend/src/admin-settings.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 450-454,513-518,770-773
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 683-685,687-688,691,703-704,709,712-713,720-721,725-768
+packages/workshop-backend/src/server.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 243
+packages/workshop-backend/src/ai-models.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 713-714,718-719
+packages/workshop-backend/src/user.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 671-673,685,703-705,877-880,918-919,922-923
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 76-78,81,127,137,197-223,226
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 160-161,163,228-245,435-448
+packages/workshop-backend/src/ai-gateway.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 136-140,146,148,217-226
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 263-298,352,354
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 223-234
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 136-138,269-376
+packages/workshop-backend/src/admin-config.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 397-399
+packages/workshop-shared/src/api.ts
+  s_c2ca47a7bbff41::t_497818068b3e70 480-482,1019-1020,1207-1209,1212-1222,1358-1363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "121cd58903103d52bfaad40e250b9d3f5384f1ca",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
