@@ -60,13 +60,12 @@
 // default gadget's creation flushed sees defaultGadgetId set and doesn't create it again.)
 
 import * as Y from "yjs";
-import { keyString } from "@gadgets/typed-storage";
 import type {
   AiChatMessage, AiChatMetadata, ChatGadgetPin, ChatGadgetPinState, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
-  compactionKey, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage,
+  chatKey, chatKeyPrefix, type CompactionCheckpoint, type GadgetRecord, type OverseerStorage,
   type StoredChatMessage,
 } from "./overseer-storage";
 import { chatChangeStatuses } from "../agent-compaction";
@@ -247,7 +246,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
   let defaultGadgetId = host.defaultGadgetId;
   let orphanedRootContent = false;
   for (let meta of Array.from(storage.chatMeta.list())) {
-    let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
+    let messages = [...storage.chats.list({ prefix: chatKeyPrefix(meta.id) })];
     for (let msg of messages) {
       if (msg.type === "merge" && msg.version !== undefined) {
         legacyMerges.push(msg);
@@ -256,7 +255,7 @@ export async function migrateCodeLogToGit(host: GitMigrationHost): Promise<{ com
     }
     // The checkpoint named by the chat's `compactedTo`, whose stamp is part of the anchor.
     let checkpoint = meta.compactedTo === undefined
-        ? undefined : storage.chatCompactions.get(compactionKey(meta.id, meta.compactedTo));
+        ? undefined : storage.chatCompactions.get(chatKey(meta.id, meta.compactedTo));
     let anchor = legacyChatBaseVersion(checkpoint, messages);
     let resolved = floorLogVersion(anchor === "current" ? finalVersion : anchor);
     if (resolved > 0) points.add(resolved);
@@ -441,7 +440,7 @@ function chatDocHasLegacyRootContent(
     if (msg.type !== "changes" || statuses.get(msg.sequence) === "reverted") continue;
     if (msg.update !== undefined) Y.applyUpdateV2(doc, msg.update);
   }
-  for (let draft of storage.chatDraftUpdates.list({ prefix: `${keyString(chatId)}.` })) {
+  for (let draft of storage.chatDraftUpdates.list({ prefix: chatKeyPrefix(chatId) })) {
     Y.applyUpdateV2(doc, draft.update);
   }
   return readDocFiles(doc, "").size > 0;
@@ -455,7 +454,7 @@ function convertLegacyChat(
     host: GitMigrationHost, tracked: Map<WorkpieceId, GadgetSynthesis>, meta: AiChatMetadata,
     anchor: number, anchorState: Uint8Array | undefined): void {
   let { storage } = host;
-  let messages = [...storage.chats.list({ prefix: `${keyString(meta.id)}.` })];
+  let messages = [...storage.chats.list({ prefix: chatKeyPrefix(meta.id) })];
   let statuses = chatChangeStatuses(messages);
 
   // The anchor doc (the conversion diff's base) and the chat doc built on top of it. Applying
@@ -478,10 +477,9 @@ function convertLegacyChat(
   // hence this iteration -- order by timestamp), then are deleted: their content now lives in
   // the conversion change.
   for (let draft of Array.from(storage.chatDraftUpdates.list(
-      { prefix: `${keyString(meta.id)}.` }))) {
+      { prefix: chatKeyPrefix(meta.id) }))) {
     Y.applyUpdateV2(chatDoc, draft.update);
-    storage.chatDraftUpdates.delete(
-        `${keyString(draft.chatId)}.${keyString(draft.timestamp.valueOf())}`);
+    storage.chatDraftUpdates.deleteRecord(draft);
   }
 
   // Diff the flatten against the anchor trees, gadget by gadget. Untouched gadgets contribute

@@ -125,6 +125,15 @@ export interface Collection<T extends object, PrimaryKey = string> {
   list(options?: ListOptions<PrimaryKey>): Iterable<T>;
   delete(key: PrimaryKey): boolean;
 
+  /**
+   * Delete the record stored under `record`'s primary key, returning whether there was one. This
+   * is `delete()` for a caller holding a record (typically one it just listed) rather than a key:
+   * the collection derives the key the same way `put()` does, so the caller need not repeat how a
+   * computed primary key is built. Only the primary key is read from `record`; its other
+   * properties need not match what is stored.
+   */
+  deleteRecord(record: T): boolean;
+
   put(value: T): void;
 
   subscribe(subscriber: Subscriber<T>): void;
@@ -446,6 +455,9 @@ function createCollection<
           return mainKv.delete(key);
         });
       }
+    },
+    deleteRecord(record: T): boolean {
+      return collection.delete(pkForT(record));
     },
 
     subscribe(subscriber: Subscriber<T>): void {

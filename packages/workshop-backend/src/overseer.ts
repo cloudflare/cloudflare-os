@@ -12,7 +12,7 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, compactionKey, makeOverseerStorage,
+  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
@@ -1381,8 +1381,8 @@ class OverseerImpl implements AgentHooks {
     let reverted: WorkpieceRecord[] = [];
     if (stamped.length > 0) {
       let statuses = chatChangeStatuses(this.storage.chats.list({
-        prefix: `${keyString(chatId)}.`,
-        start: compactionKey(chatId, Math.min(...stamped.map(g => g.pending!.sequence!))),
+        prefix: chatKeyPrefix(chatId),
+        start: chatKey(chatId, Math.min(...stamped.map(g => g.pending!.sequence!))),
       }));
       reverted = stamped.filter(g => statuses.get(g.pending!.sequence!) === "reverted");
     }
@@ -1866,7 +1866,7 @@ class OverseerImpl implements AgentHooks {
   // materialize first (accept, update-from-mainline, UI bundle loads) or apply them on top
   // themselves (getCurrentChatContent).
   async buildChatContent(chatId: number, through?: number): Promise<CodeContent> {
-    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     if (through !== undefined) {
       messages = messages.filter(msg => msg.sequence <= through);
     }
@@ -2006,7 +2006,7 @@ class OverseerImpl implements AgentHooks {
   // cached so out-of-band row updates can't serve stale attribution data.
   #newestLiveChatChange(chatId: number, generation: number): ChatChangeRecord | undefined {
     for (let row of this.storage.chatChanges.list({
-      prefix: `${keyString(chatId)}.${keyString(generation)}.`, reverse: true, limit: 1,
+      prefix: chatKeyPrefix(chatId, generation), reverse: true, limit: 1,
     })) {
       return row.retired ? undefined : row;
     }
@@ -2150,9 +2150,9 @@ class OverseerImpl implements AgentHooks {
                        throughRevision: number): ChatChangeRecord[] | undefined {
     if (afterRevision >= throughRevision) return [];
     let rows = [...this.storage.chatChanges.list({
-      prefix: `${keyString(chatId)}.${keyString(generation)}.`,
-      startAfter: `${keyString(chatId)}.${keyString(generation)}.${keyString(afterRevision)}`,
-      end: `${keyString(chatId)}.${keyString(generation)}.${keyString(throughRevision + 1)}`,
+      prefix: chatKeyPrefix(chatId, generation),
+      startAfter: chatKey(chatId, generation, afterRevision),
+      end: chatKey(chatId, generation, throughRevision + 1),
     })];
     if (rows.length !== throughRevision - afterRevision ||
         rows[0].revision !== afterRevision + 1) {
@@ -2165,7 +2165,7 @@ class OverseerImpl implements AgentHooks {
   // into a "changes" message.
   listLiveChatChanges(chatId: number, generation: number): ChatChangeRecord[] {
     return [...this.storage.chatChanges.list({
-      prefix: `${keyString(chatId)}.${keyString(generation)}.`,
+      prefix: chatKeyPrefix(chatId, generation),
     })].filter(row => !row.retired);
   }
 
@@ -2299,10 +2299,9 @@ class OverseerImpl implements AgentHooks {
   // are no longer bridgeable at all.
   #pruneRetiredChatChanges(chatId: number): void {
     let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
-    for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
+    for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
       if (row.retired && row.timestamp.getTime() < cutoff) {
-        this.storage.chatChanges.delete(
-            `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
+        this.storage.chatChanges.deleteRecord(row);
       }
     }
   }
@@ -2310,9 +2309,8 @@ class OverseerImpl implements AgentHooks {
   // Erase every change row of the chat (a destructive bump, or chat deletion): retired rows too,
   // since a destructively-closed stream is not bridgeable.
   deleteAllChatChanges(chatId: number): void {
-    for (let row of Array.from(this.storage.chatChanges.list({prefix: `${keyString(chatId)}.`}))) {
-      this.storage.chatChanges.delete(
-          `${keyString(chatId)}.${keyString(row.generation)}.${keyString(row.revision)}`);
+    for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatChanges.deleteRecord(row);
     }
     this.storage.chatChangeBoundaries.delete(chatId);
     this.#chatContentCache.delete(chatId);
@@ -2324,7 +2322,7 @@ class OverseerImpl implements AgentHooks {
   // materialization must stamp onto its message (see materializeChatChanges), and what pin rollback
   // removes when the rows that established them are discarded.
   declaredPinGadgets(chatId: number): Set<WorkpieceId> {
-    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     let statuses = chatChangeStatuses(messages);
     let declared = new Set<WorkpieceId>();
     for (let msg of messages) {
@@ -2435,7 +2433,7 @@ class OverseerImpl implements AgentHooks {
           // inside are persistent stubs (that is what made the record storable), so they work
           // directly in env.
           let stored = this.storage.agentCallbackArgs.get(
-              `${keyString(chatId)}.${keyString(entry.messageSequence)}`);
+              chatKey(chatId, entry.messageSequence));
           if (!stored) {
             throw new Error("missing agentCallbackArgs value");
           }
@@ -2791,7 +2789,7 @@ class OverseerImpl implements AgentHooks {
     // Dedupe by (user, clientId, seq) before anything that can reject the base: a retry of an
     // already-accepted change must get its recorded landing spot back even when its base has since
     // been destructively bumped or an agent turn has started.
-    let clientKey = `${keyString(chatId)}.${userId}:${submission.clientId}`;
+    let clientKey = chatChangeClientKey(chatId, userId, submission.clientId);
     let acked = this.#dedupeSubmission(clientKey, submission, digest);
     if (acked !== undefined) {
       return acked;
@@ -3312,7 +3310,7 @@ class OverseerImpl implements AgentHooks {
     // Message statuses drive excluding reverted creations from coverage below. The map stays
     // valid through the whole accept: the sequence-token revalidation after the awaits
     // guarantees no message was recorded since.
-    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     let statuses = chatChangeStatuses(messages);
 
     // A pending record (or edge) whose stamp the log already marks reverted is dead, not
@@ -3689,7 +3687,7 @@ class OverseerImpl implements AgentHooks {
     // gate: nothing can interleave between what we examine here, the "changes" messages the
     // revert message will cover, and the mutations recording the revert.
     let meta = this.assertChatNotActive(chatId);
-    let messages = [...this.storage.chats.list({prefix: `${keyString(chatId)}.`})];
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     let statuses = chatChangeStatuses(messages);
     let stillProposed = (msg: AiChatMessage) =>
         msg.type === "changes" && msg.sequence >= revertFrom &&
@@ -5404,9 +5402,9 @@ class OverseerImpl implements AgentHooks {
     }
     return foldProposedChanges(
         this.storage.chats.list({
-          prefix: `${keyString(chatId)}.`,
-          start: checkpoint && compactionKey(chatId, checkpoint.compactedTo),
-          end: endBefore === undefined ? undefined : compactionKey(chatId, endBefore),
+          prefix: chatKeyPrefix(chatId),
+          start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
+          end: endBefore === undefined ? undefined : chatKey(chatId, endBefore),
         }),
         seed);
   }
@@ -5807,8 +5805,8 @@ class OverseerImpl implements AgentHooks {
 
     // Chat storage is a single ordered table for all threads; each key starts with the chat ID.
     let messagesAfterPrompt = [...this.storage.chats.list({
-      prefix: `${keyString(chatId)}.`,
-      startAfter: `${keyString(chatId)}.${keyString(response.promptSequence)}`,
+      prefix: chatKeyPrefix(chatId),
+      startAfter: chatKey(chatId, response.promptSequence),
     })];
     let nextUserMessageIndex = messagesAfterPrompt.findIndex(
       message => message.type === "message" && message.author.type === "user",
@@ -5971,7 +5969,7 @@ class OverseerImpl implements AgentHooks {
   getActiveChatCompaction(chatId: number): CompactionCheckpoint | undefined {
     let compactedTo = this.storage.chatMeta.get(chatId)?.compactedTo;
     return compactedTo === undefined
-        ? undefined : this.storage.chatCompactions.get(compactionKey(chatId, compactedTo));
+        ? undefined : this.storage.chatCompactions.get(chatKey(chatId, compactedTo));
   }
 
   // Returns the newest checkpoint whose boundary is strictly below `sequence`, for paging history
@@ -5981,8 +5979,8 @@ class OverseerImpl implements AgentHooks {
     // bound would select records instead of none.
     if (sequence <= 0) return undefined;
     for (let checkpoint of this.storage.chatCompactions.list({
-      prefix: `${keyString(chatId)}.`,
-      end: compactionKey(chatId, sequence),
+      prefix: chatKeyPrefix(chatId),
+      end: chatKey(chatId, sequence),
       reverse: true,
       limit: 1,
     })) {
@@ -6005,8 +6003,8 @@ class OverseerImpl implements AgentHooks {
     return {
       checkpoint,
       chatMessages: [...this.storage.chats.list({
-        prefix: `${keyString(chatId)}.`,
-        start: checkpoint && compactionKey(chatId, checkpoint.compactedTo),
+        prefix: chatKeyPrefix(chatId),
+        start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
       })],
       measuredTokens: this.getChatMetaOrThrow(chatId).totalTokens ?? 0,
     };
@@ -6036,14 +6034,12 @@ class OverseerImpl implements AgentHooks {
   // `revertFrom` onward, so any checkpoint that folded in those changes can never be replayed again
   // and is deleted; earlier ones stay, which is what lets a revert cross a boundary at all.
   rollbackChatCompaction(meta: AiChatMetadata, revertFrom: number): void {
-    // Buffer the keys first: deleting invalidates the list cursor.
-    let stale = Array.from(
-        this.storage.chatCompactions.list({
-          prefix: `${keyString(meta.id)}.`,
-          start: compactionKey(meta.id, revertFrom + 1),
-        }),
-        checkpoint => compactionKey(meta.id, checkpoint.compactedTo));
-    for (let key of stale) this.storage.chatCompactions.delete(key);
+    // Buffer the checkpoints first: deleting invalidates the list cursor.
+    let stale = Array.from(this.storage.chatCompactions.list({
+      prefix: chatKeyPrefix(meta.id),
+      start: chatKey(meta.id, revertFrom + 1),
+    }));
+    for (let checkpoint of stale) this.storage.chatCompactions.deleteRecord(checkpoint);
 
     let previousBoundary = meta.compactedTo;
     let checkpoint = this.#getChatCompactionAtOrBefore(meta.id, revertFrom);
@@ -6298,7 +6294,7 @@ class OverseerImpl implements AgentHooks {
   // Whether any calls to the chat's agent are recorded but not yet appended to its chat log.
   hasPendingAgentCalls(chatId: number): boolean {
     return Array.from(this.storage.pendingAgentCalls.list(
-        {prefix: `${keyString(chatId)}.`, limit: 1})).length > 0;
+        {prefix: chatKeyPrefix(chatId), limit: 1})).length > 0;
   }
 
   // Drain every chat that has pending calls and no running turn (a running turn drains its own
@@ -6343,7 +6339,7 @@ class OverseerImpl implements AgentHooks {
     let author: AiChatAuthorInfo | undefined;
     try {
       let [first] = Array.from(this.storage.pendingAgentCalls.list(
-          {prefix: `${keyString(chatId)}.`, limit: 1}));
+          {prefix: chatKeyPrefix(chatId), limit: 1}));
       if (!first) return;
 
       // Resolve the model and profile from the initiator of the first call, so if several calls
@@ -6383,7 +6379,7 @@ class OverseerImpl implements AgentHooks {
       let initiatorUserId = first.initiatorUserId;
       let taken = this.chatScopeNames(chatId);
       for (let call of Array.from(this.storage.pendingAgentCalls.list(
-          {prefix: `${keyString(chatId)}.`}))) {
+          {prefix: chatKeyPrefix(chatId)}))) {
         let sequence = this.nextChatSequence(chatId);
         let bindingName = callArgsBindingName(call.methodName, name => taken.has(name));
         taken.add(bindingName);
@@ -6401,8 +6397,7 @@ class OverseerImpl implements AgentHooks {
           argsSummary: call.argsSummary,
           bindingName,
         });
-        this.storage.pendingAgentCalls.delete(
-            `${keyString(call.chatId)}.${keyString(call.callId)}`);
+        this.storage.pendingAgentCalls.deleteRecord(call);
       }
 
       if (modelError !== undefined) {
@@ -6597,7 +6592,7 @@ class OverseerImpl implements AgentHooks {
       taken = new Set(Object.keys(this.defaultBindingList()));
     }
     taken.add(GIT_BINDING_NAME);
-    for (let msg of chatMessages ?? this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
+    for (let msg of chatMessages ?? this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       if (msg.type === "message") {
         for (let capsule of msg.capsules ?? []) {
           if (capsule.bindingName !== undefined) taken.add(capsule.bindingName);
@@ -7388,7 +7383,7 @@ class OverseerImpl implements AgentHooks {
     try {
       let parts: string[] = [];
 
-      for (let msg of this.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
+      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
         if (msg.type === "message") {
           parts.push(`[${msg.author.type}]: ${msg.message}`);
         }
@@ -7537,8 +7532,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   getChatModelData(chatId: number, sequence: number): StoredAssistantMessage | undefined {
-    return this.storage.chatModelData.get(
-        `${keyString(chatId)}.${keyString(sequence)}`)?.message;
+    return this.storage.chatModelData.get(chatKey(chatId, sequence))?.message;
   }
 
   // Adds an inference cost (in dollars) to a chat's running total and the workspace-wide total.
@@ -9047,7 +9041,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let modelId = null;
     if (externalChat) {
       // Continue existing chats with the most recent agent model used in that chat.
-      for (let msg of this.impl.storage.chats.list({ prefix: `${keyString(externalChat.chatId)}.`, reverse: true })) {
+      for (let msg of this.impl.storage.chats.list({ prefix: chatKeyPrefix(externalChat.chatId), reverse: true })) {
         if (msg.author.type === "agent") {
           modelId = msg.author.id;
           break;
@@ -10249,7 +10243,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async #maybeResumeAfterActionDecision(chatId: number, approvedId: number): Promise<void> {
     let awaited: (ActionRecord & {type: "action"})[] = [];
     for (let msg of this.impl.storage.chats.list(
-        {prefix: `${keyString(chatId)}.`, reverse: true})) {
+        {prefix: chatKeyPrefix(chatId), reverse: true})) {
       // Stop at whatever started the current turn: a user/gadget message or a gadget callback.
       // (agentNudge is mid-turn, so it isn't a boundary.)
       if (msg.type === "agentCallback") break;
@@ -10404,7 +10398,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let chatId = Number(requestId.slice(0, colonIdx));
     if (!Number.isFinite(chatId)) throw new Error(`Malformed connection request id: ${requestId}`);
 
-    for (let msg of this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
+    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       if (msg.type === "connectionRequest" && msg.requestId === requestId) {
         return msg as AiChatMessage & {type: "connectionRequest"};
       }
@@ -10423,7 +10417,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Recover the model this thread was using. getChatContext(null) does NOT resolve a model, so we
     // find the id from the most recent agent-authored message (its author.id is the model id).
     let modelId: string | null = null;
-    for (let msg of this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`, reverse: true})) {
+    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.author.type === "agent") {
         modelId = msg.author.id;
         break;
@@ -10472,7 +10466,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Don't resume until every connection request from this turn was accepted. Scanning newest
     // first bounds the lookup to the current turn and usually finds a pending sibling immediately.
     for (let sibling of this.impl.storage.chats.list(
-        {prefix: `${keyString(msg.chatId)}.`, reverse: true})) {
+        {prefix: chatKeyPrefix(msg.chatId), reverse: true})) {
       if (sibling.type === "connectionRequest" && sibling.state !== "accepted") return;
       if (sibling.type === "agentCallback" ||
           (sibling.type === "message" &&
@@ -10643,9 +10637,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         ? this.impl.getActiveChatCompaction(chatId)
         : this.impl.getChatCompactionBelow(chatId, beforeSequence);
     let result = [...this.impl.storage.chats.list({
-      prefix: `${keyString(chatId)}.`,
-      start: checkpoint && compactionKey(chatId, checkpoint.compactedTo),
-      end: beforeSequence === undefined ? undefined : compactionKey(chatId, beforeSequence),
+      prefix: chatKeyPrefix(chatId),
+      start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
+      end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
     })];
     return {
       messages: result.map((msg) => this.#getChatMessageForClient(msg)),
@@ -10658,7 +10652,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined> {
-    let msg = this.impl.storage.chats.get(`${keyString(chatId)}.${keyString(sequence)}`);
+    let msg = this.impl.storage.chats.get(chatKey(chatId, sequence));
     return msg && this.#getChatMessageForClient(msg);
   }
 
@@ -10837,32 +10831,30 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.removeChatWorkpieces(chatId);
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
-    // Buffer the keys first: deleting invalidates the list cursor.
-    let checkpoints = Array.from(
-        this.impl.storage.chatCompactions.list({prefix: `${keyString(chatId)}.`}),
-        checkpoint => compactionKey(chatId, checkpoint.compactedTo));
-    for (let key of checkpoints) this.impl.storage.chatCompactions.delete(key);
+    // Buffer the checkpoints first: deleting invalidates the list cursor.
+    for (let checkpoint of Array.from(
+        this.impl.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatCompactions.deleteRecord(checkpoint);
+    }
 
     // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
     // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
     this.impl.deleteAllChatChanges(chatId);
     for (let record of Array.from(this.impl.storage.chatChangeClients.list(
-        {prefix: `${keyString(chatId)}.`}))) {
-      this.impl.storage.chatChangeClients.delete(
-          `${keyString(record.chatId)}.${record.userId}:${record.clientId}`);
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatChangeClients.deleteRecord(record);
     }
 
     // Any pre-conversion legacy drafts (see ChatDraftUpdateRecord).
     for (let draft of Array.from(this.impl.storage.chatDraftUpdates.list(
-        {prefix: `${keyString(chatId)}.`}))) {
-      this.impl.storage.chatDraftUpdates.delete(
-          `${keyString(draft.chatId)}.${keyString(draft.timestamp.valueOf())}`);
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.chatDraftUpdates.deleteRecord(draft);
     }
 
     // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
     // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
     this.impl.ctx.storage.transactionSync(() => {
-      for (let msg of this.impl.storage.chats.list({prefix: `${keyString(chatId)}.`})) {
+      for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
         if (msg.type === "message") {
           for (let attachment of msg.attachments ?? []) {
             let content = this.impl.storage.chatAttachmentContent.get(attachment.id);
@@ -10871,27 +10863,24 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
             }
           }
         }
-        this.impl.storage.chats.delete(`${keyString(msg.chatId)}.${keyString(msg.sequence)}`);
+        this.impl.storage.chats.deleteRecord(msg);
       }
     });
 
     // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
     for (let entry of this.impl.storage.agentCallbackArgs.list(
-        {prefix: `${keyString(chatId)}.`})) {
-      this.impl.storage.agentCallbackArgs.delete(
-          `${keyString(entry.chatId)}.${keyString(entry.sequence)}`);
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.impl.storage.agentCallbackArgs.deleteRecord(entry);
     }
     for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
-        {prefix: `${keyString(chatId)}.`}))) {
-      this.impl.storage.pendingAgentCalls.delete(
-          `${keyString(entry.chatId)}.${keyString(entry.callId)}`);
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.pendingAgentCalls.deleteRecord(entry);
     }
 
     // Clean up the chat's model-facing snapshots.
     for (let entry of this.impl.storage.chatModelData.list(
-        {prefix: `${keyString(chatId)}.`})) {
-      this.impl.storage.chatModelData.delete(
-          `${keyString(entry.chatId)}.${keyString(entry.sequence)}`);
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.impl.storage.chatModelData.deleteRecord(entry);
     }
 
     // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent

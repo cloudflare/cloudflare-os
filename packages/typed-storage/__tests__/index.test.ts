@@ -618,6 +618,65 @@ describe("basic collections with function primary key", () => {
   });
 });
 
+describe("deleteRecord", () => {
+  it("deletes by a computed primary key without the caller deriving it", () => {
+    let storage = createTypedStorage(makeMockStorage(), {
+      collections: {
+        users: collection<User>()({
+          primaryKey: (user: User) => `${user.level}.${user.name.toUpperCase()}`
+        })
+      }
+    });
+    storage.users.put(ALICE);
+    storage.users.put(BOB);
+    storage.users.put(CAROL);
+
+    // The typical use: delete records while walking a (buffered) listing of them.
+    for (let user of Array.from(storage.users.list({prefix: "8."}))) {
+      expect(storage.users.deleteRecord(user)).toStrictEqual(true);
+    }
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(false);
+    expect(storage.users.deleteRecord(EVE)).toStrictEqual(false);
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+  });
+
+  it("deletes by a property primary key", () => {
+    let storage = createTypedStorage(makeMockStorage(), PLAIN_SCHEMA);
+    storage.users.put(ALICE);
+    storage.users.put(BOB);
+
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(true);
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(false);
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+  });
+
+  it("reads only the primary key, unindexing the record as stored", () => {
+    let storage = createTypedStorage(makeMockStorage(), INDEXED_SCHEMA);
+    storage.users.put(ALICE);
+    storage.users.put(CAROL);
+
+    // A stale copy: were the index entry derived from it, removing the level-1 entry that was
+    // never written would report the index as inconsistent, and the level-8 one would be left
+    // dangling.
+    expect(storage.users.deleteRecord({...ALICE, level: 1})).toStrictEqual(true);
+    expect([...storage.users.byLevel.get(8)]).toStrictEqual([CAROL]);
+    expect([...storage.users.byLevel.list()]).toStrictEqual([CAROL]);
+  });
+
+  it("notifies subscribers with the stored record", () => {
+    let storage = createTypedStorage(makeMockStorage(), PLAIN_SCHEMA);
+    storage.users.put(ALICE);
+
+    let removed: User[] = [];
+    storage.users.subscribe({add() {}, update() {}, remove(user) { removed.push(user); }});
+    storage.users.deleteRecord({...ALICE, level: 1});
+    storage.users.deleteRecord(ALICE);  // already gone: no notification
+    expect(removed).toStrictEqual([ALICE]);
+  });
+});
+
 describe("unique index by string", () => {
   let mockStorage = makeMockStorage();
   let storage = createTypedStorage(mockStorage, {

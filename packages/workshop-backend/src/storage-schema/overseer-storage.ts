@@ -473,6 +473,26 @@ export type AutoApproveTagRecord = {
 // Chats and agents
 
 /**
+ * Primary key of a record in a chat-scoped collection: the chat's id, then the integer
+ * component(s) that identify the record within the chat, e.g. `chatKey(chatId, sequence)` for a
+ * message in `chats`. Each collection keyed this way names its components where it is declared
+ * in makeOverseerStorage. Keys order by each component in turn, so one also serves as a
+ * `start`, `startAfter` or `end` bound when listing.
+ */
+export function chatKey(chatId: number, ...rest: [number, ...number[]]): string {
+  return [chatId, ...rest].map(keyString).join(".");
+}
+
+/**
+ * `list()` prefix selecting one chat's records in a chat-scoped collection -- or, given leading
+ * key components too, the chat's records that share them, e.g. `chatKeyPrefix(chatId,
+ * generation)` for one generation of `chatChanges`.
+ */
+export function chatKeyPrefix(chatId: number, ...leading: number[]): string {
+  return [chatId, ...leading].map(keyString).join(".") + ".";
+}
+
+/**
  * A stored chat metadata row. Rows written before proposed-ness became derived (see
  * Overseer.proposedChangeWorkpieceIds) carried a cached `hasProposedChanges` flag; nothing
  * writes or reads it anymore, but old rows still hold stale values, so the stored shape admits
@@ -617,11 +637,6 @@ export type CompactionCheckpoint = {
    */
   proposedChange?: CodeChange;
 };
-
-/** Storage key of a chat's compaction checkpoint. See the `chatCompactions` collection. */
-export function compactionKey(chatId: number, compactedTo: number): string {
-  return `${keyString(chatId)}.${keyString(compactedTo)}`;
-}
 
 /**
  * Server-only record describing an in-progress agent turn, enabling resumption after a server
@@ -813,6 +828,15 @@ type ChatChangeClientRecord = {
    */
   digest: string;
 };
+
+/**
+ * Primary key of the dedupe record for one user's client session in a chat (see
+ * ChatChangeClientRecord). It starts with chatKeyPrefix(chatId) like the other chat-scoped
+ * keys, so a chat's records list under that prefix.
+ */
+export function chatChangeClientKey(chatId: number, userId: string, clientId: string): string {
+  return `${chatKeyPrefix(chatId)}${userId}:${clientId}`;
+}
 
 /**
  * The straggler bridge's record of a chat's most recent content-preserving generation close (a
@@ -1223,7 +1247,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // across a boundary needs the one before it (see rollbackChatCompaction), and only that path
       // and deleting the chat remove any.
       chatCompactions: collection<CompactionCheckpoint>()({
-        primaryKey: (checkpoint) => compactionKey(checkpoint.chatId, checkpoint.compactedTo),
+        primaryKey: (checkpoint) => chatKey(checkpoint.chatId, checkpoint.compactedTo),
       }),
 
       // Tracks in-progress agent turns so they can be resumed after a server restart. See
@@ -1256,9 +1280,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       chats: collection<StoredChatMessage>()({
-        primaryKey(msg: StoredChatMessage) {
-          return `${keyString(msg.chatId)}.${keyString(msg.sequence)}`;
-        },
+        primaryKey: (msg: StoredChatMessage) => chatKey(msg.chatId, msg.sequence),
         uniqueIndexes: {
           byTimestamp(msg: StoredChatMessage) { return msg.timestamp.valueOf(); }
         }
@@ -1268,26 +1290,22 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // conversion change folds them in and deletes them); nothing else reads or writes it, apart
       // from deleteChat's defensive sweep.
       chatDraftUpdates: collection<ChatDraftUpdateRecord>()({
-        primaryKey(record: ChatDraftUpdateRecord) {
-          return `${keyString(record.chatId)}.${keyString(record.timestamp.valueOf())}`;
-        }
+        primaryKey: (record: ChatDraftUpdateRecord) =>
+            chatKey(record.chatId, record.timestamp.valueOf()),
       }),
 
       // The chats' code-change streams (see ChatChangeRecord). Keyed so a generation's rows list in
       // revision order under one prefix.
       chatChanges: collection<ChatChangeRecord>()({
-        primaryKey(record: ChatChangeRecord) {
-          return `${keyString(record.chatId)}.${keyString(record.generation)}.` +
-              keyString(record.revision);
-        }
+        primaryKey: (record: ChatChangeRecord) =>
+            chatKey(record.chatId, record.generation, record.revision),
       }),
 
       // Per-(user, client session) submission dedupe records (see ChatChangeClientRecord). The
       // clientId's validated charset keeps the composed key unambiguous.
       chatChangeClients: collection<ChatChangeClientRecord>()({
-        primaryKey(record: ChatChangeClientRecord) {
-          return `${keyString(record.chatId)}.${record.userId}:${record.clientId}`;
-        }
+        primaryKey: (record: ChatChangeClientRecord) =>
+            chatChangeClientKey(record.chatId, record.userId, record.clientId),
       }),
 
       // Each chat's most recent content-preserving generation boundary, for the straggler
@@ -1304,9 +1322,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // messages to avoid sending potentially large data (including Fetchers) to clients.
       // Keyed by chatId.sequence matching the agentCallback chat message.
       agentCallbackArgs: collection<{chatId: number, sequence: number, args: unknown[]}>()({
-        primaryKey(entry) {
-          return `${keyString(entry.chatId)}.${keyString(entry.sequence)}`;
-        }
+        primaryKey: (entry) => chatKey(entry.chatId, entry.sequence),
       }),
 
       // Calls delivered to a callable agent that have not yet been appended to its chat log.
@@ -1315,9 +1331,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // by drainPendingAgentCalls at turn boundaries. Keyed by chatId.callId so a chat's calls
       // list in arrival order.
       pendingAgentCalls: collection<PendingAgentCallRecord>()({
-        primaryKey(entry) {
-          return `${keyString(entry.chatId)}.${keyString(entry.callId)}`;
-        }
+        primaryKey: (entry) => chatKey(entry.chatId, entry.callId),
       }),
 
       // Model-facing snapshots of agent steps, replayed verbatim on later turns so reasoning
@@ -1326,9 +1340,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // potentially several KB per step -- are never sent to clients. Keyed by chatId.sequence
       // matching the step's "message" chat record.
       chatModelData: collection<ChatModelDataRecord>()({
-        primaryKey(entry: ChatModelDataRecord) {
-          return `${keyString(entry.chatId)}.${keyString(entry.sequence)}`;
-        }
+        primaryKey: (entry: ChatModelDataRecord) => chatKey(entry.chatId, entry.sequence),
       }),
 
       collaborators: collection<CollaboratorRecord>()({
