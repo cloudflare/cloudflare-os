@@ -624,6 +624,25 @@ it.concurrent("draft and mainline code run separately across merge and revert", 
   });
 });
 
+it.concurrent("a server.js that imports a module of its own runs", async () => {
+  await withOwner(async client => {
+    const { ws } = client;
+    const { gadgetId, head } = await seedGadget(client, "lib/util.js",
+        `export const version = () => "util";\n`);
+    const chatId = await ws.newChat("Split", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
+      change: edit(gadgetId, "server.js", undefined, `import { DurableObject } from "cloudflare:workers";\n` +
+          `import { version } from "./lib/util.js";\n` +
+          `export class Gadget extends DurableObject {\n  version() { return version(); }\n}\n`),
+    });
+    await ws.finalizeChatDraft(chatId);
+    using gadget = await ws.getGadget(gadgetId);
+    using facet = await gadget.connectToGadget(chatId) as VersionedGadget;
+    expect(await facet.version()).toBe("util");
+  });
+});
+
 type StatefulGadget = RpcStub<{
   version(): string;
   put(key: string, value: string): void;

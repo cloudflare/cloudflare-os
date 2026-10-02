@@ -34,6 +34,10 @@
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
+    },
+    "./ui-page": {
+      "types": "./src/ui-page.ts",
+      "import": "./src/ui-page.ts"
     }
   },
   "scripts": {

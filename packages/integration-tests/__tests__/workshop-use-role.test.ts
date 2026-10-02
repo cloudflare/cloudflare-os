@@ -234,3 +234,53 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await useWs.getMetadata();
   expect(actions.entries).toEqual([]);
 });
+
+it("a use collaborator's UI bundle carries only what client.js reaches", async () => {
+  const [owner, viewer] = nextUsernames("bundleowner", "bundleviewer");
+  using ownerPublic = connect(harness.url);
+  using ownerApi = await signUp(ownerPublic, owner!);
+  using ws = await ownerApi.newGadget();
+  const workspaceId = (await ws.getMetadata()).id;
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using gadget = ws.createGadget("App", undefined, "APP");
+  const gadgetId = await gadget.getId();
+
+  const tree = (files: Record<string, string>): CodeContent =>
+    new Map([[gadgetId, new Map(Object.entries(files))]]);
+  const merge = async (baseCommit: string, before: Record<string, string>,
+                       after: Record<string, string>) => {
+    const chatId = await ws.newChat("Edit", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit }],
+      change: diffFiles(tree(before), tree(after)),
+    });
+    expect(await ws.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+    return headOf(workpieces, gadgetId, baseCommit);
+  };
+  const split = {
+    "client.js": `import { list } from "./ui/list.js";\n`,
+    "ui/list.js": "export const list = [];\n",
+    "server.js": `import { key } from "./lib/secret.js";\n` +
+        `export class Gadget { secret = "SERVER-ONLY"; }\n`,
+    "lib/secret.js": `export const key = "LIB-ONLY";\n`,
+  };
+  const head = await merge(await headOf(workpieces, gadgetId), {}, split);
+
+  using viewerPublic = connect(harness.url);
+  using viewerApi = await signUp(viewerPublic, viewer!);
+  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
+  using useWs = await viewerApi.openGadget(workspaceId);
+  using useGadget = await useWs.getGadget(gadgetId);
+  expect(await useGadget.getUiBundle()).toEqual({
+    modules: [
+      { path: "client.js", code: `import { list } from "gadget:ui/list.js";\n` },
+      { path: "ui/list.js", code: "export const list = [];\n" },
+    ],
+  });
+
+  await merge(head, split, { ...split, "client.js": `import { Gadget } from "./server.js";\n` });
+  await expect(useGadget.getUiBundle()).rejects.toThrow('client.js:1: "./server.js" resolves to server.js');
+});

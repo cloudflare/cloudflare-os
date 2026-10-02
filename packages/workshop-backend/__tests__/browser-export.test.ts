@@ -209,7 +209,7 @@ function render(
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
   let stream = renderGadgetInBrowser(
     {} as BrowserRun,
-    "export default {}",
+    {jsCode: "export default {}"},
     "Test Gadget",
     gadget as never,
     {
@@ -320,6 +320,7 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.exportDocument()).toContain(
       'globalThis.gadgetExportFormatId%20%3D%20%22test-format%22',
     );
+    expect(harness.exportDocumentCsp()).toContain("script-src data: 'unsafe-inline'");
     expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
     expect(harness.exportDocumentCsp()).toContain("media-src data: blob:");
     expect(harness.blobRequestContinued()).toBe(true);
@@ -342,7 +343,7 @@ describe("renderGadgetInBrowser", () => {
 
     let stream = renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}"},
       "Test Gadget",
       gadget as never,
       {
@@ -378,7 +379,7 @@ describe("renderGadgetInBrowser", () => {
 
     let stream = renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}"},
       "Test Gadget",
       gadget as never,
       {
@@ -431,7 +432,7 @@ describe("renderGadgetInBrowser", () => {
       launch.mockReturnValue(pendingLaunch.promise);
       let result = renderGadgetInBrowser(
         {} as BrowserRun,
-        "export default {}",
+        {jsCode: "export default {}"},
         "Test Gadget",
         { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
         {
@@ -464,7 +465,7 @@ describe("renderGadgetInBrowser", () => {
 
     await expect(renderGadgetInBrowser(
       {} as BrowserRun,
-      "export default {}",
+      {jsCode: "export default {}"},
       "Test Gadget",
       { [Symbol.dispose]: () => { gadgetDisposed = true; } } as never,
       {

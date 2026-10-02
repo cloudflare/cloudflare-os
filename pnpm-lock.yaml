@@ -1048,6 +1048,9 @@ importers:
       diff3:
         specifier: 0.0.3
         version: 0.0.3
+      es-module-lexer:
+        specifier: 2.3.2
+        version: 2.3.2
       isomorphic-git:
         specifier: ^1.42.2
         version: 1.42.2

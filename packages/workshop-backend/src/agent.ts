@@ -633,7 +633,7 @@ Tools refer to Gadgets by their binding name in your env: the file tools (\`read
 
 Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Workers.
 
-A Gadget is defined by two main files, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
+A Gadget is defined by two entry points, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
 
 server.js defines the Gadget's server-side logic, in the form of a Cloudflare Durable Object class. The class must be exported under the name \`Gadget\`. Unlike with normal Durable Objects on Cloudflare, there is no need to export a separate fetch handler; the Gadgets platform automatically takes care of routing requests to the Gadget. The Gadget has access to private storage via the regular Durable Objects KV and SQLite storage APIs. A simple server.js might look like:
 
@@ -663,6 +663,16 @@ Both the client and server run inside a strictly isolated sandbox. They cannot m
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
+
+## Splitting code into multiple files
+
+client.js and server.js may import other .js files in the Gadget. Each file has a size limit, so split a large UI into several files.
+
+* A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
+* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm), or URLs other than \`data:\` URLs.
+* In client code, \`import()\` works with a string literal; a computed specifier, such as \`import("./pages/" + name)\`, fails at runtime. Do not build URLs from \`import.meta.url\`.
+* Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
+* Import problems in the UI are reported in the Gadget console.
 
 ## Server -> Client callbacks and subscriptions
 
@@ -701,7 +711,7 @@ gadget.subscribe(new Callback());
 
 The top-level \`gadget\` stub survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
 
-DO NOT import \`RpcTarget\` in client.js. It is already imported.
+\`gadget\`, \`RpcTarget\`, and \`RpcStub\` are globals in every client module. DO NOT import them.
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
 
@@ -716,7 +726,7 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 
 Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
-During a browser-mode export, client.js is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
+During a browser-mode export, client code is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
 
 The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
 
