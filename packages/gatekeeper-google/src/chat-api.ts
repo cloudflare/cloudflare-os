@@ -114,6 +114,14 @@ export function isChatNoAccessError(error: unknown): boolean {
       (error.status === 403 || error.status === 404));
 }
 
+/**
+ * Whether Google found nothing for a user reference. Besides 404, the reference's shape was
+ * validated before sending, so a 400 can only mean it names no real account: the same answer.
+ */
+function isChatUserNotFound(error: unknown): boolean {
+  return error instanceof ChatApiError && (error.status === 400 || error.status === 404);
+}
+
 // ── Identifier validation ───────────────────────────────────────────
 //
 // Every id below is interpolated into a request path or a filter string, so each one is checked
@@ -605,14 +613,6 @@ export class ChatApi {
     path: string,
     init?: RequestInit & { idempotent?: boolean },
   ): Promise<T> {
-    return this.#fetchJson<T>(operation, `${CHAT_API_BASE}${path}`, init);
-  }
-
-  async #fetchJson<T>(
-    operation: string,
-    url: string,
-    init?: RequestInit & { idempotent?: boolean },
-  ): Promise<T> {
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
     if (init?.body && !headers.has("Content-Type")) {
@@ -620,7 +620,7 @@ export class ChatApi {
     }
     const { idempotent, ...rest } = init ?? {};
     const response = await fetchWithAuthRetry(
-      url,
+      `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
       this.getAccessToken,
       idempotent === undefined ? {} : { idempotent },
@@ -691,11 +691,7 @@ export class ChatApi {
       return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
         "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`));
     } catch (error) {
-      // 404 is "no direct message". The reference's shape was validated before sending, so a 400
-      // can only mean it names no real account — the same negative answer, not a caller error.
-      if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) {
-        return null;
-      }
+      if (isChatUserNotFound(error)) return null;
       throw error;
     }
   }
@@ -716,8 +712,7 @@ export class ChatApi {
       type Page = { spaces?: ChatSpaceRaw[]; nextPageToken?: string };
       const page = await this.#request<Page>("spaces.findGroupChats", `/spaces:findGroupChats?${params}`)
         .catch((error: unknown): Page => {
-          // As in findDirectMessage: a validated reference that names no real account has no chat.
-          if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) return {};
+          if (isChatUserNotFound(error)) return {};
           throw error;
         });
       for (const { name } of page.spaces ?? []) {
@@ -738,9 +733,10 @@ export class ChatApi {
     const present = await this.audienceIn(spaceName);
     if (present.size !== users.length + 1) return null;
     const ids = new Set<string>();
-    // One at a time: Chat allows 15 reads a second per space.
+    // A `users/{user}` id is its own membership's; only an email address needs looking up, one at a
+    // time, as Chat allows 15 reads a second per space.
     for (const user of users.map(chatUserName)) {
-      const id = present.has(user)
+      const id = present.has(user) || !user.includes("@")
         ? user : resolved.get(user) ?? personIn(await this.getMembership(spaceName, user));
       if (id === undefined || !present.has(id)) return null;
       resolved.set(user, id);
@@ -816,8 +812,11 @@ export class ChatApi {
       pageSize: String(options.pageSize ?? 50),
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
-    const body = await this.#fetchJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(
-      "people.searchDirectoryPeople", `${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`);
+    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`,
+      { headers: { Accept: "application/json" } }, this.getAccessToken);
+    const body = await readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
+      provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
+    });
     return {
       items: (body.people ?? []).flatMap(raw => directoryEntryFromRaw(raw) ?? []),
       ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
@@ -995,11 +994,8 @@ export class ChatApi {
       return chatMembershipFromRaw(await this.#request<ChatMembershipRaw>(
         "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`)) ?? null;
     } catch (error) {
-      // 404 is "not a member". As in findDirectMessage above, a 400 here means the validated
-      // reference names no real account, which is the same negative answer.
-      if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) {
-        return null;
-      }
+      // 404 is "not a member".
+      if (isChatUserNotFound(error)) return null;
       throw error;
     }
   }

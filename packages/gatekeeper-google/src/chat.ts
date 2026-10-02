@@ -130,23 +130,28 @@ class ChatStore {
   }
 
   get(id: number): ChatAction | undefined {
-    return this.#kv.get<ChatAction>(`chat:action:${id}`);
+    const action = this.#kv.get<ChatAction>(`chat:action:${id}`);
+    return action && this.#resolved(action);
   }
 
   list(): PendingChatAction[] {
     return [...this.#kv.list<ChatAction>({ prefix: "chat:action:" })]
-      .map(([key, action]) => ({ id: Number(key.slice("chat:action:".length)), action }))
+      .map(([key, action]) => ({ id: Number(key.slice("chat:action:".length)), action: this.#resolved(action) }))
       .toSorted((left, right) => left.id - right.id);
   }
 
-  /**
-   * Pending actions affecting one conversation, which is all a space capability may simulate. A
-   * conversation a send created is the same one as the temporary name it was queued under.
-   */
+  /** An action queued under the temporary name of a conversation a send created now names it. */
+  #resolved(action: ChatAction): ChatAction {
+    if (!("spaceName" in action) || action.spaceName === undefined) return action;
+    const requestId = pendingSpaceRequestId(action.spaceName);
+    const spaceName = requestId === undefined ? undefined : this.#kv.get<string>(`chat:conversation:${requestId}`);
+    return spaceName === undefined ? action : { ...action, spaceName };
+  }
+
+  /** Pending actions affecting one conversation, which is all a space capability may simulate. */
   listForSpace(spaceName: string): PendingChatAction[] {
-    spaceName = this.spaceName(spaceName);
     return this.list().filter(({ action }) => {
-      if (this.spaceName(chatActionSpaceName(action)) !== spaceName) return false;
+      if (chatActionSpaceName(action) !== spaceName) return false;
       if (action.type === "sendMessage" && action.threadName) {
         const root = pendingThreadActionId(this.threadName(action.threadName));
         if (root !== undefined && this.get(root)?.type !== "sendMessage") return false;
@@ -155,12 +160,8 @@ class ChatStore {
     })
       .map(entry => {
         const { action } = entry;
-        if (action.type === "sendMessage") {
-          return { ...entry, action: {
-            ...action,
-            spaceName: this.spaceName(action.spaceName),
-            ...(action.threadName ? { threadName: this.threadName(action.threadName) } : {}),
-          } };
+        if (action.type === "sendMessage" && action.threadName) {
+          return { ...entry, action: { ...action, threadName: this.threadName(action.threadName) } };
         }
         if (action.type === "updateMessage") {
           const id = pendingMessageActionId(action.messageName);
@@ -244,11 +245,12 @@ class ChatStore {
   }
 
   /**
-   * Remember the conversation a send created, so its temporary name resolves to it and later
-   * sends to the same `people` (everyone else in it, by sorted id) reuse it rather than its setup.
+   * Remember the conversation a send created, so the temporary name keyed by its setup `requestId`
+   * resolves to it, and later sends to the same `people` (everyone else in it, by sorted id) reuse
+   * it rather than its setup.
    */
-  setConversation(pendingName: string, people: string, spaceName: string): void {
-    this.#kv.put(`chat:conversation:${pendingSpaceRequestId(pendingName)}`, spaceName);
+  setConversation(requestId: string, people: string, spaceName: string): void {
+    this.#kv.put(`chat:conversation:${requestId}`, spaceName);
     this.#kv.put(`chat:with:${people}`, spaceName);
     this.settleSetupWith(people);
   }
@@ -275,12 +277,6 @@ class ChatStore {
 
   settleSetupWith(people: string): void {
     this.#kv.delete(`chat:setup:${people}`);
-  }
-
-  /** A temporary conversation name continues to identify its conversation once it is created. */
-  spaceName(name: string): string {
-    const requestId = pendingSpaceRequestId(name);
-    return requestId === undefined ? name : this.#kv.get<string>(`chat:conversation:${requestId}`) ?? name;
   }
 }
 
@@ -441,8 +437,7 @@ function resolveMessage(
   const action = ctx.store.get(queued);
   if (action?.type !== "sendMessage") throw new Error("This message was never created.");
   if (action.threadName) resolveThread(ctx, action.threadName);
-  // Once the conversation it creates exists, the send belongs to it like any other.
-  return { queued, action: { ...action, spaceName: ctx.store.spaceName(action.spaceName) } };
+  return { queued, action };
 }
 
 /** The conversation a message name belongs to, validating the name along the way. */
@@ -682,6 +677,9 @@ const MAX_CONVERSATION_PEOPLE = 49;
 
 const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
 
+const peopleNames = (people: readonly ChatPerson[]) =>
+  participantNames(people.map(person => person.name ?? person.email));
+
 /**
  * Queue a message to exactly these people, in their existing direct message or group chat, or
  * else in one created when the message is approved. Only people in the connected account's
@@ -704,7 +702,7 @@ async function queueDirectMessage(
 
   const kind = users.length === 1 ? "direct message" : "group chat";
   // People can join a group chat while a send awaits approval, so the send checks who's there before
-  // posting. Only a Chat app can join a direct message, and a send there doesn't check for one.
+  // posting. A send to a direct message doesn't, though a Chat app can be added to one.
   const existing: { spaceName: string; ids?: string[] } | null = users.length === 1
     ? await ctx.api.findDirectMessage(users[0]).then(dm => dm && { spaceName: dm.id })
     : await ctx.api.findGroupChat(users);
@@ -751,8 +749,7 @@ async function queueDirectMessage(
   };
   const one = members.length === 1;
   const id = await submitChatAction(ctx, action, {
-    title: sanitizeTitle(`Start a Google Chat conversation with ${
-      participantNames(members.map(member => member.name ?? member.email))}`),
+    title: sanitizeTitle(`Start a Google Chat conversation with ${peopleNames(members)}`),
     ...buildDescription(
       `Create a ${one ? "direct message" : "group chat"} between ${userLabel(ctx.self)} and ` +
       `${one ? "this person" : `these ${members.length} people`}, and post this message in it.`)
@@ -784,26 +781,25 @@ async function openConversation(
     if (unchanged) return known;
     store.forgetConversationWith(people);
   }
-  // spaces.setup returns an existing direct message itself, but would add a second group chat.
-  const spaceName = (ids.length > 1 ? (await api.findGroupChat(ids))?.spaceName : undefined) ??
-    await store.attemptWrite(actionId, () => api.setupConversation(ids, store.setupRequestWith(people, requestId)));
+  // spaces.setup returns an existing direct message itself, but would add a second group chat. A
+  // group chat the lookup finds has exactly these people already.
+  const found = ids.length > 1 ? await api.findGroupChat(ids) : null;
+  if (found) return found.spaceName;
+  const spaceName = await store.attemptWrite(actionId,
+    () => api.setupConversation(ids, store.setupRequestWith(people, requestId)));
   // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
   store.clearAttempt(actionId);
   // Google leaves out of a group chat anyone who blocks the caller, and a replayed setup returns the
   // group as it is now, so posting could reach other people than were approved.
   const present = await api.audienceIn(spaceName);
   const missing = members.filter(member => !present.has(member.id));
-  const wrong = missing.length > 0
-    ? `Google Chat left ${participantNames(missing.map(member => member.name ?? member.email))} out of the new ` +
-      "conversation, perhaps because they block you"
-    : present.size > ids.length + 1 ? "Someone who wasn't approved is already in the new Google Chat conversation"
-    : undefined;
-  if (wrong !== undefined) {
-    // Replaying its setup would return this same conversation.
-    store.settleSetupWith(people);
-    throw new Error(`${wrong}, so nothing was posted. Reject this message.`);
-  }
-  return spaceName;
+  if (missing.length === 0 && present.size <= ids.length + 1) return spaceName;
+  // Replaying its setup would return this same conversation.
+  store.settleSetupWith(people);
+  throw new Error(`${missing.length > 0
+    ? `Google Chat left ${peopleNames(missing)} out of the new conversation, perhaps because they block you`
+    : "Someone who wasn't approved is already in the new Google Chat conversation"}, so nothing was posted. ` +
+    "Reject this message.");
 }
 
 /** Whether exactly the connected user and the people with `ids` are in `spaceName`, with nobody else. */
@@ -827,10 +823,11 @@ function postedEntry(ctx: ChatContext, info: ChatMessageInfo): ChatMessageEntry 
   return { info, message: new ChatMessageImpl(ctx, info.id) };
 }
 
-/** A message still creating its conversation has no thread yet: the conversation doesn't exist. */
-function requireCreatedConversation(info: ChatMessageInfo): void {
-  if (pendingSpaceRequestId(info.spaceId) !== undefined) {
-    throw new Error("This message's conversation doesn't exist until the message is committed, so it has no thread yet.");
+/** Whether a new conversation is threaded is only known once a send that creates it posts. */
+function requireKnownThread(ctx: Pick<ChatContext, "store">, name: string): void {
+  const target = resolveMessage(ctx, name);
+  if ("queued" in target && target.action.newConversation) {
+    throw new Error("This message starts a new conversation, so it has no thread until the message is committed.");
   }
 }
 
@@ -1138,7 +1135,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 
   async getThread(): Promise<ChatThreadEntry> {
     const info = await this.#info();
-    requireCreatedConversation(info);
+    requireKnownThread(this.ctx, this.#name);
     if (info.threadId === undefined) {
       throw new Error("This conversation does not support threads. Use listMessages() instead.");
     }
@@ -1162,7 +1159,7 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
 
   async reply(text: string): Promise<ChatMessageEntry> {
     const info = await this.#read();
-    requireCreatedConversation(info);
+    requireKnownThread(this.ctx, this.#name);
     if (info.threadId === undefined) {
       throw new Error(
         "This conversation does not support threaded replies; send a new message instead.");
@@ -1496,13 +1493,12 @@ export class GoogleChatGatekeeperImpl
   async #conversationFor(
     api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
   ): Promise<{ spaceName: string; posted?: ChatMessageInfo }> {
-    const spaceName = store.spaceName(action.spaceName);
-    const conversation = action.newConversation;
-    if (conversation && spaceName === action.spaceName) {
+    const { spaceName, newConversation: conversation } = action;
+    if (conversation && pendingSpaceRequestId(spaceName) !== undefined) {
       const people = recipients.toSorted().join(",");
       const created = await this.#settingUp.run(people,
         () => openConversation(api, store, actionId, people, conversation));
-      store.setConversation(action.spaceName, people, created);
+      store.setConversation(conversation.requestId, people, created);
       // A send that joined another's setup still carries any mark from its own earlier attempt.
       store.clearAttempt(actionId);
       return { spaceName: created };

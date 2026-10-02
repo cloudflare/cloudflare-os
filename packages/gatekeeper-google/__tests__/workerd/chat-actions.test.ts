@@ -55,6 +55,11 @@ const json = (value: unknown, status = 200) =>
 const SPACE_ID = "AAAA";
 const SPACE_NAME = `spaces/${SPACE_ID}`;
 
+/** A joined membership of SPACE_NAME, the conversation every lookup and setup answers with. */
+const joined = (id: string) => ({
+  name: `${SPACE_NAME}/members/${id}`, state: "JOINED", member: {name: `users/${id}`, type: "HUMAN"},
+});
+
 /**
  * Provider history is paged independently of the capability cursor, including private messages
  * the gatekeeper must omit. Requests are recorded so tests check scope as well as returned data.
@@ -117,13 +122,10 @@ function chatBackend() {
     directory: [] as Array<{id: string; name: string; email: string}>,
     /** External shared contacts, which only a directory search for domain contacts returns. */
     externalContacts: [] as Array<{id: string; name: string; email: string}>,
-    directorySearches: [] as URL[],
-    /** `users/{user}` references findDirectMessage finds a direct message with. */
-    directMessagesWith: new Set(["users/alice@example.com"]),
     /** Group chats findGroupChats returns, a page at a time; each has `members` unless in `otherMembers`. */
     groupChats: [] as string[],
     /** The memberships of a group chat other than the one every send posts in, by its name. */
-    otherMembers: {} as Record<string, ChatMembershipRaw[]>,
+    otherMembers: new Map<string, ChatMembershipRaw[]>(),
     /** Each new conversation spaces.setup created: as with messages, it is always this space. */
     setups: [] as Array<{requestId: string; spaceType: string; members: string[]}>,
     /** People spaces.setup leaves out of a new group chat, as when one of them blocks the caller. */
@@ -140,7 +142,6 @@ function chatBackend() {
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
     if (url.hostname === "people.googleapis.com" && url.pathname === "/v1/people:searchDirectoryPeople") {
-      state.directorySearches.push(url);
       const query = url.searchParams.get("query")!.toLowerCase();
       const sources = url.searchParams.getAll("sources");
       const people = [
@@ -176,7 +177,7 @@ function chatBackend() {
       spaceType: state.spaceType, spaceThreadingState: state.spaceThreadingState};
     if (url.pathname === "/v1/spaces") { state.spaceLists++; return json({spaces: [space]}); }
     if (url.pathname === "/v1/spaces:findDirectMessage") {
-      return state.directMessagesWith.has(url.searchParams.get("name")!) ? json(space) : json({}, 404);
+      return url.searchParams.get("name") === "users/alice@example.com" ? json(space) : json({}, 404);
     }
     if (url.pathname === "/v1/spaces:findGroupChats") {
       const {items, ...next} = pageOf(state.groupChats, url);
@@ -192,11 +193,7 @@ function chatBackend() {
         state.setups.push({requestId: body.requestId, spaceType: body.space.spaceType, members});
         Object.assign(state, {spaceType: body.space.spaceType, spaceName: ""});
         state.members = ["users/subject-a", ...members.filter(member => !state.setupOmits.includes(member))]
-          .map(member => ({
-            name: `${SPACE_NAME}/members/${member.slice("users/".length)}`,
-            state: "JOINED",
-            member: {name: member, type: "HUMAN"},
-          }));
+          .map(member => joined(member.slice("users/".length)));
       }
       if (state.setupFailure) return json({}, state.setupFailure);
       return json({...space, spaceType: state.spaceType, displayName: undefined});
@@ -217,7 +214,7 @@ function chatBackend() {
       state.memberRequests++;
       const rejected = new Headers(init.headers).get("Authorization") === `Bearer ${state.membersRejectedToken}`;
       if (state.membersFailure || rejected) return json({}, state.membersFailure || 403);
-      const {items, ...next} = pageOf(state.otherMembers[membersOf] ?? state.members, url);
+      const {items, ...next} = pageOf(state.otherMembers.get(membersOf) ?? state.members, url);
       return json({memberships: items, ...next});
     }
     if (url.pathname.startsWith(`/v1/spaces/${SPACE_ID}/members/`)) {
@@ -1585,19 +1582,20 @@ describe("Google Chat thread capabilities", () => {
   });
 });
 
-/** A joined membership of SPACE_NAME, the conversation every lookup and setup answers with. */
-const joined = (id: string) => ({
-  name: `${SPACE_NAME}/members/${id}`, state: "JOINED", member: {name: `users/${id}`, type: "HUMAN"},
-});
-
 describe("Starting Google Chat conversations", () => {
   const BOB = {id: "200", name: "Bob Jones", email: "bob@example.com"};
   const CAROL = {id: "300", name: "Carol King", email: "carol@example.com"};
-  const accountChat = () => {
+  const CHAT_APP = {...joined("app1"), member: {name: "users/app1", type: "BOT"}};
+  /** With `groupChat`, Ada already has the group chat SPACE_NAME with Bob and Carol. */
+  const accountChat = ({groupChat = false} = {}) => {
     const backend = chatBackend();
     // Directory profiles carry numeric People ids, the same number as the account's subject.
     backend.state.directory.push({id: "100", name: "Ada", email: "ada@example.com"}, BOB, CAROL);
     backend.state.externalContacts.push({id: "900", name: "Eve Outside", email: "eve@elsewhere.test"});
+    if (groupChat) {
+      backend.state.groupChats = [SPACE_NAME];
+      backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
+    }
     return {backend, chat: chatHarness(backend, () => ({sub: "100", name: "Ada"}), "account")};
   };
 
@@ -1613,11 +1611,9 @@ describe("Starting Google Chat conversations", () => {
   });
 
   it("posts in an existing direct message or group chat as an ordinary send", async () => {
-    const {backend, chat} = accountChat();
+    const {backend, chat} = accountChat({groupChat: true});
     // Google may list a conversation's members a page at a time.
     backend.state.pageSize = 1;
-    backend.state.groupChats = [SPACE_NAME];
-    backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
     using account = await chat.account();
     using _dm = (await account.sendDirectMessage(["alice@example.com"], "hi")).message;
     using _group = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
@@ -1633,13 +1629,10 @@ describe("Starting Google Chat conversations", () => {
 
   // Google matches group chats on their human members alone, so a match may also hold a Chat app.
   it("posts in a later group chat with exactly the people named when an earlier match also holds an app", async () => {
-    const {backend, chat} = accountChat();
+    const {backend, chat} = accountChat({groupChat: true});
     backend.state.pageSize = 1;
-    backend.state.groupChats = ["spaces/WITHAPP", SPACE_NAME];
-    backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
-    backend.state.otherMembers["spaces/WITHAPP"] = [
-      ...backend.state.members, {...joined("app1"), member: {name: "users/app1", type: "BOT"}},
-    ];
+    backend.state.groupChats.unshift("spaces/WITHAPP");
+    backend.state.otherMembers.set("spaces/WITHAPP", [...backend.state.members, CHAT_APP]);
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     await chat.applyAction(1);
@@ -1651,12 +1644,10 @@ describe("Starting Google Chat conversations", () => {
   // it reaches only those it named.
   it.each([
     ["someone joins", joined("400")],
-    ["a Chat app joins", {...joined("app1"), member: {name: "users/app1", type: "BOT"}}],
+    ["a Chat app joins", CHAT_APP],
     ["a Google Group joins", {name: `${SPACE_NAME}/members/g1`, state: "JOINED", groupMember: {name: "groups/g1"}}],
   ])("posts nothing, and stays rejectable, when %s an existing group chat", async (_case, member) => {
-    const {backend, chat} = accountChat();
-    backend.state.groupChats = [SPACE_NAME];
-    backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
+    const {backend, chat} = accountChat({groupChat: true});
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     backend.state.members.push(member);
@@ -1665,10 +1656,10 @@ describe("Starting Google Chat conversations", () => {
     await chat.rejectAction(1);
   });
 
-  it("finishes a send to an existing group chat whose post landed before its response was lost, whoever has joined since", async () => {
-    const {backend, chat} = accountChat();
-    backend.state.groupChats = [SPACE_NAME];
-    backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
+  it.each([["an existing group chat", true], ["the group chat it sets up", false]])(
+    "finishes a send to %s whose post landed before its response was lost, whoever has joined since",
+    async (_case, groupChat) => {
+    const {backend, chat} = accountChat({groupChat});
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     backend.state.createFailure = 503;
@@ -1856,18 +1847,6 @@ describe("Starting Google Chat conversations", () => {
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
     await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
-  });
-
-  it("finishes a send whose post landed before its response was lost, whoever has joined since", async () => {
-    const {backend, chat} = accountChat();
-    using account = await chat.account();
-    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
-    backend.state.createFailure = 503;
-    await expect(chat.applyAction(1)).rejects.toThrow();
-    backend.state.createFailure = 0;
-    backend.state.members.push(joined("400"));
-    await chat.applyAction(1);
-    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hi all"]);
   });
 
   it("lets a send be rejected once the post it landed is deleted, whoever has joined since", async () => {
