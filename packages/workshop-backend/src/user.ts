@@ -11,7 +11,7 @@ import {
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { getAiGatewayConfig, getGatewayModels, type GatewayModels } from "./ai-gateway.js";
+import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
@@ -483,7 +483,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (this.storage.aiModels.get(profile.id) || models?.get(profile.id)) {
       throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, source));
+    this.#putModel(profile, resolveWithheldSecrets(config, source), models);
   }
 
   async getModelConfig(id: string): Promise<{profile: AiChatAuthorInfo, config: RedactedAiModelConfig}> {
@@ -498,7 +498,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (config.provider !== stored.provider || config.model !== stored.model) {
       throw new Error("A model's provider and model ID can't be changed.");
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, stored));
+    this.#putModel(profile, resolveWithheldSecrets(config, stored), models);
   }
 
   /** The stored record of a model the user added, throwing for AI Gateway models. */
@@ -511,9 +511,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return record;
   }
 
-  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig) {
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig && !gwConfig.providers.has(config.provider)) {
+  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
+    if (models && !models.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
     for (let limit of [config.contextWindow, config.outputLimit]) {

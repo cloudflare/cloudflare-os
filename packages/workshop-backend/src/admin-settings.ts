@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -9,7 +9,7 @@ import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, pars
 import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
-import { AiGatewayConfig, GatewayModels, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { gatewayReasoningLevels, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
@@ -433,6 +433,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       let models = new GatewayModels(gateway, config);
       return {
         providers: models.addableProviders,
+        providerSettings: models.providerSettings,
         models: models.all.map(model => {
           let budget = compactionBudgetRange(model);
           return {
@@ -552,6 +553,27 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         modelModes: Object.fromEntries(entriesWithout(config.modelModes, modelId)),
         modelSettings: Object.fromEntries(entriesWithout(config.modelSettings, modelId)),
       };
+    });
+  }
+
+  /**
+   * Turn a provider on or off beside the ones the environment lists, which are a floor. Off keeps
+   * the modes and settings of the provider's models and the models added under it, all of which
+   * return with it.
+   */
+  async setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      let gateway = this.#requireGateway();
+      assertGatewayProvider(provider);
+      if (gateway.providers.has(provider)) {
+        // On already, with nothing to store.
+        if (enabled) return config;
+        throw new Error(`Provider "${provider}" is enabled by CF_AI_GATEWAY_PROVIDERS and can ` +
+            "only be turned off there.");
+      }
+      let addedProviders = config.addedProviders.filter(added => added !== provider);
+      if (enabled) addedProviders.push(provider);
+      return { ...config, addedProviders };
     });
   }
 
@@ -833,5 +855,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setDefaultReasoning(level: ReasoningLevel | null): Promise<void> {
     return this.admin.setDefaultReasoning(level);
+  }
+
+  setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
+    return this.admin.setGatewayProviderEnabled(provider, enabled);
   }
 }

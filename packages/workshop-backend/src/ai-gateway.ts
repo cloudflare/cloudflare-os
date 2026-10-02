@@ -1,6 +1,6 @@
 import {
-  AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel, GatewayModelMode,
-  HTTPS_ONLY_PROVIDERS, ReasoningLevel, SUGGESTED_MODELS,
+  AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel,
+  GatewayModelMode, HTTPS_ONLY_PROVIDERS, ReasoningLevel, SUGGESTED_MODELS,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
@@ -18,6 +18,13 @@ const QUICK_MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
  */
 const GATEWAY_PROVIDERS: ReadonlySet<string> =
     new Set<AiModelProvider>(["anthropic", "openai", "google", "cloudflare"]);
+
+/** Throws unless AI Gateway serves `provider`. */
+export function assertGatewayProvider(provider: string): void {
+  if (!GATEWAY_PROVIDERS.has(provider)) {
+    throw new Error(`Provider "${provider}" is not served through AI Gateway.`);
+  }
+}
 
 /** Whether SUGGESTED_MODELS lists `modelId`, under any provider. */
 export function isCatalogModel(modelId: string): boolean {
@@ -68,6 +75,7 @@ export class AiGatewayConfig {
    * `env.ai.toMarkdown()` through it (see web-fetch.ts), so unbinding would break that too.
    */
   readonly binding?: Ai;
+  /** The providers CF_AI_GATEWAY_PROVIDERS lists, which an admin can add to (see GatewayModels). */
   readonly providers: Set<string>;
 
   constructor(env: Cloudflare.Env) {
@@ -110,7 +118,8 @@ export class AiGatewayConfig {
   /**
    * Transport for a provider's gateway inference: the Workers AI binding when present, except for
    * the providers in {@link HTTPS_ONLY_PROVIDERS}, which ride HTTPS with the token (the
-   * constructor guarantees a token whenever one of them is an enabled provider).
+   * constructor guarantees a token whenever the environment enables one of them; one that an
+   * admin enabled without a token is refused per request, in getModelViaGateway).
    */
   bindingFor(provider: string): Ai | undefined {
     return HTTPS_ONLY_PROVIDERS.has(provider) ? undefined : this.binding;
@@ -140,11 +149,17 @@ export function getAiGatewayConfig(env: Cloudflare.Env): AiGatewayConfig | null 
 
 /**
  * The models a deployment provides through AI Gateway (`gateway`), each in the mode its admin
- * gave it (see GatewayModelMode): the suggested models of every provider the gateway enables, each
- * provider's followed by the models the admin added under it. Listing and resolving a gateway
- * model both go through here, so neither can happen without the admin's modes and settings.
+ * gave it (see GatewayModelMode): the suggested models of every provider the deployment enables
+ * (`providers`), each provider's followed by the models the admin added under it. Listing and
+ * resolving a gateway model both go through here, so neither can happen without the admin's
+ * modes and settings.
  */
 export class GatewayModels {
+  /**
+   * The providers the deployment enables: the environment's, which are a floor, and the ones its
+   * admin added that the gateway serves.
+   */
+  readonly providers: ReadonlySet<string>;
   /** Every model, in any mode, in listing order. */
   readonly all: readonly AdminModel[];
   /** The providers a model may be added under: the ones the gateway both enables and serves. */
@@ -161,8 +176,12 @@ export class GatewayModels {
   readonly #defaultReasoning: ReasoningLevel | null;
 
   constructor(readonly gateway: AiGatewayConfig,
-              config: Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled" |
-                  "modelSettings" | "defaultReasoning">) {
+              config: Pick<AdminConfig, "modelModes" | "addedProviders" | "addedModels" |
+                  "userModelsEnabled" | "modelSettings" | "defaultReasoning">) {
+    this.providers = new Set([
+      ...gateway.providers,
+      ...config.addedProviders.filter(provider => GATEWAY_PROVIDERS.has(provider)),
+    ]);
     this.#added = config.addedModels;
     this.userModels = config.userModelsEnabled;
     this.#defaultReasoning = config.defaultReasoning;
@@ -177,7 +196,7 @@ export class GatewayModels {
           model.id, { ...model, mode, defaultMode, added, ...(settings && { settings }) });
     };
     for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
-      if (!gateway.providers.has(provider)) continue;
+      if (!this.providers.has(provider)) continue;
       for (let [id, model] of Object.entries(catalog)) {
         add({ provider: provider as AiModelProvider, id, name: model.name, ...tokenLimits(model) },
             model.hidden ? "hidden" : "enabled", false);
@@ -191,6 +210,20 @@ export class GatewayModels {
       }
     }
     this.all = [...this.#byId.values()];
+  }
+
+  /** Every provider the gateway serves, enabled or not, in catalog order. */
+  get providerSettings(): AdminGatewayProvider[] {
+    return (Object.keys(SUGGESTED_MODELS) as AiModelProvider[])
+        .filter(provider => GATEWAY_PROVIDERS.has(provider))
+        .map(provider => ({
+          provider,
+          ...(this.providers.has(provider) &&
+              { enabledBy: this.gateway.providers.has(provider) ? "environment" : "admin" }),
+          // What getModelViaGateway refuses a request for. Only an admin can enable a provider
+          // in that state: the environment enabling one keeps `gateway` from being built.
+          needsApiToken: !this.gateway.bindingFor(provider) && !this.gateway.apiToken,
+        }));
   }
 
   /** The gateway model with this ID, in any mode: even a disabled model's ID stays reserved. */
@@ -253,10 +286,8 @@ export class GatewayModels {
    * lists under any provider is taken, as is that of a stored added model this table leaves out.
    */
   assertAddable(model: GatewayModel): void {
-    if (!GATEWAY_PROVIDERS.has(model.provider)) {
-      throw new Error(`Provider "${model.provider}" is not served through AI Gateway.`);
-    }
-    if (!this.gateway.providers.has(model.provider)) {
+    assertGatewayProvider(model.provider);
+    if (!this.providers.has(model.provider)) {
       throw new Error(`Provider "${model.provider}" is not enabled on this deployment.`);
     }
     if (isCatalogModel(model.id)) throw new Error(`"${model.id}" is already a suggested model.`);

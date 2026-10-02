@@ -611,10 +611,7 @@ function getModelViaGateway(
       : `${gatewayBase}/${gateway}`;
   const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {
-    throw new Error(
-      `Provider "${config.provider}" is not supported through AI Gateway. ` +
-      `Configured providers: ${[...gwConfig.providers].join(", ")}`
-    );
+    throw new Error(`Provider "${config.provider}" is not supported through AI Gateway.`);
   }
 
   return makeHandle({

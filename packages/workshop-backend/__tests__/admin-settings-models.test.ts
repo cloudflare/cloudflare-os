@@ -661,6 +661,152 @@ describe("AdminSettings added models that behave like another", () => {
   });
 });
 
+// The providers an admin turned on, as stored and as the admin panel is shown every provider.
+const providers = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async admin => ({
+  stored: admin.getAdminConfig().addedProviders,
+  view: (await admin.getSettings("admin")).gatewayModels!.providerSettings,
+}));
+
+describe("AdminSettings gateway providers", () => {
+  const FLOOR = [
+    { provider: "cloudflare", enabledBy: "environment", needsApiToken: false },
+    { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
+  ];
+  const OPENAI_OFF = { provider: "openai", needsApiToken: false };
+  const OPENAI_ON = { ...OPENAI_OFF, enabledBy: "admin" };
+  const GOOGLE_OFF = { provider: "google", needsApiToken: false };
+
+  it("turns a provider on and off, storing and mirroring each change", async () => {
+    const { inDo, put, mirror } = adminSettings();
+    expect(await providers(inDo)).toStrictEqual(
+        { stored: [], view: [...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
+
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    expect(await providers(inDo)).toStrictEqual(
+        { stored: ["openai"], view: [...FLOOR, OPENAI_ON, GOOGLE_OFF] });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![0]).toBe(".adminConfig");
+    expect(JSON.parse(mirror.current!).addedProviders).toStrictEqual(["openai"]);
+    // Its suggested models are the deployment's, and models can be added under it.
+    const on = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    expect(on.providers).toEqual(["cloudflare", "anthropic", "openai"]);
+    expect(on.models.find(model => model.id === "gpt-6-sol"))
+        .toMatchObject({ provider: "openai", mode: "hidden", defaultMode: "hidden" });
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, provider: "openai", id: "gpt-test" }));
+
+    // Once is enough. Reading the config back drops a repeat, so only the raw write shows one.
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    expect(JSON.parse(mirror.current!).addedProviders).toStrictEqual(["openai"]);
+
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", false));
+    expect(await providers(inDo)).toStrictEqual(
+        { stored: [], view: [...FLOOR, OPENAI_OFF, GOOGLE_OFF] });
+    expect(JSON.parse(mirror.current!).addedProviders).toStrictEqual([]);
+    const off = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    expect(off.providers).toEqual(["cloudflare", "anthropic"]);
+    expect(off.models.filter(model => model.provider === "openai")).toEqual([]);
+  });
+
+  it("keeps the admin's other providers when one is turned off", async () => {
+    const { inDo } = adminSettings();
+    await inDo(admin => admin.setGatewayProviderEnabled("google", true));
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    await inDo(admin => admin.setGatewayProviderEnabled("google", false));
+    expect((await providers(inDo)).stored).toStrictEqual(["openai"]);
+  });
+
+  it("refuses to turn off a provider the environment enables", async () => {
+    const { inDo, put } = adminSettings();
+    await expect(inDo(admin => admin.setGatewayProviderEnabled("anthropic", false)))
+        .rejects.toThrow(new Error('Provider "anthropic" is enabled by CF_AI_GATEWAY_PROVIDERS ' +
+            "and can only be turned off there."));
+    expect((await providers(inDo)).view.slice(0, 2)).toStrictEqual(FLOOR);
+    expect(put).not.toHaveBeenCalled();
+
+    // Nor one that an admin had also turned on before the environment listed it.
+    await inDo(admin => admin.updateAdminConfig({ addedProviders: ["anthropic"] }));
+    await expect(inDo(admin => admin.setGatewayProviderEnabled("anthropic", false)))
+        .rejects.toThrow("can only be turned off there.");
+    expect((await providers(inDo)).stored).toStrictEqual(["anthropic"]);
+  });
+
+  it("stores nothing when turning on a provider the environment enables", async () => {
+    const { inDo } = adminSettings();
+    await inDo(admin => admin.setGatewayProviderEnabled("anthropic", true));
+    const { stored, view } = await providers(inDo);
+    expect(stored).toStrictEqual([]);
+    expect(view.slice(0, 2)).toStrictEqual(FLOOR);
+  });
+
+  it("refuses a provider AI Gateway does not serve, on or off", async () => {
+    // The environment lists ollama here, which makes it no more servable.
+    for (let listed of ["anthropic", "anthropic,ollama"]) {
+      const { inDo, put } = adminSettings({ ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: listed });
+      for (let enabled of [true, false]) {
+        await expect(inDo(admin => admin.setGatewayProviderEnabled("ollama", enabled)))
+            .rejects.toThrow(new Error('Provider "ollama" is not served through AI Gateway.'));
+      }
+      expect((await providers(inDo)).stored).toStrictEqual([]);
+      expect(put).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps what is stored for a provider's models while the provider is off", async () => {
+    const { inDo, stored, settings } = adminSettings();
+    const added = { ...ADDED, provider: "openai" as const, id: "gpt-test" };
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    await inDo(admin => admin.setGatewayModelMode("gpt-6-luna", "disabled"));
+    await inDo(admin => admin.setGatewayModelSettings("gpt-6-luna", { reasoning: "low" }));
+    await inDo(admin => admin.addGatewayModel(added));
+    await inDo(admin => admin.setGatewayModelMode("gpt-test", "hidden"));
+    const before = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    const kept = {
+      modelModes: { "gpt-6-luna": "disabled", "gpt-test": "hidden" }, addedModels: [added],
+    };
+    expect(await stored()).toEqual(kept);
+
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", false));
+    expect(await stored()).toEqual(kept);
+    expect(await settings()).toStrictEqual({ "gpt-6-luna": { reasoning: "low" } });
+    const off = (await inDo(admin => admin.getSettings("admin"))).gatewayModels!;
+    expect(off.models.filter(model => model.provider === "openai")).toEqual([]);
+    // Out of the table, its models can't be changed, and an added one keeps its ID.
+    await expect(inDo(admin => admin.setGatewayModelMode("gpt-6-luna", "enabled")))
+        .rejects.toThrow("No such model: gpt-6-luna");
+    await expect(inDo(admin => admin.addGatewayModel({ ...ADDED, id: "gpt-test" })))
+        .rejects.toThrow('"gpt-test" is already an added model.');
+
+    await inDo(admin => admin.setGatewayProviderEnabled("openai", true));
+    expect((await inDo(admin => admin.getSettings("admin"))).gatewayModels).toStrictEqual(before);
+  });
+
+  // The environment listing google with no token is a gateway that does not start. An admin
+  // turning it on must leave every other gateway read and write working.
+  it("turns google on for a deployment with no token, and reports that it needs one",
+      async () => {
+    const { inDo, stored } = adminSettings({
+      ...GATEWAY, CF_AI_GATEWAY_API_TOKEN: undefined, WORKERS_AI: { fetch: vi.fn() },
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await inDo(admin => admin.setGatewayProviderEnabled("google", true));
+      const { gatewayModels } = await inDo(admin => admin.getSettings("admin"));
+      expect(gatewayModels!.providerSettings).toStrictEqual([
+        ...FLOOR, OPENAI_OFF, { provider: "google", enabledBy: "admin", needsApiToken: true },
+      ]);
+      expect(gatewayModels!.models.map(model => model.id)).toContain("gemini-3.6-flash");
+
+      await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden"));
+      await inDo(admin => admin.addGatewayModel(
+          { ...ADDED, provider: "google", id: "gemini-test" }));
+      expect((await stored()).modelModes).toEqual({ "claude-fable-5-1": "hidden" });
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
+
 describe("AdminSettings outside AI Gateway mode", () => {
   it("has no gateway models to show, and refuses to change any", async () => {
     const { inDo, stored, settings, put } = adminSettings({});
@@ -677,6 +823,9 @@ describe("AdminSettings outside AI Gateway mode", () => {
     await expect(inDo(admin => admin.setGatewayModelSettings("claude-test", { reasoning: "low" })))
         .rejects.toThrow(NOT_GATEWAY);
     await expect(inDo(admin => admin.setDefaultReasoning("low"))).rejects.toThrow(NOT_GATEWAY);
+    await expect(inDo(admin => admin.setGatewayProviderEnabled("openai", true)))
+        .rejects.toThrow(NOT_GATEWAY);
+    expect(await inDo(admin => admin.getAdminConfig().addedProviders)).toStrictEqual([]);
     expect(await settings()).toStrictEqual({});
     expect(await inDo(admin => admin.getAdminConfig().defaultReasoning)).toBeNull();
     expect(await stored()).toEqual({ modelModes: {}, addedModels: [ADDED] });

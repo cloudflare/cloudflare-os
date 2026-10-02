@@ -245,6 +245,13 @@ describe("getModel AI Gateway routing", () => {
     // Session affinity flows through (Workers AI models opt in to the affinity headers).
     expect(request.headers.get("x-session-affinity")).toBe("session-a");
   }, 15000);
+
+  // The environment's providers are not all a deployment enables, so the refusal lists none.
+  it("refuses a provider the gateway has no route for", () => {
+    expect(() => getModel(env({ CF_AI_GATEWAY_PROVIDERS: "anthropic,ollama" }),
+        { provider: "ollama", model: "llama3", apiToken: "" }, INITIATOR))
+        .toThrow(new Error('Provider "ollama" is not supported through AI Gateway.'));
+  });
 });
 
 describe("getModel AI Gateway binding transport", () => {

@@ -150,6 +150,8 @@ describe("UserDurableObject model editing", () => {
 
 const listedIds = async (user: UserDurableObject) =>
     (await user.listModels()).map(model => model.id);
+const providerUnavailable = (provider: string) =>
+    new Error(`Provider "${provider}" is not available in AI Gateway mode.`);
 const storedModel = (user: UserDurableObject, id: string) =>
     (user as unknown as { storage: { aiModels: { get(id: string): unknown } } })
         .storage.aiModels.get(id);
@@ -224,6 +226,44 @@ describe("UserDurableObject gateway model modes", () => {
     await user.addModel(PROFILE, own);
     expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toStrictEqual(own);
   }, { defaultReasoning: "high" }));
+
+  describe("providers", () => {
+    // An OpenAI model, on a deployment whose environment enables anthropic alone.
+    const OTHER = { ...PROFILE, id: "other" };
+    const OTHER_CONFIG = { ...CONFIG, model: "other" };
+
+    it("accepts a model under a provider an admin turned on", () => inGatewayUser(async user => {
+      await user.addModel(PROFILE, CONFIG);
+      expect(storedModel(user, PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
+      await user.updateModel({ ...PROFILE, name: "Renamed" }, CONFIG);
+      expect(storedModel(user, PROFILE.id)).toMatchObject({ profile: { name: "Renamed" } });
+      expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toEqual(CONFIG);
+    }, { addedProviders: ["openai"] }));
+
+    it("refuses a model under a provider that neither the environment nor an admin enables",
+        () => inGatewayUser(async user => {
+      await expect(user.addModel(PROFILE, CONFIG)).rejects.toThrow(providerUnavailable("openai"));
+      expect(storedModel(user, PROFILE.id)).toBeUndefined();
+      // An admin's listing of a provider AI Gateway does not serve enables nothing.
+      const ollama = { provider: "ollama" as const, model: "llama", apiToken: "" };
+      await expect(user.addModel(PROFILE, ollama)).rejects.toThrow(providerUnavailable("ollama"));
+    }, { addedProviders: ["google", "ollama"] }));
+
+    // As when a provider leaves CF_AI_GATEWAY_PROVIDERS: the model stays and runs, uneditable.
+    it("keeps a model whose provider an admin turned off again", () => {
+      const admin: Partial<AdminConfig> = { addedProviders: ["openai"] };
+      return inGatewayUser(async user => {
+        await user.addModel(PROFILE, CONFIG);
+        admin.addedProviders = [];
+        expect(await listedIds(user)).toContain(PROFILE.id);
+        expect((await user.getChatContext(PROFILE.id)).aiModel?.config).toEqual(CONFIG);
+        await expect(user.updateModel({ ...PROFILE, name: "Renamed" }, CONFIG))
+            .rejects.toThrow(providerUnavailable("openai"));
+        await expect(user.addModel(OTHER, OTHER_CONFIG))
+            .rejects.toThrow(providerUnavailable("openai"));
+      }, admin);
+    });
+  });
 
   it("stops listing a model the admin hid, which still resolves", () => inGatewayUser(async user => {
     expect(await listedIds(user)).not.toContain(ENABLED_ID);

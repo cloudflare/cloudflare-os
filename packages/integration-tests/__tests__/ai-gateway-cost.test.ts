@@ -152,6 +152,7 @@ it("an admin's modes, added models and say over users' own decide which models r
         candidate.id === id ? { ...candidate, mode } : candidate;
     expect(await gatewayModels()).toEqual({
       providers: ["cloudflare"],
+      providerSettings: before.providerSettings,
       models: [
         ...before.models.map(withMode(SCRIPTED_MODEL_ID, "disabled")).map(withMode(other.id, "hidden")),
         ADDED_VIEW,

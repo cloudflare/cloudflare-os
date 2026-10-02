@@ -10,8 +10,9 @@
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   DEFAULT_BANNER_COLOR,
-  type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput, type BlueprintPublicInfo,
-  type GatewayModel, type GatewayModelMode, type GatewayModelSettings, type ReasoningLevel,
+  type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
+  type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
+  type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
 
 export type AdminConfig = {
@@ -70,6 +71,12 @@ export type AdminConfig = {
    * mode (see GatewayModels in ai-gateway.ts).
    */
   modelModes: Record<string, GatewayModelMode>;
+  /**
+   * The providers an admin turned on beside the ones CF_AI_GATEWAY_PROVIDERS lists. That variable
+   * is a floor: these add to it and take nothing from it. Only the ones AI Gateway serves count
+   * (see GatewayModels in ai-gateway.ts).
+   */
+  addedProviders: AiModelProvider[];
   /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
   addedModels: GatewayModel[];
   /**
@@ -134,6 +141,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   ambientGatekeeperModes: {},
   formats: [],
   modelModes: {},
+  addedProviders: [],
   addedModels: [],
   modelSettings: {},
   defaultReasoning: null,

@@ -133,6 +133,13 @@ describe("AiGatewayConfig transport selection", () => {
 
 const ids = (models: readonly { id: string }[]) => models.map(model => model.id);
 
+// A deployment whose gateway rides the Workers AI binding, with no token for HTTPS.
+const tokenless = (providers = "anthropic,cloudflare") => env({
+  CF_AI_GATEWAY_ACCOUNT_ID: "account-id",
+  CF_AI_GATEWAY_PROVIDERS: providers,
+  WORKERS_AI: { gateway: () => ({}) } as unknown as Ai,
+});
+
 // A BLUEPRINTS namespace whose only content is the admin config.
 const adminConfigKv = (config: Partial<AdminConfig>) => ({
   get: vi.fn(async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, ...config })),
@@ -156,14 +163,19 @@ describe("GatewayModels", () => {
     CF_AI_GATEWAY_API_TOKEN: "gateway-token",
     CF_AI_GATEWAY_PROVIDERS: providers,
   });
-  const gatewayModels = (
-      config: Partial<Pick<AdminConfig, "modelModes" | "addedModels" | "userModelsEnabled" |
-          "modelSettings" | "defaultReasoning">> = {},
-      providers?: string) =>
-      new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), {
-        modelModes: {}, addedModels: [], userModelsEnabled: true, modelSettings: {},
-        defaultReasoning: null, ...config,
-      });
+  type Config = Pick<AdminConfig, "modelModes" | "addedProviders" | "addedModels" |
+      "userModelsEnabled" | "modelSettings" | "defaultReasoning">;
+  const NO_CONFIG: Config = {
+    modelModes: {}, addedProviders: [], addedModels: [], userModelsEnabled: true,
+    modelSettings: {}, defaultReasoning: null,
+  };
+  const gatewayModels = (config: Partial<Config> = {}, providers?: string) =>
+      new GatewayModels(new AiGatewayConfig(gatewayEnv(providers)), { ...NO_CONFIG, ...config });
+  // The providers whose requests need a token that `deployment` lacks.
+  const needsToken = (deployment: Cloudflare.Env, addedProviders: AiModelProvider[] = []) =>
+      new GatewayModels(new AiGatewayConfig(deployment), { ...NO_CONFIG, addedProviders })
+          .providerSettings.filter(({ needsApiToken }) => needsApiToken)
+          .map(({ provider }) => provider);
 
   it("offers each catalog model in its default mode, on enabled providers only", () => {
     const models = gatewayModels();
@@ -479,6 +491,119 @@ describe("GatewayModels", () => {
 
     it.each(["__proto__", "constructor", "toString"])("accepts %s as an ID", (id) => {
       expect(() => models.assertAddable({ ...NEW, id })).not.toThrow();
+    });
+  });
+
+  describe("providers", () => {
+    const CATALOG_ORDER = ["cloudflare", "anthropic", "openai", "google"];
+    const GEMINI = "gemini-3.6-flash";
+    const NO_TOKEN = 'Provider "google" cannot use the Workers AI binding transport, and no ' +
+        "CF_AI_GATEWAY_API_TOKEN is configured for the HTTPS one.";
+    it("enables the environment's, and the ones an admin added that the gateway serves", () => {
+      expect([...gatewayModels({}, "anthropic").providers]).toEqual(["anthropic"]);
+      // Neither ollama, which has no gateway route, nor a name that is no provider's.
+      const models = gatewayModels({
+        addedProviders: ["openai", "ollama", "mistral", "constructor"] as AiModelProvider[],
+      }, "anthropic");
+      expect([...models.providers]).toEqual(["anthropic", "openai"]);
+      expect(models.providerSettings.map(({ provider }) => provider)).toEqual(CATALOG_ORDER);
+      // The environment's own are taken as they are, whether or not the gateway serves them.
+      expect([...gatewayModels({ addedProviders: ["anthropic"] }, "anthropic,ollama").providers])
+          .toEqual(["anthropic", "ollama"]);
+    });
+
+    it("gives a provider an admin added what the environment's listing of it would", () => {
+      const parked: GatewayModel =
+          { provider: "openai", id: "gpt-parked", name: "Parked", contextWindow: 1000 };
+      const off = gatewayModels({ addedModels: [parked] }, "anthropic");
+      expect(off.get("gpt-6-sol")).toBeUndefined();
+      expect(off.get("gpt-parked")).toBeUndefined();
+      expect(() => off.assertAddable({ ...parked, id: "gpt-new" }))
+          .toThrow('Provider "openai" is not enabled on this deployment.');
+
+      const on = gatewayModels({ addedProviders: ["openai"], addedModels: [parked] }, "anthropic");
+      expect(ids(on.all)).toEqual([
+        ...Object.keys(SUGGESTED_MODELS.anthropic), ...Object.keys(SUGGESTED_MODELS.openai),
+        "gpt-parked",
+      ]);
+      expect(on.get("gpt-6-sol")).toMatchObject({ mode: "hidden", defaultMode: "hidden" });
+      expect(on.get("gpt-6-luna")).toMatchObject({ mode: "enabled", defaultMode: "enabled" });
+      expect(on.addableProviders).toEqual(["anthropic", "openai"]);
+      expect(() => on.assertAddable({ ...parked, id: "gpt-new" })).not.toThrow();
+
+      const listed = gatewayModels({ addedModels: [parked] }, "anthropic,openai");
+      expect(on.all).toStrictEqual(listed.all);
+      expect(on.addableProviders).toEqual(listed.addableProviders);
+      expect(on.resolve("gpt-6-luna")).toStrictEqual(listed.resolve("gpt-6-luna"));
+    });
+
+    it("says who enabled each provider the gateway serves, in catalog order", () => {
+      expect(gatewayModels({ addedProviders: ["google"] }, "anthropic,ollama").providerSettings)
+          .toStrictEqual([
+            { provider: "cloudflare", needsApiToken: false },
+            { provider: "anthropic", enabledBy: "environment", needsApiToken: false },
+            { provider: "openai", needsApiToken: false },
+            { provider: "google", enabledBy: "admin", needsApiToken: false },
+          ]);
+      // The environment's listing comes first, so a provider it lists can't be turned off.
+      expect(gatewayModels({ addedProviders: ["anthropic", "cloudflare"] }, "anthropic")
+          .providerSettings.map(({ enabledBy }) => enabledBy))
+          .toEqual(["admin", "environment", undefined, undefined]);
+    });
+
+    it("reports a provider whose requests need a token the deployment lacks", () => {
+      // Whether the provider is on or off.
+      expect(needsToken(tokenless())).toEqual(["google"]);
+      expect(needsToken(tokenless(), ["google", "openai"])).toEqual(["google"]);
+      // With a token, over HTTPS alone or beside the binding, none does.
+      expect(needsToken(gatewayEnv("anthropic,google"))).toEqual([]);
+      expect(needsToken(env({
+        CF_AI_GATEWAY_ACCOUNT_ID: "account-id", CF_AI_GATEWAY_API_TOKEN: "gateway-token",
+        CF_AI_GATEWAY_PROVIDERS: "anthropic", WORKERS_AI: undefined,
+      }), ["google"])).toEqual([]);
+    });
+
+    // The environment enabling google without a token is a deployment that does not start. An
+    // admin doing so must not be: every gateway read builds this table.
+    it("builds with google enabled by an admin on a deployment that has no token", async () => {
+      expect(() => new AiGatewayConfig(tokenless("anthropic,google")))
+          .toThrow("enabling the google provider requires CF_AI_GATEWAY_API_TOKEN");
+
+      const models = new GatewayModels(
+          new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] });
+      expect(models.providerSettings.at(-1)).toStrictEqual(
+          { provider: "google", enabledBy: "admin", needsApiToken: true });
+      expect(ids(models.list())).toContain(GEMINI);
+      expect(ids(models.list())).toContain("claude-opus-5-5");
+
+      const read = await getGatewayModels({
+        ...tokenless(),
+        BLUEPRINTS: adminConfigKv({ addedProviders: ["google"] }) as unknown as KVNamespace,
+      });
+      expect(read!.providers.has("google")).toBe(true);
+
+      // Its models are refused request by request, and the other providers' run.
+      expect(() => getModel(tokenless(), read!.resolve(GEMINI)!.config, USER))
+          .toThrow(new Error(NO_TOKEN));
+      expect(getModel(tokenless(), read!.resolve("claude-opus-5-5")!.config, USER).model.id)
+          .toBe("claude-opus-5-5");
+    });
+
+    // The table says which providers need a token by the rule getModel refuses a request on.
+    // This holds the two in step.
+    it.each([tokenless(), gatewayEnv()])(
+        "reports a token as needed exactly where a request is refused for one (%#)",
+        (deployment) => {
+      const models = new GatewayModels(new AiGatewayConfig(deployment), NO_CONFIG);
+      for (let { provider, needsApiToken } of models.providerSettings) {
+        const request = () => getModel(
+            deployment, { provider, model: "test-model", apiToken: "" }, USER);
+        if (needsApiToken) {
+          expect(request, provider).toThrow("cannot use the Workers AI binding transport");
+        } else {
+          expect(request, provider).not.toThrow();
+        }
+      }
     });
   });
 

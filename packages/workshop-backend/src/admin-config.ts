@@ -9,7 +9,7 @@
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -199,6 +199,11 @@ export async function listFormatOffers(env: BlueprintKvEnv, config: AdminConfig)
   return offers;
 }
 
+// Object.hasOwn, so that a name like "constructor" is not taken for a provider.
+function isProvider(value: unknown): value is AiModelProvider {
+  return typeof value === "string" && Object.hasOwn(SUGGESTED_MODELS, value);
+}
+
 /** Longest id or name an added AI Gateway model may carry, its `behavesLike` id included. */
 const MAX_ADDED_MODEL_TEXT = 200;
 
@@ -211,7 +216,7 @@ export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
   if (!value || typeof value !== "object") return undefined;
   let {provider, id, name, contextWindow, outputLimit, behavesLike} =
       value as Partial<GatewayModel>;
-  if (typeof provider !== "string" || !Object.hasOwn(SUGGESTED_MODELS, provider)) return undefined;
+  if (!isProvider(provider)) return undefined;
   if (typeof id !== "string" || typeof name !== "string") return undefined;
   id = id.trim();
   name = name.trim();
@@ -316,6 +321,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     ambientGatekeeperModes,
     formats: parseFormats(p.formats),
     modelModes,
+    addedProviders: Array.isArray(p.addedProviders)
+      ? [...new Set(p.addedProviders.filter(isProvider))]
+      : [],
     addedModels: parseAddedModels(p.addedModels),
     modelSettings,
     defaultReasoning: isReasoningLevel(p.defaultReasoning) ? p.defaultReasoning : null,

@@ -303,6 +303,23 @@ describe("admin config gateway models", () => {
     expect(config.addedModels).toStrictEqual([added]);
   });
 
+  it("keeps the added providers that are providers, once each", () => {
+    expect(DEFAULT_ADMIN_CONFIG.addedProviders).toStrictEqual([]);
+    for (let stored of ["{}", '{"addedProviders":null}', '{"addedProviders":"openai"}',
+        '{"addedProviders":{"0":"openai"}}', '{"addedProviders":[]}']) {
+      expect(parseAdminConfig(stored).addedProviders, stored).toStrictEqual([]);
+    }
+
+    let config = parseAdminConfig(JSON.stringify({
+      addedProviders: ["openai", "mistral", "google", 3, null, "openai", ["anthropic"],
+          "constructor", " anthropic", "ollama"],
+    }));
+    // Whether AI Gateway can route a provider is not a matter of shape: ollama is one.
+    expect(config.addedProviders).toStrictEqual(["openai", "google", "ollama"]);
+    expect(parseAdminConfig(serializeAdminConfig(config)).addedProviders)
+        .toStrictEqual(config.addedProviders);
+  });
+
   it("lets users add their own models unless that is stored as off", () => {
     expect(DEFAULT_ADMIN_CONFIG.userModelsEnabled).toBe(true);
     expect(parseAdminConfig(null).userModelsEnabled).toBe(true);

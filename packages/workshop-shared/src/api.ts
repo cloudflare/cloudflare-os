@@ -1014,6 +1014,8 @@ export type AdminSettingsView = {
   gatewayModels?: {
     /** The providers a model may be added under: the ones the gateway both enables and serves. */
     providers: AiModelProvider[];
+    /** Every provider the gateway serves, on or off, in the order the models are listed in. */
+    providerSettings: AdminGatewayProvider[];
     /** Every gateway model, in any mode, in listing order. */
     models: AdminModelView[];
     /**
@@ -1260,6 +1262,20 @@ export interface AdminApi {
    * model's built-in behaviour. It never applies to a model a user added.
    */
   setDefaultReasoning(level: ReasoningLevel | null): Promise<void>;
+
+  /**
+   * Turn a provider on or off beside the ones CF_AI_GATEWAY_PROVIDERS lists. On is the same as
+   * listing it there: its suggested models appear in their default modes, models can be added
+   * under it, and so can users' own while those are allowed. Throws for a provider the gateway
+   * does not serve, and when turning off one that the variable lists: it is a floor, which an
+   * admin adds to.
+   *
+   * Off takes the provider's models out of the deployment's and deletes nothing: their modes and
+   * settings, and the models added under the provider, are kept for when it is back on. It stops
+   * neither a model a user already added under the provider nor a gadget model binding already
+   * minted for one of its models, which setUserModelsEnabled(false) does.
+   */
+  setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1389,6 +1405,11 @@ export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" |
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
   enabled: true;
+  /**
+   * The providers the deployment enables: the ones CF_AI_GATEWAY_PROVIDERS lists and the ones its
+   * admin turned on (see AdminApi.setGatewayProviderEnabled). A user can add a model of their own
+   * under these only.
+   */
   enabledProviders: AiModelProvider[];
   /**
    * The ID of every model the deployment provides through AI Gateway, in any mode (see
@@ -1544,6 +1565,25 @@ export type AdminModelView = AdminModel & {
    * for as long as it has no entry for the model's own ID either.
    */
   behavesLikeKnown?: boolean;
+};
+
+/** One of the providers AI Gateway serves, as a deployment's admin sees it. */
+export type AdminGatewayProvider = {
+  /** The provider. */
+  provider: AiModelProvider;
+
+  /**
+   * Who enabled the provider: the CF_AI_GATEWAY_PROVIDERS environment variable, or an admin (see
+   * AdminApi.setGatewayProviderEnabled). Absent while the provider is off.
+   */
+  enabledBy?: 'environment' | 'admin';
+
+  /**
+   * Whether the provider's requests need CF_AI_GATEWAY_API_TOKEN on a deployment that has none,
+   * so that they fail until it is set. It says nothing of the provider keys the gateway holds,
+   * which the Workshop can't see (see AdminApi.testGatewayProvider).
+   */
+  needsApiToken: boolean;
 };
 
 /** Configuration specifying how to connect to an AI model provider. */

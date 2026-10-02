@@ -44,6 +44,12 @@ const ADDED: AdminModelView = {
 }
 const GATEWAY_MODELS: GatewayModels = {
   providers: ['anthropic', 'openai'],
+  providerSettings: [
+    { provider: 'anthropic', enabledBy: 'environment', needsApiToken: false },
+    { provider: 'openai', enabledBy: 'admin', needsApiToken: false },
+    { provider: 'google', needsApiToken: true },
+    { provider: 'cloudflare', needsApiToken: false },
+  ],
   models: [SONNET, LEGACY, ADDED],
   defaultReasoning: null,
   userModelsEnabled: true,
