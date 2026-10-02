@@ -1,0 +1,43 @@
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 248-249
+  s_544ac41f1d93fd::t_1e26be82ccbd18 245,247,250,257
+  s_544ac41f1d93fd::t_388b3a6e93e864 100-105,146,148-150,156,169-183,185-198,200-214,216-217,219-236,238-244,246,251-256,258
+  s_544ac41f1d93fd::t_6c81f5980b6a4f 106-113,184,199,215,218,237
+  s_544ac41f1d93fd::t_78614542f28479 259-260
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_544ac41f1d93fd::t_a076a0bdc5c265 189
+  s_544ac41f1d93fd::t_dfd908cb6e4ebc 3-4
+  s_544ac41f1d93fd::t_a13f67954b11e0 6-7,38,109,146,148-149,165,176-188,191-194,246-248,276-278,280-281
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 249,279
+  s_544ac41f1d93fd::t_260fc1221808f9 147
+  s_544ac41f1d93fd::t_f91572528d90ca 190
+packages/workshop-frontend/src/routes/providers.tsx
+  s_544ac41f1d93fd::t_8c0f4debd5a4d6 266-272
+  s_544ac41f1d93fd::t_0ae831c52ff40e 303-308
+  s_544ac41f1d93fd::t_ec64b6394caf35 34,43-44,110,122-127,174-180,193,265,273-276,362,376
+  s_544ac41f1d93fd::t_0b4f3207c6f8e9 192
+  s_544ac41f1d93fd::t_c02e1514c801a7 348-350,352-354,357-361
+docs/public-server.md
+  s_544ac41f1d93fd::t_a597dc939c3edb 105-117,125-133,138-141
+AGENTS.md
+  s_544ac41f1d93fd::t_a597dc939c3edb 71
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_544ac41f1d93fd::t_c02e1514c801a7 92,541,544-546,552-560,652,737-738,765,777-781,805
+  s_544ac41f1d93fd::t_0b4f3207c6f8e9 91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cdd55ae36a93af703ea618fe160c7eb5727f213b",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

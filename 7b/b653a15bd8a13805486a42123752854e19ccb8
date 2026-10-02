@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/resume-suspended-agent.test.ts
+  s_544ac41f1d93fd::t_effa5d377a8ca1 79-96
+packages/workshop-backend/src/overseer.ts
+  s_544ac41f1d93fd::t_effa5d377a8ca1 11578-11579
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7bb653a15bd8a13805486a42123752854e19ccb8",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
