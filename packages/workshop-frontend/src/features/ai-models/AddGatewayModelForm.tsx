@@ -156,7 +156,7 @@ export const AddGatewayModelForm = ({
   }
 
   return (
-    <form noValidate onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
+    <form noValidate onSubmit={submit} className="grid items-start gap-4 sm:grid-cols-2">
       <Select<AiModelProvider>
         label="Provider"
         className="w-full"
@@ -187,7 +187,7 @@ export const AddGatewayModelForm = ({
             idRef.current = wrapper?.querySelector<HTMLInputElement>('[role="combobox"]') ?? null
             idRef.current?.setAttribute('aria-invalid', String(idError !== undefined))
           }}
-          className="grid content-start gap-2"
+          className="grid gap-2"
           onFocus={suggestions.onEngage}
         >
           <Autocomplete<ModelSuggestion>

@@ -256,7 +256,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         api: "anthropic-messages",
         provider: "anthropic",
         baseUrl: `${gatewayUrl}/anthropic`,
-        reasoning: true,
+        reasoning: catalog?.reasoning ?? true,
         input: catalog?.input ?? ["text", "image"],
         cost: catalog?.cost ?? ZERO_COST,
         ...window,
@@ -337,24 +337,27 @@ export function gatewayReasoningLevels(
 }
 
 // What a handle with no reasoning level asks `model` for on an agent's turn. makeHandle builds
-// the request's options from the answer.
+// the request's options from the answer. A model that does no reasoning, which is how pi marks
+// some and how an added one can be stated, is asked for nothing on any API.
 // - Anthropic: adaptive thinking (the model decides when/how much to think) -- but only for
 //   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). Other Anthropic
 //   models (e.g. Haiku 4.5, which rejects the adaptive format) are asked for nothing, so pi omits
 //   the `thinking` field and the provider default (no extended thinking) applies.
-// - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
-//   when no effort is passed; effort selection also makes pi request encrypted reasoning
-//   content, which -- with pi's unconditional `store: false` -- keeps requests stateless (ZDR)
-//   with reasoning carried between tool steps. pi sends a model that does no reasoning none of
-//   it, so such a model is asked for nothing.
+// - OpenAI Responses: explicit medium reasoning effort, or for a model that lacks "medium" the
+//   level a set "medium" would be clamped to (see reasoningOptions), so that a model is never
+//   sent an effort it does not take. pi would otherwise *disable* reasoning when no effort is
+//   passed; effort selection also makes pi request encrypted reasoning content, which -- with
+//   pi's unconditional `store: false` -- keeps requests stateless (ZDR) with reasoning carried
+//   between tool steps.
 // - Everything else: nothing, which leaves the provider's defaults.
 function builtInReasoning(model: Model<Api>): BuiltInReasoning {
+  if (!model.reasoning) return null;
   switch (model.api) {
     case "anthropic-messages":
       return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true
           ? "adaptive" : null;
     case "openai-responses":
-      return model.reasoning ? "medium" : null;
+      return clampThinkingLevel(model, "medium");
     default:
       return null;
   }

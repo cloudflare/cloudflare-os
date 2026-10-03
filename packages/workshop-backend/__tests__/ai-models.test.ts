@@ -1030,6 +1030,9 @@ describe("gateway model reasoning levels", () => {
     // pi marks GPT-4o as a model that does no reasoning, which it sends no effort.
     ["openai", "gpt-4o", undefined, null],
     ["openai", "gpt-next", "gpt-4o", null],
+    // pi gives GPT-5 Pro "high" alone, so that is the effort in place of "medium".
+    ["openai", "gpt-5-pro", undefined, "high"],
+    ["openai", "gpt-next", "gpt-5-pro", "high"],
     ["cloudflare", "@cf/test/next", undefined, null],
     ["cloudflare", "@cf/test/next", "@cf/zai-org/glm-5.2", null],
     ["google", "gemini-next", undefined, null],
@@ -1203,6 +1206,8 @@ describe("gateway model reasoning levels", () => {
         ({ ...config, capabilities: { reasoningLevels } });
     const levels = ({ provider, model, behavesLike, capabilities }: GatewayConfig) =>
         gatewayReasoningLevels(provider, model, behavesLike, capabilities);
+    const builtIn = ({ provider, model, behavesLike, capabilities }: GatewayConfig) =>
+        gatewayBuiltInReasoning(provider, model, behavesLike, capabilities);
     const input = (config: GatewayConfig) =>
         getModel(gatewayEnv, { ...config, apiToken: "" }, INITIATOR).model.input;
 
@@ -1221,8 +1226,7 @@ describe("gateway model reasoning levels", () => {
       for (const stated of [[], ["off"]] as Level[][]) {
         const gpt = stating(GPT_NEXT, ...stated);
         expect(levels(gpt)).toEqual([]);
-        expect(gatewayBuiltInReasoning("openai", gpt.model, undefined, gpt.capabilities))
-            .toBeNull();
+        expect(builtIn(gpt)).toBeNull();
         expect(await parsed(gpt)).toEqual(gptBody(GPT_NEXT, {}));
         expect(await parsed({ ...gpt, reasoning: "high" })).toEqual(gptBody(GPT_NEXT, {}));
         // The statement comes ahead of the reasoning GLM 5.2 would lend.
@@ -1230,11 +1234,36 @@ describe("gateway model reasoning levels", () => {
         expect(levels(glmLike)).toEqual([]);
         expect(await parsed({ ...glmLike, reasoning: "high" })).toEqual(completionsBody(KIMI_K3));
       }
-      // Every Anthropic descriptor reasons, so one that is stated "off" lists it.
-      expect(levels(stating(CLAUDE, "off"))).toEqual(["off"]);
-      expect(levels(stating(CLAUDE))).toEqual([]);
-      expect(await parsed({ ...stating(CLAUDE, "off"), reasoning: "high" }))
-          .toEqual(claudeBody(CLAUDE, 4096, { thinking: { type: "disabled" } }));
+    });
+
+    // The adaptive thinking that Claude Sonnet 5 would lend is not asked for either.
+    it("asks a Claude stated to do no reasoning for no thinking, whatever it behaves like",
+        async () => {
+      for (const stated of [[], ["off"]] as Level[][]) {
+        for (const claude of [CLAUDE, { ...CLAUDE, behavesLike: SONNET_5.model }]) {
+          const config = stating(claude, ...stated);
+          expect(levels(config)).toEqual([]);
+          expect(builtIn(config)).toBeNull();
+          expect(await parsed(config)).toEqual(claudeBody(CLAUDE, 4096));
+          expect(await parsed({ ...config, reasoning: "high" })).toEqual(claudeBody(CLAUDE, 4096));
+        }
+      }
+      // One stated to reason keeps the thinking it borrows.
+      const reasoning = stating({ ...CLAUDE, behavesLike: SONNET_5.model }, "low", "max");
+      expect(builtIn(reasoning)).toBe("adaptive");
+      expect(reasoningAsked(await parsed(reasoning))).toEqual(builtInRequest("adaptive"));
+    });
+
+    // While no level is set an OpenAI model is asked for "medium", or for the stated level that
+    // a set "medium" would be clamped to.
+    it.each<[Level[], Level]>([
+      [["high"], "high"], [["high", "xhigh"], "high"], [["off", "minimal", "low"], "low"],
+      [["medium"], "medium"], [["off", "low", "medium", "high"], "medium"],
+    ])("asks an OpenAI model stated %j for effort %s while no level is set",
+        async (stated, effort) => {
+      const gpt = stating(GPT_NEXT, ...stated);
+      expect(builtIn(gpt)).toBe(effort);
+      expect(await parsed(gpt)).toEqual(gptEffortBody(GPT_NEXT, effort));
     });
 
     it("sends a Workers AI model a stated level as its effort, and none while no level is set",
