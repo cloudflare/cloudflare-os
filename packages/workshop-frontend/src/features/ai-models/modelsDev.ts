@@ -1,5 +1,9 @@
 import { WORKERS_AI_OUTPUT_LIMIT } from '@gadgets/workshop-shared/api'
-import type { AiModelProvider, GatewayModel } from '@gadgets/workshop-shared/api'
+import type {
+  AiModelProvider,
+  GatewayModel,
+  GatewayModelCapabilities,
+} from '@gadgets/workshop-shared/api'
 
 /** The public model list suggestions are read from. */
 export const MODELS_DEV_URL = 'https://models.dev/api.json'
@@ -42,12 +46,24 @@ const acceptedText = (value: unknown): string | undefined => {
 }
 
 /**
+ * What the models.dev `entry` states that its model can do, or undefined where it states nothing of
+ * it: whether the kinds of input it lists include images, and no reasoning for a model it says does
+ * none. It names no levels for a model that reasons, so none are stated for one.
+ */
+const statedCapabilities = (entry: unknown): GatewayModelCapabilities | undefined => {
+  const inputs = own(own(entry, 'modalities'), 'input')
+  const capabilities: GatewayModelCapabilities = {}
+  if (Array.isArray(inputs)) capabilities.imageInput = inputs.includes('image')
+  if (own(entry, 'reasoning') === false) capabilities.reasoningLevels = ['off']
+  return Object.keys(capabilities).length > 0 ? capabilities : undefined
+}
+
+/**
  * The models to suggest out of `modelsDev`, the parsed models.dev list: for each of `providers`, in
  * the order given, the models it lists that call tools, answer in text and state a context window,
  * in the order it lists them, without those it marks deprecated and those whose ID is among
- * `existingIds`. Whatever in
- * `modelsDev` is not shaped as expected is skipped, so a surprising document costs suggestions and
- * never throws.
+ * `existingIds`. Each carries the capabilities its entry states. Whatever in `modelsDev` is not
+ * shaped as expected is skipped, so a surprising document costs suggestions and never throws.
  */
 export const suggestModels = (
   modelsDev: unknown,
@@ -83,8 +99,16 @@ export const suggestModels = (
         provider !== 'cloudflare' && isTokenLimit(output) && output < contextWindow
           ? output
           : undefined
+      const capabilities = statedCapabilities(entry)
       taken.add(id)
-      suggestions.push({ provider, id, name, contextWindow, ...(outputLimit && { outputLimit }) })
+      suggestions.push({
+        provider,
+        id,
+        name,
+        contextWindow,
+        ...(outputLimit && { outputLimit }),
+        ...(capabilities && { capabilities }),
+      })
     }
   }
   return suggestions

@@ -3,6 +3,7 @@ import { Badge, Button, Collapsible, Input, Radio, Select } from '@cloudflare/ku
 import { COMPACTION_TRIGGER_RATIO, GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
 import type {
   AdminModelView,
+  GatewayModelCapabilities,
   GatewayModelMode,
   GatewayModelSettings,
   ReasoningLevel,
@@ -39,6 +40,19 @@ const DEPLOYMENT_DEFAULT = 'default'
 const SMALL_BUDGET = 100_000
 
 const tokenCount = (tokens: number) => `${tokens.toLocaleString()} tokens`
+
+// What is stated of an added model, each fact as its row words it. Empty where nothing is.
+const statedFacts = ({ imageInput, reasoningLevels }: GatewayModelCapabilities = {}): string[] => {
+  const facts: string[] = []
+  if (imageInput !== undefined) facts.push(imageInput ? 'takes images' : 'takes no images')
+  if (reasoningLevels !== undefined) {
+    const levels = reasoningLevels.map((level) => REASONING_LEVEL_LABELS[level]).join(', ')
+    // A list with no level above Off states a model that does no reasoning.
+    facts.push(
+      reasoningLevels.some((level) => level !== 'off') ? `reasoning levels ${levels}` : 'no reasoning')
+  }
+  return facts
+}
 
 // A write replaces the whole of a model's settings, so each one sends them as they should be
 // afterwards: what the server holds with `change` applied, less the fields that leaves unset.
@@ -84,6 +98,7 @@ export const GatewayModelRow = ({
   const budgetFacts = useId()
   const budgetAlert = useFieldErrorAlert()
 
+  const stated = statedFacts(model.capabilities)
   const ownLevel = model.settings?.reasoning
   const levelInEffect = ownLevel ?? defaultReasoning
   const takesLevels = model.reasoningLevels.length > 0
@@ -163,6 +178,12 @@ export const GatewayModelRow = ({
               ? '. Not used: this version knows this model itself.'
               : model.behavesLikeKnown === false
                 && '. This version no longer knows that model, so nothing is borrowed.'}
+          </p>
+        )}
+        {stated.length > 0 && (
+          <p className="mt-0.5 text-xs text-kumo-subtle">
+            Stated: {stated.join(' · ')}
+            {model.runtimeKnown && '. Not used: this version knows this model itself.'}
           </p>
         )}
       </div>

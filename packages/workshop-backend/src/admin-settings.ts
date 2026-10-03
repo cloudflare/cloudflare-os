@@ -461,8 +461,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           let budget = compactionBudgetRange(model);
           return {
             ...model,
-            reasoningLevels: gatewayReasoningLevels(model.provider, model.id, model.behavesLike),
-            builtInReasoning: gatewayBuiltInReasoning(model.provider, model.id, model.behavesLike),
+            reasoningLevels: gatewayReasoningLevels(
+                model.provider, model.id, model.behavesLike, model.capabilities),
+            builtInReasoning: gatewayBuiltInReasoning(
+                model.provider, model.id, model.behavesLike, model.capabilities),
             builtInCompactionInputBudget: budget.builtIn,
             maxCompactionInputBudget: budget.max,
             runtimeKnown: isRuntimeModel(model.provider, model.id),

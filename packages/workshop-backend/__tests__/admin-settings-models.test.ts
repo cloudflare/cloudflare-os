@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { SUGGESTED_MODELS, type GatewayModel } from "@gadgets/workshop-shared/api";
+import {
+  SUGGESTED_MODELS, type GatewayModel, type GatewayModelCapabilities,
+} from "@gadgets/workshop-shared/api";
 import { parseAdminConfig } from "../src/admin-config.js";
 import type { AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import { AdminSettings } from "../src/admin-settings.js";
@@ -715,6 +717,68 @@ describe("AdminSettings added models that behave like another", () => {
   });
 });
 
+// The gateway model with this ID, as the admin panel is shown it.
+const shownModel = (view: Awaited<ReturnType<AdminSettings["getSettings"]>>, id: string) =>
+    view.gatewayModels!.models.find(model => model.id === id);
+
+describe("AdminSettings added models with stated capabilities", () => {
+  it("stores the well-formed part of what an added model is stated to do", async () => {
+    const { inDo, stored, mirror } = adminSettings();
+    await inDo(admin => admin.addGatewayModel({
+      ...ADDED,
+      capabilities: { imageInput: false, reasoningLevels: ["max", "low", "low"], strict: true },
+    } as GatewayModel));
+    // A malformed statement is no reason to refuse the model.
+    await inDo(admin => admin.addGatewayModel({
+      ...ADDED, id: "claude-plain", capabilities: { imageInput: "no", reasoningLevels: "high" },
+    } as unknown as GatewayModel));
+    const clean = [
+      { ...ADDED, capabilities: { imageInput: false, reasoningLevels: ["low", "max"] } },
+      { ...ADDED, id: "claude-plain" },
+    ];
+    expect((await stored()).addedModels).toStrictEqual(clean);
+    // Reading the config back sanitizes it again, so only the raw write shows what was stored.
+    expect(JSON.parse(mirror.current!).addedModels).toStrictEqual(clean);
+  });
+
+  // The runtime has no entry for either model's own ID.
+  it("lists the levels stated for a model, ahead of those of the model it behaves like",
+      async () => {
+    const { inDo } = adminSettings({ ...GATEWAY, CF_AI_GATEWAY_PROVIDERS: "anthropic,openai" });
+    const capabilities: GatewayModelCapabilities = { reasoningLevels: ["low", "max"] };
+    await inDo(admin => admin.addGatewayModel(
+        { ...ADDED, behavesLike: "claude-opus-5-5", capabilities }));
+    await inDo(admin => admin.addGatewayModel({
+      ...ADDED, provider: "openai", id: "gpt-test", capabilities: { reasoningLevels: ["off"] },
+    }));
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(shownModel(view, "claude-test")).toMatchObject({
+      behavesLike: "claude-opus-5-5", capabilities, runtimeKnown: false,
+      reasoningLevels: ["low", "max"], builtInReasoning: "adaptive",
+    });
+    // One stated to do no reasoning has no level to set, and is asked for none.
+    expect(shownModel(view, "gpt-test")).toMatchObject({
+      capabilities: { reasoningLevels: ["off"] }, runtimeKnown: false, reasoningLevels: [],
+      builtInReasoning: null,
+    });
+  });
+
+  // The runtime's own entry is used, so the statement is unused rather than wrong.
+  it("lists the runtime's levels for a model the runtime knows, whatever is stated", async () => {
+    const { inDo } = adminSettings();
+    const capabilities: GatewayModelCapabilities = { reasoningLevels: ["max"] };
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, capabilities }));
+    await inDo(admin => admin.addGatewayModel({ ...ADDED, id: "claude-sonnet-4-5", capabilities }));
+    const view = await inDo(admin => admin.getSettings("admin"));
+    expect(shownModel(view, "claude-test"))
+        .toMatchObject({ runtimeKnown: false, reasoningLevels: ["max"] });
+    expect(shownModel(view, "claude-sonnet-4-5")).toMatchObject({
+      capabilities, runtimeKnown: true,
+      reasoningLevels: ["off", "minimal", "low", "medium", "high"],
+    });
+  });
+});
+
 // The providers an admin turned on, as stored and as the admin panel is shown every provider.
 const providers = (inDo: ReturnType<typeof adminSettings>["inDo"]) => inDo(async admin => ({
   stored: admin.getAdminConfig().addedProviders,
@@ -1253,6 +1317,23 @@ describe("AdminSettings.testGatewayModel", () => {
     expect(await sent("claude-test"))
         .toEqual({ thinking: "adaptive", effort: "medium", cap: 2048 });
     expect(await sent("claude-plain")).toEqual({ thinking: "enabled", budget: 1024, cap: 2048 });
+  });
+
+  // A Workers AI model the runtime does not know is otherwise taken to do no reasoning.
+  it("asks an added model for a level it is stated to take", async () => {
+    const { sent, inDo } = answering();
+    const workersAi: GatewayModel =
+        { provider: "cloudflare", id: "@cf/test/stated", name: "Stated", contextWindow: 100000 };
+    await inDo(admin => admin.addGatewayModel(
+        { ...workersAi, capabilities: { reasoningLevels: ["off", "high"] } }));
+    await inDo(admin => admin.addGatewayModel({ ...workersAi, id: "@cf/test/plain" }));
+    // Nothing, while no level is set.
+    expect(await sent("@cf/test/stated")).toEqual({ cap: 2048 });
+
+    // A level it is not stated to take is the next one up that it is.
+    await inDo(admin => admin.setDefaultReasoning("medium"));
+    expect(await sent("@cf/test/stated")).toEqual({ effort: "high", cap: 2048 });
+    expect(await sent("@cf/test/plain")).toEqual({ cap: 2048 });
   });
 
   it("caps the response at 2,048 tokens, or at the model's own cap when that is lower",

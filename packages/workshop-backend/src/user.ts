@@ -523,7 +523,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
     // deployment's to set on its own models.
-    let {reasoning, compactionInputBudget, behavesLike, ...own} = config;
+    let {reasoning, compactionInputBudget, behavesLike, capabilities, ...own} = config;
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config: own});

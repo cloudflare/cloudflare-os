@@ -333,6 +333,13 @@ const suggestionOptions = () => {
 
 const suggested = () => suggestionOptions().map((option) => option.textContent)
 
+/** Pick the first model suggested once `typed` is typed into the Model ID field. */
+const pickSuggestion = async (typed: string) => {
+  await focus(labeledInput('Model ID'))
+  await type(labeledInput('Model ID'), typed)
+  await click(suggestionOptions()[0])
+}
+
 // What the add form says of its suggestions. Each provider's row has a status region of its own.
 const suggestionNote = () =>
   Array.from(button('Add model').closest('form')!.querySelectorAll('[role="status"]'))
@@ -1715,9 +1722,10 @@ describe('AdminModelsPanel', () => {
     describe('behaving like another model', () => {
       const LABEL = 'Behaves like'
       const TOOLTIP =
-        'The model chosen here lends the new one its thinking format, its reasoning levels and ' +
-        'its image input, until this version knows the new model itself. From then on the choice ' +
-        'is not used. The name, the limits and the cost are never borrowed.'
+        'The model chosen here lends the new one its thinking format and, where they are not ' +
+        'stated here, its reasoning levels and its image input, until this version knows the new ' +
+        'model itself. From then on the choice is not used. The name, the limits and the cost ' +
+        'are never borrowed.'
 
       it('offers none, then the chosen provider’s catalog models that the runtime knows', async () => {
         await render({
@@ -1826,6 +1834,7 @@ describe('AdminModelsPanel', () => {
         expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
           provider: 'anthropic', id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5 (latest)',
           contextWindow: 200000, outputLimit: 64000, behavesLike: 'claude-opus',
+          capabilities: { imageInput: false },
         })
       })
 
@@ -1852,6 +1861,217 @@ describe('AdminModelsPanel', () => {
 
         await act(async () => call.resolve())
         expect(button(LABEL).disabled).toBe(false)
+      })
+    })
+
+    describe('stating what a model can do', () => {
+      const IMAGES = 'Image input'
+      const LEVELS = 'Reasoning levels'
+      const NOT_STATED = 'Not stated'
+      const ADDED_MODEL = {
+        provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+      }
+
+      // The list of levels stays open over a pick, for the next one. Escape puts it away, pressed
+      // where a pick leaves focus.
+      const pickLevels = async (...labels: string[]) => {
+        for (const label of labels) await choose(LEVELS, label)
+        await press(document.activeElement as HTMLElement, 'Escape')
+        expect(button(LEVELS).getAttribute('aria-expanded')).toBe('false')
+      }
+
+      const stated = () => [button(IMAGES).textContent, button(LEVELS).textContent]
+
+      it('states nothing of a model that is added as the form starts out', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual(ADDED_MODEL)
+      })
+
+      it('offers a yes or a no on images, and every reasoning level by its name', async () => {
+        await render()
+
+        expect(await optionLabels(IMAGES)).toEqual([NOT_STATED, 'Yes', 'No'])
+        await press(document.activeElement as HTMLElement, 'Escape')
+        expect(await optionLabels(LEVELS))
+          .toEqual(['Off', 'Minimal', 'Low', 'Medium', 'High', 'Extra high', 'Max'])
+        expect(describedBy(button(LEVELS)))
+          .toContain('Pick only Off for a model that does no reasoning.')
+      })
+
+      it.each([
+        ['takes images', 'Yes', true],
+        ['takes none', 'No', false],
+      ])('adds a model stated as one that %s, with no levels stated', async (_case, label, imageInput) => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await choose(IMAGES, label)
+        expect(stated()).toEqual([label, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0])
+          .toStrictEqual({ ...ADDED_MODEL, capabilities: { imageInput } })
+      })
+
+      it('adds a model with the levels picked, least to most whatever order they were picked in', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await pickLevels('Max', 'Off', 'High')
+        expect(stated()).toEqual([NOT_STATED, 'Off, High, Max'])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0])
+          .toStrictEqual({ ...ADDED_MODEL, capabilities: { reasoningLevels: ['off', 'high', 'max'] } })
+      })
+
+      it('adds a model that does no reasoning with Off alone, beside what is stated of images', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await choose(IMAGES, 'Yes')
+        await pickLevels('Off')
+        expect(stated()).toEqual(['Yes', 'Off'])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          ...ADDED_MODEL, capabilities: { imageInput: true, reasoningLevels: ['off'] },
+        })
+      })
+
+      it('states only what is left once a statement is taken back', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'No')
+        await pickLevels('Low', 'High')
+
+        await pickLevels('Low')
+        expect(stated()).toEqual(['No', 'High'])
+        await choose(IMAGES, NOT_STATED)
+        expect(stated()).toEqual([NOT_STATED, 'High'])
+        await pickLevels('High')
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual(ADDED_MODEL)
+      })
+
+      it('has nothing stated for the next model after an add', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'Yes')
+        await pickLevels('Low', 'High')
+
+        await click(button('Add model'))
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await fillAddForm({ ...VALID, id: 'gpt-after' })
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledTimes(2)
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          ...ADDED_MODEL, capabilities: { imageInput: true, reasoningLevels: ['low', 'high'] },
+        })
+        expect(addGatewayModel.mock.calls[1][0]).toStrictEqual({ ...ADDED_MODEL, id: 'gpt-after' })
+      })
+
+      it('keeps what was stated when the server refuses the model', async () => {
+        const { addGatewayModel } = await render()
+        addGatewayModel.mockRejectedValueOnce(new Error('"gpt-next" is already an added model.'))
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'No')
+        await pickLevels('Off')
+
+        await click(button('Add model'))
+
+        expect(document.body.querySelector('[role="alert"]')?.textContent)
+          .toBe('"gpt-next" is already an added model.')
+        expect(stated()).toEqual(['No', 'Off'])
+      })
+
+      it('is prefilled by a picked suggestion with what models.dev states, and with no more', async () => {
+        const limit = { context: 200000, output: 64000 }
+        stubModelsDev(async () => new Response(JSON.stringify({
+          anthropic: {
+            models: {
+              sees: {
+                ...listed('claude-sees', 'Claude Sees', limit),
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                reasoning: true,
+              },
+              plain: { ...listed('claude-plain', 'Claude Plain', limit), reasoning: false },
+              silent: {
+                ...listed('claude-silent', 'Claude Silent', limit), modalities: { output: ['text'] },
+              },
+            },
+          },
+        })))
+        const { addGatewayModel } = await render({ gatewayModels: SUGGESTING })
+
+        // models.dev names no levels for a model that reasons, so none are stated for one.
+        await pickSuggestion('sees')
+        expect(stated()).toEqual(['Yes', NOT_STATED])
+
+        await pickSuggestion('plain')
+        expect(stated()).toEqual(['No', 'Off'])
+
+        // A pick states what its entry does and nothing else, so it also takes a statement away.
+        await pickSuggestion('silent')
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+
+        await pickSuggestion('plain')
+        await choose(IMAGES, 'Yes')
+        await click(button('Add model'))
+
+        // What is added is what the form then holds.
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          provider: 'anthropic', id: 'claude-plain', name: 'Claude Plain', contextWindow: 200000,
+          outputLimit: 64000, capabilities: { imageInput: true, reasoningLevels: ['off'] },
+        })
+      })
+
+      it('follows a model typed by hand to another provider, and not a suggested one', async () => {
+        stubModelsDev()
+        await render({ gatewayModels: SUGGESTING })
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'Yes')
+        await pickLevels('High')
+
+        await chooseProvider('OpenAI')
+        expect(stated()).toEqual(['Yes', 'High'])
+
+        await pickSuggestion('5.2')
+        expect(stated()).toEqual(['No', NOT_STATED])
+        await pickLevels('Off')
+        await chooseProvider('Anthropic')
+
+        expect(addFormValues()).toEqual(['', '', '', ''])
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+      })
+
+      it('is locked while a write is in flight', async () => {
+        const { addGatewayModel } = await render()
+        const call = deferred()
+        addGatewayModel.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+
+        await click(button('Add model'))
+        expect(button(IMAGES).disabled).toBe(true)
+        expect(button(LEVELS).disabled).toBe(true)
+
+        await act(async () => call.resolve())
+        expect(button(IMAGES).disabled).toBe(false)
+        expect(button(LEVELS).disabled).toBe(false)
       })
     })
 
@@ -2093,7 +2313,7 @@ describe('AdminModelsPanel', () => {
 
       expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
         provider: 'anthropic', id: 'claude-opus-4-5', name: 'Claude Opus 4.5',
-        contextWindow: 200000, outputLimit: 32000,
+        contextWindow: 200000, outputLimit: 32000, capabilities: { imageInput: false },
       })
     })
 
@@ -2108,7 +2328,7 @@ describe('AdminModelsPanel', () => {
 
       expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
         provider: 'anthropic', id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5 (latest)',
-        contextWindow: 200000, outputLimit: 64000,
+        contextWindow: 200000, outputLimit: 64000, capabilities: { imageInput: false },
       })
     })
 
