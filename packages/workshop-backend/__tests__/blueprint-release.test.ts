@@ -162,6 +162,26 @@ describe("release commits", () => {
     expect(new TextDecoder().decode(payload)).toMatch(/\n\nRelease 3: Test Gadget\n$/);
     expect(await gitObjectOid("commit", payload)).toBe("266b1913956214e72bb544b76d94d76a67100407");
   });
+
+  it("drops from the author what a signature cannot hold, as real git does", async () => {
+    // Oid from real `git commit-tree` on the empty tree, given this name and email.
+    let payload = encodeReleaseCommit({
+      tree: EMPTY_TREE,
+      parents: [],
+      author: { name: "Al<ice> Ex\nample", email: "al<i>ce@example.com\0" },
+      title: "Test Gadget",
+      version: 1,
+      timestamp: new Date(1700000000_000),
+    });
+    let commitId = await gitObjectOid("commit", payload);
+    expect(commitId).toBe("d0ad880962e5d52af57e21ca611da200c5ef34de");
+
+    // So a release by any publisher passes the check on what a pack may hold.
+    validateReleaseObjects(new Map([
+      [commitId, { type: "commit", payload }],
+      [EMPTY_TREE, { type: "tree", payload: new Uint8Array() }],
+    ]), commitId);
+  });
 });
 
 describe("snapshot releases", () => {

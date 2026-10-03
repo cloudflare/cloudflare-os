@@ -106,9 +106,17 @@ export interface Release {
 /**
  * Encodes a release commit's payload. The source gadget's own history is deliberately not part
  * of it: that history's messages hold chat titles and its authors include collaborators.
+ *
+ * The author is whatever the publisher calls themselves, so the characters a commit's signature
+ * cannot hold are dropped from it, as git drops them, rather than refused.
  */
 export function encodeReleaseCommit(release: Release): Uint8Array {
-  let signature = { ...release.author, timestamp: release.timestamp, utcOffsetMinutes: 0 };
+  let signature = {
+    name: release.author.name.replace(/[<>\n\0]/g, ""),
+    email: release.author.email.replace(/[<>\n\0]/g, ""),
+    timestamp: release.timestamp,
+    utcOffsetMinutes: 0,
+  };
   return encodeGitCommit({
     tree: release.tree,
     parents: release.parents,

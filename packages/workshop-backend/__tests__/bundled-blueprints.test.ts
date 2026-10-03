@@ -84,7 +84,7 @@ describe("bundled blueprints", () => {
       // ...and it survives the same validation an uploaded archive's would.
       expect(sanitizeBlueprintOutput(record.metadata.output)).toEqual(entry.output);
 
-      // Content lands where readBlueprintContent() looks for it.
+      // Content lands where readBlueprintRelease() looks for it.
       let content = r2.get(`${entry.blueprintId}/${record.metadata.version}`);
       expect(content, `${entry.blueprintId} content`).toBeDefined();
       expect(content!.byteLength).toBeGreaterThan(0);

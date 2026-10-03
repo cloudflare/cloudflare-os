@@ -2446,8 +2446,9 @@ export interface Overseer extends RpcTarget {
    * atomically in a single call with one propagation pass.
    *
    * - `title` / `description`: if provided, update the respective field.
-   * - `updateCode`: if true, snapshot the source gadget's current committed code into the
-   *   blueprint and increment the blueprint version.
+   * - `updateCode`: if true, release the source gadget's current committed code as the
+   *   blueprint's next version. If that code is what the blueprint's latest version already
+   *   holds, the version stays as it is.
    * - `updateBindings`: if true, refresh the blueprint's connection annotations from
    *   the source gadget's current bindings without changing the code snapshot.
    *
@@ -4293,6 +4294,15 @@ export type BlueprintMetadata = {
 
   version: number;       // increments every time the blueprint is updated
   lastUpdated: Date;
+
+  /**
+   * The git commit this version of the blueprint is: its *release commit*, whose tree holds the
+   * blueprint's files. The blueprint's content is a packfile of that commit.
+   *
+   * Absent on a blueprint stored before releases were commits, whose content is a snapshot of
+   * its files alone.
+   */
+  commitId?: string;
 
   /**
    * If present, a screenshot is stored separately from the metadata. The server uses this

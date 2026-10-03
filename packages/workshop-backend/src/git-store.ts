@@ -27,9 +27,11 @@
 // - No object exceeds ~2MB today (records hold single source files, small trees, and commit
 //   headers). If large blobs ever appear, chunking records or spilling to R2 is a change local
 //   to the fs shim below.
-// - No GC. Dangling objects are only created by accepted merges, imports, and migration -- never
-//   by in-flight chats -- and are cheap. If GC is ever needed, the roots are enumerable: gadget
-//   records, blueprint gadget records, live chats' pinned commits, the pin declarations in chat
+// - No GC. Dangling objects are only created by accepted merges, imports, migration, and loading
+//   a blueprint's release (whose objects are stored whether or not anything comes to refer to
+//   them) -- never by a chat's edits -- and are cheap. If GC is ever needed, the roots are
+//   enumerable: gadget records, blueprint gadget records (the commits they exported and the
+//   releases minted from those), live chats' pinned commits, the pin declarations in chat
 //   logs and compaction checkpoints (closed epochs are reconstructed from them), and the
 //   `observedOid` blob stamps (and legacy `observedCommit` stamps) on chats' readFile tool calls
 //   (which nothing else roots -- a future GC must either root them or the agent's replay must

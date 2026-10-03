@@ -980,6 +980,18 @@ export type ObserverRecord = {
 // =======================================================================================
 // Blueprints
 
+/** One published version of a blueprint's code (see blueprint-release.ts). */
+export type BlueprintRelease = {
+  /** The blueprint's version counter at this release (`BlueprintMetadata.version`). */
+  version: number;
+
+  /** The release commit, in the workspace's git object store. */
+  releaseCommit: string;
+
+  /** The commit of the source gadget whose tree the release took. */
+  sourceCommit: string;
+};
+
 /** Blueprint record stored in the Overseer DO's `blueprints` collection. */
 export type BlueprintGadgetRecord = {
   id: string;
@@ -990,11 +1002,22 @@ export type BlueprintGadgetRecord = {
 
   /**
    * The commit (in the workspace's git object store) whose tree was exported into this
-   * blueprint. Every record written since git-backed code storage carries it (a blueprint of a
-   * gadget with no committed code cannot be created); absent only on records written before,
-   * which carry `codeVersion` instead until the migration converts them.
+   * blueprint: the source of its latest release. Every record written since git-backed code
+   * storage carries it (a blueprint of a gadget with no committed code cannot be created);
+   * absent only on records written before, which carry `codeVersion` instead until the
+   * migration converts them.
    */
   commitId?: string;
+
+  /**
+   * The blueprint's releases, oldest first: one per published version of its code, and each
+   * the first parent of the next. The last is what `metadata.commitId` names.
+   *
+   * Absent on a record last published before releases were commits. The release it published
+   * is then the snapshot release of `commitId`'s files (see `buildSnapshotRelease()`), which
+   * its first entry here will have as parent.
+   */
+  releases?: BlueprintRelease[];
 
   /**
    * Legacy (pre-git-storage): version of the workspace code (from the read-only `code`

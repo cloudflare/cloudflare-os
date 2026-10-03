@@ -29,7 +29,6 @@ import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToGitStorage, migrateToMultiGadget,
   migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
-import * as Y from "yjs";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
   LanguageModelGatekeeperProps,
@@ -51,7 +50,11 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
-import { readBlueprintContent, sanitizeBlueprintOutput } from "./blueprint-archive";
+import {
+  blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
+} from "./blueprint-archive";
+import { buildReleasePack, buildSnapshotRelease, encodeReleaseCommit } from "./blueprint-release";
+import { gitObjectOid } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
@@ -7176,52 +7179,90 @@ class OverseerImpl implements AgentHooks {
     throw new Error("This gadget has no code to publish. Accept some code first.");
   }
 
-  // Create a minimal Yjs doc snapshot (no edit history) of the given commit's files, for a
-  // blueprint archive. Returns a gzip-compressed Yjs V2 encoded state update. The snapshot
-  // always uses the unnamed root "" (the canonical archive root), regardless of which root holds
-  // the gadget's files in chat docs, so archives stay compatible across gadgets. (Blueprints of
-  // code-less gadgets cannot be created, so a commit is always in hand.)
-  async snapshotCode(commitId: string): Promise<Uint8Array> {
-    let files = await this.gitStore.readCommitFiles(commitId);
-
-    // Create a clean doc with only final content (one insert per file, no history).
-    let cleanDoc = new Y.Doc();
-    let cleanMap = cleanDoc.getMap<Y.Text>();
-    for (let [file, content] of files) {
-      let text = cleanMap.set(file, new Y.Text());
-      text.insert(0, content);
+  // Mints the blueprint's next release (see blueprint-release.ts) from the tree of the gadget
+  // commit `sourceCommit`: writes the release commit, records it on `record` -- which the caller
+  // stores by propagating it -- and returns the pack to propagate with it. If that tree is what
+  // the blueprint's latest release already holds, there is nothing to release: the record is
+  // left alone and undefined is returned.
+  //
+  // The release's parent is the release before it. For a record last published before releases
+  // were commits, that is the snapshot release of the files it published, which is the release
+  // everyone who reads that content derives from it. Such a record's first release here is
+  // minted even over an unchanged tree, since it is what moves the stored content to a pack.
+  async mintBlueprintRelease(record: BlueprintGadgetRecord, sourceCommit: string)
+      : Promise<Uint8Array | undefined> {
+    let tree = await this.gitStore.commitTree(sourceCommit);
+    let previous = record.releases?.at(-1)?.releaseCommit;
+    if (previous !== undefined) {
+      if (await this.gitStore.commitTree(previous) === tree) return undefined;
+    } else if (record.commitId !== undefined) {
+      let snapshot = await buildSnapshotRelease(
+          await this.gitStore.readCommitFiles(record.commitId));
+      await this.gitCache.importObjects(snapshot.objects.values());
+      previous = snapshot.commitId;
     }
 
-    let encoded = Y.encodeStateAsUpdateV2(cleanDoc);
+    let version = record.metadata.version + 1;
+    let payload = encodeReleaseCommit({
+      tree,
+      parents: previous === undefined ? [] : [previous],
+      author: commitIdentityForAuthor(record.metadata.author),
+      title: record.metadata.title,
+      version,
+      timestamp: new Date(),
+    });
+    let releaseCommit = await gitObjectOid("commit", payload);
+    await this.gitCache.importObjects([{ type: "commit", payload }]);
 
-    // Compress with gzip via CompressionStream.
-    let cs = new CompressionStream("gzip");
-    let writer = cs.writable.getWriter();
-    writer.write(encoded);
-    writer.close();
-    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+    record.releases = [...record.releases ?? [], { version, releaseCommit, sourceCommit }];
+    record.commitId = sourceCommit;
+    delete record.codeVersion;
+    record.metadata.version = version;
+    record.metadata.commitId = releaseCommit;
+    return await this.buildBlueprintPack(releaseCommit);
+  }
+
+  // Builds the pack of a release this workspace minted. A release always yields the same bytes.
+  async buildBlueprintPack(releaseCommit: string): Promise<Uint8Array> {
+    return await buildReleasePack(oid => this.gitCache.readLocalObject(oid), releaseCommit);
+  }
+
+  // Loads the release that `metadata` describes into the workspace's git store, returning its
+  // release commit. Throws if its content is missing or invalid, having stored none of it. The
+  // metadata is the caller's to read (see readBlueprintRelease()).
+  //
+  // This is the one way a blueprint's objects enter the workspace, so what
+  // readBlueprintRelease() admits is all that one can add to the store.
+  async loadBlueprint(blueprintId: string, metadata: BlueprintMetadata): Promise<string> {
+    let release = await readBlueprintRelease(this.env, blueprintId, metadata);
+    await this.gitCache.importObjects(release.objects.values());
+    return release.commitId;
   }
 
   // Propagate a blueprint to User DO, KV, and R2.
-  // If codeSnapshot is provided, it is uploaded to R2. If omitted (metadata-only update),
-  // the R2 content is left unchanged.
+  // If `pack` is provided, it is the pack of the record's latest release, and is uploaded to R2.
+  // If omitted (metadata-only update), the R2 content is left unchanged -- unless the record is
+  // still dirty from an earlier attempt, which may not have got as far as uploading its latest
+  // release. That release is then uploaded again.
   async propagateBlueprint(
       record: BlueprintGadgetRecord,
-      codeSnapshot?: Uint8Array,
+      pack?: Uint8Array,
       screenshot?: BlueprintScreenshotUpload | null,
   ): Promise<void> {
     if (!this.ownerId) throw new Error("Workspace not initialized.");
+
+    let release = record.releases?.at(-1);
+    if (!pack && record.dirty && release) {
+      pack = await this.buildBlueprintPack(release.releaseCommit);
+    }
 
     // Mark dirty.
     record.dirty = true;
     this.storage.blueprints.put(record);
 
-    // Upload code snapshot to R2 (only when code is being created/updated).
-    if (codeSnapshot) {
-      await this.env.BLUEPRINT_CONTENT.put(
-        `${record.id}/${record.metadata.version}`,
-        codeSnapshot
-      );
+    // Upload the release to R2 (only when code is being created/updated).
+    if (pack) {
+      await this.env.BLUEPRINT_CONTENT.put(blueprintContentKey(record.id, record.metadata), pack);
     }
 
     if (screenshot !== undefined) {
@@ -7272,9 +7313,7 @@ class OverseerImpl implements AgentHooks {
     await this.env.BLUEPRINTS.delete(record.id);
 
     // Delete all historical versions from R2.
-    for (let v = 1; v <= record.metadata.version; v++) {
-      await this.env.BLUEPRINT_CONTENT.delete(`${record.id}/${v}`);
-    }
+    await deleteBlueprintContent(this.env, record.id);
     await this.env.BLUEPRINT_CONTENT.delete(`${BLUEPRINT_SCREENSHOT_R2_PREFIX}${record.id}`);
 
     // Delete from User DO.
@@ -7982,19 +8021,12 @@ class OverseerImpl implements AgentHooks {
       throw new Error(`No such blueprint: ${blueprintId}. Use listBlueprints to see available ` +
           `blueprints.`);
     }
-    let code = await readBlueprintContent(this.env, blueprintId, kvRecord.metadata.version);
-    if (!code) {
-      throw new Error(`The content of blueprint ${blueprintId} is missing; it cannot be ` +
-          `instantiated.`);
-    }
+    let commitId = await this.loadBlueprint(blueprintId, kvRecord.metadata);
 
-    // Decode the snapshot. Archives always use the doc's unnamed root "" (see snapshotCode).
-    let archiveDoc = new Y.Doc();
-    Y.applyUpdateV2(archiveDoc, code);
     // Null prototype so a hostile filename like "__proto__" is an ordinary key.
     let files: Record<string, string> = Object.create(null);
-    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
-      files[file] = content.toString();
+    for (let [file, content] of await this.gitStore.readCommitFiles(commitId)) {
+      files[file] = content;
     }
 
     // Apply the deployment's overrides, so a gadget the agent builds is labelled the same as one
@@ -9094,29 +9126,27 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Initialize this workspace's default gadget from a blueprint's code snapshot. Called by
-   * AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening) the DO.
+   * Initialize this workspace's default gadget from the release of a blueprint that `metadata`
+   * describes. Called by AuthenticatedApi.newGadgetFromBlueprint() after creating (and opening)
+   * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
+   * be republished meanwhile, and the code has to be the version those bindings belong to.
    */
-  async initializeFromBlueprint(code: Uint8Array, title: string, output?: BlueprintOutput)
-      : Promise<void> {
+  async initializeFromBlueprint(
+      blueprintId: string, metadata: BlueprintMetadata, output?: BlueprintOutput): Promise<void> {
     // Set the title. The default gadget (created below) inherits it.
+    let { title } = metadata;
     this.impl.storage.title.put(title);
 
-    // Decode the archive and write the gadget's initial (parentless) commit *before* creating
+    // Load the release and write the gadget's initial (parentless) commit *before* creating
     // the gadget record: every permanent gadget is born with a head (see GadgetRecord.commitId),
-    // so a failure here -- an empty archive, an unreachable owner -- must not leave a headless
-    // record behind. The commit is content-addressed and referenced by nothing until the record
-    // lands, so writing it first is safe. Archives always use the doc's unnamed root "" (see
-    // snapshotCode); the file contents transfer as plain text, becoming the gadget's first
-    // committed tree. An empty archive is refused rather than instantiated as a code-less
-    // gadget: blueprints of such gadgets cannot be created (see createBlueprint), so one can
-    // only arrive corrupted or hand-crafted.
-    let archiveDoc = new Y.Doc();
-    Y.applyUpdateV2(archiveDoc, code);
-    let files = new Map<string, string>();
-    for (let [file, content] of archiveDoc.getMap<Y.Text>()) {
-      files.set(file, content.toString());
-    }
+    // so a failure here -- invalid content, an empty release, an unreachable owner -- must not
+    // leave a headless record behind. The commit is content-addressed and referenced by nothing
+    // until the record lands, so writing it first is safe. The release's files become the
+    // gadget's first committed tree. An empty release is refused rather than instantiated as a
+    // code-less gadget: blueprints of such gadgets cannot be created (see createBlueprint), so
+    // one can only arrive corrupted or hand-crafted.
+    let release = await this.impl.loadBlueprint(blueprintId, metadata);
+    let files = await this.impl.gitStore.readCommitFiles(release);
     if (files.size === 0) {
       throw new Error("This blueprint's code archive is empty.");
     }
@@ -10985,7 +11015,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       record.metadata.description = options.description;
     }
 
-    let codeSnapshot: Uint8Array | undefined;
+    let pack: Uint8Array | undefined;
     if (options.updateCode || options.updateBindings) {
       // Re-collect binding metadata from the source gadget (validates annotations). Records
       // written before multi-gadget support carry no gadgetId; they export the default gadget.
@@ -10994,10 +11024,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (options.updateCode) {
         let commitId = await this.impl.assertPublishableCommit(
             this.impl.getGadgetRecord(gadgetId).commitId);
-        record.commitId = commitId;
-        delete record.codeVersion;
-        record.metadata.version++;
-        codeSnapshot = await this.impl.snapshotCode(commitId);
+        pack = await this.impl.mintBlueprintRelease(record, commitId);
       }
     }
 
@@ -11007,7 +11034,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     record.metadata.lastUpdated = new Date();
 
-    await this.impl.propagateBlueprint(record, codeSnapshot, screenshot);
+    await this.impl.propagateBlueprint(record, pack, screenshot);
   }
 
   async deleteBlueprint(blueprintId: string): Promise<void> {
@@ -11029,15 +11056,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     if (!record) throw new Error("No such blueprint.");
     if (!record.dirty) return;  // nothing to retry
 
-    // Reconstruct the code snapshot at the originally exported commit, not the current code.
-    if (record.commitId === undefined) {
-      // A record with `codeVersion` instead predates git-backed code storage; one with neither
-      // shouldn't exist, but either way the fix is the same.
-      throw new Error("This blueprint predates git-backed code storage. Republish its code " +
-          "with updateBlueprint instead of retrying.");
+    if (record.releases === undefined) {
+      // The record was last published before releases were commits, in a form that is no longer
+      // written. Republishing its code gives it a release.
+      throw new Error("This blueprint was last published in an older format. Republish its " +
+          "code with updateBlueprint instead of retrying.");
     }
-    let codeSnapshot = await this.impl.snapshotCode(record.commitId);
-    await this.impl.propagateBlueprint(record, codeSnapshot);
+
+    // Propagating a dirty record re-sends the release that was being published, not the
+    // current code.
+    await this.impl.propagateBlueprint(record);
   }
 
   // --- Collaborator management ---
@@ -11693,7 +11721,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       description: description || "",
       author: ownerProfile,
       created: now,
-      version: 1,
+      version: 0,  // counts releases; the first is minted below
       lastUpdated: now,
       bindings,
     };
@@ -11708,14 +11736,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       id,
       metadata,
       gadgetId: this.id,
-      commitId,
     };
 
     let screenshot = screenshotUpload ? validateBlueprintScreenshotUpload(screenshotUpload) : undefined;
 
-    // Snapshot the committed code and propagate to User DO, KV, R2.
-    let codeSnapshot = await this.impl.snapshotCode(commitId);
-    await this.impl.propagateBlueprint(record, codeSnapshot, screenshot);
+    // Mint the first release of the committed code and propagate to User DO, KV, R2.
+    let pack = await this.impl.mintBlueprintRelease(record, commitId);
+    await this.impl.propagateBlueprint(record, pack, screenshot);
 
     this.impl.recordGadgetAnalytics({
       event_name: "blueprint_created",
