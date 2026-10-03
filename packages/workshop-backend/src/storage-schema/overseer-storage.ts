@@ -23,8 +23,8 @@ import {
   actionChangeTime,
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
-  type BlueprintOutput, type ChatGadgetPin, type CollaboratorRole, type GatekeeperCreationSpec,
-  type PermissionEdge, type WorkpieceId,
+  type BlueprintOutput, type ChatGadgetPin, type CollaboratorRole, type GadgetUpstream,
+  type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
@@ -175,6 +175,17 @@ export type GadgetRecord = {
    * when the gadget has no files yet), so promotion establishes the invariant too.
    */
   commitId?: string;
+
+  /**
+   * The blueprint this gadget follows and the release of it the gadget most recently merged,
+   * set when the gadget is instantiated from a blueprint. Absent on a gadget that was not, or
+   * that was before gadgets recorded it.
+   *
+   * The record has to name the blueprint because the release commit in the gadget's history
+   * does not: a blueprint id is a share link, and release commits travel on into the packs of
+   * blueprints derived from them.
+   */
+  upstream?: GadgetUpstream;
 
   /**
    * This gadget's bindings: binding name (as it appears in the gadget worker's `env`) -> binding

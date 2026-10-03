@@ -53,8 +53,10 @@ import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
 } from "./blueprint-archive";
-import { buildReleasePack, buildSnapshotRelease, encodeReleaseCommit } from "./blueprint-release";
-import { gitObjectOid } from "./git-codec";
+import {
+  buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, type Release,
+} from "./blueprint-release";
+import { encodeGitTree, gitObjectOid } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
@@ -1683,9 +1685,10 @@ class OverseerImpl implements AgentHooks {
   // subscribers), gadgets still provisional to some chat are withheld entirely, and so is every
   // worktree, accepted or not: both are proposals within the owner's chats, not part of the
   // shared workspace (a worktree is its chat's for life). (A gadget's promotion then surfaces it
-  // via the collection's update notification.) Every record write re-delivers the summary, which
-  // is how a worktree's `pinBase` (advanced by an accept) and `headCommit` (an explicit commit,
-  // or its rollback) reach clients.
+  // via the collection's update notification.) Those subscribers are not told which blueprint a
+  // gadget follows either: its id is a share link to code they have no other way to read. Every
+  // record write re-delivers the summary, which is how a worktree's `pinBase` (advanced by an
+  // accept) and `headCommit` (an explicit commit, or its rollback) reach clients.
   subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>,
                         includePending: boolean): RpcStub<{}> {
     let gadgets = this.storage.gadgets;
@@ -1713,6 +1716,9 @@ class OverseerImpl implements AgentHooks {
       }
       if (record.output) {
         summary.output = record.output;
+      }
+      if (record.upstream && includePending) {
+        summary.upstream = record.upstream;
       }
       if (record.pending) {
         summary.chatId = record.pending.chatId;
@@ -2830,7 +2836,7 @@ class OverseerImpl implements AgentHooks {
       // depends on the transform below, but transforms only ever drop file changes, so prefetching
       // for every *declared* pin (plus every bridge boundary commit) covers all cases.
       let content = await this.getCurrentChatContent(chatId, meta);
-      let pinData = new Map<string, {head: string, headParents: string[],
+      let pinData = new Map<string, {head: string, previousHead: string | undefined,
                                      baseFiles: Map<string, string>}>();
       let prefetchPin = async (gadgetId: WorkpieceId, baseCommit: string) => {
         if (pinData.has(`${gadgetId}:${baseCommit}`)) return;
@@ -2839,8 +2845,10 @@ class OverseerImpl implements AgentHooks {
         if (head === undefined) return;  // validated (and rejected) in the sync tail
         pinData.set(`${gadgetId}:${baseCommit}`, {
           head,
-          headParents: head === baseCommit
-              ? [] : (await this.gitStore.readCommitLog(head, {depth: 1}))[0].parents,
+          // The first parent only: a head that merged a blueprint has the release as another,
+          // which was never this gadget's head.
+          previousHead: head === baseCommit
+              ? undefined : (await this.gitStore.readCommitObject(head)).parent[0],
           baseFiles: await this.gitStore.readCommitFiles(baseCommit),
         });
       };
@@ -2951,7 +2959,7 @@ class OverseerImpl implements AgentHooks {
   #applyValidatedSubmission(
       chatId: number, meta: AiChatMetadata, codeBase: ChatCodeBase,
       submission: CodeChangeSubmission, author: AiChatAuthorInfo, content: CodeContent,
-      pinData: Map<string, {head: string, headParents: string[],
+      pinData: Map<string, {head: string, previousHead: string | undefined,
                             baseFiles: Map<string, string>}>,
       bridge: ChatChangeBoundaryRecord | undefined,
       worktreeBases: Map<WorkpieceId, string>,
@@ -3013,9 +3021,10 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    // Establish pins: validate each declaration against the gadget's current head (tolerating a
-    // parent-of-head base -- the client raced exactly one merge) or the worktree's accepted
-    // commit, idempotent against an identical existing pin, conflicting against a different one.
+    // Establish pins: validate each declaration against the gadget's current head (tolerating
+    // the head before it, its first parent -- the client raced exactly one merge) or the
+    // worktree's accepted commit, idempotent against an identical existing pin, conflicting
+    // against a different one.
     let newPins: ChatGadgetPinState[] = [];
     let validationContent = content;
     for (let [gadgetId, baseCommit] of declarations) {
@@ -3052,7 +3061,7 @@ class OverseerImpl implements AgentHooks {
       if (prefetched === undefined || prefetched.head !== record.commitId) {
         return "retry";  // the head moved during the prefetches; re-resolve
       }
-      if (baseCommit !== prefetched.head && !prefetched.headParents.includes(baseCommit)) {
+      if (baseCommit !== prefetched.head && baseCommit !== prefetched.previousHead) {
         throw new Error("Pin declaration does not match the gadget's current head.");
       }
       newPins.push({gadgetId, baseCommit, mergedCommit: baseCommit});
@@ -7182,37 +7191,50 @@ class OverseerImpl implements AgentHooks {
   // Mints the blueprint's next release (see blueprint-release.ts) from the tree of the gadget
   // commit `sourceCommit`: writes the release commit, records it on `record` -- which the caller
   // stores by propagating it -- and returns the pack to propagate with it. If that tree is what
-  // the blueprint's latest release already holds, there is nothing to release: the record is
-  // left alone and undefined is returned.
+  // the blueprint's latest release already holds, and the gadget has merged no other blueprint
+  // since, there is nothing to release: the record is left alone and undefined is returned.
   //
-  // The release's parent is the release before it. For a record last published before releases
-  // were commits, that is the snapshot release of the files it published, which is the release
-  // everyone who reads that content derives from it. Such a record's first release here is
-  // minted even over an unchanged tree, since it is what moves the stored content to a pack.
+  // The release's first parent is the release before it. For a record last published before
+  // releases were commits, that is the snapshot release of the files it published, which is the
+  // release everyone who reads that content derives from it. Such a record's first release here
+  // is minted even over an unchanged tree, since it is what moves the stored content to a pack.
+  //
+  // Its other parents are the releases of other blueprints that the gadget has merged since, so
+  // that whoever holds this release can find what it has in common with theirs. A first parent
+  // always belongs to the blueprint's own lineage, so a blueprint with no release yet to come
+  // before those gets an empty one: release 0, the root of its lineage.
   async mintBlueprintRelease(record: BlueprintGadgetRecord, sourceCommit: string)
       : Promise<Uint8Array | undefined> {
     let tree = await this.gitStore.commitTree(sourceCommit);
     let previous = record.releases?.at(-1)?.releaseCommit;
-    if (previous !== undefined) {
-      if (await this.gitStore.commitTree(previous) === tree) return undefined;
-    } else if (record.commitId !== undefined) {
+    let unchanged = previous !== undefined && await this.gitStore.commitTree(previous) === tree;
+    if (previous === undefined && record.commitId !== undefined) {
       let snapshot = await buildSnapshotRelease(
           await this.gitStore.readCommitFiles(record.commitId));
       await this.gitCache.importObjects(snapshot.objects.values());
       previous = snapshot.commitId;
     }
+    let merged = await this.releasesMergedSince(sourceCommit, record.commitId, previous);
+    if (unchanged && merged.length === 0) return undefined;
 
-    let version = record.metadata.version + 1;
-    let payload = encodeReleaseCommit({
-      tree,
-      parents: previous === undefined ? [] : [previous],
+    let publication = {
       author: commitIdentityForAuthor(record.metadata.author),
       title: record.metadata.title,
-      version,
       timestamp: new Date(),
-    });
-    let releaseCommit = await gitObjectOid("commit", payload);
-    await this.gitCache.importObjects([{ type: "commit", payload }]);
+    };
+    let mint = async (release: Pick<Release, "tree" | "parents" | "version">) => {
+      let payload = encodeReleaseCommit({ ...release, ...publication });
+      await this.gitCache.importObjects([{ type: "commit", payload }]);
+      return await gitObjectOid("commit", payload);
+    };
+
+    if (previous === undefined && merged.length > 0) {
+      let emptyTree = await gitObjectOid("tree", encodeGitTree([]));
+      previous = await mint({ tree: emptyTree, parents: [], version: 0 });
+    }
+    let version = record.metadata.version + 1;
+    let parents = previous === undefined ? [] : [previous, ...merged];
+    let releaseCommit = await mint({ tree, parents, version });
 
     record.releases = [...record.releases ?? [], { version, releaseCommit, sourceCommit }];
     record.commitId = sourceCommit;
@@ -7220,6 +7242,28 @@ class OverseerImpl implements AgentHooks {
     record.metadata.version = version;
     record.metadata.commitId = releaseCommit;
     return await this.buildBlueprintPack(releaseCommit);
+  }
+
+  // The blueprint releases merged into a gadget on the way from its commit `since` to its
+  // commit `head`, or in the whole of `head`'s history if `since` is undefined, in the order
+  // they were merged. Those that `previous` (a release, if given) or another of them already
+  // has in its history are left out, as naming them again would say nothing.
+  //
+  // A gadget's own history is its first-parent chain, and every other parent of a commit on it
+  // is a release that the commit merged (see initializeFromBlueprint()).
+  async releasesMergedSince(head: string, since: string | undefined, previous: string | undefined)
+      : Promise<string[]> {
+    let merged: string[] = [];
+    let commit: string | undefined = head;
+    while (commit !== undefined && commit !== since) {
+      let parents: string[] = (await this.gitStore.readCommitObject(commit)).parent;
+      merged.unshift(...parents.slice(1));
+      commit = parents[0];
+    }
+    return merged.filter((release, index) =>
+        merged.indexOf(release) === index &&
+        !(previous !== undefined && this.gitCache.isAncestor(release, previous)) &&
+        !merged.some(other => other !== release && this.gitCache.isAncestor(release, other)));
   }
 
   // Builds the pack of a release this workspace minted. A release always yields the same bytes.
@@ -9137,17 +9181,16 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let { title } = metadata;
     this.impl.storage.title.put(title);
 
-    // Load the release and write the gadget's initial (parentless) commit *before* creating
-    // the gadget record: every permanent gadget is born with a head (see GadgetRecord.commitId),
-    // so a failure here -- invalid content, an empty release, an unreachable owner -- must not
-    // leave a headless record behind. The commit is content-addressed and referenced by nothing
-    // until the record lands, so writing it first is safe. The release's files become the
+    // Load the release and write the gadget's initial commits *before* creating the gadget
+    // record: every permanent gadget is born with a head (see GadgetRecord.commitId), so a
+    // failure here -- invalid content, an empty release, an unreachable owner -- must not leave
+    // a headless record behind. The commits are content-addressed and referenced by nothing
+    // until the record lands, so writing them first is safe. The release's tree becomes the
     // gadget's first committed tree. An empty release is refused rather than instantiated as a
     // code-less gadget: blueprints of such gadgets cannot be created (see createBlueprint), so
     // one can only arrive corrupted or hand-crafted.
     let release = await this.impl.loadBlueprint(blueprintId, metadata);
-    let files = await this.impl.gitStore.readCommitFiles(release);
-    if (files.size === 0) {
+    if ((await this.impl.gitStore.readCommitFiles(release)).size === 0) {
       throw new Error("This blueprint's code archive is empty.");
     }
     let ownerId = this.impl.ownerId;
@@ -9159,11 +9202,25 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let owner = () => wrapDoStubForTelemetry(
         this.impl.users.get(this.impl.users.idFromString(ownerId)), this.impl.logger);
     let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
-    let commitId = await this.impl.gitStore.writeFilesAsCommit(files, {
+
+    // The gadget's history starts at an empty root of its own, into which its head merges the
+    // release: the head's tree is the release's, its first parent the root, its second the
+    // release. A commit's first parent is always the gadget's own previous state, so the
+    // gadget's first-parent chain is its own history, every commit of which has its tree here.
+    // The release's ancestors, most of which arrived without theirs, are only ever reached
+    // through other parents -- where a later update finds what the gadget and a blueprint have
+    // in common.
+    let authorship = { author: commitIdentityForAuthor(ownerProfile), timestamp: new Date() };
+    let root = await this.impl.gitStore.writeFilesAsCommit(new Map(), {
+      ...authorship,
       parents: [],
-      author: commitIdentityForAuthor(ownerProfile),
+      message: `Create gadget: ${title}`,
+    });
+    let commitId = await this.impl.gitStore.writeCommitForTree(
+        await this.impl.gitStore.commitTree(release), {
+      ...authorship,
+      parents: [root, release],
       message: `Instantiate blueprint: ${title}`,
-      timestamp: new Date(),
     });
 
     // Blueprint instantiation still creates a fresh workspace containing one auto-created gadget,
@@ -9176,13 +9233,15 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       source: "blueprint",
     });
 
-    // The gadget inherits the blueprint's declared format, so it is named and drawn as a Document
-    // (or whatever it produces) rather than a generic app.
+    // The gadget follows the blueprint, from the release it was built from. It also inherits the
+    // blueprint's declared format, so it is named and drawn as a Document (or whatever it
+    // produces) rather than a generic app.
+    let record = this.impl.getGadgetRecord(gadgetId);
+    record.upstream = { blueprintId, commitId: release };
     if (output) {
-      let record = this.impl.getGadgetRecord(this.impl.resolveGadgetId(undefined));
       record.output = output;
-      this.impl.storage.gadgets.put(record);
     }
+    this.impl.storage.gadgets.put(record);
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
     // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from

@@ -158,6 +158,29 @@ describe("submitCodeChange", () => {
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins[0].baseCommit).toBe(c2);
   }));
 
+  it("rejects a pin at a blueprint release the head merged, which was never the head",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let release = await commitFiles(impl, { "a.txt": "released\n" });
+    let c2 = await commitFiles(impl, { "a.txt": "two\n" }, [c1, release]);
+    addGadget(impl, 1, "APP", c2);
+    addChat(impl, 1);
+
+    await expect(submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli-a", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: release }],
+      change: editChange(1, { "a.txt": "released\n" }, { "a.txt": "xreleased\n" }),
+    })).rejects.toThrow(/does not match the gadget's current head/);
+
+    // The head's first parent is the head before it, which a client may still be editing.
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli-b", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
+    });
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.pins[0].baseCommit).toBe(c1);
+  }));
+
   it("rejects stale generations, conflicting pins, headless pins, and missing declarations",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });

@@ -3,12 +3,14 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import * as Y from "yjs";
 import type {
-  AiChatAuthorInfo, BlueprintGadgetSummary, BlueprintMetadata, Overseer,
+  AiChatAuthorInfo, BlueprintGadgetSummary, BlueprintMetadata, Overseer, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   blueprintContentKey, buildBlueprintArchiveStream, parseBlueprintArchive,
 } from "../src/blueprint-archive";
-import { buildSnapshotRelease, listReleaseFiles, readReleasePack } from "../src/blueprint-release";
+import {
+  buildSnapshotRelease, listReleaseFiles, readReleasePack, type GitObjectMap,
+} from "../src/blueprint-release";
 import { buildPackBytes, concatBytes, encodeGitCommit, encodeGitTree, gitObjectOid }
   from "../src/git-codec";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -35,6 +37,8 @@ const OWNER: AiChatAuthorInfo = {
 const V1 = { "client.js": "one\n", "lib/util.js": "export const answer = 42;\n" };
 const V2 = { ...V1, "client.js": "two\n" };
 const V3 = { ...V1, "client.js": "three\n" };
+
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 // Stands in for the BLUEPRINTS namespace, which the suites' Worker does not bind. Given a real
 // one, the agent turns other suites run read the deployment's admin config from it, which the
@@ -76,8 +80,9 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
       setGadgetLastActive: async () => {},
     };
     impl.users = { idFromString: (id: string) => id, get: () => owner };
-    let client = await instance.open(
-        OWNER_USER_ID, OWNER.id, new NativeRpcStub<() => void>(() => {}));
+    // Disposed with the session: the session holds a duplicate of the stub until then.
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
     await fn({ instance, impl, client, owner });
   });
 }
@@ -92,10 +97,16 @@ async function commitFiles(
   });
 }
 
-/** Adds gadget 1 with `files` committed, or moves its head to a new commit of them. */
-async function commitToGadget(impl: any, files: Record<string, string>): Promise<string> {
-  let record = impl.storage.gadgets.get(1);
-  let commitId = await commitFiles(impl, files, record ? [record.commitId] : []);
+/**
+ * Moves the head of the workspace's gadget to a new commit of `files`, adding gadget 1 first if
+ * there is none. The commit merges the release `merged`, if given, as accepting an update from
+ * its blueprint would.
+ */
+async function commitToGadget(impl: any, files: Record<string, string>, merged?: string)
+    : Promise<string> {
+  let [record] = [...impl.storage.gadgets.list()];
+  let commitId = await commitFiles(
+      impl, files, [...record ? [record.commitId] : [], ...merged ? [merged] : []]);
   impl.storage.gadgets.put(record
       ? { ...record, commitId }
       : { type: "gadget", id: 1, title: "App", created: new Date(0), bindingName: "APP",
@@ -103,10 +114,16 @@ async function commitToGadget(impl: any, files: Record<string, string>): Promise
   return commitId;
 }
 
-async function createBlueprint(client: Overseer, title = "Starter")
+/** Publishes the workspace's gadget, which is gadget 1 unless it was instantiated. */
+async function createBlueprint(client: Overseer, title = "Starter", gadgetId = 1)
     : Promise<BlueprintGadgetSummary> {
-  let gadget = await client.getGadget(1);
+  let gadget = await client.getGadget(gadgetId);
   return await gadget.createBlueprint(title, "A starter");
+}
+
+/** The parents of a commit in the workspace's store. */
+async function parentsOf(impl: any, commitId: string): Promise<string[]> {
+  return (await impl.gitStore.readCommitLog(commitId, { depth: 1 }))[0].parents;
 }
 
 async function publishedMetadata(blueprintId: string): Promise<BlueprintMetadata | undefined> {
@@ -123,6 +140,37 @@ async function storedContent(key: string): Promise<Uint8Array> {
   let object = await env.BLUEPRINT_CONTENT.get(key);
   if (object === null) throw new Error(`no content at ${key}`);
   return new Uint8Array(await object.arrayBuffer());
+}
+
+/** The pack published for a release of a blueprint, as whoever reads it finds it. */
+async function publishedPack(blueprintId: string, commitId: string): Promise<GitObjectMap> {
+  return await readReleasePack(await storedContent(`${blueprintId}/${commitId}`), commitId);
+}
+
+function commitsIn(pack: GitObjectMap): string[] {
+  return [...pack].filter(([, object]) => object.type === "commit").map(([oid]) => oid).toSorted();
+}
+
+/**
+ * Publishes a blueprint of each of `versions` in turn, from a workspace of its own. Returns its
+ * id, and the metadata that each publish left for readers to find.
+ */
+async function publishVersions(title: string, versions: Record<string, string>[])
+    : Promise<{ blueprintId: string, published: BlueprintMetadata[] }> {
+  let blueprintId: string | undefined;
+  let published: BlueprintMetadata[] = [];
+  await withWorkspace(async ({ impl, client }) => {
+    for (let files of versions) {
+      await commitToGadget(impl, files);
+      if (blueprintId === undefined) {
+        blueprintId = (await createBlueprint(client, title)).id;
+      } else {
+        await client.updateBlueprint(blueprintId, { updateCode: true });
+      }
+      published.push((await publishedMetadata(blueprintId))!);
+    }
+  });
+  return { blueprintId: blueprintId!, published };
 }
 
 /** Stores a blueprint as publishing or importing would: content first, then metadata. */
@@ -188,14 +236,34 @@ async function instantiate(
       blueprintId, metadata ?? (await publishedMetadata(blueprintId))!);
 }
 
-/** The files of the workspace's one gadget, with the commit that holds them. */
+/**
+ * The files of the workspace's one gadget and the release they came from: the one its head
+ * merges into the gadget's own root.
+ */
 async function instantiated(impl: any)
-    : Promise<{ files: Record<string, string>, parents: string[] }> {
+    : Promise<{ files: Record<string, string>, release: string }> {
   let [gadget, ...others] = [...impl.storage.gadgets.list()];
   expect(others).toEqual([]);
   let files = Object.fromEntries(await impl.gitStore.readCommitFiles(gadget.commitId));
-  let [{ parents }] = await impl.gitStore.readCommitLog(gadget.commitId, { depth: 1 });
-  return { files, parents };
+  let [root, release, ...more] = await parentsOf(impl, gadget.commitId);
+  expect(more).toEqual([]);
+  expect(await parentsOf(impl, root)).toEqual([]);
+  expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
+  return { files, release };
+}
+
+/** What a subscriber to the workspace's workpieces is told of them, by role. */
+function summaries(impl: any, role: "build" | "use"): WorkpieceSummary[] {
+  let entries: WorkpieceSummary[] = [];
+  let subscriber: any = {
+    dup: () => subscriber,
+    onRpcBroken: () => {},
+    entry: async (summary: WorkpieceSummary) => { entries.push(summary); },
+    ready: async () => {},
+    [Symbol.dispose]: () => {},
+  };
+  impl.subscribeToWorkpieces(subscriber, role === "build")[Symbol.dispose]();
+  return entries;
 }
 
 // Publishes V2 as the blueprint's second release, but for a failure that leaves the record dirty
@@ -416,14 +484,16 @@ describe("publishing a blueprint", () => {
 describe("instantiating a blueprint", () => {
   it("builds a gadget from a release's files", async () => {
     let blueprintId!: string;
+    let release!: string;
     await withWorkspace(async ({ impl, client }) => {
       await commitToGadget(impl, V1);
       blueprintId = (await createBlueprint(client)).id;
+      release = (await publishedMetadata(blueprintId))!.commitId!;
     });
 
     await withWorkspace(async ({ instance, impl }) => {
       await instantiate(instance, blueprintId);
-      expect(await instantiated(impl)).toEqual({ files: V1, parents: [] });
+      expect(await instantiated(impl)).toEqual({ files: V1, release });
       expect(impl.storage.title.get()).toBe("Starter");
     });
 
@@ -433,6 +503,50 @@ describe("instantiating a blueprint", () => {
       expect({ ...files }).toEqual(V1);
       expect(notes).toContain(`"Starter" (blueprintId ${blueprintId})`);
       expect(notes).toContain("client.js, lib/util.js");
+    });
+  });
+
+  it("merges the release into a history of the gadget's own, and has it follow the blueprint",
+      async () => {
+    let blueprintId!: string;
+    let release!: string;
+    await withWorkspace(async ({ impl, client }) => {
+      await commitToGadget(impl, V1);
+      blueprintId = (await createBlueprint(client)).id;
+      release = (await publishedMetadata(blueprintId))!.commitId!;
+    });
+
+    await withWorkspace(async ({ instance, impl }) => {
+      await instantiate(instance, blueprintId);
+      let [gadget] = [...impl.storage.gadgets.list()];
+
+      // The head is the gadget owner's commit of the release's tree. Its first parent is the
+      // gadget's own (empty) beginning, and the release comes second, so the gadget's
+      // first-parent chain never runs into the blueprint's history.
+      let [head] = await impl.gitStore.readCommitLog(gadget.commitId, { depth: 1 });
+      let [root] = await impl.gitStore.readCommitLog(head.parents[0], { depth: 1 });
+      expect(head).toMatchObject({
+        parents: [root.oid, release],
+        message: "Instantiate blueprint: Starter\n",
+        author: { name: "Olive", email: "olive@commits.example" },
+      });
+      expect(await impl.gitStore.commitTree(head.oid))
+          .toBe(await impl.gitStore.commitTree(release));
+      expect(root).toMatchObject({ parents: [], message: "Create gadget: Starter\n" });
+      expect(await impl.gitStore.commitTree(root.oid)).toBe(EMPTY_TREE);
+
+      // Which blueprint the release belongs to is on the gadget, since no commit says.
+      let upstream = { blueprintId, commitId: release };
+      expect(gadget.upstream).toEqual(upstream);
+
+      // Its builders are told, but not those who may only use it: the id is a link to code
+      // they cannot read.
+      expect(summaries(impl, "build")).toEqual([
+        { id: gadget.id, type: "gadget", title: "Starter", commitId: head.oid, upstream },
+      ]);
+      expect(summaries(impl, "use")).toEqual([
+        { id: gadget.id, type: "gadget", title: "Starter", commitId: head.oid },
+      ]);
     });
   });
 
@@ -457,14 +571,16 @@ describe("instantiating a blueprint", () => {
     // to set up were declared for.
     await withWorkspace(async ({ instance, impl }) => {
       await instantiate(instance, blueprintId, read);
-      expect(await instantiated(impl)).toEqual({ files: V1, parents: [] });
+      expect(await instantiated(impl)).toEqual({ files: V1, release: read.commitId });
       expect(impl.storage.title.get()).toBe("Starter");
     });
 
     // Whoever starts now gets the new version.
     await withWorkspace(async ({ instance, impl }) => {
       await instantiate(instance, blueprintId);
-      expect(await instantiated(impl)).toEqual({ files: V2, parents: [] });
+      let { commitId } = (await publishedMetadata(blueprintId))!;
+      expect(commitId).not.toBe(read.commitId);
+      expect(await instantiated(impl)).toEqual({ files: V2, release: commitId });
       expect(impl.storage.title.get()).toBe("Restarted");
     });
   });
@@ -474,11 +590,13 @@ describe("instantiating a blueprint", () => {
 
     await withWorkspace(async ({ instance, impl }) => {
       await instantiate(instance, "older-content");
-      expect(await instantiated(impl)).toEqual({ files: V1, parents: [] });
 
-      // Every workspace reads the snapshot as the same release.
+      // Every workspace reads the snapshot as the same release, so that is what each gadget
+      // made from it has in its history, and in common with the others.
       let snapshot = await buildSnapshotRelease(new Map(Object.entries(V1)));
-      expect(impl.gitCache.hasLocalObject(snapshot.commitId)).toBe(true);
+      expect(await instantiated(impl)).toEqual({ files: V1, release: snapshot.commitId });
+      expect([...impl.storage.gadgets.list()][0].upstream)
+          .toEqual({ blueprintId: "older-content", commitId: snapshot.commitId });
     });
 
     await withWorkspace(async ({ impl }) => {
@@ -508,10 +626,13 @@ describe("instantiating a blueprint", () => {
     expect(uploaded.commitId).toBe(release.commitId);
     expect(await storedKeys("uploaded-v2")).toEqual([`uploaded-v2/${release.commitId}`]);
 
-    for (let [blueprintId, files] of [["uploaded-v1", V1], ["uploaded-v2", V2]] as const) {
+    let v1 = await buildSnapshotRelease(new Map(Object.entries(V1)));
+    for (let [blueprintId, files, commitId] of [
+      ["uploaded-v1", V1, v1.commitId], ["uploaded-v2", V2, release.commitId],
+    ] as const) {
       await withWorkspace(async ({ instance, impl }) => {
         await instantiate(instance, blueprintId);
-        expect(await instantiated(impl)).toEqual({ files, parents: [] });
+        expect(await instantiated(impl)).toEqual({ files, release: commitId });
       });
     }
   });
@@ -579,6 +700,107 @@ describe("instantiating a blueprint", () => {
       expect([...impl.storage.gadgets.list()]).toEqual([]);
       expect(impl.defaultGadgetId).toBeUndefined();
       expect([...impl.storage.gitObjects.list()]).toEqual([]);
+    });
+  });
+});
+
+describe("publishing a blueprint built on another", () => {
+  // Bob's additions to the second version of Alice's files.
+  const BOBS = { ...V2, "bob.js": "bob\n" };
+
+  it("names the release it was built on as a parent, after a root of its own", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let [a1, a2] = alice.published.map(metadata => metadata.commitId!);
+
+    let bob!: string;
+    let b2!: string;
+    await withWorkspace(async ({ instance, impl, client }) => {
+      // Bob builds on Alice's second release, and publishes what he made of it.
+      await instantiate(instance, alice.blueprintId);
+      let [gadget] = [...impl.storage.gadgets.list()];
+      await commitToGadget(impl, BOBS);
+      bob = (await createBlueprint(client, "Bob's", gadget.id)).id;
+
+      let published = (await publishedMetadata(bob))!;
+      let b1 = published.commitId!;
+      expect(published.version).toBe(1);
+      let [b0, ...merged] = await parentsOf(impl, b1);
+      expect(merged).toEqual([a2]);
+
+      // A release's first parent is always its own blueprint's, and Bob's had none to give.
+      // So his lineage starts at an empty release of its own.
+      expect((await impl.gitStore.readCommitLog(b0, { depth: 1 }))[0]).toMatchObject({
+        parents: [],
+        message: "Release 0: Bob's\n",
+        author: { name: "Olive", email: "olive@commits.example" },
+      });
+      expect(await impl.gitStore.commitTree(b0)).toBe(EMPTY_TREE);
+
+      // The pack holds the whole history, Alice's included, but nothing of the gadget's own.
+      // Besides Bob's files it carries those of the release he built on: someone whose gadget
+      // came from another of Alice's releases needs them to merge Bob's blueprint into it.
+      let pack = await publishedPack(bob, b1);
+      expect(commitsIn(pack)).toEqual([a1, a2, b0, b1].toSorted());
+      expect(Object.fromEntries(listReleaseFiles(pack, b1))).toEqual(BOBS);
+      expect(Object.fromEntries(listReleaseFiles(pack, a2))).toEqual(V2);
+      expect(() => listReleaseFiles(pack, a1)).toThrow(/is missing/);
+
+      // What Bob built on is in the history of his first release, so his second need not name
+      // it again.
+      await commitToGadget(impl, { ...BOBS, "bob.js": "bob again\n" });
+      await client.updateBlueprint(bob, { updateCode: true });
+      b2 = (await publishedMetadata(bob))!.commitId!;
+      expect(await parentsOf(impl, b2)).toEqual([b1]);
+    });
+
+    // Carol builds on Bob's blueprint. She never read Alice's, but Bob's pack gave her the
+    // files of the release he built on, and her own pack passes them on.
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, bob);
+      let [gadget] = [...impl.storage.gadgets.list()];
+      let carol = (await createBlueprint(client, "Carol's", gadget.id)).id;
+
+      let c1 = (await publishedMetadata(carol))!.commitId!;
+      expect((await parentsOf(impl, c1)).slice(1)).toEqual([b2]);
+      let pack = await publishedPack(carol, c1);
+      expect(Object.fromEntries(listReleaseFiles(pack, b2)))
+          .toEqual({ ...BOBS, "bob.js": "bob again\n" });
+      expect(Object.fromEntries(listReleaseFiles(pack, a2))).toEqual(V2);
+    });
+  });
+
+  it("names the releases its gadget has merged since the last, but none already in its history",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2, V3]);
+    let [, a2, a3] = alice.published.map(metadata => metadata.commitId!);
+
+    await withWorkspace(async ({ instance, impl, client }) => {
+      // Bob builds on Alice's first release, and takes her second before he publishes.
+      await instantiate(instance, alice.blueprintId, alice.published[0]);
+      let [gadget] = [...impl.storage.gadgets.list()];
+      await impl.loadBlueprint(alice.blueprintId, alice.published[1]);
+      await commitToGadget(impl, BOBS, a2);
+      let bob = (await createBlueprint(client, "Bob's", gadget.id)).id;
+
+      // Her first is in the history of her second, so naming it too would say nothing.
+      let b1 = (await publishedMetadata(bob))!.commitId!;
+      expect((await parentsOf(impl, b1)).slice(1)).toEqual([a2]);
+
+      // Taking her third leaves Bob's files as they were. It is still a release: whoever
+      // follows Bob should learn that his blueprint now has her third in it.
+      await impl.loadBlueprint(alice.blueprintId, alice.published[2]);
+      await commitToGadget(impl, BOBS, a3);
+      await client.updateBlueprint(bob, { updateCode: true });
+      let second = (await publishedMetadata(bob))!;
+      let b2 = second.commitId!;
+      expect(second.version).toBe(2);
+      expect(await parentsOf(impl, b2)).toEqual([b1, a3]);
+      expect(await impl.gitStore.commitTree(b2)).toBe(await impl.gitStore.commitTree(b1));
+
+      // Merging what the blueprint already has, here its own release, gives it nothing to add.
+      await commitToGadget(impl, BOBS, b2);
+      await client.updateBlueprint(bob, { updateCode: true });
+      expect(await publishedMetadata(bob)).toMatchObject({ version: 2, commitId: b2 });
     });
   });
 });

@@ -2037,7 +2037,7 @@ export interface Overseer extends RpcTarget {
    *
    * `submission.pins` must carry one declaration per *permanent* gadget the change touches that is
    * not yet pinned in the chat, each naming the head commit the client's content derives from.
-   * The server checks that each declared base is the gadget's current head, or a parent of it
+   * The server checks that each declared base is the gadget's current head, or its first parent
    * (tolerating a race with one concurrent merge), and establishes the pin atomically with the
    * change. A declaration identical to the existing pin is accepted idempotently; one naming a
    * different `baseCommit` (a race between two first editors) throws. Exception: a gadget still
@@ -4023,6 +4023,13 @@ export type GadgetSummary = {
   commitId?: string;
 
   /**
+   * The blueprint this gadget follows, if it was built from one. Delivered only to subscribers
+   * with the "build" role: a blueprint id is a share link to the blueprint's code, which a
+   * "use" collaborator cannot otherwise read.
+   */
+  upstream?: GadgetUpstream;
+
+  /**
    * If present, this workpiece exists only in the context of the given chat. The UI should display
    * it only while the given chat is open.
    *
@@ -4031,6 +4038,23 @@ export type GadgetSummary = {
    * reverted (or the chat is deleted).
    */
   chatId?: number;
+};
+
+/**
+ * The blueprint a gadget follows: the one it takes updates from, and how much of it the gadget
+ * already has. An update is available when the blueprint names a current release
+ * (`BlueprintMetadata.commitId`, from `PublicApi.getBlueprint()`) other than `commitId`.
+ */
+export type GadgetUpstream = {
+  /** The blueprint's id. */
+  blueprintId: string;
+
+  /**
+   * The release of that blueprint the gadget most recently merged: a release commit, and an
+   * ancestor of the gadget's head. For a blueprint stored before releases were commits, it is
+   * the commit that everyone who reads that content derives from its files.
+   */
+  commitId: string;
 };
 
 /**

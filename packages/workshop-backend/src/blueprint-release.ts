@@ -86,7 +86,8 @@ export interface Release {
   /**
    * The blueprint's previous release first (or, for a derived blueprint's first release, its own
    * empty root), then each upstream release merged into the source gadget since. Empty for an
-   * original blueprint's first release.
+   * original blueprint's first release, and for an empty root, which is written as a release
+   * too: version 0, of the empty tree.
    */
   parents: GitOid[];
 
