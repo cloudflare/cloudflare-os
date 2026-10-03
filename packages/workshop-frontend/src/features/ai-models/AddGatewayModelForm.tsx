@@ -1,16 +1,27 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { Autocomplete, Button, Input, Select } from '@cloudflare/kumo'
 import { Plus } from '@phosphor-icons/react'
-import type { AiModelProvider, GatewayModel } from '@gadgets/workshop-shared/api'
-import { PROVIDER_LABELS, parseTokenLimit } from './modelForm'
+import { REASONING_LEVELS } from '@gadgets/workshop-shared/api'
+import type {
+  AiModelProvider,
+  GatewayModel,
+  GatewayModelCapabilities,
+  ReasoningLevel,
+} from '@gadgets/workshop-shared/api'
+import { PROVIDER_LABELS, REASONING_LEVEL_LABELS, parseTokenLimit } from './modelForm'
 import type { ModelSuggestion } from './modelsDev'
 import { useFieldErrorAlert } from './useFieldErrorAlert'
 
 const TOKEN_LIMIT_ERROR = 'Enter a positive whole number of tokens'
 const BEHAVES_LIKE_HELP =
-  'The model chosen here lends the new one its thinking format, its reasoning levels and its ' +
-  'image input, until this version knows the new model itself. From then on the choice is not ' +
-  'used. The name, the limits and the cost are never borrowed.'
+  'The model chosen here lends the new one its thinking format and, where they are not stated ' +
+  'here, its reasoning levels and its image input, until this version knows the new model ' +
+  'itself. From then on the choice is not used. The name, the limits and the cost are never ' +
+  'borrowed.'
+// What a capability field shows while nothing is stated in it.
+const NOT_STATED = 'Not stated'
+const REASONING_LEVELS_HELP =
+  'The levels the model can be asked for. Pick only Off for a model that does no reasoning.'
 const MODEL_ID = {
   label: 'Model ID',
   description:
@@ -52,6 +63,9 @@ export const AddGatewayModelForm = ({
   const [contextWindow, setContextWindow] = useState('')
   const [outputLimit, setOutputLimit] = useState('')
   const [chosenBehavesLike, setChosenBehavesLike] = useState<string | null>(null)
+  // What is stated of the model: null and an empty list each state nothing.
+  const [imageInput, setImageInput] = useState<boolean | null>(null)
+  const [reasoningLevels, setReasoningLevels] = useState<ReasoningLevel[]>([])
   // Field errors stay out of sight until a submit is attempted, so an untouched form isn't red.
   const [submitAttempted, setSubmitAttempted] = useState(false)
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -86,6 +100,10 @@ export const AddGatewayModelForm = ({
   ]
   const [idError, nameError, contextWindowError, outputLimitError] =
     fields.map((field) => (submitAttempted ? field.error : undefined))
+  const capabilities: GatewayModelCapabilities = {
+    ...(imageInput !== null && { imageInput }),
+    ...(reasoningLevels.length > 0 && { reasoningLevels }),
+  }
   const model: GatewayModel | null =
     id.trim() && name.trim() && contextWindowTokens && outputLimitTokens !== null
       ? {
@@ -95,6 +113,7 @@ export const AddGatewayModelForm = ({
           contextWindow: contextWindowTokens,
           ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
           ...(behavesLike && { behavesLike: behavesLike.id }),
+          ...(Object.keys(capabilities).length > 0 && { capabilities }),
         }
       : null
 
@@ -110,6 +129,8 @@ export const AddGatewayModelForm = ({
     setContextWindow('')
     setOutputLimit('')
     setChosenBehavesLike(null)
+    setImageInput(null)
+    setReasoningLevels([])
     setSubmitAttempted(false)
     setPickedId(null)
   }
@@ -135,7 +156,7 @@ export const AddGatewayModelForm = ({
   }
 
   return (
-    <form noValidate onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
+    <form noValidate onSubmit={submit} className="grid items-start gap-4 sm:grid-cols-2">
       <Select<AiModelProvider>
         label="Provider"
         className="w-full"
@@ -166,7 +187,7 @@ export const AddGatewayModelForm = ({
             idRef.current = wrapper?.querySelector<HTMLInputElement>('[role="combobox"]') ?? null
             idRef.current?.setAttribute('aria-invalid', String(idError !== undefined))
           }}
-          className="grid content-start gap-2"
+          className="grid gap-2"
           onFocus={suggestions.onEngage}
         >
           <Autocomplete<ModelSuggestion>
@@ -192,6 +213,8 @@ export const AddGatewayModelForm = ({
               setName(picked.name)
               setContextWindow(String(picked.contextWindow))
               setOutputLimit(String(picked.outputLimit ?? ''))
+              setImageInput(picked.capabilities?.imageInput ?? null)
+              setReasoningLevels(picked.capabilities?.reasoningLevels ?? [])
             }}
           >
             <Autocomplete.InputGroup />
@@ -278,6 +301,46 @@ export const AddGatewayModelForm = ({
           ))}
         </Select>
       )}
+      <Select<boolean | null>
+        label="Image input"
+        description="Whether the model takes images beside text."
+        required={false}
+        className="w-full"
+        placeholder={NOT_STATED}
+        disabled={disabled}
+        value={imageInput}
+        onValueChange={(value) => {
+          setRefusal(null)
+          setImageInput(value)
+        }}
+        renderValue={(value) => (value ? 'Yes' : 'No')}
+      >
+        <Select.Option value={null}>{NOT_STATED}</Select.Option>
+        <Select.Option value={true}>Yes</Select.Option>
+        <Select.Option value={false}>No</Select.Option>
+      </Select>
+      <Select<ReasoningLevel, true>
+        multiple
+        label="Reasoning levels"
+        description={REASONING_LEVELS_HELP}
+        required={false}
+        className="w-full"
+        placeholder={NOT_STATED}
+        disabled={disabled}
+        value={reasoningLevels}
+        onValueChange={(levels) => {
+          setRefusal(null)
+          // In the order of the levels, whichever order they were picked in.
+          setReasoningLevels(REASONING_LEVELS.filter((level) => levels.includes(level)))
+        }}
+        // The placeholder shows for a value rendered as nothing, which an empty list is not.
+        renderValue={(levels) =>
+          levels.map((level) => REASONING_LEVEL_LABELS[level]).join(', ') || undefined}
+      >
+        {REASONING_LEVELS.map((level) => (
+          <Select.Option key={level} value={level}>{REASONING_LEVEL_LABELS[level]}</Select.Option>
+        ))}
+      </Select>
       <div className="flex flex-col items-start gap-2 sm:col-span-2">
         {fieldError.alert}
         {refusal && (

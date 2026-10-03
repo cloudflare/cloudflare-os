@@ -264,6 +264,7 @@ export class GatewayModels {
     return {
       ...gatewayModelConfig(model),
       ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
+      ...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {}),
       ...(reasoning !== null ? { reasoning } : {}),
       ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
     };

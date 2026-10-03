@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  SUGGESTED_MODELS, type AiModelProvider, type GatewayModel,
+  SUGGESTED_MODELS, type AiModelProvider, type GatewayModel, type GatewayModelCapabilities,
 } from "@gadgets/workshop-shared/api";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
@@ -428,6 +428,28 @@ describe("GatewayModels", () => {
       expect(models.resolve("claude-test-2")?.config).toStrictEqual(
           { provider: "anthropic", model: "claude-test-2", apiToken: "", contextWindow: 200000 });
       expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
+    });
+
+    it("resolves an added model with what it is stated to do, when anything is", () => {
+      const capabilities: GatewayModelCapabilities =
+          { imageInput: true, reasoningLevels: ["off", "high"] };
+      const models = gatewayModels({
+        addedModels: [
+          { ...ADDED[0]!, behavesLike: "claude-opus-5-5", capabilities }, ADDED[2]!,
+        ],
+        defaultReasoning: "high",
+        modelModes: { "claude-test": "disabled" },
+      });
+      expect(models.get("claude-test")?.capabilities).toStrictEqual(capabilities);
+      // A disabled model runs with it too, for an admin's test.
+      expect(models.runConfig("claude-test")).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        behavesLike: "claude-opus-5-5", capabilities, reasoning: "high",
+      });
+      expect(models.resolve("claude-test-2")?.config).toStrictEqual({
+        provider: "anthropic", model: "claude-test-2", apiToken: "", contextWindow: 200000,
+        reasoning: "high",
+      });
     });
 
     it("gives a model in any mode the config it runs with", () => {

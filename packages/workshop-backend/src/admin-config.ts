@@ -9,7 +9,7 @@
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -214,7 +214,7 @@ const MAX_ADDED_MODEL_TEXT = 200;
  */
 export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
   if (!value || typeof value !== "object") return undefined;
-  let {provider, id, name, contextWindow, outputLimit, behavesLike} =
+  let {provider, id, name, contextWindow, outputLimit, behavesLike, capabilities} =
       value as Partial<GatewayModel>;
   if (!isProvider(provider)) return undefined;
   if (typeof id !== "string" || typeof name !== "string") return undefined;
@@ -228,11 +228,27 @@ export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
   // Blank reads as absent.
   behavesLike = typeof behavesLike === "string" ? behavesLike.trim() : "";
   if (behavesLike.length > MAX_ADDED_MODEL_TEXT) return undefined;
+  capabilities = sanitizeCapabilities(capabilities);
   return {
     provider, id, name, contextWindow,
     ...(outputLimit === undefined ? {} : {outputLimit}),
     ...(behavesLike ? {behavesLike} : {}),
+    ...(capabilities ? {capabilities} : {}),
   };
+}
+
+// The well-formed part of what an added model is stated to do, or undefined if none of it is:
+// a malformed statement is one not made. Reasoning levels are kept once each, least to most.
+function sanitizeCapabilities(value: unknown): GatewayModelCapabilities | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  let {imageInput, reasoningLevels} = value as Partial<GatewayModelCapabilities>;
+  let capabilities: GatewayModelCapabilities = {};
+  if (typeof imageInput === "boolean") capabilities.imageInput = imageInput;
+  if (Array.isArray(reasoningLevels) && reasoningLevels.every(isReasoningLevel)) {
+    capabilities.reasoningLevels =
+        REASONING_LEVELS.filter(level => reasoningLevels.includes(level));
+  }
+  return Object.keys(capabilities).length > 0 ? capabilities : undefined;
 }
 
 function isTokenLimit(value: unknown): value is number {
