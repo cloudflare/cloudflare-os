@@ -625,7 +625,7 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     // Keyed by worker name, because that is what a service binding names.
     const dependencyPreviews = await mapWithConcurrency(
         [...gatekeepers, ...systemWorkers], GATEKEEPER_CONCURRENCY,
-        async (pkg) => {
+        async (pkg): Promise<[string, string]> => {
           // Before this gatekeeper's preview, not after, and for the same reason the backend's go
           // before its own: a preview inherits the Preview base config as it stands when it is
           // created.
