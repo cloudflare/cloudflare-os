@@ -95,6 +95,10 @@ export const NotificationBridge = ({
             ? `${notification.chatTitle || "Task"} completed`
             : `${notification.chatTitle || "Task"} needs permission`,
           variant: notification.kind === "taskCompleted" ? "success" : "info",
+          actions: [{
+            children: "Open task",
+            onClick: () => window.location.assign(notification.targetPath),
+          }],
         });
       }) as unknown as RpcStub<NotificationSubscriber>;
       let nextSubscription = authenticatedApi.subscribeToNotifications(subscriber);

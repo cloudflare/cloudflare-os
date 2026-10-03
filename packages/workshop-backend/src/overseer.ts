@@ -8285,20 +8285,28 @@ class OverseerImpl implements AgentHooks {
   }
 
   consumeCapturedActions(chatId: number)
-      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined {
+      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean,
+         endsTurn: boolean} | undefined {
     let result = this.#capturedActions.get(chatId);
     this.#capturedActions.delete(chatId);
     // Submission latched this, but the user may decide while the tool still runs, before the step's
     // action cards exist for an approval to resume from. So stop only for an awaited action that is
     // still pending, or was rejected (which ends the turn).
-    if (result) {
-      result.awaitDecision &&= result.actions.some(id => {
+    if (!result) return undefined;
+
+    let endsTurn = false;
+    if (result.awaitDecision) {
+      let pendingDecision = false;
+      for (const id of result.actions) {
         let record = this.storage.actions.get(id);
-        return record?.type === "action" && record.description.awaitDecision &&
-            record.state !== "approved";
-      });
+        if (record?.type !== "action" || !record.description.awaitDecision ||
+            record.state === "approved") continue;
+        endsTurn = true;
+        pendingDecision ||= record.state === "pending";
+      }
+      result.awaitDecision = pendingDecision;
     }
-    return result;
+    return {...result, endsTurn};
   }
 
   // --- Connection-request hooks ---

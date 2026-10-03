@@ -70,17 +70,17 @@ describe("NotificationBridge", () => {
       messageHandlers: { cloudflareOSNotificationReady: { postMessage: notificationReady } },
     };
 
-    await act(async () => root.render(
-      <NotificationBridge authenticatedApi={authenticatedApi} />,
-    ));
+    await act(async () => root.render(React.createElement(
+      NotificationBridge, { authenticatedApi },
+    )));
     expect(subscribeToNotifications).toHaveBeenCalledTimes(1);
     expect(requestSubscription).toHaveBeenCalledTimes(1);
 
     // Kumo returns a new manager wrapper whenever its consumer renders. It must not restart this
     // long-lived subscription or one completion fans out through accumulated subscribers.
-    await act(async () => root.render(
-      <NotificationBridge authenticatedApi={authenticatedApi} />,
-    ));
+    await act(async () => root.render(React.createElement(
+      NotificationBridge, { authenticatedApi },
+    )));
     expect(subscribeToNotifications).toHaveBeenCalledTimes(1);
     expect(liveSubscription.dispose).not.toHaveBeenCalled();
 
@@ -101,11 +101,16 @@ describe("NotificationBridge", () => {
       createdAt: new Date(),
       targetPath: "/workspace/workspace-1?chat=1",
     }));
-    expect(addToast).toHaveBeenCalledWith({
+    expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
       id: "notification-1",
       title: "Build the demo completed",
       variant: "success",
-    });
+      actions: [expect.objectContaining({ children: "Open task" })],
+    }));
+    let toast = addToast.mock.calls[0]?.[0] as {
+      actions: [{ onClick: () => void }];
+    };
+    expect(toast.actions[0].onClick).toBeTypeOf("function");
 
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await act(async () => document.dispatchEvent(new Event("visibilitychange")));

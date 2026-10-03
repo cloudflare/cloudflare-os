@@ -518,7 +518,8 @@ export interface AgentHooks {
                    onOutputText?: (delta: string) => void,
                    worktreeTurn?: WorktreeTurnAccess): Promise<string>;
   consumeCapturedActions(chatId: number)
-      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
+      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean,
+         endsTurn: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
 
   /**
@@ -2780,8 +2781,10 @@ async function runAgentPass(
   // thus no resume).
   let connectionRequested = false;
 
-  // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
-  // barrier persists the action before the loop ends and waits for approval to resume it.
+  // Latched by finishTurn when this step submitted an awaitDecision action that still prevents
+  // another model request. Both a pending decision and a rejection end the turn, but only the
+  // pending case is reported as waiting for permission after the loop ends.
+  let actionDecisionEndedTurn = false;
   let awaitingActionDecision = false;
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
@@ -4084,6 +4087,7 @@ async function runAgentPass(
     finishTurn: ({message, toolResults}) => {
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
+      if (capturedActionsForStep?.endsTurn) actionDecisionEndedTurn = true;
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
@@ -4098,7 +4102,7 @@ async function runAgentPass(
           // in the same turn.
           connectionRequested ||
           // Wait for approval before continuing against state that may not reflect the action.
-          awaitingActionDecision) {
+          actionDecisionEndedTurn) {
         return {action: "end"};
       }
       // The model stopped on its own; there is no next request to make room for.
