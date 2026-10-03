@@ -1,14 +1,20 @@
-// Gadgets are Git-backed, but blueprint archive version 1 intentionally retains its historical
-// gzip-compressed Yjs snapshot wire format. Instantiation decodes that snapshot into a Git commit.
+// Reads a bundled blueprint's files: from the files/ tree it is committed as, or out of a
+// `.gadget` archive exported from a Workshop.
+//
+// What the build produces is the file map itself. The Workshop backend makes a git commit of it
+// when it installs the blueprint, so nothing here writes an archive; the reader remains for the
+// `<name>.gadget` layout a blueprint directory may still use and for importing an export. Archive
+// version 1 holds a gzip-compressed Yjs snapshot of the files, which is read here. Version 2
+// holds a git packfile, which the importer hands to git.
 //
 // A blueprint's files/ tree may be authored in TypeScript: `client.ts` and `server.ts` are each
-// bundled with their `lib/**/*.ts` imports into the `client.js` / `server.js` the archive ships, so
-// the running gadget and the agent that later edits it see one JavaScript file per side, as they
-// do for a blueprint written in plain JavaScript.
+// bundled with their `lib/**/*.ts` imports into the `client.js` / `server.js` the blueprint ships,
+// so the running gadget and the agent that later edits it see one JavaScript file per side, as
+// they do for a blueprint written in plain JavaScript.
 
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import type { Dirent } from "node:fs";
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gunzipSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Y from "yjs";
@@ -17,13 +23,14 @@ import { type ModuleScan, scanModule } from "./scan.ts";
 import pkg from "../package.json" with { type: "json" };
 
 const MAGIC = 0xec2e2d3a2300e317n;
-const VERSION = 1;
+// The archive version whose content is a Yjs snapshot, and the one whose content is a git pack.
+const SNAPSHOT_VERSION = 1;
+const RELEASE_VERSION = 2;
 const PREFIX_BYTES = 24;
 const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const textEncoder = new TextEncoder();
 
 export function findInterruptedImportBackups(
   entries: Dirent[],
@@ -55,15 +62,27 @@ function invalid(label: string, message: string): never {
   throw new Error(`${label}: ${message}`);
 }
 
-export function parseArchive(bytes: Uint8Array, label: string): {
+/** A `.gadget` archive, taken apart but with its content not yet read. */
+export type BlueprintArchive = {
+  /**
+   * Which form `content` takes: 1 for a snapshot, which {@link extractFiles} reads, or 2 for a
+   * git packfile of the release commit that `metadata.commitId` names.
+   */
+  version: 1 | 2;
+  /** The blueprint's metadata as the archive holds it: parsed JSON, otherwise unchecked. */
   metadata: Record<string, unknown>;
   content: Uint8Array;
-} {
+};
+
+/** Splits a `.gadget` archive of either version into its metadata and its content. */
+export function parseArchive(bytes: Uint8Array, label: string): BlueprintArchive {
   if (bytes.byteLength < PREFIX_BYTES) invalid(label, "too short to be a .gadget archive");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getBigUint64(0) !== MAGIC) invalid(label, "not a .gadget archive (bad magic)");
   const version = view.getUint32(8);
-  if (version !== VERSION) invalid(label, `unsupported archive version ${version}`);
+  if (version !== SNAPSHOT_VERSION && version !== RELEASE_VERSION) {
+    invalid(label, `unsupported archive version ${version}`);
+  }
 
   const metadataLength = view.getUint32(12);
   const contentLength = Number(view.getBigUint64(16));
@@ -84,29 +103,10 @@ export function parseArchive(bytes: Uint8Array, label: string): {
   } catch (err) {
     invalid(label, `metadata is not valid UTF-8 JSON (${errorMessage(err)})`);
   }
-  return { metadata, content: bytes.subarray(PREFIX_BYTES + metadataLength) };
+  return { version, metadata, content: bytes.subarray(PREFIX_BYTES + metadataLength) };
 }
 
-export function serializeArchive(
-  metadata: Record<string, unknown>,
-  content: Uint8Array,
-  label: string,
-): Uint8Array {
-  const metadataBytes = textEncoder.encode(JSON.stringify(metadata));
-  if (metadataBytes.byteLength > MAX_METADATA_BYTES) invalid(label, "metadata is too large");
-  if (content.byteLength > MAX_CONTENT_BYTES) invalid(label, "compressed content is too large");
-
-  const out = new Uint8Array(PREFIX_BYTES + metadataBytes.byteLength + content.byteLength);
-  const view = new DataView(out.buffer);
-  view.setBigUint64(0, MAGIC);
-  view.setUint32(8, VERSION);
-  view.setUint32(12, metadataBytes.byteLength);
-  view.setBigUint64(16, BigInt(content.byteLength));
-  out.set(metadataBytes, PREFIX_BYTES);
-  out.set(content, PREFIX_BYTES + metadataBytes.byteLength);
-  return out;
-}
-
+/** Reads the files out of a version 1 archive's content, a gzip-compressed Yjs snapshot. */
 export function extractFiles(content: Uint8Array, label: string): Map<string, string> {
   let update: Uint8Array;
   try {
@@ -136,29 +136,12 @@ export function extractFiles(content: Uint8Array, label: string): Map<string, st
   return files;
 }
 
-export function buildContent(files: Map<string, string>, label: string): Uint8Array {
-  validateFilePaths(files.keys(), label);
-  const doc = new Y.Doc();
-  // The generated update is embedded as build output, not committed source. A fixed client ID makes
-  // repeated builds byte-identical while preserving the same minimal one-insert-per-file snapshot.
-  doc.clientID = 1;
-  const root = doc.getMap();
-  for (const [filename, source] of [...files].toSorted(([a], [b]) => compareNames(a, b))) {
-    const text = new Y.Text();
-    root.set(filename, text);
-    text.insert(0, source);
-  }
-  const update = Y.encodeStateAsUpdateV2(doc);
-  if (update.byteLength > MAX_SOURCE_BYTES) invalid(label, "source snapshot is too large");
-  return gzipSync(update, {level: 9});
-}
-
 /**
- * Reads a blueprint's files/ tree into the file map its archive will hold.
+ * Reads a blueprint's files/ tree into the file map the blueprint ships.
  *
- * Every regular file under `filesDir` is read as UTF-8 and validated as a portable archive path; a
- * tree holding TypeScript is then compiled by {@link bundleTypeScriptSources}, so the returned map
- * is what the installed gadget sees, not what is on disk.
+ * Every regular file under `filesDir` is read as UTF-8 and validated as a portable path; a tree
+ * holding TypeScript is then compiled by {@link bundleTypeScriptSources}, so the returned map is
+ * what the installed gadget sees, not what is on disk.
  */
 export async function readSourceFiles(
   filesDir: string,
@@ -258,14 +241,14 @@ const GADGET_TARGET = "es2022";
 
 /**
  * Declaration files carry no code: dropped rather than compiled. Only the plain spelling: a
- * `.d.mts` or `.d.cts` describes a module flavour the archive cannot hold, so it is refused with
+ * `.d.mts` or `.d.cts` describes a module flavour the blueprint cannot hold, so it is refused with
  * the sources it would describe (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}).
  */
 const DECLARATION_PATTERN = /\.d\.ts$/u;
 
 /**
  * TypeScript spellings a gadget module may not use, declarations included. Each would type-check
- * but reach the archive as raw TypeScript or not at all, so they are rejected rather than
+ * but reach the blueprint as raw TypeScript or not at all, so they are rejected rather than
  * half-supported: JSX has no runtime here (the client is hand-written DOM code), and the ESM/CJS
  * variants say nothing a blueprint needs -- both bundles are ES modules.
  */
@@ -314,12 +297,12 @@ const RESOLVED_AS_WRITTEN = /\.(?:ts|json)$/u;
 const JAVASCRIPT_EXTENSION = /\.js$/u;
 
 /**
- * Replaces the TypeScript in a files/ tree with the JavaScript the archive ships.
+ * Replaces the TypeScript in a files/ tree with the JavaScript the blueprint ships.
  *
  * `client.ts` and `server.ts` each become `client.js` / `server.js`, bundling whatever they import
  * from `lib/`; those `lib/` modules are inputs to the bundles and are not stored themselves.
  * `.d.ts` files carry no code and are dropped. Every other file passes through unchanged -- a
- * bundle inlining one (a JSON data file, say) does not remove it, because a module the archive
+ * bundle inlining one (a JSON data file, say) does not remove it, because a module the blueprint
  * still ships may import it too -- so a blueprint written in JavaScript builds exactly as it did
  * before TypeScript was allowed here.
  *
@@ -327,7 +310,7 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * (`<PACKAGE_NAME>/libraries/<name>/<side>`), and esbuild is given that name as an alias for the
  * package root, so the import resolves to the libraries beside this module without a
  * `node_modules` above the blueprint: a `BUNDLED_BLUEPRINTS_DIR` tree elsewhere builds against the
- * libraries this build ships with. The archive stays self-contained -- a gadget created from the
+ * libraries this build ships with. The blueprint stays self-contained -- a gadget created from the
  * blueprint carries its own copy of the library as of its instantiation, and nothing resolves the
  * package name at runtime.
  *
@@ -347,8 +330,8 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * check saw, and a module the bundler resolved to another of the blueprint's files by way of a
  * `package.json` above the tree, which the in-tree refusal cannot see (see {@link auditInputs});
  * a `.ts` file that is neither an entry nor under `lib/`; a TypeScript
- * dialect the archive has no place for (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/`
- * module no entry imports, which would be dropped from the archive; an input the bundle inlined that is
+ * dialect the blueprint has no place for (see {@link UNSUPPORTED_TYPESCRIPT_PATTERN}); a `lib/`
+ * module no entry imports, which would be dropped from the blueprint; an input the bundle inlined that is
  * neither one of the blueprint's own files nor a library reached by its package subpath, from the
  * right side, which would inline code the blueprint does not own (see {@link auditInputs}); a
  * dynamic `import()` or `require()` of anything but a string literal, refused from the source
@@ -358,8 +341,8 @@ const JAVASCRIPT_EXTENSION = /\.js$/u;
  * bundler would not (see {@link ModuleScan.rebindsRequire}); a
  * generated `client.js` or `server.js` that collides with a file or directory the tree already
  * holds; a reference to `require` the bundler could not resolve away, which would throw when
- * reached (see {@link RESIDUAL_REQUIRE_PATTERN}); and, in a JavaScript module the archive ships as
- * written, an import of a gadget library, which only the bundle can inline (see
+ * reached (see {@link RESIDUAL_REQUIRE_PATTERN}); and, in a JavaScript module the blueprint ships
+ * as written, an import of a gadget library, which only the bundle can inline (see
  * {@link checkShippedImports}).
  */
 async function bundleTypeScriptSources(
@@ -439,7 +422,7 @@ async function bundleTypeScriptSources(
   // package name to, are resolved the same way.
   const [rootDir, packageDir] = await Promise.all([realpath(filesDir), realpath(packageRoot())]);
   const librariesDir = join(packageDir, "libraries");
-  // Every input esbuild inlined into some bundle, as an archive path: what the bundles can witness
+  // Every input esbuild inlined into some bundle, as a shipped path: what the bundles can witness
   // of a `lib/` module being wanted.
   const bundled = new Set<string>();
   await Promise.all(entries.map(async entry => {
@@ -512,7 +495,7 @@ async function bundleTypeScriptSources(
     }
   }
   // The bundle added client.js / server.js, which the on-disk check never saw: a client.js/
-  // directory of non-modules would otherwise survive to buildContent.
+  // directory of non-modules would otherwise ship.
   const shipped = new Map([...output].toSorted(([a], [b]) => compareNames(a, b)));
   validateFilePaths(shipped.keys(), label);
   return shipped;
@@ -521,7 +504,7 @@ async function bundleTypeScriptSources(
 /**
  * Walks what esbuild inlined into an entry's bundle, import by import, and rejects anything that is
  * not the blueprint's own or a gadget library reached the one way a blueprint may reach one.
- * Returns the blueprint's own files the bundle inlined, as archive paths.
+ * Returns the blueprint's own files the bundle inlined, as shipped paths.
  *
  * The walk starts at the entry and follows `metafile.inputs[*].imports`, so every input is met as
  * the edge that brought it in and an error names the importer and the specifier as written. An
@@ -535,7 +518,7 @@ async function bundleTypeScriptSources(
  * modules -- is refused, so the package subpath is the libraries' only door and a library's `src/`
  * is not reachable from a blueprint by any path. An import written inside a library may reach any
  * module under `libraries/`, but never `node_modules`: a library's npm dependency would be inlined
- * into an archive nothing audits. An input inside files/ that a blueprint module imported must be
+ * into a blueprint nothing audits. An input inside files/ that a blueprint module imported must be
  * the one module its specifier names (see {@link resolveWithinFiles}), so a `browser` field or
  * `imports` map in a `package.json` above the blueprint cannot swap one of the blueprint's modules
  * for another behind the type check's back. An external import is not an input and is not walked;
@@ -632,7 +615,7 @@ function auditInputs(
  * Names each library module inlined into `text` by its package path rather than by the path
  * esbuild wrote, which is relative to the blueprint's files/ and so, for a tree outside this
  * package, climbs to the filesystem root and spells out where the checkout that built it lives.
- * The archive stays a function of its sources: the same blueprint builds the same bytes anywhere,
+ * What ships stays a function of its sources: the same blueprint builds the same files anywhere,
  * and its fingerprint with them. Only a path the metafile lists as an input is rewritten; a template
  * literal whose own line spells exactly such a path would be rewritten with it, which the README
  * lists among the build's limits.
@@ -658,7 +641,7 @@ function matchesExternal(specifier: string, externals: readonly string[]): boole
 }
 
 /**
- * Rejects an import in `source`, a module the archive ships as written, that names a gadget
+ * Rejects an import in `source`, a module the blueprint ships as written, that names a gadget
  * library by this package's name: the build inlines a library into a TypeScript entry only, so a
  * shipped module's copy of the specifier would be resolved against nothing. The specifier is
  * compared decoded (see {@link scanModule}), so spelling the name with an escape does not get it
@@ -715,7 +698,7 @@ const isRelative = (specifier: string): boolean =>
     specifier.startsWith("./") || specifier.startsWith("../");
 
 /**
- * The one archive path a relative `specifier` written in `importer` names, or `undefined` when it
+ * The one shipped path a relative `specifier` written in `importer` names, or `undefined` when it
  * names none of `files`.
  *
  * The spellings are tried in TypeScript's order, and the first that exists wins, since that is the

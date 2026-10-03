@@ -1,26 +1,29 @@
 // Turns a directory of bundled blueprints into the text of a TypeScript module holding their
-// archives, so the Workshop backend can install them with no network access when a deployment
+// files, so the Workshop backend can install them with no network access when a deployment
 // first serves /api. The backend's `scripts/build-bundled-blueprints.ts` decides which directory,
 // where the module goes and whether to write it; this is the part that reads and validates.
 //
-// Each blueprint is a directory containing blueprint.json and a files/ directory. The reviewable
-// source is converted to the ordinary binary .gadget representation only in the generated module.
+// Each blueprint is a directory containing blueprint.json and a files/ directory. The generated
+// module holds the files as built, with the manifest beside them: the backend's installer is
+// what turns them into the git commit an installed blueprint is.
 
 import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  buildContent,
   extractFiles,
   findInterruptedImportBackups,
   parseArchive,
   readSourceFiles,
-  serializeArchive,
   validatePortablePaths,
 } from "./files.ts";
-import type { BundledBlueprintManifest, BundledBlueprintPresentation } from "./manifest.ts";
-import { parseBundledBlueprintManifest, parseBundledBlueprintPresentation } from "./manifest.ts";
+import type { BundledBlueprintManifest } from "./manifest.ts";
+import {
+  parseBundledBlueprintManifest,
+  parseBundledBlueprintPresentation,
+  parseBundledBlueprintProvenance,
+} from "./manifest.ts";
 
 /** The blueprints this repository ships: `blueprints/` beside this module's `src/`. */
 export const BUNDLED_BLUEPRINTS_DIR: string =
@@ -38,18 +41,20 @@ export type GeneratedModule = {
   text: string;
   /** How many blueprints it holds. */
   count: number;
-  /** The archives' raw size before base64 encoding, summed. */
+  /** The files' size as UTF-8, summed over every blueprint. */
   totalBytes: number;
 };
 
 /**
- * Reads every blueprint under `sourceDir` and returns the generated module holding their archives.
+ * Reads every blueprint under `sourceDir` and returns the generated module holding their files.
  *
- * Extracted directories (`<name>/blueprint.json` plus `<name>/files/`) are rebuilt into archives;
- * a legacy `<name>.gadget` plus `<name>.json` pair is copied as-is. An extracted directory wins
- * over same-stem legacy files, and a `.<name>.backup-<pid>` left by an interrupted import stands
- * in for its missing directory, which is what makes migration interruption-safe. Anything else in
- * the directory other than README.md is an error, as are two blueprints sharing a `blueprintId`.
+ * Extracted directories (`<name>/blueprint.json` plus `<name>/files/`) are built; a legacy
+ * `<name>.gadget` plus `<name>.json` pair is unpacked, which only a version 1 archive can be: a
+ * newer export enters a blueprint directory through the importer, which writes the extracted
+ * layout. An extracted directory wins over same-stem legacy files, and a `.<name>.backup-<pid>`
+ * left by an interrupted import stands in for its missing directory, which is what makes
+ * migration interruption-safe. Anything else in the directory other than README.md is an error,
+ * as are two blueprints sharing a `blueprintId`.
  *
  * An empty directory is a supported way to ship no formats, so it is a warning rather than an
  * error; a mistyped directory fails in readdir(), which is the case worth catching.
@@ -106,11 +111,10 @@ export async function generateBundledBlueprintsModule(
     console.warn(`No blueprint directories in ${sourceDir}; the deployment will bundle no formats.`);
   }
 
-  let entries: Array<Omit<BundledBlueprintManifest,
-      "created" | "version" | "lastUpdated" | "bindings"> & {
-        contentHash: string;
-        archive: string;
-      }> = [];
+  let entries: Array<BundledBlueprintManifest & {
+    contentHash: string;
+    files: Array<[path: string, text: string]>;
+  }> = [];
   let totalBytes = 0;
   let seen = new Map<string, string>();
   let sources = [
@@ -121,61 +125,68 @@ export async function generateBundledBlueprintsModule(
   validatePortablePaths(sources.map(source => source.name), sourceDir);
   for (let source of sources) {
     let {name} = source;
-    let raw: string;
-    let entry: BundledBlueprintPresentation;
-    let bytes: Uint8Array;
+    let manifest: BundledBlueprintManifest;
+    let sourceFiles: Map<string, string>;
     if (source.kind === "extracted") {
       let directory = source.directory;
+      let raw: string;
       try {
         raw = await readFile(join(sourceDir, directory, "blueprint.json"), "utf8");
       } catch (err) {
         if (!isErrorCode(err, "ENOENT")) throw err;
         throw new Error(`${name}/ has no blueprint.json describing it.`, { cause: err });
       }
-      let manifest = parseBundledBlueprintManifest(name, raw);
-      let {created, version, lastUpdated, bindings, ...presentation} = manifest;
-      entry = presentation;
-      let sourceFiles = await readSourceFiles(join(sourceDir, directory, "files"), `${name}/files`);
-      let metadata = {
-        title: manifest.title,
-        description: manifest.description,
-        author: manifest.author,
-        created,
-        version,
-        lastUpdated,
-        bindings,
-      };
-      let content = buildContent(sourceFiles, name);
-      bytes = serializeArchive(metadata, content, name);
+      manifest = parseBundledBlueprintManifest(name, raw);
+      sourceFiles = await readSourceFiles(join(sourceDir, directory, "files"), `${name}/files`);
     } else {
-      raw = await readFile(join(sourceDir, `${name}.json`), "utf8");
-      entry = parseBundledBlueprintPresentation(`${name}.json`, raw);
-      bytes = await readFile(join(sourceDir, `${name}.gadget`));
-      let archive = parseArchive(bytes, name);
-      extractFiles(archive.content, name);
+      let raw = await readFile(join(sourceDir, `${name}.json`), "utf8");
+      let archive = parseArchive(await readFile(join(sourceDir, `${name}.gadget`)), name);
+      if (archive.version !== 1) {
+        throw new Error(`${name}.gadget is a version ${archive.version} archive, which the ` +
+            `${name}.gadget plus ${name}.json layout cannot hold. Import it instead, with ` +
+            `pnpm import:bundled-blueprint, which rewrites ${name} as a directory.`);
+      }
+      // The archive supplies what the blueprint does -- its code, its bindings and the dates from
+      // the workspace it was exported from. How it is presented comes from the file beside it.
+      manifest = {
+        ...parseBundledBlueprintPresentation(`${name}.json`, raw),
+        // An archive that names no bindings declares none, as the importer reads it too.
+        ...parseBundledBlueprintProvenance(`${name}.gadget`,
+            {...archive.metadata, bindings: archive.metadata.bindings ?? {}}),
+      };
+      sourceFiles = extractFiles(archive.content, name);
     }
 
-    // Two archives installing under one id would race, and only one would survive.
-    let duplicate = seen.get(entry.blueprintId);
+    // Two blueprints installing under one id would race, and only one would survive.
+    let duplicate = seen.get(manifest.blueprintId);
     if (duplicate) {
-      throw new Error(`${name} and ${duplicate} share blueprintId ${entry.blueprintId}`);
+      throw new Error(`${name} and ${duplicate} share blueprintId ${manifest.blueprintId}`);
     }
-    seen.set(entry.blueprintId, name);
-    totalBytes += bytes.byteLength;
-    let contentHash = createHash("sha256").update(bytes).digest("hex");
-    entries.push({ ...entry, contentHash, archive: Buffer.from(bytes).toString("base64") });
+    seen.set(manifest.blueprintId, name);
+
+    // Sorted, so that the module and the fingerprint below depend on what the files are and not
+    // on the order a directory or an archive happened to list them in.
+    let sorted = [...sourceFiles].toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    for (let [, text] of sorted) totalBytes += Buffer.byteLength(text);
+    let {created, version, lastUpdated, bindings} = manifest;
+    let contentHash = createHash("sha256")
+        .update(JSON.stringify({created, version, lastUpdated, bindings, files: sorted}))
+        .digest("hex");
+    entries.push({ ...manifest, contentHash, files: sorted });
   }
 
   let text = `// GENERATED by @gadgets/bundled-blueprints through scripts/build-bundled-blueprints.ts -- do not edit.
 //
-// The deployment's bundled blueprints, base64-encoded for bundling into the Worker. Extracted source
-// is rebuilt into archives; legacy BUNDLED_BLUEPRINTS_DIR archives are copied as-is. Built from
-// ${builtFrom}.
+// The deployment's bundled blueprints, for bundling into the Worker: each one's manifest, and its
+// files as the build produced them. Extracted source is built; legacy BUNDLED_BLUEPRINTS_DIR
+// archives are unpacked. Built from ${builtFrom}.
 
-import type { AiChatAuthorInfo, BlueprintOutput } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatAuthorInfo, BlueprintBinding, BlueprintOutput,
+} from "@gadgets/workshop-shared/api";
 
-// One bundled blueprint: how to present it, and the archive that says what it does. The build
-// validates the source manifest and files before constructing the archive.
+// One bundled blueprint: how to present it, and the files and metadata that say what it does.
+// The build validates the source manifest and files before writing them here.
 export type BundledBlueprint = {
   blueprintId: string;
   title: string;
@@ -183,15 +194,24 @@ export type BundledBlueprint = {
   output: BlueprintOutput;
   author: AiChatAuthorInfo;
 
-  // Bumped when the archive changes, to trigger a reinstall on deployments already holding an
+  // Bumped when the blueprint changes, to trigger a reinstall on deployments already holding an
   // older copy. Everything else here is covered by the install fingerprint.
   revision: number;
 
-  // Fingerprints the generated archive so direct source-file edits trigger a reinstall.
+  // What BlueprintMetadata holds under the same names, from the workspace the blueprint was
+  // exported from. The dates are ISO strings.
+  created: string;
+  version: number;
+  lastUpdated: string;
+  bindings: Record<string, BlueprintBinding>;
+
+  // Fingerprints the files and the four fields above, so direct source-file edits trigger a
+  // reinstall.
   contentHash: string;
 
-  // The archive's bytes, base64-encoded.
-  archive: string;
+  // The blueprint's files, sorted by path. Pairs rather than an object, which could not hold a
+  // file named \`__proto__\`.
+  files: Array<[path: string, text: string]>;
 };
 
 export const BUNDLED_BLUEPRINTS: BundledBlueprint[] = ${JSON.stringify(entries, null, 2)};

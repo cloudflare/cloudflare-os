@@ -1,7 +1,7 @@
 # Bundled blueprints
 
 This package holds the blueprints that ship with this repo, the gadget libraries they import, and
-the build that turns a blueprint directory into the archives the Workshop backend installs. A fresh
+the build that turns a blueprint directory into the files the Workshop backend installs. A fresh
 deployment installs the blueprints into BLUEPRINTS KV and BLUEPRINT_CONTENT R2 on its first `/api`
 request, after which they are ordinary blueprints, and promotes them as its standard output formats.
 "Bundled" is what this package holds; "format" is a curation state an admin controls at runtime --
@@ -9,7 +9,7 @@ a bundled blueprint can be taken out of the formats menu, and an unbundled one p
 
 Nothing here is deployed on its own. The Workshop backend's `scripts/build-bundled-blueprints.ts`
 imports `src/` to generate the gitignored `src/generated/bundled-blueprints.ts` it compiles the
-archives into, and `pnpm import:bundled-blueprint` (the same package) writes into `blueprints/`.
+blueprints into, and `pnpm import:bundled-blueprint` (the same package) writes into `blueprints/`.
 
 ## Layout
 
@@ -21,17 +21,23 @@ blueprints/<name>/     one bundled blueprint, committed as reviewable source
     client.ts          import { el } from "@gadgets/bundled-blueprints/libraries/ui/client"
     server.ts          import { MutationQueue } from ".../libraries/sync/server"
     lib/protocol.ts    the document, operation and RPC types both sides share
-  __tests__/           vitest, repo-only; never part of the archive
+  __tests__/           vitest, repo-only; never part of the blueprint
 libraries/<name>/      a gadget library: client.ts, server.ts, src/**, __tests__/** (see libraries/README.md)
-src/                   the build: archive codec and source reader (files.ts), manifest parser
+src/                   the build: source and archive reader (files.ts), manifest parser
                        (manifest.ts), module generator (generate.ts); index.ts is what the backend imports
 __tests__/             the build's own tests
 ```
 
 `files/` is the gadget's code. `blueprint.json` contains its install ID, presentation, provenance,
-bindings, blueprint `version`, and bundled `revision`. The build converts these files into the same
-gzip-compressed Yjs `.gadget` representation used by uploaded blueprints and embeds it in the
-generated Worker module. No binary archive is committed.
+bindings, blueprint `version`, and bundled `revision`. The build embeds the manifest and the files,
+as built, in the generated Worker module. No binary archive is committed, and none is built.
+
+Installing a blueprint makes a git commit of its files, as publishing one from a Workshop does, and
+stores it as a packfile. The commit has no parent and a fixed author, date and message, so it
+depends on the files and nothing else: every deployment that installs the same files installs the
+same commit, and a blueprint whose files have not changed is the same commit however often it is
+installed. A bundled blueprint's versions are not chained to one another the way a published
+blueprint's releases are: each is a commit on its own.
 
 ### Libraries
 
@@ -39,8 +45,8 @@ A blueprint may import the shared **gadget libraries** in `libraries/` (see [its
 README](libraries/README.md)) by this package's name and the subpath its `package.json` exports:
 `@gadgets/bundled-blueprints/libraries/<name>/client` from its client, `.../<name>/server` from its
 server. The build resolves each to the library's entry and inlines what the entry uses into the
-shipped `client.js` / `server.js`, as it does a `lib/` module, so the archive stays self-contained
-and a gadget created from the blueprint carries its own copy of the library as of its
+shipped `client.js` / `server.js`, as it does a `lib/` module, so the blueprint stays
+self-contained and a gadget created from it carries its own copy of the library as of its
 instantiation. A client may not import a library's server side (it would drag a Durable Object into
 the iframe), and a library, reached by that subpath, is the one thing an import may reach outside
 `files/` for. The importer has to be TypeScript: a JavaScript module ships as written, with nothing
@@ -52,8 +58,8 @@ their own domain code in `files/`.
 
 `files/` may be written in TypeScript: `client.ts` and `server.ts` are the entry points, and
 `lib/**/*.ts` holds the modules they import (by on-disk name, `./lib/protocol.ts`). The build bundles
-each entry with its imports into the `client.js` / `server.js` the archive ships -- readable rather
-than minified -- so the installed gadget, and the agent that later edits it, see exactly one
+each entry with its imports into the `client.js` / `server.js` the blueprint ships -- readable
+rather than minified -- so the installed gadget, and the agent that later edits it, see exactly one
 JavaScript file per side, the same as for a blueprint written in plain JavaScript. Those `lib/`
 modules are build input only and are not stored, and `.d.ts` files are dropped. The bundled Docs,
 Sheets and Slides blueprints are written this way, each with a `lib/protocol.ts` holding the types
@@ -135,7 +141,7 @@ subpath -- and stay inside these limits, which the build does not enforce:
   the globals its runtime supplies, and the type check is only as honest as that isolation.
 - A tree under `BUNDLED_BLUEPRINTS_DIR` is bundled but not type-checked; the programs above cover
   this package's `blueprints/` and `libraries/` only. Type-check such a tree in its own workspace.
-- The comment naming each inlined library module is rewritten line by line, so the archive is the
+- The comment naming each inlined library module is rewritten line by line, so the bundle is the
   same wherever it is built; a template literal whose own line spells exactly such a path would be
   rewritten with it.
 
@@ -146,15 +152,16 @@ and run under `pnpm test` (jsdom by default; a pure module's or a server's test 
 named `server.test.ts` or `<topic>.server.test.ts`, which is what puts it under the Workers types
 rather than the DOM's; at run time it gets `cloudflare:workers` as a stub of its base classes
 (`__tests__/stubs/cloudflare-workers.ts`), so a Durable Object can be constructed over in-memory
-storage. The archives the build produces are still installed and inspected inside workerd by the
+storage. The blueprints the build produces are still installed and inspected inside workerd by the
 Workshop backend's suite. Only `blueprint.json` and `files/` are read by the build, so `__tests__/`
-(and anything else beside them) is repo-only and never part of the archive.
+(and anything else beside them) is repo-only and never part of the blueprint.
 
 `blueprintId` is the install key. Never change it after deployment: the new ID would install a
 second blueprint while the old one remained. (TODO: the bundled IDs keep the historical `format.`
 prefix -- `format.document`, `format.spreadsheet`, `format.slides` -- for that reason; renaming them
-needs an install-time migration keyed on the old id.) `version` is the blueprint's published content version
-and R2 key. The build fingerprints the generated archive, so direct edits under `files/` reinstall
+needs an install-time migration keyed on the old id.) `version` is the blueprint's published content
+version, a counter for display: the content itself is stored under the commit of its files. The
+build fingerprints the files and the rest of the manifest, so direct edits under `files/` reinstall
 automatically. `revision` remains an explicit reinstall trigger and is bumped by the importer.
 
 ## Editing presentation
@@ -175,6 +182,12 @@ updates archive-owned metadata (`created`, `version`, `lastUpdated`, and `bindin
 `revision`, rebuilds the backend's `src/generated/bundled-blueprints.ts`, and reports changed files
 and bindings. An export the build rejects is refused before it replaces
 anything. Review the resulting source diff normally.
+
+An export is a `.gadget` archive in one of two versions, and the importer reads both. Version 1
+holds a snapshot of the blueprint's files. Version 2, which a Workshop writes for anything published
+since blueprints became git commits, holds a git packfile, and the importer has `git` unpack it.
+Only the files are taken from either: the bundled blueprint's commit is made from them at install,
+not copied from the export.
 
 An export contains the bundled JavaScript, so importing one over a TypeScript blueprint replaces its
 sources with the built `client.js` / `server.js`. Edit a TypeScript blueprint in the repo instead,
@@ -216,7 +229,9 @@ be, so its editor and `tsc` resolve the same `exports`; or it can stay JavaScrip
 
 Directories using the previous `<name>.gadget` plus `<name>.json` layout remain supported, so an
 existing deployment can update this repo without coordinating a format conversion. Importing a new
-export into one of those entries migrates that pair to the extracted layout automatically.
+export into one of those entries migrates that pair to the extracted layout automatically. That is
+also the only way to update one: the layout holds version 1 archives, and the build refuses a
+version 2 export dropped in a `<name>.gadget`'s place.
 
 Administrators can also publish and promote ordinary blueprints at runtime instead of rebuilding a
 deployment.

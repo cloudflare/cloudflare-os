@@ -5,13 +5,19 @@
 // scripts/build-bundled-blueprints.ts), so a deployment ships its own formats by pointing
 // BUNDLED_BLUEPRINTS_DIR at its own tree rather than by editing this repo.
 //
-// Installation writes an ordinary blueprint -- metadata into BLUEPRINTS, the code snapshot into
+// Installation writes an ordinary blueprint -- metadata into BLUEPRINTS, a release pack into
 // BLUEPRINT_CONTENT -- exactly as publishing does. Nothing downstream knows these are special:
 // no reserved id prefix, no fallback branch in the read path. Failure is tolerable: a deployment
 // with none installed simply has no standard formats.
+//
+// One thing does set them apart: a bundled blueprint's releases are not chained. Each is the
+// snapshot release of its files (see buildSnapshotRelease()), a parentless commit that depends on
+// nothing but those files. So an install never has to read what was installed before it, and
+// every deployment that installs the same files installs the same commit.
 
 import { BlueprintMetadata, BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
-import { parseBlueprintArchive } from "./blueprint-archive.js";
+import { blueprintContentKey } from "./blueprint-archive.js";
+import { buildReleasePack, buildSnapshotRelease } from "./blueprint-release.js";
 import type { BlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { BundledBlueprint, BUNDLED_BLUEPRINTS } from "./generated/bundled-blueprints.js";
 import { fingerprint } from "./admin-config.js";
@@ -27,7 +33,8 @@ type InstallEnv = Pick<Cloudflare.Env, "BLUEPRINTS" | "BLUEPRINT_CONTENT">;
  *
  * Everything that ends up in the installed metadata contributes, not just `revision`: editing a
  * description would otherwise build, deploy, and change nothing on a deployment that had already
- * installed. `contentHash` covers the generated archive, including direct edits to source files.
+ * installed. `contentHash` covers the files, including direct edits to their source, and what
+ * the metadata takes from the manifest besides its presentation.
  */
 export function bundledBlueprintsManifestVersion(): string {
   return BUNDLED_BLUEPRINTS
@@ -40,35 +47,28 @@ export function bundledBlueprintsManifestVersion(): string {
 // Install one bundled blueprint, returning its public info for the featured mirror.
 async function installOne(env: InstallEnv, entry: BundledBlueprint)
     : Promise<BlueprintPublicInfo> {
-  // Parse through the ordinary archive reader so a corrupt bundled file fails the same way an
-  // uploaded one would, rather than producing a half-installed blueprint.
-  let {metadata, contentLength, content} = await parseBlueprintArchive(
-      new Response(Uint8Array.fromBase64(entry.archive) as BufferSource).body!);
+  // Packed the way a published release is, which checks the files against everything a reader
+  // will demand of them: a blueprint that installs is one that instantiates.
+  let {commitId, objects} = await buildSnapshotRelease(new Map(entry.files));
+  let pack = await buildReleasePack(oid => objects.get(oid), commitId);
 
-  // R2 needs a known length, and the archive is already fully in memory (it came out of the
-  // Worker bundle), so buffer rather than plumbing a FixedLengthStream through as the upload path
-  // does for genuinely streamed uploads.
-  let contentBytes = new Uint8Array(await new Response(content).arrayBuffer());
-  if (contentBytes.byteLength !== contentLength) {
-    throw new Error(`Archive declares ${contentLength} content bytes but holds ` +
-        `${contentBytes.byteLength}.`);
-  }
-
-  // The archive supplies what the blueprint does -- code, bindings, and the dates from the
-  // workspace it was exported from. How it is presented comes from its source manifest, overwriting
-  // whatever the archive carries.
   let installed: BlueprintMetadata = {
-    ...metadata,
     title: entry.title,
     description: entry.description,
     author: entry.author,
+    created: new Date(entry.created),
+    version: entry.version,
+    lastUpdated: new Date(entry.lastUpdated),
+    commitId,
     output: entry.output,
+    bindings: entry.bindings,
   };
 
   // Content first: a blueprint whose metadata exists but whose R2 object doesn't is broken, while
-  // the reverse is merely an orphaned object that the next install overwrites. The archive's
-  // content section is already gzip-compressed, which is exactly what R2 holds.
-  await env.BLUEPRINT_CONTENT.put(`${entry.blueprintId}/${installed.version}`, contentBytes);
+  // the reverse is merely an orphaned object. The key names the commit, so reinstalling the same
+  // files rewrites the same bytes, and installing new ones leaves the release they replace
+  // where a reader that already holds its metadata will still find it.
+  await env.BLUEPRINT_CONTENT.put(blueprintContentKey(entry.blueprintId, installed), pack);
 
   let kvRecord: BlueprintKvRecord = {metadata: installed};
   await env.BLUEPRINTS.put(entry.blueprintId, JSON.stringify(kvRecord));
@@ -89,7 +89,7 @@ export async function installBundledBlueprints(env: InstallEnv): Promise<Bluepri
         event: "formats.install.ok", blueprintId: entry.blueprintId,
       });
     } catch (err) {
-      // One bad archive must not deny the deployment the others.
+      // One bad blueprint must not deny the deployment the others.
       logger.error("failed to install bundled blueprint", {
         event: "formats.install.failed", blueprintId: entry.blueprintId, error: err,
       });

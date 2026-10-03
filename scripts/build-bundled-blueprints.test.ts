@@ -1,14 +1,15 @@
-import { mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile }
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile }
   from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
-  buildContent,
+  buildSnapshotContent,
   serializeArchive,
-} from "../packages/bundled-blueprints/src/files.ts";
+} from "../packages/bundled-blueprints/__tests__/archives.ts";
 
 const temporaryDirectories: string[] = [];
 const workspaceRoot = join(import.meta.dirname, "..");
@@ -32,12 +33,9 @@ const manifest = {
   bindings: {},
 };
 
-async function writeArchive(
-  path: string,
-  version: number,
-  files: Map<string, string>,
-): Promise<void> {
-  let metadata = {
+/** The metadata of an export of the example blueprint at `version`. */
+function exportMetadata(version: number) {
+  return {
     title: manifest.title,
     description: manifest.description,
     author: manifest.author,
@@ -46,7 +44,92 @@ async function writeArchive(
     lastUpdated: manifest.lastUpdated,
     bindings: manifest.bindings,
   };
-  await writeFile(path, serializeArchive(metadata, buildContent(files, path), path));
+}
+
+/** Writes a version 1 archive: the export of a blueprint stored as a snapshot of its files. */
+async function writeArchive(
+  path: string,
+  version: number,
+  files: Map<string, string>,
+): Promise<void> {
+  await writeFile(path, serializeArchive(1, exportMetadata(version), buildSnapshotContent(files)));
+}
+
+function git(repository: string, args: string[], input?: string): string {
+  let result = spawnSync("git", ["-C", repository, "-c", "user.name=Test",
+    "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args],
+    {input, encoding: "buffer"});
+  assert.equal(result.status, 0, result.stderr.toString());
+  return result.stdout.toString("latin1");
+}
+
+/**
+ * Builds what a version 2 archive holds, with git itself: a pack of a release commit of `files`,
+ * and the commit's id. As in a Workshop's own packs, the release has an earlier release for a
+ * `parent`, whose commit is in the pack and whose tree is not. `prepare` may change the working
+ * tree before the release is committed.
+ */
+async function buildRelease(
+  files: Map<string, string>,
+  prepare: (repository: string) => Promise<void> = async () => {},
+): Promise<{commitId: string; parent: string; pack: Uint8Array}> {
+  let repository = await mkdtemp(join(tmpdir(), "bundled-blueprints-release-"));
+  temporaryDirectories.push(repository);
+  git(repository, ["init", "-q"]);
+  await writeFile(join(repository, "earlier.js"), "// an earlier release\n");
+  git(repository, ["add", "-A", "-f"]);
+  git(repository, ["commit", "-q", "-m", "Release 1: Example"]);
+  let parent = git(repository, ["rev-parse", "HEAD"]).trim();
+
+  await rm(join(repository, "earlier.js"));
+  for (let [path, source] of files) {
+    await mkdir(dirname(join(repository, path)), {recursive: true});
+    await writeFile(join(repository, path), source);
+  }
+  await prepare(repository);
+  git(repository, ["add", "-A", "-f"]);
+  git(repository, ["commit", "-q", "-m", "Release 2: Example"]);
+  let commitId = git(repository, ["rev-parse", "HEAD"]).trim();
+
+  // Both commits, and the whole of the newer one's tree.
+  let tree = git(repository, ["rev-parse", "HEAD^{tree}"]).trim();
+  let beneath = git(repository, ["ls-tree", "-r", "-t", "-z", "HEAD"]).split("\0").filter(Boolean)
+    .map(record => record.split("\t")[0]!.split(" ")[2]!);
+  let objects = [commitId, parent, tree, ...beneath];
+  let pack = spawnSync("git", ["-C", repository, "pack-objects", "--stdout", "-q"],
+    {input: `${objects.join("\n")}\n`});
+  assert.equal(pack.status, 0, pack.stderr.toString());
+  return {commitId, parent, pack: pack.stdout};
+}
+
+/** Writes a version 2 archive: the export of a blueprint whose content is a release pack. */
+async function writeReleaseArchive(
+  path: string,
+  version: number,
+  files: Map<string, string>,
+): Promise<void> {
+  let {commitId, pack} = await buildRelease(files);
+  await writeFile(path, serializeArchive(2, {...exportMetadata(version), commitId}, pack));
+}
+
+/** One entry of a generated module's `BUNDLED_BLUEPRINTS`, as far as these tests read it. */
+type GeneratedBlueprint = typeof manifest & {
+  contentHash: string;
+  files: Array<[path: string, text: string]>;
+};
+
+/** Runs the generator over `directory` and returns the blueprints in the module it wrote. */
+async function generate(directory: string): Promise<GeneratedBlueprint[]> {
+  let generatedModule = await temporaryOutFile();
+  let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
+    cwd: packageRoot,
+    env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+    encoding: "utf8",
+  });
+  assert.equal(build.status, 0, build.stderr);
+  // Node strips the module's types, which takes its one import with them.
+  let generated = await import(pathToFileURL(generatedModule).href);
+  return generated.BUNDLED_BLUEPRINTS;
 }
 
 // Throwaway output for the generator. Its default is
@@ -81,6 +164,46 @@ afterEach(async () => {
 });
 
 describe("bundled blueprint scripts", () => {
+  it("generates each blueprint's manifest and files, and fingerprints what it installs",
+      async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    let bindings = {MODEL: {type: "aiModel", title: "Model", description: ""}};
+    let source = {...manifest, version: 3, bindings};
+    let writeManifest = (changes: object) => writeFile(join(directory, "example/blueprint.json"),
+      `${JSON.stringify({...source, ...changes}, null, 2)}\n`);
+    await mkdir(join(directory, "example", "files", "lib"), {recursive: true});
+    await writeManifest({});
+    await writeFile(join(directory, "example/files/server.js"), "// server\n");
+    await writeFile(join(directory, "example/files/lib/util.js"), "// util\n");
+    await writeFile(join(directory, "example/files/client.js"), "// client\n");
+
+    let [blueprint, ...others] = await generate(directory);
+
+    assert.deepEqual(others, []);
+    let {contentHash, files, ...rest} = blueprint!;
+    assert.deepEqual(rest, source);
+    assert.deepEqual(files, [
+      ["client.js", "// client\n"],
+      ["lib/util.js", "// util\n"],
+      ["server.js", "// server\n"],
+    ]);
+    assert.match(contentHash, /^[0-9a-f]{64}$/);
+    assert.equal((await generate(directory))[0]!.contentHash, contentHash);
+
+    // The fingerprint follows the files and what else of the manifest is installed with them.
+    // Presentation is the exception: the installer fingerprints that for itself.
+    await writeManifest({title: "Renamed"});
+    assert.equal((await generate(directory))[0]!.contentHash, contentHash);
+    for (let changes of [{version: 4}, {bindings: {}}, {lastUpdated: "2026-02-02T00:00:00.000Z"}]) {
+      await writeManifest(changes);
+      assert.notEqual((await generate(directory))[0]!.contentHash, contentHash);
+    }
+    await writeManifest({});
+    await writeFile(join(directory, "example/files/lib/util.js"), "// edited\n");
+    assert.notEqual((await generate(directory))[0]!.contentHash, contentHash);
+  });
+
   it("ignores dot-prefixed files and interrupted-import directories", async () => {
     let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
@@ -208,6 +331,88 @@ describe("bundled blueprint scripts", () => {
     assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// updated\n");
   });
 
+  it("imports a version 2 export, whose content is a git pack", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files", "lib"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// old\n");
+    await writeFile(join(directory, "example", "files/lib/util.js"), "// old util\n");
+
+    let files = new Map([
+      ["README.md", "\ufeff# Kept, mark and all\n"],
+      ["client.js", "// updated\n"],
+      ["lib/deep/util.js", "// nested\n"],
+    ]);
+    let archivePath = join(directory, ".update.gadget");
+    await writeReleaseArchive(archivePath, 2, files);
+
+    let result = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
+        cwd: packageRoot,
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /release +[0-9a-f]{40} /);
+    let updated = JSON.parse(await readFile(join(directory, "example/blueprint.json"), "utf8"));
+    assert.equal(updated.revision, 2);
+    assert.equal(updated.version, 2);
+    // Exactly the release's files: none of what it replaced, and nothing of the earlier release
+    // in the pack's history.
+    let [blueprint] = await generate(directory);
+    assert.deepEqual(blueprint!.files, [...files]);
+    assert.deepEqual((await readdir(join(directory, "example/files"))).toSorted(),
+      ["README.md", "client.js", "lib"]);
+    assert.deepEqual(await readdir(join(directory, "example/files/lib")), ["deep"]);
+  });
+
+  it("refuses a version 2 export it cannot read a release from, before replacing anything",
+      async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, "example", "files"), {recursive: true});
+    await writeFile(join(directory, "example", "blueprint.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(directory, "example", "files/client.js"), "// old\n");
+
+    let files = new Map([["client.js", "// updated\n"]]);
+    let release = await buildRelease(files);
+    let executable = await buildRelease(new Map([...files, ["run.sh", "#!/bin/sh\n"]]),
+      repository => chmod(join(repository, "run.sh"), 0o755));
+    let metadata = exportMetadata(2);
+    let archivePath = join(directory, ".update.gadget");
+    for (let [archive, error] of [
+      [serializeArchive(2, metadata, release.pack), /does not name the release commit/],
+      [serializeArchive(2, {...metadata, commitId: "main"}, release.pack),
+        /does not name the release commit/],
+      // A commit the pack does not hold, and one it holds without its files.
+      [serializeArchive(2, {...metadata, commitId: "a".repeat(40)}, release.pack),
+        /git ls-tree .* failed: /],
+      [serializeArchive(2, {...metadata, commitId: release.parent}, release.pack),
+        /git ls-tree .* failed: /],
+      [serializeArchive(2, {...metadata, commitId: release.commitId},
+        new TextEncoder().encode("not a pack")), /git unpack-objects .* failed: /],
+      [serializeArchive(2, {...metadata, commitId: executable.commitId}, executable.pack),
+        /run\.sh is not a plain file \(mode 100755\)/],
+    ] as const) {
+      await writeFile(archivePath, archive);
+
+      let result = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
+        cwd: packageRoot,
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, error);
+      assert.equal(await readFile(join(directory, "example/files/client.js"), "utf8"), "// old\n");
+      assert.deepEqual((await readdir(directory)).toSorted(), [".update.gadget", "example"]);
+    }
+  });
+
   it("builds and recovers a blueprint left only in an interrupted-import backup", async () => {
     let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
     temporaryDirectories.push(directory);
@@ -287,8 +492,8 @@ describe("bundled blueprint scripts", () => {
       `${JSON.stringify(manifest, null, 2)}\n`);
     await writeFile(join(directory, "example", "files/client.js"), "// original\n");
     let archivePath = join(directory, ".invalid.gadget");
-    await writeFile(archivePath, serializeArchive({},
-      buildContent(new Map([["client.js", "// invalid\n"]]), archivePath), archivePath));
+    await writeFile(archivePath, serializeArchive(1, {},
+      buildSnapshotContent(new Map([["client.js", "// invalid\n"]]))));
 
     let result = spawnSync(process.execPath, [importScript, archivePath, "format.example"], {
       cwd: packageRoot,
@@ -393,14 +598,12 @@ describe("bundled blueprint scripts", () => {
     await writeArchive(join(directory, "example.gadget"), 1,
       new Map([["client.js", "// legacy\n"]]));
 
-    let generatedModule = await temporaryOutFile();
-    let build = spawnSync(process.execPath, [buildScript, "--out", generatedModule], {
-      cwd: packageRoot,
-      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
-      encoding: "utf8",
-    });
-    assert.equal(build.status, 0, build.stderr);
-    assert.match(await readFile(generatedModule, "utf8"), /"blueprintId": "format\.example"/);
+    // The archive supplies the files, and the part of the manifest its metadata holds.
+    let [legacy] = await generate(directory);
+    let {contentHash, files: legacyFiles, ...legacyManifest} = legacy!;
+    assert.deepEqual(legacyManifest, manifest);
+    assert.deepEqual(legacyFiles, [["client.js", "// legacy\n"]]);
+    assert.match(contentHash, /^[0-9a-f]{64}$/);
 
     let incoming = join(directory, ".update.gadget");
     await writeArchive(incoming, 2, new Map([
@@ -408,7 +611,7 @@ describe("bundled blueprint scripts", () => {
       ["lib/util.js", "// nested\n"],
     ]));
     let imported = spawnSync(process.execPath,
-      [importScript, incoming, "format.example", "--out", generatedModule], {
+      [importScript, incoming, "format.example", "--out", await temporaryOutFile()], {
         cwd: packageRoot,
         env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
         encoding: "utf8",
@@ -425,5 +628,37 @@ describe("bundled blueprint scripts", () => {
     assert.equal(migrated.blueprintId, "format.example");
     assert.equal(migrated.revision, 2);
     assert.equal(migrated.version, 2);
+  });
+
+  // The legacy layout holds the archives it always did. A newer export put in a legacy archive's
+  // place is refused by the build, and importing it is what moves the blueprint on.
+  it("refuses a version 2 archive in the legacy layout, and migrates it on import", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprints-"));
+    temporaryDirectories.push(directory);
+    await writeFile(join(directory, "example.json"), `${JSON.stringify(presentation, null, 2)}\n`);
+    let archivePath = join(directory, "example.gadget");
+    await writeReleaseArchive(archivePath, 2, new Map([["client.js", "// release\n"]]));
+
+    let build = spawnSync(process.execPath, [buildScript, "--out", await temporaryOutFile()], {
+      cwd: packageRoot,
+      env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+      encoding: "utf8",
+    });
+    assert.equal(build.status, 1);
+    assert.match(build.stderr, /example\.gadget is a version 2 archive/);
+    assert.match(build.stderr, /pnpm import:bundled-blueprint/);
+
+    let imported = spawnSync(process.execPath,
+      [importScript, archivePath, "format.example", "--out", await temporaryOutFile()], {
+        cwd: packageRoot,
+        env: {...process.env, BUNDLED_BLUEPRINTS_DIR: directory},
+        encoding: "utf8",
+      });
+
+    assert.equal(imported.status, 0, imported.stderr);
+    assert.deepEqual(await readdir(directory), ["example"]);
+    let [blueprint] = await generate(directory);
+    assert.equal(blueprint!.version, 2);
+    assert.deepEqual(blueprint!.files, [["client.js", "// release\n"]]);
   });
 });
