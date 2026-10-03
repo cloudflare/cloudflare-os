@@ -79,6 +79,20 @@ One corollary that is easy to get wrong: the "nothing escaped to the internet" a
 running, so it would inspect and clear state they are still using — and could discard an escape a
 sibling was about to be blamed for.
 
+### A redeploy keeps storage, so an upgrade can be tested
+
+`server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
+every Durable Object, the KV namespaces, the R2 bucket and the server URL. That makes it a
+deployment of a new version over an old one, which is what `Harness.redeployWorkshop()` uses it for.
+It costs about 1.5 s, and it does break every open RPC session, so a test that redeploys starts a
+harness of its own rather than doing it under its siblings.
+
+What changes between the two builds has to be something a config can express, because the Workshop
+is built once, before any test file runs. A build-time input qualifies if wrangler's bundler can
+swap it: `bundleBlueprints()` points the `alias` for the Workshop's generated bundled-blueprints
+module at `fixtures/bundled-blueprints.ts`, and hands that fixture its list through a `define`. The
+installer, and the check that decides whether to run it, are the Workshop's own.
+
 ### wrangler and miniflare versions are coupled
 
 Nothing pins `workerd` directly: `wrangler` and `miniflare` each depend on an exact `workerd`. The

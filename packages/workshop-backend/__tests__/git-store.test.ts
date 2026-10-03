@@ -137,6 +137,35 @@ describe("GitStore", () => {
     expect(limited.map(entry => entry.oid)).toEqual([SECOND_COMMIT_OID]);
   });
 
+  it("lists a commit that two lines of history share once, in readCommitLog", async () => {
+    // The shape of a gadget's history once it has merged a blueprint built on a release that
+    // its own blueprint also has: the walk reaches `shared` from both sides of `merge`.
+    let store = new GitStore(makeObjects());
+    let commit = (message: string, parents: string[], seconds: number) =>
+        store.writeFilesAsCommit(new Map(), {
+          parents, author: ALICE, message, timestamp: new Date(seconds * 1000),
+        });
+    let messages = async (oid: string, depth?: number) =>
+        (await store.readCommitLog(oid, { depth })).map(entry => entry.message.trimEnd());
+
+    // Written within one second of each other, as publishing and then instantiating can be. Of
+    // commits no newer than one another, the first that the walk reached comes first.
+    let root = await commit("root", [], 100);
+    let shared = await commit("shared", [root], 100);
+    let merge = await commit("merge", [
+      await commit("left", [shared], 100), await commit("right", [shared], 100),
+    ], 100);
+    expect(await messages(merge)).toEqual(["merge", "left", "right", "shared", "root"]);
+    expect(await messages(merge, 4)).toEqual(["merge", "left", "right", "shared"]);
+
+    // And with a clock that ran behind on one side, so that a commit is newer than one that was
+    // built on it.
+    let skewed = await commit("merge", [
+      await commit("left", [shared], 300), await commit("right", [shared], 50),
+    ], 400);
+    expect(await messages(skewed)).toEqual(["merge", "left", "shared", "root", "right"]);
+  });
+
   it("writes and round-trips an empty-tree commit", async () => {
     // An accepted gadget creation with no files yet commits an empty tree (see mergeChanges),
     // so the empty map must produce a valid commit -- byte-identical to real git's, over the

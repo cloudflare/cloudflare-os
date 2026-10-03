@@ -5,6 +5,7 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +46,8 @@ const WORKER_CONFIG = z.looseObject({
   name: z.string(),
   main: z.string(),
   account_id: z.string().optional(),
+  alias: z.record(z.string(), z.string()).optional(),
+  define: z.record(z.string(), z.string()).optional(),
   ai: z.looseObject({
     binding: z.string(),
     remote: z.boolean().optional(),
@@ -137,6 +140,14 @@ export type Harness = {
    */
   fetchWorker(name: string, ...args: Parameters<TestHarness["fetch"]>)
       : ReturnType<TestHarness["fetch"]>;
+  /**
+   * Deploy another build of the Workshop over the running one, as releasing a new version does.
+   * `patchWorkshop` takes the place of the patch the harness was started with.
+   *
+   * Storage and `url` are kept. Every Worker restarts, which breaks the RPC sessions open at the
+   * time, so only a suite that started its own harness should call this.
+   */
+  redeployWorkshop(patchWorkshop?: (config: WorkerConfig) => void): Promise<void>;
 };
 
 export async function startHarness(opts: {
@@ -153,21 +164,73 @@ export async function startHarness(opts: {
   });
 
   mkdirSync(HARNESS_ROOT, { recursive: true });
-  const server = createTestHarness({
+  const options = (patchWorkshop?: (config: WorkerConfig) => void) => ({
     root: HARNESS_ROOT,
     // workshop-backend is primary, so unrouted requests (e.g. /api) go to it.
     workers: [
-      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false,
-          opts.patchWorkshop) },
+      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false, patchWorkshop) },
       ...gatekeepers.map(({ config }) => ({ config })),
     ],
   });
+  const server = createTestHarness(options(opts.patchWorkshop));
 
   const { url } = await server.listen();
   return {
     server,
     url,
     fetchWorker: (name, ...args) => server.getWorker(name).fetch(...args),
+    redeployWorkshop: patchWorkshop => server.update(options(patchWorkshop)),
+  };
+}
+
+// Takes the place of the module the Workshop's build generates its bundled blueprints into.
+const BUNDLED_BLUEPRINTS_MODULE = resolve(HERE, "../fixtures/bundled-blueprints.ts");
+
+/** A blueprint for a Workshop to ship with. See bundleBlueprints(). */
+export type BundledBlueprintSpec = {
+  blueprintId: string;
+  title: string;
+  /** The `BlueprintMetadata.version` it installs as. */
+  version: number;
+  /** Its files, by path. */
+  files: Record<string, string>;
+};
+
+/**
+ * A Workshop patch (for `patchWorkshop`, or `Harness.redeployWorkshop()`) that builds the Workshop
+ * with `blueprints` as its bundled blueprints, in place of the ones this repo ships. The Workshop
+ * installs them on its first `/api` request, and again when a redeploy changes them.
+ *
+ * The Workshop's build compiles the repo's own blueprints into a generated module. This has
+ * wrangler resolve that module to a fixture instead, which takes the list from a `define`.
+ */
+export function bundleBlueprints(blueprints: BundledBlueprintSpec[])
+    : (config: WorkerConfig) => void {
+  // Each in the shape of an entry of workshop-backend's `src/generated/bundled-blueprints.ts`.
+  const entries = blueprints.map(({ blueprintId, title, version, files }) => {
+    const sorted = Object.entries(files).toSorted(([a], [b]) => a < b ? -1 : 1);
+    return {
+      blueprintId,
+      title,
+      description: "",
+      output: { id: "fixture", noun: "Fixture", plural: "Fixtures", icon: "appWindow" },
+      author: { type: "user", id: "bundled@gadgets-test.example", name: "Bundled" },
+      revision: 1,
+      created: new Date(0).toISOString(),
+      version,
+      lastUpdated: new Date(0).toISOString(),
+      bindings: {},
+      contentHash: createHash("sha256").update(JSON.stringify([version, sorted])).digest("hex"),
+      files: sorted,
+    };
+  });
+  return config => {
+    // Keyed by the specifier exactly as the Workshop's source imports it, which is all that
+    // wrangler matches an alias on.
+    config.alias = {
+      ...config.alias, "./generated/bundled-blueprints.js": BUNDLED_BLUEPRINTS_MODULE,
+    };
+    config.define = { ...config.define, TEST_BUNDLED_BLUEPRINTS: JSON.stringify(entries) };
   };
 }
 

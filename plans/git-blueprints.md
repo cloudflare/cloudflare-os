@@ -263,7 +263,7 @@ This lands as one PR made of the commits below, in order. Kernel commits (`works
 
 Commits 4, 6 and 7 fix commit shapes permanently, so they deserve the closest review.
 
-**Status: commits 1 to 8 are implemented.** Where what was built differs from what this plan first said, the decisions above have been brought into line, and the notes on commits 9 to 11 below say what that means for each.
+**Status: commits 1 to 9 are implemented.** Where what was built differs from what this plan first said, the decisions above have been brought into line, and the notes on commits 10 and 11 below say what that means for each.
 
 ### 1. `workshop-backend`: tree and commit encoders in git-codec
 
@@ -360,21 +360,27 @@ The agent path is tested by running the real `createGadget` tool, with pi's faux
 
 Most of the tests record the turn `applyBlueprint` starts rather than let it run, then run it by hand with pi's faux provider. One lets the workspace run it, with a model that cannot be reached, and checks that the failure leaves the chat idle and the proposal still to accept. A turn that the workspace starts and that reaches a model is left to commit 9.
 
-### 9. `integration-tests`
+### 9. `integration-tests`, `workshop-backend`: end to end
 
 In `workshop-blueprints.test.ts`:
 
-- publish, instantiate, edit both sides, republish, apply, resolve, accept;
-- the Alice, Bob and Carol switch end to end;
+- publish, instantiate, edit both sides, republish, apply, resolve, accept. The conflict is resolved by hand, with `submitCodeChange`, and the merge is read back through the chat's preview;
+- the Alice, Bob and Carol switch end to end, between three accounts, down to the commits that Carol's history then lists and the base her next update from Bob finds;
 - applying to a gadget with no lineage, with and without `allowUnrelated`;
-- a merge runs the mock model once and a fast-forward never calls it. Nothing before this runs the turn `applyBlueprint` starts as far as a model (see commit 8);
+- a merge runs the mock model for one turn and a fast-forward never calls it. Nothing before this runs the turn `applyBlueprint` starts as far as a model (see commit 8);
 - a bundled blueprint reinstalled with new files updates a gadget made from the old ones;
-- a version 1 `.gadget` still imports and instantiates, and a version 2 download re-imports;
-- existing assertions on root commits and archive versions are updated; "republishing a blueprint changes future installs, not existing ones" keeps passing.
+- a version 1 `.gadget` still imports and instantiates, and a version 2 download re-imports: as the same release under another id, which a gadget made from the original is then proposed only to follow;
+- a "use" collaborator is not told which blueprint a gadget follows (decision 7).
 
 Every `applyBlueprint` call names a `modelId`, which is null where no turn is wanted.
 
+No existing assertion needed updating: nothing in this package looked at the root commit of an instantiated gadget or at an archive's version. "republishing a blueprint changes future installs, not existing ones" passes as it was.
+
 In `workshop-use-role.test.ts`, `applyBlueprint` joins the table of `GadgetClient` methods denied to the "use" role. The table is exhaustive at compile time, so this package's type check fails from commit 7 until this is done.
+
+**The reinstall test deploys twice.** The bundled blueprints are compiled into the Workshop, which the suite builds once, so a test cannot change them by writing a file. Two additions to the toolkit make them a matter of configuration instead (docs/integration-testing.md). `Harness.redeployWorkshop()` deploys another build over the running one, keeping its storage, so that the `AdminSettings` that installed the old files is the one that notices the new. `bundleBlueprints()` is a patch that has a build ship the blueprints a test names. The test starts a harness of its own, since a redeploy breaks every session open at the time.
+
+**Fixed here: `GitStore.readCommitLog()` listed some commits twice.** It delegated to isomorphic-git's `log()`, which lists a commit again when it reaches one it has already listed. That happens to a commit which two parents of a merge both lead to, unless it is older than everything between: a tie is enough, and commit dates are whole seconds. Carol's history has such commits in the releases that Bob's blueprint was built on, and her log listed them twice. The audit of commit 6 missed this reader of parents: it follows every one, but trusts commit dates to bring it to a shared ancestor only once. The walk is now the store's own, and lists each commit once.
 
 ### 10. `workshop-frontend`: applying a blueprint
 
@@ -384,7 +390,7 @@ In `workshop-use-role.test.ts`, `applyBlueprint` joins the table of `GadgetClien
 
 ### 11. `workshop-frontend`: the proposal in the chat
 
-- The proposal notice, rendered from the `blueprintMerges` record. The UI never starts the agent for a proposal; the server already has. The chat of a merge therefore arrives with `activeAgent` set and no message from anyone: the agent's reply follows the notice directly. A split merge's later `changes` messages have no record of their own; the entry's `messageCount` says which they are, so they can be folded into the notice rather than shown as generic cards.
+- The proposal notice, rendered from the `blueprintMerges` record. The UI never starts the agent for a proposal; the server already has. The chat of a merge therefore arrives with `activeAgent` set and no message from anyone: the agent's reply follows the notice directly. (A chat subscriber hears of the new chat while it is being set up. The first deliveries of its metadata carry no `activeAgent`, and the one that does follows within the same call, a few milliseconds later.) A split merge's later `changes` messages have no record of their own; the entry's `messageCount` says which they are, so they can be folded into the notice rather than shown as generic cards.
 - Accept and discard for a chat whose only proposal is a `follow` of a release already in the gadget's history. `proposedChangeWorkpieces` is empty for such a chat, so they are offered wherever a `changes` message that is neither merged nor reverted carries `blueprintMerges` (decision 10).
 - The conflict-marker check before accept, for blueprint and mainline merges. A `blueprintMerges` entry gives paths within its gadget, and a `mainlineMerge` record gives `GADGET_NAME/path`.
 - Tests: notice text for each kind and for unverified-base, conflicted and missing-binding records; accept is intercepted while a listed file still has markers and proceeds once they are gone.
@@ -400,6 +406,7 @@ Fork-point trees (in commit 6) could be dropped from this series without a forma
 - **Bundled formats merge poorly, and that is accepted.** They ship esbuild output only until the Gadgets environment can bundle for itself, after which they ship as source. For the same reason their releases are not chained (decision 14). Gadgets made from them are customized by editing the built files, so an update to one may conflict heavily. Merge quality for them is not a goal in the meantime. The release that switches a bundled blueprint from built output to source will replace `client.js` and `server.js` wholesale: gadgets customized against the built files get one noisy update, with their edits surfacing as delete-versus-modify conflicts for the agent to port over.
 - **Wrong assumed base.** Covered under decision 8. The mitigation is review, not correctness. A merge over an assumed base gets the agent's review as well as the user's. A fast-forward over one replaces the gadget's files with the blueprint's and runs no agent, so there the only reviewer is the user, prompted by the notice's warning.
 - **A conflict in a very large file.** A conflicted file holds both sides and the base, so its merged text can exceed `MAX_FILE_TEXT_LENGTH`, which the files that went into it obey. What the edit tools and a later publish make of such a file has not been tested. A mainline merge has the same exposure, but built bundles make it likelier here.
+- **A large file that differs throughout. Open: found while testing commit 9, and not addressed.** `applyBlueprint` records its result as a minimal character-level change (`diffFiles`), as a mainline merge does, and that diff has no bound on the time it takes. Where the release's version of a file has little in common with the gadget's, it is nearly the whole cost of the call. Applying the bundled Sheets blueprint to a gadget just made from the bundled Docs one, with `allowUnrelated`, took 107 seconds in the local runtime, as a fast-forward. Their `client.js` files are 76 KB and 137 KB, and the diff of those two alone takes 88 seconds in Node. The workspace answers nothing meanwhile, and how a deployed Durable Object's CPU limit treats a call that long has not been tried. An ordinary update is not affected: scattered edits to the 137 KB file diff in 45 ms. What is affected is a blueprint applied to a gadget of another format, since every gadget has a `client.js`, and a release whose build output changed throughout. Recording a file that the merge took whole from the release as a `set`, as the agent's `writeFile` does, would cover the fast-forward. A merge that blends two versions with little in common would still be diffed.
 - **Every merge costs an agent turn**, including the ones that would have been fine. That is the price of catching conflicts a line merge cannot see.
 - **Previewing an update that migrates stored data.** A chat preview shares the gadget's storage, so discarding the code does not undo the migration. Accepted until the database-fork workstream lands.
 - **Memory.** Import decodes a whole pack in the Overseer, up to the existing 32 MiB archive cap plus inflated objects. A streaming pack decoder has been discussed and would remove this, but it is a separate change.

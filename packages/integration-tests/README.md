@@ -16,6 +16,8 @@ vendor this one as a submodule:
   [`wrangler`'s `createTestHarness()`](https://developers.cloudflare.com/changelog/post/2026-07-21-integration-test-harness/),
   patching their checked-in `wrangler.jsonc` in memory. Parameterised over gatekeepers on purpose: a
   suite for a new gatekeeper should be "point the harness at the package", not a forked copy.
+  `Harness.redeployWorkshop()` deploys another build of the Workshop over the running one, keeping
+  its storage, and `bundleBlueprints()` is a patch that changes which blueprints a build ships with.
 - **`src/network-interceptor.ts`** — `NetworkInterceptor`, mechanism only. It patches
   `globalThis.fetch` (the harness routes Worker subrequests back through the Node process, so that is
   enough), passes loopback through, and **throws on anything a handler didn't match** — a test cannot
@@ -31,6 +33,8 @@ vendor this one as a submodule:
   per-test resource URLs; account labels are allocated for you, so two tests can't pick the same one.
 - **The escape assertion lives in `afterAll`, not `afterEach`** — an `afterEach` fires while sibling
   tests are still running, so it would inspect and clear state they are still using.
+- **A test that redeploys the Workshop starts a harness of its own.** A redeploy restarts the Workers
+  under every session they have, which would break the tests sharing the file's harness.
 
 ## The fixture gatekeeper
 

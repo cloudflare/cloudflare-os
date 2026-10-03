@@ -15,7 +15,7 @@
 // We use real git formats (rather than a git-shaped custom encoding) so that gadget code can
 // later be exported to and imported from real git repositories, and so agents can eventually
 // "mount" arbitrary repos through gatekeeper-gated push/pull. isomorphic-git provides the object
-// codec; we use only its plumbing (writeBlob/writeTree/writeCommit/read*/log), which operates
+// codec; we use only its plumbing (writeBlob/writeTree/writeCommit/read*), which operates
 // against a gitdir containing nothing but `objects/**`. The porcelain is off-limits:
 // `git.commit` requires HEAD/index/config, and `git.merge` cannot represent the merge behavior
 // we want (see `threeWayMerge`).
@@ -46,7 +46,6 @@ import {
   writeBlob,
   writeCommit,
   writeTree,
-  log,
   type CommitObject,
   type PromiseFsClient,
   type TreeEntry,
@@ -261,24 +260,38 @@ export class GitStore {
 
   /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
-   * to `depth` commits' metadata. Traversal order for merge commits follows git log's default
-   * (reverse chronological).
+   * to `depth` commits' metadata, each commit once. Traversal order for merge commits follows
+   * git log's default (reverse chronological).
    */
   async readCommitLog(oid: string, options: { depth?: number } = {}): Promise<CommitInfo[]> {
-    let entries = await log({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      ref: oid,
-      depth: options.depth,
-      cache: this.#cache,
-    });
-    return entries.map(entry => ({
-      oid: entry.oid,
-      parents: entry.commit.parent,
-      message: entry.commit.message,
-      author: { name: entry.commit.author.name, email: entry.commit.author.email },
-      timestamp: new Date(entry.commit.author.timestamp * 1000),
-    }));
+    // Not isomorphic-git's `log()`, which forgets a commit once it has listed it. One that two
+    // parents of a merge both lead to is listed twice unless it is older than every commit
+    // between, which commits written in the same second are not. A gadget that has merged
+    // releases of blueprints has such commits: the releases that those were built on.
+    let entries: CommitInfo[] = [];
+    let reached = new Set([oid]);
+    let tips = [{ oid, commit: await this.readCommitObject(oid) }];
+    while (tips.length > 0) {
+      // The newest by commit date, as git orders them, and of several the first reached.
+      let next = tips.reduce((newest, tip) =>
+          tip.commit.committer.timestamp > newest.commit.committer.timestamp ? tip : newest);
+      tips.splice(tips.indexOf(next), 1);
+      entries.push({
+        oid: next.oid,
+        parents: next.commit.parent,
+        message: next.commit.message,
+        author: { name: next.commit.author.name, email: next.commit.author.email },
+        timestamp: new Date(next.commit.author.timestamp * 1000),
+      });
+      if (entries.length === options.depth) break;
+
+      for (let parent of next.commit.parent) {
+        if (reached.has(parent)) continue;
+        reached.add(parent);
+        tips.push({ oid: parent, commit: await this.readCommitObject(parent) });
+      }
+    }
+    return entries;
   }
 
   /** The tree oid of a commit. */
