@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintMerge, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -620,6 +620,19 @@ Assume the user is not an engineer. Write code and use tools as needed without n
 Be accurate about results, unfinished work, and required access. Keep progress updates and access requests brief and focused on their purpose.
 `.trim();
 
+// The conflict that SYSTEM_PROMPT shows as its example. The markers are built rather than
+// written out so that no line of this file begins with one: editors and merge tools take such
+// a line for an unresolved conflict in the file itself.
+const CONFLICT_EXAMPLE = [
+  `${"<".repeat(7)} this gadget`,
+  `the lines as one side has them`,
+  `${"|".repeat(7)} base`,
+  `the lines as they were before either side changed them`,
+  `${"=".repeat(7)}`,
+  `the lines as the other side has them`,
+  `${">".repeat(7)} blueprint`,
+].join("\n");
+
 let SYSTEM_PROMPT = `
 You are a helpful assistant who helps users get things done. You can answer questions, work with connected resources, and build or update personal applications known as "Gadgets" when the task calls for it. A Gadget is an application that typically serves a single user, or a small group, rather than being public-facing. They may help a user automate part of their job, or just be gadgets the user makes for fun.
 
@@ -833,6 +846,18 @@ export default async function(self, env, ctx) {
 \`\`\`
 
 The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
+
+# Merge conflicts
+
+A Gadget's files can be merged with changes made elsewhere: an update from the blueprint the Gadget was built from, or changes accepted from another chat while this one was open. Where both sides changed the same lines, the file is left holding every version of them, between conflict markers:
+
+\`\`\`
+${CONFLICT_EXAMPLE}
+\`\`\`
+
+The label after a marker names its side. An update from a blueprint labels them \`this gadget\`, \`base\` and \`blueprint\`; a merge of changes from other chats labels them \`mainline\`, \`merged base\` and \`this chat\`.
+
+A file is broken for as long as it has markers in it. To resolve a conflict, replace the whole block, markers included, with code that does what both sides intended. Take one side as it is only when the other's change no longer applies. Searching with \`grep\` for \`^(<<<<<<<|>>>>>>>) \` finds the conflicts that remain.
 `.trim();
 
 let SPAWNER_SYSTEM_PROMPT = `
@@ -877,6 +902,161 @@ The Gadget expects you to implement the TypeScript interface \`${mainType}\`, de
 ${types.trim()}
 \`\`\`
 `.trim();
+}
+
+/**
+ * Tells the agent which bindings a blueprint's code expects that a gadget lacks, and how to wire
+ * each one up. `gadget` is what the text calls the gadget, as in "the new gadget". Shared by
+ * the createGadget tool's result for a gadget made from a blueprint (see
+ * AgentHooks.fetchBlueprint) and the summary of a blueprint merged into an existing gadget.
+ */
+export function formatMissingBlueprintBindings(
+    bindings: Record<string, BlueprintBinding>, gadget: string): string {
+  let lines = [
+      `The blueprint's code expects the following bindings, which ${gadget} does not ` +
+      `have yet. Wire up each one under the exact binding name given. For external ` +
+      `resources, use setGadgetBinding on ${gadget} (first requesting a connection via ` +
+      `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
+      `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
+      `from the gadget's Connections panel.`];
+  for (let [name, binding] of Object.entries(bindings)) {
+    let details: string;
+    switch (binding.type) {
+      case "gatekeeper":
+        details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
+            `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
+            (binding.resourceUrl
+                ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
+                : ``);
+        break;
+      case "aiModel":
+        details = `an AI model binding`;
+        break;
+      case "agentSpawner":
+        details = `an agent-spawner binding`;
+        break;
+      default:
+        binding satisfies never;
+        details = `unknown`;
+        break;
+    }
+    lines.push(`* ${name} — ${JSON.stringify(binding.title)} (${details})` +
+        (binding.description ? `: ${binding.description}` : ``));
+  }
+  return lines.join("\n");
+}
+
+// How many files each list in the agent's summary of a blueprint merge names before it counts
+// the rest instead, so that a blueprint of very many files cannot fill the context with paths.
+const MERGE_SUMMARY_PATH_LIMIT = 50;
+
+// One list of files in that summary: nothing if there are none, else the heading and the paths.
+// The paths are quoted because a blueprint's author chose them.
+function formatMergedPaths(heading: string, paths: string[]): string[] {
+  if (paths.length === 0) return [];
+  let lines = paths.slice(0, MERGE_SUMMARY_PATH_LIMIT).map(path => `* ${JSON.stringify(path)}`);
+  if (paths.length > lines.length) lines.push(`* (and ${paths.length - lines.length} more)`);
+  return ["", heading, ...lines];
+}
+
+/**
+ * Renders a blueprint that the user applied to a gadget (see GadgetClient.applyBlueprint()) as
+ * the model's input, from the record of the proposal and the "changes" message `msg` that
+ * carries it. `gadget` is the gadget's name in the chat's env, if it has one.
+ *
+ * A merge that changed files is rendered for review: a summary of it and the task of checking
+ * it. That is what prompts the turn applyBlueprint() starts, which has no message to answer.
+ * A user's own edits replay as a diff, but the diff of a merge is as large as everything the
+ * blueprint changed. So the summary only names the files, by what the merge did with them, and
+ * the three commits, which the agent can mount as worktrees to look closer. Its size does not
+ * depend on what is in the files.
+ *
+ * Any other proposal left the agent nothing to check. It is rendered as a note of what
+ * happened, for a later turn in the chat to know of.
+ */
+async function formatBlueprintProposal(
+    merge: BlueprintMerge, msg: Pick<Extract<AiChatMessage, {type: "changes"}>, "change" | "pins">,
+    gadget: string | undefined, hooks: Pick<AgentHooks, "readCommitFiles">): Promise<string> {
+  let applied = `The user applied version ${merge.version} of the blueprint ` +
+      `${JSON.stringify(merge.title)} to ` +
+      (gadget !== undefined ? `the gadget \`env.${gadget}\`` : `a gadget`) +
+      `, as a proposed change in this chat.`;
+  if (merge.kind === "follow") {
+    return `${applied} None of the gadget's files change: accepting it only has the gadget ` +
+        `take its future updates from that blueprint.`;
+  }
+  if (merge.kind === "fastForward") {
+    return `${applied} The gadget had no changes of its own to keep, so its files are now ` +
+        `that version's exactly.`;
+  }
+  if (msg.change === undefined) {
+    return `${applied} The gadget already had every change that version made, so none of its ` +
+        `files change.`;
+  }
+
+  // A merge is always recorded with its base, on the message that pins the gadget at the head
+  // it was merged into (see applyBlueprint in overseer.ts).
+  let base = merge.baseCommit!;
+  let head = msg.pins!.find(pin => pin.gadgetId === merge.gadgetId)!.baseCommit;
+  let [was, ours, theirs] = await Promise.all(
+      [base, head, merge.commitId].map(commit => hooks.readCommitFiles(commit)));
+
+  // The files that the merge changed in the gadget and did not report as conflicted, by
+  // whether the gadget had changes of its own to them. (A file the gadget had already changed
+  // just as the blueprint did is not among them.)
+  let conflicted = new Set(merge.conflictPaths);
+  let bothChanged: string[] = [];
+  let blueprintChanged: string[] = [];
+  for (let path of [...new Set([...was.keys(), ...theirs.keys()])].toSorted()) {
+    let text = theirs.get(path);
+    if (text === was.get(path) || text === ours.get(path) || conflicted.has(path)) continue;
+    (ours.get(path) === was.get(path) ? blueprintChanged : bothChanged).push(path);
+  }
+
+  let lines = [
+    `${applied} The gadget has changes of its own, so the blueprint's changes were merged ` +
+        `with them, three ways. The gadget's files in this chat are now the result.`,
+    ``,
+    `The commits that were merged. To look closer at one, mount it with \`createWorktree\` ` +
+        `and use \`readFile\` and \`grep\` on it:`,
+    `* base, the version the two have in common: ${base}`,
+    `* this gadget, before the merge: ${head}`,
+    `* blueprint: ${merge.commitId}`,
+  ];
+  if (merge.unverifiedBase) {
+    lines.push(``,
+        `The gadget and the blueprint share no history, so that base is a guess at what the ` +
+        `gadget was built from. A change that the gadget's owner made, if the guess happens ` +
+        `to include it, looks like something the blueprint removed: the merge undid it and ` +
+        `reported no conflict. Compare the gadget before the merge with the result, and ` +
+        `tell the user of anything lost that looks like their own work.`);
+  }
+  lines.push(
+      ...formatMergedPaths(`Files with conflicts:`, merge.conflictPaths),
+      ...formatMergedPaths(
+          `Files that the gadget and the blueprint both changed, merged with no conflict found:`,
+          bothChanged),
+      ...formatMergedPaths(`Files that only the blueprint changed:`, blueprintChanged));
+  if (merge.missingBindings) {
+    lines.push(``, formatMissingBlueprintBindings(merge.missingBindings, `the gadget`));
+  }
+
+  lines.push(``, `Review the merge now, without waiting to be asked:`);
+  if (merge.conflictPaths.length > 0) {
+    lines.push(
+        `* Resolve every conflict (see "Merge conflicts" in your instructions). A file listed ` +
+        `as conflicted that has no markers in it was deleted by one side and changed by the ` +
+        `other: it holds the changed version, and whether it should stay is yours to decide.`);
+  }
+  lines.push(
+      `* Check that the gadget's own changes and the blueprint's still work together, ` +
+      `starting with any files that both changed. Changes that merge cleanly can still ` +
+      `disagree, as when one side renames something that the other side's new code uses.`);
+  if (merge.missingBindings) lines.push(`* Wire up the bindings listed above.`);
+  lines.push(
+      `Change nothing else: the user asked for the update, not for other improvements. When ` +
+      `you are done, tell the user briefly what the update changed and what you did.`);
+  return lines.join("\n");
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
@@ -1707,6 +1887,11 @@ async function runAgentPass(
     return false;
   };
 
+  // The sequence of the last "changes" message to hold part of the change of a blueprint the
+  // user applied: the one that records the proposal, or where the change was split, the last
+  // of those directly after it (see BlueprintMerge.messageCount).
+  let blueprintMergeThrough = -1;
+
   // We compute sequential change ID numbers for the purpose of telling the LLM about reverts.
   let nextChangeId = checkpoint?.nextChangeId ?? 0;
 
@@ -2191,6 +2376,22 @@ async function runAgentPass(
         // the converted content is not what those writes produced).
         if (msg.conversionBoundary) await resetSessionEpoch();
 
+        // A blueprint that the user applied is described to the model (see
+        // formatBlueprintProposal), and its change, in this message and any others it was
+        // split across, is applied below without being shown. A proposal since reverted is
+        // described all the same: the description is what the turn that reviewed it was
+        // answering, and the revert is reported where it happened. (An entry on a message of
+        // the agent's own is a gadget it created from a blueprint, which the model already
+        // sees in its createGadget call.)
+        for (let merge of msg.author.type === "user" ? msg.blueprintMerges ?? [] : []) {
+          blueprintMergeThrough = msg.sequence + (merge.messageCount ?? 1) - 1;
+          modelMessages.push({
+            role: "user",
+            content: await formatBlueprintProposal(merge, msg, chatNameFor(merge.gadgetId), hooks),
+            timestamp: msgTimestamp,
+          });
+        }
+
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
           // Pins this batch establishes enter the content before the change applies (a no-op for
           // gadgets ensureReplayContentForWrite already established early; see there).
@@ -2206,7 +2407,10 @@ async function runAgentPass(
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
-            diff = applyReplayedChange(msg.change, isUserActivity);
+            // The change of a blueprint the user applied is not shown as edits of theirs. It
+            // was described above instead.
+            diff = applyReplayedChange(
+                msg.change, isUserActivity && msg.sequence > blueprintMergeThrough);
           }
           if (isUserActivity) {
             // Surface everything the user did in this batch as one synthetic observation:

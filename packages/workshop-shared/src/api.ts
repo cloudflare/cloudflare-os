@@ -4704,10 +4704,15 @@ export interface GadgetClient extends WorkpieceClient {
    * common. If they share no history that version has to be guessed, which is only done if
    * `allowUnrelated` is set (see ApplyBlueprintResult).
    *
+   * A proposal of kind "merge" that changes any of the gadget's files starts an agent turn in
+   * the new chat, to resolve what conflicted and to check that the two sets of changes work
+   * together. `modelId` is the model that runs it: as for Overseer.newChat(), one of the IDs in
+   * the result of `listModels()`, or null for no agent. No other proposal starts a turn.
+   *
    * Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so
    * has no committed code to merge into.
    */
-  applyBlueprint(blueprintId: string, options: {allowUnrelated?: boolean})
+  applyBlueprint(blueprintId: string, options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult>;
 }
 

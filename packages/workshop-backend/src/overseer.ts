@@ -42,7 +42,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, CHAT_CHANGE_MESSAGE_BUDGET, SeedBindingInfo, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, CHAT_CHANGE_MESSAGE_BUDGET, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -3301,15 +3301,18 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The body of GadgetClient.applyBlueprint(): proposes, in a new chat, merging the blueprint's
-  // current release into the gadget. `author` is the user applying it.
+  // current release into the gadget. `userMeta` is the chat context of the user applying it,
+  // resolved for the model they named, and `clientUserId` is that user's DO id.
   //
   // Modelled on updateChatFromMainline(): the result of the merge is delivered as change rows
   // over a pin at the gadget's head and materialized into "changes" messages, the first of which
   // records the proposal (see AiChatMessageBody.blueprintMerges). Nothing here touches the
   // gadget. Accepting the chat's changes is what does, by that record (see mergeChanges).
   async applyBlueprint(gadgetId: WorkpieceId, blueprintId: string,
-                       options: {allowUnrelated?: boolean}, author: AiChatAuthorInfo)
+                       options: {allowUnrelated?: boolean}, userMeta: UserChatContext,
+                       clientUserId: string)
       : Promise<ApplyBlueprintResult> {
+    let author = userMeta.profile;
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) throw new Error("Blueprint not found.");
     let {metadata} = kvRecord;
@@ -3357,6 +3360,12 @@ class OverseerImpl implements AgentHooks {
     let pieces = splitCodeChangeByFile(change);
     if (pieces.length > 1) merge.messageCount = pieces.length;
 
+    // The agent reviews a merge, and nothing else. Lines that merge cleanly can still disagree,
+    // which only something that reads the result will catch. Every other proposal leaves the
+    // gadget with files that are one side's exactly, its own or the blueprint's, and so does a
+    // merge that changes no file.
+    let reviewer = merge.kind === "merge" && pieces.length > 0 ? userMeta.aiModel : undefined;
+
     // The awaits above are interleaving points, and an accept in some chat may have moved the
     // gadget's head since it was read. Refuse rather than record a merge into a head that the
     // gadget no longer has.
@@ -3370,8 +3379,9 @@ class OverseerImpl implements AgentHooks {
     // changes: accepting will write a commit, which has to be a fast-forward like any other.
     // One already in its history pins nothing, so the proposal cannot go stale: the release
     // stays in the history of the head wherever the head moves.
-    return this.storage.transaction((): ApplyBlueprintResult => {
-      let chatId = this.nextChatId();
+    let chatId!: number;
+    this.storage.transaction(() => {
+      chatId = this.nextChatId();
       let timestamp = this.getChatTimestamp();
       this.storage.chatMeta.put({
         id: chatId,
@@ -3397,8 +3407,21 @@ class OverseerImpl implements AgentHooks {
         this.materializeChatChanges(chatId, undefined, {author, blueprintMerges});
         blueprintMerges = [];
       } while (pieces.length > 0);
-      return {outcome: "proposed", chatId};
+
+      // Set last, since only a turn's own machinery may materialize into a chat that has one
+      // running.
+      if (reviewer) {
+        this.storage.chatMeta.put(
+            {...this.getChatMetaOrThrow(chatId), activeAgent: reviewer.profile});
+      }
     });
+
+    // The turn has no message to answer. What prompts it is the record of the proposal, which
+    // replay renders as the agent's task (see the "changes" case of runAgentPass in agent.ts).
+    // Starting it here, with the chat, is what makes it one turn per proposal however many
+    // clients are watching.
+    if (reviewer) this.startAgent(chatId, reviewer, author, clientUserId);
+    return {outcome: "proposed", chatId};
   }
 
   // Chooses the commit to merge the release `release` into a gadget against, where the history
@@ -8357,42 +8380,10 @@ class OverseerImpl implements AgentHooks {
           `them before editing.`
         : `The blueprint contained no files, so the new gadget is empty.`);
 
-    let bindings = Object.entries(kvRecord.metadata.bindings);
-    if (bindings.length === 0) {
-      lines.push("", `The blueprint requires no bindings.`);
-    } else {
-      lines.push("",
-          `The blueprint's code expects the following bindings, which the new gadget does not ` +
-          `have yet. Wire up each one under the exact binding name given. For external ` +
-          `resources, use setGadgetBinding on the new gadget (first requesting a connection via ` +
-          `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
-          `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
-          `from the gadget's Connections panel.`);
-      for (let [name, binding] of bindings) {
-        let details: string;
-        switch (binding.type) {
-          case "gatekeeper":
-            details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
-                `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
-                (binding.resourceUrl
-                    ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
-                    : ``);
-            break;
-          case "aiModel":
-            details = `an AI model binding`;
-            break;
-          case "agentSpawner":
-            details = `an agent-spawner binding`;
-            break;
-          default:
-            binding satisfies never;
-            details = `unknown`;
-            break;
-        }
-        lines.push(`* ${name} — ${JSON.stringify(binding.title)} (${details})` +
-            (binding.description ? `: ${binding.description}` : ``));
-      }
-    }
+    let {bindings} = kvRecord.metadata;
+    lines.push("", Object.keys(bindings).length === 0
+        ? `The blueprint requires no bindings.`
+        : formatMissingBlueprintBindings(bindings, `the new gadget`));
 
     // What the creation is recorded as. The new gadget's files are the release's exactly, with
     // nothing to merge them against.
@@ -12098,10 +12089,13 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     };
   }
 
-  async applyBlueprint(blueprintId: string, options: {allowUnrelated?: boolean})
+  async applyBlueprint(blueprintId: string,
+                       options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult> {
-    let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
-    return await this.impl.applyBlueprint(this.id, blueprintId, options, author);
+    let userMeta = await retryOnDoReset(
+        () => this.#clientUser.getChatContext(options.modelId), this.impl.logger);
+    return await this.impl.applyBlueprint(
+        this.id, blueprintId, options, userMeta, this.clientUserId);
   }
 }
 
@@ -12198,7 +12192,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
                         _screenshot?: BlueprintScreenshotUpload): Promise<BlueprintGadgetSummary> {
     this.#deny();
   }
-  async applyBlueprint(_blueprintId: string, _options: {allowUnrelated?: boolean})
+  async applyBlueprint(_blueprintId: string,
+                       _options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult> {
     this.#deny();
   }

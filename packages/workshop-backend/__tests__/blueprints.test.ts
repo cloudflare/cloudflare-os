@@ -3,7 +3,8 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import * as Y from "yjs";
 import {
-  createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall,
+  createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentSystemPrompt,
+  type Context, type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { keyString } from "@gadgets/typed-storage";
 import type {
@@ -43,6 +44,14 @@ const OWNER: AiChatAuthorInfo = {
   type: "user", id: "olive@example.com", name: "Olive", commitEmail: "olive@commits.example",
 };
 const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
+
+// What any model the owner names resolves to: a Workers AI model with no credentials, so that a
+// turn the workspace runs with it fails before it reaches a provider. Most tests have the
+// workspace record the turns it starts instead (see recordTurns), and run them by hand with pi's
+// faux provider.
+const AI_MODEL = {
+  profile: AGENT, config: { provider: "cloudflare", model: "faux-model", apiToken: "" },
+};
 
 const V1 = { "client.js": "one\n", "lib/util.js": "export const answer = 42;\n" };
 const V2 = { ...V1, "client.js": "two\n" };
@@ -85,7 +94,9 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     let owner = {
       id: OWNER_USER_ID,
       whoami: async () => OWNER,
-      getChatContext: async () => ({ profile: OWNER }),
+      getChatContext: async (modelId: string | null) =>
+          ({ profile: OWNER, ...(modelId ? { aiModel: AI_MODEL } : {}) }),
+      listGatekeeperVendors: async () => [],  // asked at the start of every agent turn
       updateBlueprint: async () => false,  // not featured
       deleteBlueprint: async () => {},
       setGadgetLastActive: async () => {},
@@ -825,10 +836,11 @@ function republish({ blueprintId, published }: Published, index: number): string
   return published[index].commitId!;
 }
 
+/** Applies a blueprint to a gadget, with no model to review the result unless one is named. */
 async function apply(client: Overseer, gadgetId: number, blueprintId: string, options = {})
     : Promise<ApplyBlueprintResult> {
   using gadget = await client.getGadget(gadgetId);
-  return await gadget.applyBlueprint(blueprintId, options);
+  return await gadget.applyBlueprint(blueprintId, { modelId: null, ...options });
 }
 
 /** Applies a blueprint to the workspace's gadget, which has to yield a proposal: its chat. */
@@ -854,15 +866,24 @@ function addUserChat(impl: any, id: number): void {
 
 /**
  * Runs one turn of the real agent in a chat, with a model that answers each step with the next
- * of `steps`.
+ * of `steps`. Returns what the model was shown at each step.
  */
 async function runScriptedTurn(
-    impl: any, chatId: number, steps: ReturnType<typeof fauxAssistantMessage>[]): Promise<void> {
+    impl: any, chatId: number, steps: ReturnType<typeof fauxAssistantMessage>[])
+    : Promise<Context[]> {
   let faux = createFauxCore({ models: [{ id: "faux-model" }] });
-  faux.setResponses(steps);
+  let contexts: Context[] = [];
+  faux.setResponses(steps.map(step => (context: TranscriptContext) => {
+    // pi carries the prompt in the transcript's system messages; replay them into one string.
+    contexts.push({
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages: structuredClone(context.messages),
+    });
+    return step;
+  }));
   await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, chatId, AGENT,
-      new AbortController().signal, OWNER,
-      { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
+      new AbortController().signal, OWNER, AI_MODEL.config as any);
+  return contexts;
 }
 
 function theGadget(impl: any): any {
@@ -919,8 +940,10 @@ async function legacyGadget(impl: any, files: Record<string, string>): Promise<s
  * Publishes a release of the blueprint "unchained", whose every release stands alone, as the
  * bundled blueprints' do. Returns the release.
  */
-async function publishUnchained(version: number, files: Record<string, string>): Promise<string> {
-  await storeBlueprint("unchained", metadataFor("Unchained", { version }),
+async function publishUnchained(
+    version: number, files: Record<string, string>, extra: Partial<BlueprintMetadata> = {})
+    : Promise<string> {
+  await storeBlueprint("unchained", metadataFor("Unchained", { version, ...extra }),
       await snapshotContent(files));
   return (await buildSnapshotRelease(new Map(Object.entries(files)))).commitId;
 }
@@ -1469,6 +1492,422 @@ describe("applying a blueprint to a gadget", () => {
       let chatId = await propose(workspace, alice.blueprintId);
       expect(proposal(impl, chatId).merge.kind).toBe("fastForward");
       expect(await proposedFiles(impl, chatId)).toEqual(large);
+    });
+  });
+});
+
+/**
+ * Has the workspace record each agent turn it starts, instead of running it. Returns the record:
+ * the chat, model, initiator and initiator's user id of each.
+ */
+function recordTurns(impl: any): unknown[][] {
+  let started: unknown[][] = [];
+  impl.startAgent = (...args: unknown[]) => { started.push(args); };
+  return started;
+}
+
+/**
+ * Runs the turn that a proposal started, with a model that answers each step with the next of
+ * `steps`, and ends it as the workspace ends a turn of its own. Returns what the model was shown
+ * at each step.
+ */
+async function runReview(
+    impl: any, chatId: number, steps = [fauxAssistantMessage(fauxText("Reviewed."))])
+    : Promise<Context[]> {
+  let contexts = await runScriptedTurn(impl, chatId, steps);
+  let { activeAgent, ...meta } = impl.storage.chatMeta.get(chatId);
+  expect(activeAgent).toEqual(AGENT);
+  impl.storage.chatMeta.put(meta);
+  return contexts;
+}
+
+/** Has the owner say something in a chat, and returns what the model is then shown. */
+async function askLater(impl: any, chatId: number, message: string): Promise<Context> {
+  impl.storage.chats.put({
+    chatId, sequence: impl.nextChatSequence(chatId),
+    // Workers clocks don't advance without I/O, and timestamps are indexed uniquely per chat.
+    timestamp: new Date(Date.now() + 60_000),
+    author: OWNER, type: "message", message,
+  });
+  let [context] = await runScriptedTurn(impl, chatId, [fauxAssistantMessage(fauxText("Sure."))]);
+  return context;
+}
+
+function messageText(content: Context["messages"][number]["content"]): string {
+  return typeof content === "string"
+      ? content : content.map(part => part.type === "text" ? part.text : "").join("");
+}
+
+/** The text of each message the model was shown as coming from the user, in order. */
+function userTexts(context: Context): string[] {
+  return context.messages.flatMap(
+      message => message.role === "user" ? [messageText(message.content)] : []);
+}
+
+/** The text of each tool result the model was shown, which is how it sees a user's edits. */
+function toolResultTexts(context: Context): string[] {
+  return context.messages.flatMap(
+      message => message.role === "toolResult" ? [messageText(message.content)] : []);
+}
+
+// The first release of a blueprint, its second, and the files of a gadget made from the first
+// whose owner has since changed them. The two changed different files, and opposite ends of
+// server.js, so they merge with no conflict.
+const R1 = { "client.js": "one\n", "server.js": "a\nb\nc\nd\ne\n", "old.js": "old\n" };
+const R2 = { "client.js": "two\n", "server.js": "a\nb\nc\nd\ntheirs\n", "new.js": "new\n" };
+const OWN = { ...R1, ...MINE, "server.js": "mine\nb\nc\nd\ne\n" };
+const MERGED = { ...R2, ...MINE, "server.js": "mine\nb\nc\nd\ntheirs\n" };
+
+/**
+ * Makes the workspace's gadget from the first of a blueprint's releases, has its owner change
+ * its files to `own`, and then has readers find the blueprint's second release. Returns the
+ * three commits that applying the blueprint now merges.
+ */
+async function diverge(
+    { instance, impl }: Workspace, blueprint: Published, own: Record<string, string>)
+    : Promise<{ base: string, head: string, release: string }> {
+  let base = republish(blueprint, 0);
+  await instantiate(instance, blueprint.blueprintId);
+  let head = await commitToGadget(impl, own);
+  return { base, head, release: republish(blueprint, 1) };
+}
+
+/**
+ * Applies a blueprint to the workspace's gadget where that has to start no turn, and then has
+ * the owner ask about it. Returns the proposal's chat and kind, and what the turn that answers
+ * the owner is shown of it.
+ */
+async function noted(workspace: Workspace, blueprintId: string, modelId: string | null)
+    : Promise<{ chatId: number, kind: string, note: string }> {
+  let { impl } = workspace;
+  let chatId = await propose(workspace, blueprintId, { modelId });
+  expect(impl.storage.chatMeta.get(chatId).activeAgent).toBeUndefined();
+  let context = await askLater(impl, chatId, "What happened?");
+  let [note, ...others] = userTexts(context);
+  expect([others, toolResultTexts(context)]).toEqual([["What happened?"], []]);
+  return { chatId, kind: proposal(impl, chatId).merge.kind, note };
+}
+
+/** How the model is told that the second release of Alice's blueprint was applied. */
+function applied(impl: any): string {
+  return `The user applied version 2 of the blueprint "Alice's" to the gadget ` +
+      `\`env.${theGadget(impl).bindingName}\`, as a proposed change in this chat.`;
+}
+
+describe("having the agent review a blueprint merged into a gadget", () => {
+  it("starts one turn for a merge, whether or not anything conflicted", async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+
+    for (let [own, conflictPaths] of [
+      [OWN, []], [{ ...OWN, "client.js": "mine too\n" }, ["client.js"]],
+    ] as const) {
+      await withWorkspace(async workspace => {
+        let { impl, client } = workspace;
+        let started = recordTurns(impl);
+        await diverge(workspace, alice, own);
+        let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+        expect(proposal(impl, chatId).merge).toMatchObject({ kind: "merge", conflictPaths });
+
+        // The workspace started the turn itself, for the user who applied the blueprint and
+        // with the model they named.
+        expect(started).toEqual([[chatId, AI_MODEL, OWNER, OWNER_USER_ID]]);
+        expect(impl.storage.chatMeta.get(chatId).activeAgent).toEqual(AGENT);
+
+        // Nothing was written to prompt it. The chat holds the proposal and no more.
+        expect([...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })])
+            .toEqual(changesMessages(impl, chatId));
+
+        // It is a turn like any other, which the proposal waits for.
+        await expect(client.mergeChanges(chatId)).rejects.toThrow(/Agent is running/);
+        await runReview(impl, chatId);
+        await accept(workspace, chatId);
+        expect(started).toHaveLength(1);
+      });
+    }
+  });
+
+  it("leaves the proposal as it was when the turn it starts fails", async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      await diverge(workspace, alice, OWN);
+
+      // This turn the workspace runs for itself. It gets as far as the model, which is one
+      // that cannot be reached for want of credentials.
+      let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+      expect(impl.storage.chatMeta.get(chatId).activeAgent).toEqual(AGENT);
+      await impl.waitForAllAgentsToComplete();
+
+      // The chat is told so, and is left idle with its proposal to accept.
+      expect(impl.storage.chatMeta.get(chatId).activeAgent).toBeUndefined();
+      expect([...impl.storage.activeAgents.list()]).toEqual([]);
+      expect([...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })]
+          .map(message => message.type)).toEqual(["changes", "error"]);
+      await accept(workspace, chatId);
+      expect(await headFiles(impl)).toEqual(MERGED);
+    });
+  });
+
+  it("shows the agent a summary of the merge and what to do with it, not the change",
+      async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      recordTurns(impl);
+      let { base, head, release } = await diverge(workspace, alice, OWN);
+      let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+      expect(await proposedFiles(impl, chatId)).toEqual(MERGED);
+      let gadget = theGadget(impl).bindingName;
+
+      // The agent looks closer at the version the two had in common, as the summary suggests.
+      let [context, , afterRead] = await runReview(impl, chatId, [
+        fauxAssistantMessage([fauxToolCall("createWorktree",
+            { title: "Base", bindingName: "BASE", commitId: base })], { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxToolCall("readFile",
+            { workpiece: "BASE", filename: "client.js" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxText("Reviewed.")),
+      ]);
+      expect(userTexts(context)).toEqual([[
+        `The user applied version 2 of the blueprint "Alice's" to the gadget ` +
+            `\`env.${gadget}\`, as a proposed change in this chat. The ` +
+            `gadget has changes of its own, so the blueprint's changes were merged with them, ` +
+            `three ways. The gadget's files in this chat are now the result.`,
+        ``,
+        `The commits that were merged. To look closer at one, mount it with ` +
+            `\`createWorktree\` and use \`readFile\` and \`grep\` on it:`,
+        `* base, the version the two have in common: ${base}`,
+        `* this gadget, before the merge: ${head}`,
+        `* blueprint: ${release}`,
+        ``,
+        `Files that the gadget and the blueprint both changed, merged with no conflict found:`,
+        `* "server.js"`,
+        ``,
+        `Files that only the blueprint changed:`,
+        `* "client.js"`,
+        `* "new.js"`,
+        `* "old.js"`,
+        ``,
+        `Review the merge now, without waiting to be asked:`,
+        `* Check that the gadget's own changes and the blueprint's still work together, ` +
+            `starting with any files that both changed. Changes that merge cleanly can still ` +
+            `disagree, as when one side renames something that the other side's new code uses.`,
+        `Change nothing else: the user asked for the update, not for other improvements. When ` +
+            `you are done, tell the user briefly what the update changed and what you did.`,
+      ].join("\n")]);
+
+      // The change is in the chat for the agent to read. It is not quoted, as a user's own
+      // edits would be.
+      expect(toolResultTexts(context)).toEqual([]);
+
+      // A commit that the summary names holds its files, for the agent's own tools to read.
+      expect(toolResultTexts(afterRead).at(-1)).toBe("one\n");
+      expect(context.systemPrompt).toContain(
+          "```\n<<<<<<< this gadget\nthe lines as one side has them\n||||||| base\n");
+    });
+  });
+
+  it("has the agent resolve what conflicted, and shows it the same summary on a later turn",
+      async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      recordTurns(impl);
+
+      // The owner also changed the line of client.js that the release changes, and a file
+      // that the release deletes.
+      let { head, release } = await diverge(workspace, alice,
+          { ...OWN, "client.js": "mine too\n", "old.js": "old, but mine\n" });
+      let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+      let workpiece = theGadget(impl).bindingName;
+
+      let [context] = await runReview(impl, chatId, [
+        fauxAssistantMessage([fauxToolCall("readFile", { workpiece, filename: "client.js" })],
+            { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxToolCall("writeFile",
+            { workpiece, filename: "client.js", content: "both\n" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxText("Resolved.")),
+      ]);
+      let [summary, ...others] = userTexts(context);
+      expect(others).toEqual([]);
+      expect(summary).toContain([
+        ``,
+        `Files with conflicts:`,
+        `* "client.js"`,
+        `* "old.js"`,
+        ``,
+        `Files that the gadget and the blueprint both changed, merged with no conflict found:`,
+        `* "server.js"`,
+        ``,
+        `Files that only the blueprint changed:`,
+        `* "new.js"`,
+        ``,
+        `Review the merge now, without waiting to be asked:`,
+        `* Resolve every conflict (see "Merge conflicts" in your instructions).`,
+      ].join("\n"));
+
+      // What the agent read is the merged file, markers and all.
+      let later = await askLater(impl, chatId, "What changed?");
+      expect(userTexts(later)).toEqual([summary, "What changed?"]);
+      expect(toolResultTexts(later)[0]).toBe(
+          "<<<<<<< this gadget\nmine too\n||||||| base\none\n=======\ntwo\n>>>>>>> blueprint\n");
+
+      // Its resolution is accepted along with the merge.
+      let after = await accept(workspace, chatId);
+      expect(await parentsOf(impl, after.commitId)).toEqual([head, release]);
+      expect(await headFiles(impl))
+          .toEqual({ ...MERGED, "client.js": "both\n", "old.js": "old, but mine\n" });
+    });
+  });
+
+  it("goes on showing the agent a proposal that was reverted, ahead of the revert", async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+
+    await withWorkspace(async workspace => {
+      let { impl, client } = workspace;
+      recordTurns(impl);
+      await diverge(workspace, alice, OWN);
+      let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+      let [summary] = userTexts((await runReview(impl, chatId))[0]);
+
+      // The summary is what the agent's review answered, so it stays where it was.
+      await client.revertChanges(chatId, 0);
+      let later = await askLater(impl, chatId, "Never mind.");
+      expect(userTexts(later)).toEqual([summary, "Never mind."]);
+      expect(toolResultTexts(later)).toEqual(
+          [expect.stringContaining("The user reverted all changes starting from change 0")]);
+    });
+  });
+
+  it("warns the agent of a base that was assumed, and names the bindings the gadget lacks",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      recordTurns(impl);
+      await legacyGadget(impl, V3);
+      let chatId = await propose(
+          workspace, alice.blueprintId, { modelId: "some-model", allowUnrelated: true });
+      expect(proposal(impl, chatId).merge.unverifiedBase).toBe(true);
+
+      let [summary] = userTexts((await runReview(impl, chatId))[0]);
+      expect(summary).toContain("so that base is a guess at what the gadget was built from");
+      expect(summary).not.toContain("bindings");
+    });
+
+    await publishUnchained(1, V1);
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      recordTurns(impl);
+      await instantiate(instance, "unchained");
+      await commitToGadget(impl, { ...V1, ...MINE });
+      await publishUnchained(2, V2, { bindings: { LACKS: declaredBinding("Lacks") } });
+      let chatId = await propose(workspace, "unchained", { modelId: "some-model" });
+
+      let [summary] = userTexts((await runReview(impl, chatId))[0]);
+      expect(summary).toContain([
+        `The blueprint's code expects the following bindings, which the gadget does not have ` +
+            `yet. Wire up each one under the exact binding name given. For external resources, ` +
+            `use setGadgetBinding on the gadget (first requesting a connection via ` +
+            `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
+            `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
+            `from the gadget's Connections panel.`,
+        `* LACKS — "Lacks" (external resource via the "github" gatekeeper; resource URL ` +
+            `pattern "https://github.com/*")`,
+        ``,
+      ].join("\n"));
+      expect(summary).toContain("\n* Wire up the bindings listed above.\n");
+      expect(summary).not.toContain("is a guess");
+    });
+  });
+
+  it("summarizes a merge at a size that the size of its files does not change", async () => {
+    let shown: string[] = [];
+    for (let lines of [1, 100_000]) {
+      let added = Object.fromEntries(["a", "b", "c"].map(
+          name => [`${name}.js`, `// ${name}\n`.repeat(lines)]));
+      let alice = await publishVersions("Alice's", [V1, { ...V2, ...added }]);
+
+      await withWorkspace(async workspace => {
+        let { impl } = workspace;
+        recordTurns(impl);
+        await diverge(workspace, alice, { ...V1, ...MINE });
+        let chatId = await propose(workspace, alice.blueprintId, { modelId: "some-model" });
+        expect(await proposedFiles(impl, chatId)).toEqual({ ...V2, ...added, ...MINE });
+
+        // Larger files take more messages to hold, of which the agent is shown as much as it
+        // is of one: the summary, and no change.
+        let [context] = await runReview(impl, chatId);
+        let [summary, ...others] = userTexts(context);
+        expect([others, toolResultTexts(context)]).toEqual([[], []]);
+        expect(summary).toContain([
+          `Files that only the blueprint changed:`, `* "a.js"`, `* "b.js"`, `* "c.js"`,
+          `* "client.js"`, ``,
+        ].join("\n"));
+        shown.push(summary.replace(/\b[0-9a-f]{40}\b/g, "<commit>"));
+        expect(changesMessages(impl, chatId).length > 1).toBe(lines > 1);
+      });
+    }
+    expect(shown[1]).toBe(shown[0]);
+  });
+
+  it("starts no turn where there is nothing to review or no model to do it, and leaves a note",
+      async () => {
+    let alice = await publishVersions("Alice's", [R1, R2]);
+    await storeBlueprint("copy", alice.published[1],
+        await storedContent(`${alice.blueprintId}/${alice.published[1].commitId}`));
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      let started = recordTurns(impl);
+
+      // The gadget has no changes of its own, so there is only the release to take.
+      republish(alice, 0);
+      await instantiate(instance, alice.blueprintId);
+      republish(alice, 1);
+      let { chatId, ...forward } = await noted(workspace, alice.blueprintId, "some-model");
+      expect(forward).toEqual({
+        kind: "fastForward",
+        note: `${applied(impl)} The gadget had no changes of its own to keep, so its files ` +
+            `are now that version's exactly.`,
+      });
+      await accept(workspace, chatId);
+
+      // Now it has the release, and is asked only to follow another blueprint that has it.
+      expect(await noted(workspace, "copy", "some-model")).toMatchObject({
+        kind: "follow",
+        note: `${applied(impl)} None of the gadget's files change: accepting it only has the ` +
+            `gadget take its future updates from that blueprint.`,
+      });
+      expect(started).toEqual([]);
+    });
+
+    // A merge that changes no file: the owner had already made every change the release does.
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      let started = recordTurns(impl);
+      await diverge(workspace, alice, R2);
+      let { chatId, ...same } = await noted(workspace, alice.blueprintId, "some-model");
+      expect(same).toEqual({
+        kind: "merge",
+        note: `${applied(impl)} The gadget already had every change that version made, so ` +
+            `none of its files change.`,
+      });
+      expect(proposal(impl, chatId).message.change).toBeUndefined();
+      expect(started).toEqual([]);
+    });
+
+    // A merge with no model named to review it. The summary waits for whichever turn comes
+    // first.
+    await withWorkspace(async workspace => {
+      let started = recordTurns(workspace.impl);
+      await diverge(workspace, alice, OWN);
+      let { kind, note } = await noted(workspace, alice.blueprintId, null);
+      expect(kind).toBe("merge");
+      expect(note).toContain("Review the merge now, without waiting to be asked:");
+      expect(started).toEqual([]);
     });
   });
 });
