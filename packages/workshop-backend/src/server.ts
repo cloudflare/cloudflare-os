@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart } from '@gadgets/workshop-shared/api';
+import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -180,6 +180,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   getQuickModel(): Promise<null | string> {
     return retryOnDoReset(() => this.#user.getQuickModel());
+  }
+
+  registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    return this.#user.registerNotificationDevice(deviceRegistrationId);
+  }
+
+  subscribeToNotifications(
+      subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToNotifications(subscriber);
   }
 
   getPreferredModel(): Promise<string | null> {

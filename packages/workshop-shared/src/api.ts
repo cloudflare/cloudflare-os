@@ -178,6 +178,57 @@ export interface ConnectedAccountsSubscriber {
   ready(): void;
 }
 
+/** A live notification emitted when an agent turn finishes normally. */
+export type TaskCompletedNotification = {
+  /** Stable identifier shared by the live and push delivery attempts. */
+  id: string;
+
+  /** Discriminator for task-completion notifications. */
+  kind: "taskCompleted";
+
+  /** Workspace containing the task. */
+  workspaceId: string;
+
+  /** Chat containing the task. */
+  chatId: number;
+
+  /** Current human-readable workspace title. */
+  workspaceTitle: string;
+
+  /** Current human-readable chat title. */
+  chatTitle: string;
+
+  /** Time at which the backend observed the completed turn. */
+  createdAt: Date;
+
+  /** Same-origin path a client should open when the notification is selected. */
+  targetPath: string;
+};
+
+/** A live notification for a task paused on a permission prompt. */
+export type PermissionRequestedNotification = Omit<
+  TaskCompletedNotification,
+  "kind" | "createdAt"
+> & {
+  /** Discriminator for connection and action-approval prompts. */
+  kind: "permissionRequested";
+
+  /** Time at which the backend observed the task waiting for permission. */
+  createdAt: Date;
+};
+
+/** A notification delivered to one authenticated user. */
+export type UserNotification = TaskCompletedNotification | PermissionRequestedNotification;
+
+/** Callback used by `AuthenticatedApi.subscribeToNotifications()`. */
+export interface NotificationSubscriber extends RpcTarget {
+  /**
+   * Present a notification to the active user. Resolve only after it has actually been surfaced;
+   * if no subscriber resolves promptly, the backend falls back to mobile push delivery.
+   */
+  notify(notification: UserNotification): Promise<void>;
+}
+
 /**
  * When listing gatekeeper vendors or connected accounts, you can filter to only vendors/accounts
  * that support certain features. This type specifies the filter.
@@ -459,6 +510,19 @@ export interface AuthenticatedApi extends RpcTarget {
    * which case the change-password UI should be hidden.
    */
   hasPasswordLogin(): Promise<boolean>;
+
+  /**
+   * Connect the native app's one-time central device registration to this authenticated user.
+   * The deployment never receives an APNs device token or Cloudflare account token.
+   */
+  registerNotificationDevice(deviceRegistrationId: string): Promise<void>;
+
+  /**
+   * Subscribe while this client can visibly present notifications. Dispose the returned handle
+   * when the page becomes hidden so the backend can promptly fall back to mobile push.
+   */
+  subscribeToNotifications(
+      subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
   /**
    * List the user's configured AI models.

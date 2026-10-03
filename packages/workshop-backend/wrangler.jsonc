@@ -44,6 +44,12 @@
       "binding": "LOADER"
     }
   ],
+  "services": [
+    {
+      "binding": "NOTIFICATION_DELIVERY",
+      "service": "notification-proxy"
+    }
+  ],
   "build": {
     "command": "pnpm run build:worker",
     "watch_dir": "src"

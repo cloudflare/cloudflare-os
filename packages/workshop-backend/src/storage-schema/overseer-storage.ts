@@ -660,6 +660,8 @@ export type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   /** Whether this turn was initiated by a gadget callback (vs. a chat message). */
   callbackInitiated: boolean;
+  /** Stable notification id, preserved if the turn resumes after a Durable Object restart. */
+  notificationId?: string;
 };
 
 /**

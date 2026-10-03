@@ -984,6 +984,42 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/zoominfo"
       }
     },
+    "notification-proxy": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "nodejs_als"
+      ],
+      "installable": false,
+      "kind": "system",
+      "mainModule": "worker.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "NotificationAccountState"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "worker.js",
+          "r2Key": "blobs/modules/82446dcb53fe936584cb7ccc37cf41af097c27a616470e31eb1a14ed6fd483aa",
+          "sha256": "82446dcb53fe936584cb7ccc37cf41af097c27a616470e31eb1a14ed6fd483aa",
+          "size": 60,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "vars": {}
+    },
     "router": {
       "assetsConfig": {
         "not_found_handling": "single-page-application",
@@ -1079,6 +1115,11 @@
         {
           "name": "LOADER",
           "type": "worker_loader"
+        },
+        {
+          "name": "NOTIFICATION_DELIVERY",
+          "service": "$WORKER_NAME(notification-proxy)",
+          "type": "service"
         },
         {
           "name": "WORKERS_AI",

@@ -14,6 +14,7 @@ import AppShell from '../components/AppShell/AppShell'
 import LoginPage from '../LoginPage'
 import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
+import { NotificationBridge } from '../features/notifications/NotificationBridge'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -114,6 +115,7 @@ function RootComponent() {
       <FeatureFlagsProvider>
         <TooltipProvider>
           <Toasty>
+            <NotificationBridge authenticatedApi={authenticatedApi} />
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}

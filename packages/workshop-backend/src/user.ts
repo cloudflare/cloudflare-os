@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -18,6 +18,9 @@ import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import type {
+  NotificationDeliveryService, PermissionRequestedDelivery, TaskCompletedDelivery,
+} from "@gadgets/workshop-shared/notification-delivery";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -185,6 +188,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
+  #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -339,6 +343,121 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Whether this account has a password set (false for gatekeeper sign-in accounts). */
   async hasPasswordLogin(): Promise<boolean> {
     return this.storage.passwordHashHash.get() !== null;
+  }
+
+  /**
+   * Give the install-local proxy a one-time central device registration. The proxy exchanges it
+   * for an install-bound subscription without exposing the APNs token to Workshop.
+   */
+  async registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(deviceRegistrationId)) {
+      throw new Error("Invalid notification device registration.");
+    }
+    let delivery = this.#notificationDelivery();
+    if (!delivery) throw new Error("Notifications are not available on this deployment.");
+
+    let accountId = this.storage.notificationAccountId.get();
+    if (!accountId) {
+      accountId = crypto.randomUUID();
+      this.storage.notificationAccountId.put(accountId);
+    }
+    await delivery.registerDevice(accountId, deviceRegistrationId);
+  }
+
+  /** Subscribe a visible authenticated client to live user notifications. */
+  async subscribeToNotifications(
+      subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#notificationSubscribers.set(token, subscriber);
+    let unsubscribe = () => {
+      let existing = this.#notificationSubscribers.get(token);
+      if (!existing) return;
+      this.#notificationSubscribers.delete(token);
+      existing[Symbol.dispose]();
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
+  }
+
+  /** Offer a completed task to visible clients, then fall back to mobile push. */
+  async publishTaskCompletedNotification(delivery: TaskCompletedDelivery): Promise<void> {
+    await this.#publishNotification({
+      id: delivery.id,
+      kind: "taskCompleted",
+      workspaceId: delivery.workspaceId,
+      chatId: delivery.chatId,
+      workspaceTitle: delivery.workspaceTitle,
+      chatTitle: delivery.chatTitle,
+      createdAt: delivery.completedAt,
+      targetPath: `/workspace/${encodeURIComponent(delivery.workspaceId)}?chat=${delivery.chatId}`,
+    }, service => service.deliverTaskCompleted(
+      this.storage.notificationAccountId.get()!, delivery,
+    ));
+  }
+
+  /** Alert the initiating user when their task pauses on a permission prompt. */
+  async publishPermissionRequestedNotification(
+      delivery: PermissionRequestedDelivery): Promise<void> {
+    await this.#publishNotification({
+      id: delivery.id,
+      kind: "permissionRequested",
+      workspaceId: delivery.workspaceId,
+      chatId: delivery.chatId,
+      workspaceTitle: delivery.workspaceTitle,
+      chatTitle: delivery.chatTitle,
+      createdAt: delivery.requestedAt,
+      targetPath: `/workspace/${encodeURIComponent(delivery.workspaceId)}?chat=${delivery.chatId}`,
+    }, service => service.deliverPermissionRequested(
+      this.storage.notificationAccountId.get()!, delivery,
+    ));
+  }
+
+  async #publishNotification(
+      notification: UserNotification,
+      sendPush: (service: Service<NotificationDeliveryService>) => Promise<void>,
+  ): Promise<void> {
+    if (await this.#presentLiveNotification(notification)) return;
+    if (!this.storage.notificationAccountId.get()) return;
+    let service = this.#notificationDelivery();
+    if (service) await sendPush(service);
+  }
+
+  #notificationDelivery(): Service<NotificationDeliveryService> | undefined {
+    // @cloudflare/config models a Worker binding as Fetcher because it cannot express RPC
+    // entrypoint types. The bound Worker's default export implements this shared contract.
+    return this.env.NOTIFICATION_DELIVERY as unknown as
+      Service<NotificationDeliveryService> | undefined;
+  }
+
+  async #presentLiveNotification(notification: UserNotification): Promise<boolean> {
+    let attempts = [...this.#notificationSubscribers].map(async ([token, subscriber]) => {
+      try {
+        await subscriber.notify(notification);
+      } catch (error) {
+        if (this.#notificationSubscribers.get(token) === subscriber) {
+          this.#notificationSubscribers.delete(token);
+          subscriber[Symbol.dispose]();
+        }
+        throw error;
+      }
+    });
+    if (attempts.length === 0) return false;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("live notification acknowledgement timed out")), 3000,
+      );
+    });
+    try {
+      await Promise.race([Promise.any(attempts), timeout]);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {

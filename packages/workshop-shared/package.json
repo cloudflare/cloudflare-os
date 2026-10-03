@@ -27,6 +27,10 @@
       "types": "./src/external-message-gateway.ts",
       "import": "./src/external-message-gateway.ts"
     },
+    "./notification-delivery": {
+      "types": "./src/notification-delivery.ts",
+      "import": "./src/notification-delivery.ts"
+    },
     "./code-change": {
       "types": "./src/code-change.ts",
       "import": "./src/code-change.ts"
