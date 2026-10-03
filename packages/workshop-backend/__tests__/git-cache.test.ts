@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deflate } from "pako";
 import type { GitPullHints, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage";
@@ -14,7 +15,6 @@ import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import {
   buildPackBytes,
   concatBytes,
-  decodePackBytes,
   encodeLooseObject,
   gitObjectOid,
   parseGitTree,
@@ -31,6 +31,8 @@ import {
   PACK_OFS_DELTA,
   TREE_1,
   b64Bytes,
+  byteStream,
+  decodePack,
 } from "./git-cache-fixtures";
 
 // Gatekeeper workpiece ids and action ids used throughout.
@@ -123,15 +125,6 @@ function listMarks(storage: TestStorage, actionId: number): GitOid[] {
 
 function pendingPushOf(storage: TestStorage, oid: GitOid) {
   return storage.gitObjectMetadata.get(oid)?.pendingPush ?? [];
-}
-
-async function streamOf(chunks: Uint8Array[]): Promise<ReadableStream<Uint8Array>> {
-  return new ReadableStream({
-    start(controller) {
-      for (let chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
 }
 
 async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -752,12 +745,7 @@ describe("buildPack", () => {
 
     let stub = new GitCacheImpl(t.cache, G2, ACTION);
     let pack = await collect(await stub.buildPack());
-    let objects = await decodePackBytes(pack, { maxObjectSize: 1 << 26 });
-
-    // The pack carries exactly the closure: the child commit, TREE_1, and every non-gitlink
-    // object beneath it (5 root entries, docs' file, src's three files).
-    let oids = new Set(await Promise.all(
-        objects.map(o => gitObjectOid(o.type, o.payload))));
+    let oids = new Set((await decodePack(pack)).map(o => o.oid));
     expect(oids.size).toBe(11);
     expect(oids.has(t.child)).toBe(true);
     expect(oids.has(TREE_1)).toBe(true);
@@ -772,7 +760,7 @@ describe("buildPack", () => {
 
     // Cross-check: a fresh cache consumes the pack byte-for-byte.
     let t2 = makeCache();
-    let stored = await t2.cache.consumePackFromGatekeeper(G2, await streamOf([pack]));
+    let stored = await t2.cache.consumePackFromGatekeeper(G2, byteStream(pack));
     expect(new Set(stored)).toStrictEqual(oids);
     expect(t2.cache.readLocalObject(t.child)!.type).toBe("commit");
   });
@@ -781,7 +769,7 @@ describe("buildPack", () => {
     let t = await setupCrossRemote();
     t.cache.markPushClosure(G2, ACTION, [t.ancestor]);  // already onRemote: nothing marked
     let pack = await collect(await new GitCacheImpl(t.cache, G2, ACTION).buildPack());
-    expect(await decodePackBytes(pack, { maxObjectSize: 1 })).toStrictEqual([]);
+    expect(await decodePack(pack)).toStrictEqual([]);
   });
 
   it("fails the apply with the source's error on provenance loss", async () => {
@@ -799,7 +787,7 @@ describe("consumePack", () => {
   it("stores a real-git pack exactly like the equivalent puts", async () => {
     let t = makeCache();
     let stub = new GitCacheImpl(t.cache, G1);
-    let stored = await stub.consumePack(await streamOf([b64Bytes(PACK_OFS_DELTA)]));
+    let stored = await stub.consumePack(byteStream(b64Bytes(PACK_OFS_DELTA)));
     expect(new Set(stored)).toStrictEqual(new Set(PACKED_OIDS));
 
     for (let oid of PACKED_OIDS) {
@@ -814,13 +802,16 @@ describe("consumePack", () => {
     expect(t.storage.gitObjectMetadata.get(GITLINK_TARGET)).toBeUndefined();
   });
 
-  it("rejects corrupt input", async () => {
+  it("rejects corrupt input without storing its commits or trees", async () => {
     let t = makeCache();
     let bytes = b64Bytes(PACK_OFS_DELTA).slice();
     bytes[bytes.length - 3] ^= 0x55;
-    await expect(new GitCacheImpl(t.cache, G1).consumePack(await streamOf([bytes])))
+    await expect(new GitCacheImpl(t.cache, G1).consumePack(byteStream(bytes)))
         .rejects.toThrow(/invalid packfile/);
-    expect(Array.from(t.storage.gitObjects.list())).toStrictEqual([]);
+    // The commits and trees must wait for the trailer: a present commit is treated as mounted.
+    for (let oid of PACKED_OIDS.filter(o => fixture(o).type !== "blob")) {
+      expect(t.cache.hasLocalObject(oid)).toBe(false);
+    }
   });
 
   it("measures an oversized entry, skips storing it, and omits it from the result", async () => {
@@ -832,12 +823,34 @@ describe("consumePack", () => {
     let pack = concatBytes(await buildPackBytes(
         [{ type: "blob", payload: big }, { type: "blob", payload: small }]));
 
-    let stored = await new GitCacheImpl(t.cache, G1).consumePack(await streamOf([pack]));
+    let stored = await new GitCacheImpl(t.cache, G1).consumePack(byteStream(pack));
     expect(stored).toStrictEqual([smallOid]);
     expect(t.cache.hasLocalObject(bigOid)).toBe(false);
     let meta = t.storage.gitObjectMetadata.get(bigOid)!;
     expect(meta.size).toBe(MAX_GIT_OBJECT_SIZE + 5);
     expect(meta.onRemote).toStrictEqual([G1]);
+  });
+
+  it("resolves a delta against an oversized base it declines to store", async () => {
+    // How git packs a file similar to a large one (e.g. a second lockfile in a whole-tree blob
+    // pull), hand-built: the large blob, then a ref-delta copying its first 16 bytes.
+    let t = makeCache();
+    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 5).fill(0x7a);
+    let bigOid = await gitObjectOid("blob", big);
+    // A one-blob pack minus its trailer, recounted to two entries.
+    let prefix = concatBytes(await buildPackBytes([{ type: "blob", payload: big }])).slice(0, -20);
+    new DataView(prefix.buffer).setUint32(8, 2);
+    // Delta: base size 0x100005 and target size 16 (varints), then a 16-byte copy from offset 0.
+    let delta = new Uint8Array([0x85, 0x80, 0x40, 16, 0x90, 16]);
+    let body = concatBytes([prefix, new Uint8Array([(7 << 4) | delta.length]),
+      Uint8Array.from(bigOid.match(/../g)!, h => parseInt(h, 16)), deflate(delta)]);
+    let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
+
+    let target = big.subarray(0, 16);
+    let stored = await new GitCacheImpl(t.cache, G1).consumePack(byteStream(pack));
+    expect(stored).toStrictEqual([await gitObjectOid("blob", target)]);
+    expect(t.cache.readLocalObject(stored[0])!.payload).toStrictEqual(target);
+    expect(t.storage.gitObjectMetadata.get(bigOid)!.size).toBe(big.byteLength);
   });
 });
 

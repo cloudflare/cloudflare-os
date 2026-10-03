@@ -1311,8 +1311,6 @@ to keep dependents compiling. PR boundaries to be decided later.
   (commits, trees, blobs), but this would not be very hard and it would even let
   us fix some bugs (isomorphic-git's parsing of trees is lossy when names contain
   invalid UTF-8; we'd rather error).
-- Improve packfile decoding to avoid keeping entire unpacked contents in memory;
-  instead, read objects back from disk where needed.
 - Worktree UI (changes view, diffs) — the OT stream + pins already carry everything
   a future subscription needs.
 - Eviction/GC — `gitObjectMetadata` is the re-pull index; the GC-roots enumeration

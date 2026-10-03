@@ -5,7 +5,7 @@ import {
   buildPackBytes,
   concatBytes,
   decodeLooseObject,
-  decodePackBytes,
+  decodePackStream,
   encodeLooseObject,
   gitObjectOid,
   parseGitCommitRefs,
@@ -28,6 +28,7 @@ import {
   PACK_REF_DELTA,
   TREE_1,
   b64Bytes,
+  decodePack,
 } from "./git-cache-fixtures";
 
 function fixture(oid: string): PackableObject {
@@ -141,58 +142,75 @@ describe("pack decoding", () => {
   ];
 
   for (let [name, packB64] of PACKS) {
-    it(`decodes the real \`git pack-objects\` ${name} pack to the exact objects`, async () => {
-      let objects = await decodePackBytes(b64Bytes(packB64), { maxObjectSize: 1 << 26 });
-      expect(objects).toHaveLength(PACKED_OIDS.length);
-      let byOid = new Map<string, PackableObject>();
-      for (let object of objects) {
-        byOid.set(await gitObjectOid(object.type, object.payload), object);
-      }
-      expect([...byOid.keys()].toSorted()).toStrictEqual(PACKED_OIDS.toSorted());
-      for (let oid of PACKED_OIDS) {
-        let expected = fixture(oid);
-        expect(byOid.get(oid)!.type).toBe(expected.type);
-        expect(byOid.get(oid)!.payload).toStrictEqual(expected.payload);
-      }
-    });
+    for (let step of [undefined, 1]) {
+      it(`decodes the real \`git pack-objects\` ${name} pack to the exact objects` +
+          (step ? ", byte by byte" : ""), async () => {
+        let objects = await decodePack(b64Bytes(packB64), { step });
+        expect(objects.map(o => o.oid).toSorted()).toStrictEqual(PACKED_OIDS.toSorted());
+        for (let { oid, type, payload } of objects) {
+          expect({ type, payload }).toStrictEqual(fixture(oid));
+        }
+      });
+    }
   }
 
   it("rejects bad magic", async () => {
     let pack = b64Bytes(PACK_NO_DELTA).slice();
     pack[0] = 0x51;
-    await expect(decodePackBytes(pack, { maxObjectSize: 1 << 26 })).rejects.toThrow(/bad magic/);
+    await expect(decodePack(pack)).rejects.toThrow(/bad magic/);
   });
 
   it("rejects a truncated pack", async () => {
     let pack = b64Bytes(PACK_NO_DELTA);
-    await expect(decodePackBytes(pack.subarray(0, pack.length - 40), { maxObjectSize: 1 << 26 }))
+    await expect(decodePack(pack.subarray(0, pack.length - 40)))
         .rejects.toThrow(/invalid packfile/);
   });
 
-  it("rejects a corrupted trailer", async () => {
+  it("rejects a corrupted trailer, however the pack is chunked", async () => {
     let pack = b64Bytes(PACK_NO_DELTA).slice();
     pack[pack.length - 1] ^= 0xff;
-    await expect(decodePackBytes(pack, { maxObjectSize: 1 << 26 }))
-        .rejects.toThrow(/trailer SHA-1 mismatch/);
+    for (let step of [undefined, 1]) {
+      await expect(decodePack(pack, { step })).rejects.toThrow(/trailer SHA-1 mismatch/);
+    }
   });
 
   it("rejects a pack declaring fewer objects than it carries (trailing garbage)", async () => {
     let pack = b64Bytes(PACK_NO_DELTA).slice();
     new DataView(pack.buffer).setUint32(8, PACKED_OIDS.length - 1);
-    await expect(decodePackBytes(pack, { maxObjectSize: 1 << 26 }))
-        .rejects.toThrow(/trailing garbage/);
+    // Byte by byte, the garbage arrives only after the trailer's chunk has been consumed.
+    for (let step of [undefined, 1]) {
+      await expect(decodePack(pack, { step })).rejects.toThrow(/trailing garbage/);
+    }
   });
 
   it("rejects a pack declaring more objects than it carries", async () => {
     let pack = b64Bytes(PACK_NO_DELTA).slice();
     new DataView(pack.buffer).setUint32(8, PACKED_OIDS.length + 1);
-    await expect(decodePackBytes(pack, { maxObjectSize: 1 << 26 }))
-        .rejects.toThrow(/invalid packfile/);
+    await expect(decodePack(pack)).rejects.toThrow(/invalid packfile/);
   });
 
   it("enforces the object size cap while decoding", async () => {
-    await expect(decodePackBytes(b64Bytes(PACK_NO_DELTA), { maxObjectSize: 64 }))
+    await expect(decodePack(b64Bytes(PACK_NO_DELTA), { maxObjectSize: 64 }))
         .rejects.toThrow(/exceeds the 64-byte limit/);
+  });
+
+  it("enforces the pack size cap", async () => {
+    let pack = b64Bytes(PACK_NO_DELTA);
+    await expect(decodePack(pack, { maxPackSize: pack.length - 1 }))
+        .rejects.toThrow(`packfile exceeds the ${pack.length - 1}-byte limit`);
+  });
+
+  it("cancels the source when decoding fails", async () => {
+    // An upstream still sending (a fetch body) must not be left open by a failed pull.
+    let cancelled = false;
+    let pack = new ReadableStream({
+      type: "bytes",
+      pull: controller => controller.enqueue(new TextEncoder().encode("not a pack")),
+      cancel: () => { cancelled = true; },
+    });
+    let options = { maxPackSize: Infinity, maxObjectSize: 1, resolveBase: () => undefined };
+    await expect(decodePackStream(pack, options).next()).rejects.toThrow(/bad magic/);
+    expect(cancelled).toBe(true);
   });
 
   it("fails a ref-delta whose base is nowhere, and resolves it via resolveBase", async () => {
@@ -212,10 +230,10 @@ describe("pack decoding", () => {
     let trailer = new Uint8Array(await crypto.subtle.digest("SHA-1", body));
     let pack = concatBytes([body, trailer]);
 
-    await expect(decodePackBytes(pack, { maxObjectSize: 1 << 20 }))
+    await expect(decodePack(pack, { maxObjectSize: 1 << 20 }))
         .rejects.toThrow(new RegExp(`delta base ${baseOid} is unavailable`));
 
-    let objects = await decodePackBytes(pack, {
+    let objects = await decodePack(pack, {
       maxObjectSize: 1 << 20,
       resolveBase: oid => oid === baseOid ? { type: "blob", payload: base } : undefined,
     });
@@ -226,21 +244,15 @@ describe("pack decoding", () => {
 });
 
 describe("pack encoding", () => {
-  it("round-trips all fixture objects through buildPackBytes/decodePackBytes", async () => {
-    let objects = PACKED_OIDS.map(fixture);
-    let pack = concatBytes(await buildPackBytes(objects));
-    let decoded = await decodePackBytes(pack, { maxObjectSize: 1 << 26 });
-    expect(decoded).toHaveLength(objects.length);
-    for (let i = 0; i < objects.length; i++) {
-      expect(decoded[i].type).toBe(objects[i].type);
-      expect(decoded[i].payload).toStrictEqual(objects[i].payload);
-    }
+  it("round-trips all fixture objects through buildPackBytes/decodePackStream", async () => {
+    let pack = concatBytes(await buildPackBytes(PACKED_OIDS.map(fixture)));
+    expect((await decodePack(pack)).map(o => o.oid)).toStrictEqual(PACKED_OIDS);
   });
 
   it("round-trips an empty pack", async () => {
     let pack = concatBytes(await buildPackBytes([]));
     expect(pack.byteLength).toBe(12 + 20);
-    expect(await decodePackBytes(pack, { maxObjectSize: 1 })).toStrictEqual([]);
+    expect(await decodePack(pack)).toStrictEqual([]);
   });
 });
 
