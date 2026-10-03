@@ -1205,6 +1205,7 @@ export const SUGGESTED_MODELS: Record<
     "gpt-5.6-terra": {name: "GPT 5.6 Terra", contextWindow: 1050000, outputLimit: 128000},
   },
   "google": {
+    "gemini-3.8-flash": {name: "Gemini 3.8 Flash", contextWindow: 1048576, outputLimit: 65536},
     "gemini-3.6-flash": {name: "Gemini 3.6 Flash", contextWindow: 1048576},
   },
   "ollama": {
