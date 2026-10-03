@@ -2,8 +2,8 @@ import {
   normalizeFrontendErrorReport,
   type FrontendErrorReportV1,
 } from "@gadgets/error-reporting";
-import type { ErrorEventV1, ErrorReporter } from "@gadgets/backend-utils/error-reporting";
-import { createLogger } from "@gadgets/backend-utils/logger";
+import type { ErrorEventV1, ErrorReporter } from "@gadgets/observability/error-reporting";
+import { createLogger } from "@gadgets/observability/logger";
 import type { JWTPayload } from "jose";
 import {
   accessRateLimitKey,

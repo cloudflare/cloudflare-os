@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "jsonc-parser": "^3.3.1",
     "typescript": "catalog:",
     "vitest": "catalog:",

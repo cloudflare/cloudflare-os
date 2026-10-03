@@ -1,5 +1,5 @@
 import { defineConfig } from "vite-plus";
-import { vitestTask } from "../../scripts/vitest-task-vite-config.js";
+import { vitestTask } from "@gadgets/scripts/vitest-task";
 
 /**
  * Vite+ settings for this package. The SPA's own build config lives in `vite.app.config.ts`;
@@ -17,11 +17,11 @@ export default defineConfig({
       // survive a later disabled-reporting cache hit and could be collected as if they matched the
       // current bundle. This runs every time, before the cache lookup.
       "clean:error-reporting-artifacts": {
-        command: "node ../../scripts/clean-error-reporting-artifacts.ts .",
+        command: "gadgets-clean-error-reporting .",
         cache: false,
       },
-      // A task rather than a package.json script so `input` can be stated explicitly: automatic
-      // tracking treats the whole package as input, and this build writes `dist-app/` and
+      // A task rather than a package.json script so `cache.input` can be stated explicitly:
+      // automatic tracking treats the whole package as input, and this build writes `dist-app/` and
       // `src/generated/app.txt` back into it, so nothing ever cached.
       //
       // The exclusions have to be workspace-wide, not package-relative -- tracking reaches past the
@@ -29,20 +29,22 @@ export default defineConfig({
       // the gatekeepers would invalidate each other. Only directory *contents* can be excluded, not
       // the directories, so a deleted output tree still costs one cold build.
       "build:app": {
-        command: "node build-app.mjs",
+        command: "node build-app.ts",
         dependsOn: ["clean:error-reporting-artifacts"],
-        input: [
-          { auto: true },
-          { pattern: "!**/dist-app/**", base: "workspace" },
-          { pattern: "!**/src/generated/**", base: "workspace" },
-          // Wrangler's scratch bundles are randomly named, so without this a `pnpm dev-server` run
-          // guarantees a miss on the next one.
-          { pattern: "!**/.wrangler/**", base: "workspace" },
-        ],
-        output: ["dist-app/**", "src/generated/app.txt"],
-        // Read via `loadEnv` in vite.app.config.ts and baked into the bundle, so it belongs in the
-        // fingerprint.
-        env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        cache: {
+          input: [
+            { auto: true },
+            { pattern: "!**/dist-app/**", base: "workspace" },
+            { pattern: "!**/src/generated/**", base: "workspace" },
+            // Wrangler's scratch bundles are randomly named, so without this a `pnpm dev-server`
+            // run guarantees a miss on the next one.
+            { pattern: "!**/.wrangler/**", base: "workspace" },
+          ],
+          output: ["dist-app/**", "src/generated/app.txt"],
+          // Read via `loadEnv` in vite.app.config.ts and baked into the bundle, so it belongs in
+          // the fingerprint.
+          env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        },
       },
       // The same build unminified, run by the `pnpm dev-server` pre-flight. The app watcher cannot
       // skip its own initial build, so the pre-flight's output is rebuilt regardless; matching the
@@ -53,16 +55,18 @@ export default defineConfig({
       // rebuilds it moments later (`emptyOutDir`), so restoring it would be megabytes of writes on
       // the startup critical path.
       "build:app:dev": {
-        command: "node build-app.mjs --dev",
+        command: "node build-app.ts --dev",
         dependsOn: ["clean:error-reporting-artifacts"],
-        input: [
-          { auto: true },
-          { pattern: "!**/dist-app/**", base: "workspace" },
-          { pattern: "!**/src/generated/**", base: "workspace" },
-          { pattern: "!**/.wrangler/**", base: "workspace" },
-        ],
-        output: ["src/generated/app.txt"],
-        env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        cache: {
+          input: [
+            { auto: true },
+            { pattern: "!**/dist-app/**", base: "workspace" },
+            { pattern: "!**/src/generated/**", base: "workspace" },
+            { pattern: "!**/.wrangler/**", base: "workspace" },
+          ],
+          output: ["src/generated/app.txt"],
+          env: ["VITE_FRONTEND_ERROR_REPORTING"],
+        },
       },
     },
   },

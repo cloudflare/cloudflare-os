@@ -1,6 +1,13 @@
 // The trust boundary: what an MCP server says about its own tools becomes what a Gadget may do.
 // Nothing outside this file reads a tool's `annotations`.
 
+import {
+  buildDescription,
+  codeSpan,
+  plainInline,
+  quoteUntrusted,
+  type RenderedDescription,
+} from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   clampToolSummary,
@@ -171,53 +178,11 @@ export function toCallResult(
 // Longest server-supplied tool description reproduced in an approval prompt.
 const MAX_DESCRIPTION = 600;
 
-// Longest rendering of a tool call's arguments reproduced in an approval prompt.
-const MAX_ARGUMENTS = 4000;
+// The sanitizers moved to the kit; re-exported for observation records quoting agent-chosen text
+// such as search queries.
+export { codeSpan, plainInline };
 
-// Neutralizes Markdown fences in text about to be placed inside one. Without it a value can close
-// the fence and continue in the prompt's own voice.
-function defuseFences(text: string): string {
-  return text.replace(/`{3,}/g, "'''");
-}
-
-// Renders untrusted server text safely inside the approval prompt. Left alone, a tool description
-// can write its own "Endpoint:" line and argue the server's case in the prompt's voice, so fences
-// and headings are neutralized, the text is capped, and the rest is block-quoted.
-function quoteUntrusted(text: string, max: number): string {
-  const cleaned = defuseFences(text)
-    // Repeated, since one strip leaves `##` as `#` -- still a heading, at heading weight, in the
-    // prompt the approver reads.
-    .replace(/^[ \t]*[#>]+[ \t]*/gm, "")
-    .trim();
-  const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
-  return clipped.split("\n").map(line => `> ${line}`).join("\n");
-}
-
-/**
- * Renders server-chosen text inside a bounded Markdown code span.
- *
- * Backticks are dropped and whitespace is flattened so the value cannot escape into prompt prose.
- */
-export function codeSpan(text: string, max = MAX_INLINE_TEXT): string {
-  const cleaned = text.replace(/`/g, "").replace(/\s+/g, " ").trim();
-  const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
-  return `\`${clipped || "(unnamed)"}\``;
-}
-
-// Longest server-chosen name or endpoint shown inline in a prompt.
-const MAX_INLINE_TEXT = 120;
-
-/**
- * Renders untrusted text as inline prose, removing characters that could forge Markdown structure.
- * Exported for observation records quoting agent-chosen text such as search queries.
- */
-export function plainInline(text: string, max = MAX_INLINE_TEXT): string {
-  const cleaned = text.replace(/[`*_[\]()#>|]/g, "").replace(/\s+/g, " ").trim();
-  const clipped = cleaned.length > max ? `${cleaned.slice(0, max)}\u2026` : cleaned;
-  return clipped || "(unnamed)";
-}
-
-/** Renders a tool call as the Markdown an approver reads before deciding. */
+/** Renders a tool call as the prose and fields an approver reads before deciding. */
 export function describeCall(args: {
   serverName: string;
   endpoint: string;
@@ -225,20 +190,7 @@ export function describeCall(args: {
   toolArgs: Record<string, unknown>;
   mode: "read" | "action";
   classifiedBy: ClassificationSource;
-}): { title: string; description: string } {
-  // The arguments are the agent's text, and the agent is who this prompt protects the user from, so
-  // they get the same treatment as the server's description. `JSON.stringify` escapes quotes and
-  // backslashes but not backticks.
-  let rendered: string;
-  try {
-    rendered = defuseFences(JSON.stringify(args.toolArgs, null, 2));
-  } catch {
-    rendered = "(arguments could not be displayed)";
-  }
-  if (rendered.length > MAX_ARGUMENTS) {
-    rendered = `${rendered.slice(0, MAX_ARGUMENTS)}\n... (truncated)`;
-  }
-
+}): { title: string } & RenderedDescription {
   const provenance = args.mode === "read"
     ? args.classifiedBy === "server-annotation"
       ? "The server declares this tool read-only, so it runs without approval. That claim comes " +
@@ -247,27 +199,29 @@ export function describeCall(args: {
     : "Treated as an action because the server did not declare it read-only. Nothing has been " +
       "sent yet.";
 
-  const description = [
+  // The arguments are the agent's text, and the agent is who this prompt protects the user from.
+  // They are also the whole payload of the call, so the approver must see every byte: they go in
+  // a field, which is shown literally, and the builder declares the description complete
+  // only when they fit. The heading flattens and caps the names, so it is only a label: the server,
+  // tool and endpoint the call goes to are reproduced exactly in their own fields.
+  const rendered = buildDescription([
     `**${plainInline(args.serverName)}** \u2192 ${codeSpan(args.tool.name)}`,
     "",
     args.tool.description
       ? quoteUntrusted(args.tool.description, MAX_DESCRIPTION)
       : "_The server provided no description for this tool._",
-    "",
-    "Arguments:",
-    "```json",
-    rendered,
-    "```",
-    "",
-    `Endpoint: ${codeSpan(args.endpoint)}`,
-    "",
-    provenance,
-  ].join("\n");
+  ].join("\n"))
+    .inline("Server", args.serverName)
+    .inline("Tool", args.tool.name)
+    .inline("Endpoint", args.endpoint)
+    .json("Arguments", args.toolArgs)
+    .prose(provenance)
+    .finish();
 
   // The title is plain text rather than Markdown, but it is server-chosen and appears in the
   // approval list, so it gets the same flattening and cap.
   return {
     title: `${plainInline(args.serverName)}: ${plainInline(args.tool.name)}`,
-    description,
+    ...rendered,
   };
 }

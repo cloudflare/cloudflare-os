@@ -7,6 +7,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import { useCloudflareLimitsEnabled } from '../../ServerConfigContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
+import { openConnectWindow } from '../../connectHandoff'
 
 /**
  * Shows the user's free-tier usage and Cloudflare connection / credit status on the profile page.
@@ -59,9 +60,9 @@ export default function UsageSettings() {
     setBusy(true)
     try {
       // Connecting (or signing in with) Cloudflare is handled by the Cloudflare gatekeeper. Open its
-      // OAuth popup; the connected-accounts subscription + focus refresh pick up the result.
-      const { url } = await authenticatedApi.connectAccount('cloudflare', [])
-      window.open(url, '_blank', 'noopener,noreferrer')
+      // OAuth popup; the popup redeems the ticket itself, and the account arrives through the
+      // accounts subscription (plus the focus refresh).
+      openConnectWindow(await authenticatedApi.connectAccount('cloudflare', []))
     } catch {
       toasts.add({ title: 'Failed to start Cloudflare connection', variant: 'error' })
     } finally {

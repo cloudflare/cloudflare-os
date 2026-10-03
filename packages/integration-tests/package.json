@@ -5,23 +5,29 @@
   "type": "module",
   "exports": {
     "./harness": "./src/harness.ts",
+    "./agent-session": "./src/agent-session.ts",
     "./network-interceptor": "./src/network-interceptor.ts",
-    "./rpc-client": "./src/rpc-client.ts"
+    "./rpc-client": "./src/rpc-client.ts",
+    "./mock-model": "./src/mock-model.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test:run": "vitest run",
-    "test:watch": "vitest"
+    "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper",
+    "test:run": "pnpm run test:prebuild && vitest run",
+    "test:watch": "pnpm run test:prebuild && vitest"
   },
   "dependencies": {
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "jsonc-parser": "^3.3.1",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260808.1",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "@types/node": "^26.1.0",
+    "capnweb-validate": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

@@ -7,11 +7,6 @@ import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.agent.catalog");
 
-export type AgentCatalogSnapshot = {
-  gatekeeperId: number;
-  catalog: AgentCatalog | null;
-};
-
 function normalizeText(value: string, maxLength: number): string {
   return value.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
@@ -43,39 +38,6 @@ export function normalizeAgentCatalog(catalog: AgentCatalog): AgentCatalog {
         .slice(0, AGENT_CATALOG_MAX_ENTRIES)
         .toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)),
     ...(catalog.truncated === true || dropped ? {truncated: true} : {}),
-  };
-}
-
-export async function completeAgentCatalogSnapshot(
-    existing: AgentCatalogSnapshot[] | undefined,
-    gatekeeperIds: number[],
-    loadCatalog: (gatekeeperId: number) => Promise<AgentCatalog | null>):
-    Promise<{snapshots: AgentCatalogSnapshot[], changed: boolean}> {
-  let activeIds = new Set(gatekeeperIds);
-  let existingCount = existing?.length ?? 0;
-  let catalogs = new Map(
-      existing
-          ?.filter(entry => activeIds.has(entry.gatekeeperId))
-          .map(entry => [entry.gatekeeperId, entry.catalog]));
-  let removedStaleEntries = catalogs.size !== existingCount;
-  let missing = gatekeeperIds.filter(gatekeeperId => !catalogs.has(gatekeeperId));
-  await Promise.all(missing.map(async gatekeeperId => {
-    // Isolate per entry: one failing loader must not reject the whole snapshot (it would lose every
-    // other catalog and abort the turn). A failed/empty load is recorded as null, like any other.
-    try {
-      catalogs.set(gatekeeperId, await loadCatalog(gatekeeperId));
-    } catch (error) {
-      logger.warn("failed to load agent catalog", {
-        event: "agent.catalog.load.failed", gatekeeperId, error,
-      });
-      catalogs.set(gatekeeperId, null);
-    }
-  }));
-  return {
-    snapshots: [...catalogs]
-        .toSorted(([left], [right]) => left - right)
-        .map(([gatekeeperId, catalog]) => ({gatekeeperId, catalog})),
-    changed: missing.length > 0 || removedStaleEntries,
   };
 }
 

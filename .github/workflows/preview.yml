@@ -20,8 +20,16 @@ name: Preview
 # that a future edit which weakens the trigger still does not leak the token. They are not what
 # makes this safe today.
 #
-# The `cache: pnpm` below is deliberate and is not a poisoning path: a fork PR's Actions cache is
-# scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
+# Deliberately absent from those conditions: `author_association`. GitHub computes that field for
+# the payload with no viewer, so it cannot see private organization membership — a Cloudflare
+# member whose membership is private, and who reaches this repository through a team rather than a
+# direct collaborator grant, arrives as `CONTRIBUTOR` and had every preview silently skipped. Do
+# not add it back. `head.repo.id == base.repo.id` is the stronger statement in any case, since
+# pushing a branch into this repository already requires write access, and the first step of each
+# job re-checks the author's permission against the API and fails closed.
+#
+# The setup-vp `cache: true` below is deliberate and is not a poisoning path: a fork PR's Actions
+# cache is scoped to `refs/pull/<n>/merge` and cannot be read from another PR or from `main`.
 
 on:
   pull_request:
@@ -45,7 +53,6 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
       github.event.pull_request.user.type != 'Bot' &&
       github.head_ref != 'main' &&
       github.repository_owner == 'cloudflare'
@@ -80,27 +87,29 @@ jobs:
         with:
           persist-credentials: false
 
-      # Ahead of setup-node, which shells out to `pnpm store path` to find the directory it caches.
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Deploy preview
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
-          # Secrets, not vars: these three are uploaded to the backend's Previews settings with
-          # `wrangler preview secret bulk`, and never written into a config file — Wrangler prints
-          # the values it finds in one, and this log is public.
+          # Secrets, not vars: these three are uploaded to the backend's Preview base config with
+          # `wrangler preview base-config secret bulk`, and never written into a config file —
+          # Wrangler prints the values it finds in one, and this log is public.
           PREVIEW_ADMINS: ${{ secrets.PREVIEW_ADMINS }}
           CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
           CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
@@ -120,6 +129,17 @@ jobs:
           # a gateway in a *different* account (which sets this secret to `false`), and the google
           # provider, whose SDK cannot take the binding's fetch. Both fail the deploy.
           CF_AI_GATEWAY_USE_BINDING: ${{ secrets.CF_AI_GATEWAY_USE_BINDING || 'true' }}
+          # The GitHub gatekeeper's OAuth app, uploaded to *that worker's* Preview base config the
+          # same way, and for the same reason, as the backend's three above. Optional: with both
+          # unset the preview still deploys and only the GitHub connector is dead in it.
+          #
+          # `PREVIEW_`-prefixed because GitHub refuses to store a repository secret whose name
+          # begins with `GITHUB_`. The app behind these must be one registered for previews alone,
+          # with the callback URL `https://<PREVIEW_WORKERS_DEV_HOST>/gatekeeper/github/oauth` and
+          # wildcard matching left on — every preview is a different subdomain of that host, so
+          # nothing narrower validates, and anything on that subdomain can receive its codes.
+          PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
+          PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
           # Together these are the preview name, which is the first label of its hostname: a preview
           # reads as `pr123-my-branch-router.<subdomain>.workers.dev`. The number is what keeps two
           # branches that slugify alike from sharing one instance, and is how the nightly sweep
@@ -167,7 +187,6 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action == 'closed' &&
       github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) &&
       github.event.pull_request.user.type != 'Bot' &&
       github.head_ref != 'main' &&
       github.repository_owner == 'cloudflare'
@@ -200,17 +219,20 @@ jobs:
           ref: refs/pull/${{ github.event.pull_request.number }}/head
           persist-credentials: false
 
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Delete preview
         env:
@@ -242,17 +264,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Vite+ downloads its own pnpm for `vp install` and exposes no shim, so this is what puts
+      # `pnpm` on PATH — for the steps below, and for the bare `pnpm` preview.ts spawns.
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      # Vite+ resolves its own version from the `vite-plus` catalog entry, and installs the pnpm
+      # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
+      # needed.
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          cache: true
+          run-install: true
 
       - name: Sweep previews whose PR is closed, or older than 7 days
         env:

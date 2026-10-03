@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Delete the error-reporting sourcemap artifacts of the package given as argv[2].
 //
 // The configurator and app builds write these (src/generated/<module>.js + .js.map,

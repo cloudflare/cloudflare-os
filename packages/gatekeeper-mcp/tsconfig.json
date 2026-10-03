@@ -10,7 +10,6 @@
     "types": ["./worker-configuration.d.ts"],
     "paths": {
       "@gadgets/configurator-ui": ["../configurator-ui/src/index.ts"],
-      "@gadgets/mcp-shared/*": ["../mcp-shared/src/*"],
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },

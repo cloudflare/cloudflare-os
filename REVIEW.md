@@ -39,12 +39,12 @@ through logs and errors, then everything else.
   annotations, a tool is an observation only when the server declares `readOnlyHint: true`, and
   auto-applying a write additionally requires a `vetted` endpoint. Every SDK OAuth operation must be
   given `sdkFetch(...)` so endpoint and SSRF checks survive redirects.
-- `format-blueprints/`: a `blueprintId` is never edited after deploy — installs and promotion are
+- `packages/bundled-blueprints/blueprints/`: a `blueprintId` is never edited after deploy — installs and promotion are
   keyed on it, so a rename orphans the old entry.
 
 ## Logging, errors and secrets
 
-- Server code logs through `@gadgets/backend-utils/logger` with a module-scoped logger and a stable
+- Server code logs through `@gadgets/observability/logger` with a module-scoped logger and a stable
   dot-separated `component` (plus `vendorId` for gatekeepers). Caught values are passed as `error`.
 - Never log or report secrets, prompts, headers, tokens, or request/response bodies. Exception
   messages and stacks reach the external Reporter, so the same rule applies to anything thrown or
@@ -83,8 +83,10 @@ These break silently rather than loudly, so they are worth flagging even when th
 - Do not add `incremental` to a tsconfig, do not reintroduce a root script calling
   `pnpm run --recursive`, and do not remove `scripts/assert-workerd.ts` from a package's
   `setupFiles` to make a suite green.
-- `pnpm test`'s `--filter '!cloudflare-os'` hardcodes the root package name; renaming the root
-  silently doubles the scripts suite.
+- `pnpm test`'s `--filter=!cloudflare-os` hardcodes the root package name; renaming the root
+  silently doubles the scripts suite. Keep it spelled with `=` and unquoted: `cmd.exe` keeps single
+  quotes literal, so a quoted filter matches nothing on Windows and the script exits 0 having run
+  nothing.
 - After an intentional release-manifest change, the golden file must be regenerated
   (`UPDATE_GOLDEN=1 node --test scripts/release/manifest-lib.test.ts`) and its diff reviewed.
 - A new installable gatekeeper that takes no third-party OAuth credentials belongs in
@@ -111,7 +113,7 @@ contributor to broaden scope, add refactors, or take on adjacent cleanup.
 ## Ignore during review
 
 - Generated files, which are gitignored and rebuilt: `packages/*/src/generated/**` (`app.txt`,
-  `*-configurator-ui.*`, `format-blueprints.ts`, `browser-export-runtime.txt`) and any `dist/`.
+  `*-configurator-ui.*`, `bundled-blueprints.ts`, `browser-export-runtime.txt`) and any `dist/`.
 - `pnpm-lock.yaml`, unless the change is itself a dependency change — then check it against the
   `minimumReleaseAge` supply-chain policy in `pnpm-workspace.yaml`.
-- Committed `format-blueprints/*.gadget` archives, which are opaque data.
+- Committed `*.gadget` archives in a blueprint directory, which are opaque data.

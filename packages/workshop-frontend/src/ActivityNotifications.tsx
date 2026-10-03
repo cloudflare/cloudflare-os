@@ -1,33 +1,44 @@
-import { useMemo, useState } from 'react'
+import { useId, useState } from 'react'
 import { Popover } from '@cloudflare/kumo'
 import { ArrowRight, Pulse } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
+import type { Overseer } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
+import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './components/IncompleteDescriptionNotice'
+import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
-import { formatRelativeTime, type ActivityView } from './Activity'
+import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
+import {
+  formatRelativeTime,
+  PENDING_CHECKING_COPY,
+  PENDING_ERROR_COPY,
+  type ActivityView,
+} from './Activity'
+import { useActions } from './useActions'
 import { useResolveAction } from './useResolveAction'
 
 interface ActivityNotificationsProps {
   overseer: RpcStub<Overseer>
-  pendingActions: ActionLogEntry[]
   onViewActivity: (view: ActivityView) => void
+  // True once the workspace has read restricted data (GadgetMetadata.containsRestrictedData):
+  // the approver is the leak check, so each request is shown in full with a notice saying so.
+  restricted?: boolean
 }
 
 const PREVIEW_LIMIT = 3
 
 export default function ActivityNotifications({
   overseer,
-  pendingActions,
   onViewActivity,
+  restricted,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
   const resolveAction = useResolveAction(overseer, setProcessing)
-
-  const pending = useMemo(() => pendingActions.toSorted((a, b) =>
-    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() || a.id - b.id),
-  [pendingActions])
+  const { status, pending } = useActions(overseer)
+  // While restricted each request's approve/deny buttons name the shared notice and their own
+  // request text as their description: both follow the controls in DOM order.
+  const noticeId = useId()
 
   const openFullView = (view: ActivityView) => {
     setOpen(false)
@@ -69,12 +80,30 @@ export default function ActivityNotifications({
 
         {pending.length === 0 ? (
           <p className="m-0 px-3.5 pb-3 pt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Nothing is waiting on you.
+            {status === 'error' ? PENDING_ERROR_COPY
+              : status === 'checking' ? PENDING_CHECKING_COPY
+              : 'Nothing is waiting on you.'}
           </p>
         ) : (
           <div className="max-h-[min(58vh,420px)] overflow-y-auto pb-1">
+            {restricted && (
+              <RestrictedApprovalNotice id={noticeId} className="mx-3.5 mb-1 mt-0.5 px-2.5 py-2" />
+            )}
             {pending.slice(0, PREVIEW_LIMIT).map((action, index) => {
               const isProcessing = processing.has(action.id)
+              const requestId = `${noticeId}-request-${action.id}`
+              const fieldsId = `${noticeId}-fields-${action.id}`
+              const incompleteId = `${noticeId}-incomplete-${action.id}`
+              const fields = entryFields(action)
+              const incomplete = isDescriptionIncomplete(action)
+              const describedBy = restricted
+                ? [
+                  noticeId,
+                  requestId,
+                  ...(fields.length > 0 ? [fieldsId] : []),
+                  ...(incomplete ? [incompleteId] : []),
+                ].join(' ')
+                : undefined
               return (
                 <div
                   key={action.id}
@@ -94,23 +123,40 @@ export default function ActivityNotifications({
                         <span className="px-1">·</span>
                         {formatRelativeTime(action.createdAt)}
                       </span>
-                      <span className="mt-1.5 block line-clamp-2 text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle">
+                      <span id={requestId} className={`mt-1.5 block whitespace-pre-wrap text-[12.5px] leading-[18px] tracking-[-0.2px] text-kumo-subtle ${restricted ? '' : 'line-clamp-2'}`}>
                         {action.description.description}
                       </span>
+                      {fields.length > 0 && !restricted && (
+                        // Full review happens in Activity or chat; this only says there is more.
+                        <span className="mt-1 block text-[11.5px] leading-4 tracking-[-0.1px] text-kumo-inactive">
+                          {fieldCountLabel(fields.length)}
+                        </span>
+                      )}
                     </button>
                     <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
                       <ResolveButton
                         tone="deny"
                         disabled={isProcessing}
                         onClick={() => void resolveAction(action.id, 'deny')}
+                        describedBy={describedBy}
                       />
                       <ResolveButton
                         tone="approve"
                         disabled={isProcessing}
                         onClick={() => void resolveAction(action.id, 'approve')}
+                        describedBy={describedBy}
                       />
                     </div>
                   </div>
+                  {fields.length > 0 && restricted && (
+                    // Outside the preview button, which may hold only phrasing content.
+                    <div id={fieldsId}>
+                      <ActionFields fields={fields} uncapped className="mt-2" />
+                    </div>
+                  )}
+                  {incomplete && (
+                    <IncompleteDescriptionNotice id={incompleteId} className="mt-2 px-2.5 py-2" />
+                  )}
                 </div>
               )
             })}

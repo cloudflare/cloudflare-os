@@ -130,6 +130,45 @@ describe("ActionStore", () => {
     expect(calls).toBe(1);
   });
 
+  it("lets the user discard a failed call without forgetting it may have run", async () => {
+    // The Workshop keeps a failed approval pending until the user retries or discards it. Refusing
+    // the discard stranded it there for good, and an awaited call blocks its chat until it is decided.
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {});
+    const dropped = async () => {
+      throw new McpProtocolError("MCP server returned a non-JSON response.");
+    };
+    await expect(store.apply(staged.id, fn => fn({ callTool: dropped } as never), log))
+      .rejects.toThrow(/may or may not have taken effect/);
+
+    store.reject(staged.id);
+
+    // The Gadget is still told the outcome is unknown, not that the call never ran.
+    const record = store.get(staged.id);
+    expect(record?.state).toBe("failed");
+    expect(record?.error).toMatch(/may or may not have taken effect/);
+  });
+
+  it("never sends a declined call once the user has discarded it", async () => {
+    // A declined call is otherwise retryable, so an approval racing the discard could send a call the
+    // user just turned down.
+    const store = new ActionStore(fakeSql());
+    const staged = store.stage("send", {});
+    let calls = 0;
+    const callTool = async () => {
+      calls++;
+      throw new McpProtocolError("MCP server rejected: unknown tool", -32601, "declined");
+    };
+    await expect(store.apply(staged.id, fn => fn({ callTool } as never), log))
+      .rejects.toThrow(/unknown tool/);
+
+    store.reject(staged.id);
+
+    await expect(store.apply(staged.id, fn => fn({ callTool } as never), log))
+      .rejects.toThrow(/unknown tool/);
+    expect(calls).toBe(1);
+  });
+
   it("treats an unrecognised failure as possibly performed", async () => {
     // Fails safe. A throw site that has not said what it means is not evidence the tool never ran.
     const store = new ActionStore(fakeSql());

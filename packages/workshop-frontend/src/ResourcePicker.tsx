@@ -11,6 +11,7 @@ import {
   PICKER_CAPTION, PICKER_EMPTY, PICKER_ROW, PICKER_ROW_ACTIVE, TabHint,
 } from './components/pickerRows'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { openConnectWindow } from './connectHandoff'
 
 export interface VendorOption {
   id: string
@@ -398,8 +399,7 @@ export default function ResourcePicker({
   const handleConnectNew = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
@@ -414,10 +414,10 @@ export default function ResourcePicker({
     if (resourceUrlPatterns.length === 0) return
     setGrantingAccount(accountId)
     try {
-      const result = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
-      if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-        toasts.add({ title: 'Grant the additional access in the new tab.', variant: 'success' })
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      if (flow) {
+        openConnectWindow(flow)
+        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
     } catch (error) {
       console.error('Failed to request additional access:', error)
@@ -432,10 +432,9 @@ export default function ResourcePicker({
   const handleReconnect = useCallback(async (accountId: number) => {
     setReconnectingAccount(accountId)
     try {
-      const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      // The subscription will fire add() with credentialsValid: true when reconnect completes.
-      // The reconnectingAccount state is cleared at that point.
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      // The popup redeems the ticket itself; the account arrives through the accounts subscription,
+      // whose add() with credentialsValid: true clears the reconnectingAccount state.
     } catch (error) {
       console.error('Failed to initiate reconnection:', error)
       toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })

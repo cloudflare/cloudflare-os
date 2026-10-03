@@ -4,10 +4,16 @@ import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, FetchFunction, Model,
   ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
+  from "@earendil-works/pi-ai";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
+import { resolveGoogleThinkingLevel, toGoogleThinkingLevel, usesGoogleThinkingLevel }
+  from "@earendil-works/pi-ai/api/google-shared";
 import { stream as openaiCompletionsStream } from "@earendil-works/pi-ai/api/openai-completions";
 import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/openai-responses";
+import { clampThinkingBudgetToAnswerRoom, thinkingBudgetForLevel }
+  from "@earendil-works/pi-ai/api/simple-options";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
@@ -15,11 +21,17 @@ import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT }
-  from "@gadgets/workshop-shared/api";
-import { AiGatewayConfig, getAiGatewayConfig, type AiGatewayLogRoute } from "./ai-gateway.js";
+import {
+  AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, ReasoningLevel,
+  SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
+} from "@gadgets/workshop-shared/api";
+import { traceChat } from "./agent-tracing.js";
+import {
+  AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
+} from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { splitSystemPrompt } from "./system-prompt-blocks.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -125,28 +137,60 @@ const API_STREAMS: Record<string, StreamFunction<Api, SimpleStreamOptions>> = {
 
 const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+// pi's builtin catalogs, by provider. Import per-provider, not providers/all.
+const CATALOGS: Partial<Record<AiModelProvider, Record<string, Model<Api>>>> = {
+  anthropic: ANTHROPIC_MODELS,
+  openai: OPENAI_MODELS,
+  google: GOOGLE_MODELS,
+  cloudflare: CLOUDFLARE_WORKERS_AI_MODELS,
+};
+
 // Consult pi's builtin catalog for cost/compat metadata of a known model id. Unknown models are
-// fine (synthesized with zero cost). Import per-provider, not providers/all.
-function catalogModel(provider: AiModelConfig["provider"], modelId: string): Model<Api> | undefined {
-  switch (provider) {
-    case "anthropic": return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[modelId];
-    case "openai": return (OPENAI_MODELS as Record<string, Model<Api>>)[modelId];
-    case "google": return (GOOGLE_MODELS as Record<string, Model<Api>>)[modelId];
-    case "cloudflare": return (CLOUDFLARE_WORKERS_AI_MODELS as Record<string, Model<Api>>)[modelId];
-    case "ollama": return undefined;
-    default: return undefined;
-  }
+// fine (synthesized with zero cost).
+function catalogModel(provider: AiModelProvider, modelId: string): Model<Api> | undefined {
+  let catalog = CATALOGS[provider];
+  // Object.hasOwn, so that an ID like "constructor" does not find an inherited entry.
+  return catalog && Object.hasOwn(catalog, modelId) ? catalog[modelId] : undefined;
 }
 
-// Token limits for a synthesized model. SUGGESTED_MODELS remains authoritative (compaction
-// budgets in agent-compaction.ts are computed from it and must not change); pi's catalog fills
-// gaps for models we don't list, and unknown models get conservative defaults.
-function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined)
+/** Whether the model runtime (pi's catalog) has an entry for `modelId` under `provider`. */
+export function isRuntimeModel(provider: AiModelProvider, modelId: string): boolean {
+  return catalogModel(provider, modelId) !== undefined;
+}
+
+// What a model descriptor takes from pi's catalog. An entry borrowed from another model supplies
+// the runtime flags alone, so that the name, cost and limits stay the model's own.
+type CatalogEntry =
+    Pick<Model<Api>, "id" | "compat" | "thinkingLevelMap" | "reasoning" | "input"> &
+    Partial<Pick<Model<Api>, "name" | "cost" | "contextWindow" | "maxTokens">>;
+
+// pi's entry for a gateway model: its own or, while pi has none, the flags of the model its
+// config says it behaves like. pi's own entry always wins, so a pi that learns the model takes
+// over from the borrowed one.
+function gatewayCatalogModel(config: AiModelConfig): CatalogEntry | undefined {
+  let own = catalogModel(config.provider, config.model);
+  if (own || config.behavesLike === undefined) return own;
+  let like = catalogModel(config.provider, config.behavesLike);
+  if (!like) return undefined;
+  // The models Anthropic may answer with in the other one's place are not flags: they would have
+  // this model answered by them, at their prices.
+  let { allowedFallbackModels, ...compat } = (like.compat ?? {}) as AnthropicMessagesCompat;
+  return {
+    id: like.id, compat: like.compat && compat, thinkingLevelMap: like.thinkingLevelMap,
+    reasoning: like.reasoning, input: like.input,
+  };
+}
+
+// Token limits for a synthesized model. The model config's own overrides come first, then
+// SUGGESTED_MODELS (compaction budgets in agent-compaction.ts are computed from the same two); pi's
+// catalog fills gaps for models we don't list, and unknown models get conservative defaults.
+function modelTokenWindow(config: AiModelConfig, catalog: CatalogEntry | undefined)
     : { contextWindow: number, maxTokens: number } {
   const suggested = SUGGESTED_MODELS[config.provider]?.[config.model];
   return {
-    contextWindow: suggested?.contextWindow ?? catalog?.contextWindow ?? 128_000,
-    maxTokens: suggested?.outputLimit ??
+    contextWindow: config.contextWindow ?? suggested?.contextWindow ?? catalog?.contextWindow ??
+        128_000,
+    maxTokens: config.outputLimit ?? suggested?.outputLimit ??
         (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined) ??
         catalog?.maxTokens ?? 4096,
   };
@@ -154,13 +198,16 @@ function modelTokenWindow(config: AiModelConfig, catalog: Model<Api> | undefined
 
 // Compat flags for a Workers AI model reached over its OpenAI-compatible endpoint (direct REST
 // or the gateway's workers-ai route). Matches pi's own generated Workers AI catalog entries.
-function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsCompat {
+function workersAiCompat(catalog: CatalogEntry | undefined): OpenAICompletionsCompat {
   return {
     supportsStore: false,
     supportsDeveloperRole: false,
     supportsLongCacheRetention: false,
     ...(catalog?.compat as OpenAICompletionsCompat | undefined),
     sendSessionAffinityHeaders: true,
+    // pi assumes that nothing behind an AI Gateway host takes a reasoning effort, which the
+    // workers-ai route does. It only matters once a request has an effort to send.
+    supportsReasoningEffort: true,
   };
 }
 
@@ -176,7 +223,7 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
 // including unified billing on a user's own gateway -- is orthogonal to which API a request
 // speaks. Returns undefined for providers AI Gateway cannot serve (ollama).
 function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Api> | undefined {
-  const catalog = catalogModel(config.provider, config.model);
+  const catalog = gatewayCatalogModel(config);
   const window = modelTokenWindow(config, catalog);
   switch (config.provider) {
     case "anthropic":
@@ -194,7 +241,8 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         // Catalog compat verbatim: pi's catalog marks exactly the models that require the
         // adaptive thinking format (forceAdaptiveThinking); forcing it here breaks models that
         // don't support it (Haiku). Uncataloged model ids get budget-format thinking config --
-        // if a new adaptive-only model isn't yet in pi's catalog, bump pi.
+        // if a new adaptive-only model isn't yet in pi's catalog, bump pi, or have the model
+        // behave like one that is (AiModelConfig.behavesLike).
         compat: catalog?.compat,
       };
     case "openai":
@@ -241,10 +289,106 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         input: catalog?.input ?? ["text"],
         cost: catalog?.cost ?? ZERO_COST,
         ...window,
+        // With the catalog's level map, pi sends an effort on every request, the one the map
+        // gives "off" included. So the descriptor has the map only when a level is set, and
+        // requests are otherwise sent no effort at all.
+        ...(config.reasoning !== undefined ? { thinkingLevelMap: catalog?.thinkingLevelMap } : {}),
         compat: workersAiCompat(catalog),
       };
     default:
       return undefined;
+  }
+}
+
+/**
+ * The reasoning levels a gateway model can be sent, least to most: those of the descriptor that
+ * getModel() builds for it through AI Gateway. Empty when the model takes none.
+ */
+export function gatewayReasoningLevels(
+    provider: AiModelProvider, modelId: string, behavesLike?: string): ReasoningLevel[] {
+  // Built as for a model with a level set, which is when its levels count.
+  let model = gatewayNativeModel(
+      { provider, model: modelId, apiToken: "", behavesLike, reasoning: "off" }, "");
+  return model?.reasoning ? getSupportedThinkingLevels(model) : [];
+}
+
+// What a handle with no reasoning level asks `model` for on an agent's turn. makeHandle builds
+// the request's options from the answer.
+// - Anthropic: adaptive thinking (the model decides when/how much to think) -- but only for
+//   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). Other Anthropic
+//   models (e.g. Haiku 4.5, which rejects the adaptive format) are asked for nothing, so pi omits
+//   the `thinking` field and the provider default (no extended thinking) applies.
+// - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
+//   when no effort is passed; effort selection also makes pi request encrypted reasoning
+//   content, which -- with pi's unconditional `store: false` -- keeps requests stateless (ZDR)
+//   with reasoning carried between tool steps. pi sends a model that does no reasoning none of
+//   it, so such a model is asked for nothing.
+// - Everything else: nothing, which leaves the provider's defaults.
+function builtInReasoning(model: Model<Api>): BuiltInReasoning {
+  switch (model.api) {
+    case "anthropic-messages":
+      return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true
+          ? "adaptive" : null;
+    case "openai-responses":
+      return model.reasoning ? "medium" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * What a gateway model is asked for on an agent's turns while its config carries no reasoning
+ * level: the answer for the descriptor that getModel() builds for it through AI Gateway, which
+ * is the same over either transport. Null too for a provider AI Gateway cannot serve, whose
+ * models get no handle.
+ */
+export function gatewayBuiltInReasoning(
+    provider: AiModelProvider, modelId: string, behavesLike?: string): BuiltInReasoning {
+  let model = gatewayNativeModel({ provider, model: modelId, apiToken: "", behavesLike }, "");
+  return model ? builtInReasoning(model) : null;
+}
+
+// The per-API options that ask `model` for a reasoning level on a request whose response cap is
+// `maxTokens`. This is the mapping of pi's streamSimple(), which is not called because it would
+// also give every request a response cap. A level the model lacks is clamped to one it has, so
+// "off" asks a model that can't stop reasoning for its lowest level. A model that does no
+// reasoning has "off" alone, for which pi sends it nothing. `formatId` is the ID of the pi entry
+// the model's flags come from (see gatewayCatalogModel), where there is one.
+function reasoningOptions(model: Model<Api>, level: ReasoningLevel, maxTokens: number | undefined,
+                          formatId = model.id): Record<string, unknown> {
+  let clamped = clampThinkingLevel(model, level);
+  switch (model.api) {
+    case "anthropic-messages": {
+      if (clamped === "off") return { thinkingEnabled: false };
+      if ((model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true) {
+        // Adaptive thinking takes an effort: the model's own name for the level, and otherwise
+        // the level's, with "minimal" as Anthropic's lowest.
+        let effort = model.thinkingLevelMap?.[clamped] ?? (clamped === "minimal" ? "low" : clamped);
+        return { thinkingEnabled: true, effort };
+      }
+      // Other models take a token budget, which comes out of the response cap. The cap stays as
+      // it is and the budget leaves room under it for an answer. Anthropic takes no budget below
+      // 1024 tokens, so a cap with no room for one is sent no thinking.
+      let budget = clampThinkingBudgetToAnswerRoom(
+          thinkingBudgetForLevel(clamped), maxTokens ?? model.maxTokens);
+      return budget >= 1024 ? { thinkingEnabled: true, thinkingBudgetTokens: budget } : {};
+    }
+    case "openai-responses":
+    case "openai-completions":
+      // With no effort, pi sends the model's own "off".
+      return clamped === "off" ? {} : { reasoningEffort: clamped };
+    case "google-generative-ai": {
+      if (clamped === "off") return { thinking: { enabled: false } };
+      // pi tells from a Gemini model's ID whether it takes a level or a token budget, so a model
+      // that borrows another's flags is asked the way that one is.
+      let google = { ...model, id: formatId } as Model<"google-generative-ai">;
+      let resolved = resolveGoogleThinkingLevel(google, clamped);
+      return { thinking: usesGoogleThinkingLevel(google)
+          ? { enabled: true, level: toGoogleThinkingLevel(resolved) }
+          : { enabled: true, budgetTokens: thinkingBudgetForLevel(resolved) } };
+    }
+    default:
+      return {};
   }
 }
 
@@ -274,6 +418,10 @@ type HandleArgs = {
   // gateway over env.WORKERS_AI.fetch() instead of the global fetch (see bindingFetch).
   // A per-call options.fetch still wins, which tests rely on to capture requests.
   fetch?: FetchFunction;
+  // The reasoning level of main turns, and the ID of the pi entry the model's flags come from
+  // (see reasoningOptions). No level gives the model its built-in request (see builtInReasoning).
+  reasoning?: ReasoningLevel;
+  formatId?: string;
 };
 
 function makeHandle(args: HandleArgs): ModelHandle {
@@ -282,22 +430,13 @@ function makeHandle(args: HandleArgs): ModelHandle {
     throw new Error(`Unsupported model API "${args.model.api}".`);
   }
 
-  // Per-API extras:
-  // - Anthropic: adaptive thinking (the model decides when/how much to think)` -- but only for
-  //   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). For other
-  //   Anthropic models (e.g. Haiku 4.5, which rejects the adaptive format) we pass nothing, so pi
-  //   omits the `thinking` field and the provider default (no extended thinking) applies --
-  //   matching the pre-pi quick-model behavior.
-  // - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
-  //   when no effort is passed; effort selection also makes pi request encrypted reasoning
-  //   content, which -- with pi's unconditional `store: false` -- preserves the old stateless
-  //   ZDR behavior with reasoning carried between tool steps.
-  // - Everything else: provider defaults.
+  // Per-API extras for a handle with no reasoning level of its own: the options that ask for
+  // what builtInReasoning() says. A built-in level is an OpenAI effort, sent as it is.
   const anthropicCompat = args.model.compat as AnthropicMessagesCompat | undefined;
+  const builtIn = builtInReasoning(args.model);
   const apiExtras: Record<string, unknown> =
-      args.model.api === "anthropic-messages"
-          ? (anthropicCompat?.forceAdaptiveThinking === true ? { thinkingEnabled: true } : {}) :
-      args.model.api === "openai-responses" ? { reasoningEffort: "medium" } : {};
+      builtIn === "adaptive" ? { thinkingEnabled: true } :
+      builtIn !== null ? { reasoningEffort: builtIn } : {};
 
   const handle: ModelHandle = {
     model: args.model,
@@ -305,6 +444,9 @@ function makeHandle(args: HandleArgs): ModelHandle {
     stream: (model, context, { thinking = true, ...options } = {}) => {
       // Never let a failed request read a previous request's response metadata.
       handle.lastResponse = undefined;
+      // This request's own response metadata: concurrent requests on one handle overwrite
+      // `lastResponse`, but not this.
+      let received: ModelHandle["lastResponse"];
       const headers: ProviderHeaders = {
         ...args.headers,
         ...options.headers,
@@ -312,15 +454,22 @@ function makeHandle(args: HandleArgs): ModelHandle {
             ? { "cf-aig-metadata": JSON.stringify(args.gatewayMetadata) }
             : {}),
       };
+      const transcript = normalizeContext(context);
       const merged: SimpleStreamOptions = {
-        // API defaults first, so an explicit per-call option can override them. `thinking: false`
-        // replaces them with an explicit thinking-off request: for Anthropic pi sends
-        // `thinking: {type:"disabled"}` (and knows to omit it for models that can't turn thinking
-        // off, e.g. claude-fable-5); for OpenAI Responses, passing no reasoningEffort makes pi
-        // disable reasoning.
+        // API defaults first, so an explicit per-call option can override them. A handle with a
+        // reasoning level sends that level's options in their place. `thinking: false` replaces
+        // either with a quick request. Managed-effort Anthropic models must use adaptive
+        // thinking, so select their lowest effort; other Anthropic models disable it (or omit
+        // the unsupported off setting). For OpenAI Responses, passing no reasoningEffort disables
+        // reasoning.
         ...(thinking
-            ? apiExtras
-            : args.model.api === "anthropic-messages" ? { thinkingEnabled: false } : {}),
+            ? (args.reasoning === undefined
+                ? apiExtras
+                : reasoningOptions(args.model, args.reasoning, options.maxTokens, args.formatId))
+            : args.model.api === "anthropic-messages"
+                ? (anthropicCompat?.supportsMidConvoEffort === true
+                    ? { effort: "low" } : { thinkingEnabled: false })
+                : {}),
         ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
@@ -328,20 +477,26 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
         sessionId: options.sessionId ?? args.sessionAffinity,
         onResponse: async (response, responseModel) => {
-          handle.lastResponse = {
+          received = {
             status: response.status,
             aiGatewayLogId: getHeader(response.headers, "cf-aig-log-id"),
           };
+          handle.lastResponse = received;
           await options.onResponse?.(response, responseModel);
         },
-        // PDF attachments ride pi image parts and are rewritten here into the provider's native
-        // document blocks (no-op for payloads without one; see chat-attachment-pdf.ts).
+        // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
+        // apply to: PDF attachments ride pi image parts and become the provider's native document
+        // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
+        // split after its static text (see system-prompt-blocks.ts).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
-          return bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
+          if (options.cacheRetention === "none") return bridged;
+          return splitSystemPrompt(args.model, transcript, bridged ?? payload) ?? bridged;
         },
       };
-      return streamFn(model, context, merged);
+      return traceChat(model, () => received,
+          () => streamFn(model, transcript, merged));
     },
   };
   return handle;
@@ -366,7 +521,7 @@ export function getModel(env: Cloudflare.Env, config: AiModelConfig,
   }
 
   // Otherwise: when a platform AI Gateway is configured, route through it (platform-funded free
-  // tier). The config's apiToken/apiUrl are ignored in that mode.
+  // tier). The config's apiToken/apiUrl/extraHeaders are ignored in that mode.
   let gwConfig = getAiGatewayConfig(env);
   if (gwConfig) {
     return getModelViaGateway(gwConfig, config, initiator, options);
@@ -407,6 +562,8 @@ function getModelViaUserGateway(
     },
     gatewayMetadata: metadata,
     sessionAffinity,
+    reasoning: config.reasoning,
+    formatId: gatewayCatalogModel(config)?.id,
     aiGatewayLogRoute: {
       gateway: "default",
       accountId: userGateway.accountId,
@@ -481,10 +638,7 @@ function getModelViaGateway(
       : `${gatewayBase}/${gateway}`;
   const model = gatewayNativeModel(config, gatewayUrl);
   if (!model) {
-    throw new Error(
-      `Provider "${config.provider}" is not supported through AI Gateway. ` +
-      `Configured providers: ${[...gwConfig.providers].join(", ")}`
-    );
+    throw new Error(`Provider "${config.provider}" is not supported through AI Gateway.`);
   }
 
   return makeHandle({
@@ -500,8 +654,21 @@ function getModelViaGateway(
     ...(binding ? { fetch: bindingFetch(binding) } : {}),
     gatewayMetadata: metadata,
     sessionAffinity: options.sessionAffinity,
+    reasoning: config.reasoning,
+    formatId: gatewayCatalogModel(config)?.id,
     aiGatewayLogRoute: logRoute(gateway),
   });
+}
+
+// Auth for a direct connection whose client can omit the API key, which `keyHeader` carries. A
+// blank token sends no key at all: local Ollama needs none, and a proxy may authenticate through
+// the config's extraHeaders instead (AI Gateway only injects its stored provider key into requests
+// that don't already carry one). The SDKs insist on *some* key, so they get a placeholder, while a
+// null default header deletes the header they derive from it; extra headers still override.
+function directAuth(config: AiModelConfig, keyHeader: string): Pick<HandleArgs, "apiKey" | "headers"> {
+  return config.apiToken === ""
+      ? { apiKey: "unused", headers: { [keyHeader]: null, ...config.extraHeaders } }
+      : { apiKey: config.apiToken, headers: config.extraHeaders };
 }
 
 // Direct provider access using the credentials in the model config itself (no AI Gateway).
@@ -525,7 +692,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           // Catalog compat verbatim -- see the gateway-path comment on forceAdaptiveThinking.
           compat: catalog?.compat,
         },
-        apiKey: config.apiToken,
+        ...directAuth(config, "x-api-key"),
         sessionAffinity,
       });
     case "cloudflare": {
@@ -551,6 +718,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           compat: workersAiCompat(catalog),
         },
         apiKey: config.apiToken,
+        headers: config.extraHeaders,
         sessionAffinity,
       });
     }
@@ -568,7 +736,10 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
         },
+        // Not directAuth: pi's Google API requires a key, and @google/genai adds `x-goog-api-key`
+        // with no way to suppress it (an extra header of that name replaces it, though).
         apiKey: config.apiToken,
+        headers: config.extraHeaders,
         sessionAffinity,
       });
     case "ollama":
@@ -577,9 +748,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       // the native-API base `http://host:11434/api` (the old ollama provider's convention), and
       // users may paste the /v1 endpoint directly. When no API key was configured we assume
       // local auth and send no Authorization header at all (as before the pi migration; a strict
-      // local proxy may reject an unexpected bearer token): the OpenAI SDK requires *some* key,
-      // so give it a placeholder while a null default header deletes the Authorization header
-      // the SDK derives from it.
+      // local proxy may reject an unexpected bearer token).
       return makeHandle({
         model: {
           id: config.model,
@@ -616,9 +785,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
 
           ...window,
         },
-        ...(config.apiToken === ""
-            ? { apiKey: "unused", headers: { Authorization: null } }
-            : { apiKey: config.apiToken }),
+        ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
     case "openai":
@@ -636,7 +803,7 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
           thinkingLevelMap: catalog?.thinkingLevelMap,
           compat: catalog?.compat,
         },
-        apiKey: config.apiToken,
+        ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
     default:
@@ -684,7 +851,19 @@ export class LanguageModelGatekeeper
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<LanguageModelBinding> {
-    let model = getModel(this.env, this.ctx.props.config, this.ctx.props.initiator, {
+    // A binding makes one-shot calls, which ask for no reasoning level. Without the level it was
+    // minted with, its model is described as one with none set, whatever the admin has set since.
+    let { reasoning, ...config } = this.ctx.props.config;
+    // A session starts on each call of the binding, so a binding minted before an admin disabled
+    // its gateway model stops working at its next call. While users may not add their own models,
+    // so does a binding for any other model: one a user added, or one the admin added and removed.
+    let models = await getGatewayModels(this.env);
+    if (models?.get(config.model)?.provider === config.provider) {
+      models.refuseDisabled(config.model);
+    } else {
+      models?.refuseUserModel(this.ctx.props.displayName);
+    }
+    let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
     return new LanguageModelBindingImpl(model);

@@ -32,6 +32,7 @@ import { useSiteName } from './ServerConfigContext'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { openConnectWindow } from './connectHandoff'
 
 // ─── constants ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,8 @@ export default function OnboardingWizard({
   const [aiConfig, setAiConfig] = useState<AiGatewayInfo | null>(null)
   const [addModelOpen, setAddModelOpen] = useState(false)
   const [modelsLoading, setModelsLoading] = useState(true)
+  // False only on an AI Gateway deployment whose administrator turned adding models off.
+  const canAddModels = aiConfig?.enabled !== true || aiConfig.userModelsEnabled
 
   // Connections state
   const [vendors, setVendors] = useState<VendorEntry[]>([])
@@ -251,8 +254,7 @@ export default function OnboardingWizard({
   const handleConnect = async (vendorId: string) => {
     setConnectingVendorId(vendorId)
     try {
-      const { url } = await authenticatedApi.connectAccount(vendorId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
     } catch (err) {
       console.error('Failed to start connection:', err)
       toasts.add({ title: 'Failed to start connection', variant: 'error' })
@@ -315,7 +317,8 @@ export default function OnboardingWizard({
 
   return (
     <>
-    <div className="fixed inset-0 bg-kumo-base dotted-bg flex items-center justify-center overflow-y-auto py-8">
+    {/* visual-viewport-fixed already insets by the safe areas, so plain padding suffices. */}
+    <div className="visual-viewport-fixed dotted-bg flex items-start justify-center overflow-y-auto bg-kumo-base p-4 sm:py-8">
       {/* Soft radial glow at the top for depth */}
       <div
         className="absolute inset-x-0 top-0 h-[50vh] pointer-events-none"
@@ -326,13 +329,13 @@ export default function OnboardingWizard({
       />
 
       <div
-        className={`relative w-full max-w-lg mx-4 transition-all duration-500 ease-out ${
+        className={`relative my-auto w-full max-w-lg transition-all duration-500 ease-out ${
           mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
         }`}
       >
         {/* Gadgets brand */}
         <div
-          className={`flex items-center justify-center gap-2 mb-10 transition-all duration-500 ${
+          className={`mb-6 flex items-center justify-center gap-2 transition-all duration-500 sm:mb-10 ${
             mounted ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1'
           }`}
         >
@@ -345,7 +348,7 @@ export default function OnboardingWizard({
         </div>
 
         {/* Header */}
-        <div className="text-center mb-8">
+        <div className="mb-6 text-center sm:mb-8">
           <h1
             className={`text-3xl font-semibold text-kumo-default tracking-tight transition-all duration-500 delay-100 ${
               mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
@@ -363,7 +366,7 @@ export default function OnboardingWizard({
         </div>
 
         {/* Step indicator */}
-        <div className="flex items-center justify-center gap-2 mb-8">
+        <div className="mb-6 flex items-center justify-center gap-2 sm:mb-8">
           {Array.from({ length: totalSteps }).map((_, i) => (
             <div
               key={i}
@@ -385,7 +388,7 @@ export default function OnboardingWizard({
             style={{ transform: `translateX(-${step * 100}%)` }}
           >
             {/* ── Step 0: Profile ───────────────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <h2 className="text-lg font-medium text-kumo-default mb-1">
                 Create your profile
               </h2>
@@ -394,7 +397,7 @@ export default function OnboardingWizard({
               </p>
 
               {/* Avatar + Display name side by side */}
-              <div className="flex items-start gap-5">
+              <div className="flex flex-col items-start gap-5 min-[380px]:flex-row">
                 {/* Avatar */}
                 <div className="flex flex-col items-center flex-shrink-0">
                   <button
@@ -466,14 +469,14 @@ export default function OnboardingWizard({
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
                     placeholder="How should we call you?"
-                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-kumo-line bg-kumo-base text-kumo-default placeholder:text-kumo-inactive focus:outline-none focus:border-kumo-brand transition-colors"
+                    className="w-full rounded-lg border border-kumo-line bg-kumo-base px-3 py-2.5 text-[16px] text-kumo-default transition-colors placeholder:text-kumo-inactive focus:border-kumo-brand focus:outline-none sm:text-sm"
                   />
                 </div>
               </div>
             </div>
 
             {/* ── Step 1: Model selection ───────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
                   Choose your model
@@ -535,29 +538,33 @@ export default function OnboardingWizard({
                       {models.length === 0 && (
                         <div className="text-center py-8">
                           <p className="text-sm text-kumo-subtle mb-1">
-                            No models configured yet
+                            {canAddModels ? 'No models configured yet' : 'No models available yet'}
                           </p>
                           <p className="text-xs text-kumo-inactive">
-                            Add a model to get started
+                            {canAddModels
+                              ? 'Add a model to get started'
+                              : 'Your deployment’s administrator provides the models'}
                           </p>
                         </div>
                       )}
                     </div>
 
-                    <button
-                      onClick={() => setAddModelOpen(true)}
-                      className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-kumo-subtle border border-dashed border-kumo-line rounded-xl hover:border-kumo-fill hover:text-kumo-default hover:bg-kumo-tint transition-colors"
-                    >
-                      <Plus size={14} weight="bold" />
-                      Add new model...
-                    </button>
+                    {canAddModels && (
+                      <button
+                        onClick={() => setAddModelOpen(true)}
+                        className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-kumo-subtle border border-dashed border-kumo-line rounded-xl hover:border-kumo-fill hover:text-kumo-default hover:bg-kumo-tint transition-colors"
+                      >
+                        <Plus size={14} weight="bold" />
+                        Add new model...
+                      </button>
+                    )}
                   </>
                 )}
               </div>
             </div>
 
             {/* ── Step 2: Connections ───────────────────────────────────────── */}
-            <div className={`w-full flex-shrink-0 p-8 min-h-[420px] ${showConnectionsStep ? '' : 'hidden'}`}>
+            <div className={`min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8 ${showConnectionsStep ? '' : 'hidden'}`}>
               <div>
                 <h2 className="text-lg font-medium text-kumo-default mb-1">
                   Connect your services
@@ -577,7 +584,7 @@ export default function OnboardingWizard({
                     </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1">
+                  <div className="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto pr-1 min-[360px]:grid-cols-2">
                     {sortedVendors.map((vendor) => {
                       const Logo = logoComponents[vendor.logoKey]
                       const isConnected = connectedVendorIds.has(vendor.id)
@@ -641,13 +648,13 @@ export default function OnboardingWizard({
             </div>
 
             {/* ── Final step: What you can do ────────────────────────────────── */}
-            <div className="w-full flex-shrink-0 p-8 min-h-[420px]">
-              <ShowcaseStep active={step === showcaseStep} siteName={siteName} />
+            <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
+              <ShowcaseStep active={step === showcaseStep} siteName={siteName} canAddModels={canAddModels} />
             </div>
           </div>
 
           {/* Fixed footer — stays put across all steps */}
-          <div className="flex items-center justify-between gap-3 px-8 py-5 border-t border-kumo-line bg-kumo-elevated">
+          <div className="flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-elevated px-5 py-4 sm:px-8 sm:py-5">
             {/* Back button (hidden on first step) */}
             {step > 0 ? (
               <button
@@ -727,6 +734,8 @@ interface ShowcaseFeature {
   iconBg: string
   title: string
   description: string
+  /** Set on a feature that exists only where users may add models of their own. */
+  ownModels?: true
 }
 
 const SHOWCASE_FEATURES: ShowcaseFeature[] = [
@@ -753,6 +762,7 @@ const SHOWCASE_FEATURES: ShowcaseFeature[] = [
     title: 'Bring your own models',
     description:
       'Plug in personal API tokens from any provider to use the models you love.',
+    ownModels: true,
   },
   {
     icon: Plugs,
@@ -764,7 +774,11 @@ const SHOWCASE_FEATURES: ShowcaseFeature[] = [
   },
 ]
 
-function ShowcaseStep({ active, siteName }: { active: boolean; siteName: string }) {
+function ShowcaseStep({ active, siteName, canAddModels }: {
+  active: boolean
+  siteName: string
+  canAddModels: boolean
+}) {
   // Mount-trigger for staggered fade-in when the step becomes visible
   const [revealed, setRevealed] = useState(false)
 
@@ -788,7 +802,7 @@ function ShowcaseStep({ active, siteName }: { active: boolean; siteName: string 
       </div>
 
       <div className="space-y-2.5">
-        {SHOWCASE_FEATURES.map((feature, i) => {
+        {SHOWCASE_FEATURES.filter((feature) => canAddModels || !feature.ownModels).map((feature, i) => {
           const Icon = feature.icon
           return (
             <div

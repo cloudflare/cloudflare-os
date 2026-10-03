@@ -36,8 +36,8 @@ vi.mock("./AuthContext", () => ({
   }),
 }));
 
-vi.mock("./ChatInterface", () => ({
-  ChatInput: ({ seedText, seedNonce, draftStorageKey }: {
+vi.mock("./features/chat/composer/ChatComposer", () => ({
+  ChatComposer: ({ seedText, seedNonce, draftStorageKey }: {
     seedText?: string;
     seedNonce?: number;
     draftStorageKey?: string;

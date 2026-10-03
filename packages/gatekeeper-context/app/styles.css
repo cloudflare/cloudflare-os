@@ -64,7 +64,8 @@ body,
 
   /* Tooltip */
   --color-kumo-tip-shadow: #14111014;
-  --color-kumo-tip-stroke: transparent;
+  --color-kumo-arrow-edge: var(--color-kumo-line);
+  --color-kumo-arrow-stroke: transparent;
 
   /* Text color tokens */
   --text-color-kumo-default: #1c1a18;
@@ -169,7 +170,8 @@ body,
   --color-kumo-success-tint: oklch(0.25 0.06 150.069);
 
   --color-kumo-tip-shadow: #00000066;
-  --color-kumo-tip-stroke: oklch(0.34 0.022 285);
+  --color-kumo-arrow-edge: transparent;
+  --color-kumo-arrow-stroke: var(--color-kumo-line);
 
   --text-color-kumo-default: oklch(0.92 0.01 285);
   --text-color-kumo-default-hover: oklch(0.97 0.006 285);

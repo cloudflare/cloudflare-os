@@ -1,0 +1,1 @@
+worktree-binding.d.ts

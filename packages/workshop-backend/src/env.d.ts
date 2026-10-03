@@ -41,7 +41,7 @@ declare global {
 
       // Optional browser error pipeline. Both bindings must be present before reports dispatch.
       FRONTEND_ERROR_REPORTER?: Service<
-        import("@gadgets/backend-utils/error-reporting").ErrorReporter
+        import("@gadgets/observability/error-reporting").ErrorReporter
       >;
       FRONTEND_ERROR_RATE_LIMITER?: RateLimit;
 

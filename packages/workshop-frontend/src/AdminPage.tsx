@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import { RpcStub } from 'capnweb'
 import { Switch, Textarea, Input, Button, Tabs, useKumoToastManager } from '@cloudflare/kumo'
-import { Hexagon, ShieldWarning, UserPlus } from '@phosphor-icons/react'
+import { Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
-import { AdminApi, AdminFormat, AdminResourceVendor, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
+import { AdminApi, AdminFormat, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
+import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 
 // Preset accent colors offered in the Theme section ('' = default brand).
 const ACCENT_PRESETS: { label: string; value: string }[] = [
@@ -76,6 +77,10 @@ export default function AdminPage() {
   const [signupsEnabled, setSignupsEnabled] = useState(true)
   const [savingSignups, setSavingSignups] = useState(false)
 
+  // Whether users may search the user directory to find collaborators.
+  const [userSearchEnabled, setUserSearchEnabled] = useState(false)
+  const [savingUserSearch, setSavingUserSearch] = useState(false)
+
   // Gatekeeper resource config, and the set of resource keys ("vendorId\u0000urlPattern") busy toggling.
   const [resourceVendors, setResourceVendors] = useState<AdminResourceVendor[]>([])
   const [resourceBusy, setResourceBusy] = useState<Set<string>>(new Set())
@@ -85,11 +90,19 @@ export default function AdminPage() {
   // Promoted output formats, in menu order (see AdminFormatsPanel).
   const [formats, setFormats] = useState<AdminFormat[]>([])
 
+  // The models the deployment provides through AI Gateway; absent outside AI Gateway mode (see
+  // AdminModelsPanel).
+  const [gatewayModels, setGatewayModels] = useState<AdminSettingsView['gatewayModels']>(undefined)
+  // Re-reads can overlap, since leaving the Models tab drops the panel's in-flight state, and an
+  // earlier one answering last must not replace what a later one showed.
+  const gatewayModelsRead = useRef(0)
+
   const resourceKey = (vendorId: string, urlPattern: string) => `${vendorId}\u0000${urlPattern}`
 
   // Populate all editor state from a freshly-fetched settings view.
   const applySettings = (view: Awaited<ReturnType<RpcStub<AdminApi>['getSettings']>>) => {
     setSignupsEnabled(view.signupsEnabled)
+    setUserSearchEnabled(view.userSearchEnabled)
     setSavedSiteName(view.siteName)
     setSiteNameDraft(view.siteName)
     setSiteLogoUrl(view.siteLogo?.url ?? null)
@@ -104,6 +117,7 @@ export default function AdminPage() {
     setSavedAccent(view.accentColor)
     setAccentDraft(view.accentColor)
     setFormats(view.formats)
+    setGatewayModels(view.gatewayModels)
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -294,6 +308,21 @@ export default function AdminPage() {
     }
   }
 
+  const handleUserSearchToggle = async (enabled: boolean) => {
+    if (!admin) return
+    setSavingUserSearch(true)
+    setUserSearchEnabled(enabled) // optimistic
+    try {
+      await admin.api.setUserSearchEnabled(enabled)
+    } catch (err) {
+      setUserSearchEnabled(!enabled) // revert
+      const message = err instanceof Error ? err.message : 'Update failed'
+      toasts.add({ title: message, variant: 'error' })
+    } finally {
+      setSavingUserSearch(false)
+    }
+  }
+
   const handleSaveSiteName = async () => {
     if (!admin) return
     setSavingSiteName(true)
@@ -403,6 +432,7 @@ export default function AdminPage() {
           { value: 'general', label: 'General' },
           { value: 'gatekeepers', label: 'Gatekeepers' },
           { value: 'formats', label: 'Formats' },
+          { value: 'models', label: 'Models' },
           { value: 'access', label: 'Access' },
         ]}
       />
@@ -416,26 +446,64 @@ export default function AdminPage() {
         />
       )}
 
-      {/* Sign-ups */}
+      {/* AI Gateway models */}
+      {activeTab === 'models' && (
+        <AdminModelsPanel
+          admin={admin.api}
+          gatewayModels={gatewayModels}
+          onChanged={async () => {
+            const read = ++gatewayModelsRead.current
+            const view = await admin.api.getSettings()
+            if (read === gatewayModelsRead.current) setGatewayModels(view.gatewayModels)
+          }}
+        />
+      )}
+
+      {/* Sign-ups and user search */}
       {activeTab === 'access' && (
-        <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <div className="flex items-center gap-4">
-            <div className="w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center bg-kumo-tint">
-              <UserPlus size={18} className="text-kumo-subtle" />
+        <>
+          <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center bg-kumo-tint">
+                <UserPlus size={18} className="text-kumo-subtle" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold text-kumo-strong">Allow new sign-ups</h2>
+                <p className="text-sm text-kumo-subtle mt-0.5">
+                  When off, existing users can still log in but no new accounts can be created.
+                </p>
+              </div>
+              <Switch
+                aria-label="Allow new sign-ups"
+                checked={signupsEnabled}
+                disabled={savingSignups}
+                onCheckedChange={handleSignupsToggle}
+              />
             </div>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-lg font-semibold text-kumo-strong">Allow new sign-ups</h2>
-              <p className="text-sm text-kumo-subtle mt-0.5">
-                When off, existing users can still log in but no new accounts can be created.
-              </p>
-            </div>
-            <Switch
-              checked={signupsEnabled}
-              disabled={savingSignups}
-              onCheckedChange={handleSignupsToggle}
-            />
           </div>
-        </div>
+
+          <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center bg-kumo-tint">
+                <MagnifyingGlass size={18} className="text-kumo-subtle" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold text-kumo-strong">Allow user search</h2>
+                <p className="text-sm text-kumo-subtle mt-0.5">
+                  Let users find other accounts by name or email when sharing a workspace. When off,
+                  people can only be invited by their exact username or email. Applies on each
+                  user&rsquo;s next connection.
+                </p>
+              </div>
+              <Switch
+                aria-label="Allow user search"
+                checked={userSearchEnabled}
+                disabled={savingUserSearch}
+                onCheckedChange={handleUserSearchToggle}
+              />
+            </div>
+          </div>
+        </>
       )}
 
       {/* Site name */}

@@ -4,6 +4,7 @@ import {
   ApprovalQueue,
   stripTrailingSlashes,
   type AccountDescription,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperConnectOptions,
@@ -15,6 +16,9 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   ZoomInfoApi,
   ZoomInfoApiError,
@@ -95,11 +99,26 @@ type StoredNonce = {
   value: string;
   expiresAt: number;
   stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
 };
 
 type StoredIdentity = {
   displayName?: string;
   uniqueName?: string;
+};
+
+/** The values a token grant is persisted as; staged whole during a reconnect (see commitReconnect). */
+type StoredGrant = {
+  refreshToken: string;
+  accessToken: string;
+  accessTokenExpiresAt: number;
+  scopes: string[];
+  identity: StoredIdentity;
 };
 
 type ZoomInfoGatekeeperImplProps = {
@@ -153,14 +172,6 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [ACCOUNT_RESOURCE];
 // the app home; the binding is whole-account regardless.
 const ACCOUNT_URL = "https://app.zoominfo.com/";
 
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
-
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
   <head><meta charset="UTF-8"><title>Authorization Link Expired</title></head>
@@ -186,6 +197,12 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
 
 // ---------------------------------------------------------------------------
 // Small helpers
+
+// A list of agent-chosen names (fields, topics) for an enrichment summary, which sits in the
+// description's prose and the title: one code span, so no name can open Markdown or HTML there.
+function fieldList(names: readonly (string | number)[]): string {
+  return names.length ? codeSpan(names.join(", ")) : "(none)";
+}
 
 function hexEncode(bytes: Uint8Array): string {
   return [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -305,12 +322,12 @@ export default {
       const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
         ctx.exports.UserAccount.idFromString(doId),
       );
-      const accepted = await stub.acceptAuthCode(code, oauthNonce);
-      if (!accepted) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
-      return new Response(SELF_CLOSING_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
 
     return new Response("Not Found", { status: 404 });
@@ -374,12 +391,12 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -402,19 +419,24 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     this.ctx.storage.kv.put("codeVerifier", codeVerifier);
     return { oauthNonce, codeChallenge };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     const codeVerifier = this.ctx.storage.kv.get<string>("codeVerifier");
-    if (!codeVerifier) return false;
+    if (!codeVerifier) return null;
     this.ctx.storage.kv.delete("nonce");
     this.ctx.storage.kv.delete("codeVerifier");
 
@@ -437,21 +459,26 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("ZoomInfo did not return a refresh token.");
     }
 
-    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
-    this.ctx.storage.kv.put("accessToken", grant.accessToken);
-    this.ctx.storage.kv.put("accessTokenExpiresAt", Date.now() + grant.expiresIn * 1000);
-    this.ctx.storage.kv.put("scopes", grant.scopes);
-    this.ctx.storage.kv.put<StoredIdentity>("identity", parseIdTokenClaims(grant.idToken));
-    this.ctx.storage.kv.put("expiredNotified", false);
+    const storedGrant: StoredGrant = {
+      refreshToken: grant.refreshToken,
+      accessToken: grant.accessToken,
+      accessTokenExpiresAt: Date.now() + grant.expiresIn * 1000,
+      scopes: grant.scopes,
+      identity: parseIdTokenClaims(grant.idToken),
+    };
 
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, storedGrant, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.#writeGrant(storedGrant);
       try {
         const props: ZoomInfoGatekeeperImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("refreshToken");
         this.ctx.storage.kv.delete("accessToken");
@@ -460,7 +487,23 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     await this.ctx.storage.deleteAlarm();
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#writeGrant(grant);
+  }
+
+  #writeGrant(grant: StoredGrant): void {
+    this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
+    this.ctx.storage.kv.put("accessToken", grant.accessToken);
+    this.ctx.storage.kv.put("accessTokenExpiresAt", grant.accessTokenExpiresAt);
+    this.ctx.storage.kv.put("scopes", grant.scopes);
+    this.ctx.storage.kv.put<StoredIdentity>("identity", grant.identity);
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
   async getAccessToken(): Promise<string> {
@@ -581,6 +624,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const initiationNonce = generateNonce();
     await this.#userAccount().prepareReconnect(initiationNonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
   }
 
   /**
@@ -1044,6 +1091,8 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   // so ZoomInfoGatekeeperImpl.applyAction() can replay it once approved, and returns a ticket the
   // Gadget passes to getEnrichmentResult(). No credits are spent until approval. `awaitDecision`
   // suspends the agent's turn until the user decides, so no result simulation is needed.
+  // `summary` opens the description's prose, so every agent value in it goes through `codeSpan`
+  // (`fieldList` for lists); the request itself is shown exactly in the fields.
   async #submitEnrichment(
     kind: EnrichmentKind,
     summary: string,
@@ -1056,10 +1105,15 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     try {
       await this.#approvalQueue.submitAction(id, {
         title: `ZoomInfo: ${summary}`,
-        description:
-            `${summary}\n\n**Credit cost:** up to **${worstCaseCredits}** ZoomInfo bulk-data ` +
-            `credit${worstCaseCredits === 1 ? "" : "s"} (fewer if records are already under ` +
-            `management; none for no-match/error results). Charged only on approval.`,
+        // The request body is what leaves the workspace (names, emails, company identifiers), so
+        // the approver sees it exactly, after the summary and the cost.
+        ...buildDescription(
+          `${summary}\n\n**Credit cost:** up to **${worstCaseCredits}** ZoomInfo bulk-data ` +
+          `credit${worstCaseCredits === 1 ? "" : "s"} (fewer if records are already under ` +
+          `management; none for no-match/error results). Charged only on approval.`)
+          .json("Request", attributes)
+          .json("Page", page ?? {})
+          .finish(),
         // Spent credits can't be refunded, so there is no automatic revert.
         implementsRevert: false,
         // No simulation: suspend the agent until the user decides rather than letting it read back
@@ -1150,7 +1204,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     return this.#submitEnrichment(
       "companies",
       `Enrich ${inputs.length} compan${inputs.length === 1 ? "y" : "ies"} with fields: ` +
-        `${outputFields.join(", ") || "(none)"}`,
+        `${fieldList(outputFields)}`,
       { matchCompanyInput, outputFields },
       inputs.length,
     );
@@ -1163,7 +1217,8 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     const matchCompanyInput = inputs.map(input => clean({ ...input, companyId: idValue(input.companyId) }));
     return this.#submitEnrichment(
       "corporateHierarchy",
-      `Enrich corporate hierarchy for ${inputs.length} compan${inputs.length === 1 ? "y" : "ies"}`,
+      `Enrich corporate hierarchy for ${inputs.length} compan${inputs.length === 1 ? "y" : "ies"}, ` +
+        `requesting fields: ${fieldList(outputFields)}`,
       { matchCompanyInput, outputFields },
       inputs.length,
     );
@@ -1172,7 +1227,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   async enrichHashtags(companyId: string): Promise<EnrichmentTicket> {
     return this.#submitEnrichment(
       "hashtags",
-      `Fetch hashtags for company \`${companyId}\``,
+      `Fetch hashtags for company ${codeSpan(String(companyId))}`,
       clean({ companyId: idValue(companyId) }),
       1,
     );
@@ -1208,8 +1263,8 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
     return this.#submitEnrichment(
       "contacts",
       `Enrich ${inputs.length} contact${inputs.length === 1 ? "" : "s"} with fields: ` +
-        `${outputFields.join(", ") || "(none)"}` +
-        `${requiredFields?.length ? `; required: ${requiredFields.join(", ")}` : ""}`,
+        `${fieldList(outputFields)}` +
+        `${requiredFields?.length ? `; required: ${fieldList(requiredFields)}` : ""}`,
       clean({ matchPersonInput, outputFields, requiredFields }),
       inputs.length,
     );
@@ -1240,8 +1295,8 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   ): Promise<EnrichmentTicket> {
     return this.#submitEnrichment(
       "intent",
-      `Fetch intent signals for company \`${criteria.companyId}\` across topics ` +
-        `[${criteria.topics.join(", ")}]`,
+      "Fetch intent signals for the company named in the request across topics " +
+        `${fieldList(criteria.topics)}`,
       clean({ ...criteria, companyId: idValue(criteria.companyId) }),
       1,
       page,
@@ -1272,7 +1327,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   ): Promise<EnrichmentTicket> {
     return this.#submitEnrichment(
       "scoops",
-      `Fetch scoops for company \`${criteria.companyId}\``,
+      "Fetch scoops for the company named in the request",
       clean({ ...criteria, companyId: idValue(criteria.companyId) }),
       1,
       page,
@@ -1299,7 +1354,7 @@ class ZoomInfoSessionImpl extends RpcTarget implements ZoomInfoSession {
   ): Promise<EnrichmentTicket> {
     return this.#submitEnrichment(
       "news",
-      `Fetch news articles for company \`${criteria.companyId}\``,
+      "Fetch news articles for the company named in the request",
       clean({ ...criteria, companyId: idValue(criteria.companyId) }),
       1,
       page,

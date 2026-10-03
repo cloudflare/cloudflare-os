@@ -1,0 +1,104 @@
+# `@gadgets/gatekeeper-kit`
+
+Shared building blocks for gatekeeper connect flows, credentials, actions, observations, cursors,
+caching, and simulation. These modules replace security-sensitive plumbing that gatekeepers had
+implemented separately.
+
+The kit provides a pragmatic baseline for common gatekeeper behavior. Provider-specific or esoteric
+behavior can use the canonical TypeScript interfaces directly while retaining whichever leaf
+modules still fit.
+
+## Current scope
+
+Only Layer 1 is shipped: independent leaf modules exposed through package subpaths. Import them à la
+carte; none requires a gatekeeper assembly.
+
+Layer 2, including `KitUserAccountBase`, `KitVendorBase`, and `KitGatekeeperBase`, remains a proposal
+in [`plans/gatekeeper-kit.md`](../../plans/gatekeeper-kit.md). No gatekeeper consumes it.
+
+The code and tests define the shipped behavior. The plan records the design and the unshipped
+proposal.
+
+## Responsibility boundary
+
+The kit owns provider-independent mechanisms inside each imported module. The gatekeeper owns
+provider facts, policy, and the assembly around those modules. Importing a leaf does not transfer
+the duties in the right-hand column.
+Workshop owns connect completion ticket minting and redemption.
+
+| Concern | Kit owns | Gatekeeper owns |
+| --- | --- | --- |
+| Assembly and lifetime | Independent leaf contracts; no Layer 2 assembly is shipped. | Worker, account, and resource-facet RPC surfaces; stub disposal; keeping stateful kit objects stable for one Durable Object activation. |
+| Connect | Nonce generation and comparison, the two-stage handshake, staged reconnect escrow, hardened handoff HTML, and browser mutation guards. | Provider exchange, staged payload shape, exact live commit, provider cleanup policy, routes, and authorization parameters. |
+| Preview OAuth | Signed state, stable-to-preview callback relay, and return-host validation. | Deployment configuration, provider callback parameters, issuer checks, and retaining the exact redirect URI for code exchange. |
+| Credentials | Atomic credential records, refresh coalescing, identity and connection generations, replay, and rejection adjudication. | Grant shape and projection, the refresh callback (see OAuth token endpoint), and display-safe errors. |
+| Credential expiry and simple auth retry | Durable deduplication of expiry notifications and one-refresh/one-replay helpers. | Deciding what proves grant expiry beyond an OAuth `invalid_grant`, provider refresh and revoke calls, and choosing the coordinator flow versus the standalone retry helper. |
+| OAuth token endpoint | Token-request hardening, response parsing, PKCE, the default `invalid_grant` death rule, and the canonical refresh merge. | Endpoints and client authentication, provider death evidence beyond `invalid_grant`, non-canonical merges, and non-RFC revocation. |
+| Actions | Durable submission and resolution, serialization, journaling, retention mechanics, connection fences, and dependency tracking. | Approval text, provider calls, idempotency and reconciliation, action-specific simulation, revert semantics, and retention policy. |
+| Action files | Bounded chunk storage, integrity verification, aggregate accounting, deletion, and orphan-pruning mechanics. | Byte limits and key prefixes, keeping references in action records, describing the same bytes that will be applied, and releasing files with their records. |
+| Simulation | Ordered pending-action views, pure replay with explicit incomplete results, and durable provisional-ID allocation and binding. | Target extraction, state transitions, unsupported-effect policy, provider ID syntax, and projecting pending effects onto every affected read. |
+| Observations | Admission strategies, tracked-collection fencing, exclusion derivation, and the guarded authorization call. | Calling the gate for every read, truthful escaped descriptions, choosing the matching strategy and scope, ACL oracles, and collection canonicalization. |
+| Cursors | Serialized walks, buffering, common page/offset/token continuation, filtering hooks, and per-page authorization callbacks. | Provider page adapters, page limits and termination semantics, resource lifetime, and the observation description for each returned page. |
+| Cache | Authority partitioning, stale-fill fencing, TTL storage, single-flight loads, and invalidation. | Cache families, names and keys, authority dimensions, TTLs, value projection, and deciding which reads are safe to cache. |
+| HTTP endpoints and responses | Operator-supplied endpoint normalization, common no-access probes, and byte-capped text decoding. | Host allowlists, redirect and header policy, response schemas, provider errors, and binary or streaming limits. |
+
+When a provider does not fit a leaf, implement the canonical TypeScript interface directly and keep
+the other leaves that still fit. Bypassing a leaf also means owning its guarantees for that concern;
+do not call around a stateful module while relying on its journal, fence, or lifetime elsewhere.
+
+## Start here
+
+- For an OAuth-shaped provider, start with [Connect flows](USAGE.md#connect-flows), then read the
+  [credentials guide](USAGE.md#credentials). They cover browser handoff sequencing, account-side
+  storage, consumer-side RPC, refresh, replay, expiry, and action fences.
+- For provider writes, use [`./actions`](#module-inventory) and read
+  [Actions and files](USAGE.md#actions-and-files).
+- For every gatekeeper's observer methods, select a strategy from `./observers` and read
+  [Observations](USAGE.md#observations).
+- For details attached to one class, function, option, or error, read that export's JSDoc.
+
+Import from the narrow subpath:
+
+```ts
+import {
+  CredentialCoordinator,
+  CredentialSource,
+} from "@gadgets/gatekeeper-kit/credentials";
+```
+
+## Module inventory
+
+| Subpath | Purpose | Use it when |
+| --- | --- | --- |
+| `./connect-nonce` | Nonce generation, expiry, and constant-time comparison. | A connect flow mints or checks its own nonce. The handshake and credential modules already use it. |
+| `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage. | A connect link or form redirects through an OAuth provider. |
+| `./credential-stage` | Durable reconnect escrow, exact commit, and exact-stage cleanup. | A reconnect must remain inert until Workshop commits the completed stage. |
+| `./connect-pages` | Hardened connect HTML, escaping, and browser mutation guards. | A gatekeeper serves HTML from its own origin. |
+| `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
+| `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
+| `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |
+| `./cache` | Authority-partitioned Durable Object TTL caching. | Provider reads repeat and reconnects must fence stale fills. |
+| `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
+| `./cursors` | Array, page-number, offset, and continuation-token cursors. | A session returns more rows than one RPC reply should carry. |
+| `./actions` | Action declaration, approval, application, retention, and journaling. | An operation has an externally visible side effect. |
+| `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
+| `./action-description` | Approval-text builder: prose plus exact typed fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |
+| `./simulation` | Pending-action replay and provisional-ID mapping. | An action continues with simulation and later reads must include its projected effect. |
+| `./observers` | Observer admission strategies and per-read authorization. | A gatekeeper implements its required observer methods. |
+| `./oauth-client` | OAuth 2.0 token-endpoint client, PKCE, and refresh adapter. | A gatekeeper exchanges, refreshes, or revokes OAuth 2.0 tokens. |
+| `./preview-oauth` | Signed OAuth state and stable-to-preview callback relay. | Preview Workers share one callback registered with the OAuth provider. |
+| `./endpoint` | User-supplied provider endpoint normalization. | A user enters a self-hosted provider URL. |
+| `./http-errors` | HTTP access-error classification and ACL probes. | A verifier distinguishes no access from provider failure. |
+| `./response-body` | Strict byte-capped response decoding. | A gatekeeper reads any provider response body. |
+
+## Internal modules
+
+The package does not export `kv`, `positive-int`, `per-storage`, `serial-queue`, `action-journal`,
+or `observer-tracker`. The last two are re-exported through `./actions` and `./observers`.
+
+## More documentation
+
+- [`USAGE.md`](USAGE.md): integration sequencing, storage, bounds, and operational sharp edges.
+- Exported-symbol JSDoc: exact API contracts and examples.
+- [`plans/gatekeeper-kit.md`](../../plans/gatekeeper-kit.md): design record and Layer 2 proposal.
+- [`AGENTS.md`](AGENTS.md): package-specific contributor constraints and verification commands.

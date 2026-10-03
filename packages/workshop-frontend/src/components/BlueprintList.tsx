@@ -259,7 +259,7 @@ export default function BlueprintList() {
       {/* Toolbar — search plus the page's actions. Hidden when the user has no blueprints, since
           the empty state carries its own copies of the same two actions. */}
       {!loading && items.length > 0 && (
-        <div className="mb-4 flex items-center gap-2 px-3">
+        <div className="mb-4 flex flex-col gap-2 px-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <MagnifyingGlass size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-kumo-inactive" />
             <input
@@ -272,7 +272,7 @@ export default function BlueprintList() {
           </div>
           {/* Grid, not flex: 1fr columns give the two buttons a matching width, where flex would
               size each to its own label. */}
-          <div className="grid shrink-0 grid-cols-2 gap-2">
+          <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:shrink-0">
             <Link to="/explore" className={ACTION_BUTTON}>
               <Compass size={14} />
               Explore

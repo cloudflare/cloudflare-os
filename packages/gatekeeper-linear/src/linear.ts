@@ -13,9 +13,15 @@ import {
   GatekeeperConnectCallback,
   GatekeeperConnectOptions,
   AccountDescription,
+  ConnectHandoff,
   SupportedResource,
   ResourceConfiguratorFrame,
 } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  type ActionDescriptionBuilder, buildDescription, plainInline, type RenderedDescription,
+} from "@gadgets/gatekeeper-kit/action-description";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import type {
   Cursor,
   LinearWorkspace,
@@ -121,14 +127,6 @@ const ISSUE_RESOURCE: SupportedResource = {
 const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, TEAM_RESOURCE, ISSUE_RESOURCE];
 
 const LINEAR_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(LINEAR_LOGO_SVG)}`;
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <body>
-    <script type="text/javascript">window.close();</script>
-    <p>Authorization complete. You may close this tab and return to Cloudflare OS.</p>
-  </body>
-</html>`;
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -461,12 +459,12 @@ export default {
       }
 
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      const accepted = await stub.acceptAuthCode(code, oauthNonce);
-      if (!accepted) {
+      const handoff = await stub.acceptAuthCode(code, oauthNonce);
+      if (!handoff) {
         return new Response(INVALID_LINK_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
-      return new Response(SELF_CLOSING_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
 
     return new Response("Not Found", { status: 404 });
@@ -513,7 +511,17 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 // ---------------------------------------------------------------------------
 // UserAccount DO — stores OAuth credentials and handles token refresh.
 
-type StoredNonce = { value: string; expiresAt: number; stage: "initiation" | "oauth" };
+type StoredNonce = {
+  value: string;
+  expiresAt: number;
+  stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
+};
 
 export class UserAccount extends DurableObject<Env> {
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
@@ -529,12 +537,12 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("reconnecting", true);
     this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
       stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -549,15 +557,20 @@ export class UserAccount extends DurableObject<Env> {
       value: oauthNonce,
       expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
       stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return { oauthNonce, scopes: OAUTH_SCOPES };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -577,17 +590,19 @@ export class UserAccount extends DurableObject<Env> {
       redirectUri: `${getBaseUrl(this.env)}/oauth`,
     });
 
-    this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
-    this.ctx.storage.kv.put("expiredNotified", false);
-
-    const reconnecting = this.ctx.storage.kv.get<boolean>("reconnecting");
-    if (reconnecting) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored();
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
+      this.ctx.storage.kv.put("expiredNotified", false);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("grant");
         throw err;
@@ -595,7 +610,15 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     await this.ctx.storage.deleteAlarm();
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const grant = commitStagedCredentials<LinearOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
+    this.ctx.storage.kv.put("expiredNotified", false);
   }
 
   /** Returns a currently-valid access token, refreshing it first if it is about to expire. */
@@ -794,6 +817,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#account().commitReconnect(stageId);
+  }
+
   /**
    * Mint a verifier representing this account, used by LinearGatekeeperImpl.addObserver to confirm a
    * prospective observer may read a bound team/issue (and, for workspace bindings, the workspace and
@@ -937,7 +964,9 @@ type StoredActionDraft = StoredAction extends infer T
   ? T extends { id: number } ? Omit<T, "id" | "status"> : never
   : never;
 
-type ActionDescriptionDraft = { title: string; body: string; implementsRevert: boolean };
+// The approver-facing text is always built with `buildDescription`, so every value the agent
+// supplied is shown in full and the completeness claim is the builder's, never hand-set.
+type ActionDescriptionDraft = { title: string; implementsRevert: boolean } & RenderedDescription;
 
 type LinearGatekeeperImplProps = {
   userObjectId: string;
@@ -1116,11 +1145,21 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     const id = this.#nextCounter("action");
     this.ctx.storage.kv.put<StoredAction>(`action:${id}`, { ...action, id, status: "pending" } as StoredAction);
     this.#invalidatePendingActions();
-    await approvalQueue.submitAction(id, {
-      title: description.title,
-      description: description.body,
-      implementsRevert: description.implementsRevert,
-    });
+    try {
+      await approvalQueue.submitAction(id, description);
+    } catch (err) {
+      // An auto-approval can apply the action mid-flight, which proves the overseer received it --
+      // only the reply was lost, and reporting failure would invite a repeated provider write. A
+      // missing record proves nothing: a dependency's rejection cascade deletes it too.
+      const current = this.ctx.storage.kv.get<StoredAction>(`action:${id}`);
+      if (current?.status === "applied") return;
+      if (current) {
+        // Drop the record so simulated reads don't show an action no approver can resolve.
+        this.ctx.storage.kv.delete(`action:${id}`);
+        this.#invalidatePendingActions();
+      }
+      throw err;
+    }
   }
 
   // ---- simulation: overlay pending (submitted-but-not-applied) actions onto reads ----
@@ -1307,17 +1346,23 @@ export class LinearGatekeeperImpl extends DurableObject<Env, LinearGatekeeperImp
     return this.#overlayIssue(issue);
   }
 
-  async commentsPage(ref: string, after: string | undefined, first: number): Promise<RawConnection<RawComment>> {
+  /**
+   * A page of the issue's comments, with pending comments appended after the last real page.
+   * `issue`, when the caller has it, lets pending comments staged under the issue's UUID match a
+   * `ref` that is its identifier (see #pendingCommentsFor).
+   */
+  async commentsPage(ref: string, after: string | undefined, first: number,
+                     issue: RawIssue | null = null): Promise<RawConnection<RawComment>> {
     // A provisional issue whose create hasn't been applied: only pending comments exist.
     if (ref.startsWith("~") && !this.#provisionalRealId(ref)) {
-      const nodes = after === undefined ? this.#pendingCommentsFor(ref, undefined, null) : [];
+      const nodes = after === undefined ? this.#pendingCommentsFor(ref, undefined, issue) : [];
       return { nodes, pageInfo: { hasNextPage: false, endCursor: null } };
     }
     const id = this.resolveIssueRef(ref);
     const conn = await this.#run(api => api.listComments(id, { first, after }));
     // Comments are oldest-first, so append pending comments once the real pages are exhausted.
     if (!conn.pageInfo.hasNextPage) {
-      const pending = this.#pendingCommentsFor(ref, id, null);
+      const pending = this.#pendingCommentsFor(ref, id, issue);
       if (pending.length > 0) return { nodes: [...conn.nodes, ...pending], pageInfo: conn.pageInfo };
     }
     return conn;
@@ -1953,6 +1998,13 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
     // Check real labels and any pending-created ones, so two creates can't collide on the same
     // name (which would also collide on the `~label:<name>` provisional id).
     const existing = await this.#gk.labelsForDisplay(team.id);
+    // The duplicate check and the description reveal this team, so on a workspace binding the log
+    // must only reach observers who may see it. Authorized after the read, as in listLabels, so a
+    // failed read records nothing.
+    await this.#gk.authorizeTeamObservation(this.#queue, [team.id], {
+      title: "Read team for new label",
+      description: `Read team ${team.key} and its labels to create a label.`,
+    });
     if (existing.some(l => l.name.toLowerCase() === name.toLowerCase())) {
       throw new Error(`A label named "${name}" already exists in team ${team.key}.`);
     }
@@ -1963,7 +2015,7 @@ class LinearTeamSessionImpl extends RpcTarget implements LinearTeam {
         synthetic, title: `Create label "${name}"` },
       {
         title: `Create label "${name}" in ${team.key}`,
-        body: `Create a new label named **${name}**${options?.color ? ` (color ${options.color})` : ""} in team ${team.key}.`,
+        ...describeCreateLabel(team, name, options),
         implementsRevert: true,
       },
     );
@@ -2036,6 +2088,9 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
   }
 
   // Fetch this issue, enforcing the team scope (if any) so a team grant can't reach other teams.
+  // Methods that enqueue an action use #requireIssueForAction, which also authorizes the team.
+  // Actions stage the returned issue's `id` as their issueRef: the UUID of a real issue, or the
+  // `~N` provisional ID of one whose create is still pending, which keeps them tied to that create.
   async #requireIssue(): Promise<RawIssue> {
     const issue = await this.#gk.issueRaw(this.#ref);
     if (this.#teamScope && issue.team.id !== this.#teamScope) {
@@ -2044,42 +2099,59 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
     return issue;
   }
 
+  // #requireIssue for a method that enqueues an action. The description shows the issue's IDs,
+  // title, state, labels and assignee, so on a workspace binding the log must only reach observers
+  // who may see the issue's team (and `extraTeamIds`, such as a new parent's team).
+  async #requireIssueForAction(extraTeamIds: string[] = []): Promise<RawIssue> {
+    const issue = await this.#requireIssue();
+    await this.#gk.authorizeTeamObservation(this.#queue, [...new Set([issue.team.id, ...extraTeamIds])], {
+      title: `Read issue ${issue.identifier}`,
+      description: `Read issue ${issueLabel(issue)} to describe an action on it.`,
+    });
+    return issue;
+  }
+
   async getDetails(): Promise<LinearIssueDetails> {
     const issue = await this.#requireIssue();
     await this.#gk.authorizeTeamObservation(this.#queue, [issue.team.id], {
       title: `Read issue ${issue.identifier}`,
-      description: `Read details of issue **${issue.identifier} ${issue.title}**.`,
+      description: `Read details of issue ${issueLabel(issue)}.`,
     });
     return normIssueDetails(issue, this.#wsKey);
   }
 
   async setTitle(title: string): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { title },
+      { kind: "updateIssue", issueRef: issue.id, input: { title },
         previous: { title: issue.title }, patch: { title }, title: `Set title of ${issue.identifier}` },
       { title: `Rename ${issue.identifier}`,
-        body: `Change the title of **${issue.identifier}** from "${issue.title}" to "${title}".`,
+        ...onIssue(issue, label => `Change the title of ${label}.`)
+          .inline("Current title", issue.title)
+          .inline("New title", title)
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async setDescription(descriptionMarkdown: string): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { description: descriptionMarkdown },
+      { kind: "updateIssue", issueRef: issue.id, input: { description: descriptionMarkdown },
         previous: { description: issue.description ?? "" }, patch: { description: descriptionMarkdown },
         title: `Edit description of ${issue.identifier}` },
       { title: `Edit description of ${issue.identifier}`,
-        body: `Replace the description of **${issue.identifier} ${issue.title}**.`,
+        ...onIssue(issue, label => `Replace the description of ${label}.`)
+          .verbatim("New description", descriptionMarkdown, "markdown")
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async setState(state: string): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     const states = await this.#gk.workflowStatesRaw(issue.team.id);
     const target = states.find(s => s.name.toLowerCase() === state.toLowerCase());
     if (!target) {
@@ -2087,51 +2159,59 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
     }
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { stateId: target.id },
+      { kind: "updateIssue", issueRef: issue.id, input: { stateId: target.id },
         previous: { stateId: issue.state?.id }, patch: { state: target },
         title: `Move ${issue.identifier} to ${target.name}` },
       { title: `Move ${issue.identifier} to ${target.name}`,
-        body: `Change the state of **${issue.identifier} ${issue.title}** from "${issue.state?.name ?? "Unknown"}" to "${target.name}".`,
+        ...onIssue(issue, label => `Change the state of ${label}.`)
+          .inline("Current state", issue.state?.name ?? "Unknown")
+          .inline("New state", target.name)
+          .inline("New state ID", target.id)
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async setAssignee(assignee: string | null): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     let assigneeId: string | null = null;
     let assigneeUser: RawUser | null = null;
     let label = "Unassign";
     if (assignee !== null) {
       assigneeUser = await this.#gk.resolveMemberRaw(assignee);
       assigneeId = assigneeUser.id;
-      label = `Assign to ${assigneeUser.displayName ?? assigneeUser.name}`;
+      label = `Assign to ${plainInline(assigneeUser.displayName ?? assigneeUser.name)}`;
     }
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { assigneeId },
+      { kind: "updateIssue", issueRef: issue.id, input: { assigneeId },
         previous: { assigneeId: issue.assignee?.id ?? null }, patch: { assignee: assigneeUser },
         title: `${label} (${issue.identifier})` },
       { title: `${label}: ${issue.identifier}`,
-        body: `${label} for issue **${issue.identifier} ${issue.title}**.`,
+        ...(assigneeUser
+          ? describeAssignee(onIssue(issue, name => `Assign issue ${name}.`), assigneeUser)
+          : onIssue(issue, name => `Unassign issue ${name}.`)).finish(),
         implementsRevert: true },
     );
   }
 
   async setPriority(priority: LinearPriority): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { priority: PRIORITY_TO_NUM[priority] },
+      { kind: "updateIssue", issueRef: issue.id, input: { priority: PRIORITY_TO_NUM[priority] },
         previous: { priority: issue.priority }, patch: { priority: PRIORITY_TO_NUM[priority] },
         title: `Set priority of ${issue.identifier}` },
       { title: `Set priority of ${issue.identifier} to ${priority}`,
-        body: `Change the priority of **${issue.identifier} ${issue.title}** to "${priority}".`,
+        ...onIssue(issue, label => `Change the priority of ${label}.`)
+          .inline("Priority", priority)
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async addLabels(labels: string[]): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     // Resolve against real labels *and* labels created earlier in this session that haven't been
     // applied yet — those are attachable too (their ids resolve to the real label at apply time).
     const teamLabels = await this.#gk.labelsForDisplay(issue.team.id);
@@ -2148,66 +2228,78 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
     }
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "addLabels", issueRef: this.#ref, labelIds: resolved.map(l => l.id), labels: resolved,
+      { kind: "addLabels", issueRef: issue.id, labelIds: resolved.map(l => l.id), labels: resolved,
         title: `Add labels to ${issue.identifier}` },
       { title: `Add labels to ${issue.identifier}`,
-        body: `Add label(s) ${labels.map(l => `"${l}"`).join(", ")} to **${issue.identifier} ${issue.title}**.`,
+        ...describeLabels(onIssue(issue, label => `Add labels to ${label}.`), resolved)
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async removeLabels(labels: string[]): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     const removeNames = new Set(labels.map(l => l.toLowerCase()));
     // Map the requested names to the label ids currently on the issue; ignore names not present.
-    const removeIds = (issue.labels?.nodes ?? [])
-      .filter(l => removeNames.has(l.name.toLowerCase()))
-      .map(l => l.id);
+    const removed = (issue.labels?.nodes ?? []).filter(l => removeNames.has(l.name.toLowerCase()));
+    const removeIds = removed.map(l => l.id);
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "removeLabels", issueRef: this.#ref, labelIds: removeIds, title: `Remove labels from ${issue.identifier}` },
+      { kind: "removeLabels", issueRef: issue.id, labelIds: removeIds, title: `Remove labels from ${issue.identifier}` },
       { title: `Remove labels from ${issue.identifier}`,
-        body: `Remove label(s) ${labels.map(l => `"${l}"`).join(", ")} from **${issue.identifier} ${issue.title}**.`,
+        ...(removed.length > 0
+          ? describeLabels(onIssue(issue, label => `Remove labels from ${label}.`), removed)
+          : onIssue(issue, label =>
+            `Remove labels from ${label}. None of the named labels is on this issue, so its labels stay as they are.`))
+          .finish(),
         implementsRevert: true },
     );
   }
 
   async setProject(projectId: string | null): Promise<void> {
-    const issue = await this.#requireIssue();
+    // An empty id means no project, as the description says.
+    projectId = projectId || null;
+    const issue = await this.#requireIssueForAction();
     const project = projectId ? await this.#gk.getProjectRaw(projectId) : null;
     if (projectId && !project) throw new Error(`Project not found: ${projectId}`);
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { projectId },
+      { kind: "updateIssue", issueRef: issue.id, input: { projectId },
         previous: { projectId: issue.project?.id ?? null }, patch: { project },
         title: `Set project of ${issue.identifier}` },
       { title: `${projectId ? "Move" : "Remove"} ${issue.identifier} ${projectId ? "into a project" : "from its project"}`,
-        body: projectId
-          ? `Move **${issue.identifier} ${issue.title}** into project ${projectId}.`
-          : `Remove **${issue.identifier} ${issue.title}** from its project.`,
+        ...(projectId
+          ? onIssue(issue, label => `Move ${label} into a project.`)
+            .inline("Project ID", projectId).finish()
+          : onIssue(issue, label => `Remove ${label} from its project.`)
+            .finish()),
         implementsRevert: true },
     );
   }
 
   async setDueDate(date: string | null): Promise<void> {
-    const issue = await this.#requireIssue();
+    // An empty date clears it, as the description says.
+    date = date || null;
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { dueDate: date },
+      { kind: "updateIssue", issueRef: issue.id, input: { dueDate: date },
         previous: { dueDate: issue.dueDate ?? null }, patch: { dueDate: date },
         title: `Set due date of ${issue.identifier}` },
       { title: `Set due date of ${issue.identifier}`,
-        body: date
-          ? `Set the due date of **${issue.identifier} ${issue.title}** to ${date}.`
-          : `Clear the due date of **${issue.identifier} ${issue.title}**.`,
+        ...(date
+          ? onIssue(issue, label => `Set the due date of ${label}.`)
+            .inline("Due date", date).finish()
+          : onIssue(issue, label => `Clear the due date of ${label}.`)
+            .finish()),
         implementsRevert: true },
     );
   }
 
   async setParent(parentId: string | null): Promise<void> {
-    const issue = await this.#requireIssue();
     let resolvedParentId: string | null = null;
-    let parentOverlay: RawIssue["parent"] = null;
+    let parentOverlay: NonNullable<RawIssue["parent"]> | null = null;
+    const parentTeamIds: string[] = [];
     if (parentId !== null) {
       const parent = await this.#gk.issueRaw(parentId);
       if (this.#teamScope && parent.team.id !== this.#teamScope) {
@@ -2215,16 +2307,19 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
       }
       resolvedParentId = parent.id;
       parentOverlay = { id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title };
+      parentTeamIds.push(parent.team.id);
     }
+    const issue = await this.#requireIssueForAction(parentTeamIds);
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "updateIssue", issueRef: this.#ref, input: { parentId: resolvedParentId },
+      { kind: "updateIssue", issueRef: issue.id, input: { parentId: resolvedParentId },
         previous: { parentId: issue.parent?.id ?? null }, patch: { parent: parentOverlay },
         title: `Set parent of ${issue.identifier}` },
       { title: `${parentId ? "Set" : "Clear"} parent of ${issue.identifier}`,
-        body: parentId
-          ? `Make **${issue.identifier} ${issue.title}** a sub-issue of ${parentId}.`
-          : `Detach **${issue.identifier} ${issue.title}** from its parent.`,
+        ...(parentOverlay
+          ? describeParent(onIssue(issue, label => `Make ${label} a sub-issue.`), parentOverlay).finish()
+          : onIssue(issue, label => `Detach ${label} from its parent.`)
+            .finish()),
         implementsRevert: true },
     );
   }
@@ -2232,13 +2327,14 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
   async readComments(options?: LinearPageOptions): Promise<Cursor<LinearComment>> {
     // Resolve the issue (also enforcing team scope, if any) so the comment thread can be attributed
     // to the issue's team for observer tracking.
-    const teamId = (await this.#requireIssue()).team.id;
+    const issue = await this.#requireIssue();
+    const teamId = issue.team.id;
     const ref = this.#ref;
     const first = clampPageSize(options?.resultsPerPage);
     return new StreamingCursor<RawComment, LinearComment>(
       this.#gk,
       this.#queue.dup(),
-      after => this.#gk.commentsPage(ref, after, first),
+      after => this.#gk.commentsPage(ref, after, first, issue),
       normComment,
       items => ({ title: `Read comments on ${ref}`, description: `Read ${items.length} comment(s) on issue ${ref}.` }),
       () => [teamId],
@@ -2246,7 +2342,7 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
   }
 
   async postComment(bodyMarkdown: string): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     const synthetic: RawComment = {
       id: this.#gk.nextProvisionalCommentId(),
       body: bodyMarkdown,
@@ -2256,9 +2352,11 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
     };
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "postComment", issueRef: this.#ref, body: bodyMarkdown, synthetic, title: `Comment on ${issue.identifier}` },
+      { kind: "postComment", issueRef: issue.id, body: bodyMarkdown, synthetic, title: `Comment on ${issue.identifier}` },
       { title: `Comment on ${issue.identifier}`,
-        body: `Post a comment on **${issue.identifier} ${issue.title}**:\n\n${bodyMarkdown}`,
+        ...onIssue(issue, label => `Post a comment on ${label}.`)
+          .verbatim("Comment", bodyMarkdown, "markdown")
+          .finish(),
         implementsRevert: true },
     );
   }
@@ -2275,28 +2373,125 @@ class LinearIssueImpl extends RpcTarget implements LinearIssue {
   }
 
   async archive(): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "archive", issueRef: this.#ref, archived: true, title: `Archive ${issue.identifier}` },
+      { kind: "archive", issueRef: issue.id, archived: true, title: `Archive ${issue.identifier}` },
       { title: `Archive ${issue.identifier}`,
-        body: `Archive issue **${issue.identifier} ${issue.title}**.`, implementsRevert: true },
+        ...onIssue(issue, label => `Archive issue ${label}.`).finish(),
+        implementsRevert: true },
     );
   }
 
   async unarchive(): Promise<void> {
-    const issue = await this.#requireIssue();
+    const issue = await this.#requireIssueForAction();
     await this.#gk.enqueue(
       this.#queue,
-      { kind: "archive", issueRef: this.#ref, archived: false, title: `Unarchive ${issue.identifier}` },
+      { kind: "archive", issueRef: issue.id, archived: false, title: `Unarchive ${issue.identifier}` },
       { title: `Unarchive ${issue.identifier}`,
-        body: `Restore archived issue **${issue.identifier} ${issue.title}**.`, implementsRevert: true },
+        ...onIssue(issue, label => `Restore archived issue ${label}.`).finish(),
+        implementsRevert: true },
     );
   }
 }
 
 // ---------------------------------------------------------------------------
 // Shared helpers
+
+// How an issue is named in description prose. The title is agent text for an issue created in this
+// workspace and provider text otherwise; either way it is flattened so it cannot open Markdown or
+// HTML structure that would hide the fields after it.
+function issueLabel(issue: RawIssue): string {
+  return `**${plainInline(issue.identifier)} ${plainInline(issue.title)}**`;
+}
+
+// Issue IDs of the form `~N` stand for an issue a pending createIssue makes (see
+// nextProvisionalIssueId); applyAction swaps in the ID Linear assigned once that create is applied.
+function isProvisionalIssueId(id: string): boolean {
+  return id.startsWith("~");
+}
+
+// Label IDs of the form `~label:<name>` stand for a label a pending createLabel makes; applyAction
+// swaps in the ID Linear assigned once that create is applied.
+function isProvisionalLabelId(id: string): boolean {
+  return id.startsWith("~label:");
+}
+
+const PROVISIONAL_ISSUE_NOTE =
+  "_This ID stands for an issue that an earlier pending action creates, whose description shows " +
+  "it as its provisional ID. Applying this action sends the ID Linear assigns to that issue; " +
+  "rejecting that action drops this one._";
+
+const PROVISIONAL_LABEL_NOTE =
+  "_An ID starting with `~label:` stands for a label that an earlier pending action creates. " +
+  "Applying this action uses the ID Linear assigns to that label._";
+
+// Opens the description of an action on an existing issue: the gatekeeper's summary, naming the
+// issue by its identifier and title, then the exact ID the stored action applies to.
+function onIssue(issue: RawIssue, summary: (label: string) => string): ActionDescriptionBuilder {
+  const builder = buildDescription(summary(issueLabel(issue))).inline("Issue ID", issue.id);
+  if (isProvisionalIssueId(issue.id)) builder.prose(PROVISIONAL_ISSUE_NOTE);
+  return builder;
+}
+
+// Names a resolved user exactly. Display names need not be unique, so the ID and email go beside it.
+function describeAssignee(builder: ActionDescriptionBuilder, user: RawUser): ActionDescriptionBuilder {
+  builder.inline("Assignee", user.displayName ?? user.name).inline("Assignee ID", user.id);
+  if (user.email) builder.inline("Assignee email", user.email);
+  return builder;
+}
+
+// Names resolved labels by name, then lists the exact IDs the action sends.
+function describeLabels(builder: ActionDescriptionBuilder, labels: readonly RawLabel[]): ActionDescriptionBuilder {
+  builder.list("Labels", labels.map(l => l.name)).list("Label IDs", labels.map(l => l.id));
+  if (labels.some(l => isProvisionalLabelId(l.id))) builder.prose(PROVISIONAL_LABEL_NOTE);
+  return builder;
+}
+
+// Names a parent issue by identifier, then gives the exact ID the action sends.
+function describeParent(builder: ActionDescriptionBuilder, parent: NonNullable<RawIssue["parent"]>): ActionDescriptionBuilder {
+  builder.inline("Parent issue", parent.identifier).inline("Parent issue ID", parent.id);
+  if (isProvisionalIssueId(parent.id)) builder.prose(PROVISIONAL_ISSUE_NOTE);
+  return builder;
+}
+
+// Every field the new label will carry. Color and description are sent only when given.
+function describeCreateLabel(team: RawTeam, name: string, options: LinearCreateLabelOptions | undefined): RenderedDescription {
+  const builder = buildDescription(`Create a new label in team ${plainInline(team.key)}.`)
+    .inline("Team ID", team.id)
+    .inline("Name", name);
+  if (options?.color !== undefined) builder.inline("Color", options.color);
+  if (options?.description !== undefined) builder.verbatim("Description", options.description);
+  return builder.finish();
+}
+
+// Every field the new issue will carry, with the agent's values shown in full and the resolved
+// provider objects named beside the exact IDs the create sends.
+function describeCreateIssue(
+  team: RawTeam,
+  options: LinearCreateIssueOptions,
+  provisionalId: string,
+  resolved: {
+    stateObj: RawWorkflowState | null;
+    assigneeObj: RawUser | null;
+    labelObjs: RawLabel[];
+    parentObj: RawIssue["parent"];
+  },
+): RenderedDescription {
+  const builder = buildDescription(`Create a new issue in team ${plainInline(team.key)}.`)
+    .inline("Team ID", team.id)
+    .inline("Provisional ID", provisionalId)
+    .inline("Title", options.title)
+    .verbatim("Description", options.descriptionMarkdown ?? "", "markdown");
+  if (resolved.stateObj) builder.inline("State", resolved.stateObj.name).inline("State ID", resolved.stateObj.id);
+  if (resolved.assigneeObj) describeAssignee(builder, resolved.assigneeObj);
+  if (resolved.labelObjs.length) describeLabels(builder, resolved.labelObjs);
+  if (options.priority) builder.inline("Priority", options.priority);
+  if (options.projectId) builder.inline("Project ID", options.projectId);
+  if (options.dueDate) builder.inline("Due date", options.dueDate);
+  if (resolved.parentObj) describeParent(builder, resolved.parentObj);
+  return builder.finish();
+}
 
 function issueArgs(filter: LinearIssueFilter | undefined): IssuePageArgs {
   return {
@@ -2330,8 +2525,9 @@ async function createIssueViaQueue(
     title: options.title,
     description: options.descriptionMarkdown,
     priority: options.priority ? PRIORITY_TO_NUM[options.priority] : undefined,
-    projectId: options.projectId,
-    dueDate: options.dueDate,
+    // Empty strings are omitted, matching the description's truthiness checks.
+    projectId: options.projectId || undefined,
+    dueDate: options.dueDate || undefined,
   };
 
   // Resolve display objects alongside the ids so the pending issue can be simulated faithfully.
@@ -2366,11 +2562,20 @@ async function createIssueViaQueue(
     projectObj = await gk.getProjectRaw(options.projectId);
   }
   let parentObj: RawIssue["parent"] = null;
+  let parentTeamId: string | undefined;
   if (options.parentId) {
     const parent = await gk.issueRaw(options.parentId);
     input.parentId = parent.id;
     parentObj = { id: parent.id, identifier: parent.identifier, url: parent.url, title: parent.title };
+    parentTeamId = parent.team.id;
   }
+
+  // The description shows the team, state, label and parent names and the assignee's email, so on
+  // a workspace binding the log must only reach observers who may see those teams.
+  await gk.authorizeTeamObservation(queue, [...new Set([teamId, parentTeamId ?? teamId])], {
+    title: "Read team for new issue",
+    description: "Read the team, workflow state, labels, assignee and parent issue named in a new issue.",
+  });
 
   const provisionalId = gk.nextProvisionalIssueId();
   const now = new Date().toISOString();
@@ -2383,7 +2588,7 @@ async function createIssueViaQueue(
     priority: input.priority ?? 0,
     createdAt: now,
     updatedAt: now,
-    dueDate: options.dueDate ?? null,
+    dueDate: options.dueDate || null,
     state: stateObj,
     assignee: assigneeObj,
     labels: { nodes: labelObjs, pageInfo: { hasNextPage: false, endCursor: null } },
@@ -2397,7 +2602,7 @@ async function createIssueViaQueue(
     queue,
     { kind: "createIssue", input, provisionalId, synthetic, title: `Create issue "${options.title}"` },
     { title: `Create issue "${options.title}"`,
-      body: `Create a new issue titled **${options.title}**${options.assignee ? `, assigned to ${options.assignee}` : ""}.`,
+      ...describeCreateIssue(team, options, provisionalId, { stateObj, assigneeObj, labelObjs, parentObj }),
       implementsRevert: true },
   );
 

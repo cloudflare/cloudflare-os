@@ -61,6 +61,9 @@ updates:
       # Exact pins.
       - dependency-name: "temporal-polyfill"
       - dependency-name: "@modelcontextprotocol/client"
+      # 0.0.4 has a known issue; stay on 0.0.3 but still accept any later release.
+      - dependency-name: "diff3"
+        versions: ["0.0.4"]
     groups:
       # Families whose majors have to land as a single pull request.
       cloudflare-toolchain-major:

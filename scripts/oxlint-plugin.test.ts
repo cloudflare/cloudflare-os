@@ -1,14 +1,6 @@
 import { describe, it } from "node:test";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
-import { preferJsdoc } from "./oxlint-plugin.mjs";
-
-const require = createRequire(import.meta.url);
-const vitePlusRequire = createRequire(require.resolve("vite-plus/package.json"));
-// Test against Vite+'s pinned oxlint without adding a second direct dependency that can drift.
-const { RuleTester } = await import(
-  pathToFileURL(vitePlusRequire.resolve("oxlint/plugins-dev")).href,
-);
+import { RuleTester } from "vite-plus/lint/plugins-dev";
+import plugin from "./oxlint-plugin.ts";
 
 RuleTester.describe = describe;
 RuleTester.it = it;
@@ -20,7 +12,7 @@ const ruleTester = new RuleTester({
   },
 });
 
-ruleTester.run("prefer-jsdoc", preferJsdoc, {
+ruleTester.run("prefer-jsdoc", plugin.rules["prefer-jsdoc"], {
   valid: [
     "// Explains an implementation detail.\nconst value = 1;",
     "/** Documents the public value. */\nexport const value = 1;",
@@ -111,6 +103,55 @@ ruleTester.run("prefer-jsdoc", preferJsdoc, {
       code: "export class PublicClass {\n  constructor(\n    // Public state.\n    public value: number,\n  ) {}\n}",
       output: "export class PublicClass {\n  constructor(\n    /** Public state. */\n    public value: number,\n  ) {}\n}",
       errors: [{ messageId: "useJsdoc" }],
+    },
+  ],
+});
+
+ruleTester.run("self-contained-agent-types", plugin.rules["self-contained-agent-types"], {
+  valid: [
+    "export interface Cursor<T> {\n  next(): Promise<T[] | null>;\n}",
+    "interface Cursor<T> {}\nexport type { Cursor };",
+    "import type { RpcTarget } from \"cloudflare:workers\";\nexport interface Session extends RpcTarget {}",
+    "/// <reference lib=\"es2024\" />\nexport interface Session {}",
+    "/**\n * import { Helper } from \"./helper\";\n */\nexport interface Session {}",
+    {
+      code: "import type { ReadSession } from \"./read-types\";\nexport interface Session extends ReadSession {}",
+      options: [{ allow: ["./read-types"] }],
+    },
+  ],
+  invalid: [
+    {
+      code: "import { Cursor } from \"@gadgets/workshop-shared/gatekeeper\";\nexport type { Cursor };",
+      errors: [{ messageId: "moduleReference", data: { source: "@gadgets/workshop-shared/gatekeeper" } }],
+    },
+    {
+      code: "export type { Cursor } from \"@gadgets/workshop-shared/gatekeeper\";",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "export * from \"./other-types\";",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "export type Page = import(\"./other-types\").Page;",
+      errors: [{ messageId: "moduleReference", data: { source: "./other-types" } }],
+    },
+    {
+      code: "import shared = require(\"./shared\");\nexport type Page = shared.Page;",
+      errors: [{ messageId: "moduleReference" }],
+    },
+    {
+      code: "/// <reference types=\"@cloudflare/workers-types\" />\nexport interface Session {}",
+      errors: [{ messageId: "moduleReference", data: { source: "@cloudflare/workers-types" } }],
+    },
+    {
+      code: "/// <reference path=\"./other.d.ts\" />\nexport interface Session {}",
+      errors: [{ messageId: "moduleReference", data: { source: "./other.d.ts" } }],
+    },
+    {
+      code: "import type { A } from \"./a\";\nimport type { B } from \"./b\";",
+      options: [{ allow: ["./a"] }],
+      errors: [{ messageId: "moduleReference", data: { source: "./b" } }],
     },
   ],
 });

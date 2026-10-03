@@ -9,6 +9,11 @@
 // without it.
 
 import type { RpcStub } from "cloudflare:workers";
+import {
+  type ActionDescriptionBuilder,
+  buildDescription,
+} from "@gadgets/gatekeeper-kit/action-description";
+import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
   ConfluenceApi,
@@ -42,16 +47,23 @@ export type ConfluenceAction =
   | { type: "addComment"; contentId: string; text: string }
   | { type: "addLabel"; contentId: string; name: string }
   | { type: "removeLabel"; contentId: string; name: string }
-  | {
-      type: "uploadAttachment";
-      contentId: string;
-      filename: string;
-      mediaType: string;
-      data: Uint8Array;
-      comment?: string;
-    }
+  | UploadAttachmentAction
   | { type: "trash"; contentId: string }
   | { type: "restore"; contentId: string };
+
+/**
+ * The file bytes live in the chunk store until the action is applied or rejected, keeping the
+ * action record itself small. Records queued before that store existed carry them inline as `data`
+ * instead; `ConfluenceStore.readAttachment` still accepts those.
+ */
+export type UploadAttachmentAction = {
+  type: "uploadAttachment";
+  contentId: string;
+  filename: string;
+  mediaType: string;
+  file: ActionFileReference;
+  comment?: string;
+};
 
 export type StoredActionRecord = {
   id: number;
@@ -72,18 +84,30 @@ function actionContentId(action: ConfluenceAction): string | null {
 // ---------------------------------------------------------------------------------------------
 // Store: caching + pending-action storage (backed by the gatekeeper DO's KV storage)
 
-type Kv = DurableObjectStorage["kv"];
+type Storage = Pick<DurableObjectStorage, "kv" | "transactionSync">;
 const CONTENT_TTL_MS = 30_000;
+const MAX_ATTACHMENT_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
+// How long an attachment file may go unreferenced by a pending action before it is swept: long
+// enough that no staging still in flight could be about to reference it.
+const ATTACHMENT_FILE_GRACE_MS = 60 * 60 * 1000;
 
 type ContentCache = { fetchedAt: number; content: ContentResponse };
 
 export class ConfluenceStore {
-  #kv: Kv;
+  #kv: Storage["kv"];
   #api: ConfluenceApi;
+  #files: ActionFileStore;
 
-  constructor(kv: Kv, api: ConfluenceApi) {
-    this.#kv = kv;
+  constructor(storage: Storage, api: ConfluenceApi) {
+    this.#kv = storage.kv;
     this.#api = api;
+    this.#files = new ActionFileStore(storage, {
+      filePrefix: "confluence:actionFile:",
+      allocationPrefix: "confluence:actionFileAllocation:",
+      maxFileBytes: MAX_ATTACHMENT_FILE_BYTES,
+      maxTotalBytes: MAX_ATTACHMENT_TOTAL_BYTES,
+    });
   }
 
   get api(): ConfluenceApi {
@@ -115,7 +139,9 @@ export class ConfluenceStore {
   }
 
   deleteAction(id: number): void {
+    const action = this.getAction(id)?.action;
     this.#kv.delete(`action:${id}`);
+    if (action?.type === "uploadAttachment") this.releaseAttachment(action);
   }
 
   allActions(): StoredActionRecord[] {
@@ -135,6 +161,32 @@ export class ConfluenceStore {
       const t = actionContentId(r.action);
       return t !== null && this.resolveId(t) === target;
     });
+  }
+
+  // --- attachment files ---
+
+  /**
+   * Retains upload bytes for a pending action. Files no pending action references (a staging that
+   * failed after capture, or an apply cut short before releasing them) are swept first, once old
+   * enough that no in-flight staging could still be about to reference them.
+   */
+  captureAttachment(data: Uint8Array): Promise<ActionFileReference> {
+    const referenced = new Set<string>();
+    for (const { action } of this.pendingActions()) {
+      // Legacy inline records have no `file`; nothing of theirs lives in the chunk store.
+      if (action.type === "uploadAttachment" && action.file) referenced.add(action.file.handle);
+    }
+    this.#files.pruneUnreferenced(referenced, Date.now() - ATTACHMENT_FILE_GRACE_MS);
+    return this.#files.capture(data);
+  }
+
+  readAttachment(action: UploadAttachmentAction): Promise<Uint8Array> {
+    const inline = (action as { data?: unknown }).data;
+    return inline instanceof Uint8Array ? Promise.resolve(inline) : this.#files.read(action.file);
+  }
+
+  releaseAttachment(action: UploadAttachmentAction): void {
+    this.#files.delete(action.file);
   }
 
   // --- provisional ID resolution ---
@@ -334,84 +386,120 @@ export function observation(title: string, description: string): ObservationDesc
 
 const kind = (tag: string, label: string): ActionDescription["actionKind"] => ({ tag: `confluence.${tag}`, label });
 
+// Starts a description naming, by ID, the existing content an action writes to or under.
+function onContent(intro: string, contentId: string, label = "Content ID"): ActionDescriptionBuilder {
+  const builder = buildDescription(intro).inline(label, contentId);
+  return ConfluenceStore.isProvisional(contentId)
+    ? builder.prose("An ID starting with `~` names content created by an earlier action in this workspace.")
+    : builder;
+}
+
+// The approver's text, built so every value the agent supplied (bodies, comments, titles, labels)
+// is shown in full in a field, and the completeness claim is the builder's. An uploaded attachment
+// is agent-supplied bytes the approver cannot read as text, so it is named by size and digest and
+// never claims completeness.
 function describeAction(action: ConfluenceAction): ActionDescription {
   switch (action.type) {
-    case "createContent":
+    case "createContent": {
+      const noun = action.kind === "blogpost" ? "blog post" : "page";
+      const { parent } = action;
+      const builder = parent.type === "page"
+        ? onContent(`Create a new ${noun} as a child page.`, parent.parentId, "Parent page ID")
+        : buildDescription(`Create a new ${noun} in a space.`);
+      if (parent.spaceKey !== undefined) builder.inline("Space", parent.spaceKey);
       return {
-        title: `Create Confluence ${action.kind === "blogpost" ? "blog post" : "page"}`,
-        description: `Create a new ${action.kind === "blogpost" ? "blog post" : "page"} titled **${action.title}**` +
-          (action.parent.type === "page" ? " as a child page." : ` in space ${action.parent.spaceKey}.`),
+        title: `Create Confluence ${noun}`,
+        ...builder
+          .inline("Provisional ID", action.provisionalId)
+          .inline("Title", action.title)
+          .inline("Status", action.status)
+          .verbatim("Content", action.content ?? "", "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("createContent", "Create page/blog post"),
       };
+    }
     case "setContent":
       return {
         title: "Replace Confluence page content",
-        description: `Replace the body with:\n\n${truncate(action.markdown)}`,
+        ...onContent("Replace the body with the content below.", action.contentId)
+          .verbatim("Content", action.markdown, "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "appendContent":
       return {
         title: "Append to Confluence page",
-        description: `Append to the body:\n\n${truncate(action.markdown)}`,
+        ...onContent("Append the content below to the body.", action.contentId)
+          .verbatim("Content", action.markdown, "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "setTitle":
       return {
         title: "Rename Confluence content",
-        description: `Change the title to **${action.title}** (was “${action.previousTitle}”).`,
+        ...onContent("Change the title.", action.contentId)
+          .inline("Current title", action.previousTitle)
+          .inline("New title", action.title)
+          .finish(),
         implementsRevert: true,
         actionKind: kind("setTitle", "Rename content"),
       };
     case "addComment":
       return {
         title: "Comment on Confluence content",
-        description: `Post a comment:\n\n${truncate(action.text)}`,
+        ...onContent("Post a comment.", action.contentId).verbatim("Comment", action.text).finish(),
         implementsRevert: true,
         actionKind: kind("addComment", "Add comment"),
       };
     case "addLabel":
       return {
         title: "Add label to Confluence content",
-        description: `Add the label \`${action.name}\`.`,
+        ...onContent("Add a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
         actionKind: kind("label", "Add/remove label"),
       };
     case "removeLabel":
       return {
         title: "Remove label from Confluence content",
-        description: `Remove the label \`${action.name}\`.`,
+        ...onContent("Remove a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
         actionKind: kind("label", "Add/remove label"),
       };
     case "uploadAttachment":
       return {
         title: "Upload attachment to Confluence",
-        description: `Upload **${action.filename}** (${action.mediaType}, ${action.data.byteLength} bytes).`,
+        // The bytes themselves are not shown, so the builder makes no completeness claim.
+        ...onContent("Upload a file as an attachment.", action.contentId)
+          .file("File", {
+            name: action.filename,
+            mediaType: action.mediaType,
+            size: action.file.size,
+            sha256: action.file.digest,
+            origin: "agent",
+          })
+          .verbatim("Comment", action.comment ?? "")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("uploadAttachment", "Upload attachment"),
       };
     case "trash":
       return {
         title: "Move Confluence content to trash",
-        description: "Move this content to the trash (reversible).",
+        ...onContent("Move this content to the trash (reversible).", action.contentId).finish(),
         implementsRevert: true,
         actionKind: kind("trash", "Trash content"),
       };
     case "restore":
       return {
         title: "Restore Confluence content from trash",
-        description: "Restore this content from the trash.",
+        ...onContent("Restore this content from the trash.", action.contentId).finish(),
         implementsRevert: true,
         actionKind: kind("trash", "Trash content"),
       };
   }
-}
-
-function truncate(text: string, max = 2000): string {
-  return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -539,7 +627,9 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
       break;
     case "uploadAttachment": {
       const id = requireResolved(store, action.contentId);
-      const created = await api.uploadAttachment(id, action);
+      const created = await api.uploadAttachment(id, {
+        ...action, data: await store.readAttachment(action),
+      });
       record.createdAttachmentId = created.id;
       store.putAction(record);
       break;
@@ -560,11 +650,15 @@ async function applyAction(store: ConfluenceStore, record: StoredActionRecord): 
   // overlaying it on top of the (refetched) real state.
   record.state = "applied";
   store.putAction(record);
+  if (action.type === "uploadAttachment") store.releaseAttachment(action);
 }
 
 export async function applyStoredAction(store: ConfluenceStore, id: number): Promise<void> {
   const record = store.getAction(id);
   if (!record) throw new Error(`Unknown action: ${id}`);
+  // The Workshop marks its side approved only after this RPC returns, so a restart in between
+  // re-applies an action whose work (and attachment file) is already done and gone.
+  if (record.state === "applied") return;
   await applyAction(store, record);
 }
 

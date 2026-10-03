@@ -512,7 +512,9 @@ class MySessionImpl extends RpcTarget implements MySession {
 
   // Example: action (side effect). Submit for approval; do NOT perform here.
   // Assign a sequential action ID, store the action details in the gatekeeper's
-  // own storage, then submit the ID to the approval queue.
+  // own storage, then submit the ID to the approval queue. If you read current state to build
+  // the description or capture revert info, do NOT log it as an observation: nothing is
+  // returned to the caller.
   async updateData(newValue: string): Promise<void> {
     let actionId = /* assign next sequential ID and store action details */ 0;
 
@@ -543,24 +545,30 @@ class MySessionImpl extends RpcTarget implements MySession {
 }
 ```
 
-## `wrangler.jsonc`
+## `cloudflare.config.ts`
 
-```jsonc
-{
-  "name": "gatekeeper-<name>",
-  "main": "src/<name>.ts",
-  "compatibility_date": "2026-02-02",
-  "compatibility_flags": ["allow_irrevocable_stub_storage"],
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": ["UserAccount", "MyGatekeeperImpl"]
-    }
-  ]
-}
+```typescript
+import {
+  DEFAULT_GATEKEEPER_WRANGLER, OBSERVABILITY, defineGadgetsWorker, type DurableObjectMigration,
+} from "@gadgets/scripts/worker-config";
+
+export default defineGadgetsWorker({
+  name: "gatekeeper-<name>",
+  entrypoint: ".wrangler/validate/src/<name>.ts",
+  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  observability: OBSERVABILITY,
+});
+
+export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
+
+export const migrations: DurableObjectMigration[] = [
+  { tag: "v0", new_sqlite_classes: ["UserAccount", "MyGatekeeperImpl"] },
+];
 ```
 
-Only Durable Object classes go in `new_sqlite_classes`. `MyVerifier` and `MyHookControllerImpl` are `WorkerEntrypoint`s, so they need no migration entry — but, like all entrypoints, they must be `export`ed from the worker's main module (so `ctx.exports.MyVerifier(...)` resolves). If your hook uses a dedicated event-source DO to hold the `initiator`, add that DO here too.
+Run `pnpm configs:generate`; the generated `wrangler.jsonc` is committed and never edited by hand.
+
+Only Durable Object classes go in `new_sqlite_classes`. `MyVerifier` and `MyHookControllerImpl` are `WorkerEntrypoint`s, so they need no `migrations` entry — but, like all entrypoints, they must be `export`ed from the worker's main module (so `ctx.exports.MyVerifier(...)` resolves). If your hook uses a dedicated event-source DO to hold the `initiator`, add that DO here too.
 
 ## Creating the `types.txt` symlink
 
@@ -596,9 +604,18 @@ Add package scripts:
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@gadgets/scripts": "workspace:*"
   }
 }
 ```
+
+`@gadgets/scripts` has to be declared, not just imported. The shared task configs and the
+`gadgets-*` bins that run them belong to that package, and the workspace root depends on it too —
+so its bins are already on `PATH` and a `vite.config.ts` importing it resolves even with no
+declaration here. That is a phantom dependency: it works until this package is built somewhere that
+does not happen to hoist it.
 
 No `build` script: `build` is one of the shared Vite+ tasks below, and vp forbids a task and a
 script sharing a name. Build this one package with `pnpm exec vp run -F <package-name> build` —
@@ -617,12 +634,13 @@ that and silently bake the wrong value into the shipped HTML (do not add either 
 
 ```typescript
 // Vite+ per-package settings. The build:configurator task definition is shared by all gatekeepers
-// with a configurator UI and lives beside the builder it runs.
-export { default } from '../../scripts/gatekeeper-configurator-vite-config.js'
+// with a configurator UI and ships as an export of `@gadgets/scripts`, alongside the builder it
+// runs.
+export { default } from '@gadgets/scripts/gatekeeper-configurator'
 
 // ...or, if the gatekeeper has tests, `withTests` instead: the same settings plus the shared vitest
 // `test` task. Add a `"test:run": "vitest run"` script too, for iterating without the cache.
-export { withTests as default } from '../../scripts/gatekeeper-configurator-vite-config.js'
+export { withTests as default } from '@gadgets/scripts/gatekeeper-configurator'
 ```
 
 Keep tokens and broad API clients out of public `RpcTarget` properties; use closures, `#private`, or `WeakMap` state and expose only narrow read-only helper methods.

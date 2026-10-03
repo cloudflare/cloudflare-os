@@ -10,14 +10,15 @@
     "test:run": "vitest run"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/mcp-shared": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
+    "@gadgets/scripts": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

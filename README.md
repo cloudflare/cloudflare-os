@@ -243,6 +243,6 @@ This policy may change in the future as the project matures. Until then, thank y
 Cloudflare OS has far too many open source dependencies to list here. But, we'd like to highlight a few that do particularly heavy lifting:
 
 * [Pi](https://pi.dev/) (specifically, `pi-agent-core`), which made it easy to support every LLM provider with one API.
-* [Monaco](https://microsoft.github.io/monaco-editor/) which makes it too easy to embed a beautiful text editor -- for those of us who still look at the code.
-* [Yjs](https://yjs.dev/), which we use extensively to sync code changes between clients and agents and replay histories.
+* [CodeMirror](https://codemirror.net/) provides our code editor UI and operational transform implementation for synchronizing real-time edits.
+* [isomorphic-git](https://isomorphic-git.org/) is used to implement the backing storage for Gadget code and integration with external git servers.
 * [Vite](https://vite.dev/), which makes the development loop so pleasant.

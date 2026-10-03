@@ -2,7 +2,7 @@
 // queryable fields. Typed rather than `Record<string, unknown>` so that `ReservedLogField` makes
 // `token`, `secret`, and `prompt` unloggable in a package that holds OAuth tokens.
 
-import type { Logger } from "@gadgets/backend-utils/logger";
+import type { Logger } from "@gadgets/observability/logger";
 import type { ServerTrust } from "./tools.js";
 
 /** Fields an MCP connector may attach to a log line, beyond the reserved ones every logger has. */

@@ -1,13 +1,9 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
   "name": "dev-router",
-  // The router package doubles as the dev router: with no ASSETS binding configured here, it
-  // forwards frontend requests to the backend (see packages/router/src/index.ts), which serves
-  // them from its own assets binding in `run-local` mode.
   "main": "packages/router/src/index.ts",
-  "compatibility_date": "2025-11-01",
-  "compatibility_flags": ["enable_ctx_exports"],
-
-  // Gatekeeper service bindings are dynamically added by run-dev-server.ts.
+  "compatibility_date": "2026-09-04",
   "services": [
     {
       "binding": "WORKSHOP_BACKEND",

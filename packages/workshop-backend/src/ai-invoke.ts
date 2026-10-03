@@ -1,4 +1,4 @@
-import type { Message, Usage } from "@earendil-works/pi-ai";
+import type { Message, ProviderHeaders, Usage } from "@earendil-works/pi-ai";
 import type { ModelHandle } from "./ai-models.js";
 
 /**
@@ -31,23 +31,25 @@ export class AgentTurnError extends Error {
 /**
  * Best-effort HTTP status extraction for a failed request. pi reports provider failures as
  * error text only, and its onResponse callback never fires for a request the SDK failed (so
- * ModelHandle.lastResponse is unset then) -- but the provider SDKs' error messages conventionally
- * begin with the status code (e.g. "400 {...}"), which is enough for the overseer's triage
- * (report 5xx/unknown, skip expected 4xx).
+ * the request's `response` metadata is unset then) -- but the error text conventionally opens
+ * with the status code: bare in the provider SDKs' own messages (e.g. "400 {...}"), and in
+ * parentheses behind the prefix pi's OpenAI adapter adds ("OpenAI API error (400): ..."). Either
+ * is enough for the overseer's triage (report 5xx/unknown, skip expected 4xx). Only the opening
+ * of the text is read, so digits a provider puts elsewhere in it are never taken for a status.
  */
-export function httpStatusFromError(errorMessage: string, handle: ModelHandle)
+export function httpStatusFromError(errorMessage: string, response: ModelHandle["lastResponse"])
     : number | undefined {
-  const match = /^(\d{3})\b/.exec(errorMessage.trim());
-  if (match) return Number(match[1]);
-  return handle.lastResponse?.status;
+  const match = /^(?:(\d{3})\b|OpenAI API error \((\d{3})\))/.exec(errorMessage.trim());
+  if (match) return Number(match[1] ?? match[2]);
+  return response?.status;
 }
 
 /**
  * Run a single non-streaming-style completion against a ModelHandle and return the response
  * text. Used for one-shot calls: title generation, binding naming, compaction summaries, and
- * LanguageModelBinding.run. Always requests thinking off (one-shots should be quick, and none
- * of them benefit from extended thinking; pre-pi, these calls never configured thinking either).
- * Throws AgentTurnError on provider failure, or the abort reason when `signal` fired.
+ * LanguageModelBinding.run. Requests thinking off unless asked (one-shots should be quick, and
+ * none of them benefit from extended thinking; pre-pi, these calls never configured thinking
+ * either). Throws AgentTurnError on provider failure, or the abort reason when `signal` fired.
  */
 export async function completeText(handle: ModelHandle, args: {
   systemPrompt?: string;
@@ -56,6 +58,13 @@ export async function completeText(handle: ModelHandle, args: {
   messages?: Message[];
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Headers for this request alone, beside the handle's own (see ModelHandle.stream). */
+  headers?: ProviderHeaders;
+  /**
+   * When true, the request asks for what an agent's turn on the handle would: its reasoning
+   * level, or its model's built-in request (see ModelStreamOptions.thinking). Default: false.
+   */
+  thinking?: boolean;
 }): Promise<string> {
   const messages: Message[] = args.messages ??
       [{ role: "user", content: args.prompt ?? "", timestamp: Date.now() }];
@@ -65,14 +74,15 @@ export async function completeText(handle: ModelHandle, args: {
   }, {
     maxTokens: args.maxTokens,
     signal: args.signal,
-    thinking: false,
+    headers: args.headers,
+    thinking: args.thinking ?? false,
   });
   const message = await stream.result();
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     // Surface a cancellation as the abort reason, like a directly-aborted request would.
     args.signal?.throwIfAborted();
     const errorMessage = message.errorMessage ?? "The model request failed.";
-    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle));
+    throw new AgentTurnError(errorMessage, httpStatusFromError(errorMessage, handle.lastResponse));
   }
   return message.content
       .filter(block => block.type === "text")

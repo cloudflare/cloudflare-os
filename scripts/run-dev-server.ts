@@ -22,9 +22,11 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
 import { getDevServerConfig } from "./dev-server-config.ts";
+import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
+import { vpRunEnv } from "./vp/concurrency.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
@@ -98,6 +100,10 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
   }
 }
 
+// The committed wrangler.jsonc files are generated from cloudflare.config.ts; regenerate them so a
+// TypeScript edit reaches `pnpm dev-server` without a separate step.
+await generateWorkerConfigs({ check: false });
+
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
 
 // The Context Library (packages/gatekeeper-context) is discovered by findGatekeepers and bound
@@ -162,7 +168,7 @@ function stopDevWatchers(): void {
 process.on("exit", stopDevWatchers);
 
 // Reaches each app watcher's `pnpm exec vite build --watch` grandchild, which a bare kill() on the
-// `node build-app.mjs --watch` wrapper leaves holding CPU and file watches after we are gone. Must
+// `node build-app.ts --watch` wrapper leaves holding CPU and file watches after we are gone. Must
 // not call stopDevWatchers() first: killing a wrapper reparents its children away from it, and the
 // tree walk can no longer find them.
 async function stopDevWatchersDeep(): Promise<void> {
@@ -173,11 +179,37 @@ async function stopDevWatchersDeep(): Promise<void> {
       .map(watcher => watcher.pid ? killProcessTree(watcher.pid).catch(() => {}) : null));
 }
 
+// The single in-flight teardown of each kind. Both shutdown paths join these promises rather than
+// starting their own walk: the escalation below runs *while* the first signal's walk is still
+// going, and two concurrent walks over the same pids would have the second find the tree already
+// reparented. `stopPreflightBuilds` is declared further down but hoisted; these two bindings are
+// deliberately up here, above the signal handlers that reach them, so that a signal arriving during
+// module evaluation cannot find them still in TDZ.
+let devWatchersStopped: Promise<void> | null = null;
+let preflightBuildsStopped: Promise<void> | null = null;
+
+function stopDevWatchersDeepOnce(): Promise<void> {
+  return (devWatchersStopped ??= stopDevWatchersDeep());
+}
+
+// The pre-flight builds have no equivalent of the watchers' `exit` handler, so abandoning this walk
+// leaks the whole `vp`/`vite` subtree under each one with nothing left to catch it -- and a signal
+// during the pre-flight phase is exactly when they are still running.
+function stopPreflightBuildsOnce(): Promise<void> {
+  return (preflightBuildsStopped ??= stopPreflightBuilds());
+}
+
 // Shutdown is driven by Wrangler's exit. Ctrl-C reaches the whole process group, so Wrangler is
 // already tearing down its workerd children and exiting first would orphan them. These handlers
 // disable Node's default exit-on-signal, so a wedged Wrangler would otherwise make Ctrl-C
 // ineffective and leave this process waiting forever -- a second signal or the grace deadline
 // escalates to SIGKILLing Wrangler's whole tree.
+//
+// The signal count is only an impatience shortcut on top of that grace deadline, and it is
+// deliberately left as a plain count rather than trying to tell a repeat interrupt from a fresh
+// one: nothing here can make that distinction (POSIX exposes no `siginfo.si_code` to Node), and
+// once the escalation reaps the watchers rather than abandoning them, it does not need to --
+// escalating early is then merely early, not lossy. See forceKillWrangler.
 const FORCE_KILL_GRACE_MS = 10_000;
 let receivedShutdownSignals = 0;
 let forcingShutdown = false;
@@ -186,6 +218,23 @@ let shutdownExitCode: number | null = null;
 async function forceKillWrangler(exitCode: number): Promise<void> {
   if (forcingShutdown) return;
   forcingShutdown = true;
+  // Both walks are joined, not skipped, and before the exit below. This is the force-kill path, so
+  // the temptation is to exit the moment Wrangler is dead -- but `process.exit()` here abandons
+  // whatever they still had to do, and all that runs afterwards is the `exit` handler's *shallow*
+  // stopDevWatchers(): the bare kill() whose surviving grandchild is the reason the deep walk
+  // exists at all (the pre-flight builds have no backstop even that weak). Two ordinary ways in,
+  // so the walks have to finish on this path too: a second Ctrl-C landing inside the first one's
+  // walk, and -- under a supervisor that forwards to the whole tree (relay-termination.ts) -- one
+  // interrupt arriving twice, since the tty's group broadcast and the relay's forward are
+  // indistinguishable from in here.
+  //
+  // Measured, with the walk widened to what a loaded machine costs: two interrupts 60ms apart left
+  // two orphaned `vite build --watch` processes and their esbuild children behind without this
+  // join, and nothing with it. Unwidened it happens to come out clean either way, because the
+  // SIGKILL walk below is itself slow enough for the abandoned walk to finish underneath it --
+  // which is a coincidence of two tree walks racing, not a guarantee.
+  await stopDevWatchersDeepOnce();
+  await stopPreflightBuildsOnce();
   if (wranglerChild?.exitCode === null && wranglerChild.signalCode === null && wranglerChild.pid) {
     await killProcessTree(wranglerChild.pid, "SIGKILL").catch(() => {});
   }
@@ -201,8 +250,8 @@ async function onShutdownSignal(signal: NodeJS.Signals, exitCode: number): Promi
   // (kill <pid>, IDE stop buttons) reaches only this process, so the pre-flight builds have to be
   // torn down here too and a live Wrangler has to be signalled explicitly -- on the Ctrl-C path
   // the forwarded signal lands during Wrangler's own teardown, which tolerates the repeat.
-  await stopDevWatchersDeep();
-  await stopPreflightBuilds();
+  await stopDevWatchersDeepOnce();
+  await stopPreflightBuildsOnce();
   if (wranglerChild?.exitCode === null) {
     wranglerChild.kill(signal);
     setTimeout(() => forceKillWrangler(exitCode), FORCE_KILL_GRACE_MS).unref();
@@ -232,9 +281,11 @@ async function stopPreflightBuilds(): Promise<void> {
 
 // Run a one-shot build to completion. A promise rather than execFileSync so the pre-flight builds
 // can overlap.
-function runBuild(label: string, command: string, args: string[], cwd: string): Promise<void> {
+function runBuild(
+  label: string, command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", cwd });
+    const child = spawn(command, args, { stdio: "inherit", cwd, env });
     preflightBuilds.add(child);
     child.on("error", error => {
       preflightBuilds.delete(child);
@@ -248,7 +299,7 @@ function runBuild(label: string, command: string, args: string[], cwd: string): 
   });
 }
 
-// Everything Wrangler needs generated before it bundles: the backend's format blueprint module
+// Everything Wrangler needs generated before it bundles: the backend's bundled blueprint module
 // (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
 //
 // The UI groups go through `vp` rather than a loop over `gatekeepers` so they run in parallel and
@@ -262,18 +313,31 @@ function runBuild(label: string, command: string, args: string[], cwd: string): 
 // `build:app:dev` rather than `build:app`: the app watchers cannot skip their own initial build, so
 // this output is rebuilt regardless, and unless the bytes match Wrangler sees `src/generated/app.txt`
 // change and restarts the worker. Same build, unminified.
+//
+// The two `vp` runs, listed so the concurrency split below is derived from their number rather than
+// from a literal that a third would silently invalidate. Both share the one machine-aware limit
+// (vp/concurrency.ts), divided between them: each run alone would otherwise claim the whole budget,
+// and the two together twice it. Floored at vp's default of 4, so a small machine is unchanged and a
+// big one stops double-claiming. Computed once, so the note prints once, and after `loadDevVars()`
+// so a `.dev.vars` override is honoured.
+const VP_PREFLIGHT_BUILDS = [
+  {
+    label: "configurator UIs",
+    args: ["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"],
+  },
+  { label: "gatekeeper app UIs", args: ["exec", "vp", "run", "-r", "--cache", "build:app:dev"] },
+];
+const vpEnv = vpRunEnv({ concurrentRuns: VP_PREFLIGHT_BUILDS.length });
 try {
   await Promise.all([
     runBuild(
-      "format blueprints",
+      "bundled blueprints",
       process.execPath,
-      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.mjs")],
+      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-bundled-blueprints.ts")],
       WORKSHOP_BACKEND_DIR,
     ),
-    runBuild("configurator UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:configurator", "--dev"]), ROOT),
-    runBuild("gatekeeper app UIs",
-        ...pnpmCommand(["exec", "vp", "run", "-r", "--cache", "build:app:dev"]), ROOT),
+    ...VP_PREFLIGHT_BUILDS.map(({ label, args }) =>
+        runBuild(label, ...pnpmCommand(args), ROOT, vpEnv)),
   ]);
 } catch (err) {
   // The SIGTERM handler killing the builds also lands here, as the rejection of whichever build
@@ -304,18 +368,18 @@ for (const gk of gatekeepers) {
     );
   }
 
-  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.mjs).
+  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.ts).
   //
   // Deferred until Wrangler is listening: unlike the configurator watcher, `vite build --watch`
   // cannot skip its initial build, and these are the largest builds in the repo, so running them now
   // takes cores from the worker bundles Wrangler is building concurrently. Nothing needs them sooner
   // -- the pre-flight already wrote the `app.txt` they will produce -- and Vite reads the disk when
   // it finally starts, so an edit made while the server was coming up is still picked up.
-  if (existsSync(join(gk.dir, "build-app.mjs"))) {
+  if (existsSync(join(gk.dir, "build-app.ts"))) {
     deferredWatchers.push(() => spawnDevWatcher(
       `app UI watcher for ${gk.name}`,
       process.execPath,
-      [join(gk.dir, "build-app.mjs"), "--watch"],
+      [join(gk.dir, "build-app.ts"), "--watch"],
     ));
   }
 }
@@ -415,6 +479,8 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-zoominfo": { id: "ZOOMINFO_CLIENT_ID", secret: "ZOOMINFO_CLIENT_SECRET" },
   "gatekeeper-confluence": { id: "CONFLUENCE_CLIENT_ID", secret: "CONFLUENCE_CLIENT_SECRET" },
   "gatekeeper-slack": { id: "SLACK_CLIENT_ID", secret: "SLACK_CLIENT_SECRET" },
+  "gatekeeper-linear": { id: "LINEAR_CLIENT_ID", secret: "LINEAR_CLIENT_SECRET" },
+  "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
@@ -427,7 +493,7 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
 const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-mcp-portal": [
     "MCP_PORTAL_URL", "MCP_PORTAL_NAME", "MCP_PORTAL_AUTH", "MCP_PORTAL_TOKEN",
-    "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_ALLOW_INSECURE",
+    "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_PORTAL_HIDDEN_SERVER_IDS", "MCP_ALLOW_INSECURE",
   ],
   "gatekeeper-mcp": ["MCP_ALLOW_INSECURE"],
 };
@@ -492,6 +558,15 @@ for (const gk of gatekeepers) {
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
   for (const name of OPTIONAL_FEATURE_VARS) {
     if (process.env[name] !== undefined) config.vars[name] = process.env[name];
+  }
+
+  // Account connect flows post their completion ticket to the Workshop *origin* named here (see
+  // packages/workshop-backend/src/connect-handoff.ts), so the backend refuses to complete one without
+  // it. Default to wherever the frontend is served from: Vite in normal dev, the backend itself in
+  // run-local mode.
+  if (config.vars.PUBLIC_BASE_URL === undefined) {
+    config.vars.PUBLIC_BASE_URL =
+        serveFrontendAssets ? `http://${backendHost}` : "http://localhost:3000";
   }
 
   for (const gk of gatekeepers) {
@@ -569,7 +644,15 @@ wranglerChild.on("error", err => {
 wranglerChild.on("exit", async (code, signal) => {
   // The crash path: Wrangler died on its own, so nothing has signalled the watchers and this handler
   // is what tears them down.
-  await stopDevWatchersDeep();
+  //
+  // `…Once()`, not `stopDevWatchersDeep()` directly: on every *signalled* shutdown this handler also
+  // runs -- Wrangler exits because it was signalled -- and it then runs concurrently with the walk
+  // `onShutdownSignal` already started. A second walk over the same pids is the failure the memo
+  // exists to prevent (see it above): the first walk's kills reparent the watchers' children, so the
+  // second walk's `collectTree` finds a tree that is no longer there. Joining also makes the
+  // `process.exit` below safe, since it can no longer fire while `forceKillWrangler` is still
+  // awaiting the same walk.
+  await stopDevWatchersDeepOnce();
   // The output was already shown via stdio: "inherit". A signal-initiated shutdown reports the
   // initiating signal's status; only when Wrangler died on its own is its status propagated.
   process.exit(shutdownExitCode ?? (signal ? 128 + (constants.signals[signal] ?? 0) : code ?? 1));

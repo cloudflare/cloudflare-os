@@ -8,8 +8,8 @@ This package provides Google OAuth integration for Gadgets. It serves two purpos
   which becomes the user's identity.
   The sign-in grant is transient (discarded right after the email is read).
 - **Connections:** when a user connects Google (or signs in and later connects it), the scopes for
-  the selected resources (Gmail, Docs, Sheets, Calendar, or BigQuery — see below) are requested so
-  gadgets can access those APIs on the user's behalf.
+  the selected resources (Gmail, Docs, Sheets, Drive, Calendar, or BigQuery — see below) are requested
+  so gadgets can access those APIs on the user's behalf.
 
 A single Google OAuth client is used for both. Set it up as follows.
 
@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Calendar, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, Google Chat, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -50,8 +50,10 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 17. Go back to the Library, search for "BigQuery API"
 18. Click on **BigQuery API** in the results
 19. Click **Enable**
+20. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
+21. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
 
-The Google Drive API is used only to search and display document and spreadsheet metadata in the resource pickers. Document reads and edits still go through the Google Docs API, and spreadsheet reads go through the Google Sheets API.
+The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -74,11 +76,12 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for Google Docs reads and edits.
-- `drive.metadata.readonly` so the resource pickers can search Google Docs and Sheets by title.
-- `spreadsheets.readonly` to read metadata and cell values from selected Google spreadsheets.
+- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
+- `drive.metadata.readonly` for the Docs, Sheets, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
+- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
+- `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
 
 ### Step 4: Test Users
@@ -135,15 +138,62 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive Account, Google Drive Folder, Google Drive File, Google Calendar, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, project, dataset, or table to connect.
+10. Use the picker to choose the mailbox scope, document, folder, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Worker Preview OAuth callbacks
+
+Deployments using Worker Preview hostnames can register one stable Google callback and relay the
+result to the preview that initiated authorization. Configure the stable Worker and its previews
+with the same `OAUTH_STATE_SIGNING_SECRET` and `OAUTH_ALLOW_PREVIEW_REDIRECTS=true`. Set the fixed
+redirect only on previews:
+
+```text
+OAUTH_REDIRECT_URI=https://gatekeeper-google.example.workers.dev/oauth
+```
+
+Register `OAUTH_REDIRECT_URI` as the authorized redirect URI in Google. The preview sends that fixed
+URI to Google and carries its own callback in signed, short-lived OAuth state. The stable Worker
+accepts return URLs only on its `<preview>-<worker>.<workers.dev>` hosts and forwards only the OAuth
+result and state. Normal deployments should omit these settings and continue using
+`${BASE_URL}/oauth` directly.
+
+Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
+stores baseline and Preview secrets separately, so provision the same signing value in both places.
+
+## Known limitations
+
+Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
+causing tab listing, content reads, and edits to fail.
+
+## Google Drive read-only bindings
+
+Drive exposes three permanent resource URL forms:
+
+- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: any ID the account token resolves is in scope. Listings use `corpora=user`, which Google defines as My Drive items the account created or opened plus items shared directly with it, so a shared drive's contents may be readable by ID without appearing in a listing. Bind a folder or file when this authority is too broad.
+- `https://drive.google.com/drive/folders/<folderId>` selects one folder or shared-drive root.
+- `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
+
+The folder picker is one search over `corpora=allDrives`, which spans My Drive, "Shared with me", and every shared drive the account is a member of. It runs on the baseline `drive.metadata.readonly` grant and asks for no broader scope. It returns a single provider page of suggestions, so it is an interactive search rather than an exhaustive enumeration: a known folder or shared-drive root that does not surface can still be connected by supplying its `https://drive.google.com/drive/folders/<folderId>` URL, which opens the picker prefilled. Folders whose children the account cannot list are not offered, and a search Google reports as incomplete fails rather than presenting partial results as complete.
+
+A folder URL carrying `?resourcekey=` is not supported: the key is dropped, and the binding then fails with a Drive 404 for anyone whose access to that folder comes from the link rather than from a direct grant. Google requires resource keys only for items shared by link before September 2021, and only for link-access users — an owner or anyone granted access directly is unaffected, even when the URL they paste happens to carry a key. Such a folder needs direct access to connect.
+
+The agent-facing `GoogleDriveReadSession` covers account and exact-file bindings. `GoogleDriveFolderSession` is positioned at the selected root and exposes only its current folder's direct children: `list()`, provider-side structured `search()`, `getEntry()`, native Doc/Sheet opens, and `openFolder()` for one live direct child. Listing and search return disposable RPC cursors; child folders and native content sessions are independently disposable capabilities. There is no built-in recursive folder search, traversal pager, raw Drive `q`, file write, shortcut traversal, arbitrary download/export, or Workers AI extraction.
+
+Every folder operation revalidates the selected root and the root-to-current path. A root carrying a `driveId` uses `corpora=drive`; other folders use `corpora=user`. That drive corpus requires membership of the shared drive, so a folder shared directly with a non-member connects and then fails every listing with `teamDriveMembershipRequired` — such a folder needs drive membership, not just folder access. Listing and search always carry a direct-parent predicate, so indexed content, descriptions, and OCR match only immediate children. `search()` accepts up to 50 `childFolderIds` to search inside named direct child folders instead of the positioned one: each is proved a listable direct child in a single batched check, revalidated on every page, and one request then covers them all, so polling many sibling folders no longer costs a request each. That request names every folder in one query, which is what the cap bounds, and it records every named folder as an observation — so one that later stops being listable fails collaborator admission for the whole set, where opening folders individually keeps each disclosure independent. `openFolder()` appends one validated direct-child edge to a new capability without changing the parent capability.
+
+Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`, `documents.readonly`, and `spreadsheets.readonly`. A broader `drive.readonly` or `drive` grant the account already holds covers those requirements, but is never requested here. Existing metadata-only connections are prompted to expand before native content reads are considered granted.
+
+Drive observations are typed as files or listable folders. A folder operation observes its positioned folder path plus each disclosed direct child, and native reads observe the file independently. Before a collaborator opens the workspace, the gatekeeper requires their own explicit Drive resource consent and rechecks remembered units with fresh batched metadata reads; folder units must still be live listable folders. Hidden rejected candidates are not disclosed or remembered.
+
+A search that exhausts with no match is owner-relative and cannot be verified against a file. That read is audited, withheld from current observers, and permanently closes later sharing only after the positioned folder path is revalidated. Intermediate empty provider pages do not trigger the restriction.
 
 ## Troubleshooting
 

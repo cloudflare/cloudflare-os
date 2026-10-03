@@ -28,19 +28,61 @@
   font-size: 0.85em;
 }
 
+.codeBlock {
+  position: relative;
+  margin: 0.5em 0;
+}
+
 .markdownContent pre {
   background-color: var(--color-kumo-elevated);
   border: 1px solid var(--color-kumo-line);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 10px 44px 10px 12px;
   overflow-x: auto;
-  margin: 0.5em 0;
+  margin: 0;
 }
 .markdownContent pre code {
   background: none;
   color: var(--text-color-kumo-default);
   padding: 0;
   font-size: 0.8em;
+}
+
+.codeCopyButton {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  padding: 4px;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 5px;
+  background-color: var(--color-kumo-base);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-color-kumo-default) 20%, transparent);
+  color: var(--text-color-kumo-subtle);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out,
+    box-shadow 150ms ease-out, color 150ms ease-out, opacity 150ms ease-out,
+    transform 100ms ease-out;
+}
+
+.codeCopyButton:hover,
+.codeCopyButton:focus-visible {
+  background-color: var(--color-kumo-tint);
+  border-color: var(--color-kumo-fill);
+  color: var(--text-color-kumo-default);
+  opacity: 1;
+}
+
+.codeCopyButton:active {
+  box-shadow: none;
+  transform: translateY(1px);
+}
+
+.codeCopyButton:focus-visible {
+  outline: 2px solid var(--color-kumo-brand);
+  outline-offset: 1px;
 }
 
 .markdownContent ul,
@@ -98,21 +140,6 @@
 }
 .markdownContent img { max-width: 100%; height: auto; }
 
-/* ── Chat input ───────────────────────────────────────────────────────────── */
-.chatInputRoot {
-  container-type: inline-size;
-}
-
-.attachLabelText {
-  display: inline;
-}
-
-@container (max-width: 460px) {
-  .attachLabelText {
-    display: none;
-  }
-}
-
 /* ── Streaming placeholder ────────────────────────────────────────────────── */
 .thinkingShimmer {
   color: var(--text-color-kumo-inactive);
@@ -152,13 +179,6 @@
   border-radius: 3px;
   font-family: var(--font-mono, monospace);
   font-size: 0.85em;
-}
-
-/* ── Composer text ────────────────────────────────────────────────────────── */
-/* Stacks the textarea over the mirror that paints its text (see ComposerMirror.module.css). */
-.capsuleInputWrapper {
-  position: relative;
-  flex: 1;
 }
 
 /* ── Capsule in messages ──────────────────────────────────────────────────── */

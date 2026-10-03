@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPortalServerHidden,
   isPortalToolGrantable,
   portalCatalogValidationMode,
   portalResource,
@@ -8,6 +9,7 @@ import {
   portalTokenFor,
   portalTrust,
   readPortalConfig,
+  requirePortalServerVisible,
   requirePortalServerScope,
   toolGrantOptions,
 } from "../src/config.js";
@@ -202,6 +204,27 @@ describe("portal catalog validation", () => {
     expect(isPortalToolGrantable("github_search", "github")).toBe(true);
     expect(isPortalToolGrantable("linear_search", "github")).toBe(false);
     expect(isPortalToolGrantable("portal_toggle_servers", "portal")).toBe(false);
+  });
+});
+
+describe("portal server visibility", () => {
+  const configured = env({
+    MCP_PORTAL_HIDDEN_SERVER_IDS: " jira-mcp-server, wiki-mcp-server ,,",
+  });
+
+  it("matches configured portal server ids exactly", () => {
+    expect(isPortalServerHidden(configured, "jira-mcp-server")).toBe(true);
+    expect(isPortalServerHidden(configured, "wiki-mcp-server")).toBe(true);
+    expect(isPortalServerHidden(configured, "jira")).toBe(false);
+    expect(isPortalServerHidden(configured, "JIRA-MCP-SERVER")).toBe(false);
+    expect(isPortalServerHidden(configured, "")).toBe(false);
+    expect(isPortalServerHidden(env(), "jira-mcp-server")).toBe(false);
+  });
+
+  it("refuses hidden servers at the grant boundary", () => {
+    expect(() => requirePortalServerVisible(configured, "jira-mcp-server"))
+      .toThrow(/native connector/);
+    expect(() => requirePortalServerVisible(configured, "gitlab-mcp-server")).not.toThrow();
   });
 });
 

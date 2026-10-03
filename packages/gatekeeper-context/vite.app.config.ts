@@ -9,7 +9,7 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 
 const pkgDir = dirname(fileURLToPath(import.meta.url))
 
-// `--watch` drives the `pnpm dev-server` hot loop (via build-app.mjs); one-shot build otherwise.
+// `--watch` drives the `pnpm dev-server` hot loop (via build-app.ts); one-shot build otherwise.
 const isWatch = process.argv.includes('--watch')
 
 // Minification is the only thing that differs between the watch build and the one-shot build, so
@@ -39,7 +39,7 @@ function emitAppText(frontendErrorReporting: boolean): Plugin {
       }
       const outFile = resolve(pkgDir, 'src', 'generated', 'app.txt')
       const contents =
-        `<!-- Generated from packages/gatekeeper-context/app by build-app.mjs. Do not edit. -->\n` + html
+        `<!-- Generated from packages/gatekeeper-context/app by build-app.ts. Do not edit. -->\n` + html
       if (existsSync(outFile) && readFileSync(outFile, 'utf8') === contents) {
         console.log(`app.txt unchanged (${(html.length / 1024).toFixed(0)} KiB), skipping write`)
         return

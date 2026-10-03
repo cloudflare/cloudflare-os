@@ -2,13 +2,80 @@
  * A GitHub repository.
  *
  * A GitHub repo is a Git repo *plus* issues, pull requests, etc.
+ *
+ * Git-level access works in terms of commit ids: use `listBranches()`, `listTags()`,
+ * `listCommits()`, `resolveRef()`, or `getCommit()` to discover commit ids, then mount a commit
+ * as a worktree (see the `createWorktree` tool) to read or edit the files it contains. The
+ * repository's file *content* is not readable through this interface directly.
  */
 export interface GitHubRepo {
-  // TODO: Add methods to access code. Maybe represent that as `GitRepository`. For now we only
-  //   expose issues and PRs.
-
   /** Returns basic metadata about the repository. */
   getMetadata(): Promise<GitHubRepoMetadata>;
+
+  /**
+   * Lists branches in this repository.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listBranches(options?: GitHubBranchFilter): Promise<Cursor<GitHubBranchSummary>>;
+
+  /**
+   * Lists tags in this repository.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listTags(options?: GitHubPageOptions): Promise<Cursor<GitHubTagSummary>>;
+
+  /**
+   * Resolves a ref to a full commit id, without fetching the commit's details.
+   *
+   * `ref` may be a full commit id, an unambiguously truncated commit id, a branch name, or a tag
+   * name; it defaults to the default branch, so `resolveRef()` with no argument answers "what
+   * commit is the repository currently at?". This is much cheaper than `getCommit()` -- prefer
+   * it when all you need is the commit id, e.g. to mount a worktree or to resolve a truncated
+   * id mentioned in a code comment, a commit message, or a CI log.
+   */
+  resolveRef(ref?: string): Promise<string>;
+
+  /**
+   * Looks up a single commit.
+   *
+   * `ref` may be a full commit id, an unambiguously truncated commit id, a branch name, or a tag
+   * name; it defaults to the default branch, whose latest commit is then returned. If you only
+   * need the commit id, use `resolveRef()` instead, which is much cheaper.
+   */
+  getCommit(ref?: string): Promise<GitHubCommitDetails>;
+
+  /**
+   * Lists this repository's commit history, newest first, starting from `options.ref` (the
+   * default branch when omitted).
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listCommits(options?: GitHubCommitFilter): Promise<Cursor<GitHubCommitSummary>>;
+
+  /**
+   * Pushes a commit to a branch, setting the branch's head to `commitId` -- the way commits made
+   * in a worktree get to GitHub. The branch is created if it does not exist.
+   *
+   * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
+   * and the commit's history must be locally available down to a commit that came from this
+   * repository -- which is automatic for commits authored in a worktree mounted from a commit of
+   * this repository.
+   *
+   * Without `force`, the push must be a fast-forward: the branch's current head must be an
+   * ancestor of `commitId`. If the branch has moved past the head your work was based on, the
+   * push fails with an error saying so; pull the new head and rebase, or pass `force: true` to
+   * overwrite the branch (which may discard others' commits -- prefer rebasing).
+   *
+   * To open a pull request for newly pushed work: `push(branch, commitId)` to a new branch, then
+   * `createPullRequest({head: branch, base: ...})` -- immediately is fine; the pull request will
+   * reflect the pushed commits.
+   */
+  push(branch: string, commitId: string, options?: { force?: boolean }): Promise<void>;
 
   /**
    * Creates a new issue in this repository.
@@ -29,6 +96,11 @@ export interface GitHubRepo {
    * number. You can reference it in other content using `#~1` syntax; these references
    * are automatically rewritten to the real `#number` once the PR is created. The
    * returned object is fully functional in the meantime.
+   *
+   * To create a pull request from a commit you made (e.g. in a worktree), first `push()` the
+   * commit to a new branch, then create the pull request with that branch as `head` -- the two
+   * calls may be made back to back. Both `head` and `base` must name branches that exist (or
+   * that you have just pushed); otherwise this call fails immediately.
    */
   createPullRequest(options: GitHubCreatePullRequestOptions): Promise<GitHubPullRequest>;
 
@@ -153,6 +225,21 @@ export interface GitHubPullRequest extends GitHubIssue {
    */
   replyToDiffComment(commentId: string, bodyMarkdown: string): Promise<void>;
 
+  /**
+   * Lists the commits that make up this pull request, oldest first.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listCommits(options?: GitHubPageOptions): Promise<Cursor<GitHubCommitSummary>>;
+
+  /**
+   * Returns the commit id of the pull request's merge base: the common ancestor of its head and
+   * base branches that its diff is computed against. To review the changes in a worktree, mount
+   * the pull request's head commit and diff it against this commit.
+   */
+  getMergeBase(): Promise<string>;
+
   /** Merges the pull request. */
   merge(options?: GitHubPullRequestMergeOptions): Promise<void>;
 }
@@ -177,6 +264,8 @@ export type GitHubRepoRef = {
 export type GitHubRepoMetadata = GitHubRepoRef & {
   description?: string;
   visibility: "public" | "private" | "internal";
+  /** Name of the repository's default branch (e.g. `"main"`). */
+  defaultBranch: string;
 }
 
 /** A GitHub label attached to an issue or pull request. */
@@ -254,6 +343,64 @@ export type GitHubPullRequestDetails = GitHubIssueDetails & GitHubPullRequestSum
   changedFiles: number;
 }
 
+/** A branch returned by `GitHubRepo.listBranches()`. */
+export type GitHubBranchSummary = {
+  name: string;
+  /** Commit id of the branch's current head. */
+  headCommit: string;
+  /** Whether the branch is covered by a branch protection rule. */
+  protected: boolean;
+}
+
+/** A tag returned by `GitHubRepo.listTags()`. */
+export type GitHubTagSummary = {
+  name: string;
+  /** Commit id the tag points at. */
+  commit: string;
+}
+
+/** The author or committer of a commit, as recorded in the commit itself. */
+export type GitHubCommitIdentity = {
+  name?: string;
+  email?: string;
+  date?: Date;
+}
+
+/**
+ * A commit, as returned from commit lookups and history enumeration.
+ *
+ * `id` is the commit's full git commit id. Commit ids may be used anywhere the system accepts
+ * one -- most notably, a commit can be mounted as a worktree (see the `createWorktree` tool) to
+ * read or edit the files it contains, and commit ids created on such a worktree can be passed
+ * back into this gatekeeper's APIs.
+ */
+export type GitHubCommitSummary = {
+  /** The full git commit id (40 hex digits). */
+  id: string;
+  /** The full commit message. The first line is conventionally a short summary. */
+  message: string;
+  /** Who wrote the change, per the commit itself. */
+  author: GitHubCommitIdentity;
+  /** Who created the commit, per the commit itself (differs from `author` after e.g. a rebase). */
+  committer: GitHubCommitIdentity;
+  /** The GitHub account of the author, when GitHub can determine one. */
+  authorAccount: GitHubActor | null;
+  /** Commit ids of this commit's parents: empty for a root commit, two or more for a merge. */
+  parents: string[];
+  /** The github.com web page where this commit can be viewed in a browser. */
+  url: string;
+}
+
+/** Full commit details returned by `GitHubRepo.getCommit()`. */
+export type GitHubCommitDetails = GitHubCommitSummary & {
+  /** Line counts across the commit's whole diff, when GitHub reports them. */
+  stats?: {
+    additions: number;
+    deletions: number;
+    total: number;
+  };
+}
+
 /**
  * A pagination cursor.
  *
@@ -307,6 +454,29 @@ export type GitHubPullRequestSearch = GitHubPageOptions & {
   assignee?: string;
 }
 
+/** Filters for listing branches. */
+export type GitHubBranchFilter = GitHubPageOptions & {
+  /** When set, return only protected (`true`) or only unprotected (`false`) branches. */
+  protected?: boolean;
+}
+
+/** Filters for listing commit history. */
+export type GitHubCommitFilter = GitHubPageOptions & {
+  /**
+   * Where to start listing from: a branch name, tag name, or commit id. History is enumerated
+   * newest-first from here. Defaults to the repository's default branch.
+   */
+  ref?: string;
+  /** Only commits touching the given file or directory path. */
+  path?: string;
+  /** Only commits whose author matches the given GitHub login or email address. */
+  author?: string;
+  /** Only commits dated after this time. */
+  since?: Date;
+  /** Only commits dated before this time. */
+  until?: Date;
+}
+
 export type GitHubIssueState = "open" | "closed";
 
 export type GitHubReviewDecision = "comment" | "approve" | "requestChanges";
@@ -351,14 +521,22 @@ export type GitHubPullRequestDiffFile = {
   status: "added" | "modified" | "removed" | "renamed" | "copied";
   additions: number;
   deletions: number;
+  /** True when the patch is not included (e.g. binary files, very large files or diffs). */
   diffOmitted?: boolean;
   hunks: GitHubPullRequestDiffHunk[];
 }
 
 /** Identifies the specific revision of a pull request diff. */
 export type GitHubPullRequestRevision = {
+  /** Commit id of the base branch's head. Note that the diff is *not* computed against this
+   *  commit -- see `mergeBaseSha`. */
   baseSha: string;
+  /** Commit id of the pull request's head: the last commit in the pull request. */
   headSha: string;
+  /** Commit id of the merge base -- the common ancestor of `headSha` and `baseSha` that the
+   *  diff is computed against. To review the changes in a worktree, mount `headSha` and diff it
+   *  against this commit. Omitted only when the merge base could not be determined. */
+  mergeBaseSha?: string;
 }
 
 /** A pull request diff pinned to a specific revision. */

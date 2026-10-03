@@ -1,0 +1,1085 @@
+import type { RpcPromise, RpcStub } from "capnweb";
+import type {
+  ActionHistoryFilter, ActionHistoryPage, AiChatAuthorInfo, AiChatHistoryPage, AiChatMessage,
+  AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiModelConfig, AuthenticatedApi, GadgetClient,
+  Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
+} from "@gadgets/workshop-shared/api";
+import type { CodeChange } from "@gadgets/workshop-shared/code-change";
+import {
+  type ConnectedAccount, connect, listConnectedAccounts, logIn, nextUsernames, signUp, stubFor,
+  waitFor, RpcTarget,
+} from "./rpc-client.js";
+
+const DEFAULT_TURN_TIMEOUT_MS = 40_000;
+const CANCELLATION_TIMEOUT_MS = 15_000;
+const PENDING_RPC_GRACE_MS = 5_000;
+const RECONNECT_TIMEOUT_MS = 30_000;
+const RECONNECT_INITIAL_BACKOFF_MS = 250;
+
+type UserModel = {
+  profile: AiChatAuthorInfo;
+  config: AiModelConfig;
+};
+export type AgentTurnOptions = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
+/** Configuration for one fresh local Workshop account and workspace. */
+export type AgentSessionOptions = {
+  modelId: string;
+  userModel?: UserModel;
+  ambientVendorIds?: readonly string[];
+  usernamePrefix?: string;
+  turnTimeoutMs?: number;
+  costAccountingTimeoutMs?: number;
+};
+
+/** How one observed agent activation ended. */
+export type AgentTurnOutcome =
+  | { status: "completed" }
+  | { status: "error"; message: string; code?: string }
+  | { status: "timedOut"; message: string }
+  | { status: "cancelled"; message: string };
+
+/**
+ * One model step's prompt tokens: how far the chat's running totals moved when the Workshop
+ * recorded the step.
+ */
+export type StepUsage = {
+  /** The sequence of the newest agent message the counts cover. */
+  sequence: number;
+  /** Prompt tokens the provider neither read from nor wrote to its prompt cache. */
+  uncachedTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /**
+   * How many agent messages the counts cover, present only when that is not one: a reconnect's
+   * catch-up delivers the totals of every step it replays at once.
+   */
+  modelSteps?: number;
+};
+
+/** Canonical state observed after one agent activation ends. */
+export type AgentTurnResult = {
+  outcome: AgentTurnOutcome;
+  history: AiChatMessage[];
+  workpieces: WorkpieceSummary[];
+  usage: {
+    lastStepTokens?: number;
+    observedCumulativeChatCostUsd?: number;
+    /** The chat's running prompt-token total, cache reads and writes included. */
+    cumulativePromptTokens?: number;
+    /** How many of those the provider read from its prompt cache. */
+    cumulativeCacheReadTokens?: number;
+    /** How many of those the provider wrote to its prompt cache. */
+    cumulativeCacheWriteTokens?: number;
+    /** Every model step of the chat so far, oldest first. */
+    steps?: StepUsage[];
+  };
+};
+
+/** Filters accepted by the public action-history API. */
+export type ActionListOptions = { beforeId?: number; filter?: ActionHistoryFilter };
+
+/** Gadget client and chat branch needed to connect to provisional agent code. */
+export type ProvisionalGadget = { client: RpcStub<GadgetClient>; chatId: number };
+
+/**
+ * Drives a fresh local Workshop account and workspace through the public Cap'n Web API.
+ * `runTurn()` observes one active-to-idle agent activation. It does not claim that late callbacks
+ * have settled; tests that trigger an approval continuation must use `approveActionsAndWait()`.
+ */
+export interface WorkshopAgentSession extends AsyncDisposable {
+  readonly username: string;
+  /** How many times the connection to the Workshop has dropped since the session opened. */
+  readonly connectionDrops: number;
+  runTurn(prompt: string, options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  approveActionsAndWait(
+      ids: readonly [number, ...number[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
+  connectedAccount(vendorId: string): ConnectedAccount;
+  openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
+  acceptChanges(): Promise<void>;
+  /** Rewind the chat's proposed changes from the given "changes" message on (see Overseer). */
+  revertChanges(revertFrom: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+type PendingTurnEvent =
+  | { type: "metadata"; chat: AiChatMetadata; latestSequence: number }
+  | { type: "message"; entry: AiChatMessage };
+
+class TurnObserver {
+  readonly result: Promise<AgentTurnOutcome>;
+  readonly timeoutFailure: Promise<never>;
+  #resolveResult: (outcome: AgentTurnOutcome) => void = () => {};
+  #rejectTimeout: (error: Error) => void = () => {};
+  #chatId: number | undefined;
+  #pendingEvents: PendingTurnEvent[] = [];
+  readonly #expectedPrompt: string | undefined;
+  readonly #dispatchedAfter: number;
+  #promptSeen: boolean;
+  #deferredMetadata: { chat: AiChatMetadata; latestSequence: number } | undefined;
+  #sawActive = false;
+  // Evidence the turn ran while no session was observing it (see WorkshopAgentSessionImpl's
+  // reconnect): the chat subscription's catch-up replays the agent's messages, and it may deliver
+  // the chat's idle metadata before or after them.
+  #agentReplied = false;
+  #idle: boolean | undefined;
+  #error: {
+    outcome: Extract<AgentTurnOutcome, { status: "error" }>;
+    sequence: number;
+  } | undefined;
+  #startSequence = -1;
+  #endSequence: number | undefined;
+  #outcome: AgentTurnOutcome | undefined;
+  #timer: ReturnType<typeof setTimeout>;
+  readonly #signal: AbortSignal | undefined;
+  readonly #onAbort = () => {
+    const message = "Agent activation was cancelled";
+    this.#finish({ status: "cancelled", message });
+    this.#rejectTimeout(new Error(message));
+  };
+
+  constructor(
+      chatId: number | undefined, timeoutMs: number, signal?: AbortSignal,
+      expectedPrompt?: string, holdUntilAdmitted = false, dispatchedAfter = -1) {
+    this.#chatId = chatId;
+    this.#signal = signal;
+    this.#expectedPrompt = expectedPrompt;
+    // A replayed earlier turn may carry the same prompt text; only a message newer than everything
+    // known before this dispatch can be this turn's prompt.
+    this.#dispatchedAfter = dispatchedAfter;
+    this.#promptSeen = expectedPrompt === undefined && !holdUntilAdmitted;
+    const result = Promise.withResolvers<AgentTurnOutcome>();
+    this.result = result.promise;
+    this.#resolveResult = result.resolve;
+    const timeout = Promise.withResolvers<never>();
+    this.timeoutFailure = timeout.promise;
+    this.#rejectTimeout = timeout.reject;
+    this.timeoutFailure.catch(() => {});
+    this.#timer = setTimeout(() => {
+      const message = `Timed out after ${timeoutMs}ms waiting for the agent activation`;
+      if (this.#finish({ status: "timedOut", message })) {
+        this.#rejectTimeout(new Error(message));
+      }
+    }, timeoutMs);
+    if (signal?.aborted) this.#onAbort();
+    else signal?.addEventListener("abort", this.#onAbort, { once: true });
+  }
+
+  get outcome(): AgentTurnOutcome | undefined {
+    return this.#outcome;
+  }
+
+  get startSequence(): number {
+    return this.#startSequence;
+  }
+
+  get endSequence(): number | undefined {
+    return this.#endSequence;
+  }
+
+  get aborted(): boolean {
+    return this.#signal?.aborted ?? false;
+  }
+
+  admit(startSequence?: number): void {
+    if (this.#promptSeen) return;
+    this.#promptSeen = true;
+    if (startSequence !== undefined) this.#startSequence = startSequence;
+    const deferred = this.#deferredMetadata;
+    this.#deferredMetadata = undefined;
+    if (deferred !== undefined) this.#observeMetadata(deferred.chat, deferred.latestSequence);
+  }
+
+  attach(chatId: number): void {
+    this.#chatId = chatId;
+    const events = this.#pendingEvents;
+    this.#pendingEvents = [];
+    for (const event of events) {
+      if (event.type === "metadata") {
+        this.metadata(event.chat, event.latestSequence);
+      } else {
+        this.message(event.entry);
+      }
+    }
+  }
+
+  metadata(chat: AiChatMetadata, latestSequence: number): void {
+    if (this.#chatId === undefined) {
+      this.#pendingEvents.push({ type: "metadata", chat, latestSequence });
+      return;
+    }
+    if (chat.id !== this.#chatId || this.#outcome !== undefined) return;
+    if (!this.#promptSeen) {
+      this.#deferredMetadata = { chat, latestSequence };
+      return;
+    }
+    this.#observeMetadata(chat, latestSequence);
+  }
+
+  message(entry: AiChatMessage): void {
+    if (this.#chatId === undefined) {
+      this.#pendingEvents.push({ type: "message", entry });
+      return;
+    }
+    if (entry.chatId !== this.#chatId) return;
+    if (!this.#promptSeen && entry.type === "message" && entry.author.type === "user" &&
+        entry.message === this.#expectedPrompt && entry.sequence > this.#dispatchedAfter) {
+      this.admit(entry.sequence);
+    }
+    if (this.#promptSeen && entry.type === "message" && entry.author.type === "agent" &&
+        entry.sequence > this.#startSequence) {
+      this.#agentReplied = true;
+    }
+    if (entry.type === "error" && this.#outcome === undefined &&
+        !(this.#sawActive && entry.sequence <= this.#startSequence)) {
+      const outcome: Extract<AgentTurnOutcome, { status: "error" }> = entry.code === undefined
+        ? { status: "error", message: entry.message }
+        : { status: "error", message: entry.message, code: entry.code };
+      this.#error = { outcome, sequence: entry.sequence };
+    }
+    if (this.#idle === true && !this.#sawActive) this.#finishIdle();
+  }
+
+  #observeMetadata(chat: AiChatMetadata, latestSequence: number): void {
+    this.#idle = chat.activeAgent === undefined;
+    if (chat.activeAgent !== undefined) {
+      if (!this.#sawActive) {
+        if (this.#startSequence < 0) this.#startSequence = latestSequence;
+        if (this.#error !== undefined && this.#error.sequence <= this.#startSequence) {
+          this.#error = undefined;
+        }
+      }
+      this.#sawActive = true;
+    } else if (this.#sawActive) {
+      this.#endSequence = latestSequence;
+      this.#finish(this.#error?.outcome ?? { status: "completed" });
+    } else {
+      this.#finishIdle();
+    }
+  }
+
+  // The chat is idle and this observer never saw it active: finished only if the replay shows the
+  // agent answered (or failed) the prompt. No end sequence: the snapshot reads the full history.
+  #finishIdle(): void {
+    if (!this.#promptSeen) return;
+    const failed = this.#error !== undefined && this.#error.sequence > this.#startSequence
+      ? this.#error.outcome
+      : undefined;
+    if (failed !== undefined || this.#agentReplied) {
+      this.#finish(failed ?? { status: "completed" });
+    }
+  }
+
+  race<T>(operation: Promise<T>): Promise<T> {
+    return Promise.race([operation, this.timeoutFailure]);
+  }
+
+  /**
+   * The RPC session died under the turn. An unfinished turn fails with the reason; a finished one
+   * keeps its outcome, but the race still rejects so a snapshot on the dead session stops waiting.
+   */
+  broken(error: unknown): void {
+    const message = `RPC session broken: ${error instanceof Error ? error.message : String(error)}`;
+    this.#finish({ status: "error", message });
+    this.#rejectTimeout(new Error(message));
+  }
+
+  dispose(): void {
+    clearTimeout(this.#timer);
+    this.#signal?.removeEventListener("abort", this.#onAbort);
+  }
+
+  #finish(outcome: AgentTurnOutcome): boolean {
+    if (this.#outcome !== undefined) return false;
+    clearTimeout(this.#timer);
+    this.#outcome = outcome;
+    this.#resolveResult(outcome);
+    return true;
+  }
+}
+
+class ChatSubscriber extends RpcTarget implements AiChatSubscriber {
+  observer: TurnObserver | undefined;
+  readonly #latestSequence = new Map<number, number>();
+  readonly #metadata = new Map<number, AiChatMetadata>();
+  readonly #costUpdates = new Map<number, number>();
+  // Per chat: the newest agent message, and how many arrived since the last recorded step.
+  readonly #agentMessages = new Map<number, { sequence: number; unrecorded: number }>();
+  readonly #steps = new Map<number, StepUsage[]>();
+  #costWaiter: {
+    chatId: number;
+    minimumUpdates: number;
+    resolve: (metadata: AiChatMetadata | undefined) => void;
+  } | undefined;
+
+  streamGeneration(_generation: number): void {}
+  metadata(chat: AiChatMetadata): void {
+    const previous = this.#metadata.get(chat.id);
+    this.#metadata.set(chat.id, chat);
+    this.#recordStep(chat, previous);
+    if (chat.totalCost !== undefined &&
+        (previous === undefined ? chat.totalCost > 0 : chat.totalCost !== previous.totalCost)) {
+      this.#costUpdates.set(chat.id, this.costUpdateCount(chat.id) + 1);
+    }
+    this.observer?.metadata(chat, this.latestSequence(chat.id));
+    const waiter = this.#costWaiter;
+    if (waiter !== undefined && waiter.chatId === chat.id &&
+        this.costUpdateCount(chat.id) >= waiter.minimumUpdates) {
+      waiter.resolve(chat);
+    }
+  }
+  deleted(_chatId: number): void {}
+  message(entry: AiChatMessage): void {
+    this.#latestSequence.set(
+        entry.chatId, Math.max(this.latestSequence(entry.chatId), entry.sequence));
+    if (entry.type === "message" && entry.author.type === "agent") {
+      const agent = this.#agentMessages.get(entry.chatId);
+      if (agent === undefined || entry.sequence > agent.sequence) {
+        this.#agentMessages.set(
+            entry.chatId, { sequence: entry.sequence, unrecorded: (agent?.unrecorded ?? 0) + 1 });
+      }
+    }
+    this.observer?.message(entry);
+  }
+  changeApplied(
+      _chatId: number, _generation: number, _revision: number, _author: AiChatAuthorInfo,
+      _change: CodeChange, _submission?: { clientId: string; seq: number }): void {}
+  stream(_chatId: number, _event: AiChatStreamEvent): void {}
+
+  latestSequence(chatId: number): number {
+    return this.#latestSequence.get(chatId) ?? -1;
+  }
+
+  latestMetadata(chatId: number): AiChatMetadata | undefined {
+    return this.#metadata.get(chatId);
+  }
+
+  costUpdateCount(chatId: number): number {
+    return this.#costUpdates.get(chatId) ?? 0;
+  }
+
+  steps(chatId: number): StepUsage[] {
+    return [...this.#steps.get(chatId) ?? []];
+  }
+
+  // The Workshop writes a step's messages before the metadata that adds its tokens to the chat's
+  // totals, so a push that moves the totals belongs to the newest agent message seen.
+  #recordStep(chat: AiChatMetadata, previous: AiChatMetadata | undefined): void {
+    const prompt = (chat.promptTokens ?? 0) - (previous?.promptTokens ?? 0);
+    if (prompt === 0) return;
+    const cacheReadTokens = (chat.cacheReadTokens ?? 0) - (previous?.cacheReadTokens ?? 0);
+    const cacheWriteTokens = (chat.cacheWriteTokens ?? 0) - (previous?.cacheWriteTokens ?? 0);
+    const agent = this.#agentMessages.get(chat.id) ?? { sequence: -1, unrecorded: 0 };
+    const step: StepUsage = {
+      sequence: agent.sequence,
+      uncachedTokens: prompt - cacheReadTokens - cacheWriteTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+    };
+    if (agent.unrecorded !== 1) step.modelSteps = agent.unrecorded;
+    this.#agentMessages.set(chat.id, { sequence: agent.sequence, unrecorded: 0 });
+    const steps = this.#steps.get(chat.id) ?? [];
+    steps.push(step);
+    this.#steps.set(chat.id, steps);
+  }
+
+  async waitForCostUpdates(
+      chatId: number, minimumUpdates: number,
+      timeoutMs: number): Promise<AiChatMetadata | undefined> {
+    const current = this.#metadata.get(chatId);
+    if (this.costUpdateCount(chatId) >= minimumUpdates) return current;
+    const settled = Promise.withResolvers<AiChatMetadata | undefined>();
+    this.#costWaiter = { chatId, minimumUpdates, resolve: settled.resolve };
+    const timer = setTimeout(() => settled.resolve(this.#metadata.get(chatId)), timeoutMs);
+    try {
+      return await settled.promise;
+    } finally {
+      clearTimeout(timer);
+      if (this.#costWaiter?.resolve === settled.resolve) this.#costWaiter = undefined;
+    }
+  }
+}
+
+class WorkpieceSubscriber extends RpcTarget implements WorkpiecesSubscriber {
+  readonly entries = new Map<WorkpieceId, WorkpieceSummary>();
+  readonly readiness: Promise<void>;
+  #resolveReady: () => void = () => {};
+
+  constructor() {
+    super();
+    const ready = Promise.withResolvers<void>();
+    this.readiness = ready.promise;
+    this.#resolveReady = ready.resolve;
+  }
+
+  entry(summary: WorkpieceSummary): void { this.entries.set(summary.id, summary); }
+  removed(id: WorkpieceId): void { this.entries.delete(id); }
+  ready(): void { this.#resolveReady(); }
+}
+
+class WorkshopAgentSessionImpl implements WorkshopAgentSession {
+  readonly username: string;
+  readonly #baseUrl: URL;
+  readonly #workspaceId: string;
+  readonly #openedAt = new Date(Date.now() - 1_000);
+  readonly #modelId: string;
+  #publicApi: RpcStub<PublicApi>;
+  #authenticatedApi: RpcStub<AuthenticatedApi>;
+  #workspace: RpcStub<Overseer>;
+  readonly #accounts: ReadonlyMap<string, ConnectedAccount>;
+  readonly #chatSubscriber = new ChatSubscriber();
+  readonly #turnTimeoutMs: number;
+  readonly #costAccountingTimeoutMs: number;
+  readonly #pendingRpcs = new Set<Disposable>();
+  #chatSubscriberStub: RpcStub<ChatSubscriber> | undefined;
+  #chatSubscription: RpcStub<{}> | undefined;
+  #chatId: number | undefined;
+  #activeTurn: TurnObserver | undefined;
+  #reserved = false;
+  #closePromise: Promise<void> | undefined;
+  #reconnection: Promise<void> | undefined;
+  #broken = false;
+  #reconnectedDuringTurn = false;
+  #connectionDrops = 0;
+  #terminal = false;
+  #closed = false;
+  #lastHistory: AiChatMessage[] = [];
+  #lastWorkpieces: WorkpieceSummary[] = [];
+  #lastUsage: AgentTurnResult["usage"] = {};
+
+  constructor(options: {
+    username: string;
+    baseUrl: URL;
+    workspaceId: string;
+    modelId: string;
+    publicApi: RpcStub<PublicApi>;
+    authenticatedApi: RpcStub<AuthenticatedApi>;
+    workspace: RpcStub<Overseer>;
+    accounts: ReadonlyMap<string, ConnectedAccount>;
+    turnTimeoutMs: number;
+    costAccountingTimeoutMs: number;
+  }) {
+    this.username = options.username;
+    this.#baseUrl = options.baseUrl;
+    this.#workspaceId = options.workspaceId;
+    this.#modelId = options.modelId;
+    this.#publicApi = options.publicApi;
+    this.#authenticatedApi = options.authenticatedApi;
+    this.#workspace = options.workspace;
+    this.#accounts = options.accounts;
+    this.#turnTimeoutMs = options.turnTimeoutMs;
+    this.#costAccountingTimeoutMs = options.costAccountingTimeoutMs;
+    this.#watchSession();
+  }
+
+  get connectionDrops(): number {
+    return this.#connectionDrops;
+  }
+
+  async initialize(): Promise<void> {
+    await this.#subscribeToChat();
+  }
+
+  async #subscribeToChat(startAfter?: Date): Promise<void> {
+    this.#chatSubscriberStub = stubFor(this.#chatSubscriber);
+    this.#chatSubscription =
+        await this.#workspace.subscribeToChat(this.#chatSubscriberStub, startAfter);
+  }
+
+  // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
+  // #openGadgetInternal) and the browser reconnects (main.tsx); the DO itself resumes the
+  // interrupted turn. This client does the same, so a turn is judged on what the product did
+  // rather than on the socket. Without it the first eval run sat on a dead socket for the whole
+  // 28-minute budget with zero model turns.
+  #watchSession(): void {
+    const publicApi = this.#publicApi;
+    publicApi.onRpcBroken(error => {
+      if (this.#publicApi !== publicApi || this.#closed || this.#reconnection !== undefined) return;
+      this.#connectionDrops++;
+      this.#reconnection = this.#reconnect(error).finally(() => {
+        this.#reconnection = undefined;
+      });
+      this.#reconnection.catch(() => {});
+    });
+  }
+
+  async #reconnect(cause: unknown): Promise<void> {
+    this.#disposeStubs();
+    const deadline = Date.now() + RECONNECT_TIMEOUT_MS;
+    let backoff = RECONNECT_INITIAL_BACKOFF_MS;
+    for (;;) {
+      // Cap'n Web queues calls on a connecting socket, so a peer that accepts the connection but
+      // never answers would hold an attempt open forever; each attempt races the deadline instead.
+      const publicApi = connect(this.#baseUrl);
+      try {
+        await this.#beforeCancellationDeadline(async () => {
+          const authenticated = await logIn(publicApi, this.username);
+          const workspace = await authenticated.openGadget(this.#workspaceId);
+          this.#authenticatedApi = authenticated;
+          this.#workspace = workspace;
+          this.#publicApi = publicApi;
+          // The catch-up replays everything since this session opened, which covers whatever
+          // happened while no session was listening; the observer tolerates repeats.
+          await this.#subscribeToChat(this.#openedAt);
+        }, deadline, `Reconnect attempt exceeded the ${RECONNECT_TIMEOUT_MS}ms reconnect deadline`);
+        this.#reconnectedDuringTurn = this.#activeTurn !== undefined;
+        this.#watchSession();
+        return;
+      } catch (error) {
+        // Disposing the root stub releases whatever the attempt obtained through it.
+        publicApi[Symbol.dispose]();
+        if (Date.now() + backoff >= deadline) {
+          this.#broken = true;
+          this.#terminal = true;
+          this.#activeTurn?.broken(cause);
+          throw new Error(
+              `RPC session broken and not re-established within ${RECONNECT_TIMEOUT_MS}ms`,
+              { cause: error });
+        }
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        backoff = Math.min(backoff * 2, 2_000);
+      }
+    }
+  }
+
+  /**
+   * Whether an RPC failure was the session breaking. The rejection can be observed before or after
+   * onRpcBroken fires, so yield once before looking; then wait out the reconnection, which either
+   * restores the session or marks it terminal.
+   */
+  async #recovering(): Promise<boolean> {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (this.#reconnection === undefined) return this.#broken;
+    await this.#reconnection.then(() => {}, () => {});
+    return true;
+  }
+
+  runTurn(prompt: string, options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+    this.#assertOpen();
+    if (this.#activeTurn !== undefined || this.#reserved) {
+      throw new Error("An agent activation is already running");
+    }
+    if (options.signal?.aborted) {
+      return Promise.resolve(this.#resultWithLastState({
+        status: "cancelled",
+        message: "Agent activation was cancelled",
+      }));
+    }
+    this.#reserved = true;
+    return this.#runTurn(prompt, options).finally(() => {
+      this.#reserved = false;
+    });
+  }
+
+  async #runTurn(prompt: string, options: AgentTurnOptions): Promise<AgentTurnResult> {
+    await this.#ready();
+    const chatId = this.#chatId;
+    const dispatchedAfter = chatId === undefined ? -1 : this.#chatSubscriber.latestSequence(chatId);
+    const observer = new TurnObserver(
+        chatId, options.timeoutMs ?? this.#turnTimeoutMs, options.signal, prompt, false,
+        dispatchedAfter);
+    const operation = chatId === undefined
+      ? () => this.#startChat(prompt, observer)
+      : () => this.#awaitRpc(
+          this.#workspace.sendChatMessage(chatId, prompt, this.#modelId), chatId, observer);
+    return this.#observeOperation(observer, operation);
+  }
+
+  async approveActionsAndWait(
+      ids: readonly [number, ...number[]], options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+    this.#assertOpen();
+    if (this.#activeTurn !== undefined || this.#reserved) {
+      throw new Error("An agent activation is already running");
+    }
+    if (new Set(ids).size !== ids.length) throw new Error("Action IDs must be unique");
+    if (options.signal?.aborted) {
+      return this.#resultWithLastState({
+        status: "cancelled",
+        message: "Agent activation was cancelled",
+      });
+    }
+    // Reserved before the first await, like runTurn, so the first caller in a tick wins.
+    this.#reserved = true;
+    try {
+      await this.#ready();
+    } catch (error) {
+      this.#reserved = false;
+      throw error;
+    }
+    const chatId = this.#chatId;
+    if (chatId === undefined) {
+      this.#reserved = false;
+      throw new Error("The session has no chat to resume");
+    }
+    const observer = new TurnObserver(
+        chatId, options.timeoutMs ?? this.#turnTimeoutMs, options.signal, undefined, true);
+    let observationStarted = false;
+    try {
+      const preflight = this.#assertActionsPending(ids);
+      preflight.catch(() => {});
+      try {
+        await observer.race(preflight);
+      } catch (error) {
+        const status = observer.outcome?.status;
+        if (status !== "timedOut" && status !== "cancelled") throw error;
+      }
+      if (observer.outcome !== undefined) {
+        this.#terminal = true;
+        return this.#resultWithLastState(observer.outcome);
+      }
+      this.#assertOpen();
+      observationStarted = true;
+      return await this.#observeOperation(observer, async () => {
+        try {
+          for (const [index, id] of ids.entries()) {
+            if (observer.outcome !== undefined) break;
+            if (index === ids.length - 1) {
+              observer.admit(this.#chatSubscriber.latestSequence(chatId));
+            }
+            await this.#awaitRpc(this.#workspace.approveAction(id), chatId, observer);
+          }
+        } catch (error) {
+          this.#terminal = true;
+          await this.#stopAndWaitForIdle(chatId);
+          throw error;
+        }
+      });
+    } finally {
+      if (!observationStarted) observer.dispose();
+      this.#reserved = false;
+    }
+  }
+
+  async listActions(options?: ActionListOptions): Promise<ActionHistoryPage> {
+    await this.#ready();
+    return this.#workspace.listActions(options);
+  }
+
+  connectedAccount(vendorId: string): ConnectedAccount {
+    this.#assertOpen();
+    const account = this.#accounts.get(vendorId);
+    if (account === undefined) throw new Error(`No connected account for vendor "${vendorId}"`);
+    return account;
+  }
+
+  async openGadget(id: WorkpieceId): Promise<ProvisionalGadget> {
+    await this.#ready();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat branch");
+    return { client: await this.#workspace.getGadget(id), chatId };
+  }
+
+  async acceptChanges(): Promise<void> {
+    await this.#ready();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat changes to accept");
+    const result = await this.#workspace.mergeChanges(chatId);
+    if (result.outcome !== "merged") throw new Error("The agent changes are stale");
+  }
+
+  async revertChanges(revertFrom: number): Promise<void> {
+    this.#assertOpen();
+    const chatId = this.#chatId;
+    if (chatId === undefined) throw new Error("The session has no chat changes to revert");
+    await this.#workspace.revertChanges(chatId, revertFrom);
+  }
+
+  close(): Promise<void> {
+    this.#closePromise ??= this.#close();
+    return this.#closePromise;
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
+  async #startChat(prompt: string, observer: TurnObserver): Promise<void> {
+    const creating = this.#workspace.newChat(prompt, this.#modelId);
+    this.#pendingRpcs.add(creating);
+    creating.then(chatId => {
+      const status = observer.outcome?.status;
+      if (this.#closed || status === "timedOut" || status === "cancelled") {
+        Promise.resolve(this.#workspace.stopAgent(chatId)).catch(() => {});
+        return;
+      }
+      this.#chatId = chatId;
+      observer.attach(chatId);
+    }, () => {}).finally(() => {
+      if (this.#pendingRpcs.delete(creating)) creating[Symbol.dispose]();
+    }).catch(() => {});
+    try {
+      this.#chatId = await creating;
+    } catch (error) {
+      // The acknowledgement died with the socket. A fresh workspace holds at most this one chat,
+      // so if the server created it before the break it is the only chat there.
+      if (!await this.#recovering() || this.#terminal) throw error;
+      const chats = await this.#workspace.listChats();
+      const [only] = chats;
+      if (only === undefined || chats.length !== 1) throw error;
+      this.#chatId = only.id;
+    }
+    observer.attach(this.#chatId);
+  }
+
+  async #awaitRpc(
+      operation: RpcPromise<void>, chatId: number, observer: TurnObserver): Promise<void> {
+    this.#pendingRpcs.add(operation);
+    operation.then(() => {
+      const status = observer.outcome?.status;
+      if (this.#closed || status === "timedOut" || status === "cancelled") {
+        Promise.resolve(this.#workspace.stopAgent(chatId)).catch(() => {});
+      }
+    }, () => {}).finally(() => {
+      if (this.#pendingRpcs.delete(operation)) operation[Symbol.dispose]();
+    }).catch(() => {});
+    await operation;
+  }
+
+  async #stopAndWaitForIdle(
+      chatId: number, deadline = Date.now() + CANCELLATION_TIMEOUT_MS): Promise<void> {
+    await this.#beforeCancellationDeadline(
+        () => this.#workspace.stopAgent(chatId), deadline, "Stopping the agent timed out");
+    await waitFor("timed-out agent cancellation", async () => {
+      const chats = await this.#beforeCancellationDeadline(
+          () => this.#workspace.listChats(), deadline,
+          "Reading chat state during cancellation timed out");
+      const chat = chats.find(entry => entry.id === chatId);
+      return chat === undefined || chat.activeAgent === undefined ? true : null;
+    }, Math.max(1, deadline - Date.now()));
+  }
+
+  async #beforeCancellationDeadline<T>(
+      start: () => Promise<T>, deadline: number, message: string): Promise<T> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error(message);
+    const operation = start();
+    const expired = Promise.withResolvers<never>();
+    const timer = setTimeout(() => expired.reject(new Error(message)), remaining);
+    operation.catch(() => {});
+    try {
+      return await Promise.race([operation, expired.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #observeOperation(
+      observer: TurnObserver, start: () => Promise<void>): Promise<AgentTurnResult> {
+    this.#activeTurn = observer;
+    this.#chatSubscriber.observer = observer;
+    const operation = start();
+    operation.catch(() => {});
+    try {
+      const acknowledgementOrOutcome = Promise.race([
+        operation,
+        observer.result.then(() => {}),
+      ]);
+      try {
+        await observer.race(acknowledgementOrOutcome);
+      } catch (error) {
+        const status = observer.outcome?.status;
+        // A break rejects the acknowledgement; the replacement session's replay finishes the
+        // observation, so keep waiting for the outcome (still bounded by the turn's timer).
+        if (status !== "timedOut" && status !== "cancelled" && !await this.#recovering()) throw error;
+      }
+      const outcome = observer.outcome ?? await observer.result;
+      if (this.#reconnection !== undefined) await this.#reconnection;
+      let cancellationDeadline: number | undefined;
+      if (outcome.status === "timedOut" || outcome.status === "cancelled") {
+        this.#terminal = true;
+        cancellationDeadline = Date.now() + CANCELLATION_TIMEOUT_MS;
+        const initialChatId = this.#chatId;
+        if (initialChatId !== undefined) {
+          await this.#beforeCancellationDeadline(
+              () => this.#workspace.stopAgent(initialChatId), cancellationDeadline,
+              "Stopping the agent timed out");
+        }
+        const dispatchSettled = Promise.withResolvers<void>();
+        const timer = setTimeout(
+            dispatchSettled.resolve, Math.max(0, cancellationDeadline - Date.now()));
+        try {
+          await Promise.race([operation.then(() => {}, () => {}), dispatchSettled.promise]);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (this.#chatId !== undefined) {
+          await this.#stopAndWaitForIdle(this.#chatId, cancellationDeadline);
+        }
+      }
+      const takeSnapshot = () => this.#snapshot(
+          outcome, observer.startSequence, observer.endSequence, cancellationDeadline);
+      if (outcome.status === "timedOut" || outcome.status === "cancelled") return await takeSnapshot();
+      try {
+        return await observer.race(takeSnapshot());
+      } catch (error) {
+        if (observer.aborted) {
+          this.#terminal = true;
+          return this.#resultWithLastState({
+            status: "cancelled",
+            message: "Agent activation was cancelled",
+          });
+        }
+        // The session broke while the snapshot was loading: read it again over the replacement.
+        if (!await this.#recovering() || this.#broken) throw error;
+        return await takeSnapshot();
+      }
+    } finally {
+      observer.dispose();
+      if (this.#chatSubscriber.observer === observer) this.#chatSubscriber.observer = undefined;
+      if (this.#activeTurn === observer) this.#activeTurn = undefined;
+    }
+  }
+
+  async #snapshot(
+      observedOutcome: AgentTurnOutcome, startSequence: number,
+      endSequence: number | undefined, cancellationDeadline?: number): Promise<AgentTurnResult> {
+    const chatId = this.#chatId;
+    if (chatId === undefined) {
+      return { outcome: observedOutcome, history: [], workpieces: [], usage: {} };
+    }
+    const loadState = () => Promise.all([
+      loadAllChatHistory(before => this.#workspace.getChatHistory(chatId, before)),
+      this.#workspace.listChats(),
+      this.#loadWorkpieces(),
+    ]);
+    const [loadedHistory, chats, workpieces] = cancellationDeadline === undefined
+      ? await loadState()
+      : await this.#beforeCancellationDeadline(
+          loadState, cancellationDeadline, "Reading cancelled turn state timed out");
+    const history = endSequence === undefined
+      ? loadedHistory
+      : loadedHistory.filter(message => message.sequence <= endSequence);
+    const newMessages = history.filter(message => message.sequence > startSequence);
+    const error = newMessages.find(message => message.type === "error");
+    let outcome: AgentTurnOutcome = observedOutcome;
+    if (error !== undefined && observedOutcome.status !== "timedOut" &&
+        observedOutcome.status !== "cancelled") {
+      outcome = error.code === undefined
+        ? { status: "error", message: error.message }
+        : { status: "error", message: error.message, code: error.code };
+    }
+    let metadata = chats.find(chat => chat.id === chatId);
+    if (metadata === undefined) throw new Error(`Chat ${chatId} disappeared`);
+    const modelSteps = history.filter(
+        message => message.type === "message" && message.author.type === "agent").length;
+    if (outcome.status === "completed" && this.#costAccountingTimeoutMs > 0 && modelSteps > 0) {
+      // A catch-up after a reconnect delivers the chat's metadata once for every step it
+      // replayed, so one update per step is no longer the right count. A Gateway cost lookup may
+      // still be in flight, though, so wait (bounded) for one further update rather than none.
+      const minimumUpdates = this.#reconnectedDuringTurn
+        ? this.#chatSubscriber.costUpdateCount(chatId) + 1
+        : modelSteps;
+      metadata = await this.#chatSubscriber.waitForCostUpdates(
+          chatId, minimumUpdates, this.#costAccountingTimeoutMs) ?? metadata;
+    }
+    this.#reconnectedDuringTurn = false;
+    const usage: AgentTurnResult["usage"] = {};
+    if (metadata.totalTokens !== undefined) usage.lastStepTokens = metadata.totalTokens;
+    if (metadata.totalCost !== undefined) {
+      usage.observedCumulativeChatCostUsd = metadata.totalCost;
+    }
+    if (metadata.promptTokens !== undefined) usage.cumulativePromptTokens = metadata.promptTokens;
+    if (metadata.cacheReadTokens !== undefined) {
+      usage.cumulativeCacheReadTokens = metadata.cacheReadTokens;
+    }
+    if (metadata.cacheWriteTokens !== undefined) {
+      usage.cumulativeCacheWriteTokens = metadata.cacheWriteTokens;
+    }
+    const steps = this.#chatSubscriber.steps(chatId);
+    if (steps.length > 0) usage.steps = steps;
+    this.#lastHistory = history;
+    this.#lastWorkpieces = workpieces;
+    this.#lastUsage = usage;
+    return { outcome, history, workpieces, usage };
+  }
+
+  #resultWithLastState(outcome: AgentTurnOutcome): AgentTurnResult {
+    return {
+      outcome,
+      history: [...this.#lastHistory],
+      workpieces: [...this.#lastWorkpieces],
+      usage: { ...this.#lastUsage },
+    };
+  }
+
+  async #loadWorkpieces(): Promise<WorkpieceSummary[]> {
+    const subscriber = new WorkpieceSubscriber();
+    using subscriberStub = stubFor(subscriber);
+    using _subscription = await this.#workspace.subscribeToWorkpieces(subscriberStub);
+    await subscriber.readiness;
+    return [...subscriber.entries.values()];
+  }
+
+  async #assertActionsPending(ids: readonly number[]): Promise<void> {
+    const pending = new Set(ids);
+    let beforeId: number | undefined;
+    do {
+      const page = await this.#workspace.listActions({ beforeId, filter: "pending" });
+      for (const entry of page.entries) pending.delete(entry.id);
+      beforeId = page.nextBeforeId;
+    } while (pending.size > 0 && beforeId !== undefined);
+    if (pending.size > 0) {
+      throw new Error(`Actions are not pending: ${[...pending].join(", ")}`);
+    }
+  }
+
+  async #close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#reconnection !== undefined) await this.#reconnection.then(() => {}, () => {});
+    // A session that could not be re-established already released its stubs.
+    if (this.#broken) return;
+    const deadline = Date.now() + CANCELLATION_TIMEOUT_MS;
+    let stopError: Error | undefined;
+    let deleteError: Error | undefined;
+    try {
+      try {
+        if (this.#activeTurn !== undefined && this.#chatId !== undefined) {
+          await this.#stopAndWaitForIdle(this.#chatId, deadline);
+        }
+        if (this.#pendingRpcs.size > 0) {
+          const pendingDeadline = Math.min(
+              deadline, Date.now() + PENDING_RPC_GRACE_MS);
+          await waitFor("pending agent RPC cleanup", () =>
+            Promise.resolve(this.#pendingRpcs.size === 0 ? true : null),
+          Math.max(1, pendingDeadline - Date.now()));
+        }
+      } catch (error) {
+        stopError = error instanceof Error ? error : new Error(String(error));
+      }
+      try {
+        await this.#beforeCancellationDeadline(
+            () => this.#workspace.deleteSelf(), Date.now() + CANCELLATION_TIMEOUT_MS,
+            "Workspace deletion timed out");
+      } catch (error) {
+        deleteError = error instanceof Error ? error : new Error(String(error));
+      }
+    } finally {
+      this.#disposeStubs();
+    }
+    if (stopError !== undefined && deleteError !== undefined) {
+      throw new AggregateError([stopError, deleteError], "Agent shutdown and workspace deletion failed");
+    }
+    if (stopError !== undefined) throw stopError;
+    if (deleteError !== undefined) throw deleteError;
+  }
+
+  #disposeStubs(): void {
+    this.#chatSubscription?.[Symbol.dispose]();
+    this.#chatSubscriberStub?.[Symbol.dispose]();
+    for (const rpc of this.#pendingRpcs) rpc[Symbol.dispose]();
+    this.#pendingRpcs.clear();
+    this.#workspace[Symbol.dispose]();
+    this.#authenticatedApi[Symbol.dispose]();
+    this.#publicApi[Symbol.dispose]();
+  }
+
+  #assertOpen(): void {
+    this.#assertNotClosed();
+    if (this.#terminal) throw new Error("WorkshopAgentSession cannot continue after interruption");
+  }
+
+  /** Public operations wait out a reconnection in progress rather than using the dead stubs. */
+  async #ready(): Promise<void> {
+    this.#assertNotClosed();
+    if (this.#reconnection !== undefined) await this.#reconnection.then(() => {}, () => {});
+    this.#assertOpen();
+  }
+
+  #assertNotClosed(): void {
+    if (this.#closed) throw new Error("WorkshopAgentSession is closed");
+  }
+}
+
+/** Open one fresh local account and workspace for deterministic tests or real-model evals. */
+export async function openAgentSession(
+    baseUrl: URL, options: AgentSessionOptions): Promise<WorkshopAgentSession> {
+  const publicApi = connect(baseUrl);
+  let authenticatedApi: RpcStub<AuthenticatedApi> | undefined;
+  let workspace: RpcStub<Overseer> | undefined;
+  let session: WorkshopAgentSessionImpl | undefined;
+  try {
+    const username = nextUsernames(options.usernamePrefix ?? "agent").at(0);
+    if (username === undefined) throw new Error("Failed to allocate an agent-session username");
+    const authenticated = authenticatedApi = await signUp(publicApi, username);
+    if (options.userModel !== undefined) {
+      await authenticated.addModel(options.userModel.profile, options.userModel.config);
+    }
+    await authenticated.setQuickModel(null);
+    // setPreferredModel accepts any model that resolves, not only the ones listModels() offers, so
+    // an eval can compare a superseded (hidden) model with its replacement.
+    try {
+      await authenticated.setPreferredModel(options.modelId);
+    } catch (cause) {
+      throw new Error(`Model "${options.modelId}" is not available to the test account`, { cause });
+    }
+    await authenticated.completeOnboarding();
+
+    const accounts = new Map<string, ConnectedAccount>();
+    for (const vendorId of options.ambientVendorIds ?? []) {
+      await authenticated.provisionAmbientAccount(vendorId);
+      const account = await waitFor(`the ${vendorId} account to be provisioned`, async () =>
+        (await listConnectedAccounts(authenticated)).find(entry => entry.vendorId === vendorId)
+          ?? null);
+      accounts.set(vendorId, account);
+    }
+
+    workspace = await authenticated.newGadget();
+    const { id: workspaceId } = await workspace.getMetadata();
+    session = new WorkshopAgentSessionImpl({
+      username,
+      baseUrl,
+      workspaceId,
+      modelId: options.modelId,
+      publicApi,
+      authenticatedApi,
+      workspace,
+      accounts,
+      turnTimeoutMs: options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+      costAccountingTimeoutMs: options.costAccountingTimeoutMs ?? 0,
+    });
+    await session.initialize();
+    return session;
+  } catch (error) {
+    const setupError = error instanceof Error ? error : new Error(String(error));
+    let cleanupError: Error | undefined;
+    try {
+      if (session !== undefined) {
+        await session.close();
+      } else {
+        workspace?.[Symbol.dispose]();
+        authenticatedApi?.[Symbol.dispose]();
+        publicApi[Symbol.dispose]();
+      }
+    } catch (cleanup) {
+      cleanupError = cleanup instanceof Error ? cleanup : new Error(String(cleanup));
+    }
+    if (cleanupError !== undefined) {
+      throw new Error(`Agent session setup failed; cleanup also failed: ${cleanupError.message}`,
+          { cause: error });
+    }
+    throw setupError;
+  }
+}
+
+/** Load every compacted page of one canonical chat history in ascending sequence order. */
+export async function loadAllChatHistory(
+    loadPage: (beforeSequence?: number) => Promise<AiChatHistoryPage>): Promise<AiChatMessage[]> {
+  let page = await loadPage();
+  let messages = page.messages;
+  const boundaries = new Set<number>();
+  while (page.compacted !== undefined) {
+    const boundary = page.compacted.to;
+    if (boundaries.has(boundary)) {
+      throw new Error(`Chat history repeated compaction boundary ${boundary}`);
+    }
+    boundaries.add(boundary);
+    page = await loadPage(boundary);
+    messages = [...page.messages, ...messages];
+  }
+  return messages;
+}

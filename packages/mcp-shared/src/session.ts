@@ -50,9 +50,9 @@ export type StoredAction = {
   claimedAt?: number;
   /**
    * Whether a `failed` record may be sent again. Absent means yes, which is the reading for records
-   * written before this field existed. False marks a failure that left the outcome unknown: the
+   * written before this field existed. False marks a failure that left the outcome unknown -- the
    * request may already have been carried out, so another attempt could duplicate a write that MCP
-   * gives no way to undo. See `ActionStore.apply`.
+   * gives no way to undo -- or one the user discarded. See `ActionStore.apply` and `reject`.
    */
   retryable?: boolean;
   /** Populated once applied; delivered to the Gadget as an observation. */
@@ -193,7 +193,7 @@ export class McpSessionBase extends RpcTarget {
     const entry = await host.findTool(name);
     if (!entry) throw new Error(this.#noSuchToolMessage(name));
 
-    const described = describeCall({
+    const { title, description: text, fields, descriptionIsComplete } = describeCall({
       serverName: host.serverName,
       endpoint: host.endpoint,
       tool: entry.tool,
@@ -205,13 +205,19 @@ export class McpSessionBase extends RpcTarget {
     if (entry.mode === "read") {
       const result = await host.call(client => client.callTool(name, toolArgs));
       // Authorize before the data is handed back, per the gatekeeper contract.
-      await this.#queue.authorizeObservation(described);
+      await this.#queue.authorizeObservation({
+        title, description: text, ...(fields ? { fields } : {}),
+      });
       return toCallResult(result);
     }
 
     const staged = host.stageAction(name, toolArgs);
     const description: ActionDescription = {
-      ...described,
+      title,
+      description: text,
+      ...(fields ? { fields } : {}),
+      // Absent unless the arguments were shown in full; the overseer reads presence as a claim.
+      ...(descriptionIsComplete ? { descriptionIsComplete } : {}),
       // MCP describes no inverse operation for a tool call.
       implementsRevert: false,
       // Nothing about a queued call is simulated, so later reads would show a world in which it

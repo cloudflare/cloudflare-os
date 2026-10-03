@@ -27,6 +27,10 @@
       "types": "./src/external-message-gateway.ts",
       "import": "./src/external-message-gateway.ts"
     },
+    "./code-change": {
+      "types": "./src/code-change.ts",
+      "import": "./src/code-change.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
@@ -38,8 +42,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@cloudflare/workers-types": "^5.20260808.1",
-    "capnweb": "catalog:"
+    "@cloudflare/workers-types": "catalog:",
+    "@codemirror/state": "^6.7.6",
+    "capnweb": "catalog:",
+    "fast-diff": "^1.3.0"
   },
   "devDependencies": {
     "typescript": "catalog:"

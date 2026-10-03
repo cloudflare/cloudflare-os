@@ -60,6 +60,7 @@ function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<Authen
       />
     )
   }
+  if (state.error?.kind === 'message') return <p>{state.error.message}</p>
   return <p>{state.metadata?.title}</p>
 }
 
@@ -140,5 +141,23 @@ describe('useWorkspaceOpen', () => {
     expect(document.title).toBe('Cloudflare OS')
     expect(firstSubscriptionDispose).toHaveBeenCalledOnce()
     expect(deniedOverseerDispose).toHaveBeenCalledOnce()
+  })
+
+  it('shows the share-links-disabled page when a new redeemer is refused', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.shareLinksDisabled)
+      }),
+    }) as unknown as RpcStub<Overseer>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(overseer)} />))
+
+    expect(container.textContent).toContain('Share links are turned off for this workspace')
+    expect(container.textContent)
+      .toContain('Ask the workspace owner to add you directly, then try again.')
   })
 })

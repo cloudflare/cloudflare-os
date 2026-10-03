@@ -53,7 +53,7 @@ describe("deploy scripts", () => {
   // shadows the declaration, and under vp the variable is stripped and the wrong value ships.
   it("reaches codegen through its task rather than invoking the builder", () => {
     for (const { name, path, command } of deployScripts) {
-      for (const builder of ["build-gatekeeper-configurator.ts", "build-app.mjs"]) {
+      for (const builder of ["build-gatekeeper-configurator.ts", "build-app.ts"]) {
         assert.ok(
           !command.includes(builder),
           `${name} (${path}) invokes ${builder} directly while deploying: ${command}\n` +

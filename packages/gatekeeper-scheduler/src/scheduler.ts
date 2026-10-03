@@ -20,7 +20,6 @@ import type {
   HookController,
   HookInitiator,
   HookTargetMetadata,
-  ObservationAuthorizer,
   ResourceConfiguratorFrame,
   ResourceDescription,
   SupportedResource,
@@ -269,9 +268,7 @@ export class SchedulerGatekeeper
   }
 
   /** Returns no catalog because schedule discovery happens through list(). */
-  async getAgentCatalog(
-    _authorizer: NativeRpcStub<ObservationAuthorizer>,
-  ): Promise<AgentCatalog | null> {
+  async getAgentCatalog(): Promise<AgentCatalog | null> {
     return null;
   }
 
@@ -371,6 +368,11 @@ export class ScheduleAccount
 
   /** Rejects reconnect because Scheduler has no credentials. */
   reconnect(): Promise<{ url: string }> {
+    throw new Error("Scheduled Tasks has no connect flow.");
+  }
+
+  /** Rejects commit because no flow can ever stage credentials. */
+  commitReconnect(_stageId: string): Promise<void> {
     throw new Error("Scheduled Tasks has no connect flow.");
   }
 

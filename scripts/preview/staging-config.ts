@@ -19,8 +19,10 @@
 //     namespace / R2 bucket per preview, and where service bindings get patched to point at
 //     sibling previews rather than the baselines.
 //
-// Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are deliberately absent: previews
-// exercise routing, auth and the agent, not third-party connector flows.
+// Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are absent from the generated configs
+// for the same reason the backend's secrets are — Wrangler prints what it finds in one, and this
+// workflow's logs are public. Where an OAuth app is configured for previews, preview.ts uploads the
+// pair to that gatekeeper's Preview base config instead; see resolveGatekeeperSecrets.
 
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -28,8 +30,9 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  findDeployablePackages, readWranglerConfig,
-  type BindingDecl, type ObservabilityConfig, type ServiceBinding, type WranglerConfig,
+  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
+  type BindingDecl, type DeployablePackage, type ObservabilityConfig, type ServiceBinding,
+  type WranglerConfig,
 } from "../release/manifest-lib.ts";
 
 /**
@@ -92,19 +95,7 @@ export interface StagingConfig extends WranglerConfig {
   previews?: PreviewOverrides;
 }
 
-/** A deployable package as the generator sees it: its name and its parsed wrangler.jsonc. */
-export interface PackageConfig {
-  /** The workspace package directory name, which is also the worker name. */
-  name: string;
-  /** The parsed wrangler.jsonc. */
-  config: WranglerConfig;
-}
-
-/** A deployable package on disk, as {@link readPackages} returns it. */
-export interface DeployablePackage extends PackageConfig {
-  /** Absolute path to the package directory. */
-  dir: string;
-}
+type PackageConfig = Pick<DeployablePackage, "name" | "config">;
 
 /** The values every `apply*` function derives its config from. */
 interface PreviewContext {
@@ -136,20 +127,6 @@ export const R2_MAX_BUCKET_NAME_LENGTH = 63;
 export const MAX_PREVIEW_NAME_LENGTH = 28;
 const PREVIEW_NAME_HASH_LENGTH = 8;
 
-const GATEKEEPER_PREFIX = "gatekeeper-";
-
-/** True for the packages that are gatekeeper workers (as opposed to the router and backend). */
-export function isGatekeeper(pkgName: string): boolean {
-  return pkgName.startsWith(GATEKEEPER_PREFIX);
-}
-
-/**
- * The vendor id a gatekeeper is reached by: `gatekeeper-mcp-portal` -> `mcp-portal`. Matches
- * manifest-lib.ts's shortName, and hence the `/gatekeeper/<short>` path the router serves.
- */
-export function gatekeeperShortName(pkgName: string): string {
-  return pkgName.slice(GATEKEEPER_PREFIX.length);
-}
 
 /**
  * The service binding name a gatekeeper is bound as: `gatekeeper-mcp-portal` ->
@@ -427,7 +404,7 @@ export function buildPreviewConfigs({
     throw new Error("buildPreviewConfigs needs both accountId and workersDevHost");
   }
   const baseUrl = routerPreviewUrl(previewName, workersDevHost);
-  const gatekeepers = packages.map((pkg) => pkg.name).filter(isGatekeeper).toSorted();
+  const gatekeepers = packages.map((pkg) => pkg.name).filter(isGatekeeperPackage).toSorted();
   const context: PreviewContext = { baseUrl, gatekeepers };
   const configs = new Map<string, StagingConfig>();
 
@@ -455,7 +432,7 @@ export function buildPreviewConfigs({
     delete config.routes;
     stripBaselineResources(config);
 
-    if (isGatekeeper(pkg.name)) applyGatekeeper(pkg.name, config, context);
+    if (isGatekeeperPackage(pkg.name)) applyGatekeeper(pkg.name, config, context);
     else if (pkg.name === "workshop-backend") applyBackend(config, context);
     else if (pkg.name === "router") applyRouter(config, context);
     else throw new Error(`cannot build a preview config for package: ${pkg.name}`);
@@ -636,6 +613,71 @@ export function resolveAiGateway({
 }
 
 /**
+ * Record one gatekeeper's OAuth app credentials under the variable names the worker reads them as.
+ *
+ * The pair moves together: a gatekeeper holding one half is not half-connectable, it throws "The
+ * GitHub gatekeeper is not configured." on the first click, so a typo in one secret's name fails
+ * the deploy rather than surfacing in a preview nobody is reading the logs of.
+ */
+function addOAuthApp(
+  into: Map<string, Record<string, string>>,
+  pkgName: string,
+  envPrefix: string,
+  clientId: string | undefined,
+  clientSecret: string | undefined,
+): void {
+  if (clientId && clientSecret) {
+    into.set(pkgName, { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret });
+    return;
+  }
+  if (clientId || clientSecret) {
+    throw new Error(`${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET must be set together: ` +
+        `they are one OAuth app, and ${pkgName} refuses to start a flow with half of it`);
+  }
+  console.warn(`${envPrefix}_CLIENT_ID is unset: ${pkgName} is deployed unconfigured, and ` +
+      "connecting it in this preview will fail.");
+}
+
+/**
+ * The OAuth app credentials a gatekeeper's previews are given, as `package name -> secrets`.
+ *
+ * Optional, per gatekeeper: an unconfigured one still deploys, and only that connector is dead in
+ * the preview — unlike {@link resolveAccess}, whose absence changes how the whole instance
+ * authenticates. Most gatekeepers have no preview OAuth app at all, which is why previews are for
+ * routing, auth and the agent first and third-party flows only where someone registered one.
+ *
+ * Registering one is not just a pair of secrets. A preview's redirect URI is
+ * `https://<preview>-router.<workers.dev subdomain>/gatekeeper/<short>/oauth`, and the host changes
+ * with every pull request — so the app's callback URL has to be
+ * `https://<workers.dev subdomain>/gatekeeper/<short>/oauth` with GitHub's wildcard matching left
+ * on, which is what lets each preview's subdomain validate against it. That also means any worker
+ * on that subdomain can receive an authorization code for this app, so the app it belongs to should
+ * be a throwaway registered for previews and never the one a real deployment uses.
+ *
+ * `PREVIEW_`-prefixed rather than the `GITHUB_CLIENT_ID` run-dev-server.ts reads from a developer's
+ * shell: GitHub refuses to store a repository secret whose name begins with `GITHUB_`, and the
+ * distinct name keeps the preview app and a maintainer's local app from being confused for one
+ * another.
+ *
+ * Adding a second gatekeeper is a parameter pair here, one `addOAuthApp` line, the matching pair in
+ * .github/workflows/preview.yml, and an entry in env-passthrough.test.ts.
+ *
+ * The environment is read in the parameter defaults rather than the body so that
+ * env-passthrough.test.ts, whose discovery is textual, can see every name.
+ */
+export function resolveGatekeeperSecrets({
+  githubClientId = process.env.PREVIEW_GITHUB_CLIENT_ID,
+  githubClientSecret = process.env.PREVIEW_GITHUB_CLIENT_SECRET,
+}: {
+  githubClientId?: string;
+  githubClientSecret?: string;
+} = {}): Map<string, Record<string, string>> {
+  const configured = new Map<string, Record<string, string>>();
+  addOAuthApp(configured, "gatekeeper-github", "PREVIEW_GITHUB", githubClientId, githubClientSecret);
+  return configured;
+}
+
+/**
  * The backend's secrets, keyed by the variable name it reads them as.
  *
  * These are deliberately *not* part of any generated config. Wrangler prints the value of every
@@ -644,8 +686,8 @@ export function resolveAiGateway({
  * are public — so a maintainer's email, the audience tag and the team domain would all end up
  * there. GitHub's secret masking does not save them either: it replaces exact occurrences of a
  * registered secret, and what reaches the log is a reformatted, truncated slice of one. preview.ts
- * uploads these over stdin instead, with `wrangler preview secret bulk`, which prints names and
- * `********`.
+ * uploads these over stdin instead, with `wrangler preview base-config secret bulk`, which prints
+ * names and `********`.
  *
  * Setting the Access pair is also what closes the password path — the backend's `login()` and
  * `createAccount()` both throw once CF_ACCESS_AUD is set — so DISABLE_PASSWORD_AUTH is not needed.
@@ -672,11 +714,6 @@ export function backendSecrets({
   };
 }
 
-/** Read every deployable package's wrangler.jsonc off disk. */
-export function readPackages(): DeployablePackage[] {
-  return findDeployablePackages(PACKAGES_DIR)
-      .map(({ name, dir }) => ({ name, dir, config: readWranglerConfig(dir) }));
-}
 
 /** Write one package's generated preview config to its `wrangler.staging.jsonc`. */
 export function writePreviewConfig(pkgDir: string, config: StagingConfig): void {
@@ -697,7 +734,7 @@ export function generatePreviewConfigs(options: {
 } {
   const previewName = options.previewName ?? resolvePreviewName();
   const { accountId, workersDevHost } = resolveTarget();
-  const packages = readPackages();
+  const packages = readDeployablePackages(PACKAGES_DIR);
   const configs = buildPreviewConfigs({
     previewName,
     packages,

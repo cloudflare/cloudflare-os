@@ -1,7 +1,7 @@
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from './AuthContext'
 import { useState, useEffect, useRef } from 'react'
-import { AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, validateCommitEmail } from '@gadgets/workshop-shared/api'
 import { hashPassword } from './passwordHash'
 import { CF_ACCESS_MODE } from './useAuth'
 import { User, Pencil, Check, X, Lock, Camera, Copy, Eye, EyeSlash } from '@phosphor-icons/react'
@@ -9,6 +9,7 @@ import { useAvatar, invalidateAvatarCache } from './useAvatar'
 import { compressAvatar, avatarBlobUrl } from './avatarUtils'
 import UsageSettings from './components/billing/UsageSettings'
 import { useDocumentTitle } from './useDocumentTitle'
+import { isImeComposing } from './keyboardEvent'
 
 // Shared, on-language control classes (match the rest of the app: Workspaces/Blueprints headers,
 // the gatekeepers toolbar, the command palette). Kept here so the profile page reads as part of the
@@ -18,7 +19,7 @@ const PRIMARY_BTN =
 const ICON_BTN =
   'press grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded-lg text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default'
 const INPUT =
-  'h-9 w-full rounded-lg border border-kumo-line bg-kumo-base px-3 text-[14px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15'
+  'h-10 w-full rounded-lg border border-kumo-line bg-kumo-base px-3 text-[16px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15 sm:h-9 sm:text-[14px]'
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -80,6 +81,114 @@ function PasswordField({
       ) : description ? (
         <p className="mt-1 text-[12px] tracking-[-0.1px] text-kumo-subtle">{description}</p>
       ) : null}
+    </div>
+  )
+}
+
+const CommitEmailRow = ({ initialCommitEmail }: { initialCommitEmail?: string }) => {
+  const { authenticatedApi } = useAuthenticatedApi()
+  const toasts = useKumoToastManager()
+  const [commitEmail, setCommitEmail] = useState(initialCommitEmail)
+  const [isEditing, setIsEditing] = useState(false)
+  const [input, setInput] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const startEditing = () => {
+    setInput(commitEmail ?? '')
+    setError(null)
+    setIsEditing(true)
+  }
+
+  const handleSave = async () => {
+    const email = input.trim() || null
+    if (email !== null) {
+      try {
+        validateCommitEmail(email)
+      } catch {
+        setError('Enter an address like name@example.com')
+        return
+      }
+    }
+
+    setSaving(true)
+    try {
+      await authenticatedApi.setOwnCommitEmail(email)
+      setCommitEmail(email ?? undefined)
+      setIsEditing(false)
+      toasts.add({ title: email ? 'Commit email updated' : 'Commit email cleared', variant: 'success' })
+    } catch (err) {
+      console.error('Failed to update commit email:', err)
+      toasts.add({ title: 'Failed to update commit email', variant: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="flex items-end gap-2 px-5 py-4">
+      <div className="min-w-0 flex-1">
+        <FieldLabel>Commit email</FieldLabel>
+        {isEditing ? (
+          <>
+            <input
+              type="email"
+              value={input}
+              onChange={(e) => { setInput(e.target.value); setError(null) }}
+              onKeyDown={(e) => {
+                if (isImeComposing(e)) return
+                if (e.key === 'Enter') handleSave()
+                if (e.key === 'Escape') setIsEditing(false)
+              }}
+              placeholder="name@example.com"
+              aria-label="Commit email"
+              autoComplete="email"
+              autoFocus
+              className={`mt-1.5 ${INPUT} ${error ? 'border-kumo-danger focus:border-kumo-danger' : ''}`}
+            />
+            <p className={`mt-1 text-[12px] tracking-[-0.1px] ${error ? 'text-kumo-danger' : 'text-kumo-subtle'}`}>
+              {error ?? 'Leave blank to use an address based on your user ID.'}
+            </p>
+          </>
+        ) : commitEmail ? (
+          <p className="mt-1 truncate text-[14px] tracking-[-0.25px] text-kumo-default">{commitEmail}</p>
+        ) : (
+          <p className="mt-1 text-[14px] tracking-[-0.25px] text-kumo-inactive">
+            Not set — commits use an address based on your user ID
+          </p>
+        )}
+      </div>
+      {isEditing ? (
+        <>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            aria-label="Save commit email"
+            className={PRIMARY_BTN}
+          >
+            <Check size={15} weight="bold" />
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditing(false)}
+            aria-label="Cancel"
+            className={ICON_BTN}
+          >
+            <X size={15} />
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={startEditing}
+          aria-label="Edit commit email"
+          className={ICON_BTN}
+        >
+          <Pencil size={14} />
+        </button>
+      )}
     </div>
   )
 }
@@ -246,8 +355,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-6 pb-16 sm:px-10">
-      <header className="px-1 pb-2 pt-10">
+    <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-4 pb-16 sm:px-10">
+      <header className="px-1 pb-2 pt-6 sm:pt-10">
         <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Profile</h1>
         <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
           Manage your account details, avatar, and security.
@@ -272,7 +381,7 @@ export default function SettingsPage() {
                 ) : (
                   <User size={28} className="text-kumo-subtle" />
                 )}
-                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
                   <Camera size={18} className="text-white" />
                 </div>
                 {avatarUploading && (
@@ -311,6 +420,7 @@ export default function SettingsPage() {
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
                     onKeyDown={(e) => {
+                      if (isImeComposing(e)) return
                       if (e.key === 'Enter') handleSaveName()
                       if (e.key === 'Escape') handleCancelEdit()
                     }}
@@ -356,6 +466,8 @@ export default function SettingsPage() {
                 </button>
               )}
             </div>
+
+            <CommitEmailRow initialCommitEmail={userInfo?.commitEmail} />
 
             {/* User ID */}
             <div className="flex items-center gap-2 px-5 py-4">

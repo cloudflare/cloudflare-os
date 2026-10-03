@@ -11,7 +11,6 @@
     }
   },
   "scripts": {
-    "build": "tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "test:run": "vitest run",
@@ -19,7 +18,8 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
-    "@cloudflare/workers-types": "^5.20260808.1",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
     "vitest": "catalog:"
   }
 }

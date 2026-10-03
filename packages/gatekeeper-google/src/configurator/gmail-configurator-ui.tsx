@@ -12,10 +12,16 @@ export default {
     return false;
   },
 
+  // Must mirror `parseGmailUrl` in resources.ts, which is what actually mints the capability. This
+  // module is transpiled on its own and cannot import that parser, so `__tests__/configurator-url
+  // .test.ts` is what keeps the copies honest.
   initialValuesFromResourceUrl({ resourceUrl }) {
     const hash = new URL(resourceUrl).hash.replace(/^#/, "");
     if (hash.startsWith("search/")) {
-      return { mode: "search", query: decodeURIComponent(hash.slice("search/".length)) };
+      // Gmail encodes spaces in hash searches as `+`, which decodeURIComponent leaves alone. The
+      // substitution has to precede the decode so an escaped `%2B` still yields a literal `+`.
+      const query = hash.slice("search/".length).replace(/\+/g, " ");
+      return { mode: "search", query: decodeURIComponent(query) };
     }
     if (hash.startsWith("label/")) {
       return { mode: "label", label: decodeURIComponent(hash.slice("label/".length)) };

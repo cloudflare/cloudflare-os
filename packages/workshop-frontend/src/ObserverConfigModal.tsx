@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -17,6 +17,7 @@ import {
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { openConnectWindow } from './connectHandoff'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -90,13 +91,14 @@ export default function ObserverConfigModal({
   // observer binding needs.
   const [vendorsById, setVendorsById] = useState<Map<string, GatekeeperVendorInfo>>(new Map())
   const [vendorsReady, setVendorsReady] = useState(false)
+  // The flow being started, by vendorId (connect) or accountId (re-authenticate, grant). Held only
+  // while the request that starts it is in flight, not until the account arrives: a popup flow can
+  // end without adding one (abandoned, refused by the provider, or an account the user already has),
+  // and waiting on it would strand the dialog with every way forward disabled. The result arrives
+  // through the accounts subscription whenever the flow does complete.
   const [connecting, setConnecting] = useState<string | null>(null)
   const [reconnecting, setReconnecting] = useState<number | null>(null)
   const [granting, setGranting] = useState<number | null>(null)
-
-  // The subscriber closure (created once) reads the in-flight connect target through this ref so it
-  // can clear it when the freshly-connected account arrives.
-  const connectingRef = useRef<string | null>(null)
 
   // ── subscribe to the user's connected accounts ────────────────────────────────
   useEffect(() => {
@@ -110,15 +112,6 @@ export default function ObserverConfigModal({
           next.set(id, { id, description, vendor, vendorId, supportedResources, credentialsValid })
           return next
         })
-        if (credentialsValid) {
-          setReconnecting(r => (r === id ? null : r))
-          setGranting(g => (g === id ? null : g))
-          // If we were waiting on a connect for this vendor, it's done.
-          if (connectingRef.current === vendorId) {
-            connectingRef.current = null
-            setConnecting(null)
-          }
-        }
       },
       remove(id) {
         if (cancelled) return
@@ -175,8 +168,8 @@ export default function ObserverConfigModal({
   // ── keep choices in sync with the available accounts ──────────────────────────
   // Default each binding to its first matching account, and drop a choice whose account has
   // disappeared (e.g. disconnected in another tab). When a binding is being re-prompted because it
-  // just failed, prefer the account that failed: re-authenticating it in place is usually the fix,
-  // so it should be what the re-authenticate affordance is aimed at.
+  // just failed, prefer the account that failed, so the reason shown is about the selected account
+  // and an expired one can be re-authenticated in place.
   useEffect(() => {
     setChoices(prev => {
       let changed = false
@@ -203,7 +196,6 @@ export default function ObserverConfigModal({
   // ── connect / reconnect handlers ──────────────────────────────────────────────
   const handleConnect = async (need: ObserverBindingNeed) => {
     const { vendorId } = need
-    connectingRef.current = vendorId
     setConnecting(vendorId)
     try {
       const vendor = vendorsById.get(vendorId)
@@ -211,16 +203,15 @@ export default function ObserverConfigModal({
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
         const required = requiredResourceUrlPatterns(need, vendor)
-        const { url } = await authenticatedApi.connectAccount(
+        openConnectWindow(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
-        )
-        window.open(url, '_blank', 'noopener,noreferrer')
+        ))
       }
     } catch (err) {
       console.error('Failed to initiate connection:', err)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
-      connectingRef.current = null
+    } finally {
       setConnecting(null)
     }
   }
@@ -228,12 +219,12 @@ export default function ObserverConfigModal({
   const handleReconnect = async (accountId: number) => {
     setReconnecting(accountId)
     try {
-      const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
-      // Subscription fires add() with credentialsValid:true on completion, clearing `reconnecting`.
+      // The popup redeems the ticket itself; the restored account arrives through the subscription.
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
     } catch (err) {
       console.error('Failed to initiate reconnection:', err)
       toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
+    } finally {
       setReconnecting(null)
     }
   }
@@ -248,8 +239,8 @@ export default function ObserverConfigModal({
     if (missing.length === 0) return
     setGranting(account.id)
     try {
-      const { url } = await authenticatedApi.ensureAccountResources(account.id, missing)
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      const flow = await authenticatedApi.ensureAccountResources(account.id, missing)
+      if (flow) openConnectWindow(flow)
       else {
         // The gatekeeper confirmed this account already has access. Update the modal so the user can
         // continue without an OAuth flow.
@@ -271,11 +262,11 @@ export default function ObserverConfigModal({
           })
           return next
         })
-        setGranting(null)
       }
     } catch (err) {
       console.error('Failed to request additional access:', err)
       toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+    } finally {
       setGranting(null)
     }
   }
@@ -308,188 +299,201 @@ export default function ObserverConfigModal({
   }
 
   // The overseer re-prompts with `failure` set when an already-configured binding failed
-  // verification on this open (typically expired credentials).
+  // verification on this open: expired credentials, or an account without access to the data.
   const isRetry = needs.some(n => n.failure)
 
   return (
     <Dialog.Root open disablePointerDismissal onOpenChange={open => { if (!open) onCancel() }}>
-      <Dialog className="p-6" size="lg">
-        <Dialog.Title className="mb-2 text-lg font-semibold">
-          {isRetry ? 'Verify your access again' : 'Verify your access'}
-        </Dialog.Title>
-        <Text variant="secondary" size="sm" as="p">
-          {isRetry
-            ? 'We couldn’t confirm your access to everything this workspace has read. Re-authenticate ' +
-              'the account below, or choose a different one, then try again.'
-            : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
-              'data it uses.'}
-        </Text>
+      <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0" size="lg">
+        <div className="shrink-0 px-6 pt-6">
+          <Dialog.Title className="mb-2 text-lg font-semibold">
+            {isRetry ? 'Verify your access again' : 'Verify your access'}
+          </Dialog.Title>
+          <Text variant="secondary" size="sm" as="p">
+            {isRetry
+              ? 'We couldn’t confirm your access to everything this workspace has read. Depending on ' +
+                'the reason below, re-authenticate an expired account, choose a different one, or ask ' +
+                'the workspace owner to share what your account can’t access.'
+              : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
+                'data it uses.'}
+          </Text>
+        </div>
 
-        {!ready || !vendorsReady ? (
-          <div className="text-center py-10">
-            <Loader />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 mt-5">
-            {needs.map(need => {
-              const matching = [...accounts.values()].filter(a => a.vendorId === need.vendorId)
-              const vendorInfo = vendorsById.get(need.vendorId)
-              const vendor = matching[0]?.vendor ?? vendorInfo?.description
-              const vendorName = vendor?.displayName || need.vendorId || 'service'
-              const chosen = accountFor(need.gatekeeperId)
-              const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
-              const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          {!ready || !vendorsReady ? (
+            <div className="text-center py-10">
+              <Loader />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {needs.map(need => {
+                const matching = [...accounts.values()].filter(a => a.vendorId === need.vendorId)
+                const vendorInfo = vendorsById.get(need.vendorId)
+                const vendor = matching[0]?.vendor ?? vendorInfo?.description
+                const vendorName = vendor?.displayName || need.vendorId || 'service'
+                const chosen = accountFor(need.gatekeeperId)
+                const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
+                const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
 
-              return (
-                <div key={need.gatekeeperId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">
-                  <div className={`flex items-center gap-3${matching.length === 0 && !need.failure ? '' : ' mb-3'}`}>
-                    <Avatar
-                      src={vendor?.logo?.url}
-                      background={vendor?.color}
-                      size={32}
-                      fallback={<Plus size={16} />}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-medium text-kumo-default truncate">
-                        {need.resourceTitle}
-                      </div>
-                      {need.resourceUrl && (
-                        <div className="text-xs font-mono text-kumo-subtle truncate">
-                          {need.resourceUrl.replace(/^https?:\/\//, '')}
+                return (
+                  <div key={need.gatekeeperId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">
+                    <div className={`flex items-center gap-3${matching.length === 0 && !need.failure ? '' : ' mb-3'}`}>
+                      <Avatar
+                        src={vendor?.logo?.url}
+                        background={vendor?.color}
+                        size={32}
+                        fallback={<Plus size={16} />}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] font-medium text-kumo-default truncate">
+                          {need.resourceTitle}
                         </div>
-                      )}
-                    </div>
-                    {matching.length === 0 && vendor && (
-                      <WorkshopButton
-                        tone="primary"
-                        onClick={() => handleConnect(need)}
-                        disabled={connecting === need.vendorId}
-                      >
-                        {connecting === need.vendorId ? 'Waiting for connection…' : 'Connect'}
-                      </WorkshopButton>
-                    )}
-                  </div>
-
-                  {/* Name the account that was refused and why. The reason is free text, either from
-                      the gatekeeper or authored by the overseer, and must not be parsed. */}
-                  {need.failure && (
-                    <div className={`flex items-start gap-2 px-3 py-2 rounded-md text-xs text-kumo-warning bg-kumo-warning-tint border border-kumo-warning/20${matching.length === 0 ? '' : ' mb-3'}`}>
-                      <Warning size={14} className="mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <span className="font-medium">
-                          {accountLabel(accounts.get(need.failure.accountId), need.failure.accountId)}
-                        </span>
-                        {' — '}
-                        {need.failure.reason}
-                      </div>
-                    </div>
-                  )}
-
-                  {matching.length > 0 && (
-                    <div className="flex flex-col gap-2">
-                      {matching.length === 1 ? (
-                        <div className="flex min-h-10 items-center gap-3 rounded-lg border border-kumo-line bg-kumo-elevated/50 px-3 py-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] leading-4 text-kumo-subtle">Using your account</div>
-                            <div className="truncate text-sm font-medium text-kumo-default">
-                              {accountLabel(matching[0], matching[0].id)}
-                            </div>
+                        {need.resourceUrl && (
+                          <div className="text-xs font-mono text-kumo-subtle truncate">
+                            {need.resourceUrl.replace(/^https?:\/\//, '')}
                           </div>
-                          {accountSatisfies(need, matching[0]) && (
-                            <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-kumo-success">
-                              <CheckCircle size={15} weight="fill" /> Ready
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <Select
-                          className="w-full text-sm"
-                          value={
-                            choices[need.gatekeeperId] !== undefined
-                              ? String(choices[need.gatekeeperId])
-                              : undefined
-                          }
-                          placeholder={`Choose a ${vendorName} account…`}
-                          onValueChange={v =>
-                            setChoices(prev => ({ ...prev, [need.gatekeeperId]: Number(v) }))
-                          }
-                          renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
-                        >
-                          {matching.map(acct => (
-                            <Select.Option key={acct.id} value={String(acct.id)}>
-                              {accountLabel(acct, acct.id)}
-                              {!acct.credentialsValid ? ' (expired)' : ''}
-                            </Select.Option>
-                          ))}
-                        </Select>
-                      )}
-
-                      {/* Scope expansion also replaces expired credentials, so prefer this over the
-                          plain re-authentication path when both apply. */}
-                      {chosen && missing.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleGrantResourceAccess(need, chosen)}
-                          disabled={granting === chosen.id}
-                          className="flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60"
-                        >
-                          {granting === chosen.id ? (
-                            <ArrowClockwise size={12} className="animate-spin" />
-                          ) : (
-                            <Warning size={12} />
-                          )}
-                          {granting === chosen.id
-                            ? 'Waiting for access…'
-                            : 'Grant the access needed to verify this resource'}
-                        </button>
-                      )}
-
-                      {/* Offer re-authentication when we know the credentials are stale, and also
-                          when this is the account that just failed verification: a gatekeeper that
-                          rejects an observer on an auth error doesn't always tell the Workshop, so
-                          `credentialsValid` can still read true. reconnectAccount() is documented as
-                          safe for an account that merely *may* be expiring. */}
-                      {chosen && missing.length === 0 &&
-                        (!chosen.credentialsValid || chosen.id === need.failure?.accountId) && (
-                        <button
-                          type="button"
-                          onClick={() => handleReconnect(chosen.id)}
-                          disabled={reconnecting === chosen.id}
-                          className="flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60"
-                        >
-                          {reconnecting === chosen.id ? (
-                            <ArrowClockwise size={12} className="animate-spin" />
-                          ) : (
-                            <Warning size={12} />
-                          )}
-                          {reconnecting === chosen.id
-                            ? 'Re-authenticating…'
-                            : chosen.credentialsValid
-                              ? 'Click to re-authenticate this account'
-                              : 'This account has expired — click to re-authenticate'}
-                        </button>
-                      )}
-
-                      {!vendor?.autoProvisionsAccount && (
-                        <button
-                          type="button"
+                        )}
+                      </div>
+                      {matching.length === 0 && vendor && (
+                        <WorkshopButton
+                          tone="primary"
                           onClick={() => handleConnect(need)}
                           disabled={connecting === need.vendorId}
-                          className="flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start"
                         >
-                          <Plus size={11} />
-                          {connecting === need.vendorId ? 'Waiting for connection…' : 'Connect a different account'}
-                        </button>
+                          {connecting === need.vendorId ? 'Connecting…' : 'Connect'}
+                        </WorkshopButton>
                       )}
                     </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
 
-        <div className="flex justify-end gap-2 mt-6">
+                    {/* Name the account that was refused and why. The reason is free text, either from
+                        the gatekeeper or authored by the overseer, and must not be parsed. */}
+                    {need.failure && (
+                      <div className={`flex items-start gap-2 px-3 py-2 rounded-md text-xs text-kumo-warning bg-kumo-warning-tint border border-kumo-warning/20${matching.length === 0 ? '' : ' mb-3'}`}>
+                        <Warning size={14} className="mt-0.5 shrink-0" />
+                        <div className="min-w-0">
+                          <span className="font-medium">
+                            {accountLabel(accounts.get(need.failure.accountId), need.failure.accountId)}
+                          </span>
+                          {' — '}
+                          {need.failure.reason}
+                        </div>
+                      </div>
+                    )}
+
+                    {matching.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        {matching.length === 1 ? (
+                          <div className="flex min-h-10 items-center gap-3 rounded-lg border border-kumo-line bg-kumo-elevated/50 px-3 py-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[11px] leading-4 text-kumo-subtle">Using your account</div>
+                              <div className="truncate text-sm font-medium text-kumo-default">
+                                {accountLabel(matching[0], matching[0].id)}
+                              </div>
+                            </div>
+                            {/* Never for the account verification just refused, whatever it has been granted. */}
+                            {accountSatisfies(need, matching[0]) &&
+                              matching[0].id !== need.failure?.accountId && (
+                              <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-kumo-success">
+                                <CheckCircle size={15} weight="fill" /> Ready
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <Select
+                            className="w-full text-sm"
+                            value={
+                              choices[need.gatekeeperId] !== undefined
+                                ? String(choices[need.gatekeeperId])
+                                : undefined
+                            }
+                            placeholder={`Choose a ${vendorName} account…`}
+                            onValueChange={v =>
+                              setChoices(prev => ({ ...prev, [need.gatekeeperId]: Number(v) }))
+                            }
+                            renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
+                          >
+                            {matching.map(acct => (
+                              <Select.Option key={acct.id} value={String(acct.id)}>
+                                {accountLabel(acct, acct.id)}
+                                {!acct.credentialsValid ? ' (expired)' : ''}
+                              </Select.Option>
+                            ))}
+                          </Select>
+                        )}
+
+                        {/* Scope expansion also replaces expired credentials, so prefer this over the
+                            plain re-authentication path when both apply. */}
+                        {chosen && missing.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleGrantResourceAccess(need, chosen)}
+                            disabled={granting === chosen.id}
+                            className="flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60"
+                          >
+                            {granting === chosen.id ? (
+                              <ArrowClockwise size={12} className="animate-spin" />
+                            ) : (
+                              <Warning size={12} />
+                            )}
+                            {granting === chosen.id
+                              ? 'Requesting access…'
+                              : 'Grant the access needed to verify this resource'}
+                          </button>
+                        )}
+
+                        {/* Offer re-authentication when we know the credentials are stale, and also
+                            when this is the account that just failed verification: a gatekeeper that
+                            rejects an observer on an auth error doesn't always tell the Workshop, so
+                            `credentialsValid` can still read true. reconnectAccount() is documented as
+                            safe for an account that merely *may* be expiring. The second case is not
+                            styled as a warning: a refusal of valid credentials usually means the
+                            account lacks access, which re-authenticating cannot fix. */}
+                        {chosen && missing.length === 0 &&
+                          (!chosen.credentialsValid || chosen.id === need.failure?.accountId) && (
+                          <button
+                            type="button"
+                            onClick={() => handleReconnect(chosen.id)}
+                            disabled={reconnecting === chosen.id}
+                            className={chosen.credentialsValid
+                              ? 'flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start'
+                              : 'flex items-center gap-1.5 text-xs text-kumo-warning hover:underline disabled:opacity-60'}
+                          >
+                            {reconnecting === chosen.id ? (
+                              <ArrowClockwise size={12} className="animate-spin" />
+                            ) : chosen.credentialsValid ? (
+                              <ArrowClockwise size={12} />
+                            ) : (
+                              <Warning size={12} />
+                            )}
+                            {reconnecting === chosen.id
+                              ? 'Re-authenticating…'
+                              : chosen.credentialsValid
+                                ? 'Re-authenticate this account'
+                                : 'This account has expired — click to re-authenticate'}
+                          </button>
+                        )}
+
+                        {!vendor?.autoProvisionsAccount && (
+                          <button
+                            type="button"
+                            onClick={() => handleConnect(need)}
+                            disabled={connecting === need.vendorId}
+                            className="flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start"
+                          >
+                            <Plus size={11} />
+                            {connecting === need.vendorId ? 'Connecting…' : 'Connect a different account'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 justify-end gap-2 border-t border-kumo-line px-6 py-4">
           <WorkshopButton tone="secondary" onClick={onCancel}>
             Cancel
           </WorkshopButton>

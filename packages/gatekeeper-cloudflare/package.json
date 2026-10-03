@@ -10,15 +10,17 @@
     "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
-    "miniflare": "5.20260801.0-alpha",
+    "@gadgets/scripts": "workspace:*",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

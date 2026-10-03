@@ -1,0 +1,5 @@
+/* Stacks the textarea over the mirror that paints its text (see ComposerMirror.module.css). */
+.capsuleInputWrapper {
+  position: relative;
+  flex: 1;
+}

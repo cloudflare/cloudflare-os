@@ -53,13 +53,14 @@ within the explicit scan limits above; exceeding a limit fails rather than prete
 | `MCP_PORTAL_AUTH` | `oauth` (default), `none`, or `token`. |
 | `MCP_PORTAL_TOKEN` | Secret bearer token, for `MCP_PORTAL_AUTH: "token"`. |
 | `MCP_PORTAL_TRUST_ANNOTATIONS` | `true` to let upstream tool annotations drive auto-approval. Off by default; see below. |
+| `MCP_PORTAL_HIDDEN_SERVER_IDS` | Comma-separated upstream server IDs to hide from the configurator and refuse at the grant boundary. |
 | `MCP_ALLOW_INSECURE` | `"true"` to disable the endpoint checks entirely: permits `http://` **and** private, loopback, link-local, and cloud-metadata hosts, for the portal and every OAuth URL discovered from it. Local dev only. |
 
 The portal must expose upstream tools directly. Use a portal where Code Mode is off or opt-in, or
 append `?codemode=off` when its policy is default-on. Enforced Code Mode is unsupported. Do not add
 an `optimize_context` parameter or opt in to Code Mode on `MCP_PORTAL_URL`.
 
-Only `MCP_ALLOW_INSECURE` is set in the repo's `wrangler.jsonc`, pinned to `"false"` so the default
+Only `MCP_ALLOW_INSECURE` is set in the repo's `cloudflare.config.ts`, pinned to `"false"` so the default
 is explicit rather than merely absent. None of the others is, and a portal URL committed there would
 become the default for every deployment of this repo and would send their users' OAuth flows to
 whichever host it named, so it belongs in the deployment's own configuration — for Cloudflare's

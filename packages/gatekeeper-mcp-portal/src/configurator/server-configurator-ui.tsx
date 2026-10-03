@@ -33,16 +33,20 @@ async function loadServerOptions(
 export default {
   initial: { server: null, mode: "all", tools: null, endpointKind: "unknown" },
 
-  initialValuesFromResourceUrl({ resourceUrl }) {
+  async initialValuesFromResourceUrl({ resourceUrl, ui }) {
     const params = new URLSearchParams(new URL(resourceUrl).hash.slice(1));
     const selected = params.getAll("tool").map(name => name.trim()).filter(Boolean)
       .map(encodeURIComponent);
-    const server = params.get("server")?.trim() || null;
+    const requestedServer = params.get("server")?.trim() || null;
+    const servers = await serverOptions(ui);
+    const server = requestedServer
+      ? servers.some(option => option.value === requestedServer) ? requestedServer : null
+      : servers.length === 1 ? servers[0].value : null;
     return {
       server,
       mode: params.has("tool") ? "choose" : "all",
-      tools: selected.length > 0 ? selected.join(",") : null,
-      endpointKind: server ? "portal" : "unknown",
+      tools: server && selected.length > 0 ? selected.join(",") : null,
+      endpointKind: servers.length > 0 ? "portal" : "empty",
     };
   },
 
@@ -68,10 +72,16 @@ export default {
   render({ values, setValues, ui }) {
     if (values.endpointKind === "unknown") {
       void serverOptions(ui).then(
-        servers => setValues({
-          endpointKind: servers.length > 0 ? "portal" : "empty",
-          server: servers.length === 1 ? servers[0].value : values.server,
-        }),
+        servers => {
+          const server = values.server
+            ? servers.some(option => option.value === values.server) ? values.server : null
+            : servers.length === 1 ? servers[0].value : null;
+          setValues({
+            endpointKind: servers.length > 0 ? "portal" : "empty",
+            server,
+            ...(server === values.server ? {} : { tools: null }),
+          });
+        },
         () => setValues({ endpointKind: "unavailable" }),
       );
     }
@@ -94,9 +104,9 @@ export default {
         <Field
           label="Server"
           description={
-            "The portal returned no direct upstream tools. If servers are expected, connect with " +
-            "Code Mode disabled (`?codemode=off`) and remove any `optimize_context` parameter; " +
-            "otherwise enable a server in the portal and try again."
+            "No grantable servers are available through this connector. They may be disabled in " +
+            "the portal or available through native connectors. If this is unexpected, ask an " +
+            "administrator to check the portal configuration."
           }
         />
       </Section>;
@@ -109,7 +119,7 @@ export default {
     const selectedCount = (values.tools ?? "").split(",").filter(Boolean).length;
 
     return <Section>
-      {!soleServer && <Field
+      {(!soleServer || !values.server) && <Field
         label="Server"
         description="Which server behind this portal to grant. Its tools appear next."
       >

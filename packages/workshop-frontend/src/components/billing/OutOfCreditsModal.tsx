@@ -5,6 +5,7 @@ import { CloudWarning, Lightning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
+import { openConnectWindow } from '../../connectHandoff'
 
 interface OutOfCreditsModalProps {
   open: boolean
@@ -60,10 +61,13 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
     if (!auth) return
     setConnecting(true)
     try {
-      const { url } = await auth.authenticatedApi.connectAccount('cloudflare', [])
-      window.open(url, '_blank', 'noopener,noreferrer')
-    } catch {
-      // ignore
+      openConnectWindow(await auth.authenticatedApi.connectAccount('cloudflare', []))
+    } catch (err) {
+      toasts.add({
+        title: 'Failed to start Cloudflare connection',
+        description: err instanceof Error ? err.message : undefined,
+        variant: 'error',
+      })
     } finally {
       setConnecting(false)
     }
@@ -89,7 +93,7 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <Dialog className="p-6 sm:w-[560px]" size="base">
+      <Dialog className="responsive-dialog overflow-y-auto p-6 sm:w-[560px]" size="base">
         <Dialog.Title className="text-lg font-semibold mb-2 flex items-center gap-2">
           <CloudWarning size={22} weight="bold" className="text-kumo-warning" />
           You've reached your free usage limit

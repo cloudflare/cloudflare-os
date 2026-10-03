@@ -1,0 +1,60 @@
+import {
+  DEFAULT_GATEKEEPER_WRANGLER, OBSERVABILITY, bindings, defineGadgetsWorker,
+  type DurableObjectMigration,
+} from "@gadgets/scripts/worker-config";
+
+export default defineGadgetsWorker({
+  name: "gatekeeper-mcp-portal",
+  entrypoint: ".wrangler/validate/src/portal.ts",
+
+  // See `gatekeeper-mcp`'s cloudflare.config.ts. The portal URL is administrator-supplied rather
+  // than user input, but the endpoints reached from it are not: OAuth discovery follows a
+  // `WWW-Authenticate` header and then an issuer, both chosen by the far side.
+  // `global_fetch_strictly_public` makes workerd reject reserved IP ranges after DNS resolution,
+  // which no hostname check can do.
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "global_fetch_strictly_public"],
+
+  // Every var here is deployment configuration, so this file deliberately sets none of them to a
+  // real value. `MCP_PORTAL_URL` in particular must come from the deployment's own config -- for
+  // Cloudflare's internal deployment, the per-package overrides in `gadgets-internal` -- because a
+  // URL committed here would become the default portal for anyone who deploys this repo, and would
+  // send their users' OAuth flows to whichever host it named.
+  //
+  // Unset, `readPortalConfig()` returns null, the connector advertises no resources, and the
+  // Workshop hides it. That is the intended state for a deployment that has no portal.
+  //
+  //   MCP_PORTAL_URL
+  //     The portal's MCP endpoint (Streamable HTTP). The whole configuration of this connector:
+  //     users never type a URL. Typically a Cloudflare MCP server portal, so Access decides who may
+  //     connect and Cloudflare Gateway logs and inspects what crosses.
+  //
+  //   MCP_PORTAL_NAME
+  //     Display name in the connector list and every approval prompt. Defaults to
+  //     "MCP Server Portal (<host>)".
+  //
+  //   MCP_PORTAL_AUTH
+  //     "oauth" (default), "none", or "token". For "token", the bearer is the MCP_PORTAL_TOKEN
+  //     secret.
+  //
+  //   MCP_PORTAL_TRUST_ANNOTATIONS
+  //     "true" to let tool annotations from behind this portal drive auto-approval. Off by default:
+  //     a portal is an aggregator, and those annotations are written by whichever upstream server it
+  //     proxies, not by the administrator who chose the portal. Only set it where the upstreams
+  //     themselves are trusted.
+  //
+  //   MCP_PORTAL_HIDDEN_SERVER_IDS
+  //     Comma-separated upstream server IDs to omit from the resource configurator and reject if a
+  //     caller supplies one directly in a resource URL.
+  env: {
+    // Set to "true" to permit http:// and private-network endpoints. Local development only.
+    MCP_ALLOW_INSECURE: bindings.text("false"),
+  },
+
+  observability: OBSERVABILITY,
+});
+
+export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
+
+export const migrations: DurableObjectMigration[] = [
+  { tag: "v0", new_sqlite_classes: ["McpAccount", "McpGatekeeperImpl"] },
+];

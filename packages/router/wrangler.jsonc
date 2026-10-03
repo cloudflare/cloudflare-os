@@ -1,24 +1,23 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "router",
   "main": "src/index.ts",
-  "compatibility_date": "2026-02-02",
-
-  // Gatekeeper service bindings (GATEKEEPER_*) are added dynamically at deploy time — by the
-  // deploy service for customer instances, from the release manifest's binding templates. Only
-  // the static backend binding is checked in.
+  "compatibility_date": "2026-09-04",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
   "services": [
     {
       "binding": "WORKSHOP_BACKEND",
       "service": "workshop-backend"
     }
   ],
-
-  // The router owns the public origin for customer instances, so it serves the frontend.
-  // `run_worker_first` keeps API and gatekeeper prefixes on the worker; everything else falls
-  // through to static assets with SPA fallback.
   "assets": {
-    "directory": "../workshop-frontend/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": [
@@ -27,12 +26,7 @@
       "/blueprint-screenshot",
       "/blueprint-screenshot/*",
       "/gatekeeper/*"
-    ]
-  },
-
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1,
-    "logs": { "invocation_logs": false }
+    ],
+    "directory": "../workshop-frontend/dist"
   }
 }
