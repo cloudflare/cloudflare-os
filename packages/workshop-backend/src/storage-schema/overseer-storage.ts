@@ -177,9 +177,10 @@ export type GadgetRecord = {
   commitId?: string;
 
   /**
-   * The blueprint this gadget follows and the release of it the gadget most recently merged,
-   * set when the gadget is instantiated from a blueprint. Absent on a gadget that was not, or
-   * that was before gadgets recorded it.
+   * The blueprint this gadget follows and the release of it the gadget most recently merged.
+   * Set when the gadget is instantiated from a blueprint, and by each accept of a proposal to
+   * merge one into it (see AiChatMessageBody.blueprintMerges). Absent on a gadget that never
+   * took a blueprint's release, or last did before gadgets recorded it.
    *
    * The record has to name the blueprint because the release commit in the gadget's history
    * does not: a blueprint id is a share link, and release commits travel on into the packs of

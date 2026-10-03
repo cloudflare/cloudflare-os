@@ -38,6 +38,7 @@
 //   root them or the agent's replay must tolerate a missing object by eliding the read).
 
 import {
+  Errors,
   hashBlob,
   readBlob,
   readCommit,
@@ -245,6 +246,20 @@ export class GitStore {
   }
 
   /**
+   * Like `readCommitFiles()`, but returns undefined if the store does not hold the commit with
+   * its whole tree. A blueprint release's ancestors arrive as commits alone, most of them, so
+   * holding a commit says nothing about holding its files.
+   */
+  async readCommitFilesIfHeld(oid: string): Promise<Map<string, string> | undefined> {
+    try {
+      return await this.readCommitFiles(oid);
+    } catch (err) {
+      if (err instanceof Errors.NotFoundError) return undefined;
+      throw err;
+    }
+  }
+
+  /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
    * to `depth` commits' metadata. Traversal order for merge commits follows git log's default
    * (reverse chronological).
@@ -278,6 +293,19 @@ export class GitStore {
   async readCommitObject(oid: string): Promise<CommitObject> {
     let { commit } = await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
     return commit;
+  }
+
+  /**
+   * Walks a commit's first-parent chain, the commit itself first. A first parent is the same
+   * line's previous state and any other is something merged into it, so this is a gadget's own
+   * history, or one blueprint's releases. Reads commit objects only.
+   */
+  async *firstParentChain(oid: string): AsyncGenerator<{ oid: string, commit: CommitObject }> {
+    for (let next: string | undefined = oid; next !== undefined;) {
+      let commit: CommitObject = await this.readCommitObject(next);
+      yield { oid: next, commit };
+      next = commit.parent[0];
+    }
   }
 
   /**

@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -431,6 +431,27 @@ const CHAT_CHANGE_RETIRED_TTL_MS = 60_000;
 // client-minted (a UUID satisfies this), becomes part of a storage key, and needs no other
 // structure.
 const CHAT_CHANGE_CLIENT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
+
+// Splits a change into pieces that each fit one "changes" message (CHAT_CHANGE_MESSAGE_BUDGET),
+// without dividing any file's change: applied in order, the pieces make the same change. A
+// file whose change is over the budget by itself gets a piece of its own, as a single row that
+// large gets a message of its own (see the budget's declaration). An empty change has no pieces.
+function splitCodeChangeByFile(change: CodeChange): CodeChange[] {
+  let pieces: CodeChange[] = [];
+  let size = Infinity;  // of the piece being filled: none yet, so the first file starts one
+  for (let [key, entries] of Object.entries(change)) {
+    for (let entry of entries) {
+      let entrySize = codeChangeSerializedSize({[key]: [entry]});
+      if (size + entrySize > CHAT_CHANGE_MESSAGE_BUDGET) {
+        pieces.push({});
+        size = 0;
+      }
+      (pieces.at(-1)![Number(key)] ??= []).push(entry);
+      size += entrySize;
+    }
+  }
+  return pieces;
+}
 
 const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -2500,8 +2521,9 @@ class OverseerImpl implements AgentHooks {
   // splitting would scatter one batch's extras and edits across messages a suffix revert could
   // divide, and would break the agent's message-counting change-ID numbering.
   //
-  // `options.extras` lets the agent's step barrier attach its creations/binding additions, and
-  // updateChatFromMainline attaches its `mainlineMerge` record; a message is written when
+  // `options.extras` lets the agent's step barrier attach its creations/binding additions,
+  // updateChatFromMainline its `mainlineMerge` record, and applyBlueprint (or the barrier, for
+  // a gadget created from a blueprint) its `blueprintMerges`; a message is written when
   // there is anything at all to record (rows, undeclared pins, or extras). `options.author`
   // overrides the row-derived author (required when there are no rows). The returned
   // `sequence` is the first written message's.
@@ -2513,6 +2535,7 @@ class OverseerImpl implements AgentHooks {
     addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
     worktreeCommits?: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
     mainlineMerge?: {conflictPaths: string[]},
+    blueprintMerges?: BlueprintMerge[],
   }): {sequence: number, meta: AiChatMetadata} | undefined {
     if (!meta) {
       meta = this.storage.chatMeta.get(chatId);
@@ -2533,7 +2556,8 @@ class OverseerImpl implements AgentHooks {
     let hasExtras = (options?.createdGadgets?.length ?? 0) > 0 ||
         (options?.createdWorktrees?.length ?? 0) > 0 ||
         (options?.addedBindings?.length ?? 0) > 0 ||
-        (options?.worktreeCommits?.length ?? 0) > 0 || options?.mainlineMerge !== undefined;
+        (options?.worktreeCommits?.length ?? 0) > 0 || options?.mainlineMerge !== undefined ||
+        (options?.blueprintMerges?.length ?? 0) > 0;
     if (rows.length === 0 && pins.length === 0 && !hasExtras) {
       return;
     }
@@ -2572,6 +2596,8 @@ class OverseerImpl implements AgentHooks {
           ? {worktreeCommits: options.worktreeCommits} : {}),
       ...(options?.mainlineMerge !== undefined
           ? {mainlineMerge: options.mainlineMerge} : {}),
+      ...(options?.blueprintMerges?.length
+          ? {blueprintMerges: options.blueprintMerges} : {}),
     }]);
 
     this.#retireChatChanges(rows);
@@ -2603,6 +2629,7 @@ class OverseerImpl implements AgentHooks {
         createdWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
+        blueprintMerges: BlueprintMerge[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
@@ -2739,6 +2766,7 @@ class OverseerImpl implements AgentHooks {
           createdWorktrees: step.createdWorktrees,
           addedBindings: step.addedBindings,
           worktreeCommits: step.worktreeCommits,
+          blueprintMerges: step.blueprintMerges,
         }) !== undefined;
       });
     } catch (err) {
@@ -3272,6 +3300,192 @@ class OverseerImpl implements AgentHooks {
     return {conflictPaths};
   }
 
+  // The body of GadgetClient.applyBlueprint(): proposes, in a new chat, merging the blueprint's
+  // current release into the gadget. `author` is the user applying it.
+  //
+  // Modelled on updateChatFromMainline(): the result of the merge is delivered as change rows
+  // over a pin at the gadget's head and materialized into "changes" messages, the first of which
+  // records the proposal (see AiChatMessageBody.blueprintMerges). Nothing here touches the
+  // gadget. Accepting the chat's changes is what does, by that record (see mergeChanges).
+  async applyBlueprint(gadgetId: WorkpieceId, blueprintId: string,
+                       options: {allowUnrelated?: boolean}, author: AiChatAuthorInfo)
+      : Promise<ApplyBlueprintResult> {
+    let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
+    if (!kvRecord) throw new Error("Blueprint not found.");
+    let {metadata} = kvRecord;
+    let release = await this.loadBlueprint(blueprintId, metadata);
+
+    let record = this.getGadgetRecord(gadgetId);
+    let head = record.commitId;
+    if (head === undefined) {
+      // Its files live only in its chat's proposed changes, so there is no head to merge into.
+      throw new Error("This gadget is a provisional creation in a chat. Accept the chat's " +
+          "changes before applying a blueprint to it.");
+    }
+
+    let merge: BlueprintMerge = {
+      gadgetId, blueprintId, title: metadata.title, version: metadata.version, commitId: release,
+      kind: "follow", conflictPaths: [],
+      ...this.#missingBlueprintBindings(metadata, record),
+    };
+    let change: CodeChange = {};
+    let inHistory = this.gitCache.isAncestor(release, head);
+    if (inHistory) {
+      // The gadget's history already holds the release, so there is nothing to merge. What is
+      // left to propose is following this blueprint, if the gadget follows another: it may
+      // have come by the release through a blueprint derived from this one, or from a copy of
+      // this one under another id.
+      if (record.upstream?.blueprintId === blueprintId && record.upstream.commitId === release) {
+        return {outcome: "upToDate"};
+      }
+    } else {
+      let base = await this.#blueprintMergeBase(record.upstream, head, release, blueprintId);
+      if (base === undefined) return {outcome: "baseUnavailable"};
+      if (base.unverified && !options.allowUnrelated) return {outcome: "unrelated"};
+
+      let ours = await this.gitStore.readCommitFiles(head);
+      let theirs = await this.gitStore.readCommitFiles(release);
+      let result = threeWayMerge(base.files, ours, theirs,
+          {base: "base", ours: "this gadget", theirs: "blueprint"});
+      merge.kind = filesEqual(theirs, base.files) ? "follow"
+          : filesEqual(ours, base.files) ? "fastForward" : "merge";
+      merge.baseCommit = base.commitId;
+      merge.conflictPaths = result.conflictPaths;
+      if (base.unverified) merge.unverifiedBase = true;
+      change = diffFiles(new Map([[gadgetId, ours]]), new Map([[gadgetId, result.files]]));
+    }
+    let pieces = splitCodeChangeByFile(change);
+    if (pieces.length > 1) merge.messageCount = pieces.length;
+
+    // The awaits above are interleaving points, and an accept in some chat may have moved the
+    // gadget's head since it was read. Refuse rather than record a merge into a head that the
+    // gadget no longer has.
+    let fresh = this.storage.gadgets.get(gadgetId);
+    if (fresh?.type !== "gadget" || fresh.commitId !== head) {
+      throw new Error("The gadget changed while the blueprint was being applied; please retry.");
+    }
+
+    // One transaction, so that the chat exists only with its proposal. A release that is new
+    // to the gadget's history pins the gadget at the head it was merged into, even if no file
+    // changes: accepting will write a commit, which has to be a fast-forward like any other.
+    // One already in its history pins nothing, so the proposal cannot go stale: the release
+    // stays in the history of the head wherever the head moves.
+    return this.storage.transaction((): ApplyBlueprintResult => {
+      let chatId = this.nextChatId();
+      let timestamp = this.getChatTimestamp();
+      this.storage.chatMeta.put({
+        id: chatId,
+        title: `Update from blueprint: ${metadata.title}`,
+        started: timestamp,
+        lastActive: timestamp,
+        ...(inHistory ? {} : {codeBase: {
+          pins: [{gadgetId, baseCommit: head, mergedCommit: head}], generation: 0, revision: 0,
+        }}),
+      });
+
+      // One message per piece of the change, the first of them recording the proposal -- or
+      // one message for the record alone, if no file changes. (Each piece is its own row, since
+      // materialization writes one message for all the rows it finds.) Nothing else writes to
+      // the chat meanwhile, so the messages are consecutive, as `messageCount` says they are.
+      let blueprintMerges = [merge];
+      do {
+        let piece = pieces.shift();
+        if (piece !== undefined) {
+          this.#appendChatChangeRow(
+              chatId, this.getChatMetaOrThrow(chatId), author, piece, [], undefined);
+        }
+        this.materializeChatChanges(chatId, undefined, {author, blueprintMerges});
+        blueprintMerges = [];
+      } while (pieces.length > 0);
+      return {outcome: "proposed", chatId};
+    });
+  }
+
+  // Chooses the commit to merge the release `release` into a gadget against, where the history
+  // of the gadget's head `head` does not hold that release, and reads its files. `upstream` is
+  // what the gadget follows. Returns undefined if the two histories have commits in common but
+  // the store holds the files of none: a release's ancestors mostly arrive without theirs.
+  //
+  // The base is the newest commit that both histories hold. Usually that is the release the
+  // gadget last took from this blueprint, or the one that a blueprint derived from another was
+  // built on. Histories that have merged each other can have several such commits, of which
+  // the one in the blueprint's own lineage is preferred, and then the latest.
+  //
+  // Histories with nothing in common leave the base to be assumed: the release the gadget last
+  // took from the blueprint it follows, or for a gadget that follows none, the first commit of
+  // its own to have any files. If it is this blueprint that the gadget follows, that is no
+  // guess. Only a blueprint's publisher can release under its id, so its releases are versions
+  // of one thing even where they are not chained to one another, as a bundled blueprint's are
+  // not. Otherwise the base is `unverified`, unless it has no files to be wrong about or the
+  // release's history holds the very same tree.
+  async #blueprintMergeBase(upstream: GadgetUpstream | undefined, head: string, release: string,
+                            blueprintId: string)
+      : Promise<{commitId: string, files: Map<string, string>, unverified: boolean} | undefined> {
+    let common = this.gitCache.mergeBases(head, release);
+    if (common.length === 0) {
+      let commitId = upstream?.commitId ?? await this.#firstCommitWithFiles(head);
+      let files = await this.gitStore.readCommitFilesIfHeld(commitId);
+      if (files === undefined) return undefined;
+      let unverified = upstream?.blueprintId !== blueprintId && files.size > 0 &&
+          !await this.#historyHoldsTree(release, await this.gitStore.commitTree(commitId));
+      return {commitId, files, unverified};
+    }
+
+    let held: {commitId: string, files: Map<string, string>, unverified: boolean}[] = [];
+    for (let commitId of common) {
+      let files = await this.gitStore.readCommitFilesIfHeld(commitId);
+      if (files !== undefined) held.push({commitId, files, unverified: false});
+    }
+    if (held.length <= 1) return held[0];
+
+    for await (let {oid} of this.gitStore.firstParentChain(release)) {
+      let inLineage = held.find(base => base.commitId === oid);
+      if (inLineage !== undefined) return inLineage;
+    }
+    let times = await Promise.all(held.map(async base =>
+        (await this.gitStore.readCommitObject(base.commitId)).committer.timestamp));
+    return held[times.indexOf(Math.max(...times))];
+  }
+
+  // The oldest commit of a gadget's own history to have any files, or the oldest of all if
+  // none has. `head` is the gadget's head.
+  async #firstCommitWithFiles(head: string): Promise<string> {
+    let emptyTree = await gitObjectOid("tree", encodeGitTree([]));
+    let first: string | undefined;
+    let root = head;
+    for await (let {oid, commit} of this.gitStore.firstParentChain(head)) {
+      root = oid;
+      if (commit.tree !== emptyTree) first = oid;
+    }
+    return first ?? root;
+  }
+
+  // Whether `commit` or any commit in its history has the tree `tree`. The whole history has
+  // to be held, as a blueprint release's is.
+  async #historyHoldsTree(commit: string, tree: string): Promise<boolean> {
+    let seen = new Set<string>();
+    let pending = [commit];
+    for (let oid of pending) {  // sees the parents pushed below
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      let object = await this.gitStore.readCommitObject(oid);
+      if (object.tree === tree) return true;
+      pending.push(...object.parent);
+    }
+    return false;
+  }
+
+  // The bindings a blueprint declares that the gadget has none named for, in the form a
+  // BlueprintMerge records them. `gadget` is absent for a gadget about to be created, which
+  // has no bindings at all.
+  #missingBlueprintBindings(metadata: BlueprintMetadata, gadget?: GadgetRecord)
+      : Pick<BlueprintMerge, "missingBindings"> {
+    let bound = new Set(gadget && this.visibleBindings(gadget).map(([name]) => name));
+    let missing = Object.entries(metadata.bindings)
+        .filter(([name, binding]) => !binding.spawnerOnly && !bound.has(name));
+    return missing.length > 0 ? {missingBindings: Object.fromEntries(missing)} : {};
+  }
+
 
   // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
   // hold withChatLock). `clientUserId` feeds analytics only.
@@ -3301,6 +3515,23 @@ class OverseerImpl implements AgentHooks {
     let generationToken = entryCodeBase.generation;
     let revisionToken = entryCodeBase.revision;
 
+    // Message statuses drive excluding reverted creations from coverage below. The map stays
+    // valid through the whole accept: the sequence-token revalidation after the awaits
+    // guarantees no message was recorded since.
+    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    let statuses = chatChangeStatuses(messages);
+
+    // The blueprint releases the chat still proposes to merge, by gadget: those recorded on a
+    // "changes" message that is neither merged nor reverted (see
+    // AiChatMessageBody.blueprintMerges). The log is the only record of a proposal, so a revert
+    // withdraws one just by covering its message.
+    let blueprintMerges = new Map<WorkpieceId, BlueprintMerge>();
+    for (let msg of messages) {
+      if (msg.type === "changes" && statuses.get(msg.sequence) === undefined) {
+        for (let merge of msg.blueprintMerges ?? []) blueprintMerges.set(merge.gadgetId, merge);
+      }
+    }
+
     // Get the proposed updates for the thread. Each covered gadget creation or binding addition
     // sits on one of these "changes" messages (see addChatMessages), so an empty list also
     // means there is nothing to promote -- unless the chat still holds a worktree pin. Today a
@@ -3308,18 +3539,14 @@ class OverseerImpl implements AgentHooks {
     // from before that carry pins their worktree was born with or re-pinned at by an earlier
     // accept, which are never dropped by anything else. Running the epoch reset drops them
     // (the auto-commit planning finds the worktree clean), which is how one accept moves such a
-    // chat into the current regime.
+    // chat into the current regime. A blueprint proposal is asked after separately because one
+    // that changes no file leaves nothing in a compaction checkpoint for this list to show.
     let updates = this.getProposedChanges(chatId);
-    if (updates.length === 0 && !entryCodeBase.pins.some(pin => this.isWorktree(pin.gadgetId))) {
+    if (updates.length === 0 && blueprintMerges.size === 0 &&
+        !entryCodeBase.pins.some(pin => this.isWorktree(pin.gadgetId))) {
       // Nothing to merge, so this is a no-op.
       return {outcome: "merged"};
     }
-
-    // Message statuses drive excluding reverted creations from coverage below. The map stays
-    // valid through the whole accept: the sequence-token revalidation after the awaits
-    // guarantees no message was recorded since.
-    let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
-    let statuses = chatChangeStatuses(messages);
 
     // A pending record (or edge) whose stamp the log already marks reverted is dead, not
     // covered: it survives only because a revert's awaited record deletion failed (see
@@ -3355,7 +3582,8 @@ class OverseerImpl implements AgentHooks {
     // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
     // revalidation compares against -- a primitive, so it can't be confused by whatever object
     // the storage layer hands back later).
-    let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string}[] = [];
+    let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string,
+                   release?: string}[] = [];
     for (let record of Array.from(this.storage.gadgets.list())) {
       if (record.type === "worktree") {
         // Worktrees never gate an accept and get no head-commit work here: their content stays
@@ -3382,7 +3610,18 @@ class OverseerImpl implements AgentHooks {
       // no files yet -- so promotion below can give every accepted gadget a head. Coverage must
       // never be inferred from content equality: an empty gadget compares equal to the empty
       // base, which is how creations used to be dropped from accepts.
-      if (filesEqual(files, baseFiles) && !record.pending) continue;
+      //
+      // Nor may a gadget be skipped if the chat proposes merging a blueprint release that its
+      // history does not hold yet. The commit is what records the merge, changed files or not:
+      // without it the next update from that blueprint would be merged against the wrong base.
+      // (Such a gadget is always pinned, or pending here: see applyBlueprint and the agent's
+      // createGadget.)
+      let release = blueprintMerges.get(record.id)?.commitId;
+      if (release !== undefined && record.commitId !== undefined &&
+          this.gitCache.isAncestor(release, record.commitId)) {
+        release = undefined;
+      }
+      if (filesEqual(files, baseFiles) && !record.pending && release === undefined) continue;
 
       // Accepting is only ever a fast-forward: the chat must have already merged the gadget's
       // current head. A stale chat is expected control flow (someone else's accept can land at
@@ -3391,18 +3630,33 @@ class OverseerImpl implements AgentHooks {
       if (record.commitId !== mergedCommit) {
         return {outcome: "stale"};
       }
-      toCommit.push({record, files, baseHead: record.commitId});
+      toCommit.push({record, files, baseHead: record.commitId, release});
     }
 
     // Write the commits (content-addressed object writes; harmless if the accept below turns out
     // stale after all).
     let identity = commitIdentityForAuthor(userMeta.profile);
     let commits: {gadgetId: WorkpieceId, commitId: string}[] = [];
-    for (let {record, files, baseHead} of toCommit) {
+    for (let {record, files, baseHead, release} of toCommit) {
+      let parents = baseHead !== undefined ? [baseHead] : [];
+      if (release !== undefined) {
+        // A merged release is never the first parent, which is the gadget's own previous
+        // state. A gadget that has none starts from an empty root, as one instantiated outside
+        // any chat does (see initializeFromBlueprint).
+        if (baseHead === undefined) {
+          parents.push(await this.gitStore.writeFilesAsCommit(new Map(), {
+            parents: [],
+            author: identity,
+            message: `Create gadget: ${record.title}`,
+            timestamp: new Date(),
+          }));
+        }
+        parents.push(release);
+      }
       commits.push({
         gadgetId: record.id,
         commitId: await this.gitStore.writeFilesAsCommit(files, {
-          parents: baseHead !== undefined ? [baseHead] : [],
+          parents,
           author: identity,
           message: `Accept changes from chat: ${meta.title}`,
           timestamp: new Date(),
@@ -3536,6 +3790,16 @@ class OverseerImpl implements AgentHooks {
       let record = this.storage.gadgets.get(gadgetId)!;
       if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
       record.commitId = commitId;
+      this.storage.gadgets.put(record);
+    }
+
+    // Each gadget the chat proposed merging a blueprint release into now follows that
+    // blueprint, at that release, which its head's history holds: from just above, or from
+    // before. (A gadget whose creation this merge did not cover is no part of it.)
+    for (let [gadgetId, {blueprintId, commitId}] of blueprintMerges) {
+      let record = this.storage.gadgets.get(gadgetId);
+      if (record?.type !== "gadget" || record.pending) continue;
+      record.upstream = {blueprintId, commitId};
       this.storage.gadgets.put(record);
     }
 
@@ -7254,11 +7518,9 @@ class OverseerImpl implements AgentHooks {
   async releasesMergedSince(head: string, since: string | undefined, previous: string | undefined)
       : Promise<string[]> {
     let merged: string[] = [];
-    let commit: string | undefined = head;
-    while (commit !== undefined && commit !== since) {
-      let parents: string[] = (await this.gitStore.readCommitObject(commit)).parent;
-      merged.unshift(...parents.slice(1));
-      commit = parents[0];
+    for await (let {oid, commit} of this.gitStore.firstParentChain(head)) {
+      if (oid === since) break;
+      merged.unshift(...commit.parent.slice(1));
     }
     return merged.filter((release, index) =>
         merged.indexOf(release) === index &&
@@ -8056,10 +8318,14 @@ class OverseerImpl implements AgentHooks {
 
   // Fetch a blueprint's decoded files, plus formatted notes describing what was copied and which
   // bindings the blueprint's code expects the agent to wire up, for instantiation as a new gadget
-  // by the agent's createGadget tool. Blueprint ids are bearer capabilities (like blueprint share
-  // links), so possession of the id is sufficient to read it. Throws agent-readable errors.
-  async fetchBlueprint(blueprintId: string)
-      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}> {
+  // by the agent's createGadget tool, and the record of that for the creation's "changes"
+  // message (see AiChatMessageBody.blueprintMerges). Blueprint ids are bearer capabilities (like
+  // blueprint share links), so possession of the id is sufficient to read it. Throws
+  // agent-readable errors.
+  async fetchBlueprint(blueprintId: string): Promise<{
+    files: Record<string, string>, notes: string, output?: BlueprintOutput,
+    merge: Omit<BlueprintMerge, "gadgetId">,
+  }> {
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) {
       throw new Error(`No such blueprint: ${blueprintId}. Use listBlueprints to see available ` +
@@ -8128,7 +8394,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    return {files, notes: lines.join("\n"), output};
+    // What the creation is recorded as. The new gadget's files are the release's exactly, with
+    // nothing to merge them against.
+    let merge: Omit<BlueprintMerge, "gadgetId"> = {
+      blueprintId, title: kvRecord.metadata.title, version: kvRecord.metadata.version, commitId,
+      kind: "fastForward", conflictPaths: [],
+      ...this.#missingBlueprintBindings(kvRecord.metadata),
+    };
+
+    return {files, notes: lines.join("\n"), output, merge};
   }
 
   #tailSubscribers: Set<RpcStub<ConsoleLogSubscriber>> = new Set();
@@ -11823,6 +12097,12 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       dirty: record.dirty,
     };
   }
+
+  async applyBlueprint(blueprintId: string, options: {allowUnrelated?: boolean})
+      : Promise<ApplyBlueprintResult> {
+    let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
+    return await this.impl.applyBlueprint(this.id, blueprintId, options, author);
+  }
 }
 
 // Restricted GadgetClient handed to "use"-role collaborators: it permits only what is needed to
@@ -11916,6 +12196,10 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       : Promise<void> { this.#deny(); }
   async createBlueprint(_title?: string, _description?: string,
                         _screenshot?: BlueprintScreenshotUpload): Promise<BlueprintGadgetSummary> {
+    this.#deny();
+  }
+  async applyBlueprint(_blueprintId: string, _options: {allowUnrelated?: boolean})
+      : Promise<ApplyBlueprintResult> {
     this.#deny();
   }
 }

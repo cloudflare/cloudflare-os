@@ -2,17 +2,26 @@ import { describe, expect, it } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import * as Y from "yjs";
+import {
+  createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall,
+} from "@earendil-works/pi-ai";
+import { keyString } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, BlueprintGadgetSummary, BlueprintMetadata, Overseer, WorkpieceSummary,
+  AiChatAuthorInfo, AiChatMessage, ApplyBlueprintResult, BlueprintGadgetSummary,
+  BlueprintMetadata, Overseer, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
+import { runAgent } from "../src/agent";
+import { buildCompactionState } from "../src/agent-compaction";
 import {
   blueprintContentKey, buildBlueprintArchiveStream, parseBlueprintArchive,
 } from "../src/blueprint-archive";
 import {
-  buildSnapshotRelease, listReleaseFiles, readReleasePack, type GitObjectMap,
+  buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, listReleaseFiles, readReleasePack,
+  type GitObjectMap,
 } from "../src/blueprint-release";
-import { buildPackBytes, concatBytes, encodeGitCommit, encodeGitTree, gitObjectOid }
-  from "../src/git-codec";
+import {
+  buildPackBytes, concatBytes, encodeGitCommit, encodeGitTree, gitObjectOid, parseGitCommitRefs,
+} from "../src/git-codec";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { UserDurableObject } from "../src/user.js";
 import { parseBlueprintKvRecord } from "../src/storage-schema/blueprints-kv";
@@ -33,6 +42,7 @@ const OWNER_USER_ID = "owner-user-do";
 const OWNER: AiChatAuthorInfo = {
   type: "user", id: "olive@example.com", name: "Olive", commitEmail: "olive@commits.example",
 };
+const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
 
 const V1 = { "client.js": "one\n", "lib/util.js": "export const answer = 42;\n" };
 const V2 = { ...V1, "client.js": "two\n" };
@@ -75,6 +85,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
     let owner = {
       id: OWNER_USER_ID,
       whoami: async () => OWNER,
+      getChatContext: async () => ({ profile: OWNER }),
       updateBlueprint: async () => false,  // not featured
       deleteBlueprint: async () => {},
       setGadgetLastActive: async () => {},
@@ -801,6 +812,663 @@ describe("publishing a blueprint built on another", () => {
       await commitToGadget(impl, BOBS, b2);
       await client.updateBlueprint(bob, { updateCode: true });
       expect(await publishedMetadata(bob)).toMatchObject({ version: 2, commitId: b2 });
+    });
+  });
+});
+
+/** What publishVersions() returns. */
+type Published = Awaited<ReturnType<typeof publishVersions>>;
+
+/** Has readers find an earlier or later publish of a blueprint. Returns its release. */
+function republish({ blueprintId, published }: Published, index: number): string {
+  kv.set(blueprintId, JSON.stringify({ metadata: published[index] }));
+  return published[index].commitId!;
+}
+
+async function apply(client: Overseer, gadgetId: number, blueprintId: string, options = {})
+    : Promise<ApplyBlueprintResult> {
+  using gadget = await client.getGadget(gadgetId);
+  return await gadget.applyBlueprint(blueprintId, options);
+}
+
+/** Applies a blueprint to the workspace's gadget, which has to yield a proposal: its chat. */
+async function propose(
+    { impl, client }: Workspace, blueprintId: string, options = {}): Promise<number> {
+  let result = await apply(client, theGadget(impl).id, blueprintId, options);
+  if (result.outcome !== "proposed") throw new Error(`not proposed: ${result.outcome}`);
+  return result.chatId;
+}
+
+function addChat(impl: any, id: number): void {
+  impl.storage.chatMeta.put({ id, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+}
+
+/** A chat in which the owner has asked the agent for something. */
+function addUserChat(impl: any, id: number): void {
+  addChat(impl, id);
+  impl.storage.chats.put({
+    chatId: id, sequence: impl.nextChatSequence(id), timestamp: new Date(0), author: OWNER,
+    type: "message", message: "Make me a gadget.",
+  });
+}
+
+/**
+ * Runs one turn of the real agent in a chat, with a model that answers each step with the next
+ * of `steps`.
+ */
+async function runScriptedTurn(
+    impl: any, chatId: number, steps: ReturnType<typeof fauxAssistantMessage>[]): Promise<void> {
+  let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+  faux.setResponses(steps);
+  await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, chatId, AGENT,
+      new AbortController().signal, OWNER,
+      { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
+}
+
+function theGadget(impl: any): any {
+  let [gadget, ...others] = [...impl.storage.gadgets.list()];
+  expect(others).toEqual([]);
+  return gadget;
+}
+
+type ChangesMessage = AiChatMessage & { type: "changes" };
+
+function changesMessages(impl: any, chatId: number): ChangesMessage[] {
+  return [...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })]
+      .filter(message => message.type === "changes");
+}
+
+/** The record of the proposal a chat was created for, and the message it is on. */
+function proposal(impl: any, chatId: number) {
+  let [message] = changesMessages(impl, chatId);
+  let [merge, ...others] = message.blueprintMerges!;
+  expect(others).toEqual([]);
+  return { message, merge };
+}
+
+/** The gadget's files as a chat proposes them. */
+async function proposedFiles(impl: any, chatId: number): Promise<Record<string, string>> {
+  let content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId));
+  return Object.fromEntries(content.get(theGadget(impl).id));
+}
+
+async function accept({ impl, client }: Workspace, chatId: number): Promise<any> {
+  expect(await client.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+  return theGadget(impl);
+}
+
+async function headFiles(impl: any): Promise<Record<string, string>> {
+  return Object.fromEntries(await impl.gitStore.readCommitFiles(theGadget(impl).commitId));
+}
+
+// The gadget owner's own addition to whatever version of a blueprint's files they have.
+const MINE = { "mine.js": "mine\n" };
+
+/**
+ * Builds the workspace's gadget as one from before gadgets recorded what they were made from:
+ * an empty root, then `files`, then a change of the owner's. Returns the commit of `files`.
+ */
+async function legacyGadget(impl: any, files: Record<string, string>): Promise<string> {
+  await commitToGadget(impl, {});
+  let first = await commitToGadget(impl, files);
+  await commitToGadget(impl, { ...files, ...MINE });
+  return first;
+}
+
+/**
+ * Publishes a release of the blueprint "unchained", whose every release stands alone, as the
+ * bundled blueprints' do. Returns the release.
+ */
+async function publishUnchained(version: number, files: Record<string, string>): Promise<string> {
+  await storeBlueprint("unchained", metadataFor("Unchained", { version }),
+      await snapshotContent(files));
+  return (await buildSnapshotRelease(new Map(Object.entries(files)))).commitId;
+}
+
+/** A binding as a blueprint declares it. */
+function declaredBinding(title: string) {
+  return {
+    title, description: "", type: "gatekeeper" as const, gatekeeperName: "github",
+    typeUrlPattern: "https://github.com/*",
+  };
+}
+
+describe("applying a blueprint to a gadget", () => {
+
+  it("proposes the next release in a new chat, and changes the gadget only on accept",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let a1 = republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      let before = theGadget(impl);
+      let a2 = republish(alice, 1);
+
+      // The gadget has no changes of its own, so its files simply become the new release's.
+      let chatId = await propose(workspace, alice.blueprintId);
+      let { message, merge } = proposal(impl, chatId);
+      expect(merge).toEqual({
+        gadgetId: before.id, blueprintId: alice.blueprintId, title: "Alice's", version: 2,
+        commitId: a2, kind: "fastForward", baseCommit: a1, conflictPaths: [],
+      });
+      expect(message).toMatchObject({
+        author: OWNER, pins: [{ gadgetId: before.id, baseCommit: before.commitId }],
+      });
+      expect(await proposedFiles(impl, chatId)).toEqual(V2);
+
+      // It is a chat like any other, with changes to accept or discard and no message from
+      // anyone. Until then the gadget is as it was, down to the blueprint release it follows.
+      let meta = impl.chatMetaForClient(impl.storage.chatMeta.get(chatId));
+      expect(meta).toMatchObject({
+        title: "Update from blueprint: Alice's", proposedChangeWorkpieces: [before.id],
+      });
+      expect(meta.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })])
+          .toEqual([message]);
+      expect(theGadget(impl)).toEqual(before);
+
+      // Accepting writes the merge into the gadget's history: its own previous state first,
+      // then the release. That is what the next update will find to merge against.
+      let after = await accept(workspace, chatId);
+      expect(await parentsOf(impl, after.commitId)).toEqual([before.commitId, a2]);
+      expect(await headFiles(impl)).toEqual(V2);
+      expect(after.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a2 });
+
+      expect(await apply(workspace.client, after.id, alice.blueprintId))
+          .toEqual({ outcome: "upToDate" });
+    });
+  });
+
+  it("merges a release into a gadget that has changes of its own, marking what conflicts",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2, V3]);
+    let a1 = republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, alice.blueprintId);
+
+      // The owner adds a file, and the blueprint changes another: both changes stand.
+      let own = await commitToGadget(impl, { ...V1, ...MINE });
+      let a2 = republish(alice, 1);
+      let chatId = await propose(workspace, alice.blueprintId);
+      expect(proposal(impl, chatId).merge).toMatchObject(
+          { kind: "merge", commitId: a2, baseCommit: a1, conflictPaths: [] });
+      expect(await proposedFiles(impl, chatId)).toEqual({ ...V2, ...MINE });
+      let merged = await accept(workspace, chatId);
+      expect(await parentsOf(impl, merged.commitId)).toEqual([own, a2]);
+
+      // Now both change the same line of the same file. The base is the release just merged.
+      await commitToGadget(impl, { ...V2, ...MINE, "client.js": "mine too\n" });
+      let a3 = republish(alice, 2);
+      chatId = await propose(workspace, alice.blueprintId);
+      expect(proposal(impl, chatId).merge).toMatchObject(
+          { kind: "merge", commitId: a3, baseCommit: a2, conflictPaths: ["client.js"] });
+      expect(await proposedFiles(impl, chatId)).toEqual({
+        ...V3, ...MINE,
+        "client.js": "<<<<<<< this gadget\nmine too\n||||||| base\ntwo\n=======\nthree\n" +
+            ">>>>>>> blueprint\n",
+      });
+
+      // Whether to accept a file with markers in it is the caller's to decide.
+      let conflicted = await accept(workspace, chatId);
+      expect(conflicted.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a3 });
+      expect((await headFiles(impl))["client.js"]).toContain("<<<<<<< this gadget");
+    });
+  });
+
+  it("merges a release that changes no file, so that the gadget's history has it", async () => {
+    // Bob republishes Alice's first release as it is, under a blueprint of his own.
+    let alice = await publishVersions("Alice's", [V1]);
+    let a1 = republish(alice, 0);
+    let bob!: string;
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, alice.blueprintId);
+      bob = (await createBlueprint(client, "Bob's", theGadget(impl).id)).id;
+    });
+    let b1 = (await publishedMetadata(bob))!.commitId!;
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      let own = await commitToGadget(impl, { ...V1, ...MINE });
+
+      // Switching to Bob's blueprint changes nothing in the gadget's files...
+      let chatId = await propose(workspace, bob);
+      let { message, merge } = proposal(impl, chatId);
+      expect(merge).toMatchObject({ kind: "follow", commitId: b1, baseCommit: a1 });
+      expect(message.change).toBeUndefined();
+      expect(message.pins).toEqual([{ gadgetId: merge.gadgetId, baseCommit: own }]);
+
+      // ...but accepting still commits, with those files: Bob's next release will be merged
+      // against this one, which only a gadget whose history has it can find.
+      let after = await accept(workspace, chatId);
+      expect(await parentsOf(impl, after.commitId)).toEqual([own, b1]);
+      expect(await impl.gitStore.commitTree(after.commitId))
+          .toBe(await impl.gitStore.commitTree(own));
+      expect(after.upstream).toEqual({ blueprintId: bob, commitId: b1 });
+    });
+  });
+
+  it("proposes only to follow a blueprint whose release the gadget already has", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let a2 = republish(alice, 1);
+
+    // The same release under another id, as uploading a download of the blueprint gives it.
+    await storeBlueprint("copy", alice.published[1],
+        await storedContent(`${alice.blueprintId}/${a2}`));
+
+    // And Bob's blueprint, built on that release.
+    let bob!: string;
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, alice.blueprintId);
+      await commitToGadget(impl, { ...V2, "bob.js": "bob\n" });
+      bob = (await createBlueprint(client, "Bob's", theGadget(impl).id)).id;
+    });
+    let b1 = (await publishedMetadata(bob))!.commitId!;
+
+    await withWorkspace(async workspace => {
+      let { instance, impl, client } = workspace;
+      await instantiate(instance, bob);
+      let before = theGadget(impl);
+      expect(before.upstream).toEqual({ blueprintId: bob, commitId: b1 });
+
+      // The gadget took Alice's release by way of Bob's blueprint. Going back to following
+      // hers merges nothing, pins nothing, and so can never go stale.
+      for (let blueprintId of [alice.blueprintId, "copy"]) {
+        let chatId = await propose(workspace, blueprintId);
+        let { message, merge } = proposal(impl, chatId);
+        expect(merge).toEqual({
+          gadgetId: before.id, blueprintId, title: "Alice's", version: 2, commitId: a2,
+          kind: "follow", conflictPaths: [],
+        });
+        expect(message.change).toBeUndefined();
+        expect(message.pins).toBeUndefined();
+        expect(impl.storage.chatMeta.get(chatId).codeBase).toBeUndefined();
+
+        // The head moves on meanwhile, which a pinned proposal would have to catch up with.
+        let head = await commitToGadget(impl, await headFiles(impl));
+
+        // Accepting changes which blueprint the gadget follows, and nothing else.
+        let after = await accept(workspace, chatId);
+        expect(after)
+            .toEqual({ ...before, commitId: head, upstream: { blueprintId, commitId: a2 } });
+        expect(await apply(client, before.id, blueprintId)).toEqual({ outcome: "upToDate" });
+      }
+
+      // The gadget is up to date only with the blueprint it follows, though it holds the
+      // current release of all three.
+      expect((await apply(client, before.id, alice.blueprintId)).outcome).toBe("proposed");
+
+      // Such a proposal is nothing but its record in the log, which is where accepting finds
+      // it, even after the agent's history has been compacted past it.
+      let chatId = await propose(workspace, bob);
+      let messages = [...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })];
+      let compactedTo = messages.at(-1)!.sequence + 1;
+      impl.commitChatCompaction(chatId, {
+        chatId, compactedTo, summary: "summary",
+        ...buildCompactionState(messages, compactedTo, [], undefined),
+      });
+      expect((await accept(workspace, chatId)).upstream)
+          .toEqual({ blueprintId: bob, commitId: b1 });
+    });
+  });
+
+  it("finds the release two blueprints have in common to merge against", async () => {
+    // The plan's picture: Bob built on Alice's second release, and Carol's gadget is from her
+    // third.
+    let alice = await publishVersions("Alice's", [V1, V2, V3]);
+    let a2 = republish(alice, 1);
+    let bob!: string;
+    const BOBS = { ...V2, "bob.js": "bob\n" };
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, alice.blueprintId);
+      await commitToGadget(impl, BOBS);
+      bob = (await createBlueprint(client, "Bob's", theGadget(impl).id)).id;
+    });
+    let b1 = (await publishedMetadata(bob))!.commitId!;
+    republish(alice, 2);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl, client } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      let c1 = await commitToGadget(impl, { ...V3, ...MINE });
+
+      // A pack of Bob's release that leaves out the files of the release he built on, as one
+      // made by hand might. Carol's gadget has that release in its history but never held its
+      // files, so there is nothing to merge against.
+      let thin = await publishedPack(bob, b1);
+      thin.delete(await impl.gitStore.commitTree(a2));
+      await storeBlueprint("thin", (await publishedMetadata(bob))!,
+          concatBytes(await buildPackBytes([...thin.values()])));
+      expect(await apply(client, theGadget(impl).id, "thin"))
+          .toEqual({ outcome: "baseUnavailable" });
+      expect([...impl.storage.chatMeta.list()]).toEqual([]);
+
+      // Bob's own pack carries them. Against that release, Alice's later change to
+      // client.js is Carol's change and Bob's addition is his.
+      let chatId = await propose(workspace, bob);
+      expect(proposal(impl, chatId).merge).toMatchObject(
+          { kind: "merge", commitId: b1, baseCommit: a2, conflictPaths: [] });
+      expect(await proposedFiles(impl, chatId)).toEqual({ ...V3, ...MINE, "bob.js": "bob\n" });
+
+      let after = await accept(workspace, chatId);
+      expect(await parentsOf(impl, after.commitId)).toEqual([c1, b1]);
+      expect(after.upstream).toEqual({ blueprintId: bob, commitId: b1 });
+    });
+  });
+
+  it("chooses among several releases in common: the blueprint's own, else the latest",
+      async () => {
+    // Releases made by hand, to say when each was published: `seconds` after the epoch.
+    let objects: GitObjectMap = new Map();
+    let release = async (files: Record<string, string>, parents: string[], seconds: number) => {
+      let snapshot = await buildSnapshotRelease(new Map(Object.entries(files)));
+      let { tree } = parseGitCommitRefs(snapshot.objects.get(snapshot.commitId)!.payload);
+      snapshot.objects.delete(snapshot.commitId);
+      for (let [oid, object] of snapshot.objects) objects.set(oid, object);
+      let payload = encodeReleaseCommit({
+        tree, parents, author: { name: "Olive", email: "olive@example.com" }, title: "By hand",
+        version: 1, timestamp: new Date(seconds * 1000),
+      });
+      let commitId = await gitObjectOid("commit", payload);
+      objects.set(commitId, { type: "commit", payload });
+      return commitId;
+    };
+    let publish = async (blueprintId: string, commitId: string) => await storeBlueprint(
+        blueprintId, metadataFor(blueprintId, { commitId }),
+        await buildReleasePack(oid => objects.get(oid), commitId));
+
+    // Two blueprints that each merged the other's first release, and a third built on both.
+    let x1 = await release({ "x.js": "x\n" }, [], 200);
+    let y1 = await release({ "y.js": "y\n" }, [], 100);
+    let both = { "x.js": "x\n", "y.js": "y\n" };
+    let x2 = await release(both, [x1, y1], 300);
+    let y2 = await release({ ...both, "y2.js": "y2\n" }, [y1, x1], 300);
+    let z1 = await release({ ...both, "z.js": "z\n" }, [await release({}, [], 300), x1, y1], 400);
+    await publish("x", x2);
+    await publish("y", y2);
+    await publish("z", z1);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, "x");
+
+      // The gadget's history and each of the others share x1 and y1, neither of which holds
+      // the other. Of the two, y1 is a release of the blueprint being applied, though the
+      // older. Neither is a release of z's, which leaves the later.
+      expect(proposal(impl, await propose(workspace, "y")).merge.baseCommit).toBe(y1);
+      expect(proposal(impl, await propose(workspace, "z")).merge.baseCommit).toBe(x1);
+    });
+  });
+
+  it("merges a followed blueprint's unchained releases against the one last taken", async () => {
+    let r1 = await publishUnchained(1, V1);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, "unchained");
+      await commitToGadget(impl, { ...V1, ...MINE });
+
+      // Nothing in the commits connects one release to the next, but they are published
+      // under the id the gadget follows. So each is merged against the one before, with no
+      // warning either time.
+      let previous = r1;
+      for (let [version, files] of [[2, V2], [3, V3]] as const) {
+        let release = await publishUnchained(version, files);
+        let chatId = await propose(workspace, "unchained");
+        let { merge } = proposal(impl, chatId);
+        expect(merge).toMatchObject({ kind: "merge", commitId: release, baseCommit: previous });
+        expect(merge.unverifiedBase).toBeUndefined();
+        expect((await accept(workspace, chatId)).upstream)
+            .toEqual({ blueprintId: "unchained", commitId: release });
+        expect(await headFiles(impl)).toEqual({ ...files, ...MINE });
+        previous = release;
+      }
+    });
+  });
+
+  it("assumes a base for a gadget with no history in common, if the caller allows it",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+
+    await withWorkspace(async workspace => {
+      let { impl, client } = workspace;
+      let first = await legacyGadget(impl, V3);
+      let before = theGadget(impl);
+
+      // Nothing says these files came from this blueprint. The first the gadget had are the
+      // best guess at what it started from, and the caller has to accept that it is one.
+      expect(await apply(client, before.id, alice.blueprintId)).toEqual({ outcome: "unrelated" });
+      expect([...impl.storage.chatMeta.list()]).toEqual([]);
+
+      let chatId = await propose(workspace, alice.blueprintId, { allowUnrelated: true });
+      expect(proposal(impl, chatId).merge).toMatchObject(
+          { kind: "merge", baseCommit: first, unverifiedBase: true, conflictPaths: [] });
+      expect(await proposedFiles(impl, chatId)).toEqual({ ...V2, ...MINE });
+
+      // Once accepted, the gadget follows the blueprint and its history holds the release.
+      let after = await accept(workspace, chatId);
+      expect(after.upstream)
+          .toEqual({ blueprintId: alice.blueprintId, commitId: alice.published[1].commitId });
+      expect(await apply(client, before.id, alice.blueprintId)).toEqual({ outcome: "upToDate" });
+    });
+
+    // A gadget whose first files are exactly a release of the blueprint did start from it.
+    await withWorkspace(async workspace => {
+      let first = await legacyGadget(workspace.impl, V1);
+      let chatId = await propose(workspace, alice.blueprintId);
+      let { merge } = proposal(workspace.impl, chatId);
+      expect(merge).toMatchObject({ kind: "merge", baseCommit: first });
+      expect(merge.unverifiedBase).toBeUndefined();
+      expect(await proposedFiles(workspace.impl, chatId)).toEqual({ ...V2, ...MINE });
+    });
+
+    // And one with no files has nothing that a wrong guess could undo.
+    await withWorkspace(async workspace => {
+      let root = await commitToGadget(workspace.impl, {});
+      let chatId = await propose(workspace, alice.blueprintId);
+      let { merge } = proposal(workspace.impl, chatId);
+      expect(merge).toMatchObject({ kind: "fastForward", baseCommit: root });
+      expect(merge.unverifiedBase).toBeUndefined();
+    });
+  });
+
+  it("records the bindings the release declares that the gadget lacks", async () => {
+    let bindings = {
+      HAS: declaredBinding("Has"), LACKS: declaredBinding("Lacks"),
+      FEEDS_SPAWNER: { ...declaredBinding("Feeds a spawner"), spawnerOnly: true as const },
+    };
+    let pack = await buildSnapshotRelease(new Map(Object.entries(V1)));
+    await storeBlueprint("bound", metadataFor("Bound", { commitId: pack.commitId, bindings }),
+        concatBytes(await buildPackBytes([...pack.objects.values()])));
+
+    await withWorkspace(async workspace => {
+      let { impl } = workspace;
+      await commitToGadget(impl, V1);
+      impl.storage.gadgets.put({ ...theGadget(impl), bindings: { HAS: { target: 99 } } });
+
+      let chatId = await propose(workspace, "bound");
+      expect(proposal(impl, chatId).merge.missingBindings).toEqual({ LACKS: bindings.LACKS });
+
+      // A gadget the agent creates from the blueprint starts with none of them.
+      expect((await impl.fetchBlueprint("bound")).merge.missingBindings)
+          .toEqual({ HAS: bindings.HAS, LACKS: bindings.LACKS });
+    });
+  });
+
+  it("withdraws a proposal that is reverted or whose chat is deleted", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl, client } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      let before = theGadget(impl);
+      republish(alice, 1);
+
+      // Reverted, the proposal is gone from what accepting the chat accepts, pin and all.
+      let chatId = await propose(workspace, alice.blueprintId);
+      await client.revertChanges(chatId, 0);
+      expect(impl.storage.chatMeta.get(chatId).codeBase.pins).toEqual([]);
+      expect(await accept(workspace, chatId)).toEqual(before);
+
+      // A chat deleted with its proposal still in it takes the proposal along.
+      chatId = await propose(workspace, alice.blueprintId);
+      await client.deleteChat(chatId);
+      expect(theGadget(impl)).toEqual(before);
+
+      // Neither stands in the way of proposing it again.
+      chatId = await propose(workspace, alice.blueprintId);
+      expect((await accept(workspace, chatId)).upstream)
+          .toEqual({ blueprintId: alice.blueprintId, commitId: alice.published[1].commitId });
+    });
+  });
+
+  it("makes a stale proposal catch up with the gadget before it is accepted", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl, client } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      let a2 = republish(alice, 1);
+      let chatId = await propose(workspace, alice.blueprintId);
+
+      // The gadget moves on before the proposal is accepted.
+      let moved = await commitToGadget(impl, { ...V1, ...MINE });
+      expect(await client.mergeChanges(chatId)).toEqual({ outcome: "stale" });
+      expect(theGadget(impl).upstream.commitId).not.toBe(a2);
+
+      await client.updateChatFromMainline(chatId);
+      let after = await accept(workspace, chatId);
+      expect(await parentsOf(impl, after.commitId)).toEqual([moved, a2]);
+      expect(await headFiles(impl)).toEqual({ ...V2, ...MINE });
+    });
+  });
+
+  it("splits a merge too large for one message by file", async () => {
+    let large = Object.fromEntries(["a", "b", "c"].map(
+        name => [`${name}.js`, `// ${name}\n`.repeat(100_000)]));
+    let alice = await publishVersions("Alice's", [V1, { ...V2, ...large }]);
+    republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl } = workspace;
+      await instantiate(instance, alice.blueprintId);
+      republish(alice, 1);
+      let chatId = await propose(workspace, alice.blueprintId);
+
+      // The first message records the proposal and the pin that its change and the rest apply
+      // over, and says how many messages directly after it hold the rest. No file's change is
+      // divided between two messages.
+      let messages = changesMessages(impl, chatId);
+      expect(messages.length).toBeGreaterThan(1);
+      expect(proposal(impl, chatId).merge.messageCount).toBe(messages.length);
+      expect(messages.map(message => message.sequence))
+          .toEqual(messages.map((_, index) => messages[0].sequence + index));
+      expect(messages.map(message => message.blueprintMerges?.length ?? 0))
+          .toEqual([1, ...messages.slice(1).map(() => 0)]);
+      expect(messages.map(message => message.pins?.length ?? 0))
+          .toEqual([1, ...messages.slice(1).map(() => 0)]);
+      let paths = messages.flatMap(
+          message => Object.values(message.change!).flat().map(([path]) => path));
+      expect(paths.toSorted()).toEqual(["a.js", "b.js", "c.js", "client.js"]);
+
+      await accept(workspace, chatId);
+      expect(await headFiles(impl)).toEqual({ ...V2, ...large });
+    });
+  });
+
+  it("refuses a gadget still pending in a chat, and a blueprint that does not exist",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1]);
+    await withWorkspace(async ({ impl, client }) => {
+      await commitToGadget(impl, V1);
+      await expect(apply(client, 1, "no-such-blueprint")).rejects.toThrow("Blueprint not found.");
+
+      addChat(impl, 7);
+      let pending = impl.createGadget("Pending", "PENDING", 7);
+      await expect(apply(client, pending.id, alice.blueprintId))
+          .rejects.toThrow(/provisional creation in a chat/);
+      expect([...impl.storage.chatMeta.list()].map(meta => meta.id)).toEqual([7]);
+    });
+  });
+
+  it("records the release a gadget the agent creates is made from, for its first accept",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1]);
+    let a1 = republish(alice, 0);
+
+    await withWorkspace(async ({ impl, client }) => {
+      addUserChat(impl, 1);
+      await runScriptedTurn(impl, 1, [
+        fauxAssistantMessage([fauxToolCall("createGadget",
+            { title: "Made", bindingName: "MADE", blueprintId: alice.blueprintId })],
+            { stopReason: "toolUse" }),
+        fauxAssistantMessage([fauxToolCall("writeFile",
+            { workpiece: "MADE", filename: "client.js", content: "the agent's own\n" })],
+            { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxText("Done.")),
+      ]);
+      let created = theGadget(impl);
+      expect(created.pending).toBeDefined();
+      expect(proposal(impl, 1).merge).toEqual({
+        gadgetId: created.id, blueprintId: alice.blueprintId, title: "Alice's", version: 1,
+        commitId: a1, kind: "fastForward", conflictPaths: [],
+      });
+
+      // Accepting the creation gives the gadget what one instantiated outside a chat is born
+      // with: a root of its own, the release merged into it, and the blueprint to follow. Its
+      // first commit already holds whatever the agent went on to change.
+      expect(await client.mergeChanges(1)).toEqual({ outcome: "merged" });
+      let gadget = theGadget(impl);
+      expect(gadget.pending).toBeUndefined();
+      let [root, release, ...more] = await parentsOf(impl, gadget.commitId);
+      expect([release, ...more]).toEqual([a1]);
+      expect(await parentsOf(impl, root)).toEqual([]);
+      expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
+      expect(await headFiles(impl)).toEqual({ ...V1, "client.js": "the agent's own\n" });
+      expect(gadget.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a1 });
+    });
+  });
+
+  it("records no release for a gadget whose copy of the blueprint's files failed", async () => {
+    // More than one agent step may change, so the copy that createGadget makes cannot land.
+    let large = Object.fromEntries(["a", "b"].map(
+        name => [`${name}.js`, `// ${name}\n`.repeat(100_000)]));
+    let alice = await publishVersions("Alice's", [large]);
+
+    await withWorkspace(async workspace => {
+      let { impl, client } = workspace;
+      addUserChat(impl, 1);
+      await runScriptedTurn(impl, 1, [
+        fauxAssistantMessage([fauxToolCall("createGadget",
+            { title: "Made", bindingName: "MADE", blueprintId: alice.blueprintId })],
+            { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxText("Done.")),
+      ]);
+      let [call] = [...impl.storage.chats.list({ prefix: `${keyString(1)}.` })]
+          .flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
+      expect(call).toMatchObject({ toolName: "createGadget" });
+      expect(call.error).toMatch(/Too many code changes in one step/);
+
+      // The call still leaves the gadget it created, with no files. Nothing says it was made
+      // from the release, so accepting it does not put the release in its history...
+      expect(changesMessages(impl, 1).flatMap(message => message.blueprintMerges ?? []))
+          .toEqual([]);
+      expect(await client.mergeChanges(1)).toEqual({ outcome: "merged" });
+      let gadget = theGadget(impl);
+      expect(await parentsOf(impl, gadget.commitId)).toEqual([]);
+      expect(await headFiles(impl)).toEqual({});
+      expect(gadget.upstream).toBeUndefined();
+
+      // ...and the blueprint can still be applied to it, files and all.
+      let chatId = await propose(workspace, alice.blueprintId);
+      expect(proposal(impl, chatId).merge.kind).toBe("fastForward");
+      expect(await proposedFiles(impl, chatId)).toEqual(large);
     });
   });
 });

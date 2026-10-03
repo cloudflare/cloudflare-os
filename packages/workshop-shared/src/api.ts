@@ -2335,6 +2335,11 @@ export interface Overseer extends RpcTarget {
    * is content-preserving: ChatCodeBase.prior describes the closed stream, and in-flight
    * submissions rooted in it are transformed onto the new generation rather than discarded (see
    * submitCodeChange()), so a client typing through someone's accept loses nothing.
+   *
+   * A blueprint release the chat proposes to merge into a gadget (see
+   * AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains
+   * the release as a parent, unless its history already holds it, and the gadget follows that
+   * blueprint from then on.
    */
   mergeChanges(chatId: number): Promise<MergeChangesResult>;
 
@@ -3110,6 +3115,24 @@ export type AiChatMessageBody = {
    * within the gadget identified by `gadgetId`; `target` is the bound workpiece.
    */
   addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[];
+
+  /**
+   * Blueprint releases this batch proposes to merge into gadgets: recorded by
+   * GadgetClient.applyBlueprint(), and by the agent's `createGadget` tool when it builds the new
+   * gadget from a blueprint. Where the gadget's files change, `change` is the result of the
+   * merge, or the first part of it (see BlueprintMerge.messageCount).
+   *
+   * Like the rest of the batch this is provisional. A merge through this message makes each
+   * gadget follow the blueprint named (see GadgetUpstream) and records the release in the
+   * gadget's history; a revert covering it withdraws the proposal, and until one or the other
+   * the gadget is as it was. Unlike a `mainlineMerge` batch it can be reverted, since it
+   * advances no pin.
+   *
+   * A proposal that changes no file and whose release is already in the gadget's history pins
+   * nothing, so it does not put its gadget in AiChatMetadata.proposedChangeWorkpieces: this
+   * record is then the only sign that the chat has something to accept.
+   */
+  blueprintMerges?: BlueprintMerge[];
 } | {
   /**
    * Indicates that at this point in the chat, the user chose to merge all (non-reverted) changes
@@ -4058,6 +4081,102 @@ export type GadgetUpstream = {
 };
 
 /**
+ * A proposal to merge a release of a blueprint into a gadget (see
+ * AiChatMessageBody.blueprintMerges). It records everything about the proposal as it was made,
+ * so describing it needs no second look at a blueprint that may have been republished since.
+ */
+export type BlueprintMerge = {
+  /** The gadget the release is merged into. */
+  gadgetId: WorkpieceId;
+
+  /** The blueprint, which the gadget follows once the proposal is accepted. */
+  blueprintId: string;
+
+  /** The blueprint's title at this release. */
+  title: string;
+
+  /** The blueprint's version counter at this release (`BlueprintMetadata.version`). */
+  version: number;
+
+  /** The release: the commit that the gadget's history gains as a parent, if it lacks it. */
+  commitId: string;
+
+  /**
+   * What the proposal does to the gadget's files:
+   * - "follow": nothing. Either the release is already in the gadget's history, or it changed
+   *   no file since the base.
+   * - "fastForward": they become the release's exactly. The gadget had no changes of its own
+   *   since the base, or was created from the release.
+   * - "merge": the gadget and the blueprint both changed files since the base, and the two
+   *   sets of changes were merged, three ways.
+   */
+  kind: "follow" | "fastForward" | "merge";
+
+  /**
+   * The commit the merge took as the version the gadget and the release have in common. Absent
+   * if there was nothing to merge: the release was already in the gadget's history, or the
+   * gadget was created from it.
+   */
+  baseCommit?: string;
+
+  /**
+   * The files whose merge was not clean, as paths within the gadget, in sorted order. Each
+   * holds inline conflict markers, or for a file one side deleted and the other changed, the
+   * changed content with no markers (as for `mainlineMerge`). Empty unless `kind` is "merge".
+   */
+  conflictPaths: string[];
+
+  /**
+   * Present if the gadget and the release share no history, so that `baseCommit` is a guess at
+   * what the gadget was built from. A change the gadget's owner made that the guess happens to
+   * include looks like something the blueprint removed, and is undone with no conflict
+   * reported.
+   */
+  unverifiedBase?: true;
+
+  /**
+   * The bindings the release declares that the gadget had none named for, by binding name.
+   * Absent if there were none. A binding that exists only to feed an agent spawner
+   * (`spawnerOnly`) is never listed, having no name in the gadget to look for.
+   */
+  missingBindings?: Record<string, BlueprintBinding>;
+
+  /**
+   * Present if the proposal's change was too large for one `changes` message: the number of
+   * messages it was split across, by file. They are this one and the ones at the sequences
+   * directly after it, which hold the rest of the change and nothing else. This is what tells
+   * them from changes someone made afterwards. A revert may since have covered some of them,
+   * as their statuses show.
+   */
+  messageCount?: number;
+};
+
+/** Result of GadgetClient.applyBlueprint(). */
+export type ApplyBlueprintResult = {
+  /** A new chat holds the proposal, to preview and then accept or discard. */
+  outcome: "proposed";
+
+  /** The new chat. */
+  chatId: number;
+} | {
+  /** The gadget already follows this blueprint at its current release. Nothing was proposed. */
+  outcome: "upToDate";
+} | {
+  /**
+   * The gadget and the blueprint share no history, and the caller did not allow for that.
+   * Nothing was proposed. Calling again with `allowUnrelated` proposes a merge over a guessed
+   * base (see BlueprintMerge.unverifiedBase), which the user should be warned of first.
+   */
+  outcome: "unrelated";
+} | {
+  /**
+   * The gadget and the blueprint share a version, but its files are not available to merge
+   * against. Nothing was proposed.
+   */
+  outcome: "baseUnavailable";
+};
+
+/**
  * The WorkpieceSummary of a worktree: a checkout of an external git repository that an agent
  * works in (see AiChatMessageBody.createdWorktrees). It has no app and no bindings; the UI shows
  * only its code. Its three commits are the worktree's state as the chat sees it; the OT rows of
@@ -4573,6 +4692,23 @@ export interface GadgetClient extends WorkpieceClient {
    * Overseer.updateBlueprint() etc.).
    */
   createBlueprint(title?: string, description?: string, screenshot?: BlueprintScreenshotUpload): Promise<BlueprintGadgetSummary>;
+
+  /**
+   * Propose merging the current release of a blueprint into this gadget: to take an update from
+   * the blueprint the gadget follows, or to switch it to another. The proposal is recorded in a
+   * new chat (see AiChatMessageBody.blueprintMerges), where it is previewed and then accepted
+   * or discarded like any other proposed change. Nothing about the gadget changes until it is
+   * accepted, including which blueprint it follows.
+   *
+   * The merge is three-way, against the newest version the gadget and the release have in
+   * common. If they share no history that version has to be guessed, which is only done if
+   * `allowUnrelated` is set (see ApplyBlueprintResult).
+   *
+   * Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so
+   * has no committed code to merge into.
+   */
+  applyBlueprint(blueprintId: string, options: {allowUnrelated?: boolean})
+      : Promise<ApplyBlueprintResult>;
 }
 
 /**

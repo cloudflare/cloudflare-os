@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintMerge, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -305,9 +305,10 @@ export interface AgentHooks {
    * messages (`msgs`, the tool-call record among them), validate and append each buffered
    * change as a chat change row -- one row per tool call, in call order, with the same
    * pin/codeBase bookkeeping the appends always had -- materialize the rows into the step's
-   * single "changes" message carrying the step's gadget creations, binding additions, and
-   * worktree head advancements (stamping pending gadget and binding records, making created
-   * worktrees permanent, and advancing worktree heads), and retire the rows. The step's effects
+   * single "changes" message carrying the step's gadget creations (with the blueprint release
+   * each was created from, if any), binding additions, and worktree head advancements (stamping
+   * pending gadget and binding records, making created worktrees permanent, and advancing
+   * worktree heads), and retire the rows. The step's effects
    * are thus durable iff its transcript record is; a crash mid-step loses both, and the resumed
    * model re-runs the step against unmodified content. Returns whether a "changes" message was
    * written (change-ID numbering counts messages).
@@ -331,6 +332,7 @@ export interface AgentHooks {
         createdWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
+        blueprintMerges: BlueprintMerge[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -594,11 +596,15 @@ export interface AgentHooks {
    * Fetch a blueprint's decoded files, plus formatted notes describing the copied files and the
    * bindings the blueprint's code expects the agent to wire up. Used by the createGadget tool to
    * instantiate the blueprint as a new gadget, along with the output format the blueprint declares
-   * (if any), which the created gadget inherits. Throws an agent-readable error if the blueprint
-   * doesn't exist.
+   * (if any), which the created gadget inherits. `merge` is the record of the release the files
+   * are, for the creation's "changes" message once the gadget has an id (see
+   * AiChatMessageBody.blueprintMerges). Throws an agent-readable error if the blueprint doesn't
+   * exist.
    */
-  fetchBlueprint(blueprintId: string)
-      : Promise<{files: Record<string, string>, notes: string, output?: BlueprintOutput}>;
+  fetchBlueprint(blueprintId: string): Promise<{
+    files: Record<string, string>, notes: string, output?: BlueprintOutput,
+    merge: Omit<BlueprintMerge, "gadgetId">,
+  }>;
 }
 
 // =======================================================================================
@@ -1229,6 +1235,10 @@ async function runAgentPass(
   // A step that dies before its barrier leaves only the unstamped registry record, which
   // reconciliation reaps (see reconcilePendingGadgets in overseer.ts).
   let pendingCreatedGadgets: {gadgetId: WorkpieceId, title: string, bindingName: string}[] = [];
+
+  // The blueprint release that each of those created from a blueprint was created from,
+  // awaiting the same barrier and message (see AiChatMessageBody.blueprintMerges).
+  let pendingBlueprintMerges: BlueprintMerge[] = [];
 
   // Worktrees created this step (see the createWorktree tool), awaiting the same barrier: its
   // "changes" message records each creation (`createdWorktrees`) and makes the pending record
@@ -3244,6 +3254,12 @@ async function runAgentPass(
             if (fileChanges.length > 0) {
               appendAgentEdit(created.id, {[created.id]: fileChanges});
             }
+            // Recorded with the creation, so that accepting it writes the release into the new
+            // gadget's history and has the gadget follow the blueprint -- but only now that the
+            // gadget has the release's files. The copy fails if the step has no room left for
+            // it, and a gadget recorded as made from files it never got would pass for up to
+            // date with the blueprint.
+            pendingBlueprintMerges.push({gadgetId: created.id, ...blueprint.merge});
             // (The files are deliberately NOT added to filesRead: unlike a writeFile, the agent
             // hasn't seen their contents, so it must read before editing.)
 
@@ -3682,9 +3698,11 @@ async function runAgentPass(
         pendingAddedBindings = [];
         let worktreeCommits = pendingWorktreeCommits;
         pendingWorktreeCommits = [];
+        let blueprintMerges = pendingBlueprintMerges;
+        pendingBlueprintMerges = [];
         if (await hooks.commitAgentStep(chatId, author, msgs,
             {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
-             worktreeCommits},
+             worktreeCommits, blueprintMerges},
             message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
           ++nextChangeId;
         }

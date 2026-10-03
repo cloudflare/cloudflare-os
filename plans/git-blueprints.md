@@ -47,9 +47,11 @@ Bob instantiated Alice's A2, made changes, and published B1. Carol instantiated 
 **2. Releases form a public graph that mirrors what was merged.** A release's parents are:
 
 - first, the blueprint's previous release, or a new empty-tree root if this is the first release and it has upstream parents (B0 above); and
-- then each upstream release merged into the source gadget since, found structurally as the non-first parents along the gadget's first-parent chain, dropping any that is an ancestor of the previous release or of another one kept.
+- then each upstream release merged into the source gadget since, found structurally as the non-first parents along the gadget's first-parent chain, dropping any that is an ancestor of the previous release or of another one kept. They are listed in the order the gadget merged them, oldest first.
 
-An original blueprint's first release is simply parentless. If the tree and parents match the previous release, nothing is minted and the version does not change.
+The empty root is itself written as a release commit: version 0, of the empty tree, with no parents, so its message is `Release 0: <title>`.
+
+An original blueprint's first release is simply parentless. If the tree and parents match the previous release, nothing is minted and the version does not change. A release that merged something new is minted even if its tree is unchanged.
 
 **3. The origin workspace records how releases map to its own commits.** `BlueprintGadgetRecord` gains `releases: {version, releaseCommit, sourceCommit}[]`, appended on each publish. It gives retry something exact to re-send, tells the UI whether the gadget has unpublished changes, and names the next release's first parent. The release commits and their trees live in the workspace's object store like any other objects.
 
@@ -81,13 +83,15 @@ Which trees a pack carries is a transport detail that can change later, so this 
 - `metadata.version` stays as the display counter.
 - The `.gadget` container moves to format version 2: same header, content is the raw pack (already zlib-compressed per object, so no gzip wrapper). Downloads serve whatever is stored, so a legacy blueprint keeps downloading as version 1 until it is republished.
 
-**6. A gadget's history records what it merged.** Instantiating from release R writes an empty root `e` and a commit `i = [e, R]` with R's tree; the gadget's head is `i`. Accepting a blueprint update writes `[head, R]`. Consequences:
+**6. A gadget's history records what it merged.** Instantiating from release R writes an empty root `e` and a commit `i = [e, R]` with R's tree; the gadget's head is `i`. Their messages are `Create gadget: <title>` and `Instantiate blueprint: <title>`. Accepting a blueprint update writes `[head, R]`. Consequences:
 
 - Every commit on a gadget's first-parent chain was written locally and has its tree. Release ancestors, most of which arrive without trees, are only ever reached through other parents.
 - The merge base for any future update is derivable from the graph, including after switching blueprints.
 - The alternative of pointing the head at R itself was rejected: the first-parent chain would then run into the release history, where trees are missing.
 
 **7. A gadget also names the blueprint it follows.** `GadgetRecord.upstream = {blueprintId, commitId}` is the blueprint to check for updates and the release of it most recently merged. It is needed because release commits deliberately do not name their blueprint: a blueprint id is a bearer share link, and commits propagate into derived blueprints' packs. It is not normally the merge base: the graph supplies that, and decision 8 falls back on `upstream` only where the graph has nothing to offer. Accepting a blueprint proposal always retargets `upstream` to the blueprint applied; there is no one-off merge that leaves the followed blueprint unchanged.
+
+`upstream` is delivered only to subscribers with the "build" role. The blueprint id is a share link to the blueprint's code, which a "use" collaborator cannot otherwise read.
 
 **8. The merge base comes from the commit graph, with fallbacks.**
 
@@ -102,7 +106,7 @@ Which trees a pack carries is a transport detail that can change later, so this 
 
 The fifth row serves blueprints whose releases are not chained, which today means the bundled ones (decision 14). It needs no warning because only a blueprint's own publisher can put a release under its id, so the release the gadget last took from that id is the right base. That release's tree is always held: it was the head of a pack the gadget imported.
 
-The last row has two cases. A gadget with an upstream is switching to a blueprint that shares no history with it; the release it last took is the best available guess at what its local changes are relative to. A gadget with no upstream predates this plan, and gets the first-non-empty-commit rule. "First non-empty" rather than "root" because migrated gadgets and gadgets created empty are rooted at an empty-tree commit (overseer-git-migration.ts:311, overseer.ts:9845). The warning is suppressed when the assumed base's tree id equals the tree of the target or of one of its ancestors, which the commit objects reveal for free.
+The last row has two cases. A gadget with an upstream is switching to a blueprint that shares no history with it; the release it last took is the best available guess at what its local changes are relative to. A gadget with no upstream predates this plan, and gets the first-non-empty-commit rule. "First non-empty" rather than "root" because migrated gadgets and gadgets created empty are rooted at an empty-tree commit (overseer-git-migration.ts:311, overseer.ts:9845). The warning is suppressed when the assumed base's tree id equals the tree of the target or of one of its ancestors, which the commit objects reveal for free. It is also suppressed when the assumed base has no files. That happens only for a gadget with no upstream and no commit that has any files, whose base is then its root: it has nothing a wrong guess could undo.
 
 For a gadget with no upstream, the assumed base is exact only if it was instantiated through the UI after the git migration, so that its root commit is the blueprint's tree unchanged. An agent-created gadget's first commit already includes the agent's edits, and a pre-git gadget's may include the user's. Edits that are inside the assumed base look, to a three-way merge, like something the blueprint removed, so they can be reverted with no conflict reported. That is why the warning says so, why the update lands in a chat for review, and why the merge is recorded as having an unverified base, which both the chat's notice and the agent's view of the merge repeat.
 
@@ -111,12 +115,12 @@ Once such an update is accepted, the gadget has an upstream and, for a chained b
 **9. Applying a blueprint always produces a proposal in a new chat.** `GadgetClient.applyBlueprint(blueprintId, {modelId, allowUnrelated?})`:
 
 1. Reads the blueprint and imports its pack into the workspace store.
-2. Classifies the situation per decision 8. An up-to-date gadget returns `{outcome: "upToDate"}`. An assumed base, without `allowUnrelated`, returns `{outcome: "unrelated"}` so the UI can warn and re-call.
-3. Creates a chat and records a `changes` message carrying `blueprintMerges`. Unless the target is already in the gadget's history, it first pins the gadget at its head, runs `threeWayMerge(base, head, target)`, and records the result as a change row.
+2. Classifies the situation per decision 8. An up-to-date gadget returns `{outcome: "upToDate"}`. An assumed base, without `allowUnrelated`, returns `{outcome: "unrelated"}` so the UI can warn and re-call. A base whose files are not held returns `{outcome: "baseUnavailable"}`.
+3. Creates a chat, titled `Update from blueprint: <title>`, and records a `changes` message carrying `blueprintMerges`. Unless the target is already in the gadget's history, it first pins the gadget at its head, runs `threeWayMerge(base, head, target)`, and records the result as a change row. The pin is declared even when the merge changes no file.
 4. Starts an agent turn if the proposal is a merge (decision 11).
 5. Returns the chat id.
 
-The user previews the result like any other proposed change, and accepts or discards it. Nothing about the gadget changes until accept, including which blueprint it follows. A gadget still pending in a chat has no head to merge into and is refused, as `createBlueprint` refuses it.
+The user previews the result like any other proposed change, and accepts or discards it. Nothing about the gadget changes until accept, including which blueprint it follows. A gadget still pending in a chat has no head to merge into and is refused, as `createBlueprint` refuses it. If the gadget's head moves while the proposal is being computed, the call throws an error asking for a retry rather than record a merge into a head the gadget no longer has.
 
 Every proposal is one of three kinds, recorded on it:
 
@@ -126,6 +130,8 @@ Every proposal is one of three kinds, recorded on it:
 | `fastForward` | The gadget's files equal the base's: it has no changes of its own since the release it last took. | Become the target's exactly. | No |
 | `merge` | The gadget and the blueprint have both changed files since the base. | Three-way merged. | Yes |
 
+The kind is decided by comparing each side's files with the base's, as the table says, not by what the merge produced. So a gadget and a blueprint that made the same changes yield a `merge` whose change is empty.
+
 **A `follow` proposal is what keeps "already merged" from blocking a switch.** Two cases need it. Re-uploading an export gives the same release commit a new blueprint id, and a gadget made from the original should be able to follow the copy. And a gadget that took Alice's latest release by way of Bob's derived blueprint should be able to go back to following Alice. In both, the target is already an ancestor of the head, so there is nothing to merge, but `upstream` names a different blueprint. The proposal keeps the preview-and-accept contract while changing no code: accepting it retargets `upstream`. `upToDate` is reserved for a gadget whose `upstream` already names this blueprint at this release.
 
 A `fastForward` is named for its effect on files. It still writes a two-parent commit at accept, for the reason given in decision 6.
@@ -134,20 +140,23 @@ A `fastForward` is named for its effect on files. It still writes a two-parent c
 
 ```ts
 {
-  gadgetId, blueprintId, version, commitId,
+  gadgetId, blueprintId, title, version, commitId,
   kind: "follow" | "fastForward" | "merge",
   baseCommit?: string,
   conflictPaths: string[],
   unverifiedBase?: true,
   missingBindings?: Record<string, BlueprintBinding>,
+  messageCount?: number,
 }
 ```
 
-`baseCommit` is the base the merge used; it is absent when the target was already in the gadget's history. `mergeChanges` already loads the epoch's messages and their statuses. For each gadget with a surviving entry it sets `upstream`, and it writes a commit with the release as a further parent unless the release is already an ancestor of the head. Consequences:
+The type is `BlueprintMerge` in api.ts. `title` is the blueprint's title at that release, so that describing the proposal needs no second read of the blueprint. `baseCommit` is the base the merge used; it is absent when the target was already in the gadget's history, and on the agent's `createGadget` entry. `conflictPaths` holds paths within the gadget, with no binding-name prefix: the entry names its gadget. A `mainlineMerge` record's paths are `GADGET_NAME/path` instead. `messageCount` is present when the change was split (commit 7): it counts the `changes` messages the change spans, which are the entry's own and the ones at the sequences directly after it. Those later messages hold the rest of the change and nothing else, and the count is the only thing that tells them from edits made afterwards. `mergeChanges` already loads the epoch's messages and their statuses. For each gadget with a surviving entry it sets `upstream`, and it writes a commit with the release as a further parent unless the release is already an ancestor of the head. Consequences:
 
 - No new pin state. Reverting the message removes the proposal, exactly as it removes the pin that message declared.
 - A gadget whose release is new to its history is committed even if its content equals its head. Otherwise the lineage would go unrecorded and the next update would compute the wrong base.
 - A proposal whose release is already in history declares no pin and writes no commit, so it cannot go stale: the release stays an ancestor however the head moves before accept.
+- That same proposal does not appear in `AiChatMetadata.proposedChangeWorkpieces`, which is derived from pins and pending records. `mergeChanges` and `revertChanges` handle it all the same, but the `blueprintMerges` record on a still-proposed message is then the only sign that the chat has something to accept, and the UI has to go by it (commit 11). Listing it would take either new state or a scan of the chat log on every metadata delivery.
+- `mergeChanges` looks for surviving entries in the log itself before deciding there is nothing to merge. A compaction checkpoint keeps no trace of a proposal that changes no file.
 - The agent's `createGadget({blueprintId})` records an entry on its creation message, with kind `fastForward`, so its first accept writes `[e, R]` with no state on the pending record.
 - The record is everything the UI and the agent need to describe the proposal, so neither re-reads a blueprint that may have moved since.
 
@@ -158,11 +167,11 @@ A `fastForward` is named for its effect on files. It still writes a two-parent c
 - **`applyBlueprint` starts the turn itself**, in the same call that creates the chat, with the model the caller named. A null `modelId` starts none, as with `newChat`. One application therefore starts at most one turn by construction, however many collaborators, tabs or reconnects are watching the chat, and no client decides whether to start one. Two people applying the same blueprint at once get two independent chats, like any two chats.
 - **The turn is prompted by the record, not by a message.** Replay renders the `blueprintMerges` entry as the model's input: a summary of what was merged and the task. No prose is stored, and a turn with no user message has a precedent in hook callbacks.
 - **The agent sees a summary, not a diff.** It gives the blueprint and version; the base, head and release commit ids, which the agent can diff through `env.GIT` if it wants detail; whether the base is unverified; the missing bindings; and the changed files grouped by outcome. The groups are files with conflicts, files both sides changed that merged cleanly (where hidden conflicts live), and files only the blueprint changed. User-authored changes are replayed today as an uncapped unified diff (agent.ts:1416), which for a large file would swamp the context.
-- **The task is narrow.** Resolve the conflicts, check that the files both sides changed still work together, wire the missing bindings, change nothing else, and say what was done. The system prompt gains a short section on conflict markers; the agent works with its existing `grep`, `readFile` and `editFile` tools.
-- **The UI renders a notice for every proposal**, generated deterministically from the record: which blueprint and version, what kind of proposal it is, that nothing changes until the user accepts, and that this is their chance to try the new version in the preview first. It lists missing bindings, and an unverified base adds the warning that local edits may have been reverted without a conflict.
-- **The conflict-marker check at accept is the UI's.** Before calling `mergeChanges`, the UI looks through the files the epoch's `blueprintMerges` and `mainlineMerge` records list as conflicted, in the chat content it already holds, for a line beginning `<<<<<<< ` or `>>>>>>> `. What it does on finding one (jump the editor there, pre-fill a prompt, offer "Accept anyway") is a design choice. `mergeChanges` accepts whatever it is given: merging markers is the caller's prerogative. Delete-versus-modify conflicts carry no markers, so only the notice and the summary report them.
+- **The task is narrow.** Resolve the conflicts, check that the files both sides changed still work together, wire the missing bindings, change nothing else, and say what was done. The system prompt gains a short section on conflict markers; the agent works with its existing `grep`, `readFile` and `editFile` tools. A blueprint merge labels the three sides `this gadget`, `base` and `blueprint` (`<<<<<<< this gadget`, `||||||| base`, `>>>>>>> blueprint`). A mainline merge labels them `mainline`, `merged base` and `this chat`.
+- **The UI renders a notice for every proposal**, generated deterministically from the record: which blueprint and version, what kind of proposal it is, that nothing changes until the user accepts, and that this is their chance to try the new version in the preview first. It lists missing bindings, and an unverified base adds the warning that local edits may have been reverted without a conflict. For a `follow` whose release was already in the gadget's history, the notice is also where accept and discard have to be offered, since such a chat has no `proposedChangeWorkpieces` (decision 10).
+- **The conflict-marker check at accept is the UI's.** Before calling `mergeChanges`, the UI looks through the files the epoch's `blueprintMerges` and `mainlineMerge` records list as conflicted, in the chat content it already holds, for a line beginning `<<<<<<< ` or `>>>>>>> `. The two records name files differently (decision 10). What it does on finding one (jump the editor there, pre-fill a prompt, offer "Accept anyway") is a design choice. `mergeChanges` accepts whatever it is given: merging markers is the caller's prerogative. Delete-versus-modify conflicts carry no markers, so only the notice and the summary report them.
 
-**12. Missing bindings are recorded, and the agent wires them when it runs.** `missingBindings` records the bindings the target declares that the gadget lacks, as of the proposal. On a merge, the agent's summary describes them the way `fetchBlueprint`'s notes do today, and the agent wires them with `setGadgetBinding` and `requestConnection`. On a `follow` or `fastForward` the notice lists them for the user. Bindings the target no longer declares are left alone. The gadget's `output` format is not changed by a switch.
+**12. Missing bindings are recorded, and the agent wires them when it runs.** `missingBindings` records the bindings the target declares that the gadget lacks, as of the proposal. On a merge, the agent's summary describes them the way `fetchBlueprint`'s notes do today, and the agent wires them with `setGadgetBinding` and `requestConnection`. On a `follow` or `fastForward` the notice lists them for the user. Bindings the target no longer declares are left alone. The gadget's `output` format is not changed by a switch. "Lacks" means the gadget has no binding under that name. A binding that exists only to feed an agent spawner (`spawnerOnly`) has no name in the gadget to look for, so it is never listed.
 
 **13. Legacy content converts deterministically.** A stored Yjs snapshot becomes a parentless commit of its files with a fixed author, timestamp and message, so every workspace derives the same commit id from the same content. When a legacy blueprint is next published, its first new release takes that commit as first parent, computed locally from the recorded source commit's files. Gadgets instantiated in between therefore have lineage. No stored value is rewritten.
 
@@ -199,9 +208,9 @@ Imported objects get no `gitObjectMetadata` rows, so they grant no gatekeeper an
 Every addition is doc-commented.
 
 - `BlueprintMetadata.commitId?: string`.
-- `GadgetSummary.upstream?: {blueprintId, commitId}`. The frontend detects an available update by comparing it with `PublicApi.getBlueprint()`, so detection needs no new RPC.
-- `blueprintMerges` on the `changes` message body.
-- `GadgetClient.applyBlueprint(blueprintId, {modelId, allowUnrelated?})` returning `{outcome: "proposed", chatId} | {outcome: "upToDate"} | {outcome: "unrelated"} | {outcome: "baseUnavailable"}`. Build role only, like `createBlueprint`. `modelId` follows `newChat`: an id from `listModels()`, or null for no agent.
+- `GadgetSummary.upstream?: GadgetUpstream`, which is `{blueprintId, commitId}`, delivered to the "build" role only (decision 7). The frontend detects an available update by comparing it with `PublicApi.getBlueprint()`, so detection needs no new RPC.
+- `blueprintMerges: BlueprintMerge[]` on the `changes` message body.
+- `GadgetClient.applyBlueprint(blueprintId, {modelId, allowUnrelated?})` returning `ApplyBlueprintResult`: `{outcome: "proposed", chatId} | {outcome: "upToDate"} | {outcome: "unrelated"} | {outcome: "baseUnavailable"}`. Build role only, like `createBlueprint`. `modelId` follows `newChat`: an id from `listModels()`, or null for no agent. The options object is a required argument.
 - `mergeChanges` and `MergeChangesResult` are unchanged.
 
 Every one of these is additive, so the frontend should keep compiling throughout. That is a convenience, not a constraint (see Commit series).
@@ -212,6 +221,7 @@ Every one of these is additive, so the frontend should keep compiling throughout
 - **Release builder and reader** in a new `blueprint-release.ts`: build a release commit, collect its closure, build its pack, validate and decode an incoming pack, convert legacy content, list a release's files. Pure functions over byte arrays and an object lookup, so the same code runs in the Overseer and in `AdminSettings`.
 - **`importObjects(objects)`** on `WorkspaceGitCache`: stores hash-verified objects with no `gitObjectMetadata` rows.
 - **`mergeBases(a, b)`** beside `isAncestor` in git-cache.ts, walking local commit objects.
+- **`GitStore.firstParentChain(oid)`** and **`GitStore.readCommitFilesIfHeld(oid)`**: a walk of one lineage, and a file read that reports a tree the store does not hold instead of throwing.
 - **Pin validation tolerates only the head's first parent** (overseer.ts:2839 and 3052 today accept any parent, which a two-parent head would widen to the upstream release).
 - The GC-roots note in git-store.ts gains release commits and `GadgetRecord.upstream`.
 
@@ -252,6 +262,8 @@ This lands as one PR made of the commits below, in order. Kernel commits (`works
 **Each commit must pass the tests of the packages it modifies, and only those.** A package that depends on a changed one may be broken until the later commit that is slated to update it. Do not add stubs, shims or placeholder implementations to keep the build green in between. In particular, an API change that breaks the frontend is fixed in the frontend commits, not papered over when the API changes. Use `pnpm --filter <package> test:run` per commit; `pnpm build`, `pnpm test` and `pnpm lint` must pass at the end of the series.
 
 Commits 4, 6 and 7 fix commit shapes permanently, so they deserve the closest review.
+
+**Status: commits 1 to 7 are implemented.** Where what was built differs from what this plan first said, the decisions above have been brought into line, and the notes on commits 8 to 11 below say what that means for each.
 
 ### 1. `workshop-backend`: tree and commit encoders in git-codec
 
@@ -307,17 +319,17 @@ Decision 14, both halves: what the generator emits, and what the installer makes
 
 ### 6. `workshop-shared`, `workshop-backend`: lineage
 
-- **API and storage:** `GadgetRecord.upstream`, surfaced as `GadgetSummary.upstream`.
+- **API and storage:** `GadgetRecord.upstream`, surfaced as `GadgetSummary.upstream` to the "build" role.
 - **Instantiate:** `initializeFromBlueprint` writes the empty root `e` and `i = [e, R]`, and sets `upstream` (decision 6).
-- **Publish:** a release gains upstream parents, found by walking the source gadget's first-parent chain back to the previous release's `sourceCommit` and collecting other parents (decision 2). A derived blueprint's first release gets its own empty root. Packs now carry fork-point trees.
+- **Publish:** a release gains upstream parents, found by walking the source gadget's first-parent chain back to the previous release's `sourceCommit` and collecting other parents (decision 2). A derived blueprint's first release gets its own empty root, `Release 0: <title>`. Packs now carry fork-point trees.
 - **Pins:** tolerance narrows to the head's first parent.
 - **Audit:** every reader of commit parents in the backend, for an assumption of at most one. Today that is the pin prefetch (overseer.ts:2840) and the walks in git-cache.ts, which already handle several.
 - **Tests:** instantiation produces `[e, R]`; a gadget instantiated from a legacy blueprint gets the converted commit as `R`; Bob's release is `[B0, A2]` and its pack carries A2's tree; a second release from Bob names no parent twice; a pin at the release parent of the head is rejected.
 
 ### 7. `workshop-shared`, `workshop-backend`: apply
 
-- **API:** `blueprintMerges` on the `changes` message; `GadgetClient.applyBlueprint`, denied to the "use" role.
-- **`applyBlueprint`:** decision 9 without its agent step, classified and based per decision 8, taking `{allowUnrelated?}` only. The chat is created with a deterministic title and no user message. A merge too large for one `changes` message (they are bounded by `CHAT_CHANGE_MESSAGE_BUDGET`, agent.ts:57) is split by file across consecutive messages, the first carrying `blueprintMerges`.
+- **API:** `blueprintMerges` on the `changes` message; `GadgetClient.applyBlueprint`, denied to the "use" role. Its options object is required, so that commit 8 only adds a field to it.
+- **`applyBlueprint`:** decision 9 without its agent step, classified and based per decision 8, taking `{allowUnrelated?}` only. The chat is created with a deterministic title and no user message. A merge too large for one `changes` message (they are bounded by `CHAT_CHANGE_MESSAGE_BUDGET`, agent.ts:57) is split by file across consecutive messages, the first carrying `blueprintMerges`, whose entry counts them in `messageCount`.
 - **`mergeChanges`:** a surviving `blueprintMerges` entry sets its gadget's `upstream`. If its release is not already an ancestor of the head, the gadget is committed with the release as a further parent, even when its content equals its head. A pending gadget with an entry gets an empty root first, so its first commit is `[e, R]`. A message carrying only an entry, with no `change`, still counts as something to accept, as a creation-only batch does.
 - **Agent path:** `createGadget({blueprintId})` puts a `blueprintMerges` entry on its creation message.
 - **Revert:** a `blueprintMerges` message is revertible like any other, unlike a `mainlineMerge`, because it advances no pin.
@@ -331,13 +343,17 @@ Decision 14, both halves: what the generator emits, and what the installer makes
     - a gadget with no upstream falls back to its first non-empty commit and sets `unverifiedBase`, except when that tree matches a release;
     - accept writes two parents and sets `upstream`; a release new to history is committed even with no file changes;
     - reverting the proposal leaves no trace at accept, and discarding the chat leaves `upstream` alone;
-    - an oversized merge splits; agent-created gadgets accept as `[e, R]`; Carol's switch finds A2.
+    - an oversized merge splits; agent-created gadgets accept as `[e, R]`; Carol's switch finds A2;
+    - of several best common ancestors, the one in the target's lineage is chosen, else the latest;
+    - a proposal that changes no file is still accepted after a compaction checkpoint covers it.
+
+The agent path is tested by running the real `createGadget` tool, with pi's faux provider scripting the model as `describe-binding.test.ts` does. A second test has the tool's copy of the files fail for want of room in the step, and checks that no entry is recorded for the gadget it leaves behind.
 
 ### 8. `workshop-shared`, `workshop-backend`: the agent reviews a merge
 
 - **API:** `applyBlueprint` gains `modelId`.
-- **Kick-off:** `applyBlueprint` starts a turn after recording a `merge` proposal, and for no other kind (decision 11).
-- **Replay:** a `blueprintMerges` entry of kind `merge` renders as the summary and task of decision 11 instead of a diff. A `follow` or `fastForward` proposal renders as a one-line note, so a later turn in the same chat knows what happened. The entry on the agent's own `createGadget` message needs none.
+- **Kick-off:** `applyBlueprint` starts a turn after recording a `merge` proposal, and for no other kind (decision 11). A `merge` whose change is empty (decision 9) has nothing to review; whether it still starts a turn is to be decided here.
+- **Replay:** a `blueprintMerges` entry of kind `merge` renders as the summary and task of decision 11 instead of a diff. Until this commit a proposal replays as any user-authored `changes` message does, as an `observeUserChanges` diff (the `"changes"` case of replay in agent.ts). A split merge's later messages carry the rest of the change and no entry. They are the `messageCount - 1` messages directly after the entry's (decision 10), and replay applies their changes without rendering them as user diffs. A `follow` or `fastForward` proposal renders as a one-line note, so a later turn in the same chat knows what happened. The entry on the agent's own `createGadget` message needs none.
 - **Prompt:** the system prompt gains the conflict-marker section.
 - **Tests:** a merge starts exactly one turn, with or without conflicts; `follow`, `fastForward` and a null model start none; replay of a clean merge, a conflicted one, one with an unverified base and one with missing bindings; the summary's size does not grow with the size of the files merged.
 
@@ -353,16 +369,19 @@ In `workshop-blueprints.test.ts`:
 - a version 1 `.gadget` still imports and instantiates, and a version 2 download re-imports;
 - existing assertions on root commits and archive versions are updated; "republishing a blueprint changes future installs, not existing ones" keeps passing.
 
+In `workshop-use-role.test.ts`, `applyBlueprint` joins the table of `GadgetClient` methods denied to the "use" role. The table is exhaustive at compile time, so this package's type check fails from commit 7 until this is done.
+
 ### 10. `workshop-frontend`: applying a blueprint
 
-- "Update from blueprint…" in the gadget menu, with the picker and the unrelated-blueprint confirmation. It passes the selected model, and on `proposed` it opens the new chat.
-- The "Update available" indicator, from `GadgetSummary.upstream` and `getBlueprint()`. A followed blueprint whose metadata has no `commitId` is legacy and never shows one.
+- "Update from blueprint…" in the gadget menu, with the picker and the unrelated-blueprint confirmation. It passes the selected model, and on `proposed` it opens the new chat. It says so when the outcome is `upToDate` or `baseUnavailable`, and offers a retry when the call fails because the gadget changed meanwhile.
+- The "Update available" indicator, from `GadgetSummary.upstream` and `getBlueprint()`. A followed blueprint whose metadata has no `commitId` is legacy and never shows one. Neither does a "use" collaborator's view, which is not told `upstream`.
 - The blueprint modal shows whether the gadget has unpublished changes.
 
 ### 11. `workshop-frontend`: the proposal in the chat
 
-- The proposal notice, rendered from the `blueprintMerges` record. The UI never starts the agent for a proposal; the server already has.
-- The conflict-marker check before accept, for blueprint and mainline merges.
+- The proposal notice, rendered from the `blueprintMerges` record. The UI never starts the agent for a proposal; the server already has. A split merge's later `changes` messages have no record of their own; the entry's `messageCount` says which they are, so they can be folded into the notice rather than shown as generic cards.
+- Accept and discard for a chat whose only proposal is a `follow` of a release already in the gadget's history. `proposedChangeWorkpieces` is empty for such a chat, so they are offered wherever a `changes` message that is neither merged nor reverted carries `blueprintMerges` (decision 10).
+- The conflict-marker check before accept, for blueprint and mainline merges. A `blueprintMerges` entry gives paths within its gadget, and a `mainlineMerge` record gives `GADGET_NAME/path`.
 - Tests: notice text for each kind and for unverified-base, conflicted and missing-binding records; accept is intercepted while a listed file still has markers and proceeds once they are gone.
 
 ### 12. Docs
@@ -375,6 +394,7 @@ Fork-point trees (in commit 6) could be dropped from this series without a forma
 
 - **Bundled formats merge poorly, and that is accepted.** They ship esbuild output only until the Gadgets environment can bundle for itself, after which they ship as source. For the same reason their releases are not chained (decision 14). Gadgets made from them are customized by editing the built files, so an update to one may conflict heavily. Merge quality for them is not a goal in the meantime. The release that switches a bundled blueprint from built output to source will replace `client.js` and `server.js` wholesale: gadgets customized against the built files get one noisy update, with their edits surfacing as delete-versus-modify conflicts for the agent to port over.
 - **Wrong assumed base.** Covered under decision 8. The mitigation is review, not correctness. A merge over an assumed base gets the agent's review as well as the user's. A fast-forward over one replaces the gadget's files with the blueprint's and runs no agent, so there the only reviewer is the user, prompted by the notice's warning.
+- **A conflict in a very large file.** A conflicted file holds both sides and the base, so its merged text can exceed `MAX_FILE_TEXT_LENGTH`, which the files that went into it obey. What the edit tools and a later publish make of such a file has not been tested. A mainline merge has the same exposure, but built bundles make it likelier here.
 - **Every merge costs an agent turn**, including the ones that would have been fine. That is the price of catching conflicts a line merge cannot see.
 - **Previewing an update that migrates stored data.** A chat preview shares the gadget's storage, so discarding the code does not undo the migration. Accepted until the database-fork workstream lands.
 - **Memory.** Import decodes a whole pack in the Overseer, up to the existing 32 MiB archive cap plus inflated objects. A streaming pack decoder has been discussed and would remove this, but it is a separate change.
