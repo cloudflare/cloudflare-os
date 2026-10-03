@@ -11299,9 +11299,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         codeVersionDate: await this.#blueprintCodeDate(record),
         screenshotUrl: blueprintScreenshotUrl(record.id, record.metadata),
         dirty: record.dirty,
+        ...(await this.#hasUnpublishedChanges(record) ? {unpublishedChanges: true} : {}),
       });
     }
     return result;
+  }
+
+  // Whether the gadget a blueprint exports has committed files other than the ones the
+  // blueprint last published, which are those of the record's `commitId`. A gadget that has
+  // since been removed has nothing left to publish, and a record from before git-backed code
+  // storage has no commit to compare with until it is migrated.
+  //
+  // The trees are what is compared, not the commits: publishing an unchanged tree mints nothing
+  // and leaves `commitId` where it was (see mintBlueprintRelease), so a head that has moved on
+  // to the same files would otherwise count as a change that no publish could clear.
+  async #hasUnpublishedChanges(record: BlueprintGadgetRecord): Promise<boolean> {
+    let gadgetId = record.gadgetId ?? this.impl.defaultGadgetId;
+    let gadget = gadgetId === undefined ? undefined : this.impl.storage.gadgets.get(gadgetId);
+    let head = gadget?.type === "gadget" ? gadget.commitId : undefined;
+    let published = record.commitId;
+    if (head === undefined || published === undefined || head === published) return false;
+    let store = this.impl.gitStore;
+    return await store.commitTree(head) !== await store.commitTree(published);
   }
 
   // The timestamp of the code exported into a blueprint: the exported commit's author date, or

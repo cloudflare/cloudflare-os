@@ -389,6 +389,34 @@ describe("publishing a blueprint", () => {
     });
   }));
 
+  it("lists a blueprint as having unpublished changes while its gadget's files differ from it",
+      () => withWorkspace(async ({ impl, client }) => {
+    let unpublished = async () => (await client.listBlueprints())[0].unpublishedChanges;
+
+    await commitToGadget(impl, V1);
+    let blueprint = await createBlueprint(client);
+    expect(blueprint.unpublishedChanges).toBeUndefined();
+    expect(await unpublished()).toBeUndefined();
+
+    await commitToGadget(impl, V2);
+    expect(await unpublished()).toBe(true);
+
+    await client.updateBlueprint(blueprint.id, { updateCode: true });
+    expect(await unpublished()).toBeUndefined();
+
+    // A head that has moved on to the files as they were published has nothing to publish, and
+    // publishing it would mint nothing to say so.
+    await commitToGadget(impl, V3);
+    expect(await unpublished()).toBe(true);
+    await commitToGadget(impl, V2);
+    expect(await unpublished()).toBeUndefined();
+
+    // The blueprint outlives its gadget, which then has nothing left to publish.
+    await commitToGadget(impl, V3);
+    impl.storage.gadgets.delete(1);
+    expect(await unpublished()).toBeUndefined();
+  }));
+
   it("chains the first release of an older record to the snapshot it published",
       () => withWorkspace(async ({ impl, client }) => {
     // A record as publishing wrote it before releases were commits, with the content it stored.

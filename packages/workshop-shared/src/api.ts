@@ -4481,6 +4481,14 @@ export type BlueprintGadgetSummary = {
   codeVersionDate: Date;  // timestamp of the exported code version
   screenshotUrl?: string;
   dirty?: boolean;        // true if last publish failed and needs retry
+
+  /**
+   * Present if the gadget the blueprint is published from has committed files other than the
+   * ones the blueprint last published: Overseer.updateBlueprint() with `updateCode` would
+   * publish them. It goes by the files alone, so a gadget whose history has moved on but whose
+   * files are back as they were published has none.
+   */
+  unpublishedChanges?: true;
 };
 
 /**
