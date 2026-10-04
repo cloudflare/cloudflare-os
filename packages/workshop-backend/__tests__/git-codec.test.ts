@@ -194,6 +194,17 @@ describe("pack decoding", () => {
         .rejects.toThrow(/exceeds the 64-byte limit/);
   });
 
+  it("rejects an entry whose size varint is long enough to overflow", async () => {
+    // Its zero digits overflow the multiplier, leaving a NaN size that no cap comparison rejects.
+    let pack = concatBytes(await buildPackBytes([{ type: "blob", payload: new Uint8Array(3) }]));
+    let entry = pack.subarray(12, -20);
+    let body = concatBytes([pack.subarray(0, 12), Uint8Array.of(entry[0] | 0x80),
+      new Uint8Array(160).fill(0x80), Uint8Array.of(0), entry.subarray(1)]);
+    let bytes = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
+    await expect(decodePack(bytes, { maxObjectSize: 64 }))
+        .rejects.toThrow(/entry size exceeds the 64-byte limit/);
+  });
+
   it("enforces the pack size cap", async () => {
     let pack = b64Bytes(PACK_NO_DELTA);
     await expect(decodePack(pack, { maxPackSize: pack.length - 1 }))

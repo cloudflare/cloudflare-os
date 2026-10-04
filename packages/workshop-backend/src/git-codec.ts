@@ -351,6 +351,12 @@ export async function* decodePackStream(
     let typeCode = (byte >> 4) & 0x07;
     let size = byte & 0x0f;
     for (let multiplier = 16; byte & 0x80; multiplier *= 128) {
+      // No size within the cap has a digit worth this much. (Left to run, a varint of zeros
+      // overflows the multiplier into a NaN size that the check below would let through.)
+      if (multiplier > options.maxObjectSize) {
+        throw new Error(
+            `invalid packfile: entry size exceeds the ${options.maxObjectSize}-byte limit`);
+      }
       byte = await reader.byte();
       size += (byte & 0x7f) * multiplier;
     }
