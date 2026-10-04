@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -6,8 +6,12 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
+import { getModelTokenLimits } from './agent-compaction.js';
+import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { AgentTurnError, completeText } from './ai-invoke.js';
+import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
 import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
@@ -16,6 +20,46 @@ import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bu
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
+
+// The entries of a record keyed by model ID (a model's mode, or its settings) other than
+// `modelId`'s. Callers rebuild the record with Object.fromEntries, which defines own properties:
+// assigning into a copy would lose the entry of a model whose ID is "__proto__".
+function entriesWithout<T>(record: Record<string, T>, modelId: string): [string, T][] {
+  return Object.entries(record).filter(([id]) => id !== modelId);
+}
+
+// The compaction budget a gateway model has while its settings give none, and the largest one
+// they may give it: the room its window leaves for a prompt.
+function compactionBudgetRange(model: AdminModel): { builtIn: number, max: number } {
+  let config = gatewayModelConfig(model);
+  return {
+    builtIn: getModelTokenLimits(config).inputBudget,
+    // A budget is capped at that room, so an unbounded one reads it back.
+    max: getModelTokenLimits({ ...config, compactionInputBudget: Infinity }).inputBudget,
+  };
+}
+
+// One of the tests an admin runs through the gateway: the event and the message of its log line,
+// the response cap of its request (the model's own, where that is lower), whether the request
+// asks for what an agent's turn would (see completeText), and how long the model has to answer.
+type GatewayTest = {
+  event: string, logged: string, maxTokens: number, thinking: boolean, timeoutMs: number,
+};
+const PROVIDER_TEST: GatewayTest = {
+  event: "gateway.provider.test", logged: "tested an AI Gateway provider",
+  maxTokens: 16, thinking: false, timeoutMs: 15_000,
+};
+const MODEL_TEST: GatewayTest = {
+  event: "gateway.model.test", logged: "tested an AI Gateway model",
+  maxTokens: 2048, thinking: true, timeoutMs: 30_000,
+};
+
+// What a failed test tells the admin: the provider's or the gateway's own words with the
+// deployment's gateway token cut out, should they repeat it, on one line and cut short.
+function testFailureMessage(text: string, apiToken: string | undefined): string {
+  if (apiToken) text = text.replaceAll(apiToken, "[redacted]");
+  return text.replace(/\s+/g, " ").trim().slice(0, 300);
+}
 
 /**
  * Deployment-wide admin settings singleton.
@@ -291,6 +335,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
+      gatewayModels: this.#listGatewayModels(config),
     };
   }
 
@@ -391,6 +436,263 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   async setFormatOrder(blueprintIds: string[]): Promise<void> {
     await this.#mutateFormats(formats => reorderFormats(formats, blueprintIds));
+  }
+
+  // --- AI Gateway models ---
+
+  // The gateway's configuration. Throws outside AI Gateway mode, which has no models to manage.
+  #requireGateway(): AiGatewayConfig {
+    let gateway = getAiGatewayConfig(this.env);
+    if (!gateway) throw new Error("This deployment does not provide models through AI Gateway.");
+    return gateway;
+  }
+
+  // Admin view of the gateway models, or undefined outside AI Gateway mode. A gateway the
+  // environment misconfigures reads the same way, so that it can't take the admin panel down.
+  #listGatewayModels(config: AdminConfig): AdminSettingsView["gatewayModels"] {
+    try {
+      let gateway = getAiGatewayConfig(this.env);
+      if (!gateway) return undefined;
+      let models = new GatewayModels(gateway, config);
+      return {
+        providers: models.addableProviders,
+        providerSettings: models.providerSettings,
+        models: models.all.map(model => {
+          let budget = compactionBudgetRange(model);
+          return {
+            ...model,
+            reasoningLevels: gatewayReasoningLevels(model.provider, model.id, model.behavesLike),
+            builtInReasoning: gatewayBuiltInReasoning(model.provider, model.id, model.behavesLike),
+            builtInCompactionInputBudget: budget.builtIn,
+            maxCompactionInputBudget: budget.max,
+            runtimeKnown: isRuntimeModel(model.provider, model.id),
+            ...(model.behavesLike !== undefined &&
+                { behavesLikeKnown: isRuntimeModel(model.provider, model.behavesLike) }),
+          };
+        }),
+        defaultReasoning: config.defaultReasoning,
+        userModelsEnabled: models.userModels,
+        modelsDevSuggestions: config.modelsDevSuggestions,
+      };
+    } catch (error) {
+      logger.error("failed to read the AI Gateway models", {
+        event: "gateway.models.read.failed", error,
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Set how a gateway model is offered, atomically (read-modify-write within the DO). The model's
+   * default mode is stored as absence, so setting it forgets the override.
+   */
+  async setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      // Built from the config the mutation is handed, which is authoritative; the KV mirror the
+      // user-facing paths read can trail it.
+      let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
+      if (!model) throw new Error(`No such model: ${modelId}`);
+      let modes = entriesWithout(config.modelModes, modelId);
+      if (mode !== model.defaultMode) modes.push([modelId, mode]);
+      return { ...config, modelModes: Object.fromEntries(modes) };
+    });
+  }
+
+  /**
+   * Replace what is set for a gateway model, atomically. Nothing set is stored as absence. The
+   * reasoning level is not held to the model's own levels, since a request clamps it to them; the
+   * compaction budget is held to the room the model's window leaves for a prompt.
+   */
+  async setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      let model = new GatewayModels(this.#requireGateway(), config).get(modelId);
+      if (!model) throw new Error(`No such model: ${modelId}`);
+      let budget = settings.compactionInputBudget;
+      if (budget !== undefined) {
+        let { max } = compactionBudgetRange(model);
+        if (max <= 0) {
+          throw new Error(`The "${model.name}" model's context window leaves no room for a ` +
+              "compaction budget.");
+        }
+        if (!Number.isSafeInteger(budget) || budget <= 0 || budget > max) {
+          throw new Error(`The compaction budget of the "${model.name}" model must be a whole ` +
+              `number of tokens from 1 to ${max}.`);
+        }
+      }
+      let entries = entriesWithout(config.modelSettings, modelId);
+      let clean = sanitizeModelSettings(settings);
+      if (clean) entries.push([modelId, clean]);
+      return { ...config, modelSettings: Object.fromEntries(entries) };
+    });
+  }
+
+  /** Set the reasoning level of the gateway models whose settings give none, or null for none. */
+  async setDefaultReasoning(level: ReasoningLevel | null): Promise<void> {
+    this.#requireGateway();
+    await this.updateAdminConfig({ defaultReasoning: level });
+  }
+
+  /**
+   * Add a gateway model. Whether its ID is free is decided within the mutation, so that two
+   * concurrent calls can't both add the same one.
+   */
+  async addGatewayModel(model: GatewayModel): Promise<void> {
+    let added = sanitizeAddedModel(model);
+    if (!added) {
+      throw new Error(
+          "Invalid model: it needs an ID and a name, neither over-long, and token limits that " +
+          "are positive integers. The ID of a model it behaves like can't be over-long either.");
+    }
+    await this.#mutateAdminConfig(config => {
+      new GatewayModels(this.#requireGateway(), config).assertAddable(added);
+      if (added.behavesLike !== undefined && !isRuntimeModel(added.provider, added.behavesLike)) {
+        throw new Error(`"${added.behavesLike}" is not a model the runtime knows under ` +
+            `provider "${added.provider}", so "${added.id}" can't behave like it.`);
+      }
+      // A response is reserved out of the window, so a reservation that fills it would leave
+      // every chat on the model with no prompt to send.
+      let { inputBudget, maxOutputTokens } = getModelTokenLimits(gatewayModelConfig(
+          { ...added, mode: "enabled", defaultMode: "enabled", added: true }));
+      if (inputBudget <= 0) {
+        throw new Error(`The "${added.name}" model's context window leaves no room for a ` +
+            `prompt: ${maxOutputTokens} tokens of it are reserved for the response. Give the ` +
+            "model an output limit under its context window.");
+      }
+      // The ID was free, so a mode or settings stored under it belonged to a model that has since
+      // left.
+      return {
+        ...config,
+        addedModels: [...config.addedModels, added],
+        modelModes: Object.fromEntries(entriesWithout(config.modelModes, added.id)),
+        modelSettings: Object.fromEntries(entriesWithout(config.modelSettings, added.id)),
+      };
+    });
+  }
+
+  /** Remove an added gateway model, and with it the mode and settings it was given. */
+  async removeGatewayModel(modelId: string): Promise<void> {
+    this.#requireGateway();
+    await this.#mutateAdminConfig(config => {
+      let addedModels = config.addedModels.filter(model => model.id !== modelId);
+      if (addedModels.length === config.addedModels.length) {
+        throw new Error(`No such added model: ${modelId}`);
+      }
+      // The catalog wins an ID it lists, so a mode or settings stored under one are the suggested
+      // model's.
+      if (isCatalogModel(modelId)) return { ...config, addedModels };
+      return {
+        ...config,
+        addedModels,
+        modelModes: Object.fromEntries(entriesWithout(config.modelModes, modelId)),
+        modelSettings: Object.fromEntries(entriesWithout(config.modelSettings, modelId)),
+      };
+    });
+  }
+
+  /**
+   * Turn a provider on or off beside the ones the environment lists, which are a floor. Off keeps
+   * the modes and settings of the provider's models and the models added under it, all of which
+   * return with it.
+   */
+  async setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
+    await this.#mutateAdminConfig(config => {
+      let gateway = this.#requireGateway();
+      assertGatewayProvider(provider);
+      if (gateway.providers.has(provider)) {
+        // On already, with nothing to store.
+        if (enabled) return config;
+        throw new Error(`Provider "${provider}" is enabled by CF_AI_GATEWAY_PROVIDERS and can ` +
+            "only be turned off there.");
+      }
+      let addedProviders = config.addedProviders.filter(added => added !== provider);
+      if (enabled) addedProviders.push(provider);
+      return { ...config, addedProviders };
+    });
+  }
+
+  /**
+   * Ask the first suggested model of a provider for a few tokens through the gateway, on behalf
+   * of the admin `adminUserId`, and report what happened. A request that fails is a result. The
+   * environment alone decides how the request is routed, so a provider that is off can be tested.
+   *
+   * Nothing is stored and the config mutation queue is not joined, so the other admin calls run
+   * while the request is out.
+   */
+  async testGatewayProvider(provider: AiModelProvider, adminUserId: string)
+      : Promise<GatewayModelTest> {
+    let gateway = this.#requireGateway();
+    assertGatewayProvider(provider);
+    let [model] = Object.keys(SUGGESTED_MODELS[provider]);
+    if (model === undefined) {
+      throw new Error(`Provider "${provider}" has no suggested model to test.`);
+    }
+    return this.#runTest(gateway, { provider, model, apiToken: "" }, adminUserId, PROVIDER_TEST);
+  }
+
+  /**
+   * Ask a gateway model for an answer the way a chat turn would, on behalf of the admin
+   * `adminUserId`, and report what happened: the request goes out with the config the model runs
+   * with, so with the reasoning level in effect for it, under the response cap of a test (see
+   * AdminApi.testGatewayModel). A request that fails is a result. A model in any mode can be
+   * tested, so that an admin can try one before enabling it.
+   *
+   * Like testGatewayProvider(), it stores nothing and stays out of the config mutation queue. The
+   * config is the authoritative one, which the KV mirror the chats read can trail.
+   */
+  async testGatewayModel(modelId: string, adminUserId: string): Promise<GatewayModelTest> {
+    let gateway = this.#requireGateway();
+    let config = new GatewayModels(gateway, this.#config()).runConfig(modelId);
+    if (!config) throw new Error(`No such model: ${modelId}`);
+    return this.#runTest(gateway, config, adminUserId, MODEL_TEST);
+  }
+
+  // Send the model `config` describes one prompt through the gateway, as `test` says to and on
+  // behalf of the admin `adminUserId`, and report what happened.
+  async #runTest(gateway: AiGatewayConfig, config: AiModelConfig, adminUserId: string,
+                 test: GatewayTest): Promise<GatewayModelTest> {
+    let model = config.model;
+    let signal = AbortSignal.timeout(test.timeoutMs);
+    let startedAt = Date.now();
+    let failure: { status?: number, message: string } | undefined;
+    try {
+      let handle = getModel(this.env, config,
+          { type: "user", id: adminUserId, name: adminUserId });
+      await completeText(handle, {
+        prompt: "Reply with OK.", maxTokens: Math.min(test.maxTokens, handle.model.maxTokens),
+        thinking: test.thinking, signal,
+        // The request is the same every time, which a gateway that caches responses would
+        // answer without asking the provider.
+        headers: { "cf-aig-skip-cache": "true" },
+      });
+    } catch (error) {
+      // The signal is this call's own, so nothing but the timeout aborts it.
+      let message = signal.aborted
+          ? `The model did not answer within ${test.timeoutMs / 1000} seconds.`
+          : error instanceof Error ? error.message : String(error);
+      let status = error instanceof AgentTurnError ? error.statusCode : undefined;
+      failure = {
+        ...(status !== undefined && { status }),
+        message: testFailureMessage(message, gateway.apiToken),
+      };
+    }
+    // The failure message stays out of the log: a provider words it.
+    logger.info(test.logged, {
+      event: test.event, modelId: model, outcome: failure ? "error" : "ok",
+      statusCode: failure?.status, durationMs: Date.now() - startedAt,
+    });
+    return failure ? { model, ok: false, ...failure } : { model, ok: true };
+  }
+
+  /** Set whether users may add models of their own to the ones the gateway provides. */
+  async setUserModelsEnabled(enabled: boolean): Promise<void> {
+    this.#requireGateway();
+    await this.updateAdminConfig({ userModelsEnabled: enabled });
+  }
+
+  /** Set whether the admin UI may suggest models from models.dev while an admin adds one. */
+  async setModelsDevSuggestions(enabled: boolean): Promise<void> {
+    this.#requireGateway();
+    await this.updateAdminConfig({ modelsDevSuggestions: enabled });
   }
 
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
@@ -530,8 +832,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // when the capability is minted in server.ts, so these methods don't re-check. This is a thin
 // validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
 // gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
-// stub to the DO's internal methods. Covers branding, agent instructions, signups, and gatekeeper
-// connector/resource availability; authentication config stays env-var driven.
+// stub to the DO's internal methods. Covers branding, agent instructions, signups, gatekeeper
+// connector/resource availability, and AI Gateway models; authentication config stays env-var
+// driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   /**
@@ -630,5 +933,45 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setFormatOrder(blueprintIds: string[]): Promise<void> {
     return this.admin.setFormatOrder(blueprintIds);
+  }
+
+  setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void> {
+    return this.admin.setGatewayModelMode(modelId, mode);
+  }
+
+  addGatewayModel(model: GatewayModel): Promise<void> {
+    return this.admin.addGatewayModel(model);
+  }
+
+  removeGatewayModel(modelId: string): Promise<void> {
+    return this.admin.removeGatewayModel(modelId);
+  }
+
+  setUserModelsEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setUserModelsEnabled(enabled);
+  }
+
+  setModelsDevSuggestions(enabled: boolean): Promise<void> {
+    return this.admin.setModelsDevSuggestions(enabled);
+  }
+
+  setGatewayModelSettings(modelId: string, settings: GatewayModelSettings): Promise<void> {
+    return this.admin.setGatewayModelSettings(modelId, settings);
+  }
+
+  setDefaultReasoning(level: ReasoningLevel | null): Promise<void> {
+    return this.admin.setDefaultReasoning(level);
+  }
+
+  setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void> {
+    return this.admin.setGatewayProviderEnabled(provider, enabled);
+  }
+
+  testGatewayProvider(provider: AiModelProvider): Promise<GatewayModelTest> {
+    return this.admin.testGatewayProvider(provider, this.adminUserId);
+  }
+
+  testGatewayModel(modelId: string): Promise<GatewayModelTest> {
+    return this.admin.testGatewayModel(modelId, this.adminUserId);
   }
 }

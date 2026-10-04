@@ -26,6 +26,16 @@ export type ChatUser = {
   type: "human" | "app";
 };
 
+/** A person in the connected account's Google Workspace organization directory. */
+export type ChatPerson = {
+  /** Chat identity, such as `users/123`: the same `id` their messages' `sender` carries. */
+  id: string;
+  /** Display name, when the directory has one. */
+  name?: string;
+  /** Primary email address. */
+  email: string;
+};
+
 /** The kind of Google Chat conversation. */
 export type ChatSpaceType = "space" | "groupChat" | "directMessage";
 
@@ -139,7 +149,11 @@ export type ChatMessageInfo = {
    * is committed.
    */
   id: string;
-  /** ID of the containing conversation. */
+  /**
+   * ID of the containing conversation. A message you sent with
+   * `ChatSession.sendDirectMessage()` that is creating its conversation has a temporary
+   * `pending:space:{id}` here until that conversation exists; read the message again for the real ID.
+   */
   spaceId: string;
   /**
    * Containing thread ID, such as `spaces/AAAA1234/threads/CCCC`. Only meaningful where the
@@ -339,6 +353,30 @@ export interface ChatSession extends RpcTarget {
    * See {@link ChatMessageSearch} for what search covers.
    */
   searchMessages(query: ChatMessageSearch): Promise<Cursor<ChatMessageEntry>>;
+
+  /**
+   * Find people in your Google Workspace organization's directory whose name or email address
+   * starts with `query`, such as `ada` or `ada.lovelace@`. Contacts and people outside the
+   * organization are never returned.
+   */
+  searchPeople(query: string): Promise<Cursor<ChatPerson>>;
+
+  /**
+   * Send a message to one person, in your direct message with them, or to several, in the group
+   * chat with exactly them and you. Each person is `users/{user}` or an email address; leave
+   * yourself out. At most 49 people. `text` is formatted as for `ChatSpace.post()`.
+   *
+   * When that conversation already exists the message goes there. Otherwise sending also
+   * creates it, so each person must be named by email address and be in your organization's
+   * directory (see {@link searchPeople}): conversations with people outside your organization
+   * cannot be started this way. A group chat that also holds anyone else, Chat apps and Google
+   * Groups included, doesn't count, and if anyone joins it before the message is approved,
+   * nothing is posted.
+   *
+   * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
+   * it is committed it can be edited but not replied to.
+   */
+  sendDirectMessage(people: string[], text: string): Promise<ChatMessageEntry>;
 }
 
 /**

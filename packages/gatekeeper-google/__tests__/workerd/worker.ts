@@ -493,6 +493,51 @@ testGmailPrototype.runTestOperation = async function(
       disposeRpc(cursor);
     }
   }
+  case "session.searchThreads": {
+    const cursor = await session.searchThreads(id as string);
+    try {
+      const entries = await cursor.next();
+      const result = entries?.map(entry => entry.info) ?? null;
+      for (const entry of entries ?? []) disposeRpc(entry.thread);
+      return result;
+    } finally {
+      disposeRpc(cursor);
+    }
+  }
+  case "session.searchMessages": {
+    const cursor = await session.searchMessages(id as string);
+    try {
+      const entries = await cursor.next();
+      const result = entries?.map(entry => entry.info) ?? null;
+      for (const entry of entries ?? []) disposeRpc(entry.message);
+      return result;
+    } finally {
+      disposeRpc(cursor);
+    }
+  }
+  case "session.listedThreadAfterArchivingMessage": {
+    // One thread capability from a list, read for the first time only after one of its messages
+    // was archived through it.
+    const cursor = await session.listThreads();
+    try {
+      const entries = await cursor.next();
+      try {
+        const entry = entries?.find(candidate => candidate.info.id === id);
+        if (!entry) throw new Error(`Test thread was not found: ${String(id)}`);
+        const messages = await entry.thread.messages();
+        try {
+          await messages[0].archive();
+        } finally {
+          for (const message of messages) disposeRpc(message);
+        }
+        return {listed: entry.info, afterwards: await entry.thread.getMetadata()};
+      } finally {
+        for (const candidate of entries ?? []) disposeRpc(candidate.thread);
+      }
+    } finally {
+      disposeRpc(cursor);
+    }
+  }
   case "session.listDrafts": {
     const cursor = await session.listDrafts();
     try {
@@ -555,19 +600,78 @@ testGmailPrototype.runTestOperation = async function(
     return await withMessage(session, id as string, async message => {
       const before = await message.getMetadata();
       await message.markRead();
+      const pending = await message.getMetadata();
       const cache = new RpcStub(new TestGitCache());
       try {
         await this.applyAction(value as number, cache);
       } finally {
         cache[Symbol.dispose]();
       }
-      return {before, after: await message.getMetadata()};
+      return {before, pending, after: await message.getMetadata()};
+    });
+  case "message.getContent":
+    return await withMessage(session, id as string, message => message.getContent());
+  case "message.attachments":
+    return await withMessage(session, id as string, async message => {
+      const entries = await message.attachments();
+      try {
+        return await Promise.all(entries.map(async entry => ({
+          info: entry.info,
+          content: entry.info.readable ? await entry.attachment.getContent() : undefined,
+        })));
+      } finally {
+        for (const entry of entries) disposeRpc(entry.attachment);
+      }
+    });
+  case "message.readAcrossDecision":
+    // One message capability, read before and after the action that sends it is decided.
+    return await withMessage(session, id as string, async message => {
+      const before = await message.getMetadata();
+      if (extra === "reject") {
+        await this.rejectAction(value as number);
+      } else {
+        const cache = new RpcStub(new TestGitCache());
+        try {
+          await this.applyAction(value as number, cache);
+        } finally {
+          cache[Symbol.dispose]();
+        }
+      }
+      try {
+        return {before, after: await message.getMetadata()};
+      } catch (error) {
+        return {before, error: error instanceof Error ? error.message : String(error)};
+      }
     });
   case "message.thread":
     return await withMessage(session, id as string, async message => {
       const thread = await message.thread();
       try {
         return await thread.getMetadata();
+      } finally {
+        disposeRpc(thread);
+      }
+    });
+  case "message.threadMessages":
+    // The thread capability a message opens, which is not the one getThread() returns.
+    return await withMessage(session, id as string, async message => {
+      const thread = await message.thread();
+      try {
+        const messages = await thread.messages();
+        try {
+          return await Promise.all(messages.map(member => member.getMetadata()));
+        } finally {
+          for (const member of messages) disposeRpc(member);
+        }
+      } finally {
+        disposeRpc(thread);
+      }
+    });
+  case "message.threadArchive":
+    return await withMessage(session, id as string, async message => {
+      const thread = await message.thread();
+      try {
+        return await thread.archive(value as string | undefined);
       } finally {
         disposeRpc(thread);
       }
@@ -583,6 +687,18 @@ testGmailPrototype.runTestOperation = async function(
       value as string[], extra as string, options as GmailComposeOptions));
   case "message.archive":
     return await withMessage(session, id as string, message => message.archive());
+  case "message.mutate":
+    return await withMessage(session, id as string, message => {
+      switch (value) {
+        case "archive": return message.archive();
+        case "trash": return message.trash();
+        case "markRead": return message.markRead();
+        case "markUnread": return message.markUnread();
+        case "star": return message.star();
+        case "unstar": return message.unstar();
+        default: throw new Error(`Unknown message mutation: ${String(value)}`);
+      }
+    });
   case "message.createReplyDraft": {
     return await withMessage(session, id as string, async message => {
       const draft = await message.createReplyDraft(value as string, extra as GmailReplyOptions);

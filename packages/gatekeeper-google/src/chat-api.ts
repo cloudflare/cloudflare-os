@@ -15,7 +15,7 @@ import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
-  ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatReaction,
+  ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatReaction,
   ChatSpaceInfo, ChatSpaceType, ChatUser, ChatWindow,
 } from "./chat-types";
 
@@ -23,7 +23,12 @@ const CHAT_API_BASE = "https://chat.googleapis.com/v1";
 const PEOPLE_API_BASE = "https://people.googleapis.com/v1";
 
 type PeopleNameRaw = { displayName?: unknown; metadata?: { primary?: boolean } };
+type PeopleEmailRaw = { value?: unknown; metadata?: { primary?: boolean } };
 type PersonResponseRaw = { requestedResourceName?: unknown; person?: { names?: unknown } } | null;
+type DirectoryPersonRaw = { resourceName?: unknown; names?: unknown; emailAddresses?: unknown };
+
+/** A directory profile together with every email address it answers to. */
+type DirectoryEntry = { person: ChatPerson; emails: string[] };
 
 /** The primary name in a People `names` list. */
 function peopleDisplayName(names: unknown): string | undefined {
@@ -31,6 +36,20 @@ function peopleDisplayName(names: unknown): string | undefined {
     .filter((entry): entry is PeopleNameRaw => typeof entry === "object" && entry !== null);
   const name = (entries.find(entry => entry.metadata?.primary) ?? entries[0])?.displayName;
   return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+
+/** A directory profile, or undefined when it lacks the People id or email that identify it. */
+function directoryEntryFromRaw(raw: DirectoryPersonRaw): DirectoryEntry | undefined {
+  // A People id is the same number Chat names the person by.
+  const id = /^people\/(\d{1,32})$/.exec(String(raw.resourceName))?.[1];
+  // Primary first, so the address shown for a person is the one the directory leads with.
+  const emails = (Array.isArray(raw.emailAddresses) ? raw.emailAddresses : [])
+    .filter((entry): entry is PeopleEmailRaw => typeof entry === "object" && entry !== null)
+    .toSorted((left, right) => Number(right.metadata?.primary === true) - Number(left.metadata?.primary === true))
+    .flatMap(entry => typeof entry.value === "string" && entry.value.trim() ? [entry.value.trim()] : []);
+  if (id === undefined || emails.length === 0) return undefined;
+  const name = peopleDisplayName(raw.names);
+  return { person: { id: `users/${id}`, ...(name ? { name } : {}), email: emails[0] }, emails };
 }
 
 /** Largest attachment body this gatekeeper will read back into memory. */
@@ -93,6 +112,14 @@ export function isChatNoAccessError(error: unknown): boolean {
   return error instanceof PrivateChatMessageError ||
     (error instanceof ChatApiError &&
       (error.status === 403 || error.status === 404));
+}
+
+/**
+ * Whether Google found nothing for a user reference. Besides 404, the reference's shape was
+ * validated before sending, so a 400 can only mean it names no real account: the same answer.
+ */
+function isChatUserNotFound(error: unknown): boolean {
+  return error instanceof ChatApiError && (error.status === 400 || error.status === 404);
 }
 
 // ── Identifier validation ───────────────────────────────────────────
@@ -414,6 +441,12 @@ export function chatMembershipFromRaw(raw: ChatMembershipRaw): ChatMembership | 
   return undefined;
 }
 
+/** The `users/{user}` id of a person this membership puts in the conversation, if it does. */
+function personIn(membership: ChatMembership | null): string | undefined {
+  return membership?.kind === "user" && membership.user.type === "human" && membership.state !== "notMember"
+    ? membership.user.id : undefined;
+}
+
 export function chatReactionFromRaw(raw: ChatReactionRaw): ChatReaction {
   if (!raw.name) throw new Error("Google Chat returned a reaction with no resource name.");
   const user = chatUserFromRaw(raw.user);
@@ -658,13 +691,136 @@ export class ChatApi {
       return chatSpaceInfoFromRaw(await this.#request<ChatSpaceRaw>(
         "spaces.findDirectMessage", `/spaces:findDirectMessage?${params}`));
     } catch (error) {
-      // 404 is "no direct message". The reference's shape was validated before sending, so a 400
-      // can only mean it names no real account — the same negative answer, not a caller error.
-      if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) {
-        return null;
-      }
+      if (isChatUserNotFound(error)) return null;
       throw error;
     }
+  }
+
+  /**
+   * The group chat with exactly the connected user and `users`, and those people's `users/{user}`
+   * ids, or null when there is none. Google matches human members only, so a match may also hold
+   * a Chat app; and with no full match, it offers group chats without whoever blocks the connected
+   * user or is blocked by them. So each match is checked, every page of them.
+   */
+  async findGroupChat(users: readonly string[]): Promise<{ spaceName: string; ids: string[] } | null> {
+    // A person an email address resolved to in one match is the same person in the next.
+    const resolved = new Map<string, string>();
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams({ pageSize: "30", ...(pageToken ? { pageToken } : {}) });
+      for (const user of users) params.append("users", chatUserName(user));
+      type Page = { spaces?: ChatSpaceRaw[]; nextPageToken?: string };
+      const page = await this.#request<Page>("spaces.findGroupChats", `/spaces:findGroupChats?${params}`)
+        .catch((error: unknown): Page => {
+          if (isChatUserNotFound(error)) return {};
+          throw error;
+        });
+      for (const { name } of page.spaces ?? []) {
+        if (name === undefined) continue;
+        const spaceName = `spaces/${chatSpaceId(name)}`;
+        const ids = await this.#onlyIn(spaceName, users, resolved);
+        if (ids) return { spaceName, ids };
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return null;
+  }
+
+  /** The `users/{user}` ids of `users`, if they and the connected user are everyone in `spaceName`. */
+  async #onlyIn(
+    spaceName: string, users: readonly string[], resolved: Map<string, string>,
+  ): Promise<string[] | null> {
+    const present = await this.audienceIn(spaceName);
+    if (present.size !== users.length + 1) return null;
+    const ids = new Set<string>();
+    // A `users/{user}` id is its own membership's; only an email address needs looking up, one at a
+    // time, as Chat allows 15 reads a second per space.
+    for (const user of users.map(chatUserName)) {
+      const id = present.has(user) || !user.includes("@")
+        ? user : resolved.get(user) ?? personIn(await this.getMembership(spaceName, user));
+      if (id === undefined || !present.has(id)) return null;
+      resolved.set(user, id);
+      ids.add(id);
+    }
+    // Two references to one person would leave room for someone else.
+    return ids.size === users.length ? [...ids] : null;
+  }
+
+  /**
+   * Create the direct message (one member) or group chat (several) between the connected user and
+   * `members`, returning its name. An existing direct message is returned rather than duplicated,
+   * and `requestId` makes a retry return what the first attempt created. Google silently leaves
+   * out of a group chat anyone who blocks the caller, so check its members before posting.
+   */
+  async setupConversation(members: readonly string[], requestId: string): Promise<string> {
+    const space = members.length === 1
+      ? { spaceType: "DIRECT_MESSAGE", singleUserBotDm: false }
+      : { spaceType: "GROUP_CHAT" };
+    const raw = await this.#request<ChatSpaceRaw>("spaces.setup", "/spaces:setup", {
+      method: "POST",
+      body: JSON.stringify({
+        space,
+        requestId,
+        memberships: members.map(user => ({ member: { name: chatUserName(user), type: "HUMAN" } })),
+      }),
+      idempotent: true,
+    });
+    if (!raw.name) throw new Error("Google Chat returned a space with no resource name.");
+    return `spaces/${chatSpaceId(raw.name)}`;
+  }
+
+  // ── Directory ─────────────────────────────────────────────────────
+
+  /**
+   * People in the connected user's Workspace directory whose name or email address starts with
+   * `query`. Only domain profiles are searched, never contacts, so nobody outside the
+   * organization is returned.
+   */
+  async searchDirectory(
+    query: string,
+    options: { pageToken?: string; pageSize?: number } = {},
+  ): Promise<ChatPage<ChatPerson>> {
+    const page = await this.#searchDirectory(query, options);
+    return { ...page, items: page.items.map(entry => entry.person) };
+  }
+
+  /**
+   * The directory profile with this email address, or null when the organization has none.
+   * Throws when more profiles match than one page holds and none of those has it.
+   */
+  async findDirectoryPerson(email: string): Promise<ChatPerson | null> {
+    const wanted = email.toLowerCase();
+    // Google documents a prefix search but not its ordering, so a further page leaves absence unconfirmed.
+    const { items, nextPageToken } = await this.#searchDirectory(email, { pageSize: 10 });
+    const match = items.find(entry => entry.emails.some(address => address.toLowerCase() === wanted));
+    if (match) return match.person;
+    if (nextPageToken) {
+      throw new Error(`Couldn't confirm that ${email} is in your organization's directory: too many ` +
+        "profiles match it.");
+    }
+    return null;
+  }
+
+  async #searchDirectory(
+    query: string,
+    options: { pageToken?: string; pageSize?: number },
+  ): Promise<ChatPage<DirectoryEntry>> {
+    const params = new URLSearchParams({
+      query,
+      readMask: "names,emailAddresses",
+      sources: "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+      pageSize: String(options.pageSize ?? 50),
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`,
+      { headers: { Accept: "application/json" } }, this.getAccessToken);
+    const body = await readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
+      provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
+    });
+    return {
+      items: (body.people ?? []).flatMap(raw => directoryEntryFromRaw(raw) ?? []),
+      ...(body.nextPageToken ? { nextPageToken: body.nextPageToken } : {}),
+    };
   }
 
   // ── Messages ──────────────────────────────────────────────────────
@@ -740,16 +896,18 @@ export class ChatApi {
    * Create a message as the connected user.
    *
    * `requestId` makes the write idempotent, so a retry after a lost response returns the message
-   * the first attempt created rather than posting a second one.
+   * the first attempt created rather than posting a second one. `messageId` names the message,
+   * which can then be read by that name.
    */
   async createMessage(
     spaceName: string,
     message: { text: string; threadName?: string },
-    options: { requestId?: string } = {},
+    options: { requestId?: string; messageId?: string } = {},
   ): Promise<ChatMessageInfo> {
     const spaceId = chatSpaceId(spaceName);
     const params = new URLSearchParams();
     if (options.requestId) params.set("requestId", options.requestId);
+    if (options.messageId) params.set("messageId", options.messageId);
     // Google documents this as named-space only, but a live DM reply threaded correctly.
     if (message.threadName !== undefined) {
       params.set("messageReplyOption", "REPLY_MESSAGE_OR_FAIL");
@@ -808,6 +966,25 @@ export class ChatApi {
     };
   }
 
+  /**
+   * Everyone a message in a direct message or group chat reaches: the `users/{user}` ids of its
+   * people and Chat apps, the connected user's among them, and the `groups/{group}` name of any
+   * Google Group.
+   */
+  async audienceIn(spaceName: string): Promise<Set<string>> {
+    const audience = new Set<string>();
+    let pageToken: string | undefined;
+    do {
+      const page = await this.listMembers(spaceName, pageToken ? { pageToken } : {});
+      for (const membership of page.items) {
+        if (membership.state === "notMember") continue;
+        audience.add(membership.kind === "group" ? membership.groupId : membership.user.id);
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return audience;
+  }
+
   /** Returns null when the named user is not a member of the space or does not exist. */
   async getMembership(spaceName: string, user: string): Promise<ChatMembership | null> {
     const spaceId = chatSpaceId(spaceName);
@@ -817,11 +994,8 @@ export class ChatApi {
       return chatMembershipFromRaw(await this.#request<ChatMembershipRaw>(
         "members.get", `/spaces/${spaceId}/members/${encodeURIComponent(member)}`)) ?? null;
     } catch (error) {
-      // 404 is "not a member". As in findDirectMessage above, a 400 here means the validated
-      // reference names no real account, which is the same negative answer.
-      if (error instanceof ChatApiError && (error.status === 400 || error.status === 404)) {
-        return null;
-      }
+      // 404 is "not a member".
+      if (isChatUserNotFound(error)) return null;
       throw error;
     }
   }

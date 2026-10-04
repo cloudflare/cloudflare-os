@@ -73,8 +73,9 @@ export const GOOGLE_CHAT_RESOURCE: SupportedResource = {
   title: "Google Chat Account",
   description:
       "Find conversations, read and search messages across them, and post, react, or edit as " +
-      "you. Covers direct messages as well as spaces, so it cannot be shared with " +
-      "collaborators — connect a single conversation for that.",
+      "you. Can also look people up in your organization's directory and start direct messages " +
+      "or group chats with them. Covers direct messages as well as spaces, so it cannot be " +
+      "shared with collaborators — connect a single conversation for that.",
   grantable: true,
 };
 
@@ -177,7 +178,9 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
  * because the binding also edits messages and can undo its own sends, which need the combined
  * scope; it covers reactions too. Only the account resource adds `chat.users.readstate.readonly`,
- * for its `unreadOnly` search filter.
+ * for its `unreadOnly` search filter, and what starting a conversation needs: `chat.spaces.create`
+ * (not `chat.spaces`, which could also rename and reconfigure conversations) and
+ * `directory.readonly`, to find people and to confirm they belong to the organization.
  */
 const CHAT_SCOPES = [
   "https://www.googleapis.com/auth/chat.spaces.readonly",
@@ -249,7 +252,12 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   // and `chat.delete` are all deliberately absent.
   {
     resource: GOOGLE_CHAT_RESOURCE,
-    scopes: [...CHAT_SCOPES, "https://www.googleapis.com/auth/chat.users.readstate.readonly"],
+    scopes: [
+      ...CHAT_SCOPES,
+      "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+      "https://www.googleapis.com/auth/chat.spaces.create",
+      "https://www.googleapis.com/auth/directory.readonly",
+    ],
   },
   {
     resource: GOOGLE_CHAT_SPACE_RESOURCE,
@@ -330,6 +338,9 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
     "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
+    "https://www.googleapis.com/auth/chat.spaces",
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.create": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
   "https://www.googleapis.com/auth/chat.memberships.readonly": [

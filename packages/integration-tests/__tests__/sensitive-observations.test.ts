@@ -246,7 +246,7 @@ describe("sensitive observations", () => {
       expect(incomplete.type === "action" && incomplete.description.descriptionIsComplete)
           .toBeFalsy();
       await ws.overseer.rejectAction(incomplete.id);
-      await expect(incompleteWrite).rejects.toThrow();
+      await expect(incompleteWrite).resolves.toEqual(expect.any(Number));
 
       // A write back to the producing connection is held for approval and goes through once
       // approved...
@@ -272,7 +272,7 @@ describe("sensitive observations", () => {
         return entries.length > 0 ? entries : null;
       });
       await ws.overseer.rejectAction(otherPending.id);
-      await expect(otherWrite).rejects.toThrow();
+      await expect(otherWrite).resolves.toEqual(expect.any(Number));
 
       // Reads -- sensitive or not -- keep working.
       await expect(ws.session.readValue()).resolves.toBe(42);

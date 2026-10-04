@@ -143,14 +143,14 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
 ## 4. Layer 1: leaf modules
 
 Each module is a subpath export (`@gadgets/gatekeeper-kit/<name>`), mirroring
-`packages/mcp-shared/package.json`. Seven files are internal instead: `serial-queue` (§4.12);
+`packages/mcp-shared/package.json`. Six files are internal instead: `serial-queue` (§4.12);
 `action-journal` and `observer-tracker`, split out of `actions` and `observers` and reached through
 their owning subpaths; `positive-int` — one `requirePositiveInt` shared by every module that takes a
 bound; `kv` — the three KV surface slices the leaves name, since seven modules had begun to carry
-byte-identical structural copies; `single-flight` — the in-flight coalescer four leaves had
-hand-rolled, on the same reasoning as `serial-queue`; and `per-storage` — the
-process-local-value-per-storage-object helper behind credential refresh and notification
-single-flights and observer claim counts.
+byte-identical structural copies; and `per-storage` — the process-local-value-per-storage-object
+helper behind credential refresh and notification single-flights and observer claim counts.
+`single-flight`, the in-flight coalescer four leaves had hand-rolled, started internal on the same
+reasoning as `serial-queue` and is now exported for gatekeepers that coalesce their own writes.
 
 One spec discipline applies to every section below: a behavioral sentence must name the surface
 that carries it in the adjacent method list. Behavior with no named carrier is a spec bug (three

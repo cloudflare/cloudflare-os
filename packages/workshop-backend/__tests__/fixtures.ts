@@ -90,6 +90,7 @@ export async function openFakeOverseer(
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
       recordGadgetAnalytics: () => {},
+      wrapUserDo: (stub: unknown) => stub,
       // What open() consults for a non-owner's role: the permission-graph lookup and observer
       // verification in one. The sharing manager is still reached, but only to redeem a share key,
       // which these tests never pass.

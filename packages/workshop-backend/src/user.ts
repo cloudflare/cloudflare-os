@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
 import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -11,7 +11,7 @@ import {
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { getAiGatewayConfig, type AiGatewayConfig } from "./ai-gateway.js";
+import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
@@ -450,21 +450,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#listModels(getAiGatewayConfig(this.env));
+    return this.#listModels(await getGatewayModels(this.env));
   }
 
-  #listModels(gwConfig: AiGatewayConfig | null): AiChatAuthorInfo[] {
+  #listModels(models: GatewayModels | null): AiChatAuthorInfo[] {
     let result: AiChatAuthorInfo[] = [];
 
-    // When AI Gateway mode is active, include the suggested models offered on enabled providers.
-    if (gwConfig) {
-      result.push(...gwConfig.getModelList());
+    // When AI Gateway mode is active, include the gateway models the deployment offers.
+    if (models) {
+      result.push(...models.list());
     }
 
-    // Also include user-configured models, skipping any that a gateway model shadows, including
-    // a hidden one (see #resolveModel()).
+    // Also include user-configured models, where users may add their own, skipping any that a
+    // gateway model shadows, whatever its mode (see #resolveModel()).
+    if (models && !models.userModels) return result;
     for (let model of this.storage.aiModels.list()) {
-      if (!gwConfig?.resolveModel(model.profile.id)) {
+      if (!models?.get(model.profile.id)) {
         result.push(model.profile);
       }
     }
@@ -473,44 +474,46 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
                  copySecretsFrom?: string): Promise<void> {
+    let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
     let source: AiModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
-      source = this.#getHandAddedModel(copySecretsFrom).config;
+      source = this.#getHandAddedModel(copySecretsFrom, models).config;
     }
-    // A gateway model, hidden or not, would shadow the new model and leave it unreachable.
-    if (this.storage.aiModels.get(profile.id) ||
-        getAiGatewayConfig(this.env)?.resolveModel(profile.id)) {
+    // A gateway model, whatever its mode, would shadow the new model and leave it unreachable.
+    if (this.storage.aiModels.get(profile.id) || models?.get(profile.id)) {
       throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, source));
+    this.#putModel(profile, resolveWithheldSecrets(config, source), models);
   }
 
   async getModelConfig(id: string): Promise<{profile: AiChatAuthorInfo, config: RedactedAiModelConfig}> {
-    let {profile, config} = this.#getHandAddedModel(id);
+    let {profile, config} = this.#getHandAddedModel(id, await getGatewayModels(this.env));
     return {profile, config: redactModelConfig(config)};
   }
 
   async updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
-    let stored = this.#getHandAddedModel(profile.id).config;
+    let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
+    let stored = this.#getHandAddedModel(profile.id, models).config;
     if (config.provider !== stored.provider || config.model !== stored.model) {
       throw new Error("A model's provider and model ID can't be changed.");
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, stored));
+    this.#putModel(profile, resolveWithheldSecrets(config, stored), models);
   }
 
   /** The stored record of a model the user added, throwing for AI Gateway models. */
-  #getHandAddedModel(id: string): UserAiModelRecord {
+  #getHandAddedModel(id: string, models: GatewayModels | null): UserAiModelRecord {
     let record = this.storage.aiModels.get(id);
     // A stored model sharing a gateway model's ID is shadowed by it (see listModels()).
-    if (!record || getAiGatewayConfig(this.env)?.resolveModel(id)) {
+    if (!record || models?.get(id)) {
       throw new Error(`No such hand-added model: ${id}`);
     }
     return record;
   }
 
-  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig) {
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig && !gwConfig.providers.has(config.provider)) {
+  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
+    if (models && !models.providers.has(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
     for (let limit of [config.contextWindow, config.outputLimit]) {
@@ -519,20 +522,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
+    // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
+    // deployment's to set on its own models.
+    let {reasoning, compactionInputBudget, behavesLike, ...own} = config;
+
     profile.type = "agent";
-    this.storage.aiModels.put({profile, config});
+    this.storage.aiModels.put({profile, config: own});
   }
 
   async deleteModel(id: string): Promise<void> {
-    // In AI Gateway mode, don't allow deleting built-in suggested models.
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig) {
-      for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-        if (gwConfig.providers.has(provider) && id in models) {
-          throw new Error(`Cannot delete built-in model "${models[id].name}".`);
-        }
-      }
-    }
+    // In AI Gateway mode, don't allow deleting the gateway's own models, whatever their mode.
+    let model = (await getGatewayModels(this.env))?.get(id);
+    if (model) throw new Error(`Cannot delete built-in model "${model.name}".`);
 
     this.storage.aiModels.delete(id);
   }
@@ -557,7 +558,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
       // Any model that resolves is accepted, hidden ones included (see getExternalMessageChatContext()).
-      if (!this.#resolveModel(id, getAiGatewayConfig(this.env))) {
+      if (!this.#resolveModel(id, await getGatewayModels(this.env))) {
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -658,22 +659,29 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    return this.#getChatContext(modelId, getAiGatewayConfig(this.env));
+    return this.#getChatContext(modelId, await getGatewayModels(this.env));
   }
 
-  #getChatContext(modelId: string | null, gwConfig: AiGatewayConfig | null): UserChatContext {
+  #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      result.aiModel = this.#resolveModel(modelId, gwConfig);
-      if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
+      result.aiModel = this.#resolveModel(modelId, models);
+      if (!result.aiModel) {
+        models?.refuseDisabled(modelId);
+        // No gateway model has the ID, so a stored model with it is one the deployment keeps
+        // users from running.
+        let stored = this.storage.aiModels.get(modelId);
+        if (stored) models?.refuseUserModel(stored.profile.name);
+        throw new Error(`No such model: ${modelId}`);
+      }
     }
 
     // Resolve the quick model (used for lightweight tasks like title generation).
-    if (gwConfig) {
+    if (models) {
       // In AI Gateway mode, always use the hardcoded quick model.
-      result.quickModel = gwConfig.getQuickModelConfig();
+      result.quickModel = models.gateway.getQuickModelConfig();
     } else {
       let quickModelId = this.storage.quickModel.get();
       if (quickModelId) {
@@ -690,23 +698,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // An existing chat keeps its model while it still resolves, even once no longer offered. A new
     // conversation takes the user's preferred model only while it is still offered, as the web
     // composer does with its stored choice, and otherwise the first available model.
-    let gwConfig = getAiGatewayConfig(this.env);
+    let models = await getGatewayModels(this.env);
     let selectedModelId = existingChatModelId;
-    if (selectedModelId === null || !this.#resolveModel(selectedModelId, gwConfig)) {
-      let models = this.#listModels(gwConfig);
+    if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
+      let offered = this.#listModels(models);
       let preferredModel = this.storage.preferredModel.get();
-      selectedModelId = (models.find(model => model.id === preferredModel) ?? models[0])?.id ?? null;
+      selectedModelId = (offered.find(model => model.id === preferredModel) ?? offered[0])?.id ?? null;
     }
 
-    return this.#getChatContext(selectedModelId, gwConfig);
+    return this.#getChatContext(selectedModelId, models);
   }
 
   /**
-   * Resolve a model ID the way chats do: a gateway model, hidden ones included, shadows a stored
-   * model with the same ID.
+   * Resolve a model ID the way chats do: a gateway model shadows a stored model with the same ID
+   * whatever its mode, so a disabled one resolves to nothing rather than to the stored model. No
+   * stored model resolves on a gateway deployment whose users may not add their own.
    */
-  #resolveModel(id: string, gwConfig: AiGatewayConfig | null): UserAiModelRecord | undefined {
-    return gwConfig?.resolveModel(id) ?? this.storage.aiModels.get(id);
+  #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
+    if (models?.get(id)) return models.resolve(id);
+    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {

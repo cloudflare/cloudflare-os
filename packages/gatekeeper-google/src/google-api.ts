@@ -38,6 +38,13 @@ export type GmailThreadInfoRaw = {
   labelIds: string[];
 };
 
+/** A thread's snippet and per-message metadata, from which its summary is computed. */
+export type GmailThreadMetadataRaw = {
+  id: string;
+  snippet?: string;
+  messages: GmailMessageInfoRaw[];
+};
+
 export type GmailNormalizedRecipients = {
   to: string[];
   cc: string[];
@@ -378,7 +385,7 @@ export type GmailLabelRaw = {
   type: "system" | "user";
 };
 
-// Metadata-only thread response (format=metadata). Used by getThreadInfo()
+// Metadata-only thread response (format=metadata). Used by getThreadMetadata()
 // to avoid downloading full message payloads.
 type GmailThreadMetadata = {
   id: string;
@@ -1692,7 +1699,8 @@ async function readGmailDraftWriteResult(
   return parseGmailDraftWriteResult(value, operation);
 }
 
-function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boolean {
+/** Whether a list request must ask Gmail for spam and trash, which it leaves out by default. */
+export function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boolean {
   if (labelIds?.some(id => id === "SPAM" || id === "TRASH")) return true;
   const operators = new Set(["in:anywhere", "in:spam", "in:trash", "label:spam", "label:trash"]);
   let token = "";
@@ -2313,7 +2321,7 @@ export class GmailApi {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * List threads. Gmail returns only IDs and snippets here; getThreadInfo()
+   * List threads. Gmail returns only IDs and snippets here; getThreadMetadata()
    * fetches the metadata needed for public thread summaries.
    */
   async listThreads(count: number, query?: string, pageToken?: string, labelIds?: string[]):
@@ -2377,10 +2385,10 @@ export class GmailApi {
   }
 
   /**
-   * Get aggregate thread metadata using a metadata-only fetch, without
-   * downloading message bodies or attachments.
+   * Get each message's metadata using a metadata-only fetch, without downloading message bodies
+   * or attachments. The caller summarizes the thread, so it can adjust the messages first.
    */
-  async getThreadInfo(threadId: string): Promise<GmailThreadInfoRaw> {
+  async getThreadMetadata(threadId: string): Promise<GmailThreadMetadataRaw> {
     validateGmailId(threadId, "thread ID");
 
     const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
@@ -2395,10 +2403,11 @@ export class GmailApi {
     }
 
     const thread = await response.json() as GmailThreadMetadata;
-    return summarizeGmailThread(
-      threadId, thread.snippet,
-      (thread.messages ?? []).map(parseGmailMessageMetadata),
-    );
+    return {
+      id: threadId,
+      snippet: thread.snippet,
+      messages: (thread.messages ?? []).map(parseGmailMessageMetadata),
+    };
   }
 
   /** Modify thread labels (for archive, trash, read/unread). */

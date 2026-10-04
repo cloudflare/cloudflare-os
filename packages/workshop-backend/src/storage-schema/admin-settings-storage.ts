@@ -10,7 +10,9 @@
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   DEFAULT_BANNER_COLOR,
-  type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput, type BlueprintPublicInfo,
+  type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
+  type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
+  type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
 
 export type AdminConfig = {
@@ -61,6 +63,45 @@ export type AdminConfig = {
    * the deployment offers.
    */
   formats: FormatCuration[];
+
+  /**
+   * How each AI Gateway model is offered: model id -> mode, for the models an admin changed.
+   * Absent ⇒ the model's default (SUGGESTED_MODELS' for a suggested model, "enabled" for an added
+   * one), so an untouched model follows the catalog across upgrades. Only meaningful in AI Gateway
+   * mode (see GatewayModels in ai-gateway.ts).
+   */
+  modelModes: Record<string, GatewayModelMode>;
+  /**
+   * The providers an admin turned on beside the ones CF_AI_GATEWAY_PROVIDERS lists. That variable
+   * is a floor: these add to it and take nothing from it. Only the ones AI Gateway serves count
+   * (see GatewayModels in ai-gateway.ts).
+   */
+  addedProviders: AiModelProvider[];
+  /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
+  addedModels: GatewayModel[];
+  /**
+   * What an admin set for each AI Gateway model: model id -> settings, for the models that have
+   * any. Absent ⇒ the model's built-in behaviour, at `defaultReasoning` where that is set. Only
+   * meaningful in AI Gateway mode (see GatewayModels in ai-gateway.ts).
+   */
+  modelSettings: Record<string, GatewayModelSettings>;
+  /**
+   * The reasoning level of every AI Gateway model whose settings give none, or null for each
+   * model's built-in behaviour. Never applies to a model a user added.
+   */
+  defaultReasoning: ReasoningLevel | null;
+  /**
+   * Whether users may add models of their own (default true), which in AI Gateway mode run through
+   * the deployment's gateway. While false, the gateway's models are the only ones a user can list
+   * or run; the models users stored are kept. Only meaningful in AI Gateway mode (see GatewayModels
+   * in ai-gateway.ts).
+   */
+  userModelsEnabled: boolean;
+  /**
+   * Whether the admin UI may suggest models from models.dev while an admin adds one (default
+   * false). The admin's browser reads it and fetches the suggestions; the server only stores it.
+   */
+  modelsDevSuggestions: boolean;
 };
 
 /**
@@ -99,6 +140,13 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   formats: [],
+  modelModes: {},
+  addedProviders: [],
+  addedModels: [],
+  modelSettings: {},
+  defaultReasoning: null,
+  userModelsEnabled: true,
+  modelsDevSuggestions: false,
 };
 
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {

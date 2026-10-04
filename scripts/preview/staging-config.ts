@@ -22,7 +22,7 @@
 // Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are absent from the generated configs
 // for the same reason the backend's secrets are — Wrangler prints what it finds in one, and this
 // workflow's logs are public. Where an OAuth app is configured for previews, preview.ts uploads the
-// pair to that gatekeeper's Previews settings instead; see resolveGatekeeperSecrets.
+// pair to that gatekeeper's Preview base config instead; see resolveGatekeeperSecrets.
 
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -686,8 +686,8 @@ export function resolveGatekeeperSecrets({
  * are public — so a maintainer's email, the audience tag and the team domain would all end up
  * there. GitHub's secret masking does not save them either: it replaces exact occurrences of a
  * registered secret, and what reaches the log is a reformatted, truncated slice of one. preview.ts
- * uploads these over stdin instead, with `wrangler preview secret bulk`, which prints names and
- * `********`.
+ * uploads these over stdin instead, with `wrangler preview base-config secret bulk`, which prints
+ * names and `********`.
  *
  * Setting the Access pair is also what closes the password path — the backend's `login()` and
  * `createAccount()` both throw once CF_ACCESS_AUD is set — so DISABLE_PASSWORD_AUTH is not needed.

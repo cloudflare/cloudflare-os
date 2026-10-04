@@ -88,6 +88,8 @@ export default function OnboardingWizard({
   const [aiConfig, setAiConfig] = useState<AiGatewayInfo | null>(null)
   const [addModelOpen, setAddModelOpen] = useState(false)
   const [modelsLoading, setModelsLoading] = useState(true)
+  // False only on an AI Gateway deployment whose administrator turned adding models off.
+  const canAddModels = aiConfig?.enabled !== true || aiConfig.userModelsEnabled
 
   // Connections state
   const [vendors, setVendors] = useState<VendorEntry[]>([])
@@ -536,22 +538,26 @@ export default function OnboardingWizard({
                       {models.length === 0 && (
                         <div className="text-center py-8">
                           <p className="text-sm text-kumo-subtle mb-1">
-                            No models configured yet
+                            {canAddModels ? 'No models configured yet' : 'No models available yet'}
                           </p>
                           <p className="text-xs text-kumo-inactive">
-                            Add a model to get started
+                            {canAddModels
+                              ? 'Add a model to get started'
+                              : 'Your deployment’s administrator provides the models'}
                           </p>
                         </div>
                       )}
                     </div>
 
-                    <button
-                      onClick={() => setAddModelOpen(true)}
-                      className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-kumo-subtle border border-dashed border-kumo-line rounded-xl hover:border-kumo-fill hover:text-kumo-default hover:bg-kumo-tint transition-colors"
-                    >
-                      <Plus size={14} weight="bold" />
-                      Add new model...
-                    </button>
+                    {canAddModels && (
+                      <button
+                        onClick={() => setAddModelOpen(true)}
+                        className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-kumo-subtle border border-dashed border-kumo-line rounded-xl hover:border-kumo-fill hover:text-kumo-default hover:bg-kumo-tint transition-colors"
+                      >
+                        <Plus size={14} weight="bold" />
+                        Add new model...
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -643,7 +649,7 @@ export default function OnboardingWizard({
 
             {/* ── Final step: What you can do ────────────────────────────────── */}
             <div className="min-h-[320px] w-full flex-shrink-0 p-5 sm:min-h-[420px] sm:p-8">
-              <ShowcaseStep active={step === showcaseStep} siteName={siteName} />
+              <ShowcaseStep active={step === showcaseStep} siteName={siteName} canAddModels={canAddModels} />
             </div>
           </div>
 
@@ -728,6 +734,8 @@ interface ShowcaseFeature {
   iconBg: string
   title: string
   description: string
+  /** Set on a feature that exists only where users may add models of their own. */
+  ownModels?: true
 }
 
 const SHOWCASE_FEATURES: ShowcaseFeature[] = [
@@ -754,6 +762,7 @@ const SHOWCASE_FEATURES: ShowcaseFeature[] = [
     title: 'Bring your own models',
     description:
       'Plug in personal API tokens from any provider to use the models you love.',
+    ownModels: true,
   },
   {
     icon: Plugs,
@@ -765,7 +774,11 @@ const SHOWCASE_FEATURES: ShowcaseFeature[] = [
   },
 ]
 
-function ShowcaseStep({ active, siteName }: { active: boolean; siteName: string }) {
+function ShowcaseStep({ active, siteName, canAddModels }: {
+  active: boolean
+  siteName: string
+  canAddModels: boolean
+}) {
   // Mount-trigger for staggered fade-in when the step becomes visible
   const [revealed, setRevealed] = useState(false)
 
@@ -789,7 +802,7 @@ function ShowcaseStep({ active, siteName }: { active: boolean; siteName: string 
       </div>
 
       <div className="space-y-2.5">
-        {SHOWCASE_FEATURES.map((feature, i) => {
+        {SHOWCASE_FEATURES.filter((feature) => canAddModels || !feature.ownModels).map((feature, i) => {
           const Icon = feature.icon
           return (
             <div

@@ -110,16 +110,21 @@ describe("resource declarations", () => {
   // `chat.app.*` family would make it post as a configured Chat app instead of as the person,
   // `chat.admin.*` would reach conversations the connected user cannot open, and `chat.import`
   // and `chat.delete` are destructive surfaces the session never exposes. Memberships are
-  // read-only because the session offers no way to change them.
-  it("requests only user-authentication Chat scopes, with read state for the account alone", () => {
+  // read-only because the session offers no way to change them, and the account may create
+  // conversations but not reconfigure them, so it never holds the full `chat.spaces`.
+  it("requests only user-authentication Chat scopes, with account-only extras", () => {
     const conversation = [
       "https://www.googleapis.com/auth/chat.spaces.readonly",
       "https://www.googleapis.com/auth/chat.messages",
       "https://www.googleapis.com/auth/chat.memberships.readonly",
     ];
-    const readState = "https://www.googleapis.com/auth/chat.users.readstate.readonly";
+    const accountOnly = [
+      "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+      "https://www.googleapis.com/auth/chat.spaces.create",
+      "https://www.googleapis.com/auth/directory.readonly",
+    ];
     for (const [resource, expected] of [
-      [GOOGLE_CHAT_RESOURCE, [...conversation, readState]],
+      [GOOGLE_CHAT_RESOURCE, [...conversation, ...accountOnly]],
       [GOOGLE_CHAT_SPACE_RESOURCE, conversation],
       [GOOGLE_CHAT_THREAD_RESOURCE, conversation],
     ] as const) {

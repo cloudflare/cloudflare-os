@@ -107,9 +107,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           PREVIEW_WORKERS_DEV_HOST: ${{ vars.PREVIEW_WORKERS_DEV_HOST }}
-          # Secrets, not vars: these three are uploaded to the backend's Previews settings with
-          # `wrangler preview secret bulk`, and never written into a config file — Wrangler prints
-          # the values it finds in one, and this log is public.
+          # Secrets, not vars: these three are uploaded to the backend's Preview base config with
+          # `wrangler preview base-config secret bulk`, and never written into a config file —
+          # Wrangler prints the values it finds in one, and this log is public.
           PREVIEW_ADMINS: ${{ secrets.PREVIEW_ADMINS }}
           CF_ACCESS_AUD: ${{ secrets.CF_ACCESS_AUD }}
           CF_ACCESS_ISS: ${{ secrets.CF_ACCESS_ISS }}
@@ -129,7 +129,7 @@ jobs:
           # a gateway in a *different* account (which sets this secret to `false`), and the google
           # provider, whose SDK cannot take the binding's fetch. Both fail the deploy.
           CF_AI_GATEWAY_USE_BINDING: ${{ secrets.CF_AI_GATEWAY_USE_BINDING || 'true' }}
-          # The GitHub gatekeeper's OAuth app, uploaded to *that worker's* Previews settings the
+          # The GitHub gatekeeper's OAuth app, uploaded to *that worker's* Preview base config the
           # same way, and for the same reason, as the backend's three above. Optional: with both
           # unset the preview still deploys and only the GitHub connector is dead in it.
           #

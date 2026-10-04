@@ -74,7 +74,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -458,6 +458,10 @@ const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 // How long after agent work becomes outstanding (a turn starts, or a call to a callable agent is
 // recorded) the keep-alive alarm fires. See #agentKeepAliveTime.
 const AGENT_KEEPALIVE_ALARM_MS = 60_000;
+
+// How old a workspace instance must be before a loop-limit rejection restarts it. See
+// OverseerImpl.restartIfLoopLimited.
+const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
 
 // Safely convert an unknown thrown value to a human-readable string.
 // Plain objects would otherwise render as "[object Object]".
@@ -5370,6 +5374,7 @@ class OverseerImpl implements AgentHooks {
         event: "gadget.last.active.bump.failed",
         gadgetId: this.ctx.id.toString(), error: err,
       });
+      this.restartIfLoopLimited(err);
 
       // Force retry on next bump.
       this.#lastActiveTimeKnownToUserDo = undefined;
@@ -5449,6 +5454,7 @@ class OverseerImpl implements AgentHooks {
       this.logger.warn("failed to sync workspace outputs to user DO", {
         event: "workspace.outputs.sync.failed", gadgetId: this.ctx.id.toString(), error: err,
       });
+      this.restartIfLoopLimited(err);
       return false;
     }
   }
@@ -5527,6 +5533,9 @@ class OverseerImpl implements AgentHooks {
   // - Verification scope widened (see #restartIfSessionsAffected): a collaborator's live session
   //   was verified against a smaller set of gatekeepers than the workspace now holds.
   //
+  // A third use changes nobody's entitlement (see restartIfLoopLimited): the restart replaces this
+  // instance, and with it the exhausted loop counter that was refusing its calls to user objects.
+  //
   // We restart by aborting the whole DO. Aborting propagates to clients: the `notifyClosed` stub
   // handed to each session is disposed without being called, which AuthenticatedApiImpl detects
   // and reacts to by killing the browser WebSocket, forcing a reconnect that re-runs open() and
@@ -5548,6 +5557,34 @@ class OverseerImpl implements AgentHooks {
     await this.ctx.storage.sync();
     await scheduler.wait(100);
     this.ctx.abort(reason);
+  }
+
+  // Whether restartIfLoopLimited has scheduled a restart of this instance.
+  #loopLimitRestartScheduled = false;
+
+  // Restart if `err` is the runtime's loop-limit rejection (see isLoopLimitError) of one of this
+  // object's own calls to a user object: once its outgoing channels hold an exhausted counter
+  // every such call is refused until this instance is replaced. Only rejections of those calls are
+  // passed in (wrapUserDo's stubs, the last-active bump and the outputs sync) -- code the workspace
+  // runs or calls (gadgets, agents, gatekeeper facets) can throw the same message at will, and
+  // must not be able to restart a shared workspace. A rejection the user object relays whole from
+  // something it called, such as a connected gatekeeper account, cannot be told apart and counts.
+  // At most one restart per instance, and none while the instance is young: that bounds how often
+  // a restart that did not clear the condition repeats.
+  restartIfLoopLimited(err: unknown): void {
+    if (!isLoopLimitError(err) || this.#loopLimitRestartScheduled) return;
+    if (Date.now() - this.streamGeneration < LOOP_LIMIT_RESTART_MIN_AGE_MS) return;
+    this.#loopLimitRestartScheduled = true;
+    this.logger.error("restarting workspace to clear an exhausted subrequest depth", {
+      event: "workspace.loop.limit.restart", error: err,
+    });
+    this.scheduleAccessRestart("Gadget restarted because its subrequest depth was exhausted.");
+  }
+
+  // Wraps a user DO stub for reset telemetry (see wrapDoStubForTelemetry) and so that a loop-limit
+  // rejection of any call made through it restarts this instance (see restartIfLoopLimited).
+  wrapUserDo(stub: DurableObjectStub<UserDurableObject>) {
+    return wrapDoStubForTelemetry(stub, this.logger, e => this.restartIfLoopLimited(e));
   }
 
   // Connections whose scope widening scheduled a restart, blocked until the reset lands. The
@@ -6652,7 +6689,7 @@ class OverseerImpl implements AgentHooks {
       // so a human sees them and the alarm isn't retrying forever. For that we need the profile
       // alone; if even that fails, the user DO itself is the problem, which is transient -- the
       // calls stay recorded and the alarm retries.
-      let user = this.users.get(this.users.idFromString(first.initiatorUserId));
+      let user = this.wrapUserDo(this.users.get(this.users.idFromString(first.initiatorUserId)));
       let userMeta: UserChatContext;
       let modelError: unknown;
       try {
@@ -6774,8 +6811,7 @@ class OverseerImpl implements AgentHooks {
   // A fresh stub to the workspace owner's user DO.
   ownerUserDo() {
     if (!this.ownerId) throw new Error("Workspace is not initialized.");
-    return wrapDoStubForTelemetry(
-        this.users.get(this.users.idFromString(this.ownerId)), this.logger);
+    return this.wrapUserDo(this.users.get(this.users.idFromString(this.ownerId)));
   }
 
   // Ensure every singleton account the gadget owner has (e.g. the Context Library) is provisioned
@@ -8100,8 +8136,7 @@ class OverseerImpl implements AgentHooks {
 
   #ownerUserStub() {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
-    return wrapDoStubForTelemetry(
-        this.users.get(this.users.idFromString(this.ownerId)), this.logger);
+    return this.wrapUserDo(this.users.get(this.users.idFromString(this.ownerId)));
   }
 
   // Short-TTL cache for the gatekeeper vendor list. The list is derived from static
@@ -9473,8 +9508,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
     // Fresh stub per call, so the pure whoami() read below is safe to retry once across a
     // user-DO reset (see retryOnDoReset: a captured stub would be permanently broken).
-    let owner = () => wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(ownerId)), this.impl.logger);
+    let owner = () => this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(ownerId)));
     let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.impl.logger);
 
     // The gadget's history starts at an empty root of its own, into which its head merges the
@@ -9992,15 +10027,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // stub has become broken (see AuthenticatedApiImpl.#user in server.ts).
   get #owner(): DurableObjectStub<UserDurableObject> {
     if (!this.impl.ownerId) throw new Error("Workspace has been deleted.");
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)));
   }
 
   get #clientUser(): DurableObjectStub<UserDurableObject> {
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)));
   }
 
   #leaveSession: () => void;
@@ -10775,16 +10808,34 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Recover the model this thread was using. getChatContext(null) does NOT resolve a model, so we
     // find the id from the most recent agent-authored message (its author.id is the model id).
-    let modelId: string | null = null;
+    let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.author.type === "agent") {
-        modelId = msg.author.id;
+        agent = msg.author;
         break;
       }
     }
 
-    let userMeta = await retryOnDoReset(
-        () => this.#clientUser.getChatContext(modelId), this.impl.logger);
+    let userMeta: UserChatContext;
+    try {
+      userMeta = await retryOnDoReset(
+          () => this.#clientUser.getChatContext(agent?.id ?? null), this.impl.logger);
+    } catch (err) {
+      // The outcome that triggered this resume is already recorded, so the caller's approval or
+      // accept must not fail because the thread's model stopped resolving (deleted, or disabled by
+      // an administrator). Say why in the chat, as that agent, and leave the turn ended. With no
+      // agent message there is no one to attribute the error to.
+      if (!agent) throw err;
+      this.impl.logger.error("error resolving model while resuming suspended agent", {
+        event: "agent.resume.suspended.model.resolve.failed",
+        chatId, modelId: agent.id, error: err,
+      });
+      // A turn that started during the lookup is not waiting on this one.
+      if (this.impl.storage.chatMeta.get(chatId)?.activeAgent) return;
+      this.impl.postAgentErrorMessage(chatId, agent,
+          `The agent could not be resumed: ${stringifyError(err)}`);
+      return;
+    }
     if (!userMeta.aiModel) return;  // No model resolved; nothing to resume.
 
     let preparation = this.impl.waitForChatMessagePreparation(chatId);
@@ -11590,15 +11641,13 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
   get #owner(): DurableObjectStub<UserDurableObject> {
     if (!this.impl.ownerId) throw new Error("Workspace has been deleted.");
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.impl.ownerId)));
   }
 
   get #clientUser(): DurableObjectStub<UserDurableObject> {
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)));
   }
 
   #leaveSession: () => void;
@@ -11873,9 +11922,8 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
   get #clientUser(): DurableObjectStub<UserDurableObject> {
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)));
   }
 
   async getId(): Promise<WorkpieceId> {
@@ -12150,9 +12198,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
   get #clientUser(): DurableObjectStub<UserDurableObject> {
-    return wrapDoStubForTelemetry(
-        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)),
-        this.impl.logger);
+    return this.impl.wrapUserDo(
+        this.impl.users.get(this.impl.users.idFromString(this.clientUserId)));
   }
 
   #deny(): never {

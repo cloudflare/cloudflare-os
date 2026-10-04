@@ -2,13 +2,14 @@
 // mirrored to one reserved BLUEPRINTS KV key, so the per-(re)connect getServerConfig() path and the
 // agent can resolve it with a single cheap KV get.
 //
-// This covers the "soft" deployment customizations only (branding, agent instructions, and which
-// gatekeeper connectors/resources are offered). Authentication/authorization config (sign-in
+// This covers the "soft" deployment customizations only (branding, agent instructions, which
+// gatekeeper connectors/resources are offered, and the models an AI Gateway deployment provides).
+// Authentication/authorization config (sign-in
 // providers, password login) is deliberately NOT here — it stays env-var driven so it can't be
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, OutputFormatOffer, isAmbientGatekeeperMode, isBannerColor, isOutputIcon } from "@gadgets/workshop-shared/api";
+import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -198,6 +199,71 @@ export async function listFormatOffers(env: BlueprintKvEnv, config: AdminConfig)
   return offers;
 }
 
+// Object.hasOwn, so that a name like "constructor" is not taken for a provider.
+function isProvider(value: unknown): value is AiModelProvider {
+  return typeof value === "string" && Object.hasOwn(SUGGESTED_MODELS, value);
+}
+
+/** Longest id or name an added AI Gateway model may carry, its `behavesLike` id included. */
+const MAX_ADDED_MODEL_TEXT = 200;
+
+/**
+ * An added AI Gateway model if `value` is a well-formed one, or undefined. Shape only: whether the
+ * gateway serves the provider and the id is free depends on the deployment (see GatewayModels in
+ * ai-gateway.ts).
+ */
+export function sanitizeAddedModel(value: unknown): GatewayModel | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  let {provider, id, name, contextWindow, outputLimit, behavesLike} =
+      value as Partial<GatewayModel>;
+  if (!isProvider(provider)) return undefined;
+  if (typeof id !== "string" || typeof name !== "string") return undefined;
+  id = id.trim();
+  name = name.trim();
+  for (let text of [id, name]) {
+    if (!text || text.length > MAX_ADDED_MODEL_TEXT) return undefined;
+  }
+  if (!isTokenLimit(contextWindow)) return undefined;
+  if (outputLimit !== undefined && !isTokenLimit(outputLimit)) return undefined;
+  // Blank reads as absent.
+  behavesLike = typeof behavesLike === "string" ? behavesLike.trim() : "";
+  if (behavesLike.length > MAX_ADDED_MODEL_TEXT) return undefined;
+  return {
+    provider, id, name, contextWindow,
+    ...(outputLimit === undefined ? {} : {outputLimit}),
+    ...(behavesLike ? {behavesLike} : {}),
+  };
+}
+
+function isTokenLimit(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+/**
+ * The well-formed part of a gateway model's settings, or undefined if none of it is. Shape only:
+ * how large a compaction budget may be depends on the model (see compactionBudgetRange() in
+ * admin-settings.ts).
+ */
+export function sanitizeModelSettings(value: unknown): GatewayModelSettings | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  let {reasoning, compactionInputBudget} = value as Partial<GatewayModelSettings>;
+  let settings: GatewayModelSettings = {};
+  if (isReasoningLevel(reasoning)) settings.reasoning = reasoning;
+  if (isTokenLimit(compactionInputBudget)) settings.compactionInputBudget = compactionInputBudget;
+  return Object.keys(settings).length > 0 ? settings : undefined;
+}
+
+// Accept a stored added model only if it is well-formed, and only the first under each id.
+function parseAddedModels(value: unknown): GatewayModel[] {
+  if (!Array.isArray(value)) return [];
+  let models = new Map<string, GatewayModel>();
+  for (let raw of value) {
+    let model = sanitizeAddedModel(raw);
+    if (model && !models.has(model.id)) models.set(model.id, model);
+  }
+  return [...models.values()];
+}
+
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
@@ -220,6 +286,19 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
       if (isAmbientGatekeeperMode(mode)) ambientGatekeeperModes[vendorId.toLowerCase()] = mode;
     }
   }
+  // Object.fromEntries defines own properties, so a stored "__proto__" key stays an ordinary entry.
+  let modelModes: Record<string, GatewayModelMode> =
+      p.modelModes && typeof p.modelModes === "object"
+          ? Object.fromEntries(
+              Object.entries(p.modelModes).filter(([, mode]) => isGatewayModelMode(mode)))
+          : {};
+  let modelSettings: Record<string, GatewayModelSettings> =
+      p.modelSettings && typeof p.modelSettings === "object"
+          ? Object.fromEntries(Object.entries(p.modelSettings).flatMap(([id, stored]) => {
+              let settings = sanitizeModelSettings(stored);
+              return settings ? [[id, settings]] : [];
+            }))
+          : {};
   let signupsEnabled = typeof p.signupsEnabled === "boolean"
     ? p.signupsEnabled
     : DEFAULT_ADMIN_CONFIG.signupsEnabled;
@@ -241,6 +320,19 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     formats: parseFormats(p.formats),
+    modelModes,
+    addedProviders: Array.isArray(p.addedProviders)
+      ? [...new Set(p.addedProviders.filter(isProvider))]
+      : [],
+    addedModels: parseAddedModels(p.addedModels),
+    modelSettings,
+    defaultReasoning: isReasoningLevel(p.defaultReasoning) ? p.defaultReasoning : null,
+    userModelsEnabled: typeof p.userModelsEnabled === "boolean"
+      ? p.userModelsEnabled
+      : DEFAULT_ADMIN_CONFIG.userModelsEnabled,
+    modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
+      ? p.modelsDevSuggestions
+      : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
   };
 }
 

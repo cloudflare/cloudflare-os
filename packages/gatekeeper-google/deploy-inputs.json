@@ -6,7 +6,7 @@
     "consoleUrl": "https://console.cloud.google.com/apis/credentials",
     "setupSteps": [
       "In the Google Cloud Console, create a project (or pick an existing one).",
-      "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Calendar, Google Chat, People (for Chat DM names), and BigQuery (APIs & Services > Library).",
+      "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Calendar, Google Chat, People (for Chat names and directory search), and BigQuery (APIs & Services > Library).",
       "For Chat, open the Google Chat API's Configuration tab, set an app name, avatar URL and description, turn off interactive features, and save. Without it Chat reads work but every send, edit and reaction fails.",
       "Configure the OAuth consent screen (External) and add yourself as a test user while the app is unverified.",
       "Create an OAuth client ID of type \"Web application\" and add the redirect URI below.",

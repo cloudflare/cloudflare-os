@@ -368,7 +368,8 @@ it("mainline binding names steer clear of another chat's pending binding", async
   expect(await app.bindWithSuggestedName(mainlineTargetId)).toBe("TEST_THING_2");
 
   await app.bind("MAIN", mainlineTargetId);
-  await expect(app.renameBinding("MAIN", "TEST_THING")).rejects.toThrow();
+  await expect(app.renameBinding("MAIN", "TEST_THING"))
+      .rejects.toThrow('There is already a binding named "TEST_THING".');
 });
 
 it("a mainline bind re-verifies a held use viewer against the bound connection", async () => {

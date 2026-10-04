@@ -8,6 +8,7 @@ import { StoredSecretInput } from './features/ai-models/StoredSecretInput'
 import {
   headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
 } from './features/ai-models/extraHeaders'
+import { PROVIDER_LABELS, parseTokenLimit } from './features/ai-models/modelForm'
 
 /**
  * Whether the modal adds a model from scratch, edits a stored one, or adds a model based on a
@@ -29,14 +30,6 @@ interface AddModelModalProps {
 type SelectionType =
   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
   | { type: 'custom', provider: AiModelProvider }
-
-const PROVIDER_LABELS: Record<AiModelProvider, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  cloudflare: 'Cloudflare Workers AI',
-  ollama: 'Ollama',
-}
 
 // Placeholder hinting at the shape of each provider's API token.
 const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
@@ -64,15 +57,6 @@ const FALLBACK_EXAMPLE_MODEL = { modelId: 'gemma4:31b', name: 'Gemma 4 31B' }
 function exampleModel(provider: AiModelProvider): { modelId: string, name: string } {
   const first = Object.entries(SUGGESTED_MODELS[provider])[0]
   return first ? { modelId: first[0], name: first[1].name } : FALLBACK_EXAMPLE_MODEL
-}
-
-// Parse an optional token-limit field: undefined when blank, null when invalid.
-function parseTokenLimit(text: string): number | undefined | null {
-  const trimmed = text.trim()
-  if (!trimmed) return undefined
-  if (!/^\d+$/.test(trimmed)) return null
-  const value = Number(trimmed)
-  return Number.isSafeInteger(value) && value > 0 ? value : null
 }
 
 // Encode a selection into a string value for the Select component.
