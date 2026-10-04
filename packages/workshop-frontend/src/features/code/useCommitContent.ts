@@ -10,6 +10,7 @@ import { commitFileStore, type CommitFileReader } from './commitFileStore'
 
 const NO_FILES: ReadonlyMap<string, FileAtCommit> = new Map()
 const NO_TREE: TreeNode[] = []
+const NO_PATHS: readonly string[] = []
 
 /**
  * The commit's nested tree: `null` while loading, `[]` for no commit (a pending gadget has no
@@ -32,6 +33,37 @@ export function useCommitTree(
   const error = failure !== null && failure.commitId === commitId && loaded === undefined
     ? failure.error : null
   return { tree: loaded ?? null, error }
+}
+
+/**
+ * The paths whose entry differs between two commits' trees (see Overseer.listChangedPaths()):
+ * `null` while loading, `[]` when either commit is missing or the two are the same. `error` is
+ * set when the fetch failed; bump `retryToken` to try again.
+ */
+export function useChangedPaths(
+  reader: CommitFileReader, fromCommit: string | undefined, toCommit: string | undefined,
+  retryToken = 0,
+): { paths: readonly string[] | null; error: unknown } {
+  const [, bump] = useState(0)
+  const [failure, setFailure] = useState<{ key: string; error: unknown } | null>(null)
+  const pair = fromCommit !== undefined && toCommit !== undefined && fromCommit !== toCommit
+    ? { fromCommit, toCommit } : undefined
+  const loaded = pair !== undefined
+    ? commitFileStore.peekChangedPaths(pair.fromCommit, pair.toCommit) : NO_PATHS
+  const key = `${fromCommit}\u0000${toCommit}`
+  useEffect(() => {
+    if (pair === undefined || loaded !== undefined) return
+    let cancelled = false
+    commitFileStore.listChangedPaths(reader, pair.fromCommit, pair.toCommit).then(
+      () => { if (!cancelled) bump(version => version + 1) },
+      (error: unknown) => { if (!cancelled) setFailure({ key, error }) })
+    return () => { cancelled = true }
+    // `pair` is rebuilt per render; `key` stands for it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader, key, loaded, retryToken])
+  const error = failure !== null && failure.key === key && loaded === undefined
+    ? failure.error : null
+  return { paths: loaded ?? null, error }
 }
 
 /**

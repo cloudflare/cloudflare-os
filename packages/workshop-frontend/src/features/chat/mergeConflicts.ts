@@ -1,10 +1,11 @@
-import type { AiChatMessage, WorkpieceId } from '@gadgets/workshop-shared/api'
-import type { CodeContent } from '@gadgets/workshop-shared/code-change'
+import type { AiChatMessage, FileAtCommit, WorkpieceId } from '@gadgets/workshop-shared/api'
+import type { ChatContentSnapshot } from '../code/otClient'
 
 // Accepting a chat's changes takes whatever its files hold, conflict markers included (see
 // Overseer.mergeChanges()). Whether to let markers through is the client's call, and this is
 // what it goes by: the files that the chat's merges reported as conflicted, and whether each
-// still has a marker in it. A file one side deleted and the other changed is reported too but
+// still has a marker in it, in the chat's content or, where nobody has edited it since the
+// merge, in the merge commit. A file one side deleted and the other changed is reported too but
 // never had markers, so nothing here can tell whether anyone has looked at it.
 
 /** A file that a merge recorded in a chat left with conflicts. */
@@ -41,11 +42,20 @@ export const listConflictedFiles = (
       for (const path of merge.conflictPaths) add(merge.gadgetId, path)
     }
 
-    // A mainline merge names each file as `GADGET_NAME/path`, by a binding name that the
-    // client is never told. A binding name has no slash in it, so the path is what follows the
-    // first, and the gadget is whichever one the merge's own change touches at that path: a
-    // conflict's markers are something the merge wrote.
-    for (const qualified of message.mainlineMerge?.conflictPaths ?? []) {
+    const mainlineMerge = message.mainlineMerge
+    if (mainlineMerge?.gadgets !== undefined) {
+      for (const merge of mainlineMerge.gadgets) {
+        for (const path of merge.conflictPaths) add(merge.gadgetId, path)
+      }
+      continue
+    }
+
+    // A mainline merge recorded before merges were commits names each file only as
+    // `GADGET_NAME/path`, by a binding name that the client is never told. A binding name has
+    // no slash in it, so the path is what follows the first, and the gadget is whichever one
+    // the merge's own change touches at that path: a conflict's markers are something the
+    // merge wrote.
+    for (const qualified of mainlineMerge?.conflictPaths ?? []) {
       const path = qualified.slice(qualified.indexOf('/') + 1)
       for (const [workpieceId, entries] of Object.entries(message.change ?? {})) {
         if (entries.some(([changed]) => changed === path)) add(Number(workpieceId), path)
@@ -74,13 +84,37 @@ export const findConflictMarkerLine = (text: string): number | undefined => {
 
 /**
  * Which of `files` still hold a conflict marker in `content`, the chat's uncommitted content.
- * That content holds only the files the chat has changed, which is enough: a merge wrote its
- * markers into the chat, so a file the content lacks was since removed or never had any.
+ * A file the chat has not touched since its merge has the text of its pin's base commit, the
+ * merge commit (see ChatGadgetPinState), which `baseOf` names and `readFiles` reads it from.
+ * A file the chat removed, or whose gadget it has no pin for, has no markers to find.
  */
-export const findUnresolvedConflicts = (
-  files: readonly ConflictedFile[], content: CodeContent,
-): UnresolvedConflict[] => files.flatMap(file => {
-  const text = content.get(file.workpieceId)?.get(file.path)
-  const line = text === undefined ? undefined : findConflictMarkerLine(text)
-  return line === undefined ? [] : [{ ...file, line }]
-})
+export const findUnresolvedConflicts = async (
+  files: readonly ConflictedFile[],
+  content: ChatContentSnapshot,
+  baseOf: (workpieceId: WorkpieceId) => string | undefined,
+  readFiles: (commitId: string, paths: readonly string[]) =>
+    Promise<ReadonlyMap<string, FileAtCommit>>,
+): Promise<UnresolvedConflict[]> => {
+  const texts = new Map<ConflictedFile, string | null | undefined>()
+  const untouched = new Map<string, ConflictedFile[]>()
+  for (const file of files) {
+    const text = content(file.workpieceId, file.path)
+    texts.set(file, text)
+    const base = text === undefined ? baseOf(file.workpieceId) : undefined
+    if (base !== undefined) untouched.set(base, [...untouched.get(base) ?? [], file])
+  }
+
+  await Promise.all([...untouched].map(async ([commitId, atBase]) => {
+    const read = await readFiles(commitId, atBase.map(file => file.path))
+    for (const file of atBase) {
+      const entry = read.get(file.path)
+      texts.set(file, entry?.kind === 'text' ? entry.text : null)
+    }
+  }))
+
+  return files.flatMap(file => {
+    const text = texts.get(file)
+    const line = typeof text === 'string' ? findConflictMarkerLine(text) : undefined
+    return line === undefined ? [] : [{ ...file, line }]
+  })
+}

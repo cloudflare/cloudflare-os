@@ -10,6 +10,8 @@ class FakeReader implements CommitFileReader {
   readCalls: { commitId: string; paths: string[] }[] = []
   trees = new Map<string, TreeNode[]>()
   files = new Map<string, Map<string, FileAtCommit>>()
+  changedCalls: [string, string][] = []
+  changed = new Map<string, string[]>()
   budget = Infinity
   failReads = false
 
@@ -26,6 +28,14 @@ class FakeReader implements CommitFileReader {
     const files = this.files.get(commitId) ?? new Map<string, FileAtCommit>()
     return paths.slice(0, this.budget)
       .map((path): [string, FileAtCommit] => [path, files.get(path) ?? { kind: 'absent' }])
+  }
+
+  async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
+    this.changedCalls.push([fromCommit, toCommit])
+    const paths = this.changed.get(`${fromCommit}..${toCommit}`) ??
+      this.changed.get(`${toCommit}..${fromCommit}`)
+    if (paths === undefined) throw new Error(`no such commits: ${fromCommit}, ${toCommit}`)
+    return paths
   }
 }
 
@@ -145,5 +155,27 @@ describe('CommitFileStore', () => {
     expect((await second).get('a')).toEqual(text('A'))
     expect(reader.readCalls).toHaveLength(1)
   })
-})
 
+  // The list is the same either way round (see Overseer.listChangedPaths()), so one fetch
+  // answers both orders.
+  it('memoizes the paths changed between two commits by the pair', async () => {
+    const reader = new FakeReader()
+    reader.changed.set('head..merge', ['a.txt', 'lib/b.txt'])
+    const store = new CommitFileStore()
+
+    expect(store.peekChangedPaths('head', 'merge')).toBeUndefined()
+    expect(await store.listChangedPaths(reader, 'head', 'merge')).toEqual(['a.txt', 'lib/b.txt'])
+    expect(store.peekChangedPaths('merge', 'head')).toEqual(['a.txt', 'lib/b.txt'])
+    await store.listChangedPaths(reader, 'merge', 'head')
+    expect(reader.changedCalls).toEqual([['head', 'merge']])
+  })
+
+  it('evicts a failed changed-paths fetch so a later attempt retries', async () => {
+    const reader = new FakeReader()
+    const store = new CommitFileStore()
+    await expect(store.listChangedPaths(reader, 'head', 'merge')).rejects.toThrow('no such commits')
+    reader.changed.set('head..merge', [])
+    expect(await store.listChangedPaths(reader, 'head', 'merge')).toEqual([])
+    expect(reader.changedCalls).toHaveLength(2)
+  })
+})

@@ -2,12 +2,12 @@ import {
   MAX_READ_FILES_PER_CALL, type FileAtCommit, type TreeNode,
 } from '@gadgets/workshop-shared/api'
 
-// The per-commit file store behind the code view: the client-side cache of Overseer.listTree()
-// and Overseer.readFilesAtCommit(). Commits are immutable, so everything here is memoized by
-// commit id for the page's lifetime -- across chat switches, workpiece switches, and component
-// remounts -- and a base an editor already opened is never fetched twice, including by the OT
-// client, whose delegate reads through the same store. Failures are evicted so a later attempt
-// retries.
+// The per-commit file store behind the code view: the client-side cache of Overseer.listTree(),
+// Overseer.readFilesAtCommit() and Overseer.listChangedPaths(). Commits are immutable, so
+// everything here is memoized by commit id for the page's lifetime -- across chat switches,
+// workpiece switches, and component remounts -- and a base an editor already opened is never
+// fetched twice, including by the OT client, whose delegate reads through the same store.
+// Failures are evicted so a later attempt retries.
 //
 // Reads are coalesced: every readFiles() call made in one microtask turn for the same commit
 // joins a single RPC (chunked at MAX_READ_FILES_PER_CALL), so a view that asks for a file's
@@ -20,7 +20,11 @@ import {
 export interface CommitFileReader {
   listTree(commitId: string): Promise<TreeNode[]>
   readFilesAtCommit(commitId: string, paths: string[]): Promise<[path: string, FileAtCommit][]>
+  listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>
 }
+
+// A memoized read: settled once `value` is set.
+type Memo<T> = { value?: T; promise: Promise<T> }
 
 // One path's slot: settled once `value` is set; until then `waiters` are the reads awaiting it.
 type FileSlot = {
@@ -29,7 +33,9 @@ type FileSlot = {
 }
 
 export class CommitFileStore {
-  readonly #trees = new Map<string, { value?: TreeNode[]; promise: Promise<TreeNode[]> }>()
+  readonly #trees = new Map<string, Memo<TreeNode[]>>()
+  // Keyed by the two commits in sorted order: the list is the same either way round.
+  readonly #changedPaths = new Map<string, Memo<readonly string[]>>()
   readonly #files = new Map<string, Map<string, FileSlot>>()
   // Paths requested this microtask turn and not yet sent, per commit (see #flush).
   readonly #batches = new Map<string, { reader: CommitFileReader; paths: Set<string> }>()
@@ -37,23 +43,28 @@ export class CommitFileStore {
 
   /** The commit's whole tree, nested (see TreeNode). Memoized; a failure is evicted. */
   listTree(reader: CommitFileReader, commitId: string): Promise<TreeNode[]> {
-    let entry = this.#trees.get(commitId)
-    if (entry === undefined) {
-      const created: { value?: TreeNode[]; promise: Promise<TreeNode[]> } = {
-        promise: reader.listTree(commitId),
-      }
-      entry = created
-      this.#trees.set(commitId, created)
-      created.promise.then(
-        value => { created.value = value },
-        () => { if (this.#trees.get(commitId) === created) this.#trees.delete(commitId) })
-    }
-    return entry.promise
+    return memoize(this.#trees, commitId, () => reader.listTree(commitId))
   }
 
   /** The commit's tree if already loaded, without fetching. */
   peekTree(commitId: string): TreeNode[] | undefined {
     return this.#trees.get(commitId)?.value
+  }
+
+  /**
+   * The paths whose entry differs between the two commits' trees (see
+   * Overseer.listChangedPaths()). Memoized by the pair; a failure is evicted.
+   */
+  listChangedPaths(
+    reader: CommitFileReader, fromCommit: string, toCommit: string,
+  ): Promise<readonly string[]> {
+    return memoize(this.#changedPaths, pairKey(fromCommit, toCommit),
+      () => reader.listChangedPaths(fromCommit, toCommit))
+  }
+
+  /** The paths changed between the two commits if already loaded, without fetching. */
+  peekChangedPaths(fromCommit: string, toCommit: string): readonly string[] | undefined {
+    return this.#changedPaths.get(pairKey(fromCommit, toCommit))?.value
   }
 
   /**
@@ -150,6 +161,23 @@ export class CommitFileStore {
       }
     }
   }
+}
+
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`
+}
+
+function memoize<T>(memos: Map<string, Memo<T>>, key: string, read: () => Promise<T>): Promise<T> {
+  let entry = memos.get(key)
+  if (entry === undefined) {
+    const created: Memo<T> = { promise: read() }
+    entry = created
+    memos.set(key, created)
+    created.promise.then(
+      value => { created.value = value },
+      () => { if (memos.get(key) === created) memos.delete(key) })
+  }
+  return entry.promise
 }
 
 /** The page-wide store (see the module comment). */

@@ -11,13 +11,6 @@ export const appliedBlueprintMerges = (message: AiChatMessage): BlueprintMerge[]
   message.type === 'changes' && message.author.type === 'user' ? message.blueprintMerges ?? [] : []
 
 /**
- * How many consecutive `changes` messages hold these proposals' change, counting the one that
- * records them (see BlueprintMerge.messageCount).
- */
-export const proposalMessageCount = (merges: readonly BlueprintMerge[]): number =>
-  Math.max(1, ...merges.map(merge => merge.messageCount ?? 1))
-
-/**
  * What the notice of a proposal says, generated from its record alone. It describes the proposal
  * as it was made, in words that stay true as the chat goes on: whether a conflict it reports
  * has since been resolved is for the accept-time check to say (see mergeConflicts.ts).
@@ -79,26 +72,25 @@ const UNVERIFIED_BASE_NOTE =
   'like something the blueprint removed, and is undone without a conflict being reported.'
 
 /**
- * Describes a proposal to merge a blueprint's release into a gadget. `changesFiles` is whether
- * the message that records it carries a change: a merge of two sides that made the same changes
- * has none. `reviewed` is whether an agent is taking part in the chat, which for a merge that
- * changes files means it was asked to review the result (see GadgetClient.applyBlueprint()).
- * `decided` is whether the proposal has been accepted or discarded, after which the notice
- * stays as a record and says nothing about what is still to do.
+ * Describes a proposal to merge a blueprint's release into a gadget. Its `kind` says what it does
+ * to the gadget's files: a "follow" changes none, and a "merge" always has something to review,
+ * a changed file or a conflict (see BlueprintMerge.kind). `reviewed` is whether an agent is
+ * taking part in the chat, which for a merge means it was asked to review the result (see
+ * GadgetClient.applyBlueprint()). `decided` is whether the proposal has been accepted or
+ * discarded, after which the notice stays as a record and says nothing about what is still to do.
  */
 export const describeBlueprintProposal = (
   merge: BlueprintMerge,
-  { changesFiles, reviewed, decided }: { changesFiles: boolean; reviewed: boolean; decided: boolean },
+  { reviewed, decided }: { reviewed: boolean; decided: boolean },
 ): BlueprintProposalDescription => {
-  const combined = merge.kind === 'merge' && changesFiles
+  const combined = merge.kind === 'merge'
+  const changesFiles = merge.kind !== 'follow'
   const conflicted = merge.conflictPaths.length > 0
 
   const summary = merge.kind === 'follow'
     ? 'This gadget already has everything in this version, so nothing in it changes. ' +
       'Accepting means it gets its future updates from this blueprint.'
-    : merge.kind === 'fastForward'
-      ? 'This gadget hasn’t been changed since it was last updated, so it simply becomes this version.'
-      : 'This gadget already has everything this version changes, so nothing in it changes.'
+    : 'This gadget hasn’t been changed since it was last updated, so it simply becomes this version.'
 
   const missingBindings = Object.entries(merge.missingBindings ?? {})
     .map(([name, { title, description }]) => ({ name, title: title || name, description }))
@@ -145,9 +137,7 @@ export const describeBlueprintProposal = (
       ? { missingBindingsHint: 'Ask in this chat to have them set up.' }
       : {}),
     details: {
-      method: merge.kind === 'merge' && !changesFiles
-        ? `${METHODS.merge}: both sides made the same changes`
-        : METHODS[merge.kind],
+      method: METHODS[merge.kind],
       ...(merge.baseCommit === undefined ? {} : { baseCommit: shortCommit(merge.baseCommit) }),
       releaseCommit: shortCommit(merge.commitId),
       conflictPaths: merge.conflictPaths,

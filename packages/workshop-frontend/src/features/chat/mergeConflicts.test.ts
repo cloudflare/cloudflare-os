@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatMessage, BlueprintMerge } from '@gadgets/workshop-shared/api'
-import type { CodeContent } from '@gadgets/workshop-shared/code-change'
+import type { AiChatMessage, BlueprintMerge, FileAtCommit } from '@gadgets/workshop-shared/api'
+import type { ChatContentSnapshot } from '../code/otClient'
 import {
   findConflictMarkerLine,
   findUnresolvedConflicts,
@@ -55,7 +55,29 @@ describe('listConflictedFiles', () => {
     ])
   })
 
-  it('finds a mainline merge’s gadget by the file its change wrote', () => {
+  it('takes a mainline merge’s paths from its gadgets', () => {
+    const messages = [
+      changes(0, {
+        mainlineMerge: {
+          conflictPaths: ['PLANNER/lib/dates.js', 'SERVER/api.js'],
+          gadgets: [
+            { gadgetId: 4, baseCommit: 'b', chatCommit: 's', conflictPaths: ['lib/dates.js'] },
+            { gadgetId: 9, baseCommit: 'b', chatCommit: 's', conflictPaths: ['api.js'] },
+          ],
+        },
+        pins: [
+          { gadgetId: 4, baseCommit: 'm4', mergedCommit: 'h4' },
+          { gadgetId: 9, baseCommit: 'm9', mergedCommit: 'h9' },
+        ],
+      }),
+    ]
+    expect(listConflictedFiles(messages, allPending(messages))).toEqual([
+      { workpieceId: 4, path: 'lib/dates.js' },
+      { workpieceId: 9, path: 'api.js' },
+    ])
+  })
+
+  it('finds the gadget of a mainline merge recorded as a change by the file it wrote', () => {
     const messages = [
       changes(0, {
         mainlineMerge: { conflictPaths: ['PLANNER/lib/dates.js'] },
@@ -113,6 +135,11 @@ describe('findConflictMarkerLine', () => {
   })
 })
 
+// The chat's content for gadget 4, which is pinned at the merge commit.
+const snapshot = (texts: Record<string, string | null>): ChatContentSnapshot =>
+  (gadgetId, path) => gadgetId === 4 ? texts[path] : undefined
+const pinnedAtMerge = (gadgetId: number) => gadgetId === 4 ? 'merge' : undefined
+
 describe('findUnresolvedConflicts', () => {
   const files = [
     { workpieceId: 4, path: 'client.js' },
@@ -120,25 +147,52 @@ describe('findUnresolvedConflicts', () => {
     { workpieceId: 4, path: 'removed.js' },
   ]
 
-  it('reports the listed files that still hold a marker', () => {
-    const content: CodeContent = new Map([
-      [4, new Map([['client.js', 'resolved\n'], ['lib/dates.js', CONFLICTED]])],
-    ])
-    expect(findUnresolvedConflicts(files, content)).toEqual([
+  // The merge commit the gadget is pinned at, as the server would answer for it.
+  const MERGE_FILES: Record<string, string> = {
+    'client.js': CONFLICTED, 'lib/dates.js': CONFLICTED, 'removed.js': CONFLICTED,
+  }
+  const reads: { commitId: string; paths: readonly string[] }[] = []
+  const readFiles = async (commitId: string, paths: readonly string[]) => {
+    reads.push({ commitId, paths })
+    return new Map(paths.map((path): [string, FileAtCommit] => {
+      const text = commitId === 'merge' ? MERGE_FILES[path] : undefined
+      return [path, text === undefined ? { kind: 'absent' } : { kind: 'text', text }]
+    }))
+  }
+
+  it('reports the listed files that still hold a marker', async () => {
+    const content =
+      snapshot({ 'client.js': 'resolved\n', 'lib/dates.js': CONFLICTED, 'removed.js': null })
+    expect(await findUnresolvedConflicts(files, content, pinnedAtMerge, readFiles)).toEqual([
       { workpieceId: 4, path: 'lib/dates.js', line: 2 },
     ])
   })
 
-  it('reports nothing once every marker is gone', () => {
-    const content: CodeContent = new Map([
-      [4, new Map([['client.js', 'resolved\n'], ['lib/dates.js', 'resolved\n']])],
+  it('reports nothing once every marker is gone', async () => {
+    const content =
+      snapshot({ 'client.js': 'resolved\n', 'lib/dates.js': 'resolved\n', 'removed.js': null })
+    expect(await findUnresolvedConflicts(files, content, pinnedAtMerge, readFiles)).toEqual([])
+  })
+
+  // A merge that is a commit wrote its markers there, not into the chat's content, so a file
+  // nobody has opened since holds them only at the pin's base.
+  it('reads a file the chat has not touched from the commit it is pinned at', async () => {
+    reads.length = 0
+    const content = snapshot({ 'client.js': 'resolved\n', 'removed.js': null })
+    expect(await findUnresolvedConflicts(files, content, pinnedAtMerge, readFiles)).toEqual([
+      { workpieceId: 4, path: 'lib/dates.js', line: 2 },
     ])
-    expect(findUnresolvedConflicts(files, content)).toEqual([])
+    expect(reads).toEqual([{ commitId: 'merge', paths: ['lib/dates.js'] }])
+
+    expect(await findUnresolvedConflicts(
+      files,
+      snapshot({ 'client.js': 'resolved\n', 'lib/dates.js': 'resolved\n', 'removed.js': null }),
+      pinnedAtMerge, readFiles)).toEqual([])
   })
 
   // A marker in a file no merge reported is the file's own text, such as a guide to git.
-  it('does not look in files that no merge listed', () => {
-    const content: CodeContent = new Map([[4, new Map([['docs/git.md', CONFLICTED]])]])
-    expect(findUnresolvedConflicts(files, content)).toEqual([])
+  it('does not look in files that no merge listed', async () => {
+    const content = snapshot({ 'docs/git.md': CONFLICTED, 'removed.js': null })
+    expect(await findUnresolvedConflicts(files, content, () => undefined, readFiles)).toEqual([])
   })
 })

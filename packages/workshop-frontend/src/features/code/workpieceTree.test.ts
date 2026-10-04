@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { TreeNode } from '@gadgets/workshop-shared/api'
 import {
   ancestorDirs, browserTreePaths, buildBrowserTree, deriveChanges, fileChangeStatus,
-  resolveRenamePath, type BrowserNode,
+  mergedPathStatuses, resolveRenamePath, type BrowserNode,
 } from './workpieceTree'
 
 const BASE: TreeNode[] = [
@@ -203,5 +203,46 @@ describe('deriveChanges', () => {
       { path: 'edited.ts', status: 'added' },
       { path: 'new.ts', status: 'added' },
     ])
+  })
+})
+
+// A merge commit the chat is pinned at changed files that the chat's content never touched.
+// They differ from the review base all the same, and accepting the chat would apply them.
+describe('merged paths', () => {
+  const contentTree: TreeNode[] = [
+    { name: 'both.ts', kind: 'file' },
+    { name: 'added.ts', kind: 'file' },
+    { name: 'lib', kind: 'dir', children: [{ name: 'deep.ts', kind: 'file' }] },
+  ]
+  const reviewTree: TreeNode[] = [
+    { name: 'both.ts', kind: 'file' },
+    { name: 'deleted.ts', kind: 'file' },
+    { name: 'lib', kind: 'dir', children: [{ name: 'deep.ts', kind: 'executable' }] },
+  ]
+
+  it('takes each status from the two trees', () => {
+    const statuses = mergedPathStatuses(
+      ['added.ts', 'both.ts', 'deleted.ts', 'lib/deep.ts', 'lib/nowhere.ts'],
+      contentTree, reviewTree)
+    expect(statuses).toEqual(new Map([
+      ['added.ts', 'added'], ['both.ts', 'modified'], ['deleted.ts', 'deleted'],
+      ['lib/deep.ts', 'modified'],
+    ]))
+  })
+
+  it('lists a path only the merge changed, behind whatever the chat did to it since', () => {
+    const merged = mergedPathStatuses(['both.ts', 'deleted.ts'], contentTree, reviewTree)
+    // The chat has since put both.ts back as the review base has it.
+    const display = new Map<string, string | null>([['both.ts', 'same'], ['edited.ts', 'new']])
+    const originals = new Map([
+      ['both.ts', { kind: 'text', text: 'same' }], ['edited.ts', { kind: 'text', text: 'old' }],
+    ] as const)
+    const { statuses, changes } = deriveChanges(
+      ['both.ts', 'edited.ts'], path => display.get(path), originals, true, merged)
+    expect(changes).toEqual([
+      { path: 'deleted.ts', status: 'deleted' },
+      { path: 'edited.ts', status: 'modified' },
+    ])
+    expect(statuses.get('both.ts')).toBe('unchanged')
   })
 })

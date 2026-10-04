@@ -170,6 +170,45 @@ describe("computeChatEpochChanges", () => {
     expect(epochChange).toEqual(LOADED);
   });
 
+  // An update from mainline re-roots a gadget at the merge commit (see ChatGadgetPinRecord):
+  // everything composed for it before, the boundary's seed included, is in that commit already.
+  it("restarts a gadget at a pin declaration, keeping other gadgets' changes", () => {
+    const other: CodeChange = { 2: [["other.txt", { set: "other" }]] };
+    const { epochChange } = computeChatEpochChanges(
+      [
+        changes(10, { ...LOADED, ...other }),
+        message(11, {
+          type: "changes",
+          pins: [{ gadgetId: 1, baseCommit: "merge", mergedCommit: "head" }],
+          mainlineMerge: { conflictPaths: [], gadgets: [] },
+        }),
+        changes(12, OLDER),
+      ],
+      boundary(10, PRE_BOUNDARY),
+    );
+
+    expect(epochChange).toEqual({ ...OLDER, ...other });
+  });
+
+  it("leaves nothing composed when a re-root is the whole proposal", () => {
+    const { epochChange } = computeChatEpochChanges([
+      changes(10, LOADED),
+      message(11, { type: "changes", pins: [{ gadgetId: 1, baseCommit: "merge" }] }),
+    ]);
+
+    expect(epochChange).toBeUndefined();
+  });
+
+  it("brings back what a reverted re-root dropped", () => {
+    const { epochChange } = computeChatEpochChanges([
+      changes(10, LOADED),
+      message(11, { type: "changes", pins: [{ gadgetId: 1, baseCommit: "merge" }] }),
+      revert(12, 11),
+    ]);
+
+    expect(epochChange).toEqual(LOADED);
+  });
+
   // Only the current generation's watermarks position the live-row cursor: revisions restart
   // per generation, so an older generation's watermark says nothing about the current stream.
   it("reports the current generation's materialization watermark", () => {

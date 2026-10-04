@@ -17,10 +17,10 @@ import type {
 } from '../../ChatInterface'
 import { ChatOtClient, type ChatContentReader, type RemoteFileEvent } from './otClient'
 import { commitFileStore, type CommitFileReader } from './commitFileStore'
-import { useCommitTree, useFilesAtCommit } from './useCommitContent'
+import { useChangedPaths, useCommitTree, useFilesAtCommit } from './useCommitContent'
 import {
-  EMPTY_BROWSER_TREE, browserTreePaths, buildBrowserTree, deriveChanges, type ChangedFile,
-  type FileChangeStatus,
+  EMPTY_BROWSER_TREE, browserTreePaths, buildBrowserTree, deriveChanges, mergedPathStatuses,
+  type ChangedFile, type FileChangeStatus,
 } from './workpieceTree'
 import { reportIssue } from '../../errorReporting'
 import { saveTextToFile } from '../../fileTransfers'
@@ -44,11 +44,14 @@ import { isTransientRpcError } from '../../rpcErrors'
 //    has been merged into the chat -- else the accepted commit. That is exactly what accepting
 //    would apply: a chat not updated from mainline diffs against its pin, so mainline's later
 //    commits never show up (accepting doesn't revert them, it is blocked until they are merged
-//    in); once updateChatFromMainline has imported them as rows, `mergedCommit` has advanced
-//    past the pin and those rows compare equal and vanish, rather than being listed as this
-//    chat's own changes. Accept requires `mergedCommit === head`, so where it is enabled the
-//    two agree.
-// The two coincide except for a gadget chat that has been updated from mainline. For a worktree
+//    in). Once updateChatFromMainline has merged them, the pin is rooted at the merge commit
+//    and `mergedCommit` is the head it merged, so what mainline changed compares equal and
+//    vanishes, rather than being listed as this chat's own changes. Accept requires
+//    `mergedCommit === head`, so where it is enabled the two agree.
+// The two coincide except for a gadget chat whose pin is rooted at a merge: one updated from
+// mainline, or made by applying a blueprint. The paths where they differ are listed by
+// Overseer.listChangedPaths(), which is how a file that only the merge changed reaches the
+// Changes list though the chat's content never touched it. For a worktree
 // they always coincide (it has no mainline), and in particular the worktree's own `headCommit`
 // -- the agent's last explicit commit -- plays no role: an agent that edits and immediately
 // commits still shows its work against the last *accepted* commit.
@@ -235,6 +238,7 @@ export default function WorkpieceCodeInterface({
   const reader = useMemo<CommitFileReader>(() => ({
     listTree: commitId => overseer.listTree(commitId),
     readFilesAtCommit: (commitId, paths) => overseer.readFilesAtCommit(commitId, paths),
+    listChangedPaths: (fromCommit, toCommit) => overseer.listChangedPaths(fromCommit, toCommit),
   }), [overseer])
   const readerRef = useRef(reader)
   readerRef.current = reader
@@ -453,7 +457,7 @@ export default function WorkpieceCodeInterface({
     const { chatId, client: chatClient } = clientState
     onChatContentChange({
       chatId,
-      read: () => (chatClient.isReady() ? chatClient.getContent() : undefined),
+      read: () => (chatClient.isReady() ? chatClient.snapshot() : undefined),
       hasLocalEdits: () => chatClient.hasLocalEdits(),
     })
     return () => onChatContentChange(undefined)
@@ -974,17 +978,42 @@ export default function WorkpieceCodeInterface({
     return buildBrowserTree(baseTree, present, removed)
   }, [baseTree, presentSignature, removedSignature])
 
-  // Statuses against the review base. Only touched paths can differ from it: an untouched path
-  // displays the content base's text, and every path where the review base differs from the
-  // content base was touched by the rows that imported the difference. A touched path whose
-  // review-base read is still in flight has no status yet; a removed one is listed as pending
-  // meanwhile (see deriveChanges), so that if the read fails the deletion candidate is still
-  // there to select and its pane shows the error and retry. `changes` is in path order.
+  // The paths where the content base differs from the review base, which a merge commit the
+  // chat is pinned at changed (see ChatGadgetPinState.mergedCommit). An untouched path displays
+  // the content base's entry, so these differ from the review base without the chat's content
+  // touching them; the two trees say how. Trees only: nothing here reads a file.
+  // A failed read leaves those files out of the Changes list, and a file the merge deleted is
+  // in no other listing, so the failure is shown with a retry that re-runs both reads.
+  const [mergedRetryToken, setMergedRetryToken] = useState(0)
+  const { paths: mergedPaths, error: mergedPathsError } = useChangedPaths(
+    reader, branchMode ? reviewBase : undefined, branchMode ? contentBase : undefined,
+    mergedRetryToken)
+  const { tree: reviewTree, error: reviewTreeError } = useCommitTree(
+    reader, mergedPaths !== null && mergedPaths.length > 0 ? reviewBase : undefined,
+    mergedRetryToken)
+  const mergedError = mergedPathsError ?? reviewTreeError
+  useEffect(() => {
+    if (mergedError === null) return
+    console.error('Failed to load the files a merge changed:', mergedError)
+    reportIssue('code-view.merged-changes', mergedError, { handled: true })
+  }, [mergedError])
+  const mergedStatuses = useMemo(
+    () => mergedPaths !== null && mergedPaths.length > 0 && baseTree !== null && reviewTree !== null
+      ? mergedPathStatuses(mergedPaths, baseTree, reviewTree)
+      : undefined,
+    [mergedPaths, baseTree, reviewTree])
+
+  // Statuses against the review base. A touched path compares its displayed text with the
+  // review base's; an untouched one can differ only where the merge changed it. A touched path
+  // whose review-base read is still in flight has no status yet; a removed one is listed as
+  // pending meanwhile (see deriveChanges), so that if the read fails the deletion candidate is
+  // still there to select and its pane shows the error and retry. `changes` is in path order.
   const isDiffMode = branchMode
   let fileChangeStatuses: Map<string, FileChangeStatus> | undefined
   let changes: readonly ChangedFile[] = NO_CHANGES
   if (isDiffMode) {
-    const derived = deriveChanges(touchedPaths, overlayText, reviewFiles, reviewBase !== undefined)
+    const derived = deriveChanges(
+      touchedPaths, overlayText, reviewFiles, reviewBase !== undefined, mergedStatuses)
     fileChangeStatuses = derived.statuses
     changes = derived.changes
   }
@@ -1484,6 +1513,19 @@ export default function WorkpieceCodeInterface({
           </div>
           {lockedHint && stableDisplayedFiles.length > 0 && (
             <Banner size="sm" title={lockedHint} className="m-2 w-auto shrink-0" />
+          )}
+          {mergedError !== null && (
+            <Banner
+              variant="error"
+              size="sm"
+              title="Some of this draft's changes could not be loaded"
+              action={
+                <Banner.Action onClick={() => setMergedRetryToken(token => token + 1)}>
+                  Try again
+                </Banner.Action>
+              }
+              className="m-2 w-auto shrink-0"
+            />
           )}
           <div className="min-h-0 flex-1">
             {stableDisplayedFiles.length === 0 ? (

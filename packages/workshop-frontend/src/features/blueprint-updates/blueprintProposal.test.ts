@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMessage, BlueprintMerge } from '@gadgets/workshop-shared/api'
-import {
-  appliedBlueprintMerges,
-  describeBlueprintProposal,
-  proposalMessageCount,
-} from './blueprintProposal'
+import { appliedBlueprintMerges, describeBlueprintProposal } from './blueprintProposal'
 
 const merge = (over: Partial<BlueprintMerge> = {}): BlueprintMerge => ({
   gadgetId: 1,
@@ -18,9 +14,8 @@ const merge = (over: Partial<BlueprintMerge> = {}): BlueprintMerge => ({
   ...over,
 })
 
-const REVIEWED = { changesFiles: true, reviewed: true, decided: false }
-const UNREVIEWED = { changesFiles: true, reviewed: false, decided: false }
-const NO_CHANGE = { changesFiles: false, reviewed: false, decided: false }
+const REVIEWED = { reviewed: true, decided: false }
+const UNREVIEWED = { reviewed: false, decided: false }
 
 // Words a reader who is not a developer should not meet outside the advanced details.
 const JARGON = /merge|conflict|commit|binding|base\b/i
@@ -37,7 +32,7 @@ describe('describeBlueprintProposal', () => {
   })
 
   it('says a follow changes nothing, only where the gadget gets its updates', () => {
-    const notice = describeBlueprintProposal(merge({ kind: 'follow' }), NO_CHANGE)
+    const notice = describeBlueprintProposal(merge({ kind: 'follow' }), UNREVIEWED)
     expect(notice.summary).toContain('nothing in it changes')
     expect(notice.summary).toContain('future updates from this blueprint')
     expect(notice.nextStep).toBe('Nothing changes until you accept.')
@@ -68,11 +63,14 @@ describe('describeBlueprintProposal', () => {
       .toContain('Ask in this chat to have them sorted out before accepting.')
   })
 
-  it('says a merge of two sides that made the same changes changes nothing', () => {
-    const notice = describeBlueprintProposal(merge(), NO_CHANGE)
-    expect(notice.summary).toContain('already has everything this version changes')
-    expect(notice.nextStep).toBe('Nothing changes until you accept.')
-    expect(notice.customizations).toBeUndefined()
+  // A release that only deleted a file the gadget changed leaves the gadget's files as they
+  // were, but whether the file should stay is still to be decided.
+  it('treats a merge that changes no file as one to review', () => {
+    const notice = describeBlueprintProposal(merge({ conflictPaths: ['client.js'] }), REVIEWED)
+    expect(notice.summary).toBeUndefined()
+    expect(notice.customizations).toContain('An agent is now making sure')
+    expect(notice.details.method).toBe('Three-way merge')
+    expect(notice.details.notes.join(' ')).toContain('one side deleted and the other changed')
   })
 
   it('keeps technical terms out of everything but the advanced details', () => {
@@ -83,7 +81,7 @@ describe('describeBlueprintProposal', () => {
       },
     }
     for (const kind of ['follow', 'fastForward', 'merge'] as const) {
-      for (const options of [REVIEWED, UNREVIEWED, NO_CHANGE].flatMap(pending =>
+      for (const options of [REVIEWED, UNREVIEWED].flatMap(pending =>
         [pending, { ...pending, decided: true }])) {
         const notice = describeBlueprintProposal(merge({
           kind, conflictPaths: ['client.js'], unverifiedBase: true, missingBindings,
@@ -103,7 +101,7 @@ describe('describeBlueprintProposal', () => {
     }
     const decided = (over: Partial<BlueprintMerge>, reviewed: boolean) => describeBlueprintProposal(
       merge({ unverifiedBase: true, missingBindings, ...over }),
-      { changesFiles: true, reviewed, decided: true })
+      { reviewed, decided: true })
 
     const reviewedNotice = decided({}, true)
     expect(reviewedNotice.customizations).toContain('An agent was asked to make sure')
@@ -128,7 +126,8 @@ describe('describeBlueprintProposal', () => {
     expect(details.conflictPaths).toEqual(conflictPaths)
     expect(details.notes.join(' ')).toContain('one side deleted and the other changed')
 
-    const follow = describeBlueprintProposal(merge({ kind: 'follow', baseCommit: undefined }), NO_CHANGE)
+    const follow =
+      describeBlueprintProposal(merge({ kind: 'follow', baseCommit: undefined }), UNREVIEWED)
     expect(follow.details.baseCommit).toBeUndefined()
     expect(follow.details.notes).toEqual([])
   })
@@ -142,7 +141,8 @@ describe('describeBlueprintProposal', () => {
   })
 
   it('does not warn of a guessed base where nothing changes', () => {
-    const notice = describeBlueprintProposal(merge({ unverifiedBase: true }), NO_CHANGE)
+    const notice =
+      describeBlueprintProposal(merge({ kind: 'follow', unverifiedBase: true }), UNREVIEWED)
     expect(notice.warning).toBeUndefined()
   })
 
@@ -203,13 +203,5 @@ describe('appliedBlueprintMerges', () => {
       blueprintMerges: [merge({ kind: 'fastForward' })],
     })
     expect(appliedBlueprintMerges(created)).toEqual([])
-  })
-})
-
-describe('proposalMessageCount', () => {
-  it('is one unless the change was split', () => {
-    expect(proposalMessageCount([])).toBe(1)
-    expect(proposalMessageCount([merge()])).toBe(1)
-    expect(proposalMessageCount([merge({ messageCount: 3 })])).toBe(3)
   })
 })

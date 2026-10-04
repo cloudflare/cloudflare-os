@@ -7,8 +7,6 @@ type BlueprintProposalNoticeProps = {
   merge: BlueprintMerge
   /** Whether the proposal is still to be decided, or which way it was. */
   status: 'pending' | 'merged' | 'reverted'
-  /** Whether the message that records the proposal carries a change to the gadget's files. */
-  changesFiles: boolean
   /** Whether an agent is taking part in the chat, and so reviewing a merge. */
   reviewed: boolean
 }
@@ -73,11 +71,10 @@ const AdvancedDetails = ({ details, bindingNames }: {
 export const BlueprintProposalNotice = ({
   merge,
   status,
-  changesFiles,
   reviewed,
 }: BlueprintProposalNoticeProps) => {
   const description = describeBlueprintProposal(
-    merge, { changesFiles, reviewed, decided: status !== 'pending' })
+    merge, { reviewed, decided: status !== 'pending' })
 
   return (
     <section

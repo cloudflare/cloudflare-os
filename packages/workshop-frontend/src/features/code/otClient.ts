@@ -78,14 +78,22 @@ export interface ChatContentReader {
    * reads was selected, so the holder checks this against its own selection.
    */
   chatId: number
-  /** The content, sparse as the client holds it, or undefined while it has yet to load. */
-  read(): CodeContent | undefined
+  /** The content as it stands now, or undefined while it has yet to load. */
+  read(): ChatContentSnapshot | undefined
   /**
    * Whether that content includes edits made here that the server has yet to acknowledge (see
    * ChatOtClient.hasLocalEdits()): until it has, the server's copy of the chat is behind.
    */
   hasLocalEdits(): boolean
 }
+
+/**
+ * One file of a chat's content, as of when the snapshot was read: its text, `null` where the
+ * chat removed it, or `undefined` where the chat has not touched it, which leaves it with the
+ * text of the pin's base commit (or, for a workpiece the chat has not pinned, of its accepted
+ * commit).
+ */
+export type ChatContentSnapshot = (gadgetId: WorkpieceId, path: string) => string | null | undefined
 
 /** A remote content change to one file, for open editors to apply as a remote transaction. */
 export interface RemoteFileEvent {
@@ -331,6 +339,14 @@ export class ChatOtClient {
   /** The workpiece's displayed touched paths and their text; undefined when not covered. */
   getFiles(gadgetId: WorkpieceId): ReadonlyMap<string, string> | undefined {
     return this.#display.get(gadgetId)
+  }
+
+  /** The content as it stands now, one file at a time (see ChatContentSnapshot). */
+  snapshot(): ChatContentSnapshot {
+    const display = this.#display
+    const removed = new Map([...display.keys()].map(id => [id, this.getRemovedPaths(id)]))
+    return (gadgetId, path) =>
+      display.get(gadgetId)?.get(path) ?? (removed.get(gadgetId)?.has(path) ? null : undefined)
   }
 
   /**

@@ -91,7 +91,7 @@ describe('WorkpieceCodeInterface chat content', () => {
 
     await render({ selectedChatId: CHAT_ID, chatChanges })
     await vi.waitFor(() => {
-      expect(reader?.read()?.get(GADGET.id)?.get('client.js')).toBe('const days = 7\n')
+      expect(reader?.read()?.(GADGET.id, 'client.js')).toBe('const days = 7\n')
     })
     expect(reader?.hasLocalEdits()).toBe(false)
   })
