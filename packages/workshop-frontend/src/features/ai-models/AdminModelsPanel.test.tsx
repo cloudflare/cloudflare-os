@@ -2046,6 +2046,11 @@ describe('AdminModelsPanel', () => {
                 reasoning: true,
               },
               plain: { ...listed('claude-plain', 'Claude Plain', limit), reasoning: false },
+              thinks: {
+                ...listed('claude-thinks', 'Claude Thinks', limit),
+                reasoning: true,
+                reasoning_options: [{ type: 'effort', values: ['none', 'high'] }],
+              },
               silent: {
                 ...listed('claude-silent', 'Claude Silent', limit), modalities: { output: ['text'] },
               },
@@ -2054,9 +2059,12 @@ describe('AdminModelsPanel', () => {
         })))
         const { addGatewayModel } = await render({ gatewayModels: SUGGESTING })
 
-        // models.dev names no levels for a model that reasons, so none are stated for one.
+        // Its entry names no efforts, so no levels are stated for it.
         await pickSuggestion('sees')
         expect(stated()).toEqual(['Yes', NOT_STATED])
+
+        await pickSuggestion('thinks')
+        expect(stated()).toEqual(['No', 'Off, High'])
 
         await pickSuggestion('plain')
         expect(stated()).toEqual(['No', 'Off'])

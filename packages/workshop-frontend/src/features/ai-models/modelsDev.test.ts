@@ -510,7 +510,49 @@ describe('suggestModels', () => {
         .toStrictEqual([{ ...HAIKU_WITH_NOTHING_STATED, capabilities: { reasoningLevels: ['off'] } }])
     })
 
-    // models.dev names no levels, so none are stated for a model that reasons.
+    it.each([
+      ['the efforts it names, least to most',
+        [{ type: 'effort', values: ['max', 'low', 'high'] }], ['low', 'high', 'max']],
+      ['“none” as Off', [{ type: 'effort', values: ['none', 'high'] }], ['off', 'high']],
+      // A switch does not say that the model takes “off” as an effort.
+      ['its efforts alone beside a switch and a budget',
+        [{ type: 'toggle' }, { type: 'effort', values: ['low', 'medium', 'xhigh'] },
+          { type: 'budget_tokens', min: 1024 }],
+        ['low', 'medium', 'xhigh']],
+      ['only the efforts that are levels, once each',
+        [{ type: 'effort', values: ['default', null, 3, ['high'], 'medium', 'medium'] }],
+        ['medium']],
+      ['the efforts of every list that names some',
+        [{ type: 'effort', values: ['high'] }, { type: 'effort', values: ['minimal'] }],
+        ['minimal', 'high']],
+    ])('states %s for a model that reasons', (_, reasoning_options, reasoningLevels) => {
+      expect(suggestFrom({ ...HAIKU, reasoning: true, reasoning_options })).toStrictEqual([
+        { ...HAIKU_SUGGESTION, capabilities: { imageInput: true, reasoningLevels } },
+      ])
+    })
+
+    it.each([
+      ['a switch alone', [{ type: 'toggle' }]],
+      ['a token budget alone', [{ type: 'budget_tokens', min: 1024, max: 32768 }]],
+      ['no way at all', []],
+      ['no effort above “none”', [{ type: 'effort', values: ['none'] }]],
+      ['efforts that are not a list', [{ type: 'effort', values: 'high' }]],
+      ['efforts of another kind of option', [{ type: 'budget_tokens', values: ['high'] }]],
+      ['ways that are not a list', { type: 'effort', values: ['high'] }],
+      ['ways that are not objects', ['effort', null, ['high']]],
+    ])('states no reasoning levels for a model whose reasoning is set by %s', (_, reasoning_options) => {
+      expect(suggestFrom({ ...HAIKU, reasoning: true, reasoning_options }))
+        .toStrictEqual([HAIKU_SUGGESTION])
+    })
+
+    it('states no reasoning for a model said to do none, whatever efforts it names', () => {
+      const reasoning_options = [{ type: 'effort', values: ['low', 'high'] }]
+      expect(suggestFrom({ ...HAIKU, reasoning: false, reasoning_options })).toStrictEqual([
+        { ...HAIKU_SUGGESTION, capabilities: { imageInput: true, reasoningLevels: ['off'] } },
+      ])
+    })
+
+    // An entry that names no efforts states no levels for a model that reasons.
     it.each([
       ['says reasons', true],
       ['says nothing of reasoning for', undefined],
