@@ -90,3 +90,8 @@ them:
   `LanguageModelGatekeeper.startSession()`. The Auto Router model's pool (`modelSettings[id]
   .allowedModels`, or else the enabled providers) is built there too; a model binding takes the
   current pool at each session start, not the one it was minted with.
+
+## Spaces
+
+Spaces — a key, a display name and a member list each, one `SpaceDurableObject` per space with the
+membership rules in the pure `SpaceModel` (`src/spaces.ts`) — are documented in `docs/spaces.md`.
