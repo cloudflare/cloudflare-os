@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { deflate } from "pako";
 import type { GitPullHints, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
@@ -800,6 +800,23 @@ describe("consumePack", () => {
     }
     // Referent recording ran: the gitlink target still has no row.
     expect(t.storage.gitObjectMetadata.get(GITLINK_TARGET)).toBeUndefined();
+  });
+
+  it("writes nothing when the same gatekeeper sends a pack again", async () => {
+    // A pull sends no `have`s, so a retried one, or one for another commit of a mounted
+    // repository, delivers again what is already stored.
+    let t = makeCache();
+    let stub = new GitCacheImpl(t.cache, G1);
+    let stored = await stub.consumePack(byteStream(b64Bytes(PACK_OFS_DELTA)));
+    let objectPuts = vi.spyOn(t.storage.gitObjects, "put");
+    let metadataPuts = vi.spyOn(t.storage.gitObjectMetadata, "put");
+    expect(await stub.consumePack(byteStream(b64Bytes(PACK_OFS_DELTA)))).toStrictEqual(stored);
+    expect(objectPuts).not.toHaveBeenCalled();
+    expect(metadataPuts).not.toHaveBeenCalled();
+
+    // Another gatekeeper's copy still records its own proof of possession.
+    await new GitCacheImpl(t.cache, G2).consumePack(byteStream(b64Bytes(PACK_OFS_DELTA)));
+    expect(t.storage.gitObjectMetadata.get(stored[0])!.onRemote).toStrictEqual([G1, G2]);
   });
 
   it("rejects corrupt input without storing its commits or trees", async () => {
