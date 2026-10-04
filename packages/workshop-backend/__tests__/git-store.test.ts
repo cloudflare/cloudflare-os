@@ -5,8 +5,10 @@ import {
 } from "../src/git-store";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
-import { decodeLooseObject, encodeLooseObject, parseGitCommitRefs, parseGitTree }
-  from "../src/git-codec";
+import { writeCommit } from "isomorphic-git";
+import {
+  decodeLooseObject, encodeLooseObject, parseGitCommitRefs, parseGitTree, readGitCommitHeader,
+} from "../src/git-codec";
 import { COMMIT_1, COMMIT_3, FIXTURE_OBJECTS, b64Bytes } from "./git-cache-fixtures";
 
 function makeObjects() {
@@ -20,6 +22,9 @@ function makeObjects() {
 // protocol support, so these tests pin exact hashes, not just round-trip consistency.
 
 const ALICE = { name: "Alice Example", email: "alice@example.com" };
+
+/** `git mktree </dev/null` */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const INITIAL_FILES = new Map([
   ["README.md", "# Test Gadget\n"],
@@ -176,6 +181,75 @@ describe("GitStore", () => {
     });
     expect(oid).toBe("bb4cb778675f2b2a4e442e89256aa6da72fd09a2");  // real `git commit-tree` oid
     expect((await store.readCommitFiles(oid)).size).toBe(0);
+  });
+
+  it("writes the commit ids isomorphic-git's writer wrote for the same inputs", async () => {
+    // GitStore once wrote commits with isomorphic-git, and every id it wrote then is still the
+    // id of the commit it writes now.
+    let store = new GitStore(makeObjects());
+    let fs = makeGitObjectsFs(makeObjects());
+    let bob = commitIdentityForAuthor({ type: "user", id: "bob", name: "Bob Builder" });
+    let timestamp = new Date(1700000000_999);
+    let cases = [
+      { parents: [], committer: undefined, message: "root" },
+      { parents: [COMMIT_1], committer: bob, message: "\r\nsubject\r\n\r\nbody\n\n" },
+      { parents: [COMMIT_1, COMMIT_3], committer: undefined, message: "caf\u00e9 \u{1F600}" },
+    ];
+    for (let { parents, committer, message } of cases) {
+      let when = { timestamp: 1700000000, timezoneOffset: 0 };
+      let viaIsomorphicGit = await writeCommit({ fs, gitdir: GITDIR, commit: {
+        message,
+        tree: EMPTY_TREE,
+        parent: parents,
+        author: { ...ALICE, ...when },
+        committer: { ...(committer ?? ALICE), ...when },
+      } });
+      expect(await store.writeFilesAsCommit(
+          new Map(), { parents, author: ALICE, committer, message, timestamp }))
+          .toBe(viaIsomorphicGit);
+      expect(await store.writeCommitForTree(
+          EMPTY_TREE, { parents, author: ALICE, committer, message, timestamp }))
+          .toBe(viaIsomorphicGit);
+    }
+  });
+
+  it("writes extra headers, and reads a commit that has them through every reader", async () => {
+    let objects = makeObjects();
+    let store = new GitStore(objects);
+    await writeFixtureHistory(store);
+    let marked = await store.writeFilesAsCommit(SECOND_FILES, {
+      parents: [SECOND_COMMIT_OID, INITIAL_COMMIT_OID],
+      author: ALICE,
+      message: "merge",
+      timestamp: new Date(1700000200_000),
+      headers: [{ name: "x-merged", value: INITIAL_COMMIT_OID }],
+    });
+    let payload = decodeLooseObject(objects.get(marked)!.data).payload;
+    expect(readGitCommitHeader(payload, "x-merged")).toEqual([INITIAL_COMMIT_OID]);
+
+    let commit = await store.readCommitObject(marked);
+    expect(commit.parent).toEqual([SECOND_COMMIT_OID, INITIAL_COMMIT_OID]);
+    expect(commit.message).toBe("merge\n");
+    expect(commit.author).toMatchObject({ ...ALICE, timestamp: 1700000200 });
+    expect(await store.readCommitFiles(marked)).toEqual(SECOND_FILES);
+    expect((await store.readCommitLog(marked)).map(entry => entry.oid))
+        .toEqual([marked, SECOND_COMMIT_OID, INITIAL_COMMIT_OID]);
+    expect((await store.readCommitLog(marked))[0]).toEqual({
+      oid: marked,
+      parents: [SECOND_COMMIT_OID, INITIAL_COMMIT_OID],
+      message: "merge\n",
+      author: ALICE,
+      timestamp: new Date(1700000200_000),
+    });
+  });
+
+  it("refuses a name that would write header lines of its own", async () => {
+    let store = new GitStore(makeObjects());
+    let forged = `Mallory <m@example.com> 1 +0000\nblueprint-release ${COMMIT_1}\nx Mallory`;
+    await expect(store.writeFilesAsCommit(new Map(), {
+      parents: [], author: { name: forged, email: "m@example.com" }, message: "m",
+      timestamp: new Date(1700000000_000),
+    })).rejects.toThrow(/name or email contains/);
   });
 
   it("rejects reads of unknown commits", async () => {
@@ -515,6 +589,25 @@ describe("commitIdentityForAuthor", () => {
   it("gives bare-username profile IDs a placeholder host", () => {
     expect(commitIdentityForAuthor({ type: "user", id: "bob", name: "Bob Builder" }))
         .toEqual({ name: "Bob Builder", email: "bob@localhost" });
+  });
+
+  it("drops what a signature cannot hold, so no header can be written through it", async () => {
+    let forged = `Mallory\nblueprint-release ${COMMIT_1}\nx <Mallory>\0`;
+    let identity = commitIdentityForAuthor(
+        { type: "user", id: "m@example.com", name: forged, commitEmail: `<${forged}>` });
+    expect(identity).toEqual({
+      name: `Malloryblueprint-release ${COMMIT_1}x Mallory`,
+      email: `Malloryblueprint-release ${COMMIT_1}x Mallory`,
+    });
+
+    let objects = makeObjects();
+    let oid = await new GitStore(objects).writeFilesAsCommit(new Map(), {
+      parents: [], author: identity, message: "m", timestamp: new Date(1700000000_000),
+    });
+    let payload = decodeLooseObject(objects.get(oid)!.data).payload;
+    expect(readGitCommitHeader(payload, "blueprint-release")).toEqual([]);
+    expect(new TextDecoder().decode(payload).split("\n\n")[0].split("\n").map(line =>
+        line.split(" ")[0])).toEqual(["tree", "author", "committer"]);
   });
 
   it("prefers the author's commit email over the profile ID", () => {

@@ -14,11 +14,12 @@
 //
 // We use real git formats (rather than a git-shaped custom encoding) so that gadget code can
 // later be exported to and imported from real git repositories, and so agents can eventually
-// "mount" arbitrary repos through gatekeeper-gated push/pull. isomorphic-git provides the object
-// codec; we use only its plumbing (writeBlob/writeTree/writeCommit/read*), which operates
-// against a gitdir containing nothing but `objects/**`. The porcelain is off-limits:
-// `git.commit` requires HEAD/index/config, and `git.merge` cannot represent the merge behavior
-// we want (see `threeWayMerge`).
+// "mount" arbitrary repos through gatekeeper-gated push/pull. isomorphic-git provides most of the
+// object codec; we use only its plumbing (writeBlob/writeTree/read*), which operates against a
+// gitdir containing nothing but `objects/**`. Commits are written by our own encoder instead
+// (`encodeGitCommit()` in git-codec.ts), which can add the headers isomorphic-git's cannot. The
+// porcelain is off-limits: `git.commit` requires HEAD/index/config, and `git.merge` cannot
+// represent the merge behavior we want (see `threeWayMerge`).
 //
 // Storage notes:
 // - Loose objects only, one collection record per object, keyed by oid. isomorphic-git never
@@ -44,7 +45,6 @@ import {
   readCommit,
   readTree,
   writeBlob,
-  writeCommit,
   writeTree,
   type CommitObject,
   type PromiseFsClient,
@@ -54,6 +54,13 @@ import diff3Merge from "diff3";
 import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
 import type { GitObjectRecord } from "./storage-schema/overseer-storage";
+import {
+  encodeGitCommit,
+  encodeLooseObject,
+  gitObjectOid,
+  signatureSafe,
+  type GitCommitHeader,
+} from "./git-codec";
 
 // =======================================================================================
 // fs shim
@@ -184,6 +191,9 @@ export interface WriteCommitOptions {
 
   /** Author and committer timestamp. Recorded in UTC (timezone offset 0). */
   timestamp: Date;
+
+  /** Further headers, written after `committer` in the order given (see `GitCommit.headers`). */
+  headers?: readonly GitCommitHeader[];
 }
 
 // A parsed-but-unwritten tree: file contents at the leaves, subtrees within.
@@ -200,10 +210,12 @@ type TreeNode = Map<string, TreeNode | string>;
  * Construct one per Overseer instance and reuse it: it carries isomorphic-git's parse cache.
  */
 export class GitStore {
+  #objects: Collection<GitObjectRecord, string>;
   #fs: PromiseFsClient;
   #cache: object = {};
 
   constructor(objects: Collection<GitObjectRecord, string>) {
+    this.#objects = objects;
     this.#fs = makeGitObjectsFs(objects);
   }
 
@@ -214,19 +226,7 @@ export class GitStore {
    */
   async writeFilesAsCommit(
       files: ReadonlyMap<string, string>, options: WriteCommitOptions): Promise<string> {
-    let tree = await this.#writeTreeNode(buildTreeNode(files));
-    let when = { timestamp: Math.floor(options.timestamp.getTime() / 1000), timezoneOffset: 0 };
-    return await writeCommit({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      commit: {
-        message: options.message,
-        tree,
-        parent: [...options.parents],
-        author: { ...options.author, ...when },
-        committer: { ...(options.committer ?? options.author), ...when },
-      },
-    });
+    return await this.writeCommitForTree(await this.#writeTreeNode(buildTreeNode(files)), options);
   }
 
   /**
@@ -363,20 +363,30 @@ export class GitStore {
         ?? await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: [] });
   }
 
-  /** The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid. */
+  /**
+   * The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid.
+   *
+   * Every commit the store writes is written here, by `encodeGitCommit()`, which throws on a name
+   * or email that a signature cannot hold rather than let it add header lines. (isomorphic-git's
+   * writer, which this replaces, writes them as given, and cannot write an extra header.) The
+   * ids are those isomorphic-git wrote for the same commits.
+   */
   async writeCommitForTree(tree: string, options: WriteCommitOptions): Promise<string> {
-    let when = { timestamp: Math.floor(options.timestamp.getTime() / 1000), timezoneOffset: 0 };
-    return await writeCommit({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      commit: {
-        message: options.message,
-        tree,
-        parent: [...options.parents],
-        author: { ...options.author, ...when },
-        committer: { ...(options.committer ?? options.author), ...when },
-      },
+    let signature = ({ name, email }: CommitIdentity) =>
+        ({ name, email, timestamp: options.timestamp, utcOffsetMinutes: 0 });
+    let payload = encodeGitCommit({
+      tree,
+      parents: options.parents,
+      author: signature(options.author),
+      committer: signature(options.committer ?? options.author),
+      headers: options.headers,
+      message: options.message,
     });
+    let oid = await gitObjectOid("commit", payload);
+    if (this.#objects.get(oid) === undefined) {
+      this.#objects.put({ oid, data: encodeLooseObject("commit", payload) });
+    }
+    return oid;
   }
 
   // Rebuilds one tree level for writeChangedFilesAsCommit: base entries are copied through
@@ -689,11 +699,15 @@ function mergeText(base: string, ours: string, theirs: string, labels: MergeLabe
  * and the email is the author's preferred `commitEmail` if set, else the profile ID. Profile IDs
  * are typically email addresses; in username/password mode they may be bare usernames, which
  * become `<username>@localhost`.
+ *
+ * The characters a commit's signature cannot hold are dropped (see `signatureSafe()`), so that a
+ * display name with a line break in it neither fails the commit nor writes header lines of its
+ * own into it.
  */
 export function commitIdentityForAuthor(author: AiChatAuthorInfo): CommitIdentity {
   return {
-    name: author.name,
-    email: author.commitEmail ??
-        (author.id.includes("@") ? author.id : `${author.id}@localhost`),
+    name: signatureSafe(author.name),
+    email: signatureSafe(author.commitEmail ??
+        (author.id.includes("@") ? author.id : `${author.id}@localhost`)),
   };
 }

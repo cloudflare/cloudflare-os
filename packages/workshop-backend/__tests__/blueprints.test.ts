@@ -18,10 +18,11 @@ import {
 } from "../src/blueprint-archive";
 import {
   buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, listReleaseFiles, readReleasePack,
-  type GitObjectMap,
+  releaseMergeHeader, releasesMergedBy, type GitObjectMap,
 } from "../src/blueprint-release";
 import {
   buildPackBytes, concatBytes, encodeGitCommit, encodeGitTree, gitObjectOid, parseGitCommitRefs,
+  type GitCommitHeader,
 } from "../src/git-codec";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { UserDurableObject } from "../src/user.js";
@@ -110,25 +111,28 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
 }
 
 async function commitFiles(
-    impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
+    impl: any, files: Record<string, string>, parents: string[] = [],
+    headers: GitCommitHeader[] = []): Promise<string> {
   return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Carl Collaborator", email: "carl@example.com" },
     message: "Accept chat: a private chat title",
     timestamp: new Date(1700000000_000),
+    headers,
   });
 }
 
 /**
  * Moves the head of the workspace's gadget to a new commit of `files`, adding gadget 1 first if
- * there is none. The commit merges the release `merged`, if given, as accepting an update from
- * its blueprint would.
+ * there is none. The commit merges the release `merged`, if given, and marks it as merged, as
+ * accepting an update from its blueprint would.
  */
 async function commitToGadget(impl: any, files: Record<string, string>, merged?: string)
     : Promise<string> {
   let [record] = [...impl.storage.gadgets.list()];
   let commitId = await commitFiles(
-      impl, files, [...record ? [record.commitId] : [], ...merged ? [merged] : []]);
+      impl, files, [...record ? [record.commitId] : [], ...merged ? [merged] : []],
+      merged ? [releaseMergeHeader(merged)] : []);
   impl.storage.gadgets.put(record
       ? { ...record, commitId }
       : { type: "gadget", id: 1, title: "App", created: new Date(0), bindingName: "APP",
@@ -155,6 +159,17 @@ async function createBlueprint(client: Overseer, title = "Starter", gadgetId = 1
 /** The parents of a commit in the workspace's store. */
 async function parentsOf(impl: any, commitId: string): Promise<string[]> {
   return (await impl.gitStore.readCommitLog(commitId, { depth: 1 }))[0].parents;
+}
+
+/** The releases that a commit in the workspace's store marks as merged. */
+function releasesMarkedBy(impl: any, commitId: string): string[] {
+  return releasesMergedBy(impl.gitCache.readLocalObject(commitId).payload, commitId);
+}
+
+/** The names of a commit's headers, in order. */
+function headerNames(impl: any, commitId: string): string[] {
+  let text = new TextDecoder().decode(impl.gitCache.readLocalObject(commitId).payload);
+  return text.slice(0, text.indexOf("\n\n")).split("\n").map(line => line.split(" ")[0]);
 }
 
 async function publishedMetadata(blueprintId: string): Promise<BlueprintMetadata | undefined> {
@@ -591,6 +606,7 @@ describe("instantiating a blueprint", () => {
       });
       expect(await impl.gitStore.commitTree(head.oid))
           .toBe(await impl.gitStore.commitTree(release));
+      expect(releasesMarkedBy(impl, head.oid)).toEqual([release]);
       expect(root).toMatchObject({ parents: [], message: "Create gadget: Starter\n" });
       expect(await impl.gitStore.commitTree(root.oid)).toBe(EMPTY_TREE);
 
@@ -785,6 +801,7 @@ describe("publishing a blueprint built on another", () => {
       expect(published.version).toBe(1);
       let [b0, ...merged] = await parentsOf(impl, b1);
       expect(merged).toEqual([a2]);
+      expect(releasesMarkedBy(impl, gadget.commitId)).toEqual([a2]);
 
       // A release's first parent is always its own blueprint's, and Bob's had none to give.
       // So his lineage starts at an empty release of its own.
@@ -860,6 +877,125 @@ describe("publishing a blueprint built on another", () => {
       await commitToGadget(impl, BOBS, b2);
       await client.updateBlueprint(bob, { updateCode: true });
       expect(await publishedMetadata(bob)).toMatchObject({ version: 2, commitId: b2 });
+    });
+  });
+});
+
+describe("marking the releases a gadget merges", () => {
+  // Bob's additions to Alice's files.
+  const BOBS = { ...V1, "bob.js": "bob\n" };
+
+  it("takes a parent for a release only where the commit marks it as one", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let [a1, a2] = alice.published.map(metadata => metadata.commitId!);
+
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, alice.blueprintId, alice.published[0]);
+      let gadget = theGadget(impl);
+
+      // A chat's own files merged into the gadget, as bringing a chat up to date does: a second
+      // parent that is the gadget's own, and no release.
+      let chat = await commitFiles(impl, BOBS, [gadget.commitId]);
+      let own = await commitFiles(impl, BOBS, [gadget.commitId, chat]);
+      // And a release merged by a commit that does not mark it, as this branch wrote them
+      // before releases were marked.
+      await impl.loadBlueprint(alice.blueprintId, alice.published[1]);
+      let unmarked = await commitFiles(impl, { ...BOBS, ...V2 }, [own, a2]);
+      impl.storage.gadgets.put({ ...gadget, commitId: unmarked });
+      expect(releasesMarkedBy(impl, unmarked)).toEqual([]);
+
+      // Bob's release names only what his gadget was instantiated from, and its pack holds no
+      // commit of the gadget's own.
+      let bob = (await createBlueprint(client, "Bob's", gadget.id)).id;
+      let b1 = (await publishedMetadata(bob))!.commitId!;
+      let [b0, ...merged] = await parentsOf(impl, b1);
+      expect(merged).toEqual([a1]);
+      expect(commitsIn(await publishedPack(bob, b1))).toEqual([a1, b0, b1].toSorted());
+    });
+  });
+
+  it("finds a release that a commit off the gadget's first-parent chain merged", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let [a1, a2] = alice.published.map(metadata => metadata.commitId!);
+
+    await withWorkspace(async ({ instance, impl, client }) => {
+      await instantiate(instance, alice.blueprintId, alice.published[0]);
+      let gadget = theGadget(impl);
+      let h = gadget.commitId;
+      let bob = (await createBlueprint(client, "Bob's", gadget.id)).id;
+      let b1 = (await publishedMetadata(bob))!.commitId!;
+      expect((await parentsOf(impl, b1)).slice(1)).toEqual([a1]);
+
+      // A chat proposes Alice's second release: the merge `m = [h, a2]`, marked. Before it is
+      // accepted, mainline moves on to `h2`, and the chat is brought up to date: its files `s`,
+      // which have `m` for their parent, merge with mainline as `m2 = [h2, s]`. That is what is
+      // accepted. Only `m` marks the release, and it is on no first-parent chain from `m2`.
+      await impl.loadBlueprint(alice.blueprintId, alice.published[1]);
+      let m = await commitFiles(impl, V2, [h, a2], [releaseMergeHeader(a2)]);
+      let s = await commitFiles(impl, { ...V2, "chat.js": "chat\n" }, [m]);
+      let h2 = await commitFiles(impl, { ...V1, "main.js": "main\n" }, [h]);
+      let m2 = await commitFiles(
+          impl, { ...V2, "chat.js": "chat\n", "main.js": "main\n" }, [h2, s]);
+      impl.storage.gadgets.put({ ...theGadget(impl), commitId: m2 });
+
+      await client.updateBlueprint(bob, { updateCode: true });
+      let b2 = (await publishedMetadata(bob))!.commitId!;
+      expect(await parentsOf(impl, b2)).toEqual([b1, a2]);
+      expect(commitsIn(await publishedPack(bob, b2))).not.toContain(m);
+    });
+  });
+
+  it("names no release marked in the history of the commit it was last published from",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1]);
+    let [a1] = alice.published.map(metadata => metadata.commitId!);
+
+    await withWorkspace(async ({ instance, impl }) => {
+      await instantiate(instance, alice.blueprintId);
+      let since = theGadget(impl).commitId;
+
+      // The history of `since` is left out wherever the walk reaches it: through the head's
+      // first parent and through its second.
+      let first = await commitFiles(impl, BOBS, [since]);
+      let second = await commitFiles(impl, { ...V1, "chat.js": "chat\n" }, [since]);
+      let head = await commitFiles(impl, { ...BOBS, "chat.js": "chat\n" }, [first, second]);
+      expect(await impl.releasesMergedSince(head, since, undefined)).toEqual([]);
+      expect(await impl.releasesMergedSince(head, undefined, undefined)).toEqual([a1]);
+    });
+  });
+
+  it("writes no mark through a name or a chat title, whatever they hold", async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+    let a1 = republish(alice, 0);
+
+    await withWorkspace(async workspace => {
+      let { instance, impl, owner } = workspace;
+      // Text that would be a mark, were a line break in it able to start a header.
+      let forged = `Olive\nblueprint-release ${a1}\nx`;
+      let profile = { ...OWNER, name: forged, commitEmail: `olive@example.com>\n${forged}` };
+      Object.assign(owner, {
+        whoami: async () => profile,
+        getChatContext: async () => ({ profile }),
+      });
+
+      await instantiate(instance, alice.blueprintId);
+      let head = theGadget(impl).commitId;
+      expect(headerNames(impl, head))
+          .toEqual(["tree", "parent", "parent", "author", "committer", "blueprint-release"]);
+      expect(releasesMarkedBy(impl, head)).toEqual([a1]);
+      let [entry] = await impl.gitStore.readCommitLog(head, { depth: 1 });
+      expect(entry.author.name).toBe(`Oliveblueprint-release ${a1}x`);
+
+      // And a chat titled with it, accepted.
+      let a2 = republish(alice, 1);
+      let chatId = await propose(workspace, alice.blueprintId);
+      impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(chatId), title: forged });
+      let after = await accept(workspace, chatId);
+      expect(headerNames(impl, after.commitId))
+          .toEqual(["tree", "parent", "parent", "author", "committer", "blueprint-release"]);
+      expect(releasesMarkedBy(impl, after.commitId)).toEqual([a2]);
+      expect((await impl.gitStore.readCommitLog(after.commitId, { depth: 1 }))[0].message)
+          .toBe(`Accept changes from chat: ${forged}\n`);
     });
   });
 });
@@ -1033,6 +1169,7 @@ describe("applying a blueprint to a gadget", () => {
       // then the release. That is what the next update will find to merge against.
       let after = await accept(workspace, chatId);
       expect(await parentsOf(impl, after.commitId)).toEqual([before.commitId, a2]);
+      expect(releasesMarkedBy(impl, after.commitId)).toEqual([a2]);
       expect(await headFiles(impl)).toEqual(V2);
       expect(after.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a2 });
 
@@ -1522,6 +1659,7 @@ describe("applying a blueprint to a gadget", () => {
       expect(gadget.pending).toBeUndefined();
       let [root, release, ...more] = await parentsOf(impl, gadget.commitId);
       expect([release, ...more]).toEqual([a1]);
+      expect(releasesMarkedBy(impl, gadget.commitId)).toEqual([a1]);
       expect(await parentsOf(impl, root)).toEqual([]);
       expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
       expect(await headFiles(impl)).toEqual({ ...V1, "client.js": "the agent's own\n" });

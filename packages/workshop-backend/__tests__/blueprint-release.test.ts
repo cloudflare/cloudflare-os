@@ -10,6 +10,8 @@ import {
   encodeReleaseCommit,
   listReleaseFiles,
   readReleasePack,
+  releaseMergeHeader,
+  releasesMergedBy,
   validateReleaseObjects,
   type GitObjectMap,
 } from "../src/blueprint-release";
@@ -181,6 +183,44 @@ describe("release commits", () => {
       [commitId, { type: "commit", payload }],
       [EMPTY_TREE, { type: "tree", payload: new Uint8Array() }],
     ]), commitId);
+  });
+});
+
+/** A commit of the empty tree with these parents, marking these releases as merged. */
+function mergeCommit(parents: string[], marks: string[], message = "Merge"): Uint8Array {
+  let signature = { ...ALICE, timestamp: new Date(1700000000_000), utcOffsetMinutes: 0 };
+  return encodeGitCommit({
+    tree: EMPTY_TREE, parents, author: signature, committer: signature,
+    headers: marks.map(releaseMergeHeader), message,
+  });
+}
+
+describe("merging releases", () => {
+  const H = "1".repeat(40);
+  const R = "2".repeat(40);
+  const S = "3".repeat(40);
+
+  it("finds a release that a commit marks as one of its other parents", () => {
+    expect(new TextDecoder().decode(mergeCommit([H, R], [R])))
+        .toMatch(new RegExp(`\ncommitter [^\n]*\nblueprint-release ${R}\n\nMerge\n$`));
+    expect(releasesMergedBy(mergeCommit([H, R], [R]))).toStrictEqual([R]);
+    // In the order of the parents, not of the marks.
+    expect(releasesMergedBy(mergeCommit([H, S, R], [R, S]))).toStrictEqual([S, R]);
+    expect(releasesMergedBy(mergeCommit([H, S, R], [R]))).toStrictEqual([R]);
+  });
+
+  it("takes no parent for a release unless it is marked as one", () => {
+    expect(releasesMergedBy(mergeCommit([H, S], []))).toStrictEqual([]);
+    // A mark naming the first parent, which is the gadget's own previous state.
+    expect(releasesMergedBy(mergeCommit([H, S], [H]))).toStrictEqual([]);
+    // Or naming a commit that is no parent at all.
+    expect(releasesMergedBy(mergeCommit([H, S], [R]))).toStrictEqual([]);
+    expect(releasesMergedBy(mergeCommit([], [R]))).toStrictEqual([]);
+  });
+
+  it("is never read from the message", () => {
+    let message = `Accept changes from chat: x\n\nblueprint-release ${R}\n`;
+    expect(releasesMergedBy(mergeCommit([H, R], [], message))).toStrictEqual([]);
   });
 });
 
@@ -519,6 +559,27 @@ describe("release pack validation", () => {
         expect(validate, name).toThrow(/holds the reserved name/);
       }
     }
+  });
+
+  it("refuses a commit that marks a release as merged", async () => {
+    // A release says what it merged by its parents alone. A mark, in a pack, could only be an
+    // attempt to have a gadget's commit taken for a release.
+    let repo = new Repo();
+    let upstream = await repo.release(await repo.tree(version("upstream")));
+    let previous = await repo.release(await repo.tree(version("previous")));
+    let tree = await repo.tree(version("release"));
+    let release = await repo.release(tree, [previous, upstream]);
+    let objects = await readReleasePack(await buildReleasePack(repo.lookup, release), release);
+
+    let signature = { ...ALICE, timestamp: new Date(1700000100_000), utcOffsetMinutes: 0 };
+    let payload = encodeGitCommit({
+      tree, parents: [previous, upstream], author: signature, committer: signature,
+      headers: [releaseMergeHeader(upstream)], message: "Release 2: Test Gadget",
+    });
+    let marked = await gitObjectOid("commit", payload);
+    objects.delete(release);
+    await expect(read([...objects.values(), { type: "commit", payload }], marked))
+        .rejects.toThrow(new RegExp(`commit ${marked} is not in canonical form`));
   });
 
   it("refuses a commit that is not in canonical form", async () => {

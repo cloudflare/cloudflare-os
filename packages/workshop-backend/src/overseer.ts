@@ -54,9 +54,10 @@ import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
 } from "./blueprint-archive";
 import {
-  buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, type Release,
+  buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, releaseMergeHeader,
+  releasesMergedBy, type Release,
 } from "./blueprint-release";
-import { encodeGitTree, gitObjectOid } from "./git-codec";
+import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
@@ -3678,7 +3679,8 @@ class OverseerImpl implements AgentHooks {
       if (release !== undefined) {
         // A merged release is never the first parent, which is the gadget's own previous
         // state. A gadget that has none starts from an empty root, as one instantiated outside
-        // any chat does (see initializeFromBlueprint).
+        // any chat does (see initializeFromBlueprint). The commit marks the release as merged,
+        // which is what tells it from any other parent (see releasesMergedSince).
         if (baseHead === undefined) {
           parents.push(await this.gitStore.writeFilesAsCommit(new Map(), {
             parents: [],
@@ -3696,6 +3698,7 @@ class OverseerImpl implements AgentHooks {
           author: identity,
           message: `Accept changes from chat: ${meta.title}`,
           timestamp: new Date(),
+          headers: release !== undefined ? [releaseMergeHeader(release)] : undefined,
         }),
       });
     }
@@ -7581,14 +7584,50 @@ class OverseerImpl implements AgentHooks {
   // they were merged. Those that `previous` (a release, if given) or another of them already
   // has in its history are left out, as naming them again would say nothing.
   //
-  // A gadget's own history is its first-parent chain, and every other parent of a commit on it
-  // is a release that the commit merged (see initializeFromBlueprint()).
+  // A commit merged a release only if it marks it as one (see releasesMergedBy). Its other
+  // parents are the gadget's own history: its first parent, and any other commit of the
+  // gadget's that it merged, such as a chat's own files. The walk follows all of those, since a
+  // mark can lie off the first-parent chain -- a blueprint proposal's merge, reached through the
+  // files of the chat that held it when the chat was brought up to date. It never enters a
+  // release's history, which holds no commit of the gadget's own, and stops at the history of
+  // `since`. A commit's releases come after those of its first parent's history and then of its
+  // other parents', which makes the order oldest first.
   async releasesMergedSince(head: string, since: string | undefined, previous: string | undefined)
       : Promise<string[]> {
+    let read = (oid: string) => {
+      let object = this.gitCache.readLocalObject(oid);
+      if (object?.type !== "commit") throw new Error(`Commit ${oid} is not in the git store.`);
+      let releases = releasesMergedBy(object.payload, oid);
+      let own = parseGitCommitRefs(object.payload, oid).parents
+          .filter(parent => !releases.includes(parent));
+      return {releases, own};
+    };
+
+    // `since` and everything in its own history, which the walk below is not to enter.
+    let reached = new Set<string>();
+    for (let pending = since === undefined ? [] : [since]; pending.length > 0;) {
+      let oid = pending.pop()!;
+      if (reached.has(oid)) continue;
+      reached.add(oid);
+      pending.push(...read(oid).own);
+    }
+
+    // Depth first, finishing a commit only once its own parents are finished.
     let merged: string[] = [];
-    for await (let {oid, commit} of this.gitStore.firstParentChain(head)) {
-      if (oid === since) break;
-      merged.unshift(...commit.parent.slice(1));
+    let stack: {oid: string, commit?: ReturnType<typeof read>}[] = [{oid: head}];
+    while (stack.length > 0) {
+      let top = stack.at(-1)!;
+      if (top.commit !== undefined) {
+        stack.pop();
+        merged.push(...top.commit.releases);
+      } else if (reached.has(top.oid)) {
+        stack.pop();
+      } else {
+        reached.add(top.oid);
+        top.commit = read(top.oid);
+        // Reversed, so that the first parent is the first to be taken off the stack.
+        stack.push(...top.commit.own.toReversed().map(oid => ({oid})));
+      }
     }
     return merged.filter((release, index) =>
         merged.indexOf(release) === index &&
@@ -9514,11 +9553,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     // The gadget's history starts at an empty root of its own, into which its head merges the
     // release: the head's tree is the release's, its first parent the root, its second the
-    // release. A commit's first parent is always the gadget's own previous state, so the
-    // gadget's first-parent chain is its own history, every commit of which has its tree here.
-    // The release's ancestors, most of which arrived without theirs, are only ever reached
-    // through other parents -- where a later update finds what the gadget and a blueprint have
-    // in common.
+    // release, which it marks as a release it merged (see releasesMergedSince). A commit's first
+    // parent is always the gadget's own previous state, so the gadget's first-parent chain is its
+    // own history, every commit of which has its tree here. The release's ancestors, most of
+    // which arrived without theirs, are only ever reached through other parents -- where a later
+    // update finds what the gadget and a blueprint have in common.
     let authorship = { author: commitIdentityForAuthor(ownerProfile), timestamp: new Date() };
     let root = await this.impl.gitStore.writeFilesAsCommit(new Map(), {
       ...authorship,
@@ -9530,6 +9569,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       ...authorship,
       parents: [root, release],
       message: `Instantiate blueprint: ${title}`,
+      headers: [releaseMergeHeader(release)],
     });
 
     // Blueprint instantiation still creates a fresh workspace containing one auto-created gadget,

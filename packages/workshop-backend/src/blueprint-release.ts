@@ -1,5 +1,6 @@
-// Blueprint releases: the commit a blueprint version is, the packfile it ships in, and the check
-// that decides what such a pack may bring into a workspace.
+// Blueprint releases: the commit a blueprint version is, the packfile it ships in, the check
+// that decides what such a pack may bring into a workspace, and the header with which a gadget's
+// commit marks a release it merged.
 //
 // A blueprint version is a *release commit*: a synthetic commit whose tree is the source gadget's
 // at the moment of publishing. Its first parent is the blueprint's previous release and its other
@@ -35,7 +36,10 @@ import {
   gitObjectOid,
   parseGitCommitRefs,
   parseGitTree,
+  readGitCommitHeader,
   scanGitTree,
+  signatureSafe,
+  type GitCommitHeader,
   type GitCommitRefs,
   type GitTreeEntry,
   type PackableObject,
@@ -113,8 +117,8 @@ export interface Release {
  */
 export function encodeReleaseCommit(release: Release): Uint8Array {
   let signature = {
-    name: release.author.name.replace(/[<>\n\0]/g, ""),
-    email: release.author.email.replace(/[<>\n\0]/g, ""),
+    name: signatureSafe(release.author.name),
+    email: signatureSafe(release.author.email),
     timestamp: release.timestamp,
     utcOffsetMinutes: 0,
   };
@@ -189,6 +193,42 @@ async function addFileTree(objects: GitObjectMap, files: ReadonlyMap<string, str
   // encodeGitTree() is what refuses an empty or dot segment, and a path that is both a file and
   // a directory.
   return await addObject(objects, "tree", encodeGitTree(entries));
+}
+
+// =======================================================================================
+// Merging releases
+//
+// A gadget's commit that merges a release has the release among its parents, and names it in a
+// header after `committer`:
+//
+//     blueprint-release <release commit>
+//
+// Not every parent of a gadget's commit but the first is a release: one can be a chat's own
+// files, merged with mainline when the chat is brought up to date. So nothing takes a parent for
+// a release unless the header marks it as one. A release's parents are published along with the
+// history beneath them, and a gadget's own commit among them would publish what its chats hold.
+//
+// Nothing a user types can write the header. A commit message cannot reach the headers, and
+// encodeGitCommit() refuses a name or email that could. Nor can a pack bring a marked commit
+// in: validateReleaseObjects() admits commits only in the form a release has, which carries no
+// header of its own.
+
+const RELEASE_HEADER = "blueprint-release";
+
+/** The header that marks a commit as merging `release`, which must be one of its parents. */
+export function releaseMergeHeader(release: GitOid): GitCommitHeader {
+  return { name: RELEASE_HEADER, value: release };
+}
+
+/**
+ * The releases that a commit merged: those its header marks as merged that are among its
+ * parents other than the first, in the order of its parents. A mark naming the first parent,
+ * which is the gadget's own previous state, or naming no parent at all, marks nothing.
+ */
+export function releasesMergedBy(payload: Uint8Array, commitId?: GitOid): GitOid[] {
+  let marked = new Set(readGitCommitHeader(payload, RELEASE_HEADER));
+  let { parents } = parseGitCommitRefs(payload, commitId);
+  return parents.slice(1).filter(parent => marked.has(parent));
 }
 
 // =======================================================================================

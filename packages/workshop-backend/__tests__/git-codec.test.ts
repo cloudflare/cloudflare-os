@@ -12,13 +12,16 @@ import {
   gitObjectOid,
   parseGitCommitRefs,
   parseGitTree,
+  readGitCommitHeader,
   scanGitTree,
+  signatureSafe,
   validateGitOid,
   type GitCommit,
   type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
-import { GitStore } from "../src/git-store";
+import { writeCommit } from "isomorphic-git";
+import { GITDIR, GitStore, makeGitObjectsFs } from "../src/git-store";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
 import {
@@ -303,8 +306,8 @@ describe("commit encoder", () => {
     expect(await gitObjectOid("commit", swapped)).not.toBe(await gitObjectOid("commit", payload));
   });
 
-  it("writes the same commit ids as GitStore", async () => {
-    let store = newGitStore();
+  it("writes the same commit ids as isomorphic-git", async () => {
+    let fs = makeGitObjectsFs(makeOverseerStorage(makeMockStorage()).gitObjects);
     let timestamp = new Date(1700000000_999);  // recorded in whole seconds, rounded down
     let cases: { parents: string[], message: string, committer?: typeof BOB }[] = [
       { parents: [], message: "root" },
@@ -321,8 +324,14 @@ describe("commit encoder", () => {
       { parents: [], message: "caf\u00e9 \u{1F600}" },
     ];
     for (let { parents, message, committer } of cases) {
-      let viaStore = await store.writeCommitForTree(
-          TREE_1, { parents, author: ALICE, committer, message, timestamp });
+      let when = { timestamp: Math.floor(timestamp.getTime() / 1000), timezoneOffset: 0 };
+      let viaIsomorphicGit = await writeCommit({ fs, gitdir: GITDIR, commit: {
+        message,
+        tree: TREE_1,
+        parent: parents,
+        author: { ...ALICE, ...when },
+        committer: { ...(committer ?? ALICE), ...when },
+      } });
       let payload = encodeGitCommit({
         tree: TREE_1,
         parents,
@@ -330,8 +339,62 @@ describe("commit encoder", () => {
         committer: { ...(committer ?? ALICE), timestamp, utcOffsetMinutes: 0 },
         message,
       });
-      expect(await gitObjectOid("commit", payload), JSON.stringify(message)).toBe(viaStore);
+      expect(await gitObjectOid("commit", payload), JSON.stringify(message))
+          .toBe(viaIsomorphicGit);
     }
+  });
+
+  it("writes extra headers after the committer, as real git accepts them", async () => {
+    // Real git: `git hash-object -t commit -w` of these bytes passes `git fsck --strict` with
+    // both parents in the repository (git 2.43). Ahead of `author`, hash-object refuses them.
+    let gadget = "47caa62e2dd9ea679f286c7b5d8a7391b9426482";
+    let release = "bb6b82bd9ec51b3a7c98afc47ddabe027e40eaa0";
+    let alice = { ...ALICE, ...at(1700000000) };
+    let commit: GitCommit = {
+      tree: EMPTY_TREE,
+      parents: [gadget, release],
+      author: alice,
+      committer: alice,
+      headers: [{ name: "blueprint-release", value: release }],
+      message: "Merge blueprint: Notes v1",
+    };
+    let payload = encodeGitCommit(commit);
+    expect(new TextDecoder().decode(payload)).toBe(
+        `tree ${EMPTY_TREE}\nparent ${gadget}\nparent ${release}\n` +
+        "author Alice Example <alice@example.com> 1700000000 +0000\n" +
+        "committer Alice Example <alice@example.com> 1700000000 +0000\n" +
+        `blueprint-release ${release}\n\nMerge blueprint: Notes v1\n`);
+    expect(await gitObjectOid("commit", payload)).toBe("eadc807f8f8b0675263e44f01bd234ebb49e9ae6");
+
+    // It round-trips: the commit's own fields are as they were, and the header reads back.
+    expect(parseGitCommitRefs(payload))
+        .toStrictEqual({ tree: EMPTY_TREE, parents: [gadget, release] });
+    expect(readGitCommitHeader(payload, "blueprint-release")).toStrictEqual([release]);
+    expect(readGitCommitHeader(payload, "blueprint")).toStrictEqual([]);
+    expect(readGitCommitHeader(payload, "parent")).toStrictEqual([gadget, release]);
+
+    // Several are written in the order given, and a name may repeat.
+    let several = encodeGitCommit({ ...commit, headers: [
+      { name: "x-one", value: "b" }, { name: "x-two", value: "" }, { name: "x-one", value: "a" },
+    ] });
+    expect(readGitCommitHeader(several, "x-one")).toStrictEqual(["b", "a"]);
+    expect(readGitCommitHeader(several, "x-two")).toStrictEqual([""]);
+    expect(new TextDecoder().decode(several))
+        .toMatch(/\ncommitter [^\n]*\nx-one b\nx-two \nx-one a\n\n/);
+  });
+
+  it("reads a header's value across continuation lines, and never from the message", () => {
+    let gpgsig = readGitCommitHeader(fixture(GPGSIG_COMMIT).payload, "gpgsig");
+    expect(gpgsig).toHaveLength(1);
+    expect(gpgsig[0]).toMatch(/^-----BEGIN PGP SIGNATURE-----\n/);
+    expect(gpgsig[0]).toMatch(/\n-----END PGP SIGNATURE-----$/);
+
+    let alice = { ...ALICE, ...at(1700000000) };
+    let payload = encodeGitCommit({
+      tree: TREE_1, parents: [], author: alice, committer: alice,
+      message: `subject\n\nblueprint-release ${COMMIT_1}\n`,
+    });
+    expect(readGitCommitHeader(payload, "blueprint-release")).toStrictEqual([]);
   });
 
   it("rejects fields that would not parse back as given", () => {
@@ -358,6 +421,22 @@ describe("commit encoder", () => {
     for (let utcOffsetMinutes of [0.5, NaN, 6000, -6000]) {
       expect(() => encodeGitCommit({ ...commit, committer: { ...alice, utcOffsetMinutes } }))
           .toThrow(/invalid UTC offset/);
+    }
+
+    // What signatureSafe() leaves is always taken.
+    let unsafe = forged + "<a>\0";
+    expect(signatureSafe(unsafe)).not.toMatch(/[<>\n\0]/);
+    encodeGitCommit({ ...commit, author: { ...alice, name: signatureSafe(unsafe) } });
+
+    // An extra header can neither be one of git's own nor write any other.
+    for (let name of ["parent", "tree", "Author", "committer", "gpgsig", "mergetag", "encoding",
+                      "", "two words", "x\ny", "-x", "1x", "x:y"]) {
+      expect(() => encodeGitCommit({ ...commit, headers: [{ name, value: "v" }] }), name)
+          .toThrow(/invalid header name/);
+    }
+    for (let value of [`${COMMIT_2}\nparent ${COMMIT_3}`, "a\n", "a\0b"]) {
+      expect(() => encodeGitCommit({ ...commit, headers: [{ name: "x-mark", value }] }))
+          .toThrow(/contains a newline or NUL/);
     }
   });
 });

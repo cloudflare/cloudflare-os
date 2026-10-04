@@ -10,8 +10,10 @@
 //   reachable from its exports map in 1.40 (verified), and the public `indexPack` route both
 //   silently *skips* objects whose delta chain fails to resolve and trusts claimed sizes.
 // isomorphic-git remains the engine for the existing full-materialization reads and for
-// GitStore's tree/commit *writes* (git-store.ts); tests cross-verify the two codecs over the same
-// store. The tree and commit encoders here serve writers with no object store to hand it.
+// GitStore's tree writes (git-store.ts); tests cross-verify the two codecs over the same store.
+// Every commit is written by the commit encoder here, GitStore's included: it is the one writer
+// that can add a header (see GitCommit.headers), and the one place that decides what a commit's
+// fields may hold. The tree encoder serves writers with no object store to hand isomorphic-git.
 //
 // Everything here is pure computation over byte arrays: no storage, no RPC. zlib comes from pako
 // (the same library isomorphic-git bundles) because pack entries are concatenated zlib streams
@@ -283,6 +285,52 @@ export function parseGitCommitRefs(payload: Uint8Array, commitOid?: GitOid): Git
   return { tree, parents };
 }
 
+/**
+ * Returns the values of every header named `name` in a commit payload, in the order they appear.
+ * A value spanning continuation lines is returned joined by newlines, with each continuation
+ * line's leading space removed, as git reads it. Like `parseGitCommitRefs()`, never decodes the
+ * message.
+ */
+export function readGitCommitHeader(payload: Uint8Array, name: string): string[] {
+  let decoder = new TextDecoder();
+  let values: string[] = [];
+  let current: string[] | undefined;  // the lines of the matching header being read, if any
+  let pos = 0;
+  while (pos < payload.byteLength) {
+    let eol = payload.indexOf(0x0a, pos);
+    if (eol < 0) eol = payload.byteLength;
+    if (eol === pos) break;                    // blank line: end of headers
+    let line = decoder.decode(payload.subarray(pos, eol));
+    if (line.startsWith(" ")) {
+      current?.push(line.slice(1));
+    } else {
+      if (current !== undefined) values.push(current.join("\n"));
+      current = line.startsWith(`${name} `) ? [line.slice(name.length + 1)] : undefined;
+    }
+    pos = eol + 1;
+  }
+  if (current !== undefined) values.push(current.join("\n"));
+  return values;
+}
+
+/** A header of a commit beyond the ones every commit has, as `encodeGitCommit()` writes it. */
+export interface GitCommitHeader {
+  /**
+   * The header's name: letters, digits and dashes, starting with a letter. Never one that git
+   * gives a meaning of its own, such as `parent` or `gpgsig`.
+   */
+  name: string;
+
+  /** The header's value: a single line, possibly empty. */
+  value: string;
+}
+
+// The headers git reads a meaning into. A commit may carry none of them as an extra header: the
+// first four would contradict the commit's own fields, and the rest would claim an encoding or a
+// signature that the commit does not have.
+const GIT_COMMIT_HEADERS = new Set(
+    ["tree", "parent", "author", "committer", "encoding", "gpgsig", "gpgsig-sha256", "mergetag"]);
+
 /** A whole commit, as `encodeGitCommit()` writes it. */
 export interface GitCommit extends GitCommitRefs {
   /** Who wrote the change, and when. */
@@ -290,6 +338,9 @@ export interface GitCommit extends GitCommitRefs {
 
   /** Who created the commit, and when. */
   committer: CommitSignature;
+
+  /** Further headers, written after `committer` in the order given. See `readGitCommitHeader()`. */
+  headers?: readonly GitCommitHeader[];
 
   /**
    * The commit message. Normalized exactly as `GitStore` normalizes one, so that the same
@@ -301,17 +352,28 @@ export interface GitCommit extends GitCommitRefs {
 
 /**
  * Encodes a commit payload. Parents are written in the order given, which is part of the
- * commit's identity.
+ * commit's identity, and so are the extra headers.
  *
  * Throws rather than write a commit that would not parse back to these fields: on a name or
  * email containing `<`, `>`, a newline or NUL (which would end the field early, and could forge
- * the headers after it), and on a timestamp or UTC offset git's format cannot hold.
+ * the headers after it), on a timestamp or UTC offset git's format cannot hold, and on an extra
+ * header whose name is malformed or one of git's own, or whose value holds a newline or NUL.
  */
 export function encodeGitCommit(commit: GitCommit): Uint8Array {
   let lines = [`tree ${validateGitOid(commit.tree)}`];
   for (let parent of commit.parents) lines.push(`parent ${validateGitOid(parent)}`);
   lines.push(`author ${formatCommitSignature(commit.author)}`);
   lines.push(`committer ${formatCommitSignature(commit.committer)}`);
+  for (let { name, value } of commit.headers ?? []) {
+    if (!/^[a-z][a-z0-9-]*$/i.test(name) || GIT_COMMIT_HEADERS.has(name.toLowerCase())) {
+      throw new Error(`cannot encode commit: invalid header name ${JSON.stringify(name)}`);
+    }
+    if (/[\n\0]/.test(value)) {
+      throw new Error(
+          `cannot encode commit: the value of header ${name} contains a newline or NUL`);
+    }
+    lines.push(`${name} ${value}`);
+  }
 
   let message = commit.message.replaceAll("\r", "");
   let start = 0;
@@ -321,10 +383,22 @@ export function encodeGitCommit(commit: GitCommit): Uint8Array {
   return ENCODER.encode(`${lines.join("\n")}\n\n${message.slice(start, end)}\n`);
 }
 
+// The characters a signature's name or email cannot hold.
+const SIGNATURE_UNSAFE = /[<>\n\0]/g;
+
+/**
+ * Drops from a name or email the characters that a commit's signature cannot hold, as git
+ * drops them, so that `encodeGitCommit()` takes it rather than refusing it. For a name or email
+ * that someone chose, which has no reason to hold them.
+ */
+export function signatureSafe(text: string): string {
+  return text.replace(SIGNATURE_UNSAFE, "");
+}
+
 // Formats an author or committer header's value: `<name> <<email>> <seconds> <+hhmm|-hhmm>`.
 function formatCommitSignature(signature: CommitSignature): string {
   let { name, email, utcOffsetMinutes } = signature;
-  if (/[<>\n\0]/.test(name) || /[<>\n\0]/.test(email)) {
+  if (signatureSafe(name) !== name || signatureSafe(email) !== email) {
     throw new Error(
         "cannot encode commit: a name or email contains '<', '>', a newline or NUL");
   }
