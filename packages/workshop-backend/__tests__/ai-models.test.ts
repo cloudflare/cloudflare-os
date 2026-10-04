@@ -1236,11 +1236,13 @@ describe("gateway model reasoning levels", () => {
       }
     });
 
-    // The adaptive thinking that Claude Sonnet 5 would lend is not asked for either.
+    // Neither the adaptive thinking that Claude Sonnet 5 would lend is asked for, nor the effort
+    // that pi manages for Claude Opus 5.5, which it has think on every request.
     it("asks a Claude stated to do no reasoning for no thinking, whatever it behaves like",
         async () => {
       for (const stated of [[], ["off"]] as Level[][]) {
-        for (const claude of [CLAUDE, { ...CLAUDE, behavesLike: SONNET_5.model }]) {
+        for (const behavesLike of [undefined, SONNET_5.model, OPUS.model]) {
+          const claude = { ...CLAUDE, behavesLike };
           const config = stating(claude, ...stated);
           expect(levels(config)).toEqual([]);
           expect(builtIn(config)).toBeNull();
@@ -1252,6 +1254,12 @@ describe("gateway model reasoning levels", () => {
       const reasoning = stating({ ...CLAUDE, behavesLike: SONNET_5.model }, "low", "max");
       expect(builtIn(reasoning)).toBe("adaptive");
       expect(reasoningAsked(await parsed(reasoning))).toEqual(builtInRequest("adaptive"));
+      const managed = stating({ ...CLAUDE, behavesLike: OPUS.model }, "low", "max");
+      expect(builtIn(managed)).toBe("adaptive");
+      expect(await parsed(managed))
+          .toEqual({ ...opusBody("high"), model: CLAUDE.model, max_tokens: 4096 });
+      expect(await parsed({ ...managed, reasoning: "max" }))
+          .toEqual({ ...opusBody("max"), model: CLAUDE.model, max_tokens: 4096 });
     });
 
     // While no level is set an OpenAI model is asked for "medium", or for the stated level that

@@ -185,6 +185,12 @@ function gatewayCatalogModel(config: AiModelConfig): CatalogEntry | undefined {
   if (imageInput !== undefined) entry.input = imageInput ? ["text", "image"] : ["text"];
   if (reasoningLevels) {
     entry.reasoning = reasoningLevels.some(level => level !== "off");
+    // pi has a Claude whose effort it manages think on every request, whatever the descriptor
+    // says of its reasoning, so a model stated to do none does not borrow that.
+    if (!entry.reasoning && entry.compat) {
+      let { supportsMidConvoEffort, ...unmanaged } = compat;
+      entry.compat = unmanaged;
+    }
     // pi reads both the levels a model has and the level a request is clamped to from this map,
     // where null says the model lacks a level. A stated level keeps the wire value the borrowed
     // entry gives it and otherwise has none, so it is sent as pi sends that level by default.
