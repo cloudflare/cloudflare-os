@@ -505,6 +505,38 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]>;
 
+  // --- Spaces ---
+  //
+  // A space is a key, a display name and a member list; see the "Spaces" section below.
+
+  /**
+   * List the spaces the caller is a member of: their personal space first, then the others by
+   * name, each with `role` set to the caller's role in it. The caller's personal space is created
+   * here if it does not exist yet; the server chooses its key, so read it from the first entry.
+   *
+   * The list comes from a record the caller's own account keeps of their memberships, which each
+   * space updates as they change and `openSpace` corrects for the space being opened. It is for
+   * presentation only: a listed space may still refuse to open, and a membership the record
+   * missed appears once that space has been opened by key.
+   */
+  listSpaces(): Promise<SpaceInfo[]>;
+
+  /**
+   * Open a space the caller is a member of. Throws for a `key` that is not `isValidSpaceKey()`. A
+   * key no space has claimed and a space the caller is not a member of fail with the same error.
+   * The returned `Space` acts as the caller; dispose it when done.
+   */
+  openSpace(key: string): Promise<RpcStub<Space>>;
+
+  /**
+   * Create a team space and open it; any signed-in user may. `key` must satisfy
+   * `isValidTeamSpaceKey()` and never have been claimed: keys are not released, so one claimed by
+   * anyone, the caller included, is refused as taken. `name` is trimmed, and must then be
+   * non-empty and within the server's length limit. The caller becomes the space's first admin.
+   * Dispose the returned stub when done.
+   */
+  createSpace(key: string, name: string): Promise<RpcStub<Space>>;
+
   /**
    * Change the user's password, if using password-based authentication.
    *
@@ -5884,3 +5916,147 @@ export type ShareLinkInfo = {
    */
   role?: CollaboratorRole;
 };
+
+// =======================================================================================
+// Spaces
+//
+// A space is a named set of users: a key, a display name and a member list. Every user has one
+// personal space and may create team spaces. The space's member list is the only authority on
+// who belongs to it and in what role.
+// =======================================================================================
+
+/**
+ * Whether a space belongs to one user or to a team. Fixed when the space is created.
+ *
+ * - "personal": one per user, created the first time it is needed (see
+ *   `AuthenticatedApi.listSpaces`). Its owner is its only admin: the owner can be neither demoted
+ *   nor removed, and nobody else can be made admin. It can have other members.
+ * - "team": created with `AuthenticatedApi.createSpace` and administered by its "admin" members,
+ *   of whom there is always at least one.
+ */
+export type SpaceKind = "personal" | "team";
+
+/**
+ * The first character of every personal space key. A team key cannot start with it, so the two
+ * kinds never collide. The rest of a personal key is chosen by the server and may carry a numeric
+ * suffix: read the key from `SpaceInfo.key`, never derive it from a user id.
+ */
+export const PERSONAL_SPACE_PREFIX = "~";
+
+/**
+ * The grammar of a team space key: 2 to 32 characters, each a lowercase ASCII letter, a digit or
+ * a dash, the first not a dash.
+ */
+export const TEAM_SPACE_KEY_PATTERN = /^[a-z0-9][a-z0-9-]{1,31}$/;
+
+/**
+ * Whether `key` is well-formed as a team space key: it matches `TEAM_SPACE_KEY_PATTERN`, and no
+ * key that does is reserved. Says nothing about whether the key is taken. This is the check
+ * `AuthenticatedApi.createSpace` applies, so a client using it refuses the same keys.
+ */
+export function isValidTeamSpaceKey(key: string): boolean {
+  return TEAM_SPACE_KEY_PATTERN.test(key);
+}
+
+/**
+ * Whether `key` is well-formed as a space key of either kind: a team key, or
+ * `PERSONAL_SPACE_PREFIX` followed by a `TEAM_SPACE_KEY_PATTERN` match. Says nothing about
+ * whether such a space exists. This is the check `AuthenticatedApi.openSpace` applies first.
+ */
+export function isValidSpaceKey(key: string): boolean {
+  if (isValidTeamSpaceKey(key)) return true;
+  return key.startsWith(PERSONAL_SPACE_PREFIX) &&
+      TEAM_SPACE_KEY_PATTERN.test(key.slice(PERSONAL_SPACE_PREFIX.length));
+}
+
+/**
+ * A member's role in a space. Every member holds exactly one, and being a member in any role is
+ * what lets a user open the space.
+ *
+ * - "admin": may also change the member list (`Space.setMemberRole`, `Space.removeMember`).
+ * - "build" and "use": ordinary members, named after the `CollaboratorRole` levels. In the space
+ *   itself the two confer the same thing: reading its info and member list, and leaving it.
+ */
+export type SpaceMemberRole = "admin" | "build" | "use";
+
+/**
+ * A space as one user sees it: an entry of `AuthenticatedApi.listSpaces`, or the result of
+ * `Space.getInfo`, in both cases produced for the caller.
+ */
+export interface SpaceInfo {
+  /** Unique and immutable (see `isValidSpaceKey`); pass it to `AuthenticatedApi.openSpace`. */
+  key: string;
+
+  /**
+   * Display name. A team space's is the name it was created with; a personal space's is its
+   * owner's display name, a stored snapshot that may trail a rename.
+   */
+  name: string;
+
+  /** Personal or team. */
+  kind: SpaceKind;
+
+  /**
+   * The owner of a personal space; absent for a team space, which has admins instead (see
+   * `Space.listMembers`). The display name is a stored snapshot and may trail a rename.
+   */
+  owner?: AiChatAuthorInfo;
+
+  /**
+   * The role in this space of the user the info was produced for. For display only: every
+   * operation is decided from the space's member list at the time of the call.
+   */
+  role: SpaceMemberRole;
+}
+
+/** One member of a space, as returned by `Space.listMembers` and `Space.setMemberRole`. */
+export interface SpaceMemberInfo {
+  /** Who the member is. The display name is a stored snapshot and may trail a rename. */
+  profile: AiChatAuthorInfo;
+
+  /** The member's current role. */
+  role: SpaceMemberRole;
+
+  /** When they became a member; a later change of role leaves it as it is. */
+  added: Date;
+}
+
+/**
+ * A space opened by one user, obtained from `AuthenticatedApi.openSpace` or `createSpace`. The
+ * stub acts as that user and carries no standing permission of its own: every method looks the
+ * user's membership up again when it is called, so a stub held by someone who has since been
+ * removed or demoted loses those powers at once. Dispose the stub when done.
+ */
+export interface Space extends RpcTarget {
+  /** The space's info, with `role` the caller's current role. Available to every member. */
+  getInfo(): Promise<SpaceInfo>;
+
+  /**
+   * List the space's members and their roles. Available to every member. A personal space's
+   * owner is listed too, as its sole admin.
+   */
+  listMembers(): Promise<SpaceMemberInfo[]>;
+
+  /**
+   * Set the role of the user with this username/email to exactly `role`: adds them if they are
+   * not a member, and otherwise replaces their role, whether that grants or takes away. An
+   * existing member keeps their `added` date. Returns the member's resulting info, or null if
+   * the username doesn't correspond to an existing account.
+   *
+   * Admins only. A caller who is not an admin is refused before the username is looked up, so
+   * they cannot use the call to find out which accounts exist.
+   *
+   * Throws rather than demote the space's last admin. In a personal space the owner stays the
+   * only admin: the owner cannot be demoted and nobody else can be made admin.
+   */
+  setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null>;
+
+  /**
+   * Remove a member (identified by profile.id). An admin can remove anyone; any other member can
+   * remove only themself, which is how one leaves a space. An admin removing someone who is not
+   * a member does nothing.
+   *
+   * Throws rather than remove the space's last admin, which in a personal space is its owner.
+   */
+  removeMember(profileId: string): Promise<void>;
+}
