@@ -194,10 +194,37 @@ describe('blueprint proposal notice', () => {
     })
 
     expect(text()).toContain('Trip planner, version 3')
-    expect(text()).toContain('have both changed')
-    expect(text()).toContain('The merge left conflicts in 1 file: client.js.')
+    expect(text()).toContain('You’ve customized this gadget')
+    // No agent is taking part, so the clash is left to the user.
+    expect(text()).toContain('Ask in this chat to have them sorted out')
     expect(text()).toContain('Nothing changes until you accept.')
     expect(text()).not.toContain('saved edits')
+    expect(text()).not.toContain('client.js')
+
+    await click('Advanced details')
+    expect(text()).toContain('Three-way merge')
+    expect(text()).toContain('client.js')
+  })
+
+  it('says the agent is checking a merge once one is taking part', async () => {
+    await renderProposalChat({
+      metadata: chatMetadata({ proposedChangeWorkpieces: [GADGET_ID] }),
+      history: [
+        changes(0, {
+          blueprintMerges: [merge({ conflictPaths: ['client.js'] })],
+          pins: [{ gadgetId: GADGET_ID, baseCommit: 'head' }],
+          change: { [GADGET_ID]: [['client.js', { set: CONFLICTED }]] },
+        }),
+        {
+          chatId: CHAT_ID, sequence: 1, timestamp: new Date(1700000000001),
+          author: { type: 'agent', id: 'model', name: 'Model' },
+          type: 'message', message: 'Resolved the conflict in client.js.',
+        },
+      ],
+    })
+
+    expect(text()).toContain('An agent is now making sure your customizations are compatible')
+    expect(text()).not.toContain('Ask in this chat to have them sorted out')
   })
 
   it('folds the rest of a split merge into the notice', async () => {
@@ -220,7 +247,7 @@ describe('blueprint proposal notice', () => {
     expect(text().match(/saved edits/g)).toHaveLength(1)
   })
 
-  it('leaves a line saying which way the proposal was decided', async () => {
+  it('keeps the notice once the proposal is decided, marked with which way', async () => {
     const chat = await renderProposalChat({
       history: [changes(0, { blueprintMerges: [merge({ kind: 'follow', baseCommit: undefined })] })],
     })
@@ -230,7 +257,9 @@ describe('blueprint proposal notice', () => {
       chatId: CHAT_ID, sequence: 1, timestamp: new Date(), author: USER, type: 'revert', revertFrom: 0,
     })
 
-    expect(text()).toContain('Blueprint update: Trip planner, version 3 · discarded')
+    expect(text()).toContain('Trip planner, version 3')
+    expect(text()).toContain('Discarded')
+    expect(text()).toContain('future updates from this blueprint')
     expect(text()).not.toContain('Nothing changes until you accept.')
   })
 })
@@ -257,7 +286,8 @@ describe('accepting a proposal that the chat’s metadata does not announce', ()
     })
 
     expect(button('Accept changes')).toBeUndefined()
-    expect(text()).toContain('Blueprint update: Trip planner, version 3 · accepted')
+    expect(text()).toContain('Trip planner, version 3')
+    expect(text()).toContain('Accepted')
   })
 })
 

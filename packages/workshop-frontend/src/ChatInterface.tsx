@@ -1852,6 +1852,8 @@ type ChatDisplayEntry =
       message: ChangeChatMessage;
       merges: BlueprintMerge[];
       status: "pending" | "merged" | "reverted";
+      /** Whether an agent has written in the chat since, as the one reviewing a merge does. */
+      agentFollowed: boolean;
     };
 
 function isObservationActionMessage(msg: AiChatMessage): msg is ObservationChatMessage {
@@ -2161,6 +2163,7 @@ export function buildChatDisplayEntries(
           message: msg,
           merges,
           status: changeStatus.get(msg.sequence) ?? "pending",
+          agentFollowed: messages.slice(i + 1).some((later) => later.author.type === "agent"),
         });
       } else if (isVisibleSavedChangesMessage(msg)) {
         result.push({
@@ -5814,6 +5817,7 @@ function ChatInterface({
                                 merge={merge}
                                 status={entry.status}
                                 changesFiles={entry.message.change !== undefined}
+                                reviewed={entry.agentFollowed || isAgentActive}
                               />
                             ))}
                           </div>

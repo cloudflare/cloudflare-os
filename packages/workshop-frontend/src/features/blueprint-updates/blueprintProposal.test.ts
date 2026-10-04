@@ -18,71 +18,135 @@ const merge = (over: Partial<BlueprintMerge> = {}): BlueprintMerge => ({
   ...over,
 })
 
+const REVIEWED = { changesFiles: true, reviewed: true, decided: false }
+const UNREVIEWED = { changesFiles: true, reviewed: false, decided: false }
+const NO_CHANGE = { changesFiles: false, reviewed: false, decided: false }
+
+// Words a reader who is not a developer should not meet outside the advanced details.
+const JARGON = /merge|conflict|commit|binding|base\b/i
+
+const plainText = (notice: ReturnType<typeof describeBlueprintProposal>) => [
+  notice.summary, notice.customizations, notice.warning?.title, notice.warning?.description, notice.nextStep, notice.missingBindingsHint,
+].filter(Boolean).join(' ')
+
 describe('describeBlueprintProposal', () => {
   it('names the blueprint and the version proposed', () => {
-    expect(describeBlueprintProposal(merge(), { changesFiles: true }).heading)
-      .toBe('Trip planner, version 3')
-    expect(describeBlueprintProposal(merge({ title: '' }), { changesFiles: true }).heading)
+    expect(describeBlueprintProposal(merge(), REVIEWED).heading).toBe('Trip planner, version 3')
+    expect(describeBlueprintProposal(merge({ title: '' }), REVIEWED).heading)
       .toBe('Untitled blueprint, version 3')
   })
 
-  it('says a follow changes no file, only what the gadget takes updates from', () => {
-    const notice = describeBlueprintProposal(merge({ kind: 'follow' }), { changesFiles: false })
-    expect(notice.summary).toContain('None of this gadget’s files change')
-    expect(notice.summary).toContain('take its future updates from this blueprint')
+  it('says a follow changes nothing, only where the gadget gets its updates', () => {
+    const notice = describeBlueprintProposal(merge({ kind: 'follow' }), NO_CHANGE)
+    expect(notice.summary).toContain('nothing in it changes')
+    expect(notice.summary).toContain('future updates from this blueprint')
     expect(notice.nextStep).toBe('Nothing changes until you accept.')
+    expect(notice.customizations).toBeUndefined()
   })
 
-  it('says a fast-forward makes the files the version’s exactly, and to try it first', () => {
-    const notice = describeBlueprintProposal(merge({ kind: 'fastForward' }), { changesFiles: true })
-    expect(notice.summary).toContain('its files become this version’s exactly')
+  it('says a fast-forward makes the gadget this version, and to try it first', () => {
+    const notice = describeBlueprintProposal(merge({ kind: 'fastForward' }), UNREVIEWED)
+    expect(notice.summary).toContain('it simply becomes this version')
     expect(notice.nextStep).toBe('Nothing changes until you accept. Try this version in the preview first.')
+    // Nothing is combined, so there is nothing for anyone to check.
+    expect(notice.customizations).toBeUndefined()
   })
 
-  it('says a merge combined the changes of both sides', () => {
-    const notice = describeBlueprintProposal(merge(), { changesFiles: true })
-    expect(notice.summary).toContain('have both changed')
-    expect(notice.nextStep).toContain('Try this version in the preview first.')
-    expect(notice.conflicts).toBeUndefined()
-    expect(notice.warning).toBeUndefined()
+  it('says the agent is making sure the user’s customizations fit the new version', () => {
+    const notice = describeBlueprintProposal(merge({ conflictPaths: ['client.js'] }), REVIEWED)
+    expect(notice.customizations).toBe(
+      'You’ve customized this gadget beyond what was in the original blueprint. An agent is ' +
+      'now making sure your customizations are compatible with the new version.')
+    expect(notice.summary).toBeUndefined()
   })
 
-  it('says a merge of two sides that made the same changes changes no file', () => {
-    const notice = describeBlueprintProposal(merge(), { changesFiles: false })
-    expect(notice.summary).toContain('already has every change this version made')
+  it('says nobody is checking the customizations when no agent is taking part', () => {
+    expect(describeBlueprintProposal(merge(), UNREVIEWED).customizations)
+      .toContain('No agent is checking that your customizations are compatible')
+
+    expect(describeBlueprintProposal(merge({ conflictPaths: ['client.js'] }), UNREVIEWED).customizations)
+      .toContain('Ask in this chat to have them sorted out before accepting.')
+  })
+
+  it('says a merge of two sides that made the same changes changes nothing', () => {
+    const notice = describeBlueprintProposal(merge(), NO_CHANGE)
+    expect(notice.summary).toContain('already has everything this version changes')
     expect(notice.nextStep).toBe('Nothing changes until you accept.')
+    expect(notice.customizations).toBeUndefined()
   })
 
-  it('names the conflicted files, and says that one of them may have no marks', () => {
-    const notice = describeBlueprintProposal(
-      merge({ conflictPaths: ['client.js', 'lib/dates.js'] }), { changesFiles: true })
-    expect(notice.conflicts).toContain('The merge left conflicts in 2 files: client.js, lib/dates.js.')
-    expect(notice.conflicts).toContain('one side deleted and the other changed')
-
-    expect(describeBlueprintProposal(merge({ conflictPaths: ['client.js'] }), { changesFiles: true }).conflicts)
-      .toContain('The merge left conflicts in 1 file: client.js.')
+  it('keeps technical terms out of everything but the advanced details', () => {
+    const missingBindings: BlueprintMerge['missingBindings'] = {
+      WEATHER: {
+        type: 'gatekeeper', title: 'Weather', description: '', gatekeeperName: 'weather',
+        typeUrlPattern: 'https://weather.example/*',
+      },
+    }
+    for (const kind of ['follow', 'fastForward', 'merge'] as const) {
+      for (const options of [REVIEWED, UNREVIEWED, NO_CHANGE].flatMap(pending =>
+        [pending, { ...pending, decided: true }])) {
+        const notice = describeBlueprintProposal(merge({
+          kind, conflictPaths: ['client.js'], unverifiedBase: true, missingBindings,
+        }), options)
+        expect(plainText(notice)).not.toMatch(JARGON)
+      }
+    }
   })
 
-  it('counts the conflicted files it does not name', () => {
+  // The notice stays in the transcript as a record, where what was still to do no longer is.
+  it('says nothing of what is still to do once the proposal is decided', () => {
+    const missingBindings: BlueprintMerge['missingBindings'] = {
+      WEATHER: {
+        type: 'gatekeeper', title: 'Weather', description: '', gatekeeperName: 'weather',
+        typeUrlPattern: 'https://weather.example/*',
+      },
+    }
+    const decided = (over: Partial<BlueprintMerge>, reviewed: boolean) => describeBlueprintProposal(
+      merge({ unverifiedBase: true, missingBindings, ...over }),
+      { changesFiles: true, reviewed, decided: true })
+
+    const reviewedNotice = decided({}, true)
+    expect(reviewedNotice.customizations).toContain('An agent was asked to make sure')
+    expect(reviewedNotice.nextStep).toBeUndefined()
+    expect(reviewedNotice.warning?.description).not.toContain('before accepting')
+    expect(reviewedNotice.missingBindings).toHaveLength(1)
+
+    const unreviewed = decided({ conflictPaths: ['client.js'] }, false)
+    expect(unreviewed.customizations).not.toContain('Ask in this chat')
+    expect(unreviewed.missingBindingsHint).toBeUndefined()
+  })
+
+  it('gives the technical account in the details', () => {
     const conflictPaths = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => `${name}.js`)
-    expect(describeBlueprintProposal(merge({ conflictPaths }), { changesFiles: true }).conflicts)
-      .toContain('The merge left conflicts in 7 files: a.js, b.js, c.js, d.js, e.js and 2 more.')
+    const { details } = describeBlueprintProposal(
+      merge({ conflictPaths, baseCommit: '0123456789abcdef', commitId: 'fedcba9876543210' }),
+      REVIEWED,
+    )
+    expect(details.method).toBe('Three-way merge')
+    expect(details.baseCommit).toBe('0123456')
+    expect(details.releaseCommit).toBe('fedcba9')
+    expect(details.conflictPaths).toEqual(conflictPaths)
+    expect(details.notes.join(' ')).toContain('one side deleted and the other changed')
+
+    const follow = describeBlueprintProposal(merge({ kind: 'follow', baseCommit: undefined }), NO_CHANGE)
+    expect(follow.details.baseCommit).toBeUndefined()
+    expect(follow.details.notes).toEqual([])
   })
 
   it('warns that a merge over a guessed base may have undone the user’s work', () => {
     for (const kind of ['fastForward', 'merge'] as const) {
-      const notice = describeBlueprintProposal(merge({ kind, unverifiedBase: true }), { changesFiles: true })
-      expect(notice.warning).toContain('share no history')
-      expect(notice.warning).toContain('undone without a conflict being reported')
+      const notice = describeBlueprintProposal(merge({ kind, unverifiedBase: true }), REVIEWED)
+      expect(notice.warning?.title).toBe('Some of your changes may have been undone')
+      expect(notice.details.notes.join(' ')).toContain('undone without a conflict being reported')
     }
   })
 
-  it('does not warn of a guessed base where no file changes', () => {
-    const notice = describeBlueprintProposal(merge({ unverifiedBase: true }), { changesFiles: false })
+  it('does not warn of a guessed base where nothing changes', () => {
+    const notice = describeBlueprintProposal(merge({ unverifiedBase: true }), NO_CHANGE)
     expect(notice.warning).toBeUndefined()
   })
 
-  it('lists the bindings the gadget lacks, by name', () => {
+  it('lists the connections the gadget lacks', () => {
     const missingBindings: BlueprintMerge['missingBindings'] = {
       WEATHER: {
         type: 'gatekeeper',
@@ -99,18 +163,21 @@ describe('describeBlueprintProposal', () => {
         typeUrlPattern: 'https://calendar.example/*',
       },
     }
-    const notice = describeBlueprintProposal(merge({ kind: 'fastForward', missingBindings }), { changesFiles: true })
+    const notice = describeBlueprintProposal(merge({ kind: 'fastForward', missingBindings }), UNREVIEWED)
     expect(notice.missingBindings).toEqual([
       { name: 'CALENDAR', title: 'CALENDAR', description: '' },
       { name: 'WEATHER', title: 'Weather service', description: 'Forecasts for the trip.' },
     ])
-    // Nothing starts an agent for a fast-forward, so wiring them is left to be asked for.
+    // Nothing starts an agent for a fast-forward, so setting them up is left to be asked for.
     expect(notice.missingBindingsHint).toBe('Ask in this chat to have them set up.')
 
-    // The agent that reviews a merge is asked to wire them itself.
-    expect(describeBlueprintProposal(merge({ missingBindings }), { changesFiles: true }).missingBindingsHint)
+    // The agent that reviews a merge is asked to set them up itself.
+    expect(describeBlueprintProposal(merge({ missingBindings }), REVIEWED).missingBindingsHint)
       .toBeUndefined()
-    expect(describeBlueprintProposal(merge(), { changesFiles: true }).missingBindings).toEqual([])
+    // Unless no agent is taking part.
+    expect(describeBlueprintProposal(merge({ missingBindings }), UNREVIEWED).missingBindingsHint)
+      .toBe('Ask in this chat to have them set up.')
+    expect(describeBlueprintProposal(merge(), REVIEWED).missingBindings).toEqual([])
   })
 })
 
