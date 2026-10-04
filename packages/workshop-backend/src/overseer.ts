@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -23,7 +23,9 @@ import {
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
-import { GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge } from "./git-store";
+import {
+  GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge, type MergeResult,
+} from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
@@ -463,6 +465,16 @@ const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
+
+// The error refusing a merge for the files it could not hold (see MergeResult.tooLargePaths),
+// named as the user knows them. `ownChanges` is the side the user can undo, as in "this chat's
+// changes to it": with those gone, only the other side has changed the file, and it is taken
+// whole.
+function tooLargeToMergeError(paths: string[], ownChanges: string): Error {
+  return new Error(`Cannot merge ${paths.map(path => JSON.stringify(path)).join(", ")}: both ` +
+      `sides changed it, and it is too large to merge. Make the file smaller, or undo ` +
+      `${ownChanges}, after which only one side has changed it.`);
+}
 
 // Safely convert an unknown thrown value to a human-readable string.
 // Plain objects would otherwise render as "[object Object]".
@@ -1851,6 +1863,12 @@ class OverseerImpl implements AgentHooks {
     return this.gitStore.readCommitFiles(oid);
   }
 
+  // AgentHooks implementation: the paths whose entry differs between two commits' trees (see
+  // WorkspaceGitCache.changedFilePathsBetween), sorted.
+  async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
+    return [...await this.gitCache.changedFilePathsBetween(fromCommit, toCommit)].toSorted();
+  }
+
   // AgentHooks implementation: lazily read one file of a commit's tree (see
   // WorkspaceGitCache.readFileAtCommitIfExists) -- the base resolver behind worktree reads and
   // the way unpinned gadget reads are served too.
@@ -2542,7 +2560,10 @@ class OverseerImpl implements AgentHooks {
   // `options.extras` lets the agent's step barrier attach its creations/binding additions,
   // updateChatFromMainline its `mainlineMerge` record, and applyBlueprint (or the barrier, for
   // a gadget created from a blueprint) its `blueprintMerges`; a message is written when
-  // there is anything at all to record (rows, undeclared pins, or extras). `options.author`
+  // there is anything at all to record (rows, undeclared pins, or extras). `options.pins` are
+  // declarations the caller is about to put into the code base, which re-root their gadgets
+  // (see ChatGadgetPinRecord): updateChatFromMainline writes the message that declares them
+  // ahead of the pins themselves, since clients rebuild from the log. `options.author`
   // overrides the row-derived author (required when there are no rows). The returned
   // `sequence` is the first written message's.
   materializeChatChanges(chatId: number, meta?: AiChatMetadata, options?: {
@@ -2552,7 +2573,8 @@ class OverseerImpl implements AgentHooks {
     createdWorktrees?: {worktreeId: WorkpieceId, title: string, bindingName: string}[],
     addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
     worktreeCommits?: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
-    mainlineMerge?: {conflictPaths: string[]},
+    pins?: ChatGadgetPinRecord[],
+    mainlineMerge?: {conflictPaths: string[], gadgets: MainlineMergeGadget[]},
     blueprintMerges?: BlueprintMerge[],
   }): {sequence: number, meta: AiChatMetadata} | undefined {
     if (!meta) {
@@ -2570,7 +2592,12 @@ class OverseerImpl implements AgentHooks {
 
     let codeBase = this.chatCodeBase(meta);
     let rows = this.listLiveChatChanges(chatId, codeBase.generation);
-    let pins = this.undeclaredMetaPins(chatId, meta);
+    let declared = options?.pins ?? [];
+    let pins = [
+      ...this.undeclaredMetaPins(chatId, meta)
+          .filter(pin => !declared.some(decl => decl.gadgetId === pin.gadgetId)),
+      ...declared,
+    ];
     let hasExtras = (options?.createdGadgets?.length ?? 0) > 0 ||
         (options?.createdWorktrees?.length ?? 0) > 0 ||
         (options?.addedBindings?.length ?? 0) > 0 ||
@@ -3229,7 +3256,7 @@ class OverseerImpl implements AgentHooks {
     let meta = this.assertChatNotActive(chatId);
 
     // Live change rows are part of the chat's current content, so materialize them first: the merge
-    // must take them as input, and its own row must be recorded after them.
+    // must take them as input, and its own message must be recorded after them.
     let materialized = this.materializeChatChanges(chatId, meta);
     if (materialized) meta = materialized.meta;
 
@@ -3262,29 +3289,65 @@ class OverseerImpl implements AgentHooks {
       return {conflictPaths: []};
     }
 
+    // Merge each stale gadget: the mainline commit the chat last merged (the pin's
+    // `mergedCommit`) is the base -- explicitly known, so no merge-base discovery -- the head is
+    // one side and the chat's files the other. Conflicting hunks keep inline diff3 markers for
+    // the user (or their agent) to clean up. Every merge is computed before anything is written,
+    // so a refused one leaves no trace.
     let content = await this.getCurrentChatContent(chatId, meta);
-    let merged: CodeContent = new Map(content);
-    let conflictPaths: string[] = [];
+    let merges: {pin: ChatGadgetPinState, head: string, bindingName: string,
+                 chatFiles: Map<string, string>, mainlineFiles: Map<string, string>,
+                 result: MergeResult}[] = [];
     for (let {record, pin} of stale) {
-      // The chat's last merged commit is the 3-way common ancestor -- explicitly known, so no
-      // merge-base discovery. Conflicting hunks keep inline diff3 markers for the user (or
-      // their agent) to clean up.
       let base = await this.gitStore.readCommitFiles(pin.mergedCommit);
-      let head = await this.gitStore.readCommitFiles(record.commitId!);
-      let result = threeWayMerge(base, head, merged.get(pin.gadgetId) ?? new Map(),
+      let mainlineFiles = await this.gitStore.readCommitFiles(record.commitId!);
+      let chatFiles = content.get(pin.gadgetId) ?? new Map<string, string>();
+      let result = threeWayMerge(base, mainlineFiles, chatFiles,
           {base: "merged base", ours: "mainline", theirs: "this chat"});
-      merged.set(pin.gadgetId, result.files);
-      conflictPaths.push(...result.conflictPaths.map(path => `${record.bindingName}/${path}`));
+      if (result.tooLargePaths.length > 0) {
+        throw tooLargeToMergeError(
+            result.tooLargePaths.map(path => `${record.bindingName}/${path}`),
+            "this chat's changes to it");
+      }
+      merges.push({pin, head: record.commitId!, bindingName: record.bindingName, chatFiles,
+                   mainlineFiles, result});
+    }
 
-      pin.mergedCommit = record.commitId!;
+    // Commit each merge (see MainlineMergeGadget): `S`, the chat's files before the update, on
+    // the commit the chat's changes were made on (the pin's base), and `M = [H, S]`, the result,
+    // with mainline first since it is the gadget's own history. The pin re-roots at `M` and
+    // records `H` as merged. A chat whose files are already in mainline's history had nothing
+    // of its own to merge, so it re-roots at `H` itself. These are content-addressed object
+    // writes, harmless if the revalidation below refuses; a discarded chat leaves them dangling.
+    let identity = commitIdentityForAuthor(author);
+    let declarations: ChatGadgetPinRecord[] = [];
+    let gadgets: MainlineMergeGadget[] = [];
+    let conflictPaths: string[] = [];
+    for (let {pin, head, bindingName, chatFiles, mainlineFiles, result} of merges) {
+      let chatCommit = filesEqual(chatFiles, await this.gitStore.readCommitFiles(pin.baseCommit))
+          ? pin.baseCommit
+          : await this.gitStore.writeFilesAsCommit(chatFiles, {
+              parents: [pin.baseCommit],
+              author: identity,
+              message: `Chat before update: ${meta.title}`,
+              timestamp: new Date(),
+            });
+      let mergeCommit = this.gitCache.isAncestor(chatCommit, head) &&
+              filesEqual(result.files, mainlineFiles)
+          ? head
+          : await this.gitStore.writeFilesAsCommit(result.files, {
+              parents: [head, chatCommit],
+              author: identity,
+              message: `Merge latest changes into chat: ${meta.title}`,
+              timestamp: new Date(),
+            });
+      declarations.push({gadgetId: pin.gadgetId, baseCommit: mergeCommit,
+                         ...(mergeCommit !== head ? {mergedCommit: head} : {})});
+      gadgets.push({gadgetId: pin.gadgetId, baseCommit: pin.mergedCommit, chatCommit,
+                    conflictPaths: result.conflictPaths});
+      conflictPaths.push(...result.conflictPaths.map(path => `${bindingName}/${path}`));
     }
     conflictPaths.sort();
-
-    // The merge result is delivered as an ordinary change row -- concurrent editors transform
-    // against it like any other remote change -- so it is expressed as a diff of the chat's current
-    // content. fast-diff's character-level minimality is a quality bonus for those transforms,
-    // not a correctness requirement.
-    let change = diffFiles(content, merged);
 
     // The awaits above are interleaving points. The chat lock excludes sibling mutations, but
     // an agent turn could have started, and new messages or rows could have been recorded;
@@ -3298,28 +3361,33 @@ class OverseerImpl implements AgentHooks {
       throw new Error("The chat changed while merging from mainline; please retry.");
     }
 
-    // Persist the advanced pins before recording the row and message: addChatMessages re-reads
-    // and re-writes the chat meta, so it must see this state. The advancement is applied to the
-    // freshly-read meta's own code base (its pins array is authoritative); a pin we merged is
-    // always still present in the fresh read -- only the lock-holding operations remove pins,
-    // and the revision token above excludes new submissions.
-    for (let {pin} of stale) {
-      let freshPin = freshCodeBase.pins.find(p => p.gadgetId === pin.gadgetId);
-      if (freshPin !== undefined) freshPin.mergedCommit = pin.mergedCommit;
-    }
-    freshMeta.codeBase = freshCodeBase;
-    freshMeta.lastActive = this.getChatTimestamp();
-    this.storage.chatMeta.put(freshMeta);
-
-    // Record the merge as a row (broadcast via changeApplied), then materialize it into a "changes"
-    // message carrying `mainlineMerge` -- even when the chat's content already matched mainline
-    // (no change, no conflicts): the message is the durable record that the pins advanced, which
-    // the revert guard (revertChanges) depends on. Without it, reverting the chat's earlier
-    // proposals could silently regress content the advanced pins claim as merged.
-    if (changedGadgets(change).length > 0) {
-      this.#appendChatChangeRow(chatId, freshMeta, author, change, [], merged);
-    }
-    this.materializeChatChanges(chatId, undefined, {author, mainlineMerge: {conflictPaths}});
+    // One synchronous step, in this order: the message that declares the re-roots, then the
+    // pins it declares, the end of the change stream and a destructive generation bump, as a
+    // revert does. A client rebuilds from the log on seeing the new generation, so the message
+    // has to be in the log by then. Every live row was materialized above, and the revision
+    // token rules out any since, so deleting the rows loses nothing the server accepted; a
+    // collaborator's keystrokes not yet acknowledged are dropped, as a revert drops them.
+    this.materializeChatChanges(chatId, freshMeta, {
+      author, pins: declarations, mainlineMerge: {conflictPaths, gadgets},
+    });
+    let updatedMeta = this.getChatMetaOrThrow(chatId);
+    let updatedCodeBase = this.chatCodeBase(updatedMeta);
+    updatedCodeBase.pins = updatedCodeBase.pins.map(pin => {
+      let declaration = declarations.find(decl => decl.gadgetId === pin.gadgetId);
+      return declaration === undefined ? pin : {
+        gadgetId: pin.gadgetId,
+        baseCommit: declaration.baseCommit,
+        mergedCommit: declaration.mergedCommit ?? declaration.baseCommit,
+      };
+    });
+    this.deleteAllChatChanges(chatId);
+    updatedCodeBase.generation += 1;
+    updatedCodeBase.revision = 0;
+    delete updatedCodeBase.prior;
+    updatedMeta.codeBase = updatedCodeBase;
+    updatedMeta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(updatedMeta);
+    this.proposedChangesChanged(chatId);
 
     return {conflictPaths};
   }
@@ -3374,6 +3442,9 @@ class OverseerImpl implements AgentHooks {
       let theirs = await this.gitStore.readCommitFiles(release);
       let result = threeWayMerge(base.files, ours, theirs,
           {base: "base", ours: "this gadget", theirs: "blueprint"});
+      if (result.tooLargePaths.length > 0) {
+        throw tooLargeToMergeError(result.tooLargePaths, "the gadget's own changes to it");
+      }
       merge.kind = filesEqual(theirs, base.files) ? "follow"
           : filesEqual(ours, base.files) ? "fastForward" : "merge";
       merge.baseCommit = base.commitId;

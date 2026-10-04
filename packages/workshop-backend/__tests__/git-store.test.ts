@@ -440,6 +440,21 @@ describe("writeChangedFilesAsCommit", () => {
 describe("threeWayMerge", () => {
   const files = (entries: Record<string, string>) => new Map(Object.entries(entries));
 
+  it("reports a file both sides changed that is too large to merge, in place of merging it", () => {
+    // Each version fits in a file, but the conflict holds all three.
+    let lines = (word: string) => `${word.repeat(25)}\n`.repeat(2000);
+    // Fits as text, but not as a blob: each "€" takes three bytes.
+    let wide = `${"€".repeat(399)}\n`.repeat(1000);
+    let result = threeWayMerge(
+        files({ "big.js": lines("base"), "wide.js": "w\n", "taken.js": "t\n", "a.js": "a\n" }),
+        files({ "big.js": lines("ours"), "wide.js": wide, "taken.js": wide, "a.js": "A\n" }),
+        files({ "big.js": lines("thrs"), "wide.js": "W\n", "taken.js": "t\n", "a.js": "a\n" }));
+    expect(result.tooLargePaths).toEqual(["big.js", "wide.js"]);
+    expect(result.conflictPaths).toEqual([]);
+    // A file that only one side changed is taken whole, however large.
+    expect(result.files).toEqual(files({ "taken.js": wide, "a.js": "A\n" }));
+  });
+
   it("merges disjoint changes cleanly", () => {
     let result = threeWayMerge(
         files({ "a.js": "a\nb\nc\nd\ne\n", "same.js": "s\n" }),

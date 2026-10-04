@@ -2727,22 +2727,28 @@ export interface Overseer extends RpcTarget {
    * chat, so it tracks mainline head live and there is nothing to merge into. For each pinned
    * gadget whose ChatGadgetPinState.mergedCommit is behind the gadget's current head, the server
    * computes a 3-way text merge (base = the last merged commit, ours = the head, theirs = the
-   * chat's current files) and applies the result to the chat as an ordinary change -- broadcast via
-   * AiChatSubscriber.changeApplied(), so concurrent editors transform against it like any other
-   * remote change -- recorded in a `changes` message carrying `mainlineMerge`, advancing the pin to
-   * head. Conflicting hunks are left inline as 3-way conflict markers
-   * (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or their agent to clean up; the
-   * affected paths, each qualified by its gadget's binding name (`GADGET_NAME/path`), are
-   * returned in sorted order and also recorded on the message. An empty `conflictPaths` means
-   * every file merged cleanly (or there was nothing to merge).
+   * chat's current files) and writes it as commits: the chat's files before the update, and the
+   * merge commit, whose parents are the head and that (see MainlineMergeGadget). The chat's pin
+   * for the gadget then re-roots at the merge commit (see ChatGadgetPinRecord), with the head as
+   * its `mergedCommit`. A gadget whose files in the chat are already in the head's history had
+   * nothing of its own to merge, and re-roots at the head itself. Conflicting hunks are left
+   * inline as 3-way conflict markers (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or
+   * their agent to clean up; the affected paths, each qualified by its gadget's binding name
+   * (`GADGET_NAME/path`), are returned in sorted order and also recorded on the message. An
+   * empty `conflictPaths` means every file merged cleanly (or there was nothing to merge).
+   *
+   * The update is recorded as a `changes` message carrying `mainlineMerge` and declaring the
+   * re-roots, with no `change`. It then ends the chat's change stream with a destructive bump
+   * of ChatCodeBase.generation, delivered after the message: clients rebuild their content from
+   * the log, re-rooted. Changes a client has submitted and not yet had acknowledged are lost.
+   *
+   * Throws, changing nothing, if both sides changed a file and a version of it, or the merged
+   * text, is too large for a file to hold; the error names the file. Making it smaller on
+   * either side, or undoing the chat's own changes to it, lets the update through.
    *
    * Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a
-   * plain fast-forward.
-   *
-   * Whenever any pin advances, a `changes` message carrying `mainlineMerge` is recorded -- even
-   * when the chat's content already matched mainline and there is no change to deliver -- so the
-   * chat log always accounts for the advancement (see the revert restriction on
-   * AiChatMessageBody.mainlineMerge).
+   * plain fast-forward through the merge commit. The update can be reverted like any other
+   * proposed change, which puts the pins back as they were before it (see revertChanges()).
    */
   updateChatFromMainline(chatId: number): Promise<{conflictPaths: string[]}>;
 
@@ -3061,9 +3067,10 @@ export type ChatCodeBase = {
    * two classes. **Content-preserving** (a merge's epoch reset): the stream identity changes
    * but the content carries over -- `prior` describes the closed stream, and in-flight
    * submissions are transformed onto the new generation (see submitCodeChange()). **Destructive**
-   * (a revert, draft discard, or agent turn abort erased already-applied changes): content other
-   * clients may have transformed against is gone, so they must discard local state and rebuild.
-   * Pin additions and updateChatFromMainline() do *not* bump -- they only append changes.
+   * (a revert, draft discard, or agent turn abort erased already-applied changes, or
+   * updateChatFromMainline() re-rooted pins): content other clients may have transformed against
+   * is gone, so they must discard local state and rebuild. Pin additions do *not* bump -- they
+   * only append changes.
    */
   generation: number;
 
@@ -3436,21 +3443,24 @@ export type AiChatMessageBody = {
   watermark?: {changesGeneration: number, throughRevision: number};
 
   /**
-   * Present when this batch was produced by Overseer.updateChatFromMainline(): `change` merges
-   * mainline commits into the chat. `conflictPaths` lists the files whose 3-way merge was not
-   * clean, in sorted order, each qualified by its gadget's binding name
-   * (`GADGET_NAME/path/to/file`); their merged contents carry inline conflict markers (or, for
-   * delete-vs-modify, the surviving side's content) for the user or their agent to resolve.
-   * `change` is absent when the chat's content already matched the merged mainline commits;
-   * the batch then records only that the pins advanced.
+   * Present when this batch was produced by Overseer.updateChatFromMainline(). `conflictPaths`
+   * lists the files whose 3-way merge was not clean, in sorted order, each qualified by its
+   * gadget's binding name (`GADGET_NAME/path/to/file`); their merged contents carry inline
+   * conflict markers (or, for delete-vs-modify, the surviving side's content) for the user or
+   * their agent to resolve.
    *
-   * `gadgets`, when present, records each gadget's part of the merge, and in particular what
-   * the pin's `mergedCommit` was before it, which a revert covering this message puts back (see
-   * Overseer.revertChanges()). A batch without `gadgets` was recorded before that was so: it
-   * advanced the chat's pins with no record of their earlier values, so it cannot be reverted
-   * while still proposed (Overseer.revertChanges() refuses). Erasing its content while keeping
-   * the advanced pins would let a later accept silently overwrite the mainline changes it
-   * delivered.
+   * `gadgets` records each gadget's part of the merge, whose result is a commit: the batch has
+   * no `change`, and its `pins` re-root each gadget merged at that commit, with the head merged
+   * as the declaration's `mergedCommit` (see ChatGadgetPinRecord). Each entry also records what
+   * the pin's `mergedCommit` was before the update, which a revert covering this message puts
+   * back (see Overseer.revertChanges()).
+   *
+   * A batch without `gadgets` was recorded before merges were commits. Its `change` merged
+   * mainline commits into the chat, or is absent when the chat's content already matched them,
+   * and it advanced the chat's pins with no record of their earlier values, so it cannot be
+   * reverted while still proposed (Overseer.revertChanges() refuses). Erasing its content while
+   * keeping the advanced pins would let a later accept silently overwrite the mainline changes
+   * it delivered.
    */
   mainlineMerge?: {conflictPaths: string[], gadgets?: MainlineMergeGadget[]};
 
@@ -3530,8 +3540,7 @@ export type AiChatMessageBody = {
    * Like the rest of the batch this is provisional. A merge through this message makes each
    * gadget follow the blueprint named (see GadgetUpstream) and records the release in the
    * gadget's history; a revert covering it withdraws the proposal, and until one or the other
-   * the gadget is as it was. Unlike a `mainlineMerge` batch it can be reverted, since it
-   * advances no pin.
+   * the gadget is as it was.
    *
    * A proposal that changes no file and whose release is already in the gadget's history pins
    * nothing, so it does not put its gadget in AiChatMetadata.proposedChangeWorkpieces: this
@@ -4364,8 +4373,7 @@ export interface AiChatSubscriber {
   /**
    * Delivers one accepted change of a chat's change stream: a human submitCodeChange(), an agent
    * tool edit (broadcast when the tool call completes, superseding the provisional editPreview*
-   * stream of its in-progress content -- see AiChatStreamEvent), or an updateChatFromMainline()
-   * merge. Changes must be applied in
+   * stream of its in-progress content -- see AiChatStreamEvent). Changes must be applied in
    * revision order within a generation; a gap means events were lost and the client should
    * rebuild from fresh metadata and history. On a generation switch, first finish the old
    * generation's remaining changes -- complete once seen through
@@ -4380,7 +4388,7 @@ export interface AiChatSubscriber {
    * CodeChangeSubmission's clientId and seq), so the submitting client recognizes its own change
    * -- in the live feed and in subscribe-replay alike, without depending on ack/broadcast
    * ordering -- and drops its in-flight buffer instead of re-applying. The echo is informational
-   * only; server-authored changes (agent edits, mainline merges) omit it.
+   * only; server-authored changes (agent edits) omit it.
    */
   changeApplied(chatId: number, generation: number, revision: number, author: AiChatAuthorInfo,
                 change: CodeChange, submission?: {clientId: string, seq: number}): void;
@@ -4573,7 +4581,11 @@ export type BlueprintMerge = {
 
 /**
  * One gadget's part of an update from mainline (see AiChatMessageBody.mainlineMerge): the three
- * sides of its merge, as commits, and what did not merge cleanly.
+ * sides of its merge, as commits, and what did not merge cleanly. The other two sides are on
+ * the message's pin declaration for the gadget: its `mergedCommit` is the head that was
+ * merged, and its `baseCommit` the merge commit, whose parents are that head and
+ * `chatCommit`. Where the chat had nothing of its own to merge, no merge commit was written,
+ * and the declaration's `baseCommit` is the head itself.
  */
 export type MainlineMergeGadget = {
   /** The pinned gadget that was brought up to date. */
@@ -4586,7 +4598,11 @@ export type MainlineMergeGadget = {
    */
   baseCommit: string;
 
-  /** A commit of the chat's files for the gadget as they were before the update. */
+  /**
+   * A commit of the chat's files for the gadget as they were before the update. Its parent is
+   * the pin's `baseCommit` as it was then, the commit the chat's changes were made on; where the
+   * files were that commit's own, it is that commit.
+   */
   chatCommit: string;
 
   /**

@@ -1,9 +1,11 @@
 // A pin declaration re-roots its gadget: every fold of a chat's log restarts the gadget's content
-// at the declared commit, dropping what earlier messages changed in it. Nothing writes such a
-// declaration yet beyond the first one per gadget, so these tests write the log by hand, in the
-// shape an update from mainline will: a merge commit `M = [H, S]` declared as the pin's base,
-// with the head it merged as the declaration's `mergedCommit`. Runs the real OverseerImpl, and
-// for the agent's fold the real runAgent with pi's faux provider standing in for the model.
+// at the declared commit, dropping what earlier messages changed in it. Most of these tests write
+// the log by hand, in the shape an update from mainline writes it -- a merge commit `M = [H, S]`
+// declared as the pin's base, with the head it merged as the declaration's `mergedCommit` -- so
+// that they can also build what nothing writes any more, such as an update from before merges
+// were commits. The last suite runs the real update, for what the agent is told of it. Runs the
+// real OverseerImpl, and for the agent's fold the real runAgent with pi's faux provider standing
+// in for the model.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -105,7 +107,7 @@ async function edit(impl: any, before: Record<string, string>, after: Record<str
   return impl.materializeChatChanges(CHAT)!.sequence;
 }
 
-// Brings the chat up to date with the gadget's head as an update from mainline will: commits
+// Brings the chat up to date with the gadget's head as an update from mainline does: commits
 // the chat's files as `S` on the pin's base and the merged `files` as `M = [head, S]`, declares
 // `{M, mergedCommit: head}` on a message recording the merge, and moves the live pin there with
 // a destructive generation bump.
@@ -446,4 +448,156 @@ describe("reverting a re-root", () => {
       expect(await chatFiles(impl)).toEqual(MERGED);
     });
   });
+});
+
+// What the agent is shown of the user's changes at the start of its next turn: the results of
+// the observeUserChanges calls that replay inserts, in order.
+async function observations(impl: any): Promise<string[]> {
+  putMessage(impl, { type: "message", message: "Go." });
+  let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+  let contexts: Context[] = [];
+  faux.setResponses([(context: TranscriptContext) => {
+    contexts.push({ messages: structuredClone(context.messages) });
+    return fauxAssistantMessage(fauxText("Done."));
+  }]);
+  await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, CHAT,
+      { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, USER,
+      { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
+  return contexts[0].messages.flatMap(message =>
+      message.role === "toolResult" && message.toolName === "observeUserChanges"
+          ? [message.content.map(part => part.type === "text" ? part.text : "").join("")]
+          : []);
+}
+
+// The update from mainline the chat last recorded, and its commits for the gadget.
+function lastUpdate(impl: any) {
+  let message = chatMessages(impl).filter(msg => msg.type === "changes" && msg.mainlineMerge)
+      .at(-1) as any;
+  let [entry] = message.mainlineMerge.gadgets;
+  let [declaration] = message.pins;
+  return {
+    base: entry.baseCommit, mainline: declaration.mergedCommit ?? declaration.baseCommit,
+    chat: entry.chatCommit, result: declaration.baseCommit,
+  };
+}
+
+// The agent's summary of an update, as it is given for the commits of `lastUpdate()`.
+function summary(impl: any, lists: string[]): string {
+  let { base, mainline, chat, result } = lastUpdate(impl);
+  return [
+    `The user updated this chat with the changes accepted from other chats since it was last ` +
+        `brought up to date.`,
+    ``,
+    `The files of \`env.APP\` in this chat are now the result of a three-way merge.`,
+    ``,
+    `The commits that were merged, and the result:`,
+    `* merged base, the version this chat was last based on: ${base}`,
+    `* mainline, with the other chats' changes: ${mainline}`,
+    `* this chat, before the update: ${chat}`,
+    `* the result, which this chat's files now start from: ${result}`,
+    ``,
+    `To see what changed from one commit to another, run in \`executeCode\`:`,
+    `  (await env.GIT.newWorktree("<to>")).diff("<from>")`,
+    `From merged base to mainline is what the other chats changed. From this chat before the ` +
+        `update to the result is what the update did to this chat's files.`,
+    ...lists,
+  ].join("\n");
+}
+
+describe("what the agent is told of an update from mainline", () => {
+  // The chat's own file, one that both sides change, and one that only mainline changes.
+  const BASE = { "a.txt": "one\n", "both.txt": "1\n2\n3\n4\n5\n", "main.txt": "main\n" };
+  const CHATS = { ...BASE, "a.txt": "one\nchat\n", "both.txt": "1\nchat\n3\n4\n5\n" };
+
+  // A gadget at H0 = BASE and a chat that changed it to CHATS, with mainline since moved on to
+  // `mainline`. The chat is then updated.
+  async function update(impl: any, mainline: Record<string, string>): Promise<void> {
+    let h0 = await commitFiles(impl, BASE);
+    impl.storage.gadgets.put({
+      type: "gadget", id: GADGET, title: "App", created: new Date(0), bindingName: "APP",
+      bindings: {}, commitId: h0,
+    });
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    await edit(impl, BASE, CHATS);
+    setHead(impl, await commitFiles(impl, mainline, [h0]));
+    await impl.updateChatFromMainline(CHAT, USER);
+  }
+
+  it("names the commits and lists the files a clean merge changed", () => withImpl(async impl => {
+    await update(impl, { ...BASE, "both.txt": "1\n2\n3\n4\nmain\n", "main.txt": "main!\n" });
+    let [, told] = await observations(impl);
+    expect(told).toBe(summary(impl, [
+      ``,
+      `Files that this chat and mainline both changed, merged with no conflict found:`,
+      `* "both.txt"`,
+      ``,
+      `Files that only mainline changed:`,
+      `* "main.txt"`,
+    ]));
+  }));
+
+  it("lists the conflicts", () => withImpl(async impl => {
+    await update(impl, { ...BASE, "both.txt": "1\nmain\n3\n4\n5\n" });
+    let [, told] = await observations(impl);
+    expect(told).toBe(summary(impl, [
+      ``,
+      `Files with conflicts:`,
+      `* "both.txt"`,
+      `A file listed as conflicted that has no markers in it was deleted on one side and ` +
+          `changed on the other: it holds the changed version.`,
+    ]));
+  }));
+
+  it("is no larger for a file mainline rewrote whole", () => withImpl(async impl => {
+    await update(impl, { ...BASE, "main.txt": "a long line of mainline's own\n".repeat(20_000) });
+    let [, told] = await observations(impl);
+    expect(told).toBe(summary(impl, [``, `Files that only mainline changed:`, `* "main.txt"`]));
+  }));
+
+  it("names the files the agent read that the update changed, which it must read again",
+      () => withImpl(async impl => {
+    let h0 = await commitFiles(impl, BASE);
+    impl.storage.gadgets.put({
+      type: "gadget", id: GADGET, title: "App", created: new Date(0), bindingName: "APP",
+      bindings: {}, commitId: h0,
+    });
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    await edit(impl, BASE, CHATS);
+    expect(await agentReads(impl, CHATS)).toEqual(CHATS);
+    setHead(impl, await commitFiles(impl, { ...BASE, "main.txt": "main!\n" }, [h0]));
+    await impl.updateChatFromMainline(CHAT, USER);
+
+    let told = (await observations(impl)).at(-1)!;
+    expect(told).toBe(summary(impl, [
+      ``,
+      `Files that only mainline changed:`,
+      `* "main.txt"`,
+      ``,
+      `Files you read earlier that the update changed, which you must read again before ` +
+          `editing them:`,
+      `* "main.txt"`,
+    ]));
+    let [kept, refused] = await agentTurn(impl, [
+      fauxToolCall("editFile",
+          { workpiece: "APP", filename: "a.txt", textToReplace: "chat", replacement: "chat!" }),
+      fauxToolCall("editFile",
+          { workpiece: "APP", filename: "main.txt", textToReplace: "main", replacement: "x" }),
+    ]);
+    expect(kept).toContain("success");
+    expect(refused).toContain("You must read a file before you can edit it.");
+  }));
+
+  it("replays an update from before merges were commits as a diff", () => withImpl(async impl => {
+    await staleChat(impl);
+    await updateAsBefore(impl, MERGED);
+    let [, told] = await observations(impl);
+    expect(told).toContain("==== env.APP ====");
+    expect(told).toContain("+main");
+    expect(told).not.toContain("three-way merge");
+    let old = chatMessages(impl).find(msg => msg.type === "changes" && msg.mainlineMerge)!;
+    await expect(impl.revertChanges(CHAT, old.sequence, USER))
+        .rejects.toThrow(/update from mainline/);
+  }));
 });

@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
   type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -367,6 +367,13 @@ export interface AgentHooks {
    * so results are cacheable by oid (and the store's parse cache makes repeats cheap).
    */
   readCommitFiles(oid: string): Promise<Map<string, string>>;
+
+  /**
+   * The paths of the files whose entry differs between two commits' trees, added and removed
+   * ones included, in sorted order. Compares tree objects by id, so no file is read, and a
+   * subtree that is the same on both sides is not read either.
+   */
+  listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>;
 
   /**
    * Summarize the workspace's gadgets for the system prompt and for describeBinding's `gadget`
@@ -947,17 +954,105 @@ export function formatMissingBlueprintBindings(
   return lines.join("\n");
 }
 
-// How many files each list in the agent's summary of a blueprint merge names before it counts
-// the rest instead, so that a blueprint of very many files cannot fill the context with paths.
+// How many files each list in the agent's summary of a merge, of a blueprint or from mainline,
+// names before it counts the rest instead, so that a merge of very many files cannot fill the
+// context with paths.
 const MERGE_SUMMARY_PATH_LIMIT = 50;
 
-// One list of files in that summary: nothing if there are none, else the heading and the paths.
-// The paths are quoted because a blueprint's author chose them.
+// One list of files in such a summary: nothing if there are none, else the heading and the
+// paths. The paths are quoted because someone else chose them, such as a blueprint's author.
 function formatMergedPaths(heading: string, paths: string[]): string[] {
   if (paths.length === 0) return [];
   let lines = paths.slice(0, MERGE_SUMMARY_PATH_LIMIT).map(path => `* ${JSON.stringify(path)}`);
   if (paths.length > lines.length) lines.push(`* (and ${paths.length - lines.length} more)`);
   return ["", heading, ...lines];
+}
+
+/**
+ * The files that a three-way merge changed and did not report as conflicted, by whether the
+ * side the files were merged into had changes of its own to them. `base` is the commit the two
+ * sides have in common, `incoming` the side merged in, and `own` the side merged into. A file is
+ * listed if it differs between `base` and `incoming` and between `own` and `incoming`, so a file
+ * that both sides changed alike is not. Compares trees by id, so no file is read.
+ */
+async function classifyMergedPaths(
+    hooks: Pick<AgentHooks, "listChangedPaths">,
+    sides: {base: string, incoming: string, own: string}, conflictPaths: string[])
+    : Promise<{bothChanged: string[], incomingChanged: string[]}> {
+  let [incomingChanges, ownToIncoming, ownChanges] = await Promise.all([
+    hooks.listChangedPaths(sides.base, sides.incoming),
+    hooks.listChangedPaths(sides.own, sides.incoming),
+    hooks.listChangedPaths(sides.base, sides.own),
+  ]);
+  let differs = new Set(ownToIncoming);
+  let changedByOwn = new Set(ownChanges);
+  let conflicted = new Set(conflictPaths);
+  let bothChanged: string[] = [];
+  let incomingChanged: string[] = [];
+  for (let path of incomingChanges) {
+    if (!differs.has(path) || conflicted.has(path)) continue;
+    (changedByOwn.has(path) ? bothChanged : incomingChanged).push(path);
+  }
+  return {bothChanged, incomingChanged};
+}
+
+// The opening of the agent's summary of an update from mainline, before each gadget's part.
+const MAINLINE_MERGE_INTRO =
+    `The user updated this chat with the changes accepted from other chats since it was last ` +
+    `brought up to date.`;
+
+/**
+ * Renders one gadget's part of an update from mainline (see Overseer.updateChatFromMainline())
+ * for the model, which sees it as an observation of the user's changes, after
+ * MAINLINE_MERGE_INTRO. `entry` is the gadget's part of the message's record, `declaration` the
+ * message's pin declaration for it, and `gadget` its name in the chat's env. `forgotten` names
+ * the files the model had read whose text the update changed (see applyReplayedPin), which it
+ * must read again: readFile promises to say when that happens.
+ *
+ * The update merged the chat's files with mainline, so its diff could be as large as everything
+ * the other chats changed. The summary names the commits of the merge instead, with a way to
+ * diff any two, and lists the files by what the merge did with them. Its size does not depend on
+ * what is in the files. It sets no task: the chat is the user's.
+ */
+async function formatMainlineMerge(
+    entry: MainlineMergeGadget, declaration: ChatGadgetPinRecord, gadget: string,
+    forgotten: string[], hooks: Pick<AgentHooks, "listChangedPaths">): Promise<string> {
+  let mainline = declaration.mergedCommit ?? declaration.baseCommit;
+  let {bothChanged, incomingChanged} = await classifyMergedPaths(hooks,
+      {base: entry.baseCommit, incoming: mainline, own: entry.chatCommit}, entry.conflictPaths);
+  let lines = [
+    `The files of \`env.${gadget}\` in this chat are now the result of a three-way merge.`,
+    ``,
+    `The commits that were merged, and the result:`,
+    `* merged base, the version this chat was last based on: ${entry.baseCommit}`,
+    `* mainline, with the other chats' changes: ${mainline}`,
+    `* this chat, before the update: ${entry.chatCommit}`,
+    `* the result, which this chat's files now start from: ${declaration.baseCommit}`,
+    ``,
+    `To see what changed from one commit to another, run in \`executeCode\`:`,
+    `  (await env.GIT.newWorktree("<to>")).diff("<from>")`,
+    `From merged base to mainline is what the other chats changed. From this chat before the ` +
+        `update to the result is what the update did to this chat's files.`,
+    ...formatMergedPaths(`Files with conflicts:`, entry.conflictPaths),
+  ];
+  if (entry.conflictPaths.length > 0) {
+    lines.push(
+        `A file listed as conflicted that has no markers in it was deleted on one side and ` +
+        `changed on the other: it holds the changed version.`);
+  }
+  lines.push(
+      ...formatMergedPaths(
+          `Files that this chat and mainline both changed, merged with no conflict found:`,
+          bothChanged),
+      ...formatMergedPaths(`Files that only mainline changed:`, incomingChanged));
+  if (forgotten.length > 0) {
+    // Not capped like the lists above: the model read every one of these itself.
+    lines.push(``,
+        `Files you read earlier that the update changed, which you must read again before ` +
+            `editing them:`,
+        ...forgotten.map(path => `* ${JSON.stringify(path)}`));
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -1662,9 +1757,10 @@ async function runAgentPass(
   // the knowledge is anchored to committed code -- an unpinned read of a gadget's head or a
   // worktree's accepted commit (AiToolCall.observedOid) -- or undefined while it tracks the
   // session content instead (a pinned workpiece, or a gadget with no committed code), which
-  // cannot go stale within an epoch: everything that changes it is the model's own edit or a
-  // user/mainline change shown to it as a diff. The one way knowledge goes stale is another
-  // chat's accept moving an unpinned gadget's head, and a stamp is checked against the head at
+  // cannot go stale within an epoch: everything that changes it is the model's own edit, a
+  // user's change shown to it as a diff, or a re-root, which drops the knowledge of what it
+  // changed (see applyReplayedPin). The one way knowledge goes stale is another chat's accept
+  // moving an unpinned gadget's head, and a stamp is checked against the head at
   // the two points where it would otherwise be trusted: editFile's gate on an unpinned gadget,
   // and the establishment of a pin (anchorKnowledgeToPin), after which reads are session-served
   // and the gate is skipped. At an epoch boundary session-tracking entries take an oid stamp of
@@ -1804,8 +1900,8 @@ async function runAgentPass(
   // A declaration for a gadget already pinned re-roots it (see ChatGadgetPinRecord): the
   // session content restarts at the new base, and what the model knows of a file whose text
   // that changed is dropped, so editFile requires a re-read rather than match against text the
-  // model saw before.
-  let applyReplayedPin = async (pin: ChatGadgetPin) => {
+  // model saw before. Returns the names of those files, sorted, for telling the model.
+  let applyReplayedPin = async (pin: ChatGadgetPin): Promise<string[]> => {
     if (hooks.isWorktree(pin.gadgetId)) {
       // A worktree's base is a whole repository tree, so it is never materialized: the entry
       // holds only touched/read files, resolved lazily against the pinned base (accumulated
@@ -1817,15 +1913,17 @@ async function runAgentPass(
         sessionContent.set(pin.gadgetId, new Map());
       }
       pinnedGadgets.add(pin.gadgetId);
-      return;
+      return [];
     }
     let files = await hooks.readCommitFiles(pin.baseCommit);
     let known = filesRead.get(pin.gadgetId);
+    let forgotten: string[] = [];
     if (pinnedGadgets.has(pin.gadgetId) && known !== undefined) {
       let before = sessionContent.get(pin.gadgetId);
       for (let [filename, stamp] of known) {
         if (stamp === undefined && before?.get(filename) !== files.get(filename)) {
           known.delete(filename);
+          forgotten.push(filename);
         }
       }
     }
@@ -1833,6 +1931,7 @@ async function runAgentPass(
     sessionContent.set(pin.gadgetId, files);
     pinnedGadgets.add(pin.gadgetId);
     await anchorKnowledgeToPin(pin.gadgetId, pin.baseCommit);
+    return forgotten.toSorted();
   };
 
   // Ensures the session content holds a base for a replayed write's target workpiece -- or, for
@@ -2410,8 +2509,9 @@ async function runAgentPass(
         if (chatMessageStatus.get(msg.sequence) !== "reverted") {
           // Pins this batch establishes enter the content before the change applies (a no-op for
           // gadgets ensureReplayContentForWrite already established early; see there).
+          let forgotten = new Map<WorkpieceId, string[]>();
           for (let pin of msg.pins ?? []) {
-            await applyReplayedPin(pin);
+            forgotten.set(pin.gadgetId, await applyReplayedPin(pin));
           }
           // A batch with no `change` records only creations/binding additions; there is nothing to
           // apply to the session content (and no diff), but user-authored creations/additions
@@ -2441,6 +2541,22 @@ async function runAgentPass(
               observations.push(
                   `Added binding "${name}" to ` +
                   (gadgetName !== undefined ? `gadget ${gadgetName}` : `a gadget`) + `.`);
+            }
+            if (msg.mainlineMerge?.gadgets !== undefined) {
+              // An update from mainline is a re-root with no change, described by its commits
+              // (see formatMainlineMerge). One recorded before merges were commits has a change
+              // instead, which is shown as a diff like any other.
+              let summaries: string[] = [];
+              for (let entry of msg.mainlineMerge.gadgets) {
+                let name = chatNameFor(entry.gadgetId);
+                let declaration = msg.pins?.find(pin => pin.gadgetId === entry.gadgetId);
+                if (name === undefined || declaration === undefined) continue;
+                summaries.push(await formatMainlineMerge(entry, declaration, name,
+                    forgotten.get(entry.gadgetId) ?? [], hooks));
+              }
+              if (summaries.length > 0) {
+                observations.push(MAINLINE_MERGE_INTRO, ...summaries);
+              }
             }
             if (diff !== undefined) {
               observations.push(diff);

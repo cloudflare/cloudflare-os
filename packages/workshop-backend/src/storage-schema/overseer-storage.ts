@@ -784,8 +784,8 @@ type ChatAttachmentContentRecord = {
 /**
  * One accepted row of a chat's code-change stream: the uncommitted-changes representation (see
  * ChatCodeBase in the API). Every producer's change -- a user submitCodeChange(), an agent tool
- * edit, an updateChatFromMainline() merge -- becomes one row, numbered by a per-generation
- * revision counter and broadcast to subscribers as `changeApplied`. Rows are periodically
+ * edit -- becomes one row, numbered by a per-generation revision counter and broadcast to
+ * subscribers as `changeApplied`. Rows are periodically
  * *materialized* into a durable "changes" message (see materializeChatChanges): the message's
  * `change` re-records their composition and its `watermark` names the rows it absorbed.
  */

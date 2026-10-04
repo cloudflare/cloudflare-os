@@ -28,9 +28,11 @@
 // - No object exceeds ~2MB today (records hold single source files, small trees, and commit
 //   headers). If large blobs ever appear, chunking records or spilling to R2 is a change local
 //   to the fs shim below.
-// - No GC. Dangling objects are only created by accepted merges, imports, migration, and loading
+// - No GC. Dangling objects are only created by accepted merges, imports, migration, loading
 //   a blueprint's release (whose objects are stored whether or not anything comes to refer to
-//   them) -- never by a chat's edits -- and are cheap. If GC is ever needed, the roots are
+//   them), and the merge commits of a chat that is then discarded (an update from mainline
+//   commits the chat's files and the merge result, see updateChatFromMainline) -- never by a
+//   chat's edits -- and are cheap. If GC is ever needed, the roots are
 //   enumerable: gadget records (their heads and the blueprint releases they follow), blueprint
 //   gadget records (the commits they exported and the releases minted from those), live chats'
 //   pinned commits, the pin declarations in chat logs and compaction checkpoints (closed epochs
@@ -53,7 +55,9 @@ import {
 import diff3Merge from "diff3";
 import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
+import { MAX_FILE_TEXT_LENGTH } from "@gadgets/workshop-shared/code-change";
 import type { GitObjectRecord } from "./storage-schema/overseer-storage";
+import { MAX_GIT_OBJECT_SIZE } from "./git-cache";
 import {
   encodeGitCommit,
   encodeLooseObject,
@@ -579,6 +583,25 @@ export interface MergeResult {
    * markers; delete-vs-modify conflicts keep the modified content with no markers.
    */
   conflictPaths: string[];
+
+  /**
+   * Paths that both sides changed where a version of the file, or what merging them would
+   * produce, is too large to hold (see `tooLargeToHold()`), in sorted order. These are not
+   * merged and are absent from `files`, so a result with any is not a merge: callers refuse it.
+   */
+  tooLargePaths: string[];
+}
+
+/**
+ * Whether a file's text is too large to hold as a gadget's file: longer than a chat's file may
+ * be (`MAX_FILE_TEXT_LENGTH`; an edit that leaves a file longer is refused), or a blob larger
+ * than the git cache reads back (`MAX_GIT_OBJECT_SIZE`).
+ */
+export function tooLargeToHold(text: string): boolean {
+  if (text.length > MAX_FILE_TEXT_LENGTH) return true;
+  // A UTF-16 code unit takes at most three bytes of UTF-8, so only a long text needs encoding.
+  return text.length * 3 > MAX_GIT_OBJECT_SIZE &&
+      new TextEncoder().encode(text).byteLength > MAX_GIT_OBJECT_SIZE;
 }
 
 /**
@@ -599,7 +622,9 @@ export interface MergeResult {
  * - deleted on one side, changed on the other: the changed content survives, reported as a
  *   conflict;
  * - changed on both sides (including both-added): line merged via diff3, conflicting hunks
- *   marked.
+ *   marked -- unless any of the three versions, or the merged text, is too large to hold, in
+ *   which case the file is reported in `tooLargePaths` instead. A file taken whole from one
+ *   side is no larger than it was there, so it is never checked.
  */
 export function threeWayMerge(
     base: ReadonlyMap<string, string>,
@@ -608,6 +633,7 @@ export function threeWayMerge(
     labels: MergeLabels = {}): MergeResult {
   let files = new Map<string, string>();
   let conflictPaths: string[] = [];
+  let tooLargePaths: string[] = [];
 
   let allPaths = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].toSorted();
   for (let path of allPaths) {
@@ -630,14 +656,23 @@ export function threeWayMerge(
       conflictPaths.push(path);
     } else {
       // Changed on both sides (b === undefined means both-added with different content; diff3
-      // against an empty base marks the entirety of both sides as conflicting).
+      // against an empty base marks the entirety of both sides as conflicting). A conflicted
+      // result holds both sides and the base, so it can be too large where none of them is.
+      if ([b ?? "", o, t].some(tooLargeToHold)) {
+        tooLargePaths.push(path);
+        continue;
+      }
       let merged = mergeText(b ?? "", o, t, labels);
+      if (tooLargeToHold(merged.text)) {
+        tooLargePaths.push(path);
+        continue;
+      }
       files.set(path, merged.text);
       if (!merged.clean) conflictPaths.push(path);
     }
   }
 
-  return { files, conflictPaths };
+  return { files, conflictPaths, tooLargePaths };
 }
 
 // A zero-width boundary after every "\n"; split() then keeps each terminator with its line.
