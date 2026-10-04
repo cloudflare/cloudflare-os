@@ -417,6 +417,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                 disabled={busy}
                 suggestions={suggestions}
                 onAdd={(model) => write(() => admin.addGatewayModel(model))}
+                onTest={(model) => admin.testNewGatewayModel(model)}
               />
             </>
           )}

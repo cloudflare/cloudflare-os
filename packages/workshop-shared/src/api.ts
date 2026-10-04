@@ -1307,6 +1307,21 @@ export interface AdminApi {
    * testGatewayProvider(), whose quick request is capped at a few tokens.
    */
   testGatewayModel(modelId: string): Promise<GatewayModelTest>;
+
+  /**
+   * Test a model as described, without adding it. It sends one request the way a chat turn would
+   * with no reasoning level set (so asking for what BuiltInReasoning describes, whatever the
+   * deployment's default level is), and one at each reasoning level the model would list once
+   * added (see AdminModelView.reasoningLevels). The requests are sent together, through the
+   * gateway, as the admin, each under testGatewayModel()'s response cap and time limit. The
+   * results come with the request that set no level first, then the levels from least to most.
+   * It stores nothing. Throws outside AI Gateway mode and for a model addGatewayModel() would
+   * refuse, for the same reason; a request that fails is a result (see GatewayModelLevelTest).
+   *
+   * A pass says that the model answered that one request. A model that lists every level is sent
+   * eight requests, each of which may use the whole response cap.
+   */
+  testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1652,14 +1667,21 @@ export type AdminGatewayProvider = {
 };
 
 /**
- * What AdminApi.testGatewayProvider() and AdminApi.testGatewayModel() found: the model asked, and
- * whether it answered. A failure carries a message on one line, cut short: what the provider or
- * the gateway answered, or why no answer came. It carries the HTTP status of the response only
- * when the model runtime reports one, which it does not for every provider (a failed Google
- * request has none): the message then says what there is.
+ * What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or
+ * AdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure
+ * carries a message on one line, cut short: what the provider or the gateway answered, or why no
+ * answer came. It carries the HTTP status of the response only when the model runtime reports
+ * one, which it does not for every provider (a failed Google request has none): the message then
+ * says what there is.
  */
 export type GatewayModelTest = { model: string } &
     ({ ok: true } | { ok: false; status?: number; message: string });
+
+/**
+ * One request of AdminApi.testNewGatewayModel(): its result, and the reasoning level it asked
+ * for. Null is the request sent with no level set.
+ */
+export type GatewayModelLevelTest = GatewayModelTest & { reasoning: ReasoningLevel | null };
 
 /** Configuration specifying how to connect to an AI model provider. */
 export type AiModelConfig = {

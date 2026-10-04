@@ -985,7 +985,8 @@ function answered(request: Request): Response {
 /**
  * An AdminSettings whose gateway rides a Workers AI binding that answers each request with
  * `respond`, beside the HTTPS token unless `vars` says otherwise. `test` runs one provider
- * test and `testModel` one model test, each returning its result with the entries it logged.
+ * test, `testModel` one model test and `testNewModel` one test of a model that is described,
+ * each returning its result with the entries it logged.
  */
 function tested(respond: (request: Request) => Response | Promise<Response>,
                 vars: object = {}) {
@@ -1013,7 +1014,9 @@ function tested(respond: (request: Request) => Response | Promise<Response>,
       "gateway.provider.test", admin => admin.testGatewayProvider(provider, "admin@example.com"));
   const testModel = (modelId: string) => logging(
       "gateway.model.test", admin => admin.testGatewayModel(modelId, "admin@example.com"));
-  return { ...settings, fetch, requests, test, testModel };
+  const testNewModel = (model: GatewayModel) => logging(
+      "gateway.model.test", admin => admin.testNewGatewayModel(model, "admin@example.com"));
+  return { ...settings, fetch, requests, test, testModel, testNewModel };
 }
 
 describe("AdminSettings.testGatewayProvider", () => {
@@ -1443,6 +1446,215 @@ describe("AdminSettings.testGatewayModel", () => {
         expect(view.models.find(model => model.id === "claude-fable-5-1")?.mode).toBe("hidden");
         answer.resolve(completion("OK"));
         expect(await test).toStrictEqual({ model: GLM, ok: true });
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
+
+// The results of a test in which the model answered every request, one for each of `levels`.
+const passed = (model: GatewayModel, levels: (string | null)[]) =>
+    levels.map(reasoning => ({ model: model.id, ok: true, reasoning }));
+
+describe("AdminSettings.testNewGatewayModel", () => {
+  const OPUS = "claude-opus-5-5";
+  const LOGGED = {
+    component: "workshop.admin.settings", event: "gateway.model.test",
+    message: "tested an AI Gateway model", durationMs: expect.any(Number),
+  };
+  // A Workers AI model that neither the catalog nor the runtime knows, stated to take two levels.
+  const STATED: GatewayModel = {
+    provider: "cloudflare", id: "@cf/moonshotai/kimi-k3", name: "Kimi K3", contextWindow: 262144,
+    capabilities: { reasoningLevels: ["off", "high"] },
+  };
+  const PLAIN: GatewayModel =
+      { provider: "cloudflare", id: "@cf/test/plain", name: "Plain", contextWindow: 100000 };
+  // What each request asked for, least effort first: the requests are sent together, so the
+  // order they arrive in says nothing.
+  const EFFORTS = [undefined, "none", "low", "medium", "high", "xhigh", "max"];
+  const sent = (requests: ReturnType<typeof tested>["requests"]) => requests.map(asked).toSorted(
+      (a, b) => EFFORTS.indexOf(a.effort as string) - EFFORTS.indexOf(b.effort as string));
+
+  it("asks the described model once with no level set and once at each level it would list",
+      async () => {
+    const { testNewModel, requests } = tested(answered);
+    const { result, entries } = await testNewModel(STATED);
+
+    expect(result).toStrictEqual(passed(STATED, [null, "off", "high"]));
+    // Workers AI takes "off" as the effort "none".
+    expect(sent(requests)).toEqual(
+        [{ cap: 2048 }, { effort: "none", cap: 2048 }, { effort: "high", cap: 2048 }]);
+    for (let { url, headers, body } of requests) {
+      expect(url).toBe("https://workers-binding.ai/ai-gateway/gateways/platform-gateway/" +
+          "workers-ai/v1/chat/completions");
+      expect(JSON.parse(headers.get("cf-aig-metadata")!))
+          .toStrictEqual({ user: "admin@example.com" });
+      expect(headers.get("cf-aig-skip-cache")).toBe("true");
+      expect(body.model).toBe(STATED.id);
+      expect(body.messages).toEqual([{ role: "user", content: "Reply with OK." }]);
+    }
+    // One entry a request.
+    const ok = { ...LOGGED, modelId: STATED.id, outcome: "ok" };
+    expect(entries).toEqual([ok, ok, ok]);
+  });
+
+  // A stored model's test asks for the default level. This one tests that level beside the rest.
+  it("sets no level on the first request, whatever the deployment's default level is",
+      async () => {
+    const { testNewModel, requests, inDo } = tested(answered);
+    await inDo(admin => admin.setDefaultReasoning("high"));
+    expect((await testNewModel(STATED)).result)
+        .toStrictEqual(passed(STATED, [null, "off", "high"]));
+    expect(sent(requests)).toEqual(
+        [{ cap: 2048 }, { effort: "none", cap: 2048 }, { effort: "high", cap: 2048 }]);
+  });
+
+  it("tests the levels of the model it behaves like, when none is stated", async () => {
+    const { testNewModel, requests } = tested(answered);
+    const model = { ...ADDED, behavesLike: OPUS };
+    expect((await testNewModel(model)).result)
+        .toStrictEqual(passed(model, [null, "low", "medium", "high", "xhigh", "max"]));
+    // Opus 5.5 takes a level as an effort. With none set it is asked for adaptive thinking, which
+    // pi sends at the effort "high".
+    expect(sent(requests)).toEqual(["low", "medium", "high", "high", "xhigh", "max"].map(
+        effort => ({ thinking: "adaptive", effort, cap: 2048 })));
+  });
+
+  it("sends the one request for a model that would list no level", async () => {
+    const { testNewModel, requests } = tested(answered);
+    const { result, entries } = await testNewModel(PLAIN);
+    expect(result).toStrictEqual(passed(PLAIN, [null]));
+    expect(sent(requests)).toEqual([{ cap: 2048 }]);
+    expect(entries).toEqual([{ ...LOGGED, modelId: PLAIN.id, outcome: "ok" }]);
+  });
+
+  it("reports a level the provider refuses as that level's result, beside the others",
+      async () => {
+    const { testNewModel, requests } = tested(async request => {
+      const { reasoning_effort } = await request.json() as { reasoning_effort?: string };
+      return reasoning_effort === "high"
+          ? new Response("This model takes no\n effort above none.", { status: 400 })
+          : completion("OK");
+    });
+    const { result, entries } = await testNewModel(STATED);
+    expect(result).toStrictEqual([
+      ...passed(STATED, [null, "off"]),
+      {
+        model: STATED.id, ok: false, status: 400, reasoning: "high",
+        message: "400 This model takes no effort above none.",
+      },
+    ]);
+    expect(requests).toHaveLength(3);
+    const ok = { ...LOGGED, modelId: STATED.id, outcome: "ok" };
+    expect(entries.filter(entry => entry.outcome === "ok")).toEqual([ok, ok]);
+    expect(entries.filter(entry => entry.outcome !== "ok"))
+        .toEqual([{ ...LOGGED, modelId: STATED.id, outcome: "error", statusCode: 400 }]);
+  });
+
+  // What is tested is the model as it would be stored, not as it was sent.
+  it("asks the model by the ID, the levels and the output limit it would be stored with",
+      async () => {
+    const { testNewModel, requests } = tested(answered);
+    const stored = { ...STATED, outputLimit: 1000 };
+    const { result } = await testNewModel({
+      ...stored, id: `  ${STATED.id} `, capabilities: { reasoningLevels: ["high", "off", "high"] },
+    });
+    expect(result).toStrictEqual(passed(stored, [null, "off", "high"]));
+    // A response is capped at the model's own limit, where that is under the test's.
+    expect(sent(requests)).toEqual(
+        [{ cap: 1000 }, { effort: "none", cap: 1000 }, { effort: "high", cap: 1000 }]);
+    expect(requests.map(({ body }) => body.model)).toEqual([STATED.id, STATED.id, STATED.id]);
+  });
+
+  it("stores nothing", async () => {
+    const { testNewModel, requests, put, inDo } = tested(answered);
+    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "hidden"));
+    put.mockClear();
+    const before = await inDo(admin => admin.getAdminConfig());
+
+    await testNewModel(STATED);
+    expect(requests).toHaveLength(3);
+    expect(await inDo(admin => admin.getAdminConfig())).toStrictEqual(before);
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("leaves the model to be added as it was described, with the levels that were tested",
+      async () => {
+    const { testNewModel, inDo, stored, settings } = tested(answered);
+    const { result } = await testNewModel(STATED);
+
+    await inDo(admin => admin.addGatewayModel(STATED));
+    expect(await stored()).toStrictEqual({ modelModes: {}, addedModels: [STATED] });
+    expect(await settings()).toStrictEqual({});
+    const model = shownModel(await inDo(admin => admin.getSettings("admin")), STATED.id)!;
+    expect(model).toMatchObject({ ...STATED, mode: "enabled", added: true });
+    expect(result.map(({ reasoning }) => reasoning)).toEqual([null, ...model.reasoningLevels]);
+  });
+
+  it.each<[string, GatewayModel, string]>([
+    ["a malformed model", { ...ADDED, id: "claude-new", contextWindow: 1.5 },
+      "Invalid model: it needs an ID and a name, neither over-long, and token limits that are " +
+      "positive integers. The ID of a model it behaves like can't be over-long either."],
+    ["a suggested model's ID", { ...ADDED, id: OPUS }, `"${OPUS}" is already a suggested model.`],
+    ["an added model's ID", { ...ADDED, name: "Second" },
+      '"claude-test" is already an added model.'],
+    ["a model to behave like that the runtime does not know",
+      { ...ADDED, id: "claude-new", behavesLike: "claude-nope" },
+      '"claude-nope" is not a model the runtime knows under provider "anthropic", so ' +
+      '"claude-new" can\'t behave like it.'],
+    ["a provider that is off", { ...ADDED, id: "gpt-test", provider: "openai" },
+      'Provider "openai" is not enabled on this deployment.'],
+    ["a window that leaves a prompt no room",
+      { ...ADDED, id: "claude-new", contextWindow: 8000, outputLimit: 8000 },
+      'The "Claude Test" model\'s context window leaves no room for a prompt: 8000 tokens of ' +
+      "it are reserved for the response. Give the model an output limit under its context " +
+      "window."],
+  ])("refuses %s in addGatewayModel's words, without a request", async (_, model, message) => {
+    const { inDo, fetch } = tested(answered);
+    await inDo(admin => admin.addGatewayModel(ADDED));
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await expect(inDo(admin => admin.testNewGatewayModel(model, "admin@example.com")))
+          .rejects.toThrow(new Error(message));
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+    await expect(inDo(admin => admin.addGatewayModel(model))).rejects.toThrow(new Error(message));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("throws outside AI Gateway mode, whatever the model", async () => {
+    const { inDo } = adminSettings({});
+    for (let model of [STATED, { ...STATED, id: " " }]) {
+      await expect(inDo(admin => admin.testNewGatewayModel(model, "admin@example.com")))
+          .rejects.toThrow(new Error(NOT_GATEWAY));
+    }
+  });
+
+  // The requests are out for as long as thirty seconds, which no other admin call waits for.
+  // None is answered before all three are out, which requests sent in turn would never be.
+  it("sends the requests together, and lets the config be read and changed while they are out",
+      async () => {
+    const requested = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    let out = 0;
+    const { inDo } = tested(async () => {
+      if (++out === 3) requested.resolve();
+      await answer.promise;
+      return completion("OK");
+    });
+    const logged = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await inDo(async admin => {
+        const test = admin.testNewGatewayModel(STATED, "admin@example.com");
+        await requested.promise;
+        await admin.setGatewayModelMode("claude-fable-5-1", "hidden");
+        const view = (await admin.getSettings("admin")).gatewayModels!;
+        expect(view.models.find(model => model.id === "claude-fable-5-1")?.mode).toBe("hidden");
+        answer.resolve();
+        expect(await test).toStrictEqual(passed(STATED, [null, "off", "high"]));
       });
     } finally {
       logged.mockRestore();

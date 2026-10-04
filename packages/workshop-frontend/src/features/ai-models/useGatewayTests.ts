@@ -4,11 +4,11 @@ import { rpcFailureDescription } from '../../rpcErrors'
 
 /**
  * Where a test stands: in flight, answered by the server (a request that failed is an answer too),
- * or not run, because the call for it failed.
+ * or not run, because the call for it failed. `Result` is what the server answers a test with.
  */
-export type GatewayTestState =
+export type GatewayTestState<Result = GatewayModelTest> =
   | { state: 'testing' }
-  | { state: 'answered'; result: GatewayModelTest }
+  | { state: 'answered'; result: Result }
   | { state: 'not-run'; reason: string | undefined }
 
 /**
@@ -16,11 +16,15 @@ export type GatewayTestState =
  * list rather than to the server: one runs whatever else the page is doing, and its result stays
  * until the same key is tested again or the list forgets it.
  */
-export const useGatewayTests = <Key extends string>(
-  /** Runs one test. A request that fails is a result; rejects when it could not be run at all. */
-  runTest: (key: Key) => Promise<GatewayModelTest>,
+export const useGatewayTests = <Key extends string, Result = GatewayModelTest>(
+  /**
+   * Runs one test. A request that fails is a result; rejects when it could not be run at all.
+   * `Result` is the caller's to state and is not inferred from here: what an RPC call returns is
+   * assignable to the promise of its result without being one.
+   */
+  runTest: (key: Key) => Promise<NoInfer<Result>>,
 ) => {
-  const [tests, setTests] = useState<ReadonlyMap<Key, GatewayTestState>>(() => new Map())
+  const [tests, setTests] = useState<ReadonlyMap<Key, GatewayTestState<Result>>>(() => new Map())
   // The request each key is waiting on. A key has at most one, so an earlier test can't answer
   // over a later one, and a request that is not its key's when it settles was forgotten.
   const inFlight = useRef(new Map<Key, symbol>())
@@ -39,7 +43,7 @@ export const useGatewayTests = <Key extends string>(
     // A test is forgotten for a change made after it was asked, so what a forgotten one finds
     // is neither shown nor logged.
     const forgotten = () => inFlight.current.get(key) !== request
-    const show = (test: GatewayTestState) => setTests((shown) => new Map(shown).set(key, test))
+    const show = (test: GatewayTestState<Result>) => setTests((shown) => new Map(shown).set(key, test))
     show({ state: 'testing' })
     try {
       const result = await runTest(key)
