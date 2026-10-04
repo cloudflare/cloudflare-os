@@ -33,7 +33,8 @@ export type BlueprintChoiceSources = {
   featured: BlueprintPublicInfo[]
 }
 
-const titleOf = (title: string) => title || 'Untitled blueprint'
+/** What to call a blueprint, which may have been published with no title. */
+export const titleOf = (title: string) => title || 'Untitled blueprint'
 
 const fromMetadata = ({ id, metadata }: { id: string; metadata: BlueprintMetadata }): BlueprintChoice => ({
   id,

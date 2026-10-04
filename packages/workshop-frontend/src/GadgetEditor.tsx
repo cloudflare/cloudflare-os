@@ -35,6 +35,7 @@ import {
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
+import type { ChatContentReader } from './features/code/otClient'
 import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
@@ -650,6 +651,9 @@ export default function GadgetEditor() {
   // content), likewise subscription-shaped (see ChatLiveEditPreviews).
   const [liveEditPreviews, setLiveEditPreviews] =
     useState<ChatLiveEditPreviews | undefined>(undefined)
+  // The selected chat's uncommitted content as the code view holds it, plumbed the other way:
+  // the chat reads it to look for unresolved merge conflicts before accepting.
+  const [chatContent, setChatContent] = useState<ChatContentReader | undefined>(undefined)
   const [streamingActiveFileState, setStreamingActiveFileState] = useState<{
     chatId: number
     file: ActiveFileTarget | null | undefined
@@ -1830,6 +1834,7 @@ export default function GadgetEditor() {
                   onChatChangesChange={setChatChanges}
                   onLiveRowsChange={setLiveRows}
                   onLiveEditPreviewsChange={setLiveEditPreviews}
+                  chatContent={chatContent}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
                   pendingConsoleLogCount={consoleLogCount}
                   consoleLogPreview={
@@ -2057,6 +2062,7 @@ export default function GadgetEditor() {
                   isAgentActive={isAgentActive}
                   isVisible={activeTab === 'code'}
                   onHasCodeChange={setHasCode}
+                  onChatContentChange={setChatContent}
                 />
               ) : (
                 <NoGadgetPlaceholder height="100%" />

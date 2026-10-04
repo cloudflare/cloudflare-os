@@ -68,6 +68,25 @@ export interface ChatDurableCode {
   rowsThrough: number
 }
 
+/**
+ * Read access to one chat's uncommitted content as its ChatOtClient displays it (see
+ * ChatOtClient.getContent()), for whoever needs to look at it from outside the code view.
+ */
+export interface ChatContentReader {
+  /**
+   * Which chat the content belongs to. A reader reaches its holder a render after the chat it
+   * reads was selected, so the holder checks this against its own selection.
+   */
+  chatId: number
+  /** The content, sparse as the client holds it, or undefined while it has yet to load. */
+  read(): CodeContent | undefined
+  /**
+   * Whether that content includes edits made here that the server has yet to acknowledge (see
+   * ChatOtClient.hasLocalEdits()): until it has, the server's copy of the chat is behind.
+   */
+  hasLocalEdits(): boolean
+}
+
 /** A remote content change to one file, for open editors to apply as a remote transaction. */
 export interface RemoteFileEvent {
   gadgetId: WorkpieceId

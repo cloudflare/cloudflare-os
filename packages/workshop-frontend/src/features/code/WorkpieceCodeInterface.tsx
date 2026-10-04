@@ -15,7 +15,7 @@ import CodeDiffEditor from './CodeDiffEditor'
 import type {
   ChatCodeChanges, ChatLiveChangeRows, ChatLiveEditPreviews, EditPreviewEvent,
 } from '../../ChatInterface'
-import { ChatOtClient, type RemoteFileEvent } from './otClient'
+import { ChatOtClient, type ChatContentReader, type RemoteFileEvent } from './otClient'
 import { commitFileStore, type CommitFileReader } from './commitFileStore'
 import { useCommitTree, useFilesAtCommit } from './useCommitContent'
 import {
@@ -96,6 +96,9 @@ interface WorkpieceCodeInterfaceProps {
   isAgentActive: boolean
   isVisible?: boolean
   onHasCodeChange?: (hasCode: boolean) => void
+  // Hands out read access to the selected chat's uncommitted content (see ChatContentReader),
+  // and withdraws it with `undefined` when there is no chat to read.
+  onChatContentChange?: (content: ChatContentReader | undefined) => void
 }
 
 const NO_PENDING_GADGETS: ReadonlySet<WorkpieceId> = new Set()
@@ -210,7 +213,7 @@ function replaceSpanTextChange(
 export default function WorkpieceCodeInterface({
   overseer, summary, height = '100%', selectedChatId = null, chatChanges,
   liveRows, liveEditPreviews, pendingGadgetIds, streamingActiveFile, isAgentActive,
-  isVisible = true, onHasCodeChange,
+  isVisible = true, onHasCodeChange, onChatContentChange,
 }: WorkpieceCodeInterfaceProps) {
   const toasts = useKumoToastManager()
   const toastsRef = useRef(toasts)
@@ -442,6 +445,19 @@ export default function WorkpieceCodeInterface({
     : null
   const clientRef = useRef(client)
   clientRef.current = client
+
+  // Lend out the chat's content (see ChatContentReader). Read through the client at the time
+  // of asking, so that the answer includes edits which have yet to become a message.
+  useEffect(() => {
+    if (clientState === null || onChatContentChange === undefined) return
+    const { chatId, client: chatClient } = clientState
+    onChatContentChange({
+      chatId,
+      read: () => (chatClient.isReady() ? chatClient.getContent() : undefined),
+      hasLocalEdits: () => chatClient.hasLocalEdits(),
+    })
+    return () => onChatContentChange(undefined)
+  }, [clientState, onChatContentChange])
 
   // Feed live rows to the client by subscribing to the chat's row stream: retained rows are
   // replayed at subscribe time (the client dedupes by (generation, revision)) and new rows
