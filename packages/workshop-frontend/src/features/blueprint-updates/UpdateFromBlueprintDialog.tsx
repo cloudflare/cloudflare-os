@@ -186,12 +186,14 @@ export const UpdateFromBlueprintDialog = ({
     : []
   const selected = groups.flatMap(group => group.choices).find(choice => choice.id === selectedId)
 
-  // A blueprint stored before releases were commits names no release to compare with, so it
-  // gets neither status.
+  // A blueprint stored before releases were commits names no release to compare with, and a
+  // gadget made before gadgets recorded the release they took has none to compare. Either gets
+  // neither status.
   const followedStatus =
-    load.status !== 'loaded' || !load.followed || !gadget.upstream ? null
+    load.status !== 'loaded' || !load.followed || gadget.upstream?.commitId === undefined ||
+      load.followed.metadata.commitId === undefined ? null
       : hasNewerRelease(gadget.upstream, load.followed.metadata) ? 'Update available'
-        : load.followed.metadata.commitId !== undefined ? 'Up to date' : null
+        : 'Up to date'
 
   const header = (title: string, description: string) => (
     <div className="flex shrink-0 items-start justify-between gap-4 border-b border-kumo-line px-4 py-5 sm:px-6">

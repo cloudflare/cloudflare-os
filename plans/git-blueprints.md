@@ -233,7 +233,7 @@ Every one of these is additive, so the frontend should keep compiling throughout
 - `initializeFromBlueprint` and `fetchBlueprint` call that loader. The first takes a blueprint id instead of content bytes, so the pack no longer crosses an RPC from server.ts; it writes `e` and `i` and sets `upstream`. The second returns the release for the creation message.
 - `importBlueprint`, `downloadBlueprint`, blueprint-archive.ts: accept and emit container versions 1 and 2.
 - bundled-blueprints.ts and the generator: decision 14. `import:bundled-blueprint` learns to read version 2 archives, with `git` (see commit 5).
-- Storage: `GadgetRecord.upstream`, `BlueprintGadgetRecord.releases`. Both optional, so no schema version bump and no migration.
+- Storage: `GadgetRecord.upstream`, `BlueprintGadgetRecord.releases`. Both optional, so neither needs a migration. One was added afterwards all the same, as schema version 5, to name the blueprint of gadgets that predate `upstream` (see Backfilling `upstream` below).
 
 ### workshop-backend: chat and agent
 
@@ -400,6 +400,15 @@ In `workshop-use-role.test.ts`, `applyBlueprint` joins the table of `GadgetClien
 `docs/blueprints.md` and the bundled-blueprints paragraph of `AGENTS.md`.
 
 Fork-point trees (in commit 6) could be dropped from this series without a format change, at the cost that releases published before they land cannot serve as a switch target for gadgets that never held the fork point.
+
+## Backfilling `upstream`
+
+Added after the commit series. A gadget made from a blueprint before this plan has no `upstream`, so the picker has no blueprint to start on, and nothing in the gadget's history names one.
+
+- **What is recovered.** For a gadget an agent created, the `createGadget` tool call in the chat log names the blueprint (`input.blueprintId`) and the gadget (`output.gadgetId`). The storage migration `migrateToBlueprintUpstreams` (version 4 to 5) sets `upstream = {blueprintId}` on each such gadget that has no `upstream`.
+- **What is not.** The release the gadget took. `GadgetUpstream.commitId` becomes optional, and its absence means the release is unknown. Such a gadget is treated as one with no upstream everywhere but in the picker: no "Update available", and decision 8's last row applies, with its warning, even when the blueprint applied is the one named. Accepting that proposal records the release. Recovering the release from the creation's `changes` message, or taking the gadget's first commit for it, was considered and set aside as not worth the code: the first is exact only when the agent wrote nothing else in the step, and the second announces an update on every such gadget.
+- **Bounded.** The migration runs synchronously in the constructor. It reads no chat in a workspace with no gadget that lacks an `upstream`, which many are: one chat working on external resources, and no gadget at all. Otherwise it reads at most 1000 messages per workspace, divided between the chats and taken from the start of each, where creations mostly are.
+- **Not covered.** Gadgets instantiated through the UI, which left no record of their blueprint outside product analytics, and gadgets whose creating chat was deleted. Both keep the manual path: pick the blueprint, and confirm the warning.
 
 ## Risks
 

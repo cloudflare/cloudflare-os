@@ -241,6 +241,17 @@ describe('UpdateFromBlueprintDialog', () => {
     expect(onProposed).toHaveBeenCalledExactlyOnceWith(7)
   })
 
+  // A gadget made before gadgets recorded the release they took names its blueprint alone.
+  it('starts on the followed blueprint, with no status, when the release taken is unknown', async () => {
+    await open({ blueprintId: 'trip' })
+
+    expect(radio('Trip planner').checked).toBe(true)
+    const description = radio('Trip planner').closest('label')!.textContent
+    expect(description).toContain('Version 2')
+    expect(description).not.toContain('Update available')
+    expect(description).not.toContain('Up to date')
+  })
+
   it('names no model when the user has chosen to chat with no agent', async () => {
     localStorage.setItem('lastSelectedModel', NO_AGENT_OPTION_VALUE)
     applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 7 })

@@ -14,9 +14,9 @@
 import type {
   AgentSpawnerConfig, CommitIdentity, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type {
-  AgentSpawnerBindingProps, BindingRecord, GadgetRecord, LegacyAgentSpawnerConfig,
-  OverseerStorage,
+import {
+  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
+  type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
@@ -29,7 +29,13 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 4;
+export const OVERSEER_STORAGE_VERSION = 5;
+
+/**
+ * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
+ * chats. It runs in the constructor, so this bounds what a workspace's first wake waits on.
+ */
+export const UPSTREAM_BACKFILL_MESSAGE_LIMIT = 1000;
 
 /**
  * What the migrations need from the Overseer. OverseerImpl satisfies this structurally and
@@ -267,5 +273,64 @@ export function migrateToWorkpieceTypes(host: OverseerMigrationHost): void {
   });
   host.logger.info("stamped workpiece record types", {
     event: "storage.migration.workpiece-types.completed",
+  });
+}
+
+/**
+ * Version 4 -> 5: name the blueprint that each gadget an agent created from one follows (see
+ * GadgetRecord.upstream), for gadgets created before that was recorded. The agent's
+ * `createGadget` call, where the chat log still holds it, names both the blueprint and the
+ * gadget. The release the gadget took is not recovered, so `upstream` is left without a
+ * `commitId`: the blueprint is the one offered for the gadget's updates, and the first of them
+ * is merged as into a gadget that follows nothing. A gadget instantiated outside any chat left
+ * no record of its blueprint, and is not covered.
+ *
+ * The scan is skipped where no gadget lacks an `upstream`. Otherwise it is best-effort and
+ * bounded by UPSTREAM_BACKFILL_MESSAGE_LIMIT, spent on the start of each chat, which is where
+ * an agent mostly creates gadgets. A gadget it misses stays as it was. Synchronous and atomic,
+ * like migrateToWorkpieceTypes, which it is chained after; the `!== 4` guard keeps
+ * never-initialized DOs write-free.
+ */
+export function migrateToBlueprintUpstreams(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 4) return;
+  host.ctx.storage.transactionSync(() => {
+    // Many workspaces have no gadget at all, only chats that work on external resources, and
+    // their chats are not read. Nor are those of one whose gadgets all follow something.
+    let unnamed = Array.from(host.storage.gadgets.list())
+        .some(record => record.type === "gadget" && record.upstream === undefined);
+
+    // No more chats than the budget, so that every chat listed gets at least one message.
+    let chats = unnamed
+        ? Array.from(host.storage.chatMeta.list({limit: UPSTREAM_BACKFILL_MESSAGE_LIMIT})) : [];
+    let budget = UPSTREAM_BACKFILL_MESSAGE_LIMIT;
+    let blueprints = new Map<WorkpieceId, string>();
+    chats.forEach((chat, index) => {
+      // An even share of what is left, so that what a short chat does not use goes to the
+      // chats after it.
+      let share = Math.ceil(budget / (chats.length - index));
+      for (let msg of host.storage.chats.list({prefix: chatKeyPrefix(chat.id), limit: share})) {
+        budget--;
+        if (msg.type !== "message") continue;
+        for (let call of msg.toolCalls ?? []) {
+          // A call that failed recorded no output, whether or not it left a gadget behind.
+          if (call.toolName === "createGadget" && call.input.blueprintId !== undefined &&
+              call.output !== undefined) {
+            blueprints.set(call.output.gadgetId, call.input.blueprintId);
+          }
+        }
+      }
+    });
+
+    // Written once the scan is done, so that nothing is written under its cursor.
+    for (let [gadgetId, blueprintId] of blueprints) {
+      let record = host.storage.gadgets.get(gadgetId);
+      // The record is gone if the creation was reverted, or the gadget deleted since.
+      if (record?.type !== "gadget" || record.upstream !== undefined) continue;
+      host.storage.gadgets.put({...record, upstream: {blueprintId}});
+    }
+    host.storage.version.put(5);
+  });
+  host.logger.info("named the blueprints that agent-created gadgets follow", {
+    event: "storage.migration.blueprint-upstreams.completed",
   });
 }

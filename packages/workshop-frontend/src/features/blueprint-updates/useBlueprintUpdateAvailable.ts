@@ -10,10 +10,13 @@ import { logRpcFailure } from '../../rpcErrors'
 
 /**
  * Whether a blueprint, as it now stands, has a release that a gadget following it has not taken.
- * A blueprint stored before releases were commits names no release, so it never has one.
+ * A blueprint stored before releases were commits names no release, so it never has one. Nor can
+ * one be told for a gadget made before gadgets recorded the release they took: an update that
+ * may not exist is not announced.
  */
 export const hasNewerRelease = (upstream: GadgetUpstream, blueprint: BlueprintMetadata): boolean =>
-  blueprint.commitId !== undefined && blueprint.commitId !== upstream.commitId
+  upstream.commitId !== undefined && blueprint.commitId !== undefined &&
+  blueprint.commitId !== upstream.commitId
 
 /**
  * Whether the blueprint a gadget follows has moved on since the gadget last took a release of it.
@@ -33,7 +36,7 @@ export const useBlueprintUpdateAvailable = (
   const takenRelease = upstream?.commitId
 
   useEffect(() => {
-    if (blueprintId === undefined) return
+    if (blueprintId === undefined || takenRelease === undefined) return
     let cancelled = false
     publicApi.getBlueprint(blueprintId).then(
       blueprint => { if (!cancelled) setFollowed(blueprint) },

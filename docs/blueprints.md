@@ -253,7 +253,7 @@ When someone opens a blueprint link (`/blueprint/<id>`), they see the **Blueprin
 
 Instantiating from release R writes two commits. The first is an empty root `e`, `Create gadget: <title>`. The second is `i = [e, R]` with R's tree, `Instantiate blueprint: <title>`, which becomes the gadget's head. So every commit on the gadget's first-parent chain was written locally and has its tree, while R's ancestors, most of which arrive without trees, are reached only through other parents. Pointing the head at R itself would run the gadget's own history into the release history, where trees are missing.
 
-The gadget also records the blueprint it follows: `GadgetRecord.upstream = {blueprintId, commitId}`, the blueprint to check for updates and the release of it most recently merged. The record has to name the blueprint because the release commit does not. `upstream` reaches clients as `GadgetSummary.upstream`, for subscribers with the "build" role only: a blueprint ID is a share link to the blueprint's code, which a "use" collaborator cannot otherwise read.
+The gadget also records the blueprint it follows: `GadgetRecord.upstream = {blueprintId, commitId}`, the blueprint to check for updates and the release of it most recently merged. (The release is absent only on some gadgets that predate the record, see [Gadgets made before releases were recorded](#gadgets-made-before-releases-were-recorded).) The record has to name the blueprint because the release commit does not. `upstream` reaches clients as `GadgetSummary.upstream`, for subscribers with the "build" role only: a blueprint ID is a share link to the blueprint's code, which a "use" collaborator cannot otherwise read.
 
 A release that fails validation, or has no files, refuses to instantiate and leaves no gadget behind.
 
@@ -281,7 +281,7 @@ There are no automatic updates.
 ### In the UI
 
 - **Update from blueprint…** in the gadget editor's Blueprints menu opens a picker. It offers the blueprint the gadget follows (preselected), a blueprint named by a pasted share link, the user's own and library blueprints, and the deployment's featured ones.
-- **Update available** appears on that menu item, and as a dot on the menu's button, when the followed blueprint's current release is not the one the gadget last took. The frontend works this out by comparing `GadgetSummary.upstream.commitId` with `PublicApi.getBlueprint()`, so there is no RPC for it. The blueprint is read when the gadget's upstream changes, not continuously, so a release published while the workspace stays open is noticed later. A followed blueprint with no `commitId` never shows an update, and neither does a "use" collaborator's view, which is not told `upstream`.
+- **Update available** appears on that menu item, and as a dot on the menu's button, when the followed blueprint's current release is not the one the gadget last took. The frontend works this out by comparing `GadgetSummary.upstream.commitId` with `PublicApi.getBlueprint()`, so there is no RPC for it. The blueprint is read when the gadget's upstream changes, not continuously, so a release published while the workspace stays open is noticed later. A followed blueprint with no `commitId` never shows an update. Neither does a gadget whose `upstream` names no release (see [Gadgets made before releases were recorded](#gadgets-made-before-releases-were-recorded)), nor a "use" collaborator's view, which is not told `upstream`.
 - On a proposal, the UI opens the new chat. For the other outcomes it says so in the dialog, and when the call fails because the gadget changed meanwhile it offers to try again.
 
 ### What `applyBlueprint` does
@@ -324,16 +324,24 @@ The base of the three-way merge comes from the commit graph (`WorkspaceGitCache.
 | One best common ancestor, tree held | Use it. |
 | Several best common ancestors | Of those whose trees are held, prefer one on the release's own lineage, else the one with the latest commit date. A recursive merge is future work. |
 | A common ancestor exists, but no candidate's tree is held | Refuse (`baseUnavailable`). |
-| No common ancestor, and the blueprint is the one the gadget follows | Use `upstream.commitId`, the release the gadget last took from it. No warning. |
-| No common ancestor otherwise | Assume a base, and require `allowUnrelated`: `upstream.commitId` if the gadget follows a blueprint, else the oldest commit on its first-parent chain to have any files. |
+| No common ancestor, and the blueprint is the one the gadget follows, at a release on record | Use `upstream.commitId`, the release the gadget last took from it. No warning. |
+| No common ancestor otherwise | Assume a base, and require `allowUnrelated`: `upstream.commitId` if the gadget has one, else the oldest commit on its first-parent chain to have any files. |
 
 The fifth row serves blueprints whose releases are not chained, which today means the bundled ones. It needs no warning because only a blueprint's own publisher can put a release under its ID, so the release the gadget last took from that ID is the right base.
 
-The last row is a guess. A gadget that follows a blueprint and switches to one sharing no history with it is merged against the release it last took. A gadget that follows nothing (it was never made from a blueprint, or was made from one before gadgets recorded what they follow) is merged against its first non-empty commit. It is "first non-empty" rather than "root" because a gadget created empty, or converted from the storage that preceded git, is rooted at an empty-tree commit. That guess is exact only if the commit is the blueprint's tree unchanged. Where it already includes edits of the owner's or the agent's, those edits look to a three-way merge like something the blueprint removed, and can be reverted with no conflict reported. So the proposal is recorded with `unverifiedBase`, and the dialog, the notice in the chat and the agent's view of the merge all say so.
+The last row is a guess. A gadget that follows a blueprint and switches to one sharing no history with it is merged against the release it last took. A gadget with no release on record (it was never made from a blueprint, or was made from one before gadgets recorded what they follow) is merged against its first non-empty commit. It is "first non-empty" rather than "root" because a gadget created empty, or converted from the storage that preceded git, is rooted at an empty-tree commit. That guess is exact only if the commit is the blueprint's tree unchanged. Where it already includes edits of the owner's or the agent's, those edits look to a three-way merge like something the blueprint removed, and can be reverted with no conflict reported. So the proposal is recorded with `unverifiedBase`, and the dialog, the notice in the chat and the agent's view of the merge all say so.
 
 A base is not treated as a guess if it has no files (there is nothing a wrong guess could undo), or if the release or one of its ancestors has the very same tree, which the commit objects reveal.
 
 Once such an update is accepted, the gadget has an upstream and, for a blueprint with chained releases, real lineage. Later updates from the same blueprint need no warning.
+
+### Gadgets made before releases were recorded
+
+A gadget made from a blueprint before gadgets recorded `upstream` has nothing in its history that names the blueprint. A storage migration (`migrateToBlueprintUpstreams` in `storage-schema/overseer-migrations.ts`) recovers the blueprint's ID for gadgets that an agent created, from the `createGadget` tool call in the chat log, and records `upstream = {blueprintId}` with no `commitId`: the call does not say which release the gadget took.
+
+Such an `upstream` does one thing: the picker starts on that blueprint. Everything else treats the gadget as one with no release on record. No update is announced for it, and applying the blueprint takes the last row of the table above, with its warning. Accepting that proposal records the release, and the gadget is like any other from then on.
+
+The migration is best-effort. A workspace with no gadget that lacks an `upstream` is not scanned at all, which covers the many workspaces that hold no gadget. Otherwise it reads at most 1000 chat messages per workspace, shared between the chats and taken from the start of each, so a creation late in a long chat can be missed. It finds nothing for a gadget whose creating chat was deleted, or for one instantiated from the landing page or the New menu, which left no record of its blueprint anywhere. Those gadgets follow nothing until someone picks a blueprint to apply.
 
 ### The proposal record
 

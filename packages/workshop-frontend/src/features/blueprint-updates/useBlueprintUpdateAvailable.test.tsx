@@ -54,6 +54,10 @@ describe('hasNewerRelease', () => {
   it('reports nothing for a blueprint stored before releases were commits', () => {
     expect(hasNewerRelease(upstream, metadata())).toBe(false)
   })
+
+  it('reports nothing for a gadget whose release of the blueprint is not on record', () => {
+    expect(hasNewerRelease({ blueprintId: 'trip' }, metadata('release-2'))).toBe(false)
+  })
 })
 
 describe('useBlueprintUpdateAvailable', () => {
@@ -95,6 +99,13 @@ describe('useBlueprintUpdateAvailable', () => {
   // A "use" collaborator's view of every gadget looks like this.
   it('reads no blueprint for a gadget that is not known to follow one', async () => {
     await render(undefined)
+
+    expect(getBlueprint).not.toHaveBeenCalled()
+    expect(container.textContent).toBe('no update')
+  })
+
+  it('reads no blueprint for a gadget whose release of it is not on record', async () => {
+    await render({ blueprintId: 'trip' })
 
     expect(getBlueprint).not.toHaveBeenCalled()
     expect(container.textContent).toBe('no update')

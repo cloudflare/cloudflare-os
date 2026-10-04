@@ -180,7 +180,9 @@ export type GadgetRecord = {
    * The blueprint this gadget follows and the release of it the gadget most recently merged.
    * Set when the gadget is instantiated from a blueprint, and by each accept of a proposal to
    * merge one into it (see AiChatMessageBody.blueprintMerges). Absent on a gadget that never
-   * took a blueprint's release, or last did before gadgets recorded it.
+   * took a blueprint's release. One that last did before gadgets recorded it has none either,
+   * unless an agent created it from a blueprint and the chat log still said which: it then
+   * names that blueprint, with no release (see migrateToBlueprintUpstreams()).
    *
    * The record has to name the blueprint because the release commit in the gadget's history
    * does not: a blueprint id is a share link, and release commits travel on into the packs of
@@ -1083,6 +1085,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   4 = unified workpiece records: every row of the `gadgets` collection carries the
       //       WorkpieceRecord `type` discriminant (pre-existing rows stamped "gadget"); worktree
       //       rows may exist from here on.
+      //   5 = gadgets that an agent created from a blueprint before gadgets recorded what they
+      //       follow name that blueprint as `upstream`, where the chat log still told which.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)

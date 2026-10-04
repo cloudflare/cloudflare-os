@@ -1327,6 +1327,37 @@ describe("applying a blueprint to a gadget", () => {
     });
   });
 
+  it("assumes a base for a gadget that names its blueprint but not the release it took",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1, V2]);
+
+    await withWorkspace(async workspace => {
+      let { impl, client } = workspace;
+      // What an agent made from the blueprint before gadgets recorded the release they took,
+      // as the storage migration leaves it (see migrateToBlueprintUpstreams()).
+      let first = await legacyGadget(impl, V3);
+      impl.storage.gadgets.put(
+          { ...theGadget(impl), upstream: { blueprintId: alice.blueprintId } });
+      let before = theGadget(impl);
+      expect(summaries(impl, "build")).toMatchObject(
+          [{ id: before.id, upstream: { blueprintId: alice.blueprintId } }]);
+
+      // Following the blueprint does not make the gadget's first files a release of it. They
+      // are as much a guess as for a gadget that follows nothing.
+      expect(await apply(client, before.id, alice.blueprintId)).toEqual({ outcome: "unrelated" });
+      let chatId = await propose(workspace, alice.blueprintId, { allowUnrelated: true });
+      expect(proposal(impl, chatId).merge).toMatchObject(
+          { kind: "merge", baseCommit: first, unverifiedBase: true, conflictPaths: [] });
+      expect(await proposedFiles(impl, chatId)).toEqual({ ...V2, ...MINE });
+
+      // Accepting records the release, and the gadget is like any other from then on.
+      let after = await accept(workspace, chatId);
+      expect(after.upstream)
+          .toEqual({ blueprintId: alice.blueprintId, commitId: alice.published[1].commitId });
+      expect(await apply(client, before.id, alice.blueprintId)).toEqual({ outcome: "upToDate" });
+    });
+  });
+
   it("records the bindings the release declares that the gadget lacks", async () => {
     let bindings = {
       HAS: declaredBinding("Has"), LACKS: declaredBinding("Lacks"),

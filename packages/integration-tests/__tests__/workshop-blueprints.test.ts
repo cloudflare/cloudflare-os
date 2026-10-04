@@ -845,7 +845,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
   const legacyGadget = await gadgetNow(fromLegacy, await defaultGadget(fromLegacy));
   expect(await codeAt(fromLegacy, legacyGadget.commitId)).toEqual(V1);
   expect(legacyGadget.upstream?.blueprintId).toBe(legacyId);
-  const snapshot = legacyGadget.upstream!.commitId;
+  const snapshot = legacyGadget.upstream!.commitId!;
   expect((await parentsOf(fromLegacy, legacyGadget.commitId))?.slice(1)).toEqual([snapshot]);
   expect(await parentsOf(fromLegacy, snapshot)).toEqual([]);
   expect(await codeAt(fromLegacy, snapshot)).toEqual(V1);

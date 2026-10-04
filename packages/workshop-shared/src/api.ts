@@ -4066,7 +4066,7 @@ export type GadgetSummary = {
 /**
  * The blueprint a gadget follows: the one it takes updates from, and how much of it the gadget
  * already has. An update is available when the blueprint names a current release
- * (`BlueprintMetadata.commitId`, from `PublicApi.getBlueprint()`) other than `commitId`.
+ * (`BlueprintMetadata.commitId`, from `PublicApi.getBlueprint()`) other than a known `commitId`.
  */
 export type GadgetUpstream = {
   /** The blueprint's id. */
@@ -4076,8 +4076,14 @@ export type GadgetUpstream = {
    * The release of that blueprint the gadget most recently merged: a release commit, and an
    * ancestor of the gadget's head. For a blueprint stored before releases were commits, it is
    * the commit that everyone who reads that content derives from its files.
+   *
+   * Absent if the gadget was created from the blueprint before gadgets recorded the release
+   * they took. Which release that was is then unknown: whether an update is available cannot
+   * be told, and applying the blueprint merges over a guessed base (see
+   * BlueprintMerge.unverifiedBase), as for a gadget that follows no blueprint. Accepting that
+   * proposal records the release.
    */
-  commitId: string;
+  commitId?: string;
 };
 
 /**

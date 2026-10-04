@@ -26,8 +26,8 @@ import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/u
 import { GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToGitStorage, migrateToMultiGadget,
-  migrateToWorkpieceTypes,
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
+  migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1113,10 +1113,12 @@ class OverseerImpl implements AgentHooks {
         await migrateToGitStorage(this);
         migrateToActionIndexes(this);
         migrateToWorkpieceTypes(this);
+        migrateToBlueprintUpstreams(this);
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
       migrateToActionIndexes(this);
       migrateToWorkpieceTypes(this);
+      migrateToBlueprintUpstreams(this);
       this.#resumeInterruptedAgents();
     }
   }
@@ -3435,12 +3437,12 @@ class OverseerImpl implements AgentHooks {
   // the one in the blueprint's own lineage is preferred, and then the latest.
   //
   // Histories with nothing in common leave the base to be assumed: the release the gadget last
-  // took from the blueprint it follows, or for a gadget that follows none, the first commit of
-  // its own to have any files. If it is this blueprint that the gadget follows, that is no
-  // guess. Only a blueprint's publisher can release under its id, so its releases are versions
-  // of one thing even where they are not chained to one another, as a bundled blueprint's are
-  // not. Otherwise the base is `unverified`, unless it has no files to be wrong about or the
-  // release's history holds the very same tree.
+  // took from the blueprint it follows, or for a gadget with no such release on record, the
+  // first commit of its own to have any files. If it is this blueprint that the gadget took
+  // the release from, that is no guess. Only a blueprint's publisher can release under its id,
+  // so its releases are versions of one thing even where they are not chained to one another,
+  // as a bundled blueprint's are not. Otherwise the base is `unverified`, unless it has no
+  // files to be wrong about or the release's history holds the very same tree.
   async #blueprintMergeBase(upstream: GadgetUpstream | undefined, head: string, release: string,
                             blueprintId: string)
       : Promise<{commitId: string, files: Map<string, string>, unverified: boolean} | undefined> {
@@ -3449,7 +3451,8 @@ class OverseerImpl implements AgentHooks {
       let commitId = upstream?.commitId ?? await this.#firstCommitWithFiles(head);
       let files = await this.gitStore.readCommitFilesIfHeld(commitId);
       if (files === undefined) return undefined;
-      let unverified = upstream?.blueprintId !== blueprintId && files.size > 0 &&
+      let taken = upstream?.blueprintId === blueprintId && upstream.commitId !== undefined;
+      let unverified = !taken && files.size > 0 &&
           !await this.#historyHoldsTree(release, await this.gitStore.commitTree(commitId));
       return {commitId, files, unverified};
     }

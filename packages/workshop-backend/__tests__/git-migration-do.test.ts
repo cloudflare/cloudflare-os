@@ -11,15 +11,17 @@
 // impl.storage. The public DO surface (open() etc.) is deliberately never called:
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
-// The version-3 action-index backfill and the version-4 workpiece-type stamp ride the same
-// constructor trigger, so their tests live here too.
+// The version-3 action-index backfill, the version-4 workpiece-type stamp and the version-5
+// blueprint-upstream backfill ride the same constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
-import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
+import {
+  OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
+} from "../src/storage-schema/overseer-migrations";
 import {
   LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
 } from "./legacy-workspace";
@@ -222,6 +224,145 @@ describe("action-index backfills via the Overseer constructor", () => {
           .toEqual([3]);
       expect([...impl.storage.actions.byLastChanged.list()].map((r: any) => r.id))
           .toEqual([2, 3, 1]);
+    });
+  });
+});
+
+describe("the blueprint-upstream backfill via the Overseer constructor", () => {
+  const AGENT = { type: "agent", id: "some-model", name: "Agent" };
+
+  function putGadget(impl: any, id: number, extra: object = {}): void {
+    impl.storage.gadgets.put({
+      type: "gadget", id, title: `Gadget ${id}`, created: new Date(0), bindingName: `G${id}`,
+      bindings: {}, ...extra,
+    });
+  }
+
+  function putChat(impl: any, id: number): void {
+    impl.storage.chatMeta.put(
+        { id, title: "Chat", started: new Date(0), lastActive: new Date(id) });
+  }
+
+  // The agent's message for a step in which it called createGadget, as the log records it. A
+  // call that succeeded recorded the gadget it made.
+  function putCreation(impl: any, chatId: number, sequence: number,
+                       call: { gadgetId?: number, blueprintId?: string, error?: string }): void {
+    impl.storage.chats.put({
+      chatId, sequence, timestamp: new Date(chatId * 1_000_000 + sequence), author: AGENT,
+      type: "message", message: "",
+      toolCalls: [{
+        toolCallId: `call-${chatId}-${sequence}`, toolName: "createGadget",
+        input: {
+          title: "Made", bindingName: "MADE",
+          ...(call.blueprintId !== undefined ? { blueprintId: call.blueprintId } : {}),
+        },
+        ...(call.gadgetId !== undefined
+            ? { output: { gadgetId: call.gadgetId, changeId: 1 } } : {}),
+        ...(call.error !== undefined ? { error: call.error } : {}),
+      }],
+    });
+  }
+
+  function putText(impl: any, chatId: number, sequence: number): void {
+    impl.storage.chats.put({
+      chatId, sequence, timestamp: new Date(chatId * 1_000_000 + sequence), author: USER,
+      type: "message", message: "And another thing.",
+    });
+  }
+
+  it("names the blueprint of each gadget an agent created from one", async () => {
+    await inOverseer("upstream-backfill", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      putGadget(impl, 1);
+      putGadget(impl, 2);
+      putGadget(impl, 3, { upstream: { blueprintId: "followed", commitId: "f".repeat(40) } });
+      putGadget(impl, 4, { pending: { chatId: 2, sequence: 1 } });
+      putGadget(impl, 5);
+      putGadget(impl, 6);
+
+      putChat(impl, 1);
+      putText(impl, 1, 0);
+      putCreation(impl, 1, 1, { gadgetId: 1, blueprintId: "docs" });
+      putCreation(impl, 1, 2, { gadgetId: 2 });  // created empty
+      putCreation(impl, 1, 3, { gadgetId: 3, blueprintId: "sheets" });
+      // A creation since reverted, whose gadget is gone, and a call that failed.
+      putCreation(impl, 1, 4, { gadgetId: 99, blueprintId: "docs" });
+      putCreation(impl, 1, 5, { blueprintId: "docs", error: "No such blueprint: docs." });
+      putChat(impl, 2);
+      putCreation(impl, 2, 0, { gadgetId: 4, blueprintId: "slides" });
+      // Last write: arm the constructor's version-4 migration.
+      impl.storage.version.put(4);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("upstream-backfill", async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      let upstreams = [...impl.storage.gadgets.list()].map((gadget: any) => gadget.upstream);
+      expect(upstreams).toEqual([
+        // The blueprint, and no release: the log does not tell which the gadget took.
+        { blueprintId: "docs" },
+        undefined,
+        // What a gadget already follows stands.
+        { blueprintId: "followed", commitId: "f".repeat(40) },
+        { blueprintId: "slides" },
+        // No call names these two: the one instantiated outside a chat, say, and the one whose
+        // creating chat was deleted.
+        undefined,
+        undefined,
+      ]);
+      // A gadget still pending in its chat stays so.
+      expect(impl.storage.gadgets.get(4).pending).toEqual({ chatId: 2, sequence: 1 });
+      expect(impl.storage.gadgets.get(99)).toBeUndefined();
+    });
+  });
+
+  it("reads the start of each chat, within one budget that the chats share", async () => {
+    // Two chats, so half the budget each. The first uses two messages of its half and the
+    // second gets the rest, which reaches the creation of gadget 1 but not that of gadget 2.
+    let reach = UPSTREAM_BACKFILL_MESSAGE_LIMIT - 2;
+    await inOverseer("upstream-backfill-budget", async impl => {
+      putGadget(impl, 1);
+      putGadget(impl, 2);
+      putChat(impl, 1);
+      putText(impl, 1, 0);
+      putText(impl, 1, 1);
+      putChat(impl, 2);
+      for (let sequence = 0; sequence < reach - 1; sequence++) putText(impl, 2, sequence);
+      putCreation(impl, 2, reach - 1, { gadgetId: 1, blueprintId: "docs" });
+      putCreation(impl, 2, reach, { gadgetId: 2, blueprintId: "docs" });
+      impl.storage.version.put(4);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("upstream-backfill-budget", async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.gadgets.get(1).upstream).toEqual({ blueprintId: "docs" });
+      expect(impl.storage.gadgets.get(2).upstream).toBeUndefined();
+    });
+  });
+
+  // Skipping the scan changes nothing that is stored, so this runs the migration by hand, over
+  // chat collections that refuse to be read.
+  it.each([
+    ["no gadget", (_impl: any) => {}],
+    ["no gadget but ones that follow a blueprint already", (impl: any) => {
+      putGadget(impl, 1, { upstream: { blueprintId: "followed", commitId: "f".repeat(40) } });
+    }],
+  ])("reads no chat in a workspace with %s", async (description, seed) => {
+    await inOverseer(`upstream-backfill-skip: ${description}`, async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      seed(impl);
+      putChat(impl, 1);
+      putCreation(impl, 1, 0, { gadgetId: 1, blueprintId: "docs" });
+      impl.storage.version.put(4);
+
+      let unread = { value: { list: () => { throw new Error("read a chat"); } } };
+      let storage = Object.create(impl.storage, { chatMeta: unread, chats: unread });
+      migrateToBlueprintUpstreams(Object.create(impl, { storage: { value: storage } }));
+
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
     });
   });
 });
