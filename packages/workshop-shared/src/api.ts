@@ -2693,10 +2693,17 @@ export interface Overseer extends RpcTarget {
    * `changes` message are swept in first, and there is no way to accept only a subset.
    *
    * Accepting is only ever a fast-forward: every gadget touched by the merged changes must have
-   * its chat pin equal to the gadget's current head commit (see
-   * ChatGadgetPinState.mergedCommit). If mainline has advanced past any pin, nothing at all is
-   * merged and the call returns a "stale" outcome (an expected result, not an exception; see
-   * MergeChangesResult): call updateChatFromMainline(), resolve any conflicts, and retry.
+   * its chat pin's ChatGadgetPinState.mergedCommit equal to the gadget's current head commit.
+   * If mainline has advanced past any pin, nothing at all is merged and the call returns a
+   * "stale" outcome (an expected result, not an exception; see MergeChangesResult): call
+   * updateChatFromMainline(), resolve any conflicts, and retry. Where the pin's `baseCommit` is
+   * a merge commit not yet accepted, whose first parent is `mergedCommit`, the head moves
+   * through it: to the merge commit itself if the chat changed nothing since, else to a new
+   * commit on top of it.
+   *
+   * A chat has something to accept when it holds a pin, a gadget or binding edge pending in it,
+   * or a blueprint proposal that is neither merged nor reverted. Otherwise this is a no-op and
+   * records nothing.
    *
    * A successful merge closes the chat's current **epoch**: all merged content now lives in
    * commits, so the chat's code base resets to empty (every pin is dropped, the change stream
@@ -2743,14 +2750,17 @@ export interface Overseer extends RpcTarget {
    * Indicates that the user has requested that proposed changes starting from the given sequence
    * number in the chat thread be reverted.
    *
-   * Throws if the range covers a still-proposed mainline merge (see
+   * Throws if the range covers a still-proposed mainline merge that records no `gadgets` (see
    * AiChatMessageBody.mainlineMerge for why such a message cannot be erased), or if the range
    * erases the chat's conversion boundary while keeping an earlier still-proposed batch (see
    * AiChatMessageBody.conversionBoundary; a revert covering everything, `revertFrom` 0, always
    * satisfies this).
    *
-   * Pins declared by reverted messages are removed from ChatCodeBase (a pin survives a revert
-   * iff its declaring message survives), and changes not yet materialized into a message are erased
+   * Each pin is settled from the log as it stands after the revert: its `baseCommit` is that of
+   * its last surviving declaration, and a pin with none is removed from ChatCodeBase. Its
+   * `mergedCommit` is put back to what the earliest update from mainline the revert covers
+   * records it was before (MainlineMergeGadget.baseCommit), and is otherwise left alone.
+   * Changes not yet materialized into a message are erased
    * along with the reverted range. Erasing already-applied changes invalidates every client's local
    * state -- content they may have transformed against is gone -- so ChatCodeBase.generation is
    * bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of
@@ -3032,7 +3042,9 @@ export type AiChatMetadata = {
  * (Overseer.listTree(baseCommit), with each file's text read by path via readFilesAtCommit()
  * only when something needs it -- an `edit` to apply, or a file the user opens; a whole
  * repository tree is never fetched); apply the current epoch's non-reverted `changes` messages'
- * changes in log order; then apply the changes not yet materialized into a message, delivered
+ * changes in log order, from the pin's last declaration on (see ChatGadgetPinRecord, and
+ * `composeEpochChanges` in `@gadgets/workshop-shared/code-change`); then apply the changes not
+ * yet materialized into a message, delivered
  * in revision order via AiChatSubscriber.changeApplied(). Accepting changes ends the epoch: the
  * pin set resets to empty and the change stream restarts.
  */
@@ -3106,39 +3118,59 @@ export type ChatCodeBase = {
  * worktree, also its first commit()), which pins at the then-current head (a worktree's
  * accepted commit) -- and lasts until the epoch ends or the declaring message is reverted.
  *
- * This same shape is both the declaration a client submits with a first modification
- * (CodeChangeSubmission.pins) and the permanent record of it in the chat log (the `pins` field of
- * a "changes" message) and in compaction checkpoints. The log record is what a closed epoch's
- * content is reconstructed from: start from `baseCommit`'s tree, then apply the epoch's changes
- * in order. Nothing here ever changes once recorded; a pin's mutable state lives in
- * ChatGadgetPinState.
+ * This shape is the declaration a client submits with a first modification
+ * (CodeChangeSubmission.pins). Its permanent record in the chat log and in compaction
+ * checkpoints is a ChatGadgetPinRecord, which only the server writes.
  */
 export type ChatGadgetPin = {
   /** The pinned gadget. */
   gadgetId: WorkpieceId;
 
   /**
-   * The commit whose tree the chat's uncommitted changes for this gadget apply on top of.
-   * Immutable for the life of the pin: every change recorded for this gadget since is expressed
-   * against content rooted here, so the base moving would invalidate them all. (Mainline movement
-   * is merged into the chat as ordinary changes, advancing ChatGadgetPinState.mergedCommit --
-   * never this.)
+   * The commit whose tree the chat's uncommitted changes for this gadget apply on top of. Fixed
+   * until a later declaration re-roots the gadget (see ChatGadgetPinRecord): every change
+   * recorded for this gadget since is expressed against content rooted here, so nothing else
+   * moves it.
    */
   baseCommit: string;
 };
 
 /**
- * A pin's current state within a chat (see ChatCodeBase.pins): the immutable ChatGadgetPin the
- * epoch recorded, plus how far mainline has been merged into the chat since. That addition is
- * live state rather than history, which is why it is absent from the declaration a client submits
- * and from the record the chat log keeps.
+ * A pin declaration as the chat log records it: the `pins` of a "changes" message, and of a
+ * compaction checkpoint. A declaration **re-roots** its gadget: the gadget's chat content
+ * becomes `baseCommit`'s tree, and any changes that earlier messages of the epoch recorded for
+ * the gadget no longer count. Every fold of the log applies that one rule, so a closed epoch's
+ * content is reconstructed by starting each gadget from its last surviving declaration's tree
+ * and applying the changes recorded from that message on. A reverted message declares nothing,
+ * so reverting a re-root brings back the declaration before it and the changes recorded since.
+ */
+export type ChatGadgetPinRecord = ChatGadgetPin & {
+  /**
+   * ChatGadgetPinState.mergedCommit as of the declaration, for whoever describes it. Absent
+   * when it equals `baseCommit`. A record of the past only: the pin's live `mergedCommit` is
+   * never set from it.
+   */
+  mergedCommit?: string;
+};
+
+/**
+ * A pin's current state within a chat (see ChatCodeBase.pins): its current declaration, plus how
+ * far mainline has been merged into the chat since. That addition is live state rather than
+ * history, which is why it is absent from the declaration a client submits.
  */
 export type ChatGadgetPinState = ChatGadgetPin & {
   /**
-   * The most recent mainline commit whose content has been merged into the chat for this gadget.
-   * Starts equal to baseCommit and advances on updateChatFromMainline(). Accepting the chat's
-   * changes requires this to equal the gadget's current head (WorkpieceSummary.commitId); a
-   * difference means the chat is stale and the UI should offer updating from mainline.
+   * The most recent mainline commit whose content the chat's content for this gadget includes.
+   * Accepting the chat's changes requires this to equal the gadget's current head
+   * (WorkpieceSummary.commitId); a difference means the chat is stale and the UI should offer
+   * updating from mainline.
+   *
+   * It starts equal to `baseCommit`. An update from mainline recorded before re-roots existed
+   * advanced it to a descendant of `baseCommit`. A re-root that merges mainline into the chat
+   * declares a merge commit as `baseCommit` and sets this to the merge's first parent, the head
+   * that was merged; accepting then fast-forwards the head from here through the merge commit
+   * (see Overseer.mergeChanges()). A revert puts back what the earliest update it covers
+   * records the pin had before (see AiChatMessageBody.mainlineMerge).
    */
   mergedCommit: string;
 };
@@ -3384,12 +3416,12 @@ export type AiChatMessageBody = {
   observedCodeVersion?: number;
 
   /**
-   * Pins this batch establishes: for each gadget listed, this message's `change` contains the
-   * epoch's first modification of that gadget's code, applied on top of the pinned commit's
-   * tree. Content reconstruction establishes each listed pin's base before applying the change (see
-   * ChatGadgetPin).
+   * Pins this batch declares. For each gadget listed, the chat's content restarts at the pinned
+   * commit's tree, dropping whatever earlier messages of the epoch changed in it (see
+   * ChatGadgetPinRecord), and this message's `change` applies on top. Usually the declaration
+   * accompanies the epoch's first modification of the gadget's code.
    */
-  pins?: ChatGadgetPin[];
+  pins?: ChatGadgetPinRecord[];
 
   /**
    * The span of the change stream this batch materialized: this message's `change` is the
@@ -3412,12 +3444,15 @@ export type AiChatMessageBody = {
    * `change` is absent when the chat's content already matched the merged mainline commits;
    * the batch then records only that the pins advanced.
    *
-   * A batch carrying this cannot be reverted while still proposed (Overseer.revertChanges()
-   * refuses): the merge advanced the chat's pins, and erasing its content while keeping the
-   * advanced pins would let a later accept silently overwrite the mainline changes it
+   * `gadgets`, when present, records each gadget's part of the merge, and in particular what
+   * the pin's `mergedCommit` was before it, which a revert covering this message puts back (see
+   * Overseer.revertChanges()). A batch without `gadgets` was recorded before that was so: it
+   * advanced the chat's pins with no record of their earlier values, so it cannot be reverted
+   * while still proposed (Overseer.revertChanges() refuses). Erasing its content while keeping
+   * the advanced pins would let a later accept silently overwrite the mainline changes it
    * delivered.
    */
-  mainlineMerge?: {conflictPaths: string[]};
+  mainlineMerge?: {conflictPaths: string[], gadgets?: MainlineMergeGadget[]};
 
   /**
    * Present on the synthetic message that converted this chat from the pre-git-storage
@@ -4534,6 +4569,31 @@ export type BlueprintMerge = {
    * as their statuses show.
    */
   messageCount?: number;
+};
+
+/**
+ * One gadget's part of an update from mainline (see AiChatMessageBody.mainlineMerge): the three
+ * sides of its merge, as commits, and what did not merge cleanly.
+ */
+export type MainlineMergeGadget = {
+  /** The pinned gadget that was brought up to date. */
+  gadgetId: WorkpieceId;
+
+  /**
+   * The base of the merge: the mainline commit the chat had last merged for this gadget, which
+   * is the pin's ChatGadgetPinState.mergedCommit as it was before the update. A revert of the
+   * update puts the pin's `mergedCommit` back to this.
+   */
+  baseCommit: string;
+
+  /** A commit of the chat's files for the gadget as they were before the update. */
+  chatCommit: string;
+
+  /**
+   * The files whose merge was not clean, as paths within the gadget, in sorted order (see
+   * BlueprintMerge.conflictPaths).
+   */
+  conflictPaths: string[];
 };
 
 /** Result of GadgetClient.applyBlueprint(). */

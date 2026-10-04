@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPin, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -48,7 +48,7 @@ import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldProposedChanges, type ChangeBatch } from "./agent-compaction";
+import { chatChangeStatuses } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
@@ -2356,14 +2356,15 @@ class OverseerImpl implements AgentHooks {
     this.#liveWindowCache.delete(chatId);
   }
 
-  // Gadgets whose pin establishment is recorded by a surviving (non-reverted) "changes" message
-  // in the chat's current epoch. The complement -- meta pins missing from this set -- is what
-  // materialization must stamp onto its message (see materializeChatChanges), and what pin rollback
-  // removes when the rows that established them are discarded.
-  declaredPinGadgets(chatId: number): Set<WorkpieceId> {
+  // Each gadget's last pin declaration on a surviving (non-reverted) "changes" message in the
+  // chat's current epoch: the one its content is rooted at (see ChatGadgetPinRecord). Meta pins
+  // missing from the map are what materialization must stamp onto its message (see
+  // materializeChatChanges), and what pin rollback removes when the rows that established them
+  // are discarded; a revert also takes each surviving pin's base from here.
+  declaredPins(chatId: number): Map<WorkpieceId, ChatGadgetPinRecord> {
     let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     let statuses = chatChangeStatuses(messages);
-    let declared = new Set<WorkpieceId>();
+    let declared = new Map<WorkpieceId, ChatGadgetPinRecord>();
     for (let msg of messages) {
       if (msg.type === "merge" && msg.epochBoundary) {
         declared.clear();
@@ -2372,25 +2373,29 @@ class OverseerImpl implements AgentHooks {
         // would reset the worktree's content mid-fold), and a revert must not drop them (they
         // root content that survived the accept; merges themselves are never reverted) -- the
         // next accept's epoch reset is what retires such a pin.
-        for (let pin of msg.worktreePins ?? []) declared.add(pin.worktreeId);
+        for (let pin of msg.worktreePins ?? []) {
+          declared.set(pin.worktreeId, {gadgetId: pin.worktreeId, baseCommit: pin.baseCommit});
+        }
       } else if (msg.type === "changes" && statuses.get(msg.sequence) !== "reverted") {
         if (msg.conversionBoundary) declared.clear();
-        for (let pin of msg.pins ?? []) declared.add(pin.gadgetId);
+        for (let pin of msg.pins ?? []) declared.set(pin.gadgetId, pin);
       }
     }
     return declared;
   }
 
   // Pins in the chat's live state (see ChatGadgetPinState) whose establishment no surviving
-  // current-epoch "changes" message records yet, stripped back to what the log stores. A pin
-  // lands in `codeBase` atomically with the row that needed it; its durable log declaration
-  // lands when the rows materialize.
-  undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatGadgetPin[] {
+  // current-epoch "changes" message records yet, as the log records them. A pin lands in
+  // `codeBase` atomically with the row that needed it; its durable log declaration lands when
+  // the rows materialize.
+  undeclaredMetaPins(chatId: number, meta: AiChatMetadata): ChatGadgetPinRecord[] {
     let pins = meta.codeBase?.pins ?? [];
     if (pins.length === 0) return [];
-    let declared = this.declaredPinGadgets(chatId);
+    let declared = this.declaredPins(chatId);
     return pins.filter(pin => !declared.has(pin.gadgetId))
-        .map(pin => ({gadgetId: pin.gadgetId, baseCommit: pin.baseCommit}));
+        .map(({gadgetId, baseCommit, mergedCommit}) => ({
+          gadgetId, baseCommit, ...(mergedCommit !== baseCommit ? {mergedCommit} : {}),
+        }));
   }
 
   makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
@@ -2877,20 +2882,25 @@ class OverseerImpl implements AgentHooks {
       // depends on the transform below, but transforms only ever drop file changes, so prefetching
       // for every *declared* pin (plus every bridge boundary commit) covers all cases.
       let content = await this.getCurrentChatContent(chatId, meta);
-      let pinData = new Map<string, {head: string, previousHead: string | undefined,
+      let pinData = new Map<string, {head: string, recentHeads: string[],
                                      baseFiles: Map<string, string>}>();
       let prefetchPin = async (gadgetId: WorkpieceId, baseCommit: string) => {
         if (pinData.has(`${gadgetId}:${baseCommit}`)) return;
         let record = this.storage.gadgets.get(gadgetId);
         let head = record?.type === "gadget" ? record.commitId : undefined;
         if (head === undefined) return;  // validated (and rejected) in the sync tail
+        // The head and up to two first-parent steps back, stopping at the declared base. One
+        // accept that writes on a merge commit moves the head two steps (`C = [M]`, `M = [H,
+        // ...]`), so a client that raced it still declares `H`. First parents only: a head's
+        // other parents (a merged release, a chat's snapshot) were never this gadget's head.
+        let recentHeads = [head];
+        while (recentHeads.length < 3 && recentHeads.at(-1) !== baseCommit) {
+          let parent = (await this.gitStore.readCommitObject(recentHeads.at(-1)!)).parent[0];
+          if (parent === undefined) break;
+          recentHeads.push(parent);
+        }
         pinData.set(`${gadgetId}:${baseCommit}`, {
-          head,
-          // The first parent only: a head that merged a blueprint has the release as another,
-          // which was never this gadget's head.
-          previousHead: head === baseCommit
-              ? undefined : (await this.gitStore.readCommitObject(head)).parent[0],
-          baseFiles: await this.gitStore.readCommitFiles(baseCommit),
+          head, recentHeads, baseFiles: await this.gitStore.readCommitFiles(baseCommit),
         });
       };
       for (let decl of submission.pins ?? []) {
@@ -3000,7 +3010,7 @@ class OverseerImpl implements AgentHooks {
   #applyValidatedSubmission(
       chatId: number, meta: AiChatMetadata, codeBase: ChatCodeBase,
       submission: CodeChangeSubmission, author: AiChatAuthorInfo, content: CodeContent,
-      pinData: Map<string, {head: string, previousHead: string | undefined,
+      pinData: Map<string, {head: string, recentHeads: string[],
                             baseFiles: Map<string, string>}>,
       bridge: ChatChangeBoundaryRecord | undefined,
       worktreeBases: Map<WorkpieceId, string>,
@@ -3063,9 +3073,10 @@ class OverseerImpl implements AgentHooks {
     }
 
     // Establish pins: validate each declaration against the gadget's current head (tolerating
-    // the head before it, its first parent -- the client raced exactly one merge) or the
-    // worktree's accepted commit, idempotent against an identical existing pin, conflicting
-    // against a different one.
+    // the two heads before it along first parents -- the client raced exactly one accept, which
+    // moves the head two steps when it writes on a merge commit) or the worktree's accepted
+    // commit, idempotent against an identical existing pin, conflicting against a different one.
+    // A pin behind the head is harmless: the accept's stale gate catches it.
     let newPins: ChatGadgetPinState[] = [];
     let validationContent = content;
     for (let [gadgetId, baseCommit] of declarations) {
@@ -3102,7 +3113,7 @@ class OverseerImpl implements AgentHooks {
       if (prefetched === undefined || prefetched.head !== record.commitId) {
         return "retry";  // the head moved during the prefetches; re-resolve
       }
-      if (baseCommit !== prefetched.head && baseCommit !== prefetched.previousHead) {
+      if (!prefetched.recentHeads.includes(baseCommit)) {
         throw new Error("Pin declaration does not match the gadget's current head.");
       }
       newPins.push({gadgetId, baseCommit, mergedCommit: baseCommit});
@@ -3569,18 +3580,17 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    // Get the proposed updates for the thread. Each covered gadget creation or binding addition
-    // sits on one of these "changes" messages (see addChatMessages), so an empty list also
-    // means there is nothing to promote -- unless the chat still holds a worktree pin. Today a
-    // worktree pin is established only by a modification, whose message is proposed; but chats
-    // from before that carry pins their worktree was born with or re-pinned at by an earlier
-    // accept, which are never dropped by anything else. Running the epoch reset drops them
-    // (the auto-commit planning finds the worktree clean), which is how one accept moves such a
-    // chat into the current regime. A blueprint proposal is asked after separately because one
-    // that changes no file leaves nothing in a compaction checkpoint for this list to show.
-    let updates = this.getProposedChanges(chatId);
-    if (updates.length === 0 && blueprintMerges.size === 0 &&
-        !entryCodeBase.pins.some(pin => this.isWorktree(pin.gadgetId))) {
+    // Whether the chat proposes anything is read from its state, never from its changes: a
+    // pin, a gadget or binding edge pending in it (which is what the UI goes by, see
+    // proposedChangeWorkpieceIds), or a surviving blueprint proposal. The changes can't say: a
+    // re-root leaves a pin at a merge commit as the whole proposal, with no change recorded
+    // anywhere, and a compaction checkpoint keeps nothing of a proposal that changes no file.
+    // Once the sweep above has run, a pin exists only while a surviving message of the epoch
+    // declares it, so this agrees with the log. (A chat from before worktree pins meant
+    // modification can hold a worktree pin that proposes nothing; the epoch reset below drops
+    // it -- the auto-commit planning finds the worktree clean -- which is how one accept moves
+    // such a chat into the current regime.)
+    if (this.proposedChangeWorkpieceIds(chatId, meta).length === 0 && blueprintMerges.size === 0) {
       // Nothing to merge, so this is a no-op.
       return {outcome: "merged"};
     }
@@ -3618,9 +3628,11 @@ class OverseerImpl implements AgentHooks {
 
     // `baseHead` snapshots the head this accept fast-forwards from (also the value the post-await
     // revalidation compares against -- a primitive, so it can't be confused by whatever object
-    // the storage layer hands back later).
+    // the storage layer hands back later). `parent` is the commit the new head is written on,
+    // or becomes when nothing needs writing (`reuseParent`); `release` is a release the parent's
+    // history lacks, which the new commit merges.
     let toCommit: {record: GadgetRecord, files: Map<string, string>, baseHead?: string,
-                   release?: string}[] = [];
+                   parent?: string, reuseParent: boolean, release?: string}[] = [];
     for (let record of Array.from(this.storage.gadgets.list())) {
       if (record.type === "worktree") {
         // Worktrees never gate an accept and get no head-commit work here: their content stays
@@ -3638,7 +3650,8 @@ class OverseerImpl implements AgentHooks {
         continue;
       }
       let files = chatContent.get(record.id) ?? new Map<string, string>();
-      let mergedCommit = pins.get(record.id)?.mergedCommit;
+      let pin = pins.get(record.id);
+      let mergedCommit = pin?.mergedCommit;
       let baseFiles = mergedCommit !== undefined
           ? await this.gitStore.readCommitFiles(mergedCommit)
           : new Map<string, string>();
@@ -3667,21 +3680,49 @@ class OverseerImpl implements AgentHooks {
       if (record.commitId !== mergedCommit) {
         return {outcome: "stale"};
       }
-      toCommit.push({record, files, baseHead: record.commitId, release});
+
+      // The new head's parent. A pin re-rooted at a merge commit not yet accepted -- one whose
+      // first parent is the head the chat merged -- fast-forwards through that commit, so the
+      // merge stays in the gadget's history. Any other pin (one that never moved, or one that an
+      // update from before re-roots advanced past its base) commits on the head itself.
+      let parent = mergedCommit;
+      if (pin !== undefined && pin.baseCommit !== pin.mergedCommit &&
+          (await this.gitStore.readCommitObject(pin.baseCommit)).parent[0] === pin.mergedCommit) {
+        parent = pin.baseCommit;
+      }
+
+      // If the chat's files are the parent's own and the parent's history holds every release
+      // proposed, the parent itself becomes the head and nothing is written: an accept with no
+      // edits after a merge makes the merge commit the head.
+      let parentRelease = release;
+      if (parent !== mergedCommit) {
+        if (parentRelease !== undefined && this.gitCache.isAncestor(parentRelease, parent!)) {
+          parentRelease = undefined;
+        }
+        baseFiles = await this.gitStore.readCommitFiles(parent!);
+      }
+      let reuseParent = parent !== undefined && parentRelease === undefined &&
+          filesEqual(files, baseFiles);
+      toCommit.push({record, files, baseHead: record.commitId, parent, reuseParent,
+                     release: parentRelease});
     }
 
     // Write the commits (content-addressed object writes; harmless if the accept below turns out
     // stale after all).
     let identity = commitIdentityForAuthor(userMeta.profile);
     let commits: {gadgetId: WorkpieceId, commitId: string}[] = [];
-    for (let {record, files, baseHead, release} of toCommit) {
-      let parents = baseHead !== undefined ? [baseHead] : [];
+    for (let {record, files, parent, reuseParent, release} of toCommit) {
+      if (reuseParent) {
+        commits.push({gadgetId: record.id, commitId: parent!});
+        continue;
+      }
+      let parents = parent !== undefined ? [parent] : [];
       if (release !== undefined) {
         // A merged release is never the first parent, which is the gadget's own previous
         // state. A gadget that has none starts from an empty root, as one instantiated outside
         // any chat does (see initializeFromBlueprint). The commit marks the release as merged,
         // which is what tells it from any other parent (see releasesMergedSince).
-        if (baseHead === undefined) {
+        if (parent === undefined) {
           parents.push(await this.gitStore.writeFilesAsCommit(new Map(), {
             parents: [],
             author: identity,
@@ -4021,16 +4062,17 @@ class OverseerImpl implements AgentHooks {
           "only be discarded together. Discard all of the chat's pending changes instead.");
     }
 
-    // A still-proposed mainline merge (see updateChatFromMainline) cannot be reverted: it
-    // advanced the chat's pins to commits whose content arrived in that very update, so erasing
-    // the update would leave the pins claiming content the chat no longer has -- and a later
-    // accept would then silently overwrite those mainline changes. Rolling pins back would need
-    // their pre-merge values, which aren't recorded; until they are, refuse loudly. (An
-    // *accepted* mainline merge is untouched by reverts, so it doesn't block anything. Scanned
-    // over canonical history rather than getProposedChanges, whose compacted-prefix batch hides
+    // A still-proposed mainline merge that records no `gadgets` cannot be reverted: it advanced
+    // the chat's pins to commits whose content arrived in that very update, so erasing the
+    // update would leave the pins claiming content the chat no longer has -- and a later accept
+    // would then silently overwrite those mainline changes. Rolling the pins back needs their
+    // pre-merge values, which only a merge that records `gadgets` keeps (see the pin settlement
+    // below). (An *accepted* mainline merge is untouched by reverts, so it doesn't block
+    // anything. Scanned over canonical history, since a compaction checkpoint keeps no trace of
     // individual messages.)
     for (let msg of messages) {
-      if (msg.type === "changes" && msg.mainlineMerge !== undefined && stillProposed(msg)) {
+      if (msg.type === "changes" && msg.mainlineMerge !== undefined &&
+          msg.mainlineMerge.gadgets === undefined && stillProposed(msg)) {
         throw new Error("Cannot revert changes that include an update from mainline: the " +
             "update brought in other chats' accepted work, which the revert would silently " +
             "discard. Edit or revert the files directly instead.");
@@ -4082,16 +4124,36 @@ class OverseerImpl implements AgentHooks {
       revertFrom,
     });
 
-    // Roll back pins: a pin survives the revert iff its declaring message survives.
-    // `declaredPinGadgets` reads the log as it now stands -- including the revert message just
-    // written -- so pins declared only by reverted messages drop out, as do meta-only pins with
-    // no logged declaration at all (established by rows that never materialized: those rows die
-    // below, and nothing else roots in their bases). Unlike mergedCommit advancement -- whose
-    // prior value is unrecorded, hence the mainlineMerge refusal above -- a declared pin's
-    // prior state is trivially "unpinned".
+    // Settle the pins, one record per field. `declaredPins` reads the log as it now stands --
+    // including the revert message just written -- so a pin's base is its last surviving
+    // declaration's, which a reverted re-root hands back to the declaration before it. Pins
+    // declared only by reverted messages drop out, as do meta-only pins with no logged
+    // declaration at all (established by rows that never materialized: those rows die below,
+    // and nothing else roots in their bases).
+    //
+    // `mergedCommit` goes back to what the earliest reverted update from mainline records it
+    // was before (MainlineMergeGadget.baseCommit), and nothing else moves it. Not the
+    // surviving declaration's `mergedCommit`: an update from before re-roots advanced the pin
+    // without declaring anything, so the declaration can be behind the content the chat still
+    // holds, and the next update would merge against too old a base.
     let codeBase = this.chatCodeBase(meta);
-    let declared = this.declaredPinGadgets(chatId);
-    codeBase.pins = codeBase.pins.filter(pin => declared.has(pin.gadgetId));
+    let declared = this.declaredPins(chatId);
+    let mergedBefore = new Map<WorkpieceId, string>();
+    for (let msg of messages) {
+      if (msg.type !== "changes" || !stillProposed(msg)) continue;
+      for (let {gadgetId, baseCommit} of msg.mainlineMerge?.gadgets ?? []) {
+        if (!mergedBefore.has(gadgetId)) mergedBefore.set(gadgetId, baseCommit);
+      }
+    }
+    codeBase.pins = codeBase.pins.flatMap(pin => {
+      let declaration = declared.get(pin.gadgetId);
+      if (declaration === undefined) return [];
+      return [{
+        gadgetId: pin.gadgetId,
+        baseCommit: declaration.baseCommit,
+        mergedCommit: mergedBefore.get(pin.gadgetId) ?? pin.mergedCommit,
+      }];
+    });
 
     // Roll back worktree heads: a revert covering a `worktreeCommits`-bearing message returns
     // each affected worktree's head to the *earliest* reverted advancement's previousHead --
@@ -4164,7 +4226,7 @@ class OverseerImpl implements AgentHooks {
     // erased base. (The per-client dedupe records survive -- see submitCodeChange: a straggling
     // retry of an erased row is still acknowledged with its recorded landing spot instead of
     // being applied twice.)
-    let declared = this.declaredPinGadgets(chatId);
+    let declared = this.declaredPins(chatId);
     codeBase.pins = codeBase.pins.filter(pin => declared.has(pin.gadgetId));
     this.deleteAllChatChanges(chatId);
     codeBase.generation += 1;
@@ -5724,51 +5786,6 @@ class OverseerImpl implements AgentHooks {
     let result = this.storage.nextChatId.get();
     this.storage.nextChatId.put(result + 1);
     return result;
-  }
-
-  // For the given chat ID, return all code changes that are still in the "proposed" state, i.e.
-  // they are neither merged nor reverted. An entry's `change` is absent for batches that record
-  // only gadget creations/binding additions (which still count as proposed changes: they are
-  // merged and reverted like code edits).
-  //
-  // The compacted prefix seeds one entry, addressed at the last sequence it covers, so a single
-  // merge through it accepts everything before the boundary. `endBefore` must stay at or above that
-  // boundary: below it the prefix has already folded away batches a full scan would still report.
-  getProposedChanges(chatId: number, endBefore?: number): ChangeBatch[] {
-    let checkpoint = this.getActiveChatCompaction(chatId);
-    let seed: ChangeBatch[] = [];
-    if (checkpoint) {
-      // A creation-only prefix has no change to carry, so the registry rows it left behind are what
-      // reveal it (see CompactionCheckpoint.proposedChange).
-      if (checkpoint.proposedChange || this.#hasPendingStructure(chatId, checkpoint.compactedTo)) {
-        seed.push({sequence: checkpoint.compactedTo - 1, change: checkpoint.proposedChange});
-      }
-    }
-    return foldProposedChanges(
-        this.storage.chats.list({
-          prefix: chatKeyPrefix(chatId),
-          start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
-          end: endBefore === undefined ? undefined : chatKey(chatId, endBefore),
-        }),
-        seed);
-  }
-
-  // Whether the chat still owns a provisional gadget or binding edge recorded before `compactedTo`.
-  // Those carry no Y.Doc update, so this is how a creation-only compacted prefix stays visible as a
-  // proposed change.
-  #hasPendingStructure(chatId: number, compactedTo: number): boolean {
-    for (let gadget of this.storage.gadgets.list()) {
-      // Worktrees have no binding edges, and their creation proposes nothing.
-      if (gadget.type !== "gadget") continue;
-      let stamped = (pending: {chatId: number, sequence?: number} | undefined) =>
-          pending?.chatId === chatId && pending.sequence !== undefined &&
-          pending.sequence < compactedTo;
-      if (stamped(gadget.pending)) return true;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (stamped(edge.pending)) return true;
-      }
-    }
-    return false;
   }
 
   // Get the sequence number that should be assigned to the next message in the given chat thread.

@@ -521,6 +521,49 @@ describe("compaction checkpoint state", () => {
     expect(proposed.map(batch => batch.sequence)).toEqual([0]);
   });
 
+  it("drops a re-rooted gadget's earlier changes, the previous checkpoint's included", () => {
+    // Gadget 1 is edited in two batches either side of a checkpoint, then re-rooted at a merge
+    // commit; gadget 2's edit is untouched by the re-root. The re-root's declaration keeps the
+    // head it merged.
+    let other: CodeChange = {2: [["other.js", {set: "other"}]]};
+    let previous = {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {
+        type: "changes", change: {...codeChange("a", "first.js"), ...other}, pins: [pin7],
+      })], 1),
+    };
+    let reroot = {gadgetId: 1, baseCommit: "c".repeat(40), mergedCommit: "d".repeat(40)};
+
+    let next = buildCompactionState([
+      record(1, agent, {type: "changes", change: codeChange("b", "second.js")}),
+      record(2, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+      record(3, agent, {type: "changes", change: codeChange("c", "third.js")}),
+    ], 4, initialBindings, previous);
+
+    expect(next.pins).toEqual([pin7, reroot]);
+    expect(filesIn(next.proposedChange)).toEqual(["third.js"]);
+    expect(next.proposedChange![2]).toEqual(other[2]);
+
+    // With nothing recorded since, the re-root leaves no change at all, never an empty one.
+    let rootedOnly = buildCompactionState([
+      record(1, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+    ], 2, initialBindings, {
+      chatId: 1, compactedTo: 1, summary: "earlier",
+      ...buildState([record(0, agent, {type: "changes", change: codeChange("a"), pins: [pin7]})],
+                    1),
+    });
+    expect(rootedOnly.proposedChange).toBeUndefined();
+
+    // A reverted re-root declares nothing, so the changes before it survive.
+    let reverted = buildState([
+      record(0, agent, {type: "changes", change: codeChange("a", "first.js"), pins: [pin7]}),
+      record(1, user, {type: "changes", pins: [reroot], mainlineMerge: {conflictPaths: []}}),
+      record(2, user, {type: "revert", revertFrom: 1}),
+    ], 3);
+    expect(reverted.pins).toEqual([pin7]);
+    expect(filesIn(reverted.proposedChange)).toEqual(["first.js"]);
+  });
+
   it("treats a conversion boundary as an epoch boundary for pins and the epoch", () => {
     // A migrated chat's conversionBoundary changes message re-seeds the content at (pin bases +
     // its change), so a checkpoint past one records the boundary as the epoch and only pins

@@ -136,11 +136,13 @@ describe("submitCodeChange", () => {
     expect(Object.fromEntries(rebuilt.get(1)!)).toEqual({ "a.txt": "// top\none\nedited\n" });
   }));
 
-  it("accepts a pin at the head's parent but rejects older bases", () => withImpl(async impl => {
+  it("accepts a pin two first-parent steps behind the head but rejects older bases",
+      () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let c2 = await commitFiles(impl, { "a.txt": "two\n" }, [c1]);
     let c3 = await commitFiles(impl, { "a.txt": "three\n" }, [c2]);
-    addGadget(impl, 1, "APP", c3);
+    let c4 = await commitFiles(impl, { "a.txt": "four\n" }, [c3]);
+    addGadget(impl, 1, "APP", c4);
     addChat(impl, 1);
 
     await expect(submit(impl, 1, {
@@ -149,7 +151,8 @@ describe("submitCodeChange", () => {
       change: editChange(1, { "a.txt": "one\n" }, { "a.txt": "xone\n" }),
     })).rejects.toThrow(/does not match the gadget's current head/);
 
-    // A parent of the head is tolerated: the client raced exactly one merge.
+    // Two steps back is tolerated: the client raced one accept, which moves the head two steps
+    // when it writes on top of a merge commit.
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli-b", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c2 }],
@@ -430,7 +433,7 @@ describe("mergeChanges", () => {
       prior: { generation: 0, finalRevision: 1, discontinuousGadgets: [] },
     });
     expect(liveRows(impl, 1)).toEqual([]);
-    expect(impl.getProposedChanges(1)).toEqual([]);
+    expect(impl.proposedChangeWorkpieceIds(1, impl.storage.chatMeta.get(1)!)).toEqual([]);
     expect(await gadgetContent(impl, 1, 1)).toEqual({});
 
     // A second epoch re-pins lazily against the new head and replays independently.

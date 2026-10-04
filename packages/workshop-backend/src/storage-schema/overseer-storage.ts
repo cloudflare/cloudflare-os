@@ -23,7 +23,7 @@ import {
   actionChangeTime,
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
-  type BlueprintOutput, type ChatGadgetPin, type CollaboratorRole, type GadgetUpstream,
+  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -623,10 +623,10 @@ export type CompactionCheckpoint = {
   observedCodeVersion?: number;
 
   /**
-   * The pins active at the boundary (see ChatGadgetPin). Replay establishes their base trees
-   * before applying `proposedChange`.
+   * The pins active at the boundary: each gadget's last surviving declaration before it (see
+   * ChatGadgetPinRecord). Replay establishes their base trees before applying `proposedChange`.
    */
-  pins?: ChatGadgetPin[];
+  pins?: ChatGadgetPinRecord[];
 
   /**
    * Sequence of the message that opened the epoch the boundary lies in, mirroring
@@ -643,16 +643,16 @@ export type CompactionCheckpoint = {
   proposedChanges?: Uint8Array;
 
   /**
-   * Still-proposed code changes from before the boundary, composed into one change (bounded by
-   * content size, not edit history). Individual batches remain addressable through the chat
-   * log, so reverting to a point before the boundary is still possible.
+   * Still-proposed code changes from before the boundary, composed into one change over `pins`
+   * (bounded by content size, not edit history). Individual batches remain addressable through
+   * the chat log, so reverting to a point before the boundary is still possible.
    *
-   * Provisional gadget creations and binding additions from before the boundary are deliberately
-   * absent: they carry no change, and the registry rows they created (`GadgetRecord.pending`,
-   * `BindingRecord.pending`) already record them with the sequence that did, untouched by
-   * compaction. Merge and revert promote and delete from there rather than from the log, so
-   * duplicating them here would be a second source of truth. See getProposedChanges(), which
-   * reports the compacted prefix as pending when either this or such a row exists.
+   * This is content and nothing else: what replay applies over the pins' trees. It is absent
+   * when the composition leaves nothing, which says nothing about whether the prefix proposes
+   * anything. A pin can be the whole of a proposal (a merge commit, see ChatGadgetPinRecord), and
+   * provisional gadget creations and binding additions are recorded by the registry rows they
+   * created (`GadgetRecord.pending`, `BindingRecord.pending`), untouched by compaction. What a
+   * chat proposes is read from that state, never from this (see mergeChanges).
    */
   proposedChange?: CodeChange;
 };

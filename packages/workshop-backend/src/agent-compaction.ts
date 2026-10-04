@@ -1,8 +1,8 @@
 import {
   COMPACTION_TRIGGER_RATIO, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT, type AiChatMessage,
-  type AiModelConfig,
+  type AiModelConfig, type ChatGadgetPinRecord,
 } from "@gadgets/workshop-shared/api";
-import {composeCodeChange, type CodeChange} from "@gadgets/workshop-shared/code-change";
+import {composeEpochChanges, type CodeChange} from "@gadgets/workshop-shared/code-change";
 import type {Api, Message, Model} from "@earendil-works/pi-ai";
 import type {ChatBindingEntry, CompactionCheckpoint} from "./storage-schema/overseer-storage";
 import {zeroUsage} from "./ai-invoke";
@@ -92,9 +92,10 @@ export function startsAgentTurn(message: AiChatMessage): boolean {
 
 /**
  * One batch of code changes, addressed by the chat sequence that recorded it. `change` is absent
- * for a batch that records only gadget creations or binding additions.
+ * for a batch that records only gadget creations or binding additions. `pins` are the batch's
+ * declarations, each of which re-roots its gadget (see ChatGadgetPinRecord).
  */
-export type ChangeBatch = {sequence: number, change?: CodeChange};
+export type ChangeBatch = {sequence: number, change?: CodeChange, pins?: ChatGadgetPinRecord[]};
 
 /**
  * Folds `merge` and `revert` over a chat log. A merge accepts through `mergeThrough` inclusively; a
@@ -114,7 +115,7 @@ export function foldProposedChanges(
       // must not make a read-only migrated chat show proposed changes. A boundary *with* a change
       // is an ordinary proposed batch.
       if (!message.conversionBoundary || message.change !== undefined) {
-        proposed.push({sequence: message.sequence, change: message.change});
+        proposed.push({sequence: message.sequence, change: message.change, pins: message.pins});
       }
     } else if (message.type === "merge") {
       while (proposed.length > 0 && proposed[0].sequence <= message.mergeThrough) {
@@ -419,17 +420,12 @@ export function buildCompactionState(
   // messages. A carried-forward prefix is addressed below every message in this span: the
   // previous checkpoint already folded it, so nothing here can accept or revert part of it.
   // Composition is bounded by content size, not edit count, so `proposedChange` can't grow with
-  // history the way merged CRDT updates could.
-  let proposed = foldProposedChanges(
+  // history the way merged CRDT updates could. A declaration in the span re-roots its gadget,
+  // dropping that gadget's part of what came before it, the carried-forward prefix included.
+  let proposedChange = composeEpochChanges(foldProposedChanges(
       compacted,
       previous?.proposedChange !== undefined
-          ? [{sequence: -1, change: previous.proposedChange}] : []);
-  let proposedChange: CodeChange | undefined;
-  for (let batch of proposed) {
-    if (batch.change === undefined) continue;
-    proposedChange = proposedChange === undefined
-        ? batch.change : composeCodeChange(proposedChange, batch.change);
-  }
+          ? [{sequence: -1, change: previous.proposedChange}] : []));
 
   return {
     chatBindings: [...chatBindings],

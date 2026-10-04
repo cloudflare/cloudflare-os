@@ -1800,6 +1800,11 @@ async function runAgentPass(
   // Establishes a pin's base tree in the session content during replay and marks the gadget
   // pinned. Idempotent: commits are immutable, so re-establishing the same base is harmless --
   // which is what lets ensureReplayContentForWrite below establish a base *early*.
+  //
+  // A declaration for a gadget already pinned re-roots it (see ChatGadgetPinRecord): the
+  // session content restarts at the new base, and what the model knows of a file whose text
+  // that changed is dropped, so editFile requires a re-read rather than match against text the
+  // model saw before.
   let applyReplayedPin = async (pin: ChatGadgetPin) => {
     if (hooks.isWorktree(pin.gadgetId)) {
       // A worktree's base is a whole repository tree, so it is never materialized: the entry
@@ -1815,6 +1820,15 @@ async function runAgentPass(
       return;
     }
     let files = await hooks.readCommitFiles(pin.baseCommit);
+    let known = filesRead.get(pin.gadgetId);
+    if (pinnedGadgets.has(pin.gadgetId) && known !== undefined) {
+      let before = sessionContent.get(pin.gadgetId);
+      for (let [filename, stamp] of known) {
+        if (stamp === undefined && before?.get(filename) !== files.get(filename)) {
+          known.delete(filename);
+        }
+      }
+    }
     sessionContent = new Map(sessionContent);
     sessionContent.set(pin.gadgetId, files);
     pinnedGadgets.add(pin.gadgetId);

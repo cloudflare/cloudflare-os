@@ -296,6 +296,32 @@ export function composeCodeChange(a: CodeChange, b: CodeChange): CodeChange {
   return makeCodeChange(gadgets);
 }
 
+/**
+ * Composes one epoch of a chat's batches of changes, in log order, into a single change over
+ * the epoch's pin bases. A batch's `pins` re-root the gadgets they name: whatever was composed
+ * for such a gadget before the batch is dropped, since its content restarts at the pinned
+ * commit's tree, and the batch's own `change` then applies over that tree. `seed` is the
+ * change accumulated before the first batch, such as a compaction checkpoint's
+ * `proposedChange`; a re-root drops the gadget's part of it like any other.
+ *
+ * Returns undefined when nothing is left, never an empty change. That is not to say that
+ * nothing is proposed: a re-root can leave a gadget's whole proposal in its pin.
+ */
+export function composeEpochChanges(
+    batches: Iterable<{change?: CodeChange, pins?: readonly {gadgetId: number}[]}>,
+    seed?: CodeChange): CodeChange | undefined {
+  let composed = seed ?? {};
+  for (let {change, pins} of batches) {
+    if (pins !== undefined && pins.length > 0) {
+      let rerooted = new Set(pins.map(pin => pin.gadgetId));
+      composed = Object.fromEntries(
+          gadgetEntries(composed).filter(([gadgetId]) => !rerooted.has(gadgetId)));
+    }
+    if (change !== undefined) composed = composeCodeChange(composed, change);
+  }
+  return Object.keys(composed).length > 0 ? composed : undefined;
+}
+
 function composeFileChange(
     gadgetId: number, path: string, a: FileChange | undefined, b: FileChange | undefined)
     : FileChange {

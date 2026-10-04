@@ -1052,11 +1052,11 @@ describe("epoch reset advances the accepted commit", () => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id } = await createThroughBarrier(impl, 1, c1);
 
-    // Clean: nothing touched this epoch, so nothing was pinned and nothing advances.
+    // Clean: nothing touched this epoch, so nothing was pinned and nothing advances. A
+    // worktree's creation proposes nothing, so the accept is a no-op and records nothing.
     await impl.mergeChanges(1, USER_META, "client-user");
     expect(impl.storage.gadgets.get(id)!.pinBase).toBe(c1);
-    expect(chatMessages(impl, 1).find(msg => msg.type === "merge")!.worktreePins)
-        .toBeUndefined();
+    expect(chatMessages(impl, 1).filter(msg => msg.type === "merge")).toEqual([]);
     expect(codeBaseOf(impl, 1).pins).toEqual([]);
 
     // Edit, then advance the head to a commit capturing exactly that edit (as an explicit
@@ -1161,11 +1161,12 @@ describe("logs from the born-pinned version", () => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id } = await createThroughBarrier(impl, 1, c1);
+    await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "two\n") }]});
     await impl.mergeChanges(1, USER_META, "client-user");
+    let accepted = impl.storage.gadgets.get(id)!.pinBase;
     let repin = makeLegacy(impl, 1, id);
-    expect(repin).toBe(c1);
+    expect(repin).toBe(accepted);
     let generation = codeBaseOf(impl, 1).generation;
-    expect(impl.getProposedChanges(1)).toEqual([]);
     // The vacuous pin reads as a proposed change (a spurious banner on an idle chat), which the
     // accept below is the way out of -- deliberately not migrated.
     expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).proposedChangeWorkpieces)
@@ -1177,7 +1178,7 @@ describe("logs from the born-pinned version", () => {
     expect(await impl.mergeChanges(1, USER_META, "client-user")).toEqual({ outcome: "merged" });
     expect(codeBaseOf(impl, 1).pins).toEqual([]);
     expect(codeBaseOf(impl, 1).generation).toBe(generation + 1);
-    expect(impl.storage.gadgets.get(id)!.pinBase).toBe(c1);
+    expect(impl.storage.gadgets.get(id)!.pinBase).toBe(accepted);
     expect(chatMessages(impl, 1).at(-1)!.type).toBe("merge");
     expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!).proposedChangeWorkpieces)
         .toBeUndefined();
@@ -1192,6 +1193,7 @@ describe("logs from the born-pinned version", () => {
     addChat(impl, 1);
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     let { id } = await createThroughBarrier(impl, 1, c1);
+    await barrier(impl, 1, { changes: [{ change: { [id]: [["b.txt", { set: "bee\n" }]] } }]});
     await impl.mergeChanges(1, USER_META, "client-user");
     makeLegacy(impl, 1, id);
 

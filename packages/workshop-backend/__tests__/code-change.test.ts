@@ -7,6 +7,7 @@ import {
   applyCodeChange,
   changedGadgets,
   composeCodeChange,
+  composeEpochChanges,
   diffFiles,
   replaceSpanChange,
   transformCodeChange,
@@ -288,6 +289,33 @@ describe("composeCodeChange", () => {
     let a: CodeChange = { 1: [["f.txt", { remove: true }]] };
     let b: CodeChange = { 1: [["f.txt", { edit: [[1, "x"]] }]] };
     expect(() => composeCodeChange(a, b)).toThrow(/compose edit after remove/);
+  });
+});
+
+describe("composeEpochChanges", () => {
+  it("composes batches in order, each pin dropping what came before for its gadget", () => {
+    let seed: CodeChange = {
+      1: [["seed.txt", { set: "seed" }]],
+      2: [["two.txt", { set: "two" }]],
+    };
+    let composed = composeEpochChanges([
+      { change: { 1: [["seed.txt", { edit: [4, [0, "!"]] }]] } },
+      { pins: [{ gadgetId: 1 }], change: { 1: [["after.txt", { set: "after" }]] } },
+      { change: { 1: [["after.txt", { edit: [5, [0, "?"]] }]] } },
+    ], seed);
+    expect(composed).toEqual({
+      1: [["after.txt", { set: "after?" }]],
+      2: [["two.txt", { set: "two" }]],
+    });
+  });
+
+  it("returns no change, never an empty one, when a re-root leaves nothing", () => {
+    expect(composeEpochChanges([
+      { change: { 1: [["a.txt", { set: "a" }]] } },
+      { pins: [{ gadgetId: 1 }] },
+    ])).toBeUndefined();
+    expect(composeEpochChanges([], {})).toBeUndefined();
+    expect(composeEpochChanges([{}])).toBeUndefined();
   });
 });
 
