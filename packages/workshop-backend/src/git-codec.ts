@@ -19,7 +19,7 @@
 // streams with no recorded lengths -- finding where one ends requires a streaming inflater that
 // reports unconsumed input, which DecompressionStream cannot do.
 
-import { deflateSync, inflateSync } from "node:zlib";
+import { constants, deflateSync, inflateSync } from "node:zlib";
 import { Inflate, deflate } from "pako";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 
@@ -77,10 +77,14 @@ export async function gitObjectOid(type: GitObjectType, payload: Uint8Array): Pr
   return toHex(new Uint8Array(digest));
 }
 
-/** Encodes a loose object record's `data` bytes from a type and headerless payload. */
+/**
+ * Encodes a loose object record's `data` bytes from a type and headerless payload, at zlib's
+ * fastest level: deflating is the largest single cost of storing a pack, and the level trades
+ * about a third of that CPU for some 10% more stored bytes.
+ */
 export function encodeLooseObject(type: GitObjectType, payload: Uint8Array): Uint8Array {
   let header = ENCODER.encode(`${type} ${payload.byteLength}\0`);
-  return deflateSync(concatBytes([header, payload]));
+  return deflateSync(concatBytes([header, payload]), { level: constants.Z_BEST_SPEED });
 }
 
 /** Decodes a loose object record's `data` bytes into its type and headerless payload. */
