@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
 import { deflate } from "pako";
 import type { GitPullHints, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
@@ -800,6 +801,37 @@ describe("consumePack", () => {
     }
     // Referent recording ran: the gitlink target still has no row.
     expect(t.storage.gitObjectMetadata.get(GITLINK_TARGET)).toBeUndefined();
+  });
+
+  it("consumes a pack another Worker streams in, as a gatekeeper's arrives", async () => {
+    // The other tests build a byte stream. A gatekeeper sends a default stream, which the
+    // decoder's BYOB reader refuses when handed one directly ("This ReadableStream does not
+    // support BYOB reads"); it works only because Workers RPC delivers it as a byte stream.
+    let t = makeCache();
+    let sender = env.LOADER.get("pack-sender", () => ({
+      compatibilityDate: "2026-09-04",
+      mainModule: "sender.js",
+      modules: {
+        "sender.js": `
+          import { WorkerEntrypoint } from "cloudflare:workers";
+          export default class extends WorkerEntrypoint {
+            send(cache, pack) {
+              let pos = 0;
+              return cache.consumePack(new ReadableStream({
+                pull(controller) {
+                  if (pos < pack.byteLength) controller.enqueue(pack.slice(pos, pos += 100));
+                  else controller.close();
+                },
+              }));
+            }
+          }`,
+      },
+    })).getEntrypoint();
+    let stored = await sender.send(new GitCacheImpl(t.cache, G1), b64Bytes(PACK_OFS_DELTA));
+    expect(new Set(stored)).toStrictEqual(new Set(PACKED_OIDS));
+    for (let oid of PACKED_OIDS) {
+      expect(t.cache.readLocalObject(oid)).toStrictEqual(fixture(oid));
+    }
   });
 
   it("writes nothing when the same gatekeeper sends a pack again", async () => {
