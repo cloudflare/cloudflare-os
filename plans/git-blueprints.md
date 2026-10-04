@@ -245,7 +245,7 @@ Every one of these is additive, so the frontend should keep compiling throughout
 
 Load the `frontend-conventions` skill before starting.
 
-- **"Update from blueprint…"** in the gadget menu: two options, updating from the followed blueprint (the default) or, under "Advanced: Switch blueprints", from another blueprint the user names by pasting its ID or link, with a note that it must be derived from the same base. With no followed blueprint known or available, only the second is offered. Then the unrelated-blueprint warning with its confirm step. It passes the user's selected model.
+- **"Update from blueprint…"** in the gadget menu: two options, updating from the followed blueprint (the default) or, under "Advanced: Switch blueprints", from another blueprint the user names by pasting its ID or link, with a note that it must be derived from the same base. With no followed blueprint known or available, only the second is offered. Then the unrelated-blueprint warning with its confirm step. A "Reviewing agent" selector, starting on the user's selected model and offering "No agent", picks the model it passes.
 - **"Update available"** indicator on a gadget whose followed blueprint has moved.
 - **Proposal notice** for a `blueprintMerges` batch, in place of the generic changes card (decision 11).
 - **Conflict-marker check** before accept, covering mainline merges too.
@@ -384,7 +384,7 @@ In `workshop-use-role.test.ts`, `applyBlueprint` joins the table of `GadgetClien
 
 ### 10. `workshop-frontend`: applying a blueprint
 
-- "Update from blueprint…" in the gadget menu, with the followed-or-switch choice and the unrelated-blueprint confirmation. It passes the selected model, and on `proposed` it opens the new chat. It says so when the outcome is `upToDate` or `baseUnavailable`, and offers a retry when the call fails because the gadget changed meanwhile.
+- "Update from blueprint…" in the gadget menu, with the followed-or-switch choice and the unrelated-blueprint confirmation. It passes the model picked in its "Reviewing agent" selector (the user's selected model by default, or "No agent"), and on `proposed` it opens the new chat. It says so when the outcome is `upToDate` or `baseUnavailable`, and offers a retry when the call fails because the gadget changed meanwhile.
 - The "Update available" indicator, from `GadgetSummary.upstream` and `getBlueprint()`. A followed blueprint whose metadata has no `commitId` is legacy and never shows one. Neither does a "use" collaborator's view, which is not told `upstream`.
 - The blueprint modal shows whether the gadget has unpublished changes.
 

@@ -98,7 +98,30 @@ vi.mock('@cloudflare/kumo', async () => {
     },
   )
 
-  return { Banner, Dialog, Loader: () => <span>Loading</span>, Radio }
+  const Select = Object.assign(
+    ({ children, label, value, onValueChange, disabled }: {
+      children: ReactNode
+      label: string
+      value: string
+      onValueChange: (value: string) => void
+      disabled?: boolean
+    }) => (
+      <select
+        aria-label={label}
+        value={value}
+        onChange={event => onValueChange(event.target.value)}
+        disabled={disabled}
+      >
+        {children}
+      </select>
+    ),
+    {
+      Option: ({ children, value }: { children: ReactNode; value: string }) =>
+        <option value={value}>{children}</option>,
+    },
+  )
+
+  return { Banner, Dialog, Loader: () => <span>Loading</span>, Radio, Select }
 })
 
 vi.mock('@phosphor-icons/react', () => ({ X: () => <span>close</span> }))
@@ -224,6 +247,17 @@ async function switchTo(text: string) {
   await paste(text)
 }
 
+const reviewerSelect = () =>
+  container.querySelector<HTMLSelectElement>('select[aria-label="Reviewing agent"]')!
+
+async function pickReviewer(value: string) {
+  const select = reviewerSelect()
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
 const bannerText = () => container.querySelector('[data-testid="banner"]')?.textContent ?? null
 
 describe('UpdateFromBlueprintDialog', () => {
@@ -261,6 +295,33 @@ describe('UpdateFromBlueprintDialog', () => {
     applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 7 })
 
     await open(TRIP_UPSTREAM)
+    await click('Update')
+
+    expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: null })
+  })
+
+  it('starts the reviewer on the model a new chat would, and lets the user pick another', async () => {
+    localStorage.setItem('lastSelectedModel', 'sonnet')
+    applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 7 })
+
+    await open(TRIP_UPSTREAM)
+    expect(reviewerSelect().value).toBe('sonnet')
+    expect([...reviewerSelect().options].map(option => option.textContent))
+      .toEqual(['Opus', 'Sonnet', 'No agent'])
+
+    await pickReviewer('opus')
+    await click('Update')
+
+    expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: 'opus' })
+    // Like the composer's selector, the pick carries over to the next chat.
+    expect(localStorage.getItem('lastSelectedModel')).toBe('opus')
+  })
+
+  it('reviews with no agent when the user picks none', async () => {
+    applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 7 })
+
+    await open(TRIP_UPSTREAM)
+    await pickReviewer(NO_AGENT_OPTION_VALUE)
     await click('Update')
 
     expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: null })

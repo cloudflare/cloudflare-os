@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Banner, Dialog, Loader, Radio } from '@cloudflare/kumo'
+import { Banner, Dialog, Loader, Radio, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type {
@@ -11,7 +11,14 @@ import type {
   PublicApi,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from '../../components/WorkshopControls'
-import { getStoredSelectedModel } from '../../modelSelection'
+import {
+  fromModelSelectValue,
+  getStoredSelectedModel,
+  NO_AGENT_OPTION_VALUE,
+  persistSelectedModel,
+  toModelSelectValue,
+} from '../../modelSelection'
+import { useDialogSelectPortalContainer } from '../../useDialogSelectPortalContainer'
 import { logRpcFailure } from '../../rpcErrors'
 import { toBlueprintChoice, type BlueprintChoice } from './blueprintChoices'
 import { parseBlueprintReference } from './blueprintReference'
@@ -32,8 +39,9 @@ type Load =
   | { status: 'failed' }
   | {
     status: 'loaded'
-    /** The model a new chat would start with, which reviews a merge. Null for no agent. */
-    reviewer: AiChatAuthorInfo | null
+    models: AiChatAuthorInfo[]
+    /** The model a new chat would start with, which reviews a merge unless the user picks another. */
+    defaultReviewerId: string | null
     followed: BlueprintPublicInfo | null
   }
 
@@ -104,6 +112,9 @@ export const UpdateFromBlueprintDialog = ({
   const referenceRequest = useRef(0)
   const [applying, setApplying] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
+  // Wrapped, so that a pick of "No agent" (null) is told from no pick at all.
+  const [pickedReviewer, setPickedReviewer] = useState<{ modelId: string | null } | null>(null)
+  const selectContainer = useDialogSelectPortalContainer()
 
   useEffect(() => {
     let cancelled = false
@@ -113,9 +124,7 @@ export const UpdateFromBlueprintDialog = ({
     ]).then(([models, followed]) => {
       if (cancelled) return
       // The same choice a new chat's composer starts on, since a new chat is where this lands.
-      const reviewerId = getStoredSelectedModel(models)
-      const reviewer = models.find(model => model.id === reviewerId) ?? null
-      setLoad({ status: 'loaded', reviewer, followed })
+      setLoad({ status: 'loaded', models, defaultReviewerId: getStoredSelectedModel(models), followed })
     }, err => {
       logRpcFailure('Failed to load the blueprint to update from:', err)
       if (!cancelled) setLoad({ status: 'failed' })
@@ -149,12 +158,22 @@ export const UpdateFromBlueprintDialog = ({
     })
   }
 
+  const reviewerId = pickedReviewer
+    ? pickedReviewer.modelId
+    : load.status === 'loaded' ? load.defaultReviewerId : null
+
+  const pickReviewer = (modelId: string | null) => {
+    setPickedReviewer({ modelId })
+    // As the composer's selector does, since the chat this opens is where the choice applies.
+    persistSelectedModel(modelId)
+  }
+
   const apply = async (blueprint: BlueprintChoice, allowUnrelated: boolean) => {
     if (load.status !== 'loaded') return
     setApplying(true)
     try {
       const result = await gadget.client.applyBlueprint(blueprint.id, {
-        modelId: load.reviewer?.id ?? null,
+        modelId: reviewerId,
         ...(allowUnrelated ? { allowUnrelated } : {}),
       })
       if (result.outcome === 'proposed') onProposed(result.chatId)
@@ -209,20 +228,14 @@ export const UpdateFromBlueprintDialog = ({
     </div>
   )
 
-  const actions = (note: string | null, buttons: ReactNode) => (
+  const actions = (buttons: ReactNode) => (
     <div className="flex items-center justify-between gap-3">
       <p role="status" className="m-0 min-w-0 text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-        {applying ? APPLYING_NOTE : note}
+        {applying && APPLYING_NOTE}
       </p>
       <div className="flex shrink-0 items-center gap-2">{buttons}</div>
     </div>
   )
-
-  const reviewerNote = load.status !== 'loaded'
-    ? null
-    : load.reviewer
-      ? `If the gadget and the blueprint have both changed, ${load.reviewer.name} reviews the merge.`
-      : 'No agent is selected, so a merge of changes on both sides is not reviewed.'
 
   const switchForm = () => (
     <div className="space-y-2">
@@ -244,6 +257,29 @@ export const UpdateFromBlueprintDialog = ({
         ) : REFERENCE_MESSAGES[reference.lookup.status]}
       </div>
     </div>
+  )
+
+  const reviewerField = (models: readonly AiChatAuthorInfo[]) => (
+    <Select
+      label="Reviewing agent"
+      description={
+        'If you’ve customized this gadget, this agent makes sure your customizations are ' +
+        'compatible with the new version. Choose “No agent” to check them yourself.'
+      }
+      className="w-full text-sm [&_button]:!h-9"
+      container={selectContainer}
+      value={toModelSelectValue(reviewerId)}
+      onValueChange={value => pickReviewer(fromModelSelectValue(String(value)))}
+      renderValue={value => value === NO_AGENT_OPTION_VALUE
+        ? 'No agent'
+        : models.find(model => model.id === value)?.name ?? String(value)}
+      disabled={applying}
+    >
+      {models.map(model => (
+        <Select.Option key={model.id} value={model.id}>{model.name}</Select.Option>
+      ))}
+      <Select.Option value={NO_AGENT_OPTION_VALUE}>No agent</Select.Option>
+    </Select>
   )
 
   const outcomeBanner = () => {
@@ -319,7 +355,7 @@ export const UpdateFromBlueprintDialog = ({
               </p>
             </div>
             <div className="shrink-0 border-t border-kumo-line px-4 py-4 sm:px-6">
-              {actions(null, (
+              {actions((
                 <>
                   <WorkshopButton
                     className="!h-9"
@@ -391,13 +427,14 @@ export const UpdateFromBlueprintDialog = ({
                   {source === 'switch' && switchForm()}
                 </>
               )}
+              {load.status === 'loaded' && reviewerField(load.models)}
             </div>
 
             <div className="shrink-0 space-y-3 border-t border-kumo-line px-4 py-4 sm:px-6">
               {/* Always present, so that what arrives in it is announced: Kumo's Banner announces
                   nothing itself. */}
               <div aria-live="polite" className="empty:hidden">{outcomeBanner()}</div>
-              {actions(reviewerNote, (
+              {actions((
                 <>
                   <WorkshopButton className="!h-9" onClick={onClose} disabled={applying}>
                     Cancel
