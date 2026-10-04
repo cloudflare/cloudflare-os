@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api';
-import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange, diffFiles,
+import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
@@ -434,27 +434,6 @@ const CHAT_CHANGE_RETIRED_TTL_MS = 60_000;
 // client-minted (a UUID satisfies this), becomes part of a storage key, and needs no other
 // structure.
 const CHAT_CHANGE_CLIENT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
-
-// Splits a change into pieces that each fit one "changes" message (CHAT_CHANGE_MESSAGE_BUDGET),
-// without dividing any file's change: applied in order, the pieces make the same change. A
-// file whose change is over the budget by itself gets a piece of its own, as a single row that
-// large gets a message of its own (see the budget's declaration). An empty change has no pieces.
-function splitCodeChangeByFile(change: CodeChange): CodeChange[] {
-  let pieces: CodeChange[] = [];
-  let size = Infinity;  // of the piece being filled: none yet, so the first file starts one
-  for (let [key, entries] of Object.entries(change)) {
-    for (let entry of entries) {
-      let entrySize = codeChangeSerializedSize({[key]: [entry]});
-      if (size + entrySize > CHAT_CHANGE_MESSAGE_BUDGET) {
-        pieces.push({});
-        size = 0;
-      }
-      (pieces.at(-1)![Number(key)] ??= []).push(entry);
-      size += entrySize;
-    }
-  }
-  return pieces;
-}
 
 const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -3396,10 +3375,12 @@ class OverseerImpl implements AgentHooks {
   // current release into the gadget. `userMeta` is the chat context of the user applying it,
   // resolved for the model they named, and `clientUserId` is that user's DO id.
   //
-  // Modelled on updateChatFromMainline(): the result of the merge is delivered as change rows
-  // over a pin at the gadget's head and materialized into "changes" messages, the first of which
-  // records the proposal (see AiChatMessageBody.blueprintMerges). Nothing here touches the
-  // gadget. Accepting the chat's changes is what does, by that record (see mergeChanges).
+  // Modelled on updateChatFromMainline(): the merge is written as a commit, `M = [H, R]`, which
+  // marks the release it merged (see releasesMergedSince), and the new chat is pinned at it,
+  // with the gadget's head `H` as the pin's `mergedCommit`. One "changes" message declares the
+  // pin and records the proposal (see AiChatMessageBody.blueprintMerges); it carries no change.
+  // Nothing here touches the gadget. Accepting the chat is what does, fast-forwarding through
+  // `M` (see mergeChanges).
   async applyBlueprint(gadgetId: WorkpieceId, blueprintId: string,
                        options: {allowUnrelated?: boolean}, userMeta: UserChatContext,
                        clientUserId: string)
@@ -3423,13 +3404,14 @@ class OverseerImpl implements AgentHooks {
       kind: "follow", conflictPaths: [],
       ...this.#missingBlueprintBindings(metadata, record),
     };
-    let change: CodeChange = {};
-    let inHistory = this.gitCache.isAncestor(release, head);
-    if (inHistory) {
+    // The pin the chat is created with, if any: at the merge commit, with the head it merged.
+    let pin: ChatGadgetPinState | undefined;
+    if (this.gitCache.isAncestor(release, head)) {
       // The gadget's history already holds the release, so there is nothing to merge. What is
       // left to propose is following this blueprint, if the gadget follows another: it may
       // have come by the release through a blueprint derived from this one, or from a copy of
-      // this one under another id.
+      // this one under another id. Nothing is written and nothing is pinned, so the proposal
+      // cannot go stale: the release stays in the history of the head wherever the head moves.
       if (record.upstream?.blueprintId === blueprintId && record.upstream.commitId === release) {
         return {outcome: "upToDate"};
       }
@@ -3445,21 +3427,35 @@ class OverseerImpl implements AgentHooks {
       if (result.tooLargePaths.length > 0) {
         throw tooLargeToMergeError(result.tooLargePaths, "the gadget's own changes to it");
       }
-      merge.kind = filesEqual(theirs, base.files) ? "follow"
-          : filesEqual(ours, base.files) ? "fastForward" : "merge";
+
+      // The kind is the merge's result: a "follow" if the gadget already had every change the
+      // release made, and a "fastForward" if the gadget had none of its own to keep. A conflict
+      // makes a "merge" even where no file changes: a file the gadget changed and the release
+      // deleted is kept, but whether it should stay is still to be decided.
+      merge.kind = filesEqual(result.files, ours) && result.conflictPaths.length === 0
+          ? "follow" : filesEqual(ours, base.files) ? "fastForward" : "merge";
       merge.baseCommit = base.commitId;
       merge.conflictPaths = result.conflictPaths;
       if (base.unverified) merge.unverifiedBase = true;
-      change = diffFiles(new Map([[gadgetId, ours]]), new Map([[gadgetId, result.files]]));
+
+      // Every kind is committed, since the commit is what records the release in the gadget's
+      // history; a "follow" as much as any. A content-addressed object write, which a refusal
+      // below, or a chat that is discarded, leaves dangling.
+      let mergeCommit = await this.gitStore.writeFilesAsCommit(result.files, {
+        parents: [head, release],
+        author: commitIdentityForAuthor(author),
+        message: `Merge blueprint: ${metadata.title} v${metadata.version}`,
+        timestamp: new Date(),
+        headers: [releaseMergeHeader(release)],
+      });
+      pin = {gadgetId, baseCommit: mergeCommit, mergedCommit: head};
     }
-    let pieces = splitCodeChangeByFile(change);
-    if (pieces.length > 1) merge.messageCount = pieces.length;
 
     // The agent reviews a merge, and nothing else. Lines that merge cleanly can still disagree,
-    // which only something that reads the result will catch. Every other proposal leaves the
-    // gadget with files that are one side's exactly, its own or the blueprint's, and so does a
-    // merge that changes no file.
-    let reviewer = merge.kind === "merge" && pieces.length > 0 ? userMeta.aiModel : undefined;
+    // which only something that reads the result will catch, and a conflict always needs
+    // resolving. Every other proposal leaves the gadget with files that are one side's exactly,
+    // its own or the blueprint's.
+    let reviewer = merge.kind === "merge" ? userMeta.aiModel : undefined;
 
     // The awaits above are interleaving points, and an accept in some chat may have moved the
     // gadget's head since it was read. Refuse rather than record a merge into a head that the
@@ -3469,11 +3465,9 @@ class OverseerImpl implements AgentHooks {
       throw new Error("The gadget changed while the blueprint was being applied; please retry.");
     }
 
-    // One transaction, so that the chat exists only with its proposal. A release that is new
-    // to the gadget's history pins the gadget at the head it was merged into, even if no file
-    // changes: accepting will write a commit, which has to be a fast-forward like any other.
-    // One already in its history pins nothing, so the proposal cannot go stale: the release
-    // stays in the history of the head wherever the head moves.
+    // One transaction, so that the chat exists only with its proposal: one message, which
+    // declares the pin the chat is created with and records the proposal. No client holds
+    // state for a chat that did not exist, so starting it re-rooted needs no generation bump.
     let chatId!: number;
     this.storage.transaction(() => {
       chatId = this.nextChatId();
@@ -3483,25 +3477,9 @@ class OverseerImpl implements AgentHooks {
         title: `Update from blueprint: ${metadata.title}`,
         started: timestamp,
         lastActive: timestamp,
-        ...(inHistory ? {} : {codeBase: {
-          pins: [{gadgetId, baseCommit: head, mergedCommit: head}], generation: 0, revision: 0,
-        }}),
+        ...(pin !== undefined ? {codeBase: {pins: [pin], generation: 0, revision: 0}} : {}),
       });
-
-      // One message per piece of the change, the first of them recording the proposal -- or
-      // one message for the record alone, if no file changes. (Each piece is its own row, since
-      // materialization writes one message for all the rows it finds.) Nothing else writes to
-      // the chat meanwhile, so the messages are consecutive, as `messageCount` says they are.
-      let blueprintMerges = [merge];
-      do {
-        let piece = pieces.shift();
-        if (piece !== undefined) {
-          this.#appendChatChangeRow(
-              chatId, this.getChatMetaOrThrow(chatId), author, piece, [], undefined);
-        }
-        this.materializeChatChanges(chatId, undefined, {author, blueprintMerges});
-        blueprintMerges = [];
-      } while (pieces.length > 0);
+      this.materializeChatChanges(chatId, undefined, {author, blueprintMerges: [merge]});
 
       // Set last, since only a turn's own machinery may materialize into a chat that has one
       // running.

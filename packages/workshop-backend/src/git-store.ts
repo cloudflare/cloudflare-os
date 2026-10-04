@@ -31,8 +31,9 @@
 // - No GC. Dangling objects are only created by accepted merges, imports, migration, loading
 //   a blueprint's release (whose objects are stored whether or not anything comes to refer to
 //   them), and the merge commits of a chat that is then discarded (an update from mainline
-//   commits the chat's files and the merge result, see updateChatFromMainline) -- never by a
-//   chat's edits -- and are cheap. If GC is ever needed, the roots are
+//   commits the chat's files and the merge result, see updateChatFromMainline, and applying a
+//   blueprint commits its merge, see applyBlueprint) -- never by a chat's edits -- and are
+//   cheap. If GC is ever needed, the roots are
 //   enumerable: gadget records (their heads and the blueprint releases they follow), blueprint
 //   gadget records (the commits they exported and the releases minted from those), live chats'
 //   pinned commits, the pin declarations in chat logs and compaction checkpoints (closed epochs

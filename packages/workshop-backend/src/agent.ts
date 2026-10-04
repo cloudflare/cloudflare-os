@@ -1060,19 +1060,18 @@ async function formatMainlineMerge(
  * the model's input, from the record of the proposal and the "changes" message `msg` that
  * carries it. `gadget` is the gadget's name in the chat's env, if it has one.
  *
- * A merge that changed files is rendered for review: a summary of it and the task of checking
- * it. That is what prompts the turn applyBlueprint() starts, which has no message to answer.
- * A user's own edits replay as a diff, but the diff of a merge is as large as everything the
- * blueprint changed. So the summary only names the files, by what the merge did with them, and
- * the three commits, which the agent can mount as worktrees to look closer. Its size does not
- * depend on what is in the files.
+ * A merge is rendered for review: a summary of it and the task of checking it. That is what
+ * prompts the turn applyBlueprint() starts, which has no message to answer. The merge is a
+ * commit, whose diff could be as large as everything the blueprint changed. So the summary
+ * names the commits of the merge instead, with a way to diff any two, and lists the files by
+ * what the merge did with them. Its size does not depend on what is in the files.
  *
  * Any other proposal left the agent nothing to check. It is rendered as a note of what
  * happened, for a later turn in the chat to know of.
  */
 async function formatBlueprintProposal(
-    merge: BlueprintMerge, msg: Pick<Extract<AiChatMessage, {type: "changes"}>, "change" | "pins">,
-    gadget: string | undefined, hooks: Pick<AgentHooks, "readCommitFiles">): Promise<string> {
+    merge: BlueprintMerge, msg: Pick<Extract<AiChatMessage, {type: "changes"}>, "pins">,
+    gadget: string | undefined, hooks: Pick<AgentHooks, "listChangedPaths">): Promise<string> {
   let applied = `The user applied version ${merge.version} of the blueprint ` +
       `${JSON.stringify(merge.title)} to ` +
       (gadget !== undefined ? `the gadget \`env.${gadget}\`` : `a gadget`) +
@@ -1085,39 +1084,31 @@ async function formatBlueprintProposal(
     return `${applied} The gadget had no changes of its own to keep, so its files are now ` +
         `that version's exactly.`;
   }
-  if (msg.change === undefined) {
-    return `${applied} The gadget already had every change that version made, so none of its ` +
-        `files change.`;
-  }
 
-  // A merge is always recorded with its base, on the message that pins the gadget at the head
-  // it was merged into (see applyBlueprint in overseer.ts).
+  // A merge is always recorded with its base, on the message that re-roots the gadget at the
+  // merge commit, whose `mergedCommit` is the head it merged into (see applyBlueprint in
+  // overseer.ts).
   let base = merge.baseCommit!;
-  let head = msg.pins!.find(pin => pin.gadgetId === merge.gadgetId)!.baseCommit;
-  let [was, ours, theirs] = await Promise.all(
-      [base, head, merge.commitId].map(commit => hooks.readCommitFiles(commit)));
-
-  // The files that the merge changed in the gadget and did not report as conflicted, by
-  // whether the gadget had changes of its own to them. (A file the gadget had already changed
-  // just as the blueprint did is not among them.)
-  let conflicted = new Set(merge.conflictPaths);
-  let bothChanged: string[] = [];
-  let blueprintChanged: string[] = [];
-  for (let path of [...new Set([...was.keys(), ...theirs.keys()])].toSorted()) {
-    let text = theirs.get(path);
-    if (text === was.get(path) || text === ours.get(path) || conflicted.has(path)) continue;
-    (ours.get(path) === was.get(path) ? blueprintChanged : bothChanged).push(path);
-  }
+  let declaration = msg.pins!.find(pin => pin.gadgetId === merge.gadgetId)!;
+  let head = declaration.mergedCommit ?? declaration.baseCommit;
+  let {bothChanged, incomingChanged: blueprintChanged} = await classifyMergedPaths(hooks,
+      {base, incoming: merge.commitId, own: head}, merge.conflictPaths);
 
   let lines = [
     `${applied} The gadget has changes of its own, so the blueprint's changes were merged ` +
         `with them, three ways. The gadget's files in this chat are now the result.`,
     ``,
-    `The commits that were merged. To look closer at one, mount it with \`createWorktree\` ` +
-        `and use \`readFile\` and \`grep\` on it:`,
+    `The commits that were merged, and the result:`,
     `* base, the version the two have in common: ${base}`,
     `* this gadget, before the merge: ${head}`,
     `* blueprint: ${merge.commitId}`,
+    `* the result, which the gadget's files in this chat start from: ${declaration.baseCommit}`,
+    ``,
+    `To see what changed from one commit to another, run in \`executeCode\`:`,
+    `  (await env.GIT.newWorktree("<to>")).diff("<from>")`,
+    `From base to blueprint is what the blueprint changed. From this gadget before the merge ` +
+        `to the result is what the merge did to the gadget's files. To read a commit's files ` +
+        `with \`readFile\` and \`grep\`, mount it with \`createWorktree\`.`,
   ];
   if (merge.unverifiedBase) {
     lines.push(``,
@@ -2001,11 +1992,6 @@ async function runAgentPass(
     return false;
   };
 
-  // The sequence of the last "changes" message to hold part of the change of a blueprint the
-  // user applied: the one that records the proposal, or where the change was split, the last
-  // of those directly after it (see BlueprintMerge.messageCount).
-  let blueprintMergeThrough = -1;
-
   // We compute sequential change ID numbers for the purpose of telling the LLM about reverts.
   let nextChangeId = checkpoint?.nextChangeId ?? 0;
 
@@ -2491,14 +2477,12 @@ async function runAgentPass(
         if (msg.conversionBoundary) await resetSessionEpoch();
 
         // A blueprint that the user applied is described to the model (see
-        // formatBlueprintProposal), and its change, in this message and any others it was
-        // split across, is applied below without being shown. A proposal since reverted is
-        // described all the same: the description is what the turn that reviewed it was
-        // answering, and the revert is reported where it happened. (An entry on a message of
-        // the agent's own is a gadget it created from a blueprint, which the model already
-        // sees in its createGadget call.)
+        // formatBlueprintProposal). Its message has no change, only the pin at the merge
+        // commit, which is applied below. A proposal since reverted is described all the same:
+        // the description is what the turn that reviewed it was answering, and the revert is
+        // reported where it happened. (An entry on a message of the agent's own is a gadget it
+        // created from a blueprint, which the model already sees in its createGadget call.)
         for (let merge of msg.author.type === "user" ? msg.blueprintMerges ?? [] : []) {
-          blueprintMergeThrough = msg.sequence + (merge.messageCount ?? 1) - 1;
           modelMessages.push({
             role: "user",
             content: await formatBlueprintProposal(merge, msg, chatNameFor(merge.gadgetId), hooks),
@@ -2522,10 +2506,7 @@ async function runAgentPass(
           let diff: string | undefined;
           if (msg.change !== undefined) {
             await seedWorktreeBasesForChange(msg.change);
-            // The change of a blueprint the user applied is not shown as edits of theirs. It
-            // was described above instead.
-            diff = applyReplayedChange(
-                msg.change, isUserActivity && msg.sequence > blueprintMergeThrough);
+            diff = applyReplayedChange(msg.change, isUserActivity);
           }
           if (isUserActivity) {
             // Surface everything the user did in this batch as one synthetic observation:

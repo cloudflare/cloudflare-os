@@ -3534,15 +3534,21 @@ export type AiChatMessageBody = {
   /**
    * Blueprint releases this batch proposes to merge into gadgets: recorded by
    * GadgetClient.applyBlueprint(), and by the agent's `createGadget` tool when it builds the new
-   * gadget from a blueprint. Where the gadget's files change, `change` is the result of the
-   * merge, or the first part of it (see BlueprintMerge.messageCount).
+   * gadget from a blueprint.
+   *
+   * A proposal that GadgetClient.applyBlueprint() records is one message with no `change`. Its
+   * merge was written as a commit, whose parents are the gadget's head and the release, and
+   * which marks the release as merged. The batch's `pins` re-root the gadget at that commit,
+   * with the head as the declaration's `mergedCommit` (see ChatGadgetPinRecord). The agent's
+   * `createGadget` instead delivers the release's files as the batch's `change`, since a gadget
+   * still pending in the chat has no head to commit on.
    *
    * Like the rest of the batch this is provisional. A merge through this message makes each
    * gadget follow the blueprint named (see GadgetUpstream) and records the release in the
    * gadget's history; a revert covering it withdraws the proposal, and until one or the other
    * the gadget is as it was.
    *
-   * A proposal that changes no file and whose release is already in the gadget's history pins
+   * A proposal whose release is already in the gadget's history writes no commit and pins
    * nothing, so it does not put its gadget in AiChatMetadata.proposedChangeWorkpieces: this
    * record is then the only sign that the chat has something to accept.
    */
@@ -4530,13 +4536,15 @@ export type BlueprintMerge = {
   commitId: string;
 
   /**
-   * What the proposal does to the gadget's files:
-   * - "follow": nothing. Either the release is already in the gadget's history, or it changed
-   *   no file since the base.
+   * What the proposal does to the gadget's files, as the result of the merge decides it:
+   * - "follow": nothing. Either the release is already in the gadget's history, or the gadget
+   *   already has every change the release made since the base.
    * - "fastForward": they become the release's exactly. The gadget had no changes of its own
    *   since the base, or was created from the release.
    * - "merge": the gadget and the blueprint both changed files since the base, and the two
-   *   sets of changes were merged, three ways.
+   *   sets of changes were merged, three ways. A merge that conflicted is one even if no file
+   *   changes: a file the gadget changed and the release deleted is kept, but whether it
+   *   should stay is still to be decided.
    */
   kind: "follow" | "fastForward" | "merge";
 
@@ -4568,15 +4576,6 @@ export type BlueprintMerge = {
    * (`spawnerOnly`) is never listed, having no name in the gadget to look for.
    */
   missingBindings?: Record<string, BlueprintBinding>;
-
-  /**
-   * Present if the proposal's change was too large for one `changes` message: the number of
-   * messages it was split across, by file. They are this one and the ones at the sequences
-   * directly after it, which hold the rest of the change and nothing else. This is what tells
-   * them from changes someone made afterwards. A revert may since have covered some of them,
-   * as their statuses show.
-   */
-  messageCount?: number;
 };
 
 /**
@@ -5171,15 +5170,19 @@ export interface GadgetClient extends WorkpieceClient {
    *
    * The merge is three-way, against the newest version the gadget and the release have in
    * common. If they share no history that version has to be guessed, which is only done if
-   * `allowUnrelated` is set (see ApplyBlueprintResult).
+   * `allowUnrelated` is set (see ApplyBlueprintResult). Unless the release is already in the
+   * gadget's history, the merge is written as a commit, which the new chat is pinned at.
    *
-   * A proposal of kind "merge" that changes any of the gadget's files starts an agent turn in
-   * the new chat, to resolve what conflicted and to check that the two sets of changes work
-   * together. `modelId` is the model that runs it: as for Overseer.newChat(), one of the IDs in
-   * the result of `listModels()`, or null for no agent. No other proposal starts a turn.
+   * A proposal of kind "merge" starts an agent turn in the new chat, to resolve what conflicted
+   * and to check that the two sets of changes work together. `modelId` is the model that runs
+   * it: as for Overseer.newChat(), one of the IDs in the result of `listModels()`, or null for
+   * no agent. No other proposal starts a turn.
    *
    * Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so
-   * has no committed code to merge into.
+   * has no committed code to merge into. Throws too, creating no chat, if the gadget and the
+   * blueprint both changed a file and a version of it, or the merged text, is too large for a
+   * file to hold; the error names the file. Making it smaller, or undoing the gadget's own
+   * changes to it, lets the blueprint be applied.
    */
   applyBlueprint(blueprintId: string, options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult>;
