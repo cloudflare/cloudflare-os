@@ -362,6 +362,33 @@ describe("pullGitObjectsIntoCache", () => {
       .resolves.toBeUndefined();
   });
 
+  it("reports why the fetch failed, not how consumePack saw it end", async () => {
+    // Across RPC, consumePack() sees a failed stream only as one that ended early.
+    const cache = {
+      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
+        await collect(pack).catch(() => {
+          throw new Error("ReadableStream disconnected prematurely");
+        });
+        return [];
+      },
+    };
+    const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
+    await expect(pullGitObjectsIntoCache(fakeFetch([], response), [oid(1)], HINTS, cache))
+      .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
+  });
+
+  it("reports consumePack's own failure when the fetch itself succeeded", async () => {
+    const cache = {
+      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
+        await collect(pack);
+        throw new Error("invalid packfile: bad signature");
+      },
+    };
+    await expect(pullGitObjectsIntoCache(
+        fakeFetch([], packfileResponse()), [oid(1)], HINTS, cache))
+      .rejects.toThrow("invalid packfile: bad signature");
+  });
+
   it("still throws for a missing blob when no blob filter bounded the request", async () => {
     const cache = fakeCache([]);
     await expect(pullGitObjectsIntoCache(
