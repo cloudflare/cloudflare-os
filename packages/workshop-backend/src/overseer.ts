@@ -1842,8 +1842,9 @@ class OverseerImpl implements AgentHooks {
     return this.gitStore.readCommitFiles(oid);
   }
 
-  // AgentHooks implementation: the paths whose entry differs between two commits' trees (see
-  // WorkspaceGitCache.changedFilePathsBetween), sorted.
+  // AgentHooks implementation, and the read behind Overseer.listChangedPaths: the paths whose
+  // entry differs between two commits' trees (see WorkspaceGitCache.changedFilePathsBetween),
+  // sorted.
   async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
     return [...await this.gitCache.changedFilePathsBetween(fromCommit, toCommit)].toSorted();
   }
@@ -10452,6 +10453,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return await this.impl.gitCache.readFilesAtCommit(validateOid(commitId), paths);
   }
 
+  async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
+    return await this.impl.listChangedPaths(validateOid(fromCommit), validateOid(toCommit));
+  }
+
   async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
     if (depth !== undefined && (!Number.isInteger(depth) || depth <= 0)) {
       throw new Error("Invalid depth.");
@@ -11877,6 +11882,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listTree(_commitId: string): Promise<TreeNode[]> { this.#deny(); }
   async readFilesAtCommit(_commitId: string, _paths: string[])
       : Promise<[path: string, FileAtCommit][]> {
+    this.#deny();
+  }
+  async listChangedPaths(_fromCommit: string, _toCommit: string): Promise<string[]> {
     this.#deny();
   }
   async getCommitLog(_fromCommit: string, _depth?: number): Promise<CommitInfo[]> {

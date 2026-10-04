@@ -2386,6 +2386,23 @@ export interface Overseer extends RpcTarget {
       : Promise<[path: string, FileAtCommit][]>;
 
   /**
+   * List the paths whose entry differs between two commits' trees: added, removed, or changed
+   * in content or mode, sorted by code unit (as `Array.prototype.sort()` sorts). Only files are
+   * listed, never a directory: a symlink or submodule is listed as a file is, and a name that is
+   * a file in one tree and a directory in the other lists the file and the paths within the
+   * directory. The two commits may come in either order; the list is the same.
+   *
+   * Like listTree(), only tree objects are read, never blobs, and a subtree with the same id
+   * in both is not read at all, so the cost is proportional to what differs. The result is
+   * immutable and cacheable by the pair of commit IDs.
+   *
+   * This is how a client finds the files a merge changed: where a chat's pin has a `baseCommit`
+   * other than its `mergedCommit` (see ChatGadgetPinState), the files that differ between the
+   * two are changed in the chat even where none of the chat's code changes touch them.
+   */
+  listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>;
+
+  /**
    * Walk the commit graph from `fromCommit` (that commit first, then its ancestry), returning up
    * to `depth` commits' metadata -- all reachable commits when `depth` is omitted. Traversal
    * order for merge commits follows git log's default (reverse chronological). Like

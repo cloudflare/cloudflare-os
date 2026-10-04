@@ -16,9 +16,11 @@ import {
   buildPackBytes,
   concatBytes,
   decodePackBytes,
+  encodeGitTree,
   encodeLooseObject,
   gitObjectOid,
   parseGitTree,
+  type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
 import {
@@ -1536,6 +1538,80 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     t.sources.delete(G1);  // provenance loss: the only source is gone
     await expect(t.cache.readFilesAtCommit(COMMIT_1, ["README.md", "nope.txt"]))
         .rejects.toThrow(/Could not pull git object/);
+  });
+});
+
+// =======================================================================================
+
+describe("changedFilePathsBetween", () => {
+  // A tree, described as nested objects: a string is a regular file's text, an object a
+  // directory. An `Executable` is a file of mode 100755, and a `Subtree` names a tree by id,
+  // stored or not.
+  class Executable { constructor(readonly text: string) {} }
+  class Subtree { constructor(readonly oid: GitOid) {} }
+  type TreeSpec = { [name: string]: string | Executable | Subtree | TreeSpec };
+
+  async function storeTree(t: TestCache, spec: TreeSpec): Promise<GitOid> {
+    let storeBlob = async (text: string) =>
+        await storeLocal(t.storage, { type: "blob", payload: new TextEncoder().encode(text) });
+    let entries: GitTreeEntry[] = [];
+    for (let [name, value] of Object.entries(spec)) {
+      if (typeof value === "string") {
+        entries.push({ mode: "100644", name, oid: await storeBlob(value) });
+      } else if (value instanceof Executable) {
+        entries.push({ mode: "100755", name, oid: await storeBlob(value.text) });
+      } else if (value instanceof Subtree) {
+        entries.push({ mode: "40000", name, oid: value.oid });
+      } else {
+        entries.push({ mode: "40000", name, oid: await storeTree(t, value) });
+      }
+    }
+    return await storeLocal(t.storage, { type: "tree", payload: encodeGitTree(entries) });
+  }
+  async function storeTreeCommit(t: TestCache, spec: TreeSpec): Promise<GitOid> {
+    return await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(await storeTree(t, spec), [], "tree commit") });
+  }
+
+  it("lists added, removed and changed files at any depth, and a change of mode", async () => {
+    let t = makeCache();
+    let before = await storeTreeCommit(t, {
+      "keep.js": "keep\n",
+      "edit.js": "edit\n",
+      "gone.js": "gone\n",
+      "run.sh": "#!/bin/sh\n",
+      "src": { "top.js": "top\n", "lib": { "deep.js": "deep\n", "same.js": "same\n" } },
+      "docs": { "old.md": "old\n" },
+      "shape": "a file\n",
+    });
+    let after = await storeTreeCommit(t, {
+      "keep.js": "keep\n",
+      "edit.js": "edited\n",
+      "run.sh": new Executable("#!/bin/sh\n"),
+      "new.js": "new\n",
+      "src": { "top.js": "top\n",
+               "lib": { "deep.js": "deeper\n", "same.js": "same\n", "added.js": "added\n" } },
+      "shape": { "inner.js": "a file\n" },
+    });
+    let expected = new Set([
+      "edit.js", "gone.js", "run.sh", "new.js", "src/lib/deep.js", "src/lib/added.js",
+      "docs/old.md", "shape", "shape/inner.js",
+    ]);
+    expect(await t.cache.changedFilePathsBetween(before, after)).toStrictEqual(expected);
+    expect(await t.cache.changedFilePathsBetween(after, before)).toStrictEqual(expected);
+    expect(t.pulls).toHaveLength(0);
+  });
+
+  it("does not read a subtree that is the same on both sides", async () => {
+    let t = makeCache();
+    // Held nowhere: reading it would fail, as there is no source to pull it from.
+    let unheld = "ab".repeat(20);
+    let before = await storeTreeCommit(t, { "a.js": "a\n", "vendor": new Subtree(unheld) });
+    let after = await storeTreeCommit(t, { "a.js": "A\n", "vendor": new Subtree(unheld) });
+    expect(await t.cache.changedFilePathsBetween(before, after)).toStrictEqual(new Set(["a.js"]));
+    // Nor is a commit compared with itself read at all.
+    expect(await t.cache.changedFilePathsBetween(unheld, unheld)).toStrictEqual(new Set());
+    expect(t.pulls).toHaveLength(0);
   });
 });
 
