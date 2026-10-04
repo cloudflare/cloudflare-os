@@ -20,8 +20,9 @@ export const hasNewerRelease = (upstream: GadgetUpstream, blueprint: BlueprintMe
 
 /**
  * Whether the blueprint a gadget follows has moved on since the gadget last took a release of it.
- * `upstream` is absent for a gadget that follows no blueprint, and for every gadget in the view
- * of a "use" collaborator, who is not told which blueprint a gadget follows.
+ * `upstream` is absent for a gadget whose origin is unknown, and for every gadget in the view of
+ * a "use" collaborator, who is not told which blueprint a gadget follows. It names no blueprint
+ * for a gadget built from scratch.
  *
  * The blueprint is read when the gadget's upstream changes, which includes the accept of an
  * update. Nothing announces a blueprint being republished, so one published while the workspace
@@ -46,6 +47,6 @@ export const useBlueprintUpdateAvailable = (
   }, [publicApi, blueprintId, takenRelease])
 
   // `followed` may still be the blueprint of the gadget selected before this one.
-  return upstream !== undefined && followed?.id === upstream.blueprintId &&
+  return upstream !== undefined && followed !== null && followed.id === upstream.blueprintId &&
     hasNewerRelease(upstream, followed.metadata)
 }

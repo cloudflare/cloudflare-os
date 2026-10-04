@@ -10,9 +10,9 @@ import type {
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 
-// Covers what the editor does once "Update from blueprint" has produced a proposal: the proposal
-// lives in a new chat, which the editor has to bring into view. Everything the editor composes
-// is stubbed down to the callbacks that drive its layout.
+// Covers which gadgets the editor offers "Update from blueprint" for, and what it does once that
+// has produced a proposal: the proposal lives in a new chat, which the editor has to bring into
+// view. Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -189,8 +189,35 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   container.remove()
+  delete GADGET.upstream
   if (previousMatchMedia) Object.defineProperty(window, 'matchMedia', previousMatchMedia)
   else Reflect.deleteProperty(window, 'matchMedia')
+})
+
+describe('GadgetEditor, offering an update from a blueprint', () => {
+  const offers = () => [...container.querySelectorAll('button')]
+    .filter(candidate => candidate.textContent === 'Update from blueprint…').length
+
+  // Once in the toolbar's Blueprints menu and once in the phone layout's menu.
+  it('offers it for a gadget that follows a blueprint, and for one of unknown origin', async () => {
+    await openEditor('desktop')
+    expect(offers()).toBe(2)
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    GADGET.upstream = { blueprintId: 'trip' }
+    await openEditor('desktop')
+    expect(offers()).toBe(2)
+  })
+
+  it('does not offer it for a gadget recorded as built from scratch', async () => {
+    GADGET.upstream = {}
+
+    await openEditor('desktop')
+
+    expect(offers()).toBe(0)
+    expect(button('Publish as blueprint…')).toBeTruthy()
+  })
 })
 
 describe('GadgetEditor, once a blueprint update is proposed', () => {

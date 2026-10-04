@@ -642,12 +642,14 @@ it.concurrent("a gadget with no lineage takes a blueprint only over a base the c
   const blueprint = await publish(publicApi, source, await createApp(source, V1), "Unrelated");
   const { blueprintId, release: r1 } = blueprint;
 
-  // A gadget built by hand follows no blueprint, and its history holds none.
+  // A gadget built by hand follows no blueprint, as its upstream says by naming none, and its
+  // history holds none. The UI offers such a gadget no update, but applying a blueprint to it
+  // is not refused.
   using ws = await api.newGadget();
   const gadgetId = await createApp(ws, { "client.js": "mine\n" });
   using gadget = await ws.getGadget(gadgetId);
   const first = await gadgetNow(ws, gadgetId);
-  expect(first.upstream).toBeUndefined();
+  expect(first.upstream).toEqual({});
   const own = await commitCode(ws, gadgetId, { "client.js": "mine\n", ...NOTES });
 
   const chats = await ws.listChats();

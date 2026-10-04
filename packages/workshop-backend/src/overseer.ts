@@ -1269,11 +1269,14 @@ class OverseerImpl implements AgentHooks {
   // getting its creation recorded in the chat log so the pending record gets sequence-stamped
   // (see addChatMessages()). Otherwise the gadget is permanent and `initialCommitId` -- its
   // empty-tree initial commit, written by the caller beforehand -- is required: every permanent
-  // gadget is born with a head (see GadgetRecord.commitId). `output` is the format declared by
-  // the blueprint being instantiated, if any. `actorUserId` (hex user DO ID) feeds analytics only;
-  // a permanent creation's caller records its own workpiece_created, naming its source.
+  // gadget is born with a head (see GadgetRecord.commitId). `blueprint` is the blueprint being
+  // instantiated, if any, and `output` the format it declares. A gadget created from none is
+  // recorded as made from scratch (see GadgetRecord.upstream); one created from a blueprint
+  // comes to follow it when its creation is accepted. `actorUserId` (hex user DO ID) feeds
+  // analytics only; a permanent creation's caller records its own workpiece_created, naming its
+  // source.
   createGadget(title: string, bindingName: string, chatId?: number,
-               output?: BlueprintOutput, initialCommitId?: string,
+               blueprint?: {output?: BlueprintOutput}, initialCommitId?: string,
                actorUserId?: string): GadgetRecord {
     title = title.trim();
     if (!title) {
@@ -1299,8 +1302,11 @@ class OverseerImpl implements AgentHooks {
       bindingName,
       bindings: {},
     };
-    if (output) {
-      record.output = output;
+    if (blueprint?.output) {
+      record.output = blueprint.output;
+    }
+    if (!blueprint) {
+      record.upstream = {};
     }
     if (chatId !== undefined) {
       record.pending = {chatId};

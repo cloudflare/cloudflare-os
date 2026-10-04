@@ -4046,9 +4046,10 @@ export type GadgetSummary = {
   commitId?: string;
 
   /**
-   * The blueprint this gadget follows, if it was built from one. Delivered only to subscribers
-   * with the "build" role: a blueprint id is a share link to the blueprint's code, which a
-   * "use" collaborator cannot otherwise read.
+   * Where this gadget's code came from: the blueprint it follows, or that it was built from
+   * scratch (see GadgetUpstream). Absent if that is not known, as for a gadget made before it
+   * was recorded. Delivered only to subscribers with the "build" role: a blueprint id is a share
+   * link to the blueprint's code, which a "use" collaborator cannot otherwise read.
    */
   upstream?: GadgetUpstream;
 
@@ -4067,10 +4068,18 @@ export type GadgetSummary = {
  * The blueprint a gadget follows: the one it takes updates from, and how much of it the gadget
  * already has. An update is available when the blueprint names a current release
  * (`BlueprintMetadata.commitId`, from `PublicApi.getBlueprint()`) other than a known `commitId`.
+ *
+ * A gadget built from scratch in its workspace follows no blueprint, and its upstream says so
+ * by naming none. That differs from a gadget with no upstream at all, whose origin is unknown.
  */
 export type GadgetUpstream = {
-  /** The blueprint's id. */
-  blueprintId: string;
+  /**
+   * The blueprint's id. Absent if the gadget was built from scratch: there is then no blueprint
+   * to offer it updates from, and no `commitId` either. GadgetClient.applyBlueprint() treats
+   * such a gadget like one of unknown origin, and gives it a blueprint to follow if its
+   * proposal is accepted.
+   */
+  blueprintId?: string;
 
   /**
    * The release of that blueprint the gadget most recently merged: a release commit, and an

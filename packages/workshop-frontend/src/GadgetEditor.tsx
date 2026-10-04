@@ -775,6 +775,11 @@ export default function GadgetEditor() {
   const selectedGadgetId = selectedGadgetSummary?.id ?? null
   // A gadget still pending in a chat has no committed code for an update to be merged into.
   const canUpdateFromBlueprint = selectedGadgetSummary?.commitId !== undefined
+  // An upstream that names no blueprint records that the gadget was built from scratch, so there
+  // is no blueprint whose update it could sensibly take. No upstream at all is different: the
+  // gadget's origin is unknown, or this is a "use" collaborator's view, which is not told.
+  const builtFromScratch = selectedGadgetSummary?.upstream !== undefined &&
+    selectedGadgetSummary.upstream.blueprintId === undefined
   const blueprintUpdateAvailable =
     useBlueprintUpdateAvailable(publicApi, selectedGadgetSummary?.upstream)
   // A worktree has only Code; the chosen tab is remembered for the next gadget.
@@ -1623,13 +1628,15 @@ export default function GadgetEditor() {
               <DropdownMenu.Item onClick={() => setBlueprintModalOpen(true)} className={MENU_ITEM}>
                 Publish as blueprint…
               </DropdownMenu.Item>
-              <DropdownMenu.Item
-                disabled={!canUpdateFromBlueprint}
-                onClick={() => setBlueprintUpdateDialogOpen(true)}
-                className={MENU_ITEM}
-              >
-                <UpdateFromBlueprintLabel updateAvailable={blueprintUpdateAvailable} />
-              </DropdownMenu.Item>
+              {!builtFromScratch && (
+                <DropdownMenu.Item
+                  disabled={!canUpdateFromBlueprint}
+                  onClick={() => setBlueprintUpdateDialogOpen(true)}
+                  className={MENU_ITEM}
+                >
+                  <UpdateFromBlueprintLabel updateAvailable={blueprintUpdateAvailable} />
+                </DropdownMenu.Item>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu>
 
@@ -1766,13 +1773,15 @@ export default function GadgetEditor() {
                 >
                   Publish as blueprint…
                 </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  disabled={!selectedGadgetStub || !canUpdateFromBlueprint}
-                  onClick={() => setBlueprintUpdateDialogOpen(true)}
-                  className={MENU_ITEM}
-                >
-                  <UpdateFromBlueprintLabel updateAvailable={blueprintUpdateAvailable} />
-                </DropdownMenu.Item>
+                {!builtFromScratch && (
+                  <DropdownMenu.Item
+                    disabled={!selectedGadgetStub || !canUpdateFromBlueprint}
+                    onClick={() => setBlueprintUpdateDialogOpen(true)}
+                    className={MENU_ITEM}
+                  >
+                    <UpdateFromBlueprintLabel updateAvailable={blueprintUpdateAvailable} />
+                  </DropdownMenu.Item>
+                )}
                 <DropdownMenu.Item
                   disabled={!mobilePreviewActive}
                   onClick={enterGadgetFullscreen}

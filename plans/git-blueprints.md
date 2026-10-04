@@ -233,7 +233,7 @@ Every one of these is additive, so the frontend should keep compiling throughout
 - `initializeFromBlueprint` and `fetchBlueprint` call that loader. The first takes a blueprint id instead of content bytes, so the pack no longer crosses an RPC from server.ts; it writes `e` and `i` and sets `upstream`. The second returns the release for the creation message.
 - `importBlueprint`, `downloadBlueprint`, blueprint-archive.ts: accept and emit container versions 1 and 2.
 - bundled-blueprints.ts and the generator: decision 14. `import:bundled-blueprint` learns to read version 2 archives, with `git` (see commit 5).
-- Storage: `GadgetRecord.upstream`, `BlueprintGadgetRecord.releases`. Both optional, so neither needs a migration. One was added afterwards all the same, as schema version 5, to name the blueprint of gadgets that predate `upstream` (see Backfilling `upstream` below).
+- Storage: `GadgetRecord.upstream`, `BlueprintGadgetRecord.releases`. Both optional, so neither needs a migration. One was added afterwards all the same, as schema version 5, to record where gadgets that predate `upstream` came from (see Backfilling `upstream` below).
 
 ### workshop-backend: chat and agent
 
@@ -403,12 +403,24 @@ Fork-point trees (in commit 6) could be dropped from this series without a forma
 
 ## Backfilling `upstream`
 
-Added after the commit series. A gadget made from a blueprint before this plan has no `upstream`, so the picker has no blueprint to start on, and nothing in the gadget's history names one.
+Added after the commit series. A gadget made from a blueprint before this plan has no `upstream`, so the picker has no blueprint to start on, and nothing in the gadget's history names one. And with `upstream` simply absent on everything else, a gadget that was never made from a blueprint cannot be told from one whose blueprint was not recorded, so "Update from blueprint…" is offered where it makes no sense.
 
-- **What is recovered.** For a gadget an agent created, the `createGadget` tool call in the chat log names the blueprint (`input.blueprintId`) and the gadget (`output.gadgetId`). The storage migration `migrateToBlueprintUpstreams` (version 4 to 5) sets `upstream = {blueprintId}` on each such gadget that has no `upstream`.
-- **What is not.** The release the gadget took. `GadgetUpstream.commitId` becomes optional, and its absence means the release is unknown. Such a gadget is treated as one with no upstream everywhere but in the picker: no "Update available", and decision 8's last row applies, with its warning, even when the blueprint applied is the one named. Accepting that proposal records the release. Recovering the release from the creation's `changes` message, or taking the gadget's first commit for it, was considered and set aside as not worth the code: the first is exact only when the agent wrote nothing else in the step, and the second announces an update on every such gadget.
+`upstream` therefore gains two partial forms, and its absence a narrower meaning:
+
+| `upstream` | Meaning | "Update from blueprint…" |
+|---|---|---|
+| `{blueprintId, commitId}` | As decision 7. | Shown, blueprint preselected |
+| `{blueprintId}` | Made from that blueprint; the release it took is unknown. | Shown, blueprint preselected |
+| `{}` | Built from scratch in this workspace. | Hidden |
+| absent | Origin unknown. | Shown, nothing preselected |
+
+- **Going forward.** `OverseerImpl.createGadget`, which every creation from no blueprint goes through, writes `{}`. Instantiation and accept already write the full form. So absent and `{blueprintId}` are legacy states, apart from a gadget the agent is creating from a blueprint, which has none until its creation is accepted.
+- **The migration.** `migrateToBlueprintUpstreams` (version 4 to 5) scans the chat log. The agent's `createGadget` tool call names the gadget (`output.gadgetId`) and the blueprint if any (`input.blueprintId`): with one the gadget gets `{blueprintId}`, without one `{}`. A `changes` message in a user's name that lists a gadget in `createdGadgets` is the user's own creation, and gets `{}`. The message that converted a chat from the storage before git is excluded: it is in the owner's name and lists again whatever gadgets were pending in the chat, whoever made them. Gadgets with no such evidence stay absent.
+- **The release is not recovered.** A gadget with `{blueprintId}` is treated as one with no upstream everywhere but in the picker: no "Update available", and decision 8's last row applies, with its warning, even when the blueprint applied is the one named. Accepting that proposal records the release. Recovering the release from the creation's `changes` message, or taking the gadget's first commit for it, was considered and set aside as not worth the code: the first is exact only when the agent wrote nothing else in the step, and the second announces an update on every such gadget.
+- **Hiding is the UI's alone.** `applyBlueprint` treats `{}` as it does absent, and accepting its proposal overwrites it. So nothing in the kernel has to be undone by the flow below.
 - **Bounded.** The migration runs synchronously in the constructor. It reads no chat in a workspace with no gadget that lacks an `upstream`, which many are: one chat working on external resources, and no gadget at all. Otherwise it reads at most 1000 messages per workspace, divided between the chats and taken from the start of each, where creations mostly are.
-- **Not covered.** Gadgets instantiated through the UI, which left no record of their blueprint outside product analytics, and gadgets whose creating chat was deleted. Both keep the manual path: pick the blueprint, and confirm the warning.
+- **Left of unknown origin.** Gadgets instantiated through the UI, which left no record of their blueprint outside product analytics; gadgets a user created outside any chat; and gadgets whose creating chat was deleted or whose creation the scan did not reach. All keep the manual path: pick the blueprint, and confirm the warning.
+- **Not served: merging back into a blueprint's source.** Alice builds a gadget from scratch and publishes it; Bob builds on her blueprint and publishes his; Alice wants Bob's changes. Her gadget is `{}`, so the UI offers her no update. What it would have offered was poor anyway: her history holds no release, so the base would be her first commit, far behind what Bob started from. The right base is the commit she published from, which `BlueprintGadgetRecord.releases` records as `sourceCommit`. That is a flow of its own, left to a later change.
 
 ## Risks
 

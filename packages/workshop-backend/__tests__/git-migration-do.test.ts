@@ -263,6 +263,18 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
     });
   }
 
+  // A "changes" message that records the creation of gadgets and nothing else.
+  function putCreated(impl: any, chatId: number, sequence: number, author: object,
+                      gadgetIds: number[], extra: object = {}): void {
+    impl.storage.chats.put({
+      chatId, sequence, timestamp: new Date(chatId * 1_000_000 + sequence), author,
+      type: "changes",
+      createdGadgets: gadgetIds.map(
+          gadgetId => ({ gadgetId, title: `Gadget ${gadgetId}`, bindingName: `G${gadgetId}` })),
+      ...extra,
+    });
+  }
+
   function putText(impl: any, chatId: number, sequence: number): void {
     impl.storage.chats.put({
       chatId, sequence, timestamp: new Date(chatId * 1_000_000 + sequence), author: USER,
@@ -270,7 +282,8 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
     });
   }
 
-  it("names the blueprint of each gadget an agent created from one", async () => {
+  it("names the blueprint of each gadget an agent created from one, and none for each made " +
+      "from scratch", async () => {
     await inOverseer("upstream-backfill", async impl => {
       expect(impl.storage.version.get()).toBe(0);
       putGadget(impl, 1);
@@ -279,15 +292,28 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       putGadget(impl, 4, { pending: { chatId: 2, sequence: 1 } });
       putGadget(impl, 5);
       putGadget(impl, 6);
+      putGadget(impl, 7);
+      putGadget(impl, 8);
 
       putChat(impl, 1);
       putText(impl, 1, 0);
+      // Each of the agent's calls is followed by its step's record of the creation, in the
+      // agent's name, which tells nothing that the call does not.
       putCreation(impl, 1, 1, { gadgetId: 1, blueprintId: "docs" });
-      putCreation(impl, 1, 2, { gadgetId: 2 });  // created empty
-      putCreation(impl, 1, 3, { gadgetId: 3, blueprintId: "sheets" });
+      putCreated(impl, 1, 2, AGENT, [1]);
+      putCreation(impl, 1, 3, { gadgetId: 2 });  // created empty
+      putCreated(impl, 1, 4, AGENT, [2]);
+      putCreation(impl, 1, 5, { gadgetId: 3, blueprintId: "sheets" });
       // A creation since reverted, whose gadget is gone, and a call that failed.
-      putCreation(impl, 1, 4, { gadgetId: 99, blueprintId: "docs" });
-      putCreation(impl, 1, 5, { blueprintId: "docs", error: "No such blueprint: docs." });
+      putCreation(impl, 1, 6, { gadgetId: 99, blueprintId: "docs" });
+      putCreation(impl, 1, 7, { blueprintId: "docs", error: "No such blueprint: docs." });
+      // What the user created from the workspace UI, with the chat open.
+      putCreated(impl, 1, 8, USER, [6]);
+      // The message that converted a chat from the storage before git lists again, in the
+      // owner's name, the gadgets pending there: whoever created them, and from whatever.
+      putCreated(impl, 1, 9, USER, [1, 7], { conversionBoundary: true });
+      // An agent's creation whose call is gone from the log, though its record is not.
+      putCreated(impl, 1, 10, AGENT, [8]);
       putChat(impl, 2);
       putCreation(impl, 2, 0, { gadgetId: 4, blueprintId: "slides" });
       // Last write: arm the constructor's version-4 migration.
@@ -302,12 +328,17 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       expect(upstreams).toEqual([
         // The blueprint, and no release: the log does not tell which the gadget took.
         { blueprintId: "docs" },
-        undefined,
+        // No blueprint: the agent made it from scratch.
+        {},
         // What a gadget already follows stands.
         { blueprintId: "followed", commitId: "f".repeat(40) },
         { blueprintId: "slides" },
-        // No call names these two: the one instantiated outside a chat, say, and the one whose
-        // creating chat was deleted.
+        // Nothing in the log tells of this one: it was instantiated outside any chat, say, or
+        // the chat that created it was deleted.
+        undefined,
+        // The user made it from scratch.
+        {},
+        // These two the log lists, but not in a way that tells what they were made from.
         undefined,
         undefined,
       ]);

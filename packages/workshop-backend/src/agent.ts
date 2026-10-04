@@ -390,11 +390,12 @@ export interface AgentHooks {
    * the given chat: it becomes permanent only when the user accepts the chat's changes through
    * the "changes" message that records the creation (GadgetRecord.pending in overseer-storage.ts).
    * Throws if the binding name is invalid or already claimed by another gadget (including one
-   * still pending in another chat). Returns the id and the (trimmed) title as created. `output`
-   * is the format declared by the blueprint being instantiated, if any (see fetchBlueprint).
+   * still pending in another chat). Returns the id and the (trimmed) title as created.
+   * `blueprint` is the blueprint being instantiated, if any, and `output` the format it declares
+   * (see fetchBlueprint). A gadget created from none is recorded as made from scratch.
    */
-  createGadget(title: string, bindingName: string, chatId: number, output?: BlueprintOutput)
-      : {id: WorkpieceId, title: string};
+  createGadget(title: string, bindingName: string, chatId: number,
+               blueprint?: {output?: BlueprintOutput}): {id: WorkpieceId, title: string};
 
   /**
    * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
@@ -3437,7 +3438,7 @@ async function runAgentPass(
             emitStreamEvent({type: "toolCallOutputFormat", toolCallId, output: blueprint.output});
           }
 
-          let created = hooks.createGadget(title, bindingName, chatId, blueprint?.output);
+          let created = hooks.createGadget(title, bindingName, chatId, blueprint);
           pendingCreatedGadgets.push({gadgetId: created.id, title: created.title, bindingName});
           chatBindings.set(bindingName, {type: "workpiece", id: created.id});
 

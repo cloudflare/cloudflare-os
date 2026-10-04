@@ -136,6 +136,15 @@ async function commitToGadget(impl: any, files: Record<string, string>, merged?:
   return commitId;
 }
 
+/** Moves the head of one of the workspace's gadgets to a new commit of `files`. */
+async function commitFilesTo(impl: any, gadgetId: number, files: Record<string, string>)
+    : Promise<string> {
+  let record = impl.storage.gadgets.get(gadgetId);
+  let commitId = await commitFiles(impl, files, [record.commitId]);
+  impl.storage.gadgets.put({ ...record, commitId });
+  return commitId;
+}
+
 /** Publishes the workspace's gadget, which is gadget 1 unless it was instantiated. */
 async function createBlueprint(client: Overseer, title = "Starter", gadgetId = 1)
     : Promise<BlueprintGadgetSummary> {
@@ -1497,6 +1506,9 @@ describe("applying a blueprint to a gadget", () => {
       ]);
       let created = theGadget(impl);
       expect(created.pending).toBeDefined();
+      // Nothing says where the gadget came from until the creation is accepted. It is not
+      // marked as made from scratch meanwhile, as one created from no blueprint is.
+      expect(created.upstream).toBeUndefined();
       expect(proposal(impl, 1).merge).toEqual({
         gadgetId: created.id, blueprintId: alice.blueprintId, title: "Alice's", version: 1,
         commitId: a1, kind: "fastForward", conflictPaths: [],
@@ -1514,6 +1526,52 @@ describe("applying a blueprint to a gadget", () => {
       expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
       expect(await headFiles(impl)).toEqual({ ...V1, "client.js": "the agent's own\n" });
       expect(gadget.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a1 });
+    });
+  });
+
+  it("records a gadget created from no blueprint as made from scratch, however it is created",
+      async () => {
+    let alice = await publishVersions("Alice's", [V1]);
+
+    await withWorkspace(async workspace => {
+      let { impl, client } = workspace;
+      addUserChat(impl, 1);
+      // By the user outside any chat, by the user in a chat, and by the agent.
+      using direct = await client.createGadget("Direct");
+      using _inChat = await client.createGadget("In chat", 1);
+      await runScriptedTurn(impl, 1, [
+        fauxAssistantMessage([fauxToolCall("createGadget",
+            { title: "Agent's", bindingName: "AGENTS" })], { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxText("Done.")),
+      ]);
+      let created = [...impl.storage.gadgets.list()];
+      expect(created.map((gadget: any) => gadget.title)).toEqual(["Direct", "In chat", "Agent's"]);
+      expect(created.map((gadget: any) => gadget.upstream)).toEqual([{}, {}, {}]);
+      expect(created.map((gadget: any) => gadget.pending !== undefined))
+          .toEqual([false, true, true]);
+
+      // A builder is told so, which is what the UI goes by to offer such a gadget no update.
+      expect(summaries(impl, "build").map(summary => (summary as any).upstream))
+          .toEqual([{}, {}, {}]);
+      expect(summaries(impl, "use").map(summary => (summary as any).upstream))
+          .toEqual([undefined]);
+
+      // It stays so when the creation is accepted.
+      expect(await client.mergeChanges(1)).toEqual({ outcome: "merged" });
+      created = [...impl.storage.gadgets.list()];
+      expect(created.map((gadget: any) => gadget.upstream)).toEqual([{}, {}, {}]);
+
+      // Applying a blueprint is not refused for it. The gadget is treated as any other that
+      // has no release on record, and accepting has it follow the blueprint.
+      let gadgetId = await direct.getId();
+      await commitFilesTo(impl, gadgetId, V3);
+      expect(await apply(client, gadgetId, alice.blueprintId)).toEqual({ outcome: "unrelated" });
+      let result = await apply(client, gadgetId, alice.blueprintId, { allowUnrelated: true });
+      if (result.outcome !== "proposed") throw new Error(`not proposed: ${result.outcome}`);
+      expect(proposal(impl, result.chatId).merge).toMatchObject({ gadgetId, unverifiedBase: true });
+      expect(await client.mergeChanges(result.chatId)).toEqual({ outcome: "merged" });
+      expect(impl.storage.gadgets.get(gadgetId).upstream)
+          .toEqual({ blueprintId: alice.blueprintId, commitId: alice.published[0].commitId });
     });
   });
 
