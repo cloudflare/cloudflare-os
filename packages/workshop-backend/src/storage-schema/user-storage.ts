@@ -6,8 +6,8 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  WorkspaceMetadata, WorkpieceId,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, WorkspaceMetadata,
+  WorkpieceId, SpaceInfo,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
@@ -197,6 +197,12 @@ export function makeUserStorage(storage: DurableObjectStorage) {
           byWorkspace(record: OutputRecord) { return record.workspaceId; },
         },
       }),
+      // The spaces this user is a member of, mirrored here by each space so listing them is one
+      // read of the user's own DO, like the record of a workspace shared with them. Presentation
+      // only: a space's own member list is the authority, and nothing is authorized from this.
+      spaces: collection<SpaceInfo>()({
+        primaryKey: "key",
+      }),
     },
     singletons: {
       // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
@@ -246,6 +252,11 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // (-1 = never, which also lazily backfills users created before the
       // directory existed). See #syncDirectory().
       directoryRev: -1,
+
+      // The key of this user's personal space, once one has been claimed for them (see
+      // #ensurePersonalSpace()). It says which of `spaces` to list first and nothing more: like
+      // that mirror it authorizes nothing, since the space itself records its owner.
+      personalSpaceKey: <string | null>null,
     }
   });
 }

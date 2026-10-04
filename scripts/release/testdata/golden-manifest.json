@@ -1443,6 +1443,12 @@
             "UserDirectoryDurableObject"
           ],
           "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "SpaceDurableObject"
+          ],
+          "tag": "v4"
         }
       ],
       "modules": [

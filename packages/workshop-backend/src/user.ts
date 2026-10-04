@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, SpaceInfo } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -19,7 +19,10 @@ import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
-import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import {
+  CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken,
+  PENDING_HANDOFF_LIFETIME_MS,
+} from "./connect-handoff.js";
 import {
   authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
 } from "./notification-service.js";
@@ -27,6 +30,7 @@ import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
+import { personalSpaceClaim } from "./spaces.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -1095,6 +1099,61 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     result.sort((a, b) => b.lastActive.getTime() - a.lastActive.getTime());
     return result;
+  }
+
+  // --- Spaces (see spaces.ts) ---
+
+  // The allocation of this user's personal space while one is in flight. Concurrent callers share
+  // it, so they allocate one key between them.
+  #personalSpaceAllocation?: Promise<string>;
+
+  // The key of this user's personal space, allocating the space on first use.
+  #ensurePersonalSpace(): Promise<string> {
+    return this.#personalSpaceAllocation ??= this.#allocatePersonalSpace().finally(() => {
+      this.#personalSpaceAllocation = undefined;
+    });
+  }
+
+  // Claims the candidates of personalSpaceClaim() in order until a space grants one. The key is
+  // remembered only once it is granted, and a personal space grants its owner's claim again, so
+  // an allocation interrupted in between ends up on the key it had already claimed.
+  async #allocatePersonalSpace(): Promise<string> {
+    let remembered = this.storage.personalSpaceKey.get();
+    if (remembered !== null) return remembered;
+    let owner = this.storage.profile.get();
+    for (let attempt = 1; ; attempt++) {
+      let claim = personalSpaceClaim(owner, attempt);
+      if (await this.ctx.exports.SpaceDurableObject.getByName(claim.key).claim(claim, owner)) {
+        this.storage.personalSpaceKey.put(claim.key);
+        this.storage.spaces.put({ ...claim, owner, role: "admin" });
+        return claim.key;
+      }
+    }
+  }
+
+  /** AuthenticatedApi.listSpaces: the user's own personal space first, then the rest by name. */
+  async listSpaces(): Promise<SpaceInfo[]> {
+    let personalKey = await this.#ensurePersonalSpace();
+    let rank = (space: SpaceInfo) => space.key === personalKey ? 0 : 1;
+    return [...this.storage.spaces.list()].toSorted((a, b) =>
+        rank(a) - rank(b) || a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));
+  }
+
+  /**
+   * Records that this user is a member of a space, as `info` describes it for them. Pushed by the
+   * space when their membership changes and whenever they open it. Presentation only, like
+   * recordSharedGadgetOpen(): the space's member list stays the authority.
+   */
+  async recordSpaceMembership(info: SpaceInfo): Promise<void> {
+    this.storage.spaces.put(info);
+  }
+
+  /**
+   * Drops a space from this user's listing: they were removed from it, or it refused to open for
+   * them. Like forgetSharedGadget(), it grants and revokes nothing.
+   */
+  async forgetSpace(key: string): Promise<void> {
+    this.storage.spaces.delete(key);
   }
 
   // --- Blueprint methods (called by Overseer during propagation) ---

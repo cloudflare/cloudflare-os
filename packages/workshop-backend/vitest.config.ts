@@ -101,6 +101,7 @@ export default defineConfig({
           // Likewise only reached through `ctx.exports`, by the overseer deleting a blueprint.
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
+          TEST_SPACE: { className: 'SpaceDurableObject', useSQLite: true },
         },
       },
     }),
