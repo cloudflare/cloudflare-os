@@ -1,13 +1,10 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Banner, Dialog, Loader, Radio } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
-  AuthenticatedApi,
-  BlueprintLibrarySummary,
   BlueprintPublicInfo,
-  BlueprintUserSummary,
   GadgetClient,
   GadgetUpstream,
   Overseer,
@@ -16,19 +13,14 @@ import type {
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from '../../components/WorkshopControls'
 import { getStoredSelectedModel } from '../../modelSelection'
 import { logRpcFailure } from '../../rpcErrors'
-import {
-  groupBlueprintChoices,
-  type BlueprintChoice,
-  type BlueprintChoiceSource,
-} from './blueprintChoices'
-import { parseBlueprintLink } from './blueprintLink'
+import { toBlueprintChoice, type BlueprintChoice } from './blueprintChoices'
+import { parseBlueprintReference } from './blueprintReference'
 import { hasNewerRelease } from './useBlueprintUpdateAvailable'
 
 type UpdateFromBlueprintDialogProps = {
-  /** The gadget to update. `upstream` is the blueprint it follows, which the picker starts on. */
+  /** The gadget to update. `upstream` is the blueprint it follows, which the dialog offers first. */
   gadget: { title: string; upstream?: GadgetUpstream; client: RpcStub<GadgetClient> }
   overseer: RpcStub<Overseer>
-  authenticatedApi: RpcStub<AuthenticatedApi>
   publicApi: RpcStub<PublicApi>
   onClose: () => void
   /** Called with the new chat that holds the proposal, once there is one. */
@@ -43,13 +35,13 @@ type Load =
     /** The model a new chat would start with, which reviews a merge. Null for no agent. */
     reviewer: AiChatAuthorInfo | null
     followed: BlueprintPublicInfo | null
-    own: BlueprintUserSummary[]
-    library: BlueprintLibrarySummary[]
-    featured: BlueprintPublicInfo[]
   }
 
-type LinkLookup =
-  | { status: 'empty' | 'notALink' | 'loading' | 'notFound' | 'failed' }
+/** Whether to update from the followed blueprint, or switch to one the user names. */
+type Source = 'followed' | 'switch'
+
+type ReferenceLookup =
+  | { status: 'empty' | 'invalid' | 'loading' | 'notFound' | 'failed' }
   | { status: 'found'; blueprint: BlueprintPublicInfo }
 
 /** How the last attempt to apply a blueprint ended, unless it ended in a proposal. */
@@ -57,18 +49,11 @@ type Outcome =
   | { kind: 'upToDate' | 'baseUnavailable' | 'unrelated'; blueprint: BlueprintChoice }
   | { kind: 'failed'; blueprint: BlueprintChoice; allowUnrelated: boolean; message: string }
 
-const GROUP_LABELS: Record<BlueprintChoiceSource, string> = {
-  followed: 'Following',
-  linked: 'From link',
-  yours: 'Your blueprints',
-  featured: 'Featured',
-}
-
-const LINK_MESSAGES: Partial<Record<LinkLookup['status'], string>> = {
-  notALink: 'That is not a link to a blueprint.',
+const REFERENCE_MESSAGES: Partial<Record<ReferenceLookup['status'], string>> = {
+  invalid: 'That is not a blueprint ID or link.',
   loading: 'Looking up that blueprint…',
-  notFound: 'No blueprint was found at that link.',
-  failed: 'That link could not be looked up.',
+  notFound: 'No blueprint was found with that ID.',
+  failed: 'That blueprint could not be looked up.',
 }
 
 const DIALOG_CLASS =
@@ -81,15 +66,29 @@ const APPLYING_NOTE =
   'Working out the update. This can take a few minutes for a blueprint that has little in ' +
   'common with the gadget.'
 
+// A merge is only as good as the base it is worked out from, which is the newest version the
+// gadget and the blueprint have in common. With none, the confirm step's warning applies.
+const SWITCH_NOTE =
+  'The new blueprint must be derived from the same base as this gadget, such as a remix of the ' +
+  'blueprint the gadget was made from. If the two share no history, you are warned before ' +
+  'anything is merged. Once you accept the update, the gadget follows the new blueprint.'
+
+const describeChoice = (choice: BlueprintChoice, status: string | null) => (
+  <>
+    <span className="block">Version {choice.version}{status && ` · ${status}`}</span>
+    {choice.description && <span className="line-clamp-2">{choice.description}</span>}
+  </>
+)
+
 /**
- * Picks a blueprint and proposes merging its current release into a gadget (see
- * GadgetClient.applyBlueprint()). The proposal lands in a new chat, where it is previewed and
- * accepted, so nothing here changes the gadget. Mount it while it should be open.
+ * Proposes merging a blueprint's current release into a gadget (see GadgetClient.applyBlueprint()):
+ * the blueprint the gadget follows, or, as an advanced option, another one the user names by ID
+ * or link. The proposal lands in a new chat, where it is previewed and accepted, so nothing here
+ * changes the gadget. Mount it while it should be open.
  */
 export const UpdateFromBlueprintDialog = ({
   gadget,
   overseer,
-  authenticatedApi,
   publicApi,
   onClose,
   onProposed,
@@ -98,11 +97,11 @@ export const UpdateFromBlueprintDialog = ({
 
   const [load, setLoad] = useState<Load>({ status: 'loading' })
   const [loadAttempt, setLoadAttempt] = useState(0)
-  const [selectedId, setSelectedId] = useState<string | null>(followedId ?? null)
-  const [link, setLink] = useState<{ text: string; lookup: LinkLookup }>(
+  const [source, setSource] = useState<Source>(followedId === undefined ? 'switch' : 'followed')
+  const [reference, setReference] = useState<{ text: string; lookup: ReferenceLookup }>(
     { text: '', lookup: { status: 'empty' } },
   )
-  const linkRequest = useRef(0)
+  const referenceRequest = useRef(0)
   const [applying, setApplying] = useState(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
 
@@ -111,47 +110,42 @@ export const UpdateFromBlueprintDialog = ({
     Promise.all([
       overseer.listModels(),
       followedId === undefined ? null : publicApi.getBlueprint(followedId),
-      authenticatedApi.listOwnBlueprints(),
-      authenticatedApi.listLibraryBlueprints(),
-      authenticatedApi.listFeaturedBlueprints(),
-    ]).then(([models, followed, own, library, featured]) => {
+    ]).then(([models, followed]) => {
       if (cancelled) return
       // The same choice a new chat's composer starts on, since a new chat is where this lands.
       const reviewerId = getStoredSelectedModel(models)
       const reviewer = models.find(model => model.id === reviewerId) ?? null
-      setLoad({ status: 'loaded', reviewer, followed, own, library, featured })
+      setLoad({ status: 'loaded', reviewer, followed })
     }, err => {
-      logRpcFailure('Failed to load the blueprints to update from:', err)
+      logRpcFailure('Failed to load the blueprint to update from:', err)
       if (!cancelled) setLoad({ status: 'failed' })
     })
     return () => { cancelled = true }
-  }, [overseer, authenticatedApi, publicApi, followedId, loadAttempt])
+  }, [overseer, publicApi, followedId, loadAttempt])
 
   const retryLoad = () => {
     setLoad({ status: 'loading' })
     setLoadAttempt(attempt => attempt + 1)
   }
 
-  const handleLinkChange = (text: string) => {
-    const request = ++linkRequest.current
-    const blueprintId = parseBlueprintLink(text)
+  const handleReferenceChange = (text: string) => {
+    const request = ++referenceRequest.current
+    setOutcome(null)
+    const blueprintId = parseBlueprintReference(text)
     if (blueprintId === null) {
-      setLink({ text, lookup: { status: text.trim() === '' ? 'empty' : 'notALink' } })
+      setReference({ text, lookup: { status: text.trim() === '' ? 'empty' : 'invalid' } })
       return
     }
-    setLink({ text, lookup: { status: 'loading' } })
+    setReference({ text, lookup: { status: 'loading' } })
     publicApi.getBlueprint(blueprintId).then(blueprint => {
-      if (linkRequest.current !== request) return
-      if (blueprint === null) {
-        setLink({ text, lookup: { status: 'notFound' } })
-        return
-      }
-      setLink({ text, lookup: { status: 'found', blueprint } })
-      setSelectedId(blueprint.id)
-      setOutcome(null)
+      if (referenceRequest.current !== request) return
+      setReference({
+        text,
+        lookup: blueprint === null ? { status: 'notFound' } : { status: 'found', blueprint },
+      })
     }, err => {
-      logRpcFailure('Failed to look up a blueprint link:', err)
-      if (linkRequest.current === request) setLink({ text, lookup: { status: 'failed' } })
+      logRpcFailure('Failed to look up a blueprint by ID:', err)
+      if (referenceRequest.current === request) setReference({ text, lookup: { status: 'failed' } })
     })
   }
 
@@ -178,21 +172,21 @@ export const UpdateFromBlueprintDialog = ({
     }
   }
 
-  const groups = load.status === 'loaded'
-    ? groupBlueprintChoices({
-      ...load,
-      linked: link.lookup.status === 'found' ? link.lookup.blueprint : null,
-    })
-    : []
-  const selected = groups.flatMap(group => group.choices).find(choice => choice.id === selectedId)
+  const followed = load.status === 'loaded' && load.followed ? load.followed : null
+  const followedChoice = followed && toBlueprintChoice(followed)
+  const namedChoice = reference.lookup.status === 'found'
+    ? toBlueprintChoice(reference.lookup.blueprint)
+    : null
+  // With no followed blueprint to offer, naming another is the only way to update.
+  const selected = source === 'switch' || !followedChoice ? namedChoice : followedChoice
 
   // A blueprint stored before releases were commits names no release to compare with, and a
   // gadget made before gadgets recorded the release they took has none to compare. Either gets
   // neither status.
   const followedStatus =
-    load.status !== 'loaded' || !load.followed || gadget.upstream?.commitId === undefined ||
-      load.followed.metadata.commitId === undefined ? null
-      : hasNewerRelease(gadget.upstream, load.followed.metadata) ? 'Update available'
+    !followed || gadget.upstream?.commitId === undefined ||
+      followed.metadata.commitId === undefined ? null
+      : hasNewerRelease(gadget.upstream, followed.metadata) ? 'Update available'
         : 'Up to date'
 
   const header = (title: string, description: string) => (
@@ -229,6 +223,28 @@ export const UpdateFromBlueprintDialog = ({
     : load.reviewer
       ? `If the gadget and the blueprint have both changed, ${load.reviewer.name} reviews the merge.`
       : 'No agent is selected, so a merge of changes on both sides is not reviewed.'
+
+  const switchForm = () => (
+    <div className="space-y-2">
+      <p className={BODY_TEXT}>{SWITCH_NOTE}</p>
+      <WorkshopInput
+        aria-label="Blueprint ID or link"
+        placeholder="Paste a blueprint ID or link"
+        value={reference.text}
+        onChange={event => handleReferenceChange(event.target.value)}
+        disabled={applying}
+        className="w-full"
+      />
+      <div role="status" className={`${BODY_TEXT} empty:hidden`}>
+        {namedChoice ? (
+          <>
+            <span className="block font-medium text-kumo-default">{namedChoice.title}</span>
+            {describeChoice(namedChoice, null)}
+          </>
+        ) : REFERENCE_MESSAGES[reference.lookup.status]}
+      </div>
+    </div>
+  )
 
   const outcomeBanner = () => {
     switch (outcome?.kind) {
@@ -329,82 +345,50 @@ export const UpdateFromBlueprintDialog = ({
                 'new chat, where you can try it before accepting it.',
             )}
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-              <div className="space-y-1.5">
-                <WorkshopInput
-                  aria-label="Blueprint link"
-                  placeholder="Paste a blueprint link"
-                  value={link.text}
-                  onChange={event => handleLinkChange(event.target.value)}
-                  disabled={applying}
-                  className="w-full"
-                />
-                <p role="status" className={`${BODY_TEXT} empty:hidden`}>
-                  {LINK_MESSAGES[link.lookup.status]}
-                </p>
-              </div>
-
               {load.status === 'loading' ? (
                 <div className="flex justify-center py-6"><Loader size="base" /></div>
               ) : load.status === 'failed' ? (
                 <Banner
                   variant="error"
                   size="sm"
-                  title="Your blueprints could not be loaded"
+                  title="The blueprint could not be loaded"
                   action={<Banner.Action onClick={retryLoad}>Try again</Banner.Action>}
                 />
+              ) : !followedChoice ? (
+                <>
+                  <p className={BODY_TEXT}>
+                    {followedId === undefined
+                      ? 'The blueprint this gadget was made from is not known, so paste the ID ' +
+                        'or link of the one to update from.'
+                      : 'The blueprint this gadget follows is no longer available, but you can ' +
+                        'switch it to another.'}
+                  </p>
+                  {switchForm()}
+                </>
               ) : (
                 <>
-                  {followedId !== undefined && load.followed === null && (
-                    <p className={BODY_TEXT}>
-                      The blueprint this gadget follows is no longer available.
-                    </p>
-                  )}
-                  {groups.length === 0 ? (
-                    <p className={BODY_TEXT}>
-                      You have no blueprints to update from yet. Paste the link of one above.
-                    </p>
-                  ) : (
-                    <Radio.Group
-                      appearance="card"
-                      // Never undefined, which would make the group uncontrolled. No blueprint
-                      // has the empty id, so it selects nothing.
-                      value={selectedId ?? ''}
-                      onValueChange={blueprintId => {
-                        setSelectedId(blueprintId)
-                        setOutcome(null)
-                      }}
-                      disabled={applying}
-                    >
-                      <Radio.Legend className="sr-only">Blueprint to update from</Radio.Legend>
-                      {groups.map(group => (
-                        <Fragment key={group.source}>
-                          <p className="m-0 text-[11px] font-medium uppercase leading-4 tracking-[0.06em] text-kumo-inactive">
-                            {GROUP_LABELS[group.source]}
-                          </p>
-                          {group.choices.map(choice => {
-                            const status = group.source === 'followed' ? followedStatus : null
-                            return (
-                              <Radio.Item
-                                key={choice.id}
-                                value={choice.id}
-                                label={choice.title}
-                                description={
-                                  <>
-                                    <span className="block">
-                                      Version {choice.version}{status && ` · ${status}`}
-                                    </span>
-                                    {choice.description && (
-                                      <span className="line-clamp-2">{choice.description}</span>
-                                    )}
-                                  </>
-                                }
-                              />
-                            )
-                          })}
-                        </Fragment>
-                      ))}
-                    </Radio.Group>
-                  )}
+                  <Radio.Group
+                    appearance="card"
+                    value={source}
+                    onValueChange={value => {
+                      setSource(value)
+                      setOutcome(null)
+                    }}
+                    disabled={applying}
+                  >
+                    <Radio.Legend className="sr-only">Blueprint to update from</Radio.Legend>
+                    <Radio.Item
+                      value="followed"
+                      label={`Update from ${followedChoice.title}`}
+                      description={describeChoice(followedChoice, followedStatus)}
+                    />
+                    <Radio.Item
+                      value="switch"
+                      label="Advanced: Switch blueprints"
+                      description="Update from a different blueprint, named by its ID or link."
+                    />
+                  </Radio.Group>
+                  {source === 'switch' && switchForm()}
                 </>
               )}
             </div>
@@ -421,7 +405,7 @@ export const UpdateFromBlueprintDialog = ({
                   <WorkshopButton
                     tone="primary"
                     onClick={() => { if (selected) void apply(selected, false) }}
-                    disabled={applying || selected === undefined}
+                    disabled={applying || !selected}
                   >
                     {applying ? 'Preparing update…' : 'Update'}
                   </WorkshopButton>

@@ -280,7 +280,7 @@ There are no automatic updates.
 
 ### In the UI
 
-- **Update from blueprint…** in the gadget editor's Blueprints menu opens a picker. It offers the blueprint the gadget follows (preselected), a blueprint named by a pasted share link, the user's own and library blueprints, and the deployment's featured ones. The menu item is not shown for a gadget recorded as built from scratch (see [What `upstream` can say](#what-upstream-can-say)).
+- **Update from blueprint…** in the gadget editor's Blueprints menu opens a dialog with two options: update from the blueprint the gadget follows (the default), or, under **Advanced: Switch blueprints**, from another blueprint the user names by pasting its ID or share link. The second explains that the new blueprint must be derived from the same base as the gadget. When the followed blueprint is not known or no longer exists, naming one is the only option. The menu item is not shown for a gadget recorded as built from scratch (see [What `upstream` can say](#what-upstream-can-say)).
 - **Update available** appears on that menu item, and as a dot on the menu's button, when the followed blueprint's current release is not the one the gadget last took. The frontend works this out by comparing `GadgetSummary.upstream.commitId` with `PublicApi.getBlueprint()`, so there is no RPC for it. The blueprint is read when the gadget's upstream changes, not continuously, so a release published while the workspace stays open is noticed later. A followed blueprint with no `commitId` never shows an update. Neither does a gadget whose `upstream` names no release, nor a "use" collaborator's view, which is not told `upstream`.
 - On a proposal, the UI opens the new chat. For the other outcomes it says so in the dialog, and when the call fails because the gadget changed meanwhile it offers to try again.
 
@@ -341,10 +341,10 @@ Once such an update is accepted, the gadget has an upstream and, for a blueprint
 
 | `upstream` | Meaning | "Update from blueprint…" |
 |---|---|---|
-| `{blueprintId, commitId}` | The gadget follows that blueprint, and last took that release. | Shown, starting on that blueprint |
-| `{blueprintId}` | The gadget was made from that blueprint, but which release it took is not on record. | Shown, starting on that blueprint |
+| `{blueprintId, commitId}` | The gadget follows that blueprint, and last took that release. | Shown, offering that blueprint |
+| `{blueprintId}` | The gadget was made from that blueprint, but which release it took is not on record. | Shown, offering that blueprint |
 | `{}` | The gadget was built from scratch in this workspace. It follows no blueprint. | Hidden |
-| absent | Where the gadget came from is not known. | Shown, starting on nothing |
+| absent | Where the gadget came from is not known. | Shown, asking for a blueprint ID or link |
 
 A gadget instantiated from a blueprint gets the first state, and accepting any blueprint proposal sets it. A gadget created from no blueprint (by the user from the workspace UI, in a chat or outside one, or by the agent's `createGadget` with no `blueprintId`) is born in the third. So every gadget made since this was recorded is in the first or the third once it is permanent. A gadget the agent is creating from a blueprint has no `upstream` while its creation is still proposed.
 
@@ -358,7 +358,7 @@ The second state and the last exist only for gadgets made before `upstream` was 
 - That call with no `blueprintId`, or a `changes` message in a user's name that lists the gadget as created (the user's own creation, from the workspace UI with a chat open): `{}`.
 - Anything else: left absent. That covers a gadget instantiated from the landing page or the New menu, which left no record of its blueprint anywhere; one a user created outside any chat; and one whose record in the log is gone or was not reached.
 
-An `upstream` with no release does one thing: the picker starts on that blueprint. No update is announced for the gadget, and applying the blueprint takes the last row of the table above, with its warning. Accepting that proposal records the release, and the gadget is like any other from then on.
+An `upstream` with no release does one thing: the update dialog offers that blueprint. No update is announced for the gadget, and applying the blueprint takes the last row of the table above, with its warning. Accepting that proposal records the release, and the gadget is like any other from then on.
 
 The migration is best-effort. A workspace with no gadget that lacks an `upstream` is not scanned at all, which covers the many workspaces that hold no gadget. Otherwise it reads at most 1000 chat messages per workspace, shared between the chats and taken from the start of each, so a creation late in a long chat can be missed. A gadget it misses stays of unknown origin, and keeps the menu item.
 

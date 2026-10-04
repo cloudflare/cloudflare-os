@@ -8,10 +8,7 @@ import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   ApplyBlueprintResult,
-  AuthenticatedApi,
-  BlueprintLibrarySummary,
   BlueprintPublicInfo,
-  BlueprintUserSummary,
   GadgetClient,
   GadgetUpstream,
   Overseer,
@@ -137,6 +134,11 @@ const published = (id: string, title: string, commitId?: string): BlueprintPubli
   },
 })
 
+const BLUEPRINTS = [
+  published('trip', 'Trip planner', 'release-2'),
+  published('budget', 'Budget tracker', 'release-9'),
+]
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(resolvePromise => { resolve = resolvePromise })
@@ -146,9 +148,6 @@ function deferred<T>() {
 const applyBlueprint = vi.fn<GadgetClient['applyBlueprint']>()
 const getBlueprint = vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>()
 const listModels = vi.fn<() => Promise<AiChatAuthorInfo[]>>()
-const listOwnBlueprints = vi.fn<() => Promise<BlueprintUserSummary[]>>()
-const listLibraryBlueprints = vi.fn<() => Promise<BlueprintLibrarySummary[]>>()
-const listFeaturedBlueprints = vi.fn<() => Promise<BlueprintPublicInfo[]>>()
 const onClose = vi.fn<() => void>()
 const onProposed = vi.fn<(chatId: number) => void>()
 
@@ -159,11 +158,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
   listModels.mockResolvedValue([OPUS, SONNET])
-  getBlueprint.mockImplementation(async id =>
-    id === 'trip' ? published('trip', 'Trip planner', 'release-2') : null)
-  listOwnBlueprints.mockResolvedValue([])
-  listLibraryBlueprints.mockResolvedValue([])
-  listFeaturedBlueprints.mockResolvedValue([published('budget', 'Budget tracker', 'release-9')])
+  getBlueprint.mockImplementation(async id => BLUEPRINTS.find(blueprint => blueprint.id === id) ?? null)
   container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -184,9 +179,6 @@ async function open(upstream?: GadgetUpstream) {
           client: { applyBlueprint } as unknown as RpcStub<GadgetClient>,
         }}
         overseer={{ listModels } as unknown as RpcStub<Overseer>}
-        authenticatedApi={{
-          listOwnBlueprints, listLibraryBlueprints, listFeaturedBlueprints,
-        } as unknown as RpcStub<AuthenticatedApi>}
         publicApi={{ getBlueprint } as unknown as RpcStub<PublicApi>}
         onClose={onClose}
         onProposed={onProposed}
@@ -209,16 +201,27 @@ async function click(name: string) {
 function radio(title: string): HTMLInputElement {
   const label = [...container.querySelectorAll('label')].find(candidate =>
     candidate.querySelector('[data-testid="blueprint-title"]')?.textContent === title)
-  if (!label) throw new Error(`No "${title}" blueprint in: ${container.textContent}`)
+  if (!label) throw new Error(`No "${title}" option in: ${container.textContent}`)
   return label.querySelector('input')!
 }
 
-async function pasteLink(link: string) {
-  const input = container.querySelector<HTMLInputElement>('[aria-label="Blueprint link"]')!
+const FOLLOWED = 'Update from Trip planner'
+const SWITCH = 'Advanced: Switch blueprints'
+
+const referenceInput = () =>
+  container.querySelector<HTMLInputElement>('[aria-label="Blueprint ID or link"]')
+
+async function paste(text: string) {
+  const input = referenceInput()!
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, link)
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text)
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
+}
+
+async function switchTo(text: string) {
+  await act(async () => { radio(SWITCH).click() })
+  await paste(text)
 }
 
 const bannerText = () => container.querySelector('[data-testid="banner"]')?.textContent ?? null
@@ -230,9 +233,10 @@ describe('UpdateFromBlueprintDialog', () => {
 
     await open(TRIP_UPSTREAM)
 
-    expect(radio('Trip planner').checked).toBe(true)
-    expect(radio('Trip planner').closest('label')!.textContent).toContain('Update available')
-    expect(radio('Budget tracker').checked).toBe(false)
+    expect(radio(FOLLOWED).checked).toBe(true)
+    expect(radio(FOLLOWED).closest('label')!.textContent).toContain('Update available')
+    expect(radio(SWITCH).checked).toBe(false)
+    expect(referenceInput()).toBeNull()
 
     await click('Update')
 
@@ -245,8 +249,8 @@ describe('UpdateFromBlueprintDialog', () => {
   it('starts on the followed blueprint, with no status, when the release taken is unknown', async () => {
     await open({ blueprintId: 'trip' })
 
-    expect(radio('Trip planner').checked).toBe(true)
-    const description = radio('Trip planner').closest('label')!.textContent
+    expect(radio(FOLLOWED).checked).toBe(true)
+    const description = radio(FOLLOWED).closest('label')!.textContent
     expect(description).toContain('Version 2')
     expect(description).not.toContain('Update available')
     expect(description).not.toContain('Up to date')
@@ -262,34 +266,50 @@ describe('UpdateFromBlueprintDialog', () => {
     expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: null })
   })
 
-  it('switches the gadget to another blueprint the user picks', async () => {
+  it('switches the gadget to another blueprint named by its id', async () => {
     applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 8 })
 
     await open(TRIP_UPSTREAM)
-    await act(async () => { radio('Budget tracker').click() })
+    await act(async () => { radio(SWITCH).click() })
+    // Nothing is named yet, and the followed blueprint is no longer what Update would apply.
+    expect(button('Update').disabled).toBe(true)
+
+    await paste('budget')
+    expect(container.textContent).toContain('Budget tracker')
     await click('Update')
 
     expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('budget', { modelId: 'opus' })
     expect(onProposed).toHaveBeenCalledExactlyOnceWith(8)
   })
 
-  it('offers a blueprint from a pasted link, and nothing to apply before one is chosen', async () => {
-    getBlueprint.mockImplementation(async id =>
-      id === 'shared' ? published('shared', 'Shared itinerary', 'release-5') : null)
+  it('goes back to the followed blueprint when the user unselects switching', async () => {
+    applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 8 })
+
+    await open(TRIP_UPSTREAM)
+    await switchTo('budget')
+    await act(async () => { radio(FOLLOWED).click() })
+    await click('Update')
+
+    expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: 'opus' })
+  })
+
+  it('asks for a blueprint by id or link when the gadget follows none known', async () => {
     applyBlueprint.mockResolvedValue({ outcome: 'proposed', chatId: 9 })
 
     await open(undefined)
+    expect(container.querySelector('input[type="radio"]')).toBeNull()
     expect(button('Update').disabled).toBe(true)
 
-    await pasteLink('https://gadgets.example/blueprint/missing')
-    expect(container.textContent).toContain('No blueprint was found at that link.')
+    await paste('my blueprint')
+    expect(container.textContent).toContain('That is not a blueprint ID or link.')
+
+    await paste('https://gadgets.example/blueprint/missing')
+    expect(container.textContent).toContain('No blueprint was found with that ID.')
     expect(button('Update').disabled).toBe(true)
 
-    await pasteLink('https://gadgets.example/blueprint/shared')
-    expect(radio('Shared itinerary').checked).toBe(true)
-
+    await paste('https://gadgets.example/blueprint/budget')
     await click('Update')
-    expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('shared', { modelId: 'opus' })
+    expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('budget', { modelId: 'opus' })
   })
 
   it('warns before merging an unrelated blueprint, and guesses a base only once confirmed', async () => {
@@ -297,7 +317,7 @@ describe('UpdateFromBlueprintDialog', () => {
     applyBlueprint.mockResolvedValueOnce({ outcome: 'proposed', chatId: 11 })
 
     await open(TRIP_UPSTREAM)
-    await act(async () => { radio('Budget tracker').click() })
+    await switchTo('budget')
     await click('Update')
 
     expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('budget', { modelId: 'opus' })
@@ -315,11 +335,13 @@ describe('UpdateFromBlueprintDialog', () => {
     applyBlueprint.mockResolvedValueOnce({ outcome: 'unrelated' })
 
     await open(TRIP_UPSTREAM)
+    await switchTo('budget')
     await click('Update')
     await click('Back')
 
     expect(applyBlueprint).toHaveBeenCalledTimes(1)
-    expect(radio('Trip planner').checked).toBe(true)
+    expect(radio(SWITCH).checked).toBe(true)
+    expect(referenceInput()!.value).toBe('budget')
     expect(bannerText()).toBeNull()
   })
 
@@ -383,28 +405,29 @@ describe('UpdateFromBlueprintDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('says that the followed blueprint is gone, and lets the user pick another', async () => {
-    getBlueprint.mockResolvedValue(null)
+  it('says that the followed blueprint is gone, and lets the user name another', async () => {
+    getBlueprint.mockImplementation(async id =>
+      id === 'budget' ? BLUEPRINTS[1] : null)
 
     await open(TRIP_UPSTREAM)
 
-    expect(container.textContent).toContain('The blueprint this gadget follows is no longer available.')
+    expect(container.textContent).toContain('The blueprint this gadget follows is no longer available')
     expect(button('Update').disabled).toBe(true)
 
-    await act(async () => { radio('Budget tracker').click() })
+    await paste('budget')
     expect(button('Update').disabled).toBe(false)
   })
 
-  it('can reload the blueprints after failing to', async () => {
-    listFeaturedBlueprints.mockRejectedValueOnce(new Error('KV unavailable'))
+  it('can reload the followed blueprint after failing to', async () => {
+    getBlueprint.mockRejectedValueOnce(new Error('KV unavailable'))
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     await open(TRIP_UPSTREAM)
-    expect(bannerText()).toContain('Your blueprints could not be loaded')
+    expect(bannerText()).toContain('The blueprint could not be loaded')
 
     await click('Try again')
 
-    expect(radio('Trip planner').checked).toBe(true)
+    expect(radio(FOLLOWED).checked).toBe(true)
     consoleError.mockRestore()
   })
 })
