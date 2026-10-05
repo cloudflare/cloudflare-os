@@ -790,7 +790,6 @@ it.concurrent("the agent reviews a merge in one turn, and is never called for a 
   expect(model.remainingSteps()).toBe(0);
   expect(model.requests).toHaveLength(3);
   const [first, second] = model.requests.map(request => CHAT_REQUEST.parse(request).messages);
-  expect(first!.find(entry => entry.role === "system")?.content).toContain("# Merge conflicts");
   const [prompt, ...prompts] = first!.filter(entry => entry.role === "user");
   expect(prompts).toEqual([]);
   for (const said of [

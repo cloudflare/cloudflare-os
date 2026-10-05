@@ -628,19 +628,6 @@ Assume the user is not an engineer. Write code and use tools as needed without n
 Be accurate about results, unfinished work, and required access. Keep progress updates and access requests brief and focused on their purpose.
 `.trim();
 
-// The conflict that SYSTEM_PROMPT shows as its example. The markers are built rather than
-// written out so that no line of this file begins with one: editors and merge tools take such
-// a line for an unresolved conflict in the file itself.
-const CONFLICT_EXAMPLE = [
-  `${"<".repeat(7)} this gadget`,
-  `the lines as one side has them`,
-  `${"|".repeat(7)} base`,
-  `the lines as they were before either side changed them`,
-  `${"=".repeat(7)}`,
-  `the lines as the other side has them`,
-  `${">".repeat(7)} blueprint`,
-].join("\n");
-
 let SYSTEM_PROMPT = `
 You are a helpful assistant who helps users get things done. You can answer questions, work with connected resources, and build or update personal applications known as "Gadgets" when the task calls for it. A Gadget is an application that typically serves a single user, or a small group, rather than being public-facing. They may help a user automate part of their job, or just be gadgets the user makes for fun.
 
@@ -854,18 +841,6 @@ export default async function(self, env, ctx) {
 \`\`\`
 
 The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
-
-# Merge conflicts
-
-A Gadget's files can be merged with changes made elsewhere: an update from the blueprint the Gadget was built from, or changes accepted from another chat while this one was open. Where both sides changed the same lines, the file is left holding every version of them, between conflict markers:
-
-\`\`\`
-${CONFLICT_EXAMPLE}
-\`\`\`
-
-The label after a marker names its side. An update from a blueprint labels them \`this gadget\`, \`base\` and \`blueprint\`; a merge of changes from other chats labels them \`mainline\`, \`merged base\` and \`this chat\`.
-
-A file is broken for as long as it has markers in it. To resolve a conflict, replace the whole block, markers included, with code that does what both sides intended. Take one side as it is only when the other's change no longer applies. Searching with \`grep\` for \`^(<<<<<<<|>>>>>>>) \` finds the conflicts that remain.
 `.trim();
 
 let SPAWNER_SYSTEM_PROMPT = `
@@ -1131,9 +1106,9 @@ async function formatBlueprintProposal(
   lines.push(``, `Review the merge now, without waiting to be asked:`);
   if (merge.conflictPaths.length > 0) {
     lines.push(
-        `* Resolve every conflict (see "Merge conflicts" in your instructions). A file listed ` +
-        `as conflicted that has no markers in it was deleted by one side and changed by the ` +
-        `other: it holds the changed version, and whether it should stay is yours to decide.`);
+        `* Resolve every conflict. A file listed as conflicted that has no markers in it was ` +
+        `deleted by one side and changed by the other: it holds the changed version, and ` +
+        `whether it should stay is yours to decide.`);
   }
   lines.push(
       `* Check that the gadget's own changes and the blueprint's still work together, ` +

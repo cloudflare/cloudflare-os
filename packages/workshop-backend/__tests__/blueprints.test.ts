@@ -2164,8 +2164,6 @@ describe("having the agent review a blueprint merged into a gadget", () => {
 
       // A commit that the summary names holds its files, for the agent's own tools to read.
       expect(toolResultTexts(afterRead).at(-1)).toBe("one\n");
-      expect(context.systemPrompt).toContain(
-          "```\n<<<<<<< this gadget\nthe lines as one side has them\n||||||| base\n");
     });
   });
 
@@ -2206,7 +2204,7 @@ describe("having the agent review a blueprint merged into a gadget", () => {
         `* "new.js"`,
         ``,
         `Review the merge now, without waiting to be asked:`,
-        `* Resolve every conflict (see "Merge conflicts" in your instructions).`,
+        `* Resolve every conflict.`,
       ].join("\n"));
 
       // What the agent read is the merged file, markers and all.
