@@ -22,8 +22,8 @@ import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } 
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
 import {
-  AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, ReasoningLevel,
-  SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
+  AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, GatewayModelCapabilities,
+  REASONING_LEVELS, ReasoningLevel, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
 } from "@gadgets/workshop-shared/api";
 import { traceChat } from "./agent-tracing.js";
 import {
@@ -159,26 +159,55 @@ export function isRuntimeModel(provider: AiModelProvider, modelId: string): bool
 }
 
 // What a model descriptor takes from pi's catalog. An entry borrowed from another model supplies
-// the runtime flags alone, so that the name, cost and limits stay the model's own.
-type CatalogEntry =
-    Pick<Model<Api>, "id" | "compat" | "thinkingLevelMap" | "reasoning" | "input"> &
-    Partial<Pick<Model<Api>, "name" | "cost" | "contextWindow" | "maxTokens">>;
+// the runtime flags alone, so that the name, cost and limits stay the model's own, and one made
+// of stated capabilities supplies only what they state.
+type CatalogEntry = Pick<Model<Api>, "id"> & Partial<Pick<Model<Api>,
+    "compat" | "thinkingLevelMap" | "reasoning" | "input" | "name" | "cost" | "contextWindow" |
+    "maxTokens">>;
 
 // pi's entry for a gateway model: its own or, while pi has none, the flags of the model its
-// config says it behaves like. pi's own entry always wins, so a pi that learns the model takes
-// over from the borrowed one.
+// config says it behaves like, under the capabilities its config states. pi's own entry always
+// wins, so a pi that learns the model takes over from both.
 function gatewayCatalogModel(config: AiModelConfig): CatalogEntry | undefined {
   let own = catalogModel(config.provider, config.model);
-  if (own || config.behavesLike === undefined) return own;
-  let like = catalogModel(config.provider, config.behavesLike);
-  if (!like) return undefined;
+  if (own) return own;
+  let like = config.behavesLike === undefined
+      ? undefined : catalogModel(config.provider, config.behavesLike);
+  if (!like && !config.capabilities) return undefined;
   // The models Anthropic may answer with in the other one's place are not flags: they would have
   // this model answered by them, at their prices.
-  let { allowedFallbackModels, ...compat } = (like.compat ?? {}) as AnthropicMessagesCompat;
-  return {
-    id: like.id, compat: like.compat && compat, thinkingLevelMap: like.thinkingLevelMap,
-    reasoning: like.reasoning, input: like.input,
+  let { allowedFallbackModels, ...compat } = (like?.compat ?? {}) as AnthropicMessagesCompat;
+  let entry: CatalogEntry = {
+    id: like?.id ?? config.model, compat: like?.compat && compat,
+    thinkingLevelMap: like?.thinkingLevelMap, reasoning: like?.reasoning, input: like?.input,
   };
+  let { imageInput, reasoningLevels } = config.capabilities ?? {};
+  if (imageInput !== undefined) entry.input = imageInput ? ["text", "image"] : ["text"];
+  if (reasoningLevels) {
+    entry.reasoning = reasoningLevels.some(level => level !== "off");
+    // pi has a Claude whose effort it manages think on every request, whatever the descriptor
+    // says of its reasoning, so a model stated to do none does not borrow that.
+    if (!entry.reasoning && entry.compat) {
+      let { supportsMidConvoEffort, ...unmanaged } = compat;
+      entry.compat = unmanaged;
+    }
+    // pi reads both the levels a model has and the level a request is clamped to from this map,
+    // where null says the model lacks a level. A stated level keeps the wire value the borrowed
+    // entry gives it and otherwise has none, so it is sent as pi sends that level by default.
+    // pi offers "xhigh" and "max" only where they are mapped, so each maps to its own name, or
+    // to "high" on Gemini, where pi takes no higher level. pi sends Workers AI no effort for an
+    // "off" that is not mapped, which leaves the model reasoning, so there it maps to "none",
+    // which is what the Workers AI models that stop reasoning are sent.
+    entry.thinkingLevelMap = Object.fromEntries(REASONING_LEVELS.map(level => {
+      let wire = like?.thinkingLevelMap?.[level];
+      return [level, !reasoningLevels.includes(level) ? null :
+          typeof wire === "string" ? wire :
+          level === "off" && config.provider === "cloudflare" ? "none" :
+          level !== "xhigh" && level !== "max" ? undefined :
+          config.provider === "google" ? "high" : level];
+    }));
+  }
+  return entry;
 }
 
 // Token limits for a synthesized model. The model config's own overrides come first, then
@@ -233,7 +262,7 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
         api: "anthropic-messages",
         provider: "anthropic",
         baseUrl: `${gatewayUrl}/anthropic`,
-        reasoning: true,
+        reasoning: catalog?.reasoning ?? true,
         input: catalog?.input ?? ["text", "image"],
         cost: catalog?.cost ?? ZERO_COST,
         ...window,
@@ -305,32 +334,36 @@ function gatewayNativeModel(config: AiModelConfig, gatewayUrl: string): Model<Ap
  * getModel() builds for it through AI Gateway. Empty when the model takes none.
  */
 export function gatewayReasoningLevels(
-    provider: AiModelProvider, modelId: string, behavesLike?: string): ReasoningLevel[] {
+    provider: AiModelProvider, modelId: string, behavesLike?: string,
+    capabilities?: GatewayModelCapabilities): ReasoningLevel[] {
   // Built as for a model with a level set, which is when its levels count.
   let model = gatewayNativeModel(
-      { provider, model: modelId, apiToken: "", behavesLike, reasoning: "off" }, "");
+      { provider, model: modelId, apiToken: "", behavesLike, capabilities, reasoning: "off" }, "");
   return model?.reasoning ? getSupportedThinkingLevels(model) : [];
 }
 
 // What a handle with no reasoning level asks `model` for on an agent's turn. makeHandle builds
-// the request's options from the answer.
+// the request's options from the answer. A model that does no reasoning, which is how pi marks
+// some and how an added one can be stated, is asked for nothing on any API.
 // - Anthropic: adaptive thinking (the model decides when/how much to think) -- but only for
 //   models pi's catalog marks adaptive-capable (compat.forceAdaptiveThinking). Other Anthropic
 //   models (e.g. Haiku 4.5, which rejects the adaptive format) are asked for nothing, so pi omits
 //   the `thinking` field and the provider default (no extended thinking) applies.
-// - OpenAI Responses: explicit medium reasoning effort. pi would otherwise *disable* reasoning
-//   when no effort is passed; effort selection also makes pi request encrypted reasoning
-//   content, which -- with pi's unconditional `store: false` -- keeps requests stateless (ZDR)
-//   with reasoning carried between tool steps. pi sends a model that does no reasoning none of
-//   it, so such a model is asked for nothing.
+// - OpenAI Responses: explicit medium reasoning effort, or for a model that lacks "medium" the
+//   level a set "medium" would be clamped to (see reasoningOptions), so that a model is never
+//   sent an effort it does not take. pi would otherwise *disable* reasoning when no effort is
+//   passed; effort selection also makes pi request encrypted reasoning content, which -- with
+//   pi's unconditional `store: false` -- keeps requests stateless (ZDR) with reasoning carried
+//   between tool steps.
 // - Everything else: nothing, which leaves the provider's defaults.
 function builtInReasoning(model: Model<Api>): BuiltInReasoning {
+  if (!model.reasoning) return null;
   switch (model.api) {
     case "anthropic-messages":
       return (model.compat as AnthropicMessagesCompat | undefined)?.forceAdaptiveThinking === true
           ? "adaptive" : null;
     case "openai-responses":
-      return model.reasoning ? "medium" : null;
+      return clampThinkingLevel(model, "medium");
     default:
       return null;
   }
@@ -343,8 +376,10 @@ function builtInReasoning(model: Model<Api>): BuiltInReasoning {
  * models get no handle.
  */
 export function gatewayBuiltInReasoning(
-    provider: AiModelProvider, modelId: string, behavesLike?: string): BuiltInReasoning {
-  let model = gatewayNativeModel({ provider, model: modelId, apiToken: "", behavesLike }, "");
+    provider: AiModelProvider, modelId: string, behavesLike?: string,
+    capabilities?: GatewayModelCapabilities): BuiltInReasoning {
+  let model = gatewayNativeModel(
+      { provider, model: modelId, apiToken: "", behavesLike, capabilities }, "");
   return model ? builtInReasoning(model) : null;
 }
 

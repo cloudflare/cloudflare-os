@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  SUGGESTED_MODELS, type AiModelProvider, type GatewayModel,
+  SUGGESTED_MODELS, type AiModelProvider, type GatewayModel, type GatewayModelCapabilities,
 } from "@gadgets/workshop-shared/api";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
@@ -9,6 +9,7 @@ import {
   AiGatewayLogRetryableError,
   GatewayModels,
   gatewayModelConfig,
+  gatewayRunConfig,
   getAiGatewayLogCost,
   getGatewayModels,
 } from "../src/ai-gateway.js";
@@ -430,6 +431,28 @@ describe("GatewayModels", () => {
       expect(models.resolve("claude-opus-5-5")?.config).toStrictEqual(OPUS);
     });
 
+    it("resolves an added model with what it is stated to do, when anything is", () => {
+      const capabilities: GatewayModelCapabilities =
+          { imageInput: true, reasoningLevels: ["off", "high"] };
+      const models = gatewayModels({
+        addedModels: [
+          { ...ADDED[0]!, behavesLike: "claude-opus-5-5", capabilities }, ADDED[2]!,
+        ],
+        defaultReasoning: "high",
+        modelModes: { "claude-test": "disabled" },
+      });
+      expect(models.get("claude-test")?.capabilities).toStrictEqual(capabilities);
+      // A disabled model runs with it too, for an admin's test.
+      expect(models.runConfig("claude-test")).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        behavesLike: "claude-opus-5-5", capabilities, reasoning: "high",
+      });
+      expect(models.resolve("claude-test-2")?.config).toStrictEqual({
+        provider: "anthropic", model: "claude-test-2", apiToken: "", contextWindow: 200000,
+        reasoning: "high",
+      });
+    });
+
     it("gives a model in any mode the config it runs with", () => {
       const models = gatewayModels({
         addedModels: [{ ...ADDED[0]!, behavesLike: "claude-opus-5-5" }],
@@ -457,6 +480,37 @@ describe("GatewayModels", () => {
       for (let id of ["claude-fable-9", "gemini-3.6-flash", "constructor"]) {
         expect(models.runConfig(id), id).toBeUndefined();
       }
+    });
+
+    it("gives a model that is described the config it runs with once added", () => {
+      const described: GatewayModel = {
+        ...ADDED[0]!, behavesLike: "claude-opus-5-5",
+        capabilities: { imageInput: true, reasoningLevels: ["off", "high"] },
+      };
+      const added = { ...described, mode: "enabled", defaultMode: "enabled", added: true } as const;
+      // With no level set for the added model, then with each level set for it.
+      for (let reasoning of [null, "off", "high"] as const) {
+        const models = gatewayModels({
+          addedModels: [described],
+          modelSettings: reasoning === null ? {} : { [described.id]: { reasoning } },
+        });
+        expect(gatewayRunConfig(added, reasoning), String(reasoning))
+            .toStrictEqual(models.runConfig(described.id));
+      }
+      expect(gatewayRunConfig(added, null)).toStrictEqual({
+        provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
+        behavesLike: "claude-opus-5-5", capabilities: described.capabilities,
+      });
+      expect(gatewayRunConfig(added, "off")).toStrictEqual(
+          { ...gatewayRunConfig(added, null), reasoning: "off" });
+
+      const budgeted = gatewayModels({
+        addedModels: [described],
+        modelSettings: { [described.id]: { reasoning: "high", compactionInputBudget: 300000 } },
+      });
+      expect(gatewayRunConfig(added, "high", 300000))
+          .toStrictEqual(budgeted.runConfig(described.id));
+      expect(gatewayRunConfig(added, "high", 300000).compactionInputBudget).toBe(300000);
     });
 
     it("describes a model as it runs before its settings", () => {

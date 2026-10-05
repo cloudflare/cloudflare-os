@@ -7,6 +7,7 @@ const HAIKU = {
   id: 'claude-haiku-4-5',
   name: 'Claude Haiku 4.5 (latest)',
   tool_call: true,
+  reasoning: true,
   modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
   limit: { context: 200000, output: 64000 },
 }
@@ -20,6 +21,7 @@ const MODELS_DEV = {
         id: 'claude-opus-5-5',
         name: 'Claude Opus 5.5',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
         limit: { context: 1000000, output: 128000 },
       },
@@ -33,6 +35,7 @@ const MODELS_DEV = {
         id: 'gpt-6.1-sol',
         name: 'GPT-6.1 Sol',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
         limit: { context: 1050000, input: 922000, output: 128000 },
       },
@@ -40,6 +43,7 @@ const MODELS_DEV = {
         id: 'gpt-4',
         name: 'GPT-4',
         tool_call: true,
+        reasoning: false,
         modalities: { input: ['text'], output: ['text'] },
         limit: { context: 8192, output: 8192 },
       },
@@ -47,6 +51,7 @@ const MODELS_DEV = {
         id: 'gpt-image-1',
         name: 'gpt-image-1',
         tool_call: false,
+        reasoning: false,
         modalities: { input: ['text', 'image'], output: ['image'] },
         limit: { context: 0, input: 0, output: 0 },
       },
@@ -54,6 +59,7 @@ const MODELS_DEV = {
         id: 'text-embedding-3-small',
         name: 'text-embedding-3-small',
         tool_call: false,
+        reasoning: false,
         modalities: { input: ['text'], output: ['text'] },
         limit: { context: 8191, output: 1536 },
       },
@@ -67,6 +73,7 @@ const MODELS_DEV = {
         id: 'gemini-3.6-flash',
         name: 'Gemini 3.6 Flash',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image', 'video', 'audio', 'pdf'], output: ['text'] },
         limit: { context: 1048576, output: 65536 },
       },
@@ -74,6 +81,7 @@ const MODELS_DEV = {
         id: 'gemini-2.5-flash-preview-tts',
         name: 'Gemini 2.5 Flash Preview TTS',
         tool_call: false,
+        reasoning: false,
         modalities: { input: ['text'], output: ['audio'] },
         limit: { context: 8192, output: 16384 },
       },
@@ -87,6 +95,7 @@ const MODELS_DEV = {
         id: '@cf/meta/llama-guard-3-8b',
         name: 'Llama Guard 3 8B',
         tool_call: false,
+        reasoning: false,
         modalities: { input: ['text'], output: ['text'] },
         limit: { context: 131072, output: 131072 },
       },
@@ -94,6 +103,7 @@ const MODELS_DEV = {
         id: '@cf/moonshotai/kimi-k2.7-code',
         name: 'Kimi K2.7 Code',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
         limit: { context: 262144, output: 262144 },
       },
@@ -101,6 +111,7 @@ const MODELS_DEV = {
         id: '@cf/zai-org/glm-5.2',
         name: 'Glm 5.2',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text'], output: ['text'] },
         limit: { context: 262144, output: 256000 },
       },
@@ -108,6 +119,7 @@ const MODELS_DEV = {
         id: '@cf/openai/gpt-oss-120b',
         name: 'GPT OSS 120B',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text'], output: ['text'] },
         limit: { context: 128000, output: 16384 },
       },
@@ -121,6 +133,7 @@ const MODELS_DEV = {
         id: 'glm-5.3-flash',
         name: 'GLM-5.3-Flash',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image', 'video', 'pdf'], output: ['text'] },
         limit: { context: 1000000, output: 131072 },
       },
@@ -134,6 +147,7 @@ const MODELS_DEV = {
         id: 'anthropic/claude-opus-4.6',
         name: 'Claude Opus 4.6',
         tool_call: true,
+        reasoning: true,
         modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
         limit: { context: 1000000, output: 128000 },
       },
@@ -146,6 +160,7 @@ const HAIKU_WITHOUT_OUTPUT_LIMIT = {
   id: 'claude-haiku-4-5',
   name: 'Claude Haiku 4.5 (latest)',
   contextWindow: 200000,
+  capabilities: { imageInput: true },
 }
 const HAIKU_SUGGESTION = { ...HAIKU_WITHOUT_OUTPUT_LIMIT, outputLimit: 64000 }
 
@@ -167,6 +182,7 @@ describe('suggestModels', () => {
         name: 'Claude Opus 5.5',
         contextWindow: 1000000,
         outputLimit: 128000,
+        capabilities: { imageInput: true },
       },
       {
         provider: 'openai',
@@ -174,27 +190,43 @@ describe('suggestModels', () => {
         name: 'GPT-6.1 Sol',
         contextWindow: 1050000,
         outputLimit: 128000,
+        capabilities: { imageInput: true },
       },
-      { provider: 'openai', id: 'gpt-4', name: 'GPT-4', contextWindow: 8192 },
+      {
+        provider: 'openai',
+        id: 'gpt-4',
+        name: 'GPT-4',
+        contextWindow: 8192,
+        capabilities: { imageInput: false, reasoningLevels: ['off'] },
+      },
       {
         provider: 'google',
         id: 'gemini-3.6-flash',
         name: 'Gemini 3.6 Flash',
         contextWindow: 1048576,
         outputLimit: 65536,
+        capabilities: { imageInput: true },
       },
       {
         provider: 'cloudflare',
         id: '@cf/moonshotai/kimi-k2.7-code',
         name: 'Kimi K2.7 Code',
         contextWindow: 262144,
+        capabilities: { imageInput: true },
       },
-      { provider: 'cloudflare', id: '@cf/zai-org/glm-5.2', name: 'Glm 5.2', contextWindow: 262144 },
+      {
+        provider: 'cloudflare',
+        id: '@cf/zai-org/glm-5.2',
+        name: 'Glm 5.2',
+        contextWindow: 262144,
+        capabilities: { imageInput: false },
+      },
       {
         provider: 'cloudflare',
         id: '@cf/openai/gpt-oss-120b',
         name: 'GPT OSS 120B',
         contextWindow: 128000,
+        capabilities: { imageInput: false },
       },
     ])
   })
@@ -256,7 +288,7 @@ describe('suggestModels', () => {
     })
 
     it('keeps a model that answers in text among other things', () => {
-      const entry = { ...HAIKU, modalities: { input: ['text'], output: ['image', 'text'] } }
+      const entry = { ...HAIKU, modalities: { ...HAIKU.modalities, output: ['image', 'text'] } }
       expect(suggestFrom(entry)).toStrictEqual([HAIKU_SUGGESTION])
     })
 
@@ -351,7 +383,13 @@ describe('suggestModels', () => {
         c: workersAi('@cf/roomy', 32769) }
       expect(suggestModels({ 'cloudflare-workers-ai': { models } }, ['cloudflare'], []))
         .toStrictEqual([
-          { provider: 'cloudflare', id: '@cf/roomy', name: HAIKU.name, contextWindow: 32769 },
+          {
+            provider: 'cloudflare',
+            id: '@cf/roomy',
+            name: HAIKU.name,
+            contextWindow: 32769,
+            capabilities: { imageInput: true },
+          },
         ])
       // Another provider's model states its own output limit, or reserves none.
       expect(idsOf(suggestModels({ anthropic: { models } }, ['anthropic'], [])))
@@ -425,8 +463,106 @@ describe('suggestModels', () => {
     ])('skips a model entry %s, and suggests the model after it', (_, entry) => {
       const { id, name } = MODELS_DEV.anthropic.models['claude-opus-5-5']
       expect(suggestFrom(entry, MODELS_DEV.anthropic.models['claude-opus-5-5'])).toStrictEqual([
-        { provider: 'anthropic', id, name, contextWindow: 1000000, outputLimit: 128000 },
+        {
+          provider: 'anthropic',
+          id,
+          name,
+          contextWindow: 1000000,
+          outputLimit: 128000,
+          capabilities: { imageInput: true },
+        },
       ])
+    })
+  })
+
+  describe('capabilities', () => {
+    const { capabilities: _stated, ...HAIKU_WITH_NOTHING_STATED } = HAIKU_SUGGESTION
+
+    it.each([
+      ['images among other things', ['text', 'image', 'pdf'], true],
+      ['images alone', ['image'], true],
+      ['text alone', ['text'], false],
+      ['audio and video', ['text', 'audio', 'video'], false],
+      ['nothing', [], false],
+      ['entries that name no kind of input', [1, null, {}, ['image']], false],
+    ])('states whether a model takes images for one that takes %s', (_, input, imageInput) => {
+      expect(suggestFrom({ ...HAIKU, modalities: { input, output: ['text'] } }))
+        .toStrictEqual([{ ...HAIKU_SUGGESTION, capabilities: { imageInput } }])
+    })
+
+    it.each([
+      ['is missing', { output: ['text'] }],
+      ['is null', { input: null, output: ['text'] }],
+      ['is text', { input: 'image', output: ['text'] }],
+      ['is an object', { input: { image: true }, output: ['text'] }],
+    ])('states nothing of images when the list of inputs %s', (_, modalities) => {
+      expect(suggestFrom({ ...HAIKU, modalities })).toStrictEqual([HAIKU_WITH_NOTHING_STATED])
+    })
+
+    it('states no reasoning for a model that models.dev says does none', () => {
+      expect(suggestFrom({ ...HAIKU, reasoning: false })).toStrictEqual([
+        { ...HAIKU_SUGGESTION, capabilities: { imageInput: true, reasoningLevels: ['off'] } },
+      ])
+    })
+
+    it('states no reasoning alone where the list of inputs is missing', () => {
+      expect(suggestFrom({ ...HAIKU, modalities: { output: ['text'] }, reasoning: false }))
+        .toStrictEqual([{ ...HAIKU_WITH_NOTHING_STATED, capabilities: { reasoningLevels: ['off'] } }])
+    })
+
+    it.each([
+      ['the efforts it names, least to most',
+        [{ type: 'effort', values: ['max', 'low', 'high'] }], ['low', 'high', 'max']],
+      ['“none” as Off', [{ type: 'effort', values: ['none', 'high'] }], ['off', 'high']],
+      // A switch does not say that the model takes “off” as an effort.
+      ['its efforts alone beside a switch and a budget',
+        [{ type: 'toggle' }, { type: 'effort', values: ['low', 'medium', 'xhigh'] },
+          { type: 'budget_tokens', min: 1024 }],
+        ['low', 'medium', 'xhigh']],
+      ['only the efforts that are levels, once each',
+        [{ type: 'effort', values: ['default', null, 3, ['high'], 'medium', 'medium'] }],
+        ['medium']],
+      ['the efforts of every list that names some',
+        [{ type: 'effort', values: ['high'] }, { type: 'effort', values: ['minimal'] }],
+        ['minimal', 'high']],
+    ])('states %s for a model that reasons', (_, reasoning_options, reasoningLevels) => {
+      expect(suggestFrom({ ...HAIKU, reasoning: true, reasoning_options })).toStrictEqual([
+        { ...HAIKU_SUGGESTION, capabilities: { imageInput: true, reasoningLevels } },
+      ])
+    })
+
+    it.each([
+      ['a switch alone', [{ type: 'toggle' }]],
+      ['a token budget alone', [{ type: 'budget_tokens', min: 1024, max: 32768 }]],
+      ['no way at all', []],
+      ['no effort above “none”', [{ type: 'effort', values: ['none'] }]],
+      ['efforts that are not a list', [{ type: 'effort', values: 'high' }]],
+      ['efforts of another kind of option', [{ type: 'budget_tokens', values: ['high'] }]],
+      ['ways that are not a list', { type: 'effort', values: ['high'] }],
+      ['ways that are not objects', ['effort', null, ['high']]],
+    ])('states no reasoning levels for a model whose reasoning is set by %s', (_, reasoning_options) => {
+      expect(suggestFrom({ ...HAIKU, reasoning: true, reasoning_options }))
+        .toStrictEqual([HAIKU_SUGGESTION])
+    })
+
+    it('states no reasoning for a model said to do none, whatever efforts it names', () => {
+      const reasoning_options = [{ type: 'effort', values: ['low', 'high'] }]
+      expect(suggestFrom({ ...HAIKU, reasoning: false, reasoning_options })).toStrictEqual([
+        { ...HAIKU_SUGGESTION, capabilities: { imageInput: true, reasoningLevels: ['off'] } },
+      ])
+    })
+
+    // An entry that names no efforts states no levels for a model that reasons.
+    it.each([
+      ['says reasons', true],
+      ['says nothing of reasoning for', undefined],
+      ['states null for', null],
+      ['states zero for', 0],
+      ['states “false” as text for', 'false'],
+    ])('states no reasoning levels for a model that models.dev %s', (_, reasoning) => {
+      const { reasoning: _reasons, ...entry } = HAIKU
+      expect(suggestFrom(reasoning === undefined ? entry : { ...entry, reasoning }))
+        .toStrictEqual([HAIKU_SUGGESTION])
     })
   })
 

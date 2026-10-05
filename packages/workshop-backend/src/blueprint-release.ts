@@ -30,7 +30,7 @@ import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper"
 import {
   buildPackBytes,
   concatBytes,
-  decodePackBytes,
+  decodePackStream,
   encodeGitCommit,
   encodeGitTree,
   gitObjectOid,
@@ -453,7 +453,7 @@ function collectTree(lookup: GitObjectLookup, tree: GitOid, into: GitObjectMap):
  * after checking them with `validateReleaseObjects()`. `commitId` is the release the pack is
  * claimed to be for (`BlueprintMetadata.commitId`).
  *
- * The pack must stand alone: a delta against an object outside it is refused.
+ * The pack must stand alone: a delta is refused unless its base comes earlier in the same pack.
  */
 export async function readReleasePack(pack: Uint8Array, commitId: GitOid):
     Promise<GitObjectMap> {
@@ -461,9 +461,12 @@ export async function readReleasePack(pack: Uint8Array, commitId: GitOid):
     throw invalid(`its pack is larger than ${MAX_RELEASE_PACK_BYTES} bytes`);
   }
   let objects: GitObjectMap = new Map();
-  for (let object of await decodePackBytes(pack, { maxObjectSize: MAX_RELEASE_OBJECT_BYTES })) {
-    objects.set(await gitObjectOid(object.type, object.payload), object);
-  }
+  let decoded = decodePackStream(new Blob([pack]).stream(), {
+    maxPackSize: MAX_RELEASE_PACK_BYTES,
+    maxObjectSize: MAX_RELEASE_OBJECT_BYTES,
+    resolveBase: oid => objects.get(oid),
+  });
+  for await (let { oid, ...object } of decoded) objects.set(oid, object);
   validateReleaseObjects(objects, commitId);
   return objects;
 }

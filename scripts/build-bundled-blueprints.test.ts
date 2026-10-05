@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile }
   from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
@@ -322,8 +322,10 @@ describe("bundled blueprint scripts", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(join(directory, "example/__tests__/greeting.test.ts"), "utf8"), test);
     assert.equal(await readFile(join(directory, "example/NOTES.md"), "utf8"), notes);
-    // Copied as written, not resolved to this checkout's absolute path.
-    assert.equal(await readlink(join(directory, "example/__tests__/notes.md")), "../NOTES.md");
+    // Copied as written, not resolved to this checkout's absolute path. Windows stores the target
+    // with backslashes.
+    assert.equal(await readlink(join(directory, "example/__tests__/notes.md")),
+      normalize("../NOTES.md"));
     assert.deepEqual((await readdir(join(directory, "example"))).toSorted(),
       ["NOTES.md", "__tests__", "blueprint.json", "files"]);
     // files/ holds exactly the archive's files: the old lib/util.js is gone.
@@ -524,7 +526,7 @@ describe("bundled blueprint scripts", () => {
 
     assert.equal(result.status, 1);
     assert.match(result.stderr,
-      /imported blueprint paths are ignored by Git: example\/files\/dist\/client\.js/);
+      /imported blueprint paths are ignored by Git: example[\\/]files[\\/]dist[\\/]client\.js/);
     await assert.rejects(readFile(join(directory, "example/blueprint.json")), {code: "ENOENT"});
   });
 
@@ -546,7 +548,7 @@ describe("bundled blueprint scripts", () => {
 
     assert.equal(result.status, 1);
     assert.match(result.stderr,
-      /imported blueprint paths are ignored by Git: example\/blueprint\.json/);
+      /imported blueprint paths are ignored by Git: example[\\/]blueprint\.json/);
     await assert.rejects(readFile(join(directory, "example/blueprint.json")), {code: "ENOENT"});
   });
 

@@ -52,9 +52,8 @@ import {
 import type { GitObjectMetadataRecord, GitObjectRecord } from "./storage-schema/overseer-storage";
 import {
   buildPackBytes,
-  concatBytes,
   decodeLooseObject,
-  decodePackBytes,
+  decodePackStream,
   encodeLooseObject,
   gitObjectOid,
   parseGitCommitRefs,
@@ -268,14 +267,10 @@ export class WorkspaceGitCache {
       : Promise<GitOid> {
     validateGitObjectType(type);
     let oid = await gitObjectOid(type, payload);
-    if (payload.byteLength > MAX_GIT_OBJECT_SIZE) {
-      this.storage.transaction(
-          () => this.#recordOversized(gatekeeperId, oid, type, payload.byteLength));
+    if (!this.storage.transaction(
+        () => this.#storeVerifiedObject(gatekeeperId, oid, { type, payload }))) {
       throw new GitObjectTooLargeError(oid, payload.byteLength);
     }
-    let data = encodeLooseObject(type, payload);
-    this.storage.transaction(
-        () => this.#storeVerifiedObject(gatekeeperId, oid, type, payload, data));
     return oid;
   }
 
@@ -296,38 +291,43 @@ export class WorkspaceGitCache {
    * construction), same metadata recording and mark propagation, same size-cap handling (an
    * oversized entry is measured, recorded, and skipped rather than stored; it is then also
    * absent from the returned list, which is how a gitPull implementation notices). Returns the
-   * stored oids in pack order.
+   * stored oids.
+   *
+   * The pack streams through: small blobs, the bulk of a checkout, are stored as they arrive.
+   * Everything else -- oversized blobs included, as a later delta may name one as its base -- is
+   * held until the whole pack has verified, then stored the same way, one object per
+   * transaction, with commits last: a commit's local presence is what lets `fetchCommit` mount
+   * it and skip ever pulling it again, so no commit is stored before every other held object is.
+   * A store that throws rolls back only its own object, so a failure partway can leave verified
+   * trees, the root tree included, with no commit: nothing treats those as mounted, and lazy
+   * reads fault around them. No await separates these stores, so they still reach disk
+   * together; one transaction around them all would also undo the earlier objects when a later
+   * one throws, but in production it nearly doubled a vscode-size mount's CPU.
    */
   async consumePackFromGatekeeper(gatekeeperId: WorkpieceId, pack: ReadableStream<Uint8Array>)
       : Promise<GitOid[]> {
-    let bytes = await collectByteStream(pack, MAX_GIT_PACK_BYTES);
-    let objects = await decodePackBytes(bytes, {
-      maxObjectSize: MAX_GIT_PACK_BYTES,
-      resolveBase: oid => this.readLocalObject(oid),
-    });
-    // Hash and deflate outside the storage transaction (hashing is async; deflate is just CPU
-    // that needn't run under the write lock).
-    let entries = await Promise.all(objects.map(async object => ({
-      ...object,
-      oid: await gitObjectOid(object.type, object.payload),
-      data: object.payload.byteLength <= MAX_GIT_OBJECT_SIZE
-          ? encodeLooseObject(object.type, object.payload) : undefined,
-    })));
-
+    let held = new Map<GitOid, PackableObject>();
     let stored: GitOid[] = [];
-    let seen = new Set<GitOid>();
-    this.storage.transaction(() => {
-      for (let entry of entries) {
-        if (seen.has(entry.oid)) continue;
-        seen.add(entry.oid);
-        if (entry.data === undefined) {
-          this.#recordOversized(gatekeeperId, entry.oid, entry.type, entry.payload.byteLength);
-          continue;
-        }
-        this.#storeVerifiedObject(gatekeeperId, entry.oid, entry.type, entry.payload, entry.data);
-        stored.push(entry.oid);
-      }
+    let objects = decodePackStream(pack, {
+      maxPackSize: MAX_GIT_PACK_BYTES,
+      maxObjectSize: MAX_GIT_PACK_BYTES,
+      resolveBase: oid => held.get(oid) ?? this.readLocalObject(oid),
     });
+    for await (let { oid, ...object } of objects) {
+      if (object.type === "blob" && object.payload.byteLength <= MAX_GIT_OBJECT_SIZE) {
+        this.storage.transaction(() => this.#storeVerifiedObject(gatekeeperId, oid, object));
+        stored.push(oid);
+      } else {
+        held.set(oid, object);
+      }
+    }
+    let commitsLast = [...held].toSorted(([, a], [, b]) =>
+        Number(a.type === "commit") - Number(b.type === "commit"));
+    for (let [oid, object] of commitsLast) {
+      if (this.storage.transaction(() => this.#storeVerifiedObject(gatekeeperId, oid, object))) {
+        stored.push(oid);
+      }
+    }
     return stored;
   }
 
@@ -1274,16 +1274,28 @@ export class WorkspaceGitCache {
     this.storage.gitObjectMetadata.put(meta);
   }
 
-  // The shared put()-equivalent store step (callers wrap in a transaction): record proof of
-  // possession, then store the object, which extends that proof to its referents as pull
-  // routing (see `#extendToReferents`).
-  #storeVerifiedObject(gatekeeperId: WorkpieceId, oid: GitOid, type: GitObjectType,
-                       payload: Uint8Array, data: Uint8Array): void {
+  // The shared put()-equivalent store step (callers wrap in a transaction): an object over
+  // MAX_GIT_OBJECT_SIZE is only measured, returning false. Anything else has proof of possession
+  // recorded and is then stored, which extends that proof to its referents as pull routing (see
+  // `#extendToReferents`). An object already present, measured, and proven for this gatekeeper
+  // is left as it is: a pull sends no `have`s, so a retried one, or one for another commit of a
+  // mounted repository, carries mostly such objects.
+  #storeVerifiedObject(gatekeeperId: WorkpieceId, oid: GitOid, { type, payload }: PackableObject)
+      : boolean {
+    if (payload.byteLength > MAX_GIT_OBJECT_SIZE) {
+      this.#recordOversized(gatekeeperId, oid, type, payload.byteLength);
+      return false;
+    }
     let { meta } = this.#metaFor(gatekeeperId, oid, type, "measured");
+    if (meta.size !== undefined && meta.onRemote.includes(gatekeeperId) &&
+        this.hasLocalObject(oid)) {
+      return true;
+    }
     addUnique(meta.onRemote, gatekeeperId);
     meta.size = payload.byteLength;
     this.storage.gitObjectMetadata.put(meta);
-    this.storage.gitObjects.put({ oid, data });
+    this.storage.gitObjects.put({ oid, data: encodeLooseObject(type, payload) });
+    return true;
   }
 
   // Extends what is recorded about an object to the objects it refers to. This can only happen
@@ -1416,27 +1428,4 @@ function splitTreePath(path: string): string[] {
     }
   }
   return segments;
-}
-
-// Collects a byte stream into one buffer, enforcing a size cap as chunks arrive.
-async function collectByteStream(stream: ReadableStream<Uint8Array>, maxBytes: number)
-    : Promise<Uint8Array> {
-  let chunks: Uint8Array[] = [];
-  let total = 0;
-  let reader = stream.getReader();
-  try {
-    for (;;) {
-      let { done, value } = await reader.read();
-      if (done) break;
-      if (!(value instanceof Uint8Array)) throw new Error("expected a byte stream");
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(`packfile exceeds the ${maxBytes}-byte limit`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return concatBytes(chunks);
 }

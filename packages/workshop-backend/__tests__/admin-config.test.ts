@@ -231,6 +231,48 @@ describe("admin config gateway models", () => {
     expect(config.addedModels).toStrictEqual([{ ...added, behavesLike: "claude-opus-5-5" }]);
   });
 
+  it("keeps the well-formed part of what an added model is stated to do", () => {
+    let stated = (capabilities: unknown) => sanitizeAddedModel({ ...added, capabilities });
+    expect(stated({ imageInput: false, reasoningLevels: ["off", "high"], strictTools: true }))
+        .toStrictEqual(
+            { ...added, capabilities: { imageInput: false, reasoningLevels: ["off", "high"] } });
+    // Each level once, least to most.
+    expect(stated({ reasoningLevels: ["max", "low", "off", "low", "max"] }))
+        .toStrictEqual({ ...added, capabilities: { reasoningLevels: ["off", "low", "max"] } });
+    // No level states a model that does no reasoning, which is not the same as stating nothing.
+    expect(stated({ reasoningLevels: [] }))
+        .toStrictEqual({ ...added, capabilities: { reasoningLevels: [] } });
+
+    // A malformed field is one not stated, and the rest is kept.
+    expect(stated({ imageInput: "yes", reasoningLevels: ["high"] }))
+        .toStrictEqual({ ...added, capabilities: { reasoningLevels: ["high"] } });
+    for (let reasoningLevels of [["high", "extreme"], "high", { 0: "high" }, [["high"]], null]) {
+      expect(stated({ imageInput: true, reasoningLevels }))
+          .toStrictEqual({ ...added, capabilities: { imageInput: true } });
+    }
+    // With nothing well-formed in it there is no statement, and the model is added all the same.
+    for (let capabilities of [{}, { imageInput: 1, reasoningLevels: ["extreme"] }, null, "image",
+        ["high"], true, undefined]) {
+      expect(stated(capabilities)).toStrictEqual(added);
+    }
+  });
+
+  it("round-trips what an added model is stated to do", () => {
+    let model: GatewayModel = {
+      ...added, behavesLike: "claude-opus-5-5",
+      capabilities: { imageInput: true, reasoningLevels: ["low", "xhigh"] },
+    };
+    let config = parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, addedModels: [model, { ...added, id: "plain" }] }));
+    expect(config.addedModels).toStrictEqual([model, { ...added, id: "plain" }]);
+
+    let stored = parseAdminConfig(JSON.stringify({ addedModels: [
+      { ...added, capabilities: { imageInput: "no", reasoningLevels: ["high", "off", "high"] } },
+    ] }));
+    expect(stored.addedModels)
+        .toStrictEqual([{ ...added, capabilities: { reasoningLevels: ["off", "high"] } }]);
+  });
+
   it("defaults to no model settings and no default reasoning level", () => {
     expect(DEFAULT_ADMIN_CONFIG.modelSettings).toStrictEqual({});
     expect(DEFAULT_ADMIN_CONFIG.defaultReasoning).toBeNull();

@@ -22,6 +22,9 @@
 //      PACK_OFS_DELTA: git pack-objects --delta-base-offset    (ofs-delta chains up to length 2)
 //      PACK_REF_DELTA: git pack-objects                        (ref-delta chains up to length 2)
 
+import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import { decodePackStream, type DecodePackOptions, type PackableObject } from "../src/git-codec";
+
 export interface FixtureObject {
   oid: string;
   type: "commit" | "tree" | "blob" | "tag";
@@ -105,4 +108,37 @@ export const PACK_REF_DELTA = "UEFDSwAAAAIAAAAVkw54nJ2MwQrDMAxD7/kK3wfDiZekgVG2w
 
 export function b64Bytes(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+/** `bytes` as a BYOB-readable stream (as a gatekeeper's pack arrives), in `step`-byte chunks. */
+export function byteStream(bytes: Uint8Array, step = bytes.byteLength): ReadableStream<Uint8Array> {
+  let pos = 0;
+  return new ReadableStream({
+    type: "bytes",
+    pull(controller) {
+      if (pos < bytes.byteLength) {
+        controller.enqueue(bytes.slice(pos, pos + step));
+        pos += step;
+      } else {
+        controller.close();
+        controller.byobRequest?.respond(0);
+      }
+    },
+  });
+}
+
+/** Decodes a whole pack, resolving delta bases from its own objects first, as consumePack does. */
+export async function decodePack(
+    bytes: Uint8Array, { step, ...options }: Partial<DecodePackOptions> & { step?: number } = {})
+    : Promise<(PackableObject & { oid: GitOid })[]> {
+  let objects: (PackableObject & { oid: GitOid })[] = [];
+  for await (let object of decodePackStream(byteStream(bytes, step), {
+    maxPackSize: Infinity,
+    maxObjectSize: 1 << 26,
+    ...options,
+    resolveBase: oid => objects.find(o => o.oid === oid) ?? options.resolveBase?.(oid),
+  })) {
+    objects.push(object);
+  }
+  return objects;
 }

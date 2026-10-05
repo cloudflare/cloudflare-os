@@ -115,7 +115,10 @@ describe("UserDurableObject model editing", () => {
   // The validated RPC boundary lets through properties the argument's type omits.
   it("stores none of the fields that only a deployment sets on its own models", async () => {
     const { user, stored } = await userWithModel();
-    const smuggled = { reasoning: "max", compactionInputBudget: 5, behavesLike: "gpt-6-sol" };
+    const smuggled = {
+      reasoning: "max", compactionInputBudget: 5, behavesLike: "gpt-6-sol",
+      capabilities: { imageInput: true, reasoningLevels: ["high"] },
+    };
     const other = { type: "agent" as const, id: "other", name: "Other" };
     await user.addModel(other, { ...CONFIG, model: "other", ...smuggled } as typeof CONFIG);
     expect(await stored("other")).toStrictEqual(

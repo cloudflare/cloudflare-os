@@ -9,7 +9,9 @@ import type {
   AdminApi,
   AdminModelView,
   AdminSettingsView,
+  GatewayModelLevelTest,
   GatewayModelTest,
+  ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 
 const { addToast } = vi.hoisted(() => ({
@@ -95,6 +97,15 @@ const withProvider = (provider: 'google' | 'openai', enabled: boolean): GatewayM
 const TEST_PASSED: GatewayModelTest = { model: 'claude-sonnet', ok: true }
 const TEST_PASSED_TEXT = 'claude-sonnet answered through the gateway.'
 const MODEL_TEST_PASSED_TEXT = 'Answered through the gateway.'
+
+// What one request of a described model's test found, at the level it asked for.
+const levelPassed = (reasoning: ReasoningLevel | null): GatewayModelLevelTest =>
+  ({ model: 'gpt-next', ok: true, reasoning })
+const levelFailed = (
+  reasoning: ReasoningLevel | null, message: string, status?: number,
+): GatewayModelLevelTest => ({
+  model: 'gpt-next', ok: false, message, reasoning, ...(status !== undefined && { status }),
+})
 
 const SUGGESTIONS_LABEL = 'Suggest models from models.dev'
 const SUGGESTING: GatewayModels = { ...GATEWAY_MODELS, modelsDevSuggestions: true }
@@ -333,10 +344,40 @@ const suggestionOptions = () => {
 
 const suggested = () => suggestionOptions().map((option) => option.textContent)
 
-// What the add form says of its suggestions. Each provider's row has a status region of its own.
+/** Pick the first model suggested once `typed` is typed into the Model ID field. */
+const pickSuggestion = async (typed: string) => {
+  await focus(labeledInput('Model ID'))
+  await type(labeledInput('Model ID'), typed)
+  await click(suggestionOptions()[0])
+}
+
+// The add form's status regions on one side of its buttons. What it says of its suggestions is
+// before them and what its test answered is after them. Each provider's row has a status region
+// of its own.
+const addFormStatus = (side: number) => {
+  const add = button('Add model')
+  return Array.from(add.closest('form')!.querySelectorAll('[role="status"]'))
+    .filter((region) => add.compareDocumentPosition(region) & side)
+}
+
 const suggestionNote = () =>
-  Array.from(button('Add model').closest('form')!.querySelectorAll('[role="status"]'))
-    .map((note) => note.textContent)
+  addFormStatus(Node.DOCUMENT_POSITION_PRECEDING).map((note) => note.textContent)
+
+// The Test button of the add form, which says what it tests while the test is in flight too.
+const formTestButton = () => {
+  const form = button('Add model').closest('form')!
+  const element = Array.from(form.querySelectorAll<HTMLButtonElement>('button'))
+    .find((b) => ['Test this model', 'Testing this model…'].includes(b.getAttribute('aria-label') ?? ''))
+  if (!element) throw new Error('No Test button in the add form')
+  return element
+}
+
+/** What the status region of the add form's test says, line by line. */
+const formTestResult = () => {
+  const regions = addFormStatus(Node.DOCUMENT_POSITION_FOLLOWING)
+  if (regions.length !== 1) throw new Error(`${regions.length} status regions for the add form’s test`)
+  return Array.from(regions[0].querySelectorAll('li, p')).map((line) => line.textContent)
+}
 
 const fillAddForm = async (fields: { id: string; name: string; contextWindow: string; outputLimit?: string }) => {
   await type(labeledInput('Model ID'), fields.id)
@@ -373,11 +414,13 @@ describe('AdminModelsPanel', () => {
     const testGatewayProvider = vi.fn<AdminApi['testGatewayProvider']>(async () => TEST_PASSED)
     const testGatewayModel = vi.fn<AdminApi['testGatewayModel']>(
       async (modelId) => ({ model: modelId, ok: true }))
+    const testNewGatewayModel = vi.fn<AdminApi['testNewGatewayModel']>(
+      async (model) => [{ model: model.id, ok: true, reasoning: null }])
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel,
+      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -390,7 +433,8 @@ describe('AdminModelsPanel', () => {
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
       setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
-      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, onChanged, show,
+      setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
+      onChanged, show,
     }
   }
 
@@ -1715,9 +1759,10 @@ describe('AdminModelsPanel', () => {
     describe('behaving like another model', () => {
       const LABEL = 'Behaves like'
       const TOOLTIP =
-        'The model chosen here lends the new one its thinking format, its reasoning levels and ' +
-        'its image input, until this version knows the new model itself. From then on the choice ' +
-        'is not used. The name, the limits and the cost are never borrowed.'
+        'The model chosen here lends the new one its thinking format and, where they are not ' +
+        'stated here, its reasoning levels and its image input, until this version knows the new ' +
+        'model itself. From then on the choice is not used. The name, the limits and the cost ' +
+        'are never borrowed.'
 
       it('offers none, then the chosen provider’s catalog models that the runtime knows', async () => {
         await render({
@@ -1826,6 +1871,7 @@ describe('AdminModelsPanel', () => {
         expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
           provider: 'anthropic', id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5 (latest)',
           contextWindow: 200000, outputLimit: 64000, behavesLike: 'claude-opus',
+          capabilities: { imageInput: false },
         })
       })
 
@@ -1852,6 +1898,579 @@ describe('AdminModelsPanel', () => {
 
         await act(async () => call.resolve())
         expect(button(LABEL).disabled).toBe(false)
+      })
+    })
+
+    describe('stating what a model can do', () => {
+      const IMAGES = 'Image input'
+      const LEVELS = 'Reasoning levels'
+      const NOT_STATED = 'Not stated'
+      const ADDED_MODEL = {
+        provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+      }
+
+      // The list of levels stays open over a pick, for the next one. Escape puts it away, pressed
+      // where a pick leaves focus.
+      const pickLevels = async (...labels: string[]) => {
+        for (const label of labels) await choose(LEVELS, label)
+        await press(document.activeElement as HTMLElement, 'Escape')
+        expect(button(LEVELS).getAttribute('aria-expanded')).toBe('false')
+      }
+
+      const stated = () => [button(IMAGES).textContent, button(LEVELS).textContent]
+
+      it('states nothing of a model that is added as the form starts out', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual(ADDED_MODEL)
+      })
+
+      it('offers a yes or a no on images, and every reasoning level by its name', async () => {
+        await render()
+
+        expect(await optionLabels(IMAGES)).toEqual([NOT_STATED, 'Yes', 'No'])
+        await press(document.activeElement as HTMLElement, 'Escape')
+        expect(await optionLabels(LEVELS))
+          .toEqual(['Off', 'Minimal', 'Low', 'Medium', 'High', 'Extra high', 'Max'])
+        expect(describedBy(button(LEVELS)))
+          .toContain('Pick only Off for a model that does no reasoning.')
+      })
+
+      it.each([
+        ['takes images', 'Yes', true],
+        ['takes none', 'No', false],
+      ])('adds a model stated as one that %s, with no levels stated', async (_case, label, imageInput) => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await choose(IMAGES, label)
+        expect(stated()).toEqual([label, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0])
+          .toStrictEqual({ ...ADDED_MODEL, capabilities: { imageInput } })
+      })
+
+      it('adds a model with the levels picked, least to most whatever order they were picked in', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await pickLevels('Max', 'Off', 'High')
+        expect(stated()).toEqual([NOT_STATED, 'Off, High, Max'])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0])
+          .toStrictEqual({ ...ADDED_MODEL, capabilities: { reasoningLevels: ['off', 'high', 'max'] } })
+      })
+
+      it('adds a model that does no reasoning with Off alone, beside what is stated of images', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+
+        await choose(IMAGES, 'Yes')
+        await pickLevels('Off')
+        expect(stated()).toEqual(['Yes', 'Off'])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          ...ADDED_MODEL, capabilities: { imageInput: true, reasoningLevels: ['off'] },
+        })
+      })
+
+      it('states only what is left once a statement is taken back', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'No')
+        await pickLevels('Low', 'High')
+
+        await pickLevels('Low')
+        expect(stated()).toEqual(['No', 'High'])
+        await choose(IMAGES, NOT_STATED)
+        expect(stated()).toEqual([NOT_STATED, 'High'])
+        await pickLevels('High')
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual(ADDED_MODEL)
+      })
+
+      it('has nothing stated for the next model after an add', async () => {
+        const { addGatewayModel } = await render()
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'Yes')
+        await pickLevels('Low', 'High')
+
+        await click(button('Add model'))
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+        await fillAddForm({ ...VALID, id: 'gpt-after' })
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledTimes(2)
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          ...ADDED_MODEL, capabilities: { imageInput: true, reasoningLevels: ['low', 'high'] },
+        })
+        expect(addGatewayModel.mock.calls[1][0]).toStrictEqual({ ...ADDED_MODEL, id: 'gpt-after' })
+      })
+
+      it('keeps what was stated when the server refuses the model', async () => {
+        const { addGatewayModel } = await render()
+        addGatewayModel.mockRejectedValueOnce(new Error('"gpt-next" is already an added model.'))
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'No')
+        await pickLevels('Off')
+
+        await click(button('Add model'))
+
+        expect(document.body.querySelector('[role="alert"]')?.textContent)
+          .toBe('"gpt-next" is already an added model.')
+        expect(stated()).toEqual(['No', 'Off'])
+      })
+
+      it('is prefilled by a picked suggestion with what models.dev states, and with no more', async () => {
+        const limit = { context: 200000, output: 64000 }
+        stubModelsDev(async () => new Response(JSON.stringify({
+          anthropic: {
+            models: {
+              sees: {
+                ...listed('claude-sees', 'Claude Sees', limit),
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                reasoning: true,
+              },
+              plain: { ...listed('claude-plain', 'Claude Plain', limit), reasoning: false },
+              thinks: {
+                ...listed('claude-thinks', 'Claude Thinks', limit),
+                reasoning: true,
+                reasoning_options: [{ type: 'effort', values: ['none', 'high'] }],
+              },
+              silent: {
+                ...listed('claude-silent', 'Claude Silent', limit), modalities: { output: ['text'] },
+              },
+            },
+          },
+        })))
+        const { addGatewayModel } = await render({ gatewayModels: SUGGESTING })
+
+        // Its entry names no efforts, so no levels are stated for it.
+        await pickSuggestion('sees')
+        expect(stated()).toEqual(['Yes', NOT_STATED])
+
+        await pickSuggestion('thinks')
+        expect(stated()).toEqual(['No', 'Off, High'])
+
+        await pickSuggestion('plain')
+        expect(stated()).toEqual(['No', 'Off'])
+
+        // A pick states what its entry does and nothing else, so it also takes a statement away.
+        await pickSuggestion('silent')
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+
+        await pickSuggestion('plain')
+        await choose(IMAGES, 'Yes')
+        await click(button('Add model'))
+
+        // What is added is what the form then holds.
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addGatewayModel.mock.calls[0][0]).toStrictEqual({
+          provider: 'anthropic', id: 'claude-plain', name: 'Claude Plain', contextWindow: 200000,
+          outputLimit: 64000, capabilities: { imageInput: true, reasoningLevels: ['off'] },
+        })
+      })
+
+      it('follows a model typed by hand to another provider, and not a suggested one', async () => {
+        stubModelsDev()
+        await render({ gatewayModels: SUGGESTING })
+        await fillAddForm(VALID)
+        await choose(IMAGES, 'Yes')
+        await pickLevels('High')
+
+        await chooseProvider('OpenAI')
+        expect(stated()).toEqual(['Yes', 'High'])
+
+        await pickSuggestion('5.2')
+        expect(stated()).toEqual(['No', NOT_STATED])
+        await pickLevels('Off')
+        await chooseProvider('Anthropic')
+
+        expect(addFormValues()).toEqual(['', '', '', ''])
+        expect(stated()).toEqual([NOT_STATED, NOT_STATED])
+      })
+
+      it('is locked while a write is in flight', async () => {
+        const { addGatewayModel } = await render()
+        const call = deferred()
+        addGatewayModel.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+
+        await click(button('Add model'))
+        expect(button(IMAGES).disabled).toBe(true)
+        expect(button(LEVELS).disabled).toBe(true)
+
+        await act(async () => call.resolve())
+        expect(button(IMAGES).disabled).toBe(false)
+        expect(button(LEVELS).disabled).toBe(false)
+      })
+    })
+
+    describe('testing a model before adding it', () => {
+      const HELP =
+        'Test sends the model described here one request with no reasoning level set and one at ' +
+        'each reasoning level it would list once added. Each request can use up to 2,048 output ' +
+        'tokens, and nothing is added.'
+      const HINT =
+        'The gateway may hold no key or credits for this provider, or CF_AI_GATEWAY_API_TOKEN ' +
+        'may not be allowed to run models.'
+      // The one line of the test that the fake admin answers with.
+      const NO_LEVEL_PASSED = `No level set: ${MODEL_TEST_PASSED_TEXT}`
+      const ALREADY_ADDED = '"gpt-next" is already an added model.'
+
+      // A valid form whose model was tested, with the answer shown.
+      const renderTested = async (gatewayModels = GATEWAY_MODELS) => {
+        const rendered = await render({ gatewayModels })
+        await fillAddForm(VALID)
+        await click(formTestButton())
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+        return rendered
+      }
+
+      it('says by its buttons what Test sends and can use, and that nothing is added', async () => {
+        await render()
+
+        const form = button('Add model').closest('form')!
+        const help = Array.from(form.querySelectorAll('p')).find((p) => p.textContent === HELP)
+        expect(help).toBeDefined()
+        // Read in the page's flow, and not spoken as a result is.
+        expect(help!.closest('[role="status"], [role="alert"], [aria-live]')).toBeNull()
+        expect(button('Add model').compareDocumentPosition(formTestButton())
+          & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(formTestButton().type).toBe('button')
+        expect(formTestButton().textContent).toBe('Test')
+        // The region is there for the first answer to be announced in.
+        expect(formTestResult()).toEqual([])
+      })
+
+      it('tests the model as the form describes it, once, and adds nothing', async () => {
+        const { testNewGatewayModel, addGatewayModel, onChanged } =
+          await render({ gatewayModels: RUNTIME_MODELS })
+        const typed = { id: '  gpt-next ', name: ' GPT Next  ', contextWindow: ' 128000 ', outputLimit: '4096' }
+        await fillAddForm(typed)
+        await choose('Behaves like', 'Claude Haiku')
+        await choose('Image input', 'No')
+        await choose('Reasoning levels', 'High')
+        await choose('Reasoning levels', 'Off')
+        await press(document.activeElement as HTMLElement, 'Escape')
+
+        await click(formTestButton())
+
+        expect(testNewGatewayModel).toHaveBeenCalledOnce()
+        expect(testNewGatewayModel.mock.calls[0]).toStrictEqual([{
+          provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+          outputLimit: 4096, behavesLike: 'claude-haiku',
+          capabilities: { imageInput: false, reasoningLevels: ['off', 'high'] },
+        }])
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+        expect(addGatewayModel).not.toHaveBeenCalled()
+        expect(onChanged).not.toHaveBeenCalled()
+        expect(addToast).not.toHaveBeenCalled()
+        expect(addFormValues()).toEqual(Object.values(typed))
+        expect(button('Behaves like').textContent).toBe('Claude Haiku')
+      })
+
+      it('shows a line for each request under the level it asked for, in the order they came in', async () => {
+        const { testNewGatewayModel } = await render()
+        testNewGatewayModel.mockResolvedValueOnce([
+          levelPassed(null),
+          levelFailed('off', 'Unsupported value: reasoning_effort does not support none.', 400),
+          levelFailed('xhigh', 'The request timed out.'),
+          levelPassed('max'),
+        ])
+        await fillAddForm(VALID)
+
+        await click(formTestButton())
+
+        expect(formTestResult()).toEqual([
+          NO_LEVEL_PASSED,
+          'Off: Failed (400): Unsupported value: reasoning_effort does not support none.',
+          'Extra high: Failed: The request timed out.',
+          `Max: ${MODEL_TEST_PASSED_TEXT}`,
+        ])
+        expect(addToast).not.toHaveBeenCalled()
+      })
+
+      it('says once, after the lines, what requests refused as unauthorized may mean', async () => {
+        const { testNewGatewayModel } = await render()
+        testNewGatewayModel.mockResolvedValueOnce([
+          levelFailed(null, 'invalid x-api-key', 401),
+          levelFailed('low', 'Your credit balance is too low.', 403),
+          levelPassed('high'),
+        ])
+        await fillAddForm(VALID)
+
+        await click(formTestButton())
+
+        expect(formTestResult()).toEqual([
+          'No level set: Failed (401): invalid x-api-key',
+          'Low: Failed (403): Your credit balance is too low.',
+          `High: ${MODEL_TEST_PASSED_TEXT}`,
+          HINT,
+        ])
+      })
+
+      it.each([
+        ['an empty ID', { ...VALID, id: '   ' }, 'Model ID'],
+        ['an empty name', { ...VALID, name: '   ' }, 'Display name'],
+        ['a fractional context window', { ...VALID, contextWindow: '1280.5' }, 'Context window'],
+        ['a zero output limit', { ...VALID, outputLimit: '0' }, 'Output limit'],
+      ])('asks for nothing with %s, and points at the field as an add does', async (
+        _case, fields, invalidField,
+      ) => {
+        const { testNewGatewayModel, addGatewayModel } = await render()
+        await fillAddForm(fields)
+
+        await click(formTestButton())
+
+        expect(testNewGatewayModel).not.toHaveBeenCalled()
+        expect(addGatewayModel).not.toHaveBeenCalled()
+        const field = labeledInput(invalidField)
+        expect(field.getAttribute('aria-invalid')).toBe('true')
+        expect(document.activeElement).toBe(field)
+        expect(describedBy(field)).toMatch(/^Enter /)
+        expect(formTestButton().textContent).toBe('Test')
+        expect(formTestResult()).toEqual([])
+      })
+
+      // Focus can't announce an error on the field it is already in.
+      it('says the error aloud when the invalid field already has focus', async () => {
+        const { testNewGatewayModel } = await render()
+        await fillAddForm({ ...VALID, contextWindow: '128k' })
+        const field = labeledInput('Context window')
+        await focus(field)
+
+        await click(formTestButton())
+
+        expect(testNewGatewayModel).not.toHaveBeenCalled()
+        expect(document.activeElement).toBe(field)
+        expect(document.body.querySelector('[role="alert"]')?.textContent)
+          .toBe('Enter a positive whole number of tokens')
+      })
+
+      it('says that a test is in flight, keeps focus, and asks for nothing on a second press', async () => {
+        const { testNewGatewayModel, addGatewayModel } = await render()
+        const call = deferred<GatewayModelLevelTest[]>()
+        testNewGatewayModel.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+        const pressed = formTestButton()
+        expect(pressed.getAttribute('aria-label')).toBe('Test this model')
+        await focus(pressed)
+
+        await click(pressed)
+
+        expect(formTestButton()).toBe(pressed)
+        expect(pressed.textContent).toBe('Testing…')
+        expect(pressed.getAttribute('aria-label')).toBe('Testing this model…')
+        expect(pressed.getAttribute('aria-disabled')).toBe('true')
+        expect(pressed.disabled).toBe(false)
+        expect(document.activeElement).toBe(pressed)
+        expect(formTestResult()).toEqual([])
+        // A test is not a write, so it locks nothing.
+        expect(button('Add model').disabled).toBe(false)
+        expect(labeledInput('Model ID').disabled).toBe(false)
+        expect(modesDisabled('Claude Sonnet')).toBe(false)
+        await click(pressed)
+        expect(testNewGatewayModel).toHaveBeenCalledOnce()
+
+        await act(async () => call.resolve([levelPassed(null), levelPassed('high')]))
+
+        expect(pressed.textContent).toBe('Test')
+        expect(pressed.getAttribute('aria-label')).toBe('Test this model')
+        expect(pressed.getAttribute('aria-disabled')).toBe('false')
+        expect(document.activeElement).toBe(pressed)
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED, `High: ${MODEL_TEST_PASSED_TEXT}`])
+        expect(addGatewayModel).not.toHaveBeenCalled()
+
+        // Once a test has answered, the next press runs another.
+        await click(pressed)
+        expect(testNewGatewayModel).toHaveBeenCalledTimes(2)
+      })
+
+      it('shows why a test could not be run, in the form and not as a toast', async () => {
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const { testNewGatewayModel } = await render()
+        const failure = new Error(ALREADY_ADDED)
+        testNewGatewayModel.mockRejectedValueOnce(failure)
+        await fillAddForm(VALID)
+
+        await click(formTestButton())
+
+        expect(formTestResult()).toEqual([`Couldn’t run the test: ${ALREADY_ADDED}`])
+        expect(formTestButton().textContent).toBe('Test')
+        // Said in the test's own region, and not as the refusal of an add is.
+        expect(document.body.querySelector('[role="alert"]')).toBeNull()
+        expect(addToast).not.toHaveBeenCalled()
+        expect(logged).toHaveBeenCalledExactlyOnceWith(expect.any(String), failure)
+        expect(addFormValues()).toEqual(['gpt-next', 'GPT Next', '128000', ''])
+      })
+
+      // Every way the form comes to describe another model: what each is, and what makes it.
+      const EDITS = [
+        ['the model ID is edited', () => type(labeledInput('Model ID'), 'gpt-after')],
+        ['the display name is edited', () => type(labeledInput('Display name'), 'GPT After')],
+        ['the context window is edited', () => type(labeledInput('Context window'), '64000')],
+        ['the output limit is edited', () => type(labeledInput('Output limit'), '4096')],
+        ['a model to behave like is chosen', () => choose('Behaves like', 'Claude Haiku')],
+        ['image input is stated', () => choose('Image input', 'Yes')],
+        ['a reasoning level is stated', () => choose('Reasoning levels', 'High')],
+        ['the provider is changed', () => chooseProvider('OpenAI')],
+      ] as const
+
+      it.each(EDITS)('forgets the results once %s', async (_case, edit) => {
+        const { testNewGatewayModel } = await renderTested(RUNTIME_MODELS)
+
+        await edit()
+
+        expect(formTestResult()).toEqual([])
+        expect(testNewGatewayModel).toHaveBeenCalledOnce()
+      })
+
+      // The provider is the first one offered until another is chosen, so the form follows the
+      // list it is given without an edit.
+      it('shows nothing of a test once the form describes the model under another provider', async () => {
+        const { show, testNewGatewayModel } = await renderTested()
+        expect(testNewGatewayModel.mock.calls[0][0].provider).toBe('anthropic')
+
+        await show({ ...GATEWAY_MODELS, providers: ['openai'] })
+
+        expect(formTestResult()).toEqual([])
+        await click(formTestButton())
+        expect(testNewGatewayModel.mock.calls.map(([model]) => model.provider))
+          .toEqual(['anthropic', 'openai'])
+      })
+
+      it('forgets the results once a suggestion is picked', async () => {
+        stubModelsDev()
+        await render({ gatewayModels: SUGGESTING })
+        await type(labeledInput('Display name'), 'Opus')
+        await type(labeledInput('Context window'), '200000')
+        await focus(labeledInput('Model ID'))
+        await type(labeledInput('Model ID'), 'opus')
+        await click(formTestButton())
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+
+        await click(suggestionOptions()[0])
+
+        expect(addFormValues()).toEqual(['claude-opus-4-5', 'Claude Opus 4.5 (latest)', '200000', '64000'])
+        expect(formTestResult()).toEqual([])
+      })
+
+      it('shows nothing of an answer that arrives after an edit, and tests the edited model at once', async () => {
+        const { testNewGatewayModel } = await render()
+        const earlier = deferred<GatewayModelLevelTest[]>()
+        const later = deferred<GatewayModelLevelTest[]>()
+        testNewGatewayModel.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(later.promise)
+        await fillAddForm(VALID)
+        await click(formTestButton())
+        expect(formTestButton().textContent).toBe('Testing…')
+
+        await type(labeledInput('Display name'), 'GPT After')
+
+        expect(formTestButton().textContent).toBe('Test')
+        expect(formTestResult()).toEqual([])
+
+        await click(formTestButton())
+        expect(testNewGatewayModel.mock.calls.map(([model]) => model.name))
+          .toEqual(['GPT Next', 'GPT After'])
+        await act(async () => earlier.resolve([levelFailed(null, 'The server had an error.', 500)]))
+
+        // The earlier answer neither shows nor ends the later test.
+        expect(formTestButton().textContent).toBe('Testing…')
+        expect(formTestResult()).toEqual([])
+
+        await act(async () => later.resolve([levelPassed(null)]))
+
+        expect(formTestButton().textContent).toBe('Test')
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+      })
+
+      it('forgets the results once the model is added, and tests nothing by adding it', async () => {
+        const { addGatewayModel, testNewGatewayModel } = await renderTested()
+
+        await click(button('Add model'))
+
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+        expect(addFormValues()).toEqual(['', '', '', ''])
+        expect(formTestResult()).toEqual([])
+        expect(testNewGatewayModel).toHaveBeenCalledOnce()
+      })
+
+      it('shows nothing of an answer that arrives after the model is added', async () => {
+        const { testNewGatewayModel } = await render()
+        const call = deferred<GatewayModelLevelTest[]>()
+        testNewGatewayModel.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+        await click(formTestButton())
+
+        await click(button('Add model'))
+
+        expect(addFormValues()).toEqual(['', '', '', ''])
+        expect(formTestButton().textContent).toBe('Test')
+
+        await act(async () => call.resolve([levelPassed(null)]))
+
+        expect(formTestResult()).toEqual([])
+      })
+
+      it('keeps the results of a model that the server refused to add, and the refusal over a test', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {})
+        const { addGatewayModel, testNewGatewayModel } = await renderTested()
+        addGatewayModel.mockRejectedValueOnce(new Error(ALREADY_ADDED))
+
+        await click(button('Add model'))
+
+        expect(document.body.querySelector('[role="alert"]')?.textContent).toBe(ALREADY_ADDED)
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+
+        // Pressing Test describes no other model, so it is no edit either.
+        testNewGatewayModel.mockResolvedValueOnce([levelPassed(null), levelPassed('low')])
+        await click(formTestButton())
+
+        expect(document.body.querySelector('[role="alert"]')?.textContent).toBe(ALREADY_ADDED)
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED, `Low: ${MODEL_TEST_PASSED_TEXT}`])
+        expect(addGatewayModel).toHaveBeenCalledOnce()
+      })
+
+      it('can be run while a write is in flight', async () => {
+        const { setUserModelsEnabled, testNewGatewayModel } = await render()
+        const call = deferred()
+        setUserModelsEnabled.mockReturnValueOnce(call.promise)
+        await fillAddForm(VALID)
+        await click(userModelsCheckbox())
+        expect(button('Add model').disabled).toBe(true)
+        expect(labeledInput('Model ID').disabled).toBe(true)
+
+        expect(formTestButton().disabled).toBe(false)
+        expect(formTestButton().getAttribute('aria-disabled')).toBe('false')
+        await click(formTestButton())
+
+        expect(testNewGatewayModel).toHaveBeenCalledOnce()
+        expect(testNewGatewayModel.mock.calls[0]).toStrictEqual([{
+          provider: 'anthropic', id: 'gpt-next', name: 'GPT Next', contextWindow: 128000,
+        }])
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
+        // The test did not end the write's lock either.
+        expect(button('Add model').disabled).toBe(true)
+
+        await act(async () => call.resolve())
+
+        expect(button('Add model').disabled).toBe(false)
+        expect(formTestResult()).toEqual([NO_LEVEL_PASSED])
       })
     })
 
@@ -2093,7 +2712,7 @@ describe('AdminModelsPanel', () => {
 
       expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
         provider: 'anthropic', id: 'claude-opus-4-5', name: 'Claude Opus 4.5',
-        contextWindow: 200000, outputLimit: 32000,
+        contextWindow: 200000, outputLimit: 32000, capabilities: { imageInput: false },
       })
     })
 
@@ -2108,7 +2727,7 @@ describe('AdminModelsPanel', () => {
 
       expect(addGatewayModel).toHaveBeenCalledExactlyOnceWith({
         provider: 'anthropic', id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5 (latest)',
-        contextWindow: 200000, outputLimit: 64000,
+        contextWindow: 200000, outputLimit: 64000, capabilities: { imageInput: false },
       })
     })
 

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AdminModelView,
   BuiltInReasoning,
+  GatewayModelCapabilities,
   GatewayModelMode,
   GatewayModelSettings,
   GatewayModelTest,
@@ -115,6 +116,10 @@ const resetBudget = (modelName = 'Claude Sonnet') =>
 // What the row says of the model it behaves like, if anything.
 const behavesLikeLine = () => Array.from(document.body.querySelectorAll('li p'))
   .map((p) => p.textContent).filter((text) => text?.startsWith('Behaves like'))
+
+// What the row says is stated of the model, if anything.
+const statedLine = () => Array.from(document.body.querySelectorAll('li p'))
+  .map((p) => p.textContent).filter((text) => text?.startsWith('Stated'))
 
 // As Enter in the field does. jsdom submits no form for a key press.
 const pressEnter = (field: HTMLInputElement) => act(async () => {
@@ -708,6 +713,70 @@ describe('GatewayModelRow', () => {
       expect(behavesLikeLine()).toEqual([
         'Behaves like claude-retired. This version no longer knows that model, so nothing is borrowed.',
       ])
+    })
+  })
+
+  describe('an added model with capabilities stated for it', () => {
+    it.each<[string, GatewayModelCapabilities | undefined]>([
+      ['none stated', undefined],
+      ['an empty statement', {}],
+    ])('says nothing of them for a model with %s', async (_case, capabilities) => {
+      await render({ model: { ...ADDED, capabilities }, removable: true }, { collapsed: true })
+
+      expect(statedLine()).toEqual([])
+    })
+
+    it.each<[string, GatewayModelCapabilities, string]>([
+      ['that it takes images', { imageInput: true }, 'Stated: takes images'],
+      ['that it takes none', { imageInput: false }, 'Stated: takes no images'],
+      [
+        'its reasoning levels by their names',
+        { reasoningLevels: ['off', 'high', 'xhigh'] },
+        'Stated: reasoning levels Off, High, Extra high',
+      ],
+      ['a single level above Off', { reasoningLevels: ['high'] }, 'Stated: reasoning levels High'],
+      ['no reasoning for Off alone', { reasoningLevels: ['off'] }, 'Stated: no reasoning'],
+      ['no reasoning for no level at all', { reasoningLevels: [] }, 'Stated: no reasoning'],
+      [
+        'both facts, images first',
+        { reasoningLevels: ['low', 'high'], imageInput: true },
+        'Stated: takes images · reasoning levels Low, High',
+      ],
+    ])('says %s', async (_case, capabilities, line) => {
+      await render({ model: { ...ADDED, capabilities }, removable: true }, { collapsed: true })
+
+      expect(statedLine()).toEqual([line])
+    })
+
+    it('says they are not used once this version knows the model itself', async () => {
+      await render(
+        {
+          model: {
+            ...ADDED, runtimeKnown: true, capabilities: { imageInput: false, reasoningLevels: ['off'] },
+          },
+          removable: true,
+        },
+        { collapsed: true })
+
+      expect(statedLine()).toEqual([
+        'Stated: takes no images · no reasoning. Not used: this version knows this model itself.',
+      ])
+    })
+
+    it('says them under the model it behaves like', async () => {
+      await render(
+        {
+          model: {
+            ...ADDED, behavesLike: 'claude-sonnet', behavesLikeKnown: true,
+            capabilities: { imageInput: true },
+          },
+          behavesLikeName: 'Claude Sonnet',
+          removable: true,
+        },
+        { collapsed: true })
+
+      expect(Array.from(document.body.querySelectorAll('li p')).map((p) => p.textContent).slice(-2))
+        .toEqual(['Behaves like Claude Sonnet', 'Stated: takes images'])
     })
   })
 

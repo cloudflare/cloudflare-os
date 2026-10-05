@@ -407,8 +407,8 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                 onChange={changeModelsDevSuggestions}
               >
                 While you add a model, your browser downloads models.dev’s public model list to
-                suggest model IDs, names and limits. A suggestion only fills in the form: nothing
-                is added until you select “Add model”.
+                suggest model IDs, names, limits and what a model can do. A suggestion only fills
+                in the form: nothing is added until you select “Add model”.
               </SettingSwitch>
               <AddGatewayModelForm
                 providers={gatewayModels.providers}
@@ -417,6 +417,7 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
                 disabled={busy}
                 suggestions={suggestions}
                 onAdd={(model) => write(() => admin.addGatewayModel(model))}
+                onTest={(model) => admin.testNewGatewayModel(model)}
               />
             </>
           )}

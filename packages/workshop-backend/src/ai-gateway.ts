@@ -51,6 +51,23 @@ export function gatewayModelConfig(model: AdminModel): AiModelConfig {
   };
 }
 
+/**
+ * The config a gateway model runs with at the reasoning level `reasoning`, or with no level set
+ * when that is null, and with the compaction budget `budget` when one is given. A stored model's
+ * config (see GatewayModels.runConfig) and that of a model an admin tests before adding it are
+ * both built here, so that the test asks what the added model would be asked.
+ */
+export function gatewayRunConfig(
+    model: AdminModel, reasoning: ReasoningLevel | null, budget?: number): AiModelConfig {
+  return {
+    ...gatewayModelConfig(model),
+    ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
+    ...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {}),
+    ...(reasoning !== null ? { reasoning } : {}),
+    ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
+  };
+}
+
 export class AiGatewayConfig {
   readonly gateway: string;
   /**
@@ -259,14 +276,8 @@ export class GatewayModels {
   runConfig(id: string): AiModelConfig | undefined {
     let model = this.#byId.get(id);
     if (!model) return undefined;
-    let reasoning = model.settings?.reasoning ?? this.#defaultReasoning;
-    let budget = model.settings?.compactionInputBudget;
-    return {
-      ...gatewayModelConfig(model),
-      ...(model.behavesLike !== undefined ? { behavesLike: model.behavesLike } : {}),
-      ...(reasoning !== null ? { reasoning } : {}),
-      ...(budget !== undefined ? { compactionInputBudget: budget } : {}),
-    };
+    return gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
+        model.settings?.compactionInputBudget);
   }
 
   /** Throws if `id` names a gateway model that an admin disabled. */

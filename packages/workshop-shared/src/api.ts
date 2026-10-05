@@ -1296,17 +1296,32 @@ export interface AdminApi {
    * Send one request to a gateway model the way a chat turn would, through the gateway, as the
    * admin, and report what happened within 30 seconds. The request asks for the reasoning level
    * in effect for the model (its own, else the deployment's default, else what BuiltInReasoning
-   * describes), with the flags of the model it behaves like, under a response cap of at most
-   * 2,048 tokens. A level that a model takes as a token budget comes out of that cap, so it is
-   * cut to the room the cap leaves and is smaller than a chat's. It works on a model in any
-   * mode, hidden and disabled included, and changes nothing. Throws outside AI Gateway mode and
-   * for an ID that names no gateway model; a request that fails is a result (see
-   * GatewayModelTest).
+   * describes), with the capabilities stated for it and the flags of the model it behaves like,
+   * under a response cap of at most 2,048 tokens. A level that a model takes as a token budget
+   * comes out of that cap, so it is cut to the room the cap leaves and is smaller than a chat's.
+   * It works on a model in any mode, hidden and disabled included, and changes nothing. Throws
+   * outside AI Gateway mode and for an ID that names no gateway model; a request that fails is a
+   * result (see GatewayModelTest).
    *
    * A pass says that the model answered that one request. It costs more than
    * testGatewayProvider(), whose quick request is capped at a few tokens.
    */
   testGatewayModel(modelId: string): Promise<GatewayModelTest>;
+
+  /**
+   * Test a model as described, without adding it. It sends one request the way a chat turn would
+   * with no reasoning level set (so asking for what BuiltInReasoning describes, whatever the
+   * deployment's default level is), and one at each reasoning level the model would list once
+   * added (see AdminModelView.reasoningLevels). The requests are sent together, through the
+   * gateway, as the admin, each under testGatewayModel()'s response cap and time limit. The
+   * results come with the request that set no level first, then the levels from least to most.
+   * It stores nothing. Throws outside AI Gateway mode and for a model addGatewayModel() would
+   * refuse, for the same reason; a request that fails is a result (see GatewayModelLevelTest).
+   *
+   * A pass says that the model answered that one request. A model that lists every level is sent
+   * eight requests, each of which may use the whole response cap.
+   */
+  testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1528,6 +1543,21 @@ export type GatewayModelSettings = {
 };
 
 /**
+ * What a deployment's admin states that a model it adds can do. Nothing checks a stated fact
+ * against the provider: requests are built from it as it stands.
+ */
+export type GatewayModelCapabilities = {
+  /** Whether the model takes images as input, beside text. Absent while not stated. */
+  imageInput?: boolean;
+
+  /**
+   * The reasoning levels the model can be sent. A list with no level above 'off' states a model
+   * that does no reasoning. Absent while not stated.
+   */
+  reasoningLevels?: ReasoningLevel[];
+};
+
+/**
  * The description of a model a deployment provides through AI Gateway. Its admin supplies one to
  * add a model beside the SUGGESTED_MODELS of the providers the gateway enables.
  */
@@ -1553,10 +1583,16 @@ export type GatewayModel = {
   /**
    * The ID of a model of the same provider that the model runtime knows. While the runtime has
    * no entry for this model's own ID, the model borrows that one's runtime flags: its request
-   * formats, its reasoning levels and the kinds of input it takes. Its name, limits and cost stay
-   * its own.
+   * formats and, for what `capabilities` leaves unstated, its reasoning levels and the kinds of
+   * input it takes. Its name, limits and cost stay its own.
    */
   behavesLike?: string;
+
+  /**
+   * What the model is stated to do. Used only while the runtime has no entry for this model's
+   * own ID, where each stated fact comes ahead of what `behavesLike` lends.
+   */
+  capabilities?: GatewayModelCapabilities;
 };
 
 /** A model a deployment provides through AI Gateway, as its admin sees it. */
@@ -1599,7 +1635,7 @@ export type AdminModelView = AdminModel & {
 
   /**
    * Whether the model runtime has an entry for the model's own ID. When it has, the runtime's
-   * entry is used and `behavesLike` is not.
+   * entry is used, and neither `behavesLike` nor `capabilities` is.
    */
   runtimeKnown: boolean;
 
@@ -1631,14 +1667,21 @@ export type AdminGatewayProvider = {
 };
 
 /**
- * What AdminApi.testGatewayProvider() and AdminApi.testGatewayModel() found: the model asked, and
- * whether it answered. A failure carries a message on one line, cut short: what the provider or
- * the gateway answered, or why no answer came. It carries the HTTP status of the response only
- * when the model runtime reports one, which it does not for every provider (a failed Google
- * request has none): the message then says what there is.
+ * What one request of AdminApi.testGatewayProvider(), AdminApi.testGatewayModel() or
+ * AdminApi.testNewGatewayModel() found: the model asked, and whether it answered. A failure
+ * carries a message on one line, cut short: what the provider or the gateway answered, or why no
+ * answer came. It carries the HTTP status of the response only when the model runtime reports
+ * one, which it does not for every provider (a failed Google request has none): the message then
+ * says what there is.
  */
 export type GatewayModelTest = { model: string } &
     ({ ok: true } | { ok: false; status?: number; message: string });
+
+/**
+ * One request of AdminApi.testNewGatewayModel(): its result, and the reasoning level it asked
+ * for. Null is the request sent with no level set.
+ */
+export type GatewayModelLevelTest = GatewayModelTest & { reasoning: ReasoningLevel | null };
 
 /** Configuration specifying how to connect to an AI model provider. */
 export type AiModelConfig = {
@@ -1706,6 +1749,12 @@ export type AiModelConfig = {
    * the models a deployment's admin added to its AI Gateway.
    */
   behavesLike?: string;
+
+  /**
+   * What the model is stated to do (see GatewayModel.capabilities). Set only on the models a
+   * deployment's admin added to its AI Gateway.
+   */
+  capabilities?: GatewayModelCapabilities;
 };
 
 /**
@@ -1716,7 +1765,8 @@ export type AiModelConfig = {
  * the stored value. It has none of the fields that only a deployment sets on its own models.
  */
 export type RedactedAiModelConfig = Omit<AiModelConfig,
-    "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike"> & {
+    "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
+    "capabilities"> & {
   /** `AiModelConfig.apiToken`, or null if withheld. */
   apiToken: string | null;
 

@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -9,7 +9,7 @@ import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, pars
 import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
-import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
+import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { AgentTurnError, completeText } from './ai-invoke.js';
 import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
@@ -37,6 +37,12 @@ function compactionBudgetRange(model: AdminModel): { builtIn: number, max: numbe
     // A budget is capped at that room, so an unbounded one reads it back.
     max: getModelTokenLimits({ ...config, compactionInputBudget: Infinity }).inputBudget,
   };
+}
+
+// The model that `model`, a description of one, becomes once added: enabled, with nothing set
+// for it.
+function addedModel(model: GatewayModel): AdminModel {
+  return { ...model, mode: "enabled", defaultMode: "enabled", added: true };
 }
 
 // One of the tests an admin runs through the gateway: the event and the message of its log line,
@@ -461,8 +467,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           let budget = compactionBudgetRange(model);
           return {
             ...model,
-            reasoningLevels: gatewayReasoningLevels(model.provider, model.id, model.behavesLike),
-            builtInReasoning: gatewayBuiltInReasoning(model.provider, model.id, model.behavesLike),
+            reasoningLevels: gatewayReasoningLevels(
+                model.provider, model.id, model.behavesLike, model.capabilities),
+            builtInReasoning: gatewayBuiltInReasoning(
+                model.provider, model.id, model.behavesLike, model.capabilities),
             builtInCompactionInputBudget: budget.builtIn,
             maxCompactionInputBudget: budget.max,
             runtimeKnown: isRuntimeModel(model.provider, model.id),
@@ -532,32 +540,41 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     await this.updateAdminConfig({ defaultReasoning: level });
   }
 
-  /**
-   * Add a gateway model. Whether its ID is free is decided within the mutation, so that two
-   * concurrent calls can't both add the same one.
-   */
-  async addGatewayModel(model: GatewayModel): Promise<void> {
+  // The model `model` describes, as it is stored once added. Throws outside AI Gateway mode, and
+  // unless the model may be added to `config`: it is well-formed, its provider is one a model may
+  // be added under, its ID is free, the runtime knows the model it behaves like, and its window
+  // leaves room for a prompt.
+  #addableModel(model: GatewayModel, config: AdminConfig): GatewayModel {
     let added = sanitizeAddedModel(model);
     if (!added) {
       throw new Error(
           "Invalid model: it needs an ID and a name, neither over-long, and token limits that " +
           "are positive integers. The ID of a model it behaves like can't be over-long either.");
     }
+    new GatewayModels(this.#requireGateway(), config).assertAddable(added);
+    if (added.behavesLike !== undefined && !isRuntimeModel(added.provider, added.behavesLike)) {
+      throw new Error(`"${added.behavesLike}" is not a model the runtime knows under ` +
+          `provider "${added.provider}", so "${added.id}" can't behave like it.`);
+    }
+    // A response is reserved out of the window, so a reservation that fills it would leave
+    // every chat on the model with no prompt to send.
+    let { inputBudget, maxOutputTokens } =
+        getModelTokenLimits(gatewayModelConfig(addedModel(added)));
+    if (inputBudget <= 0) {
+      throw new Error(`The "${added.name}" model's context window leaves no room for a ` +
+          `prompt: ${maxOutputTokens} tokens of it are reserved for the response. Give the ` +
+          "model an output limit under its context window.");
+    }
+    return added;
+  }
+
+  /**
+   * Add a gateway model. Whether its ID is free is decided within the mutation, so that two
+   * concurrent calls can't both add the same one.
+   */
+  async addGatewayModel(model: GatewayModel): Promise<void> {
     await this.#mutateAdminConfig(config => {
-      new GatewayModels(this.#requireGateway(), config).assertAddable(added);
-      if (added.behavesLike !== undefined && !isRuntimeModel(added.provider, added.behavesLike)) {
-        throw new Error(`"${added.behavesLike}" is not a model the runtime knows under ` +
-            `provider "${added.provider}", so "${added.id}" can't behave like it.`);
-      }
-      // A response is reserved out of the window, so a reservation that fills it would leave
-      // every chat on the model with no prompt to send.
-      let { inputBudget, maxOutputTokens } = getModelTokenLimits(gatewayModelConfig(
-          { ...added, mode: "enabled", defaultMode: "enabled", added: true }));
-      if (inputBudget <= 0) {
-        throw new Error(`The "${added.name}" model's context window leaves no room for a ` +
-            `prompt: ${maxOutputTokens} tokens of it are reserved for the response. Give the ` +
-            "model an output limit under its context window.");
-      }
+      let added = this.#addableModel(model, config);
       // The ID was free, so a mode or settings stored under it belonged to a model that has since
       // left.
       return {
@@ -644,6 +661,32 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let config = new GatewayModels(gateway, this.#config()).runConfig(modelId);
     if (!config) throw new Error(`No such model: ${modelId}`);
     return this.#runTest(gateway, config, adminUserId, MODEL_TEST);
+  }
+
+  /**
+   * Test the gateway model `model` describes, without adding it and on behalf of the admin
+   * `adminUserId`. One request sets no reasoning level and one is at each level the model would
+   * list once added, least to most: each is sent as testGatewayModel() sends its own, with the
+   * config the added model would run with at that level, and all are sent together. The results
+   * come in that order, each with its level, which is null for the request that set none. A
+   * request that fails is the result of its level alone. Throws for a model addGatewayModel()
+   * would refuse, as it does.
+   *
+   * Like testGatewayModel(), it stores nothing and stays out of the config mutation queue: the
+   * model is held to the config as this call reads it, and whether it may be added is for
+   * addGatewayModel() to decide within its own mutation.
+   */
+  async testNewGatewayModel(model: GatewayModel, adminUserId: string)
+      : Promise<GatewayModelLevelTest[]> {
+    let gateway = this.#requireGateway();
+    let added = addedModel(this.#addableModel(model, this.#config()));
+    let levels = gatewayReasoningLevels(
+        added.provider, added.id, added.behavesLike, added.capabilities);
+    return Promise.all([null, ...levels].map(async reasoning => ({
+      ...await this.#runTest(
+          gateway, gatewayRunConfig(added, reasoning), adminUserId, MODEL_TEST),
+      reasoning,
+    })));
   }
 
   // Send the model `config` describes one prompt through the gateway, as `test` says to and on
@@ -973,5 +1016,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   testGatewayModel(modelId: string): Promise<GatewayModelTest> {
     return this.admin.testGatewayModel(modelId, this.adminUserId);
+  }
+
+  testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]> {
+    return this.admin.testNewGatewayModel(model, this.adminUserId);
   }
 }
