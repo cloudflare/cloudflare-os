@@ -2832,9 +2832,11 @@ export interface Overseer extends RpcTarget {
    * throws, or null to return the workspace to its owner's personal space.
    *
    * After a move that succeeds the target space lists the workspace, the space it left no longer
-   * does, and `GadgetMetadata.spaceKey` on the owner's record follows. When the owner may not add
-   * workspaces to the target space (see `SpaceKind` for who may), this throws and the workspace
-   * is not moved.
+   * does, and `GadgetMetadata.spaceKey` on the owner's record follows. The workspace's address
+   * does not move with it (see `SpaceWorkspaceInfo.slug`): the slugs it had in the space it left
+   * stop resolving, and the target space gives it a new one as it does any workspace it comes to
+   * list. When the owner may not add workspaces to the target space (see `SpaceKind` for who
+   * may), this throws and the workspace is not moved.
    *
    * A move can also fail with no answer from a space, one that could not be reached for
    * instance. This throws too, but `GadgetMetadata.spaceKey` may be left as the move would have
@@ -6012,6 +6014,11 @@ export type ShareLinkInfo = {
 // member lets a user see the space's listing of workspaces. The listing describes those
 // workspaces and grants nothing on them: whether a user can open one is decided by that
 // workspace's own sharing.
+//
+// A listed workspace can have an address within its space, a slug (see
+// `SpaceWorkspaceInfo.slug`). The address belongs to the workspace's entry in that listing, so a
+// workspace that leaves the listing gives it up, and one moved to another space gets a new
+// address there.
 // =======================================================================================
 
 /**
@@ -6064,10 +6071,12 @@ export function isValidSpaceKey(key: string): boolean {
  * A member's role in a space. Every member holds exactly one, and being a member in any role is
  * what lets a user open the space and see the workspaces listed in it.
  *
- * - "admin": may also change the member list (`Space.setMemberRole`, `Space.removeMember`).
+ * - "admin": may also change the member list (`Space.setMemberRole`, `Space.removeMember`) and
+ *   the address of any workspace the space lists (`Space.setWorkspaceSlug`).
  * - "build" and "use": ordinary members, named after the `CollaboratorRole` levels. In the space
  *   itself the two confer the same thing: reading its info, its member list and its listing of
- *   workspaces, adding workspaces of their own to a team space, and leaving it.
+ *   workspaces, resolving an address in it, adding workspaces of their own to a team space,
+ *   changing the address of a workspace of their own that it lists, and leaving it.
  */
 export type SpaceMemberRole = "admin" | "build" | "use";
 
@@ -6113,11 +6122,37 @@ export interface SpaceMemberInfo {
   added: Date;
 }
 
+/** The longest slug a workspace can have: what `slugify()` cuts the slug it derives to. */
+export const MAX_SLUG_LENGTH = 80;
+
 /**
- * One workspace in a space's listing, as returned by `Space.listWorkspaces`. It is what the space
- * recorded when the workspace last registered with it, so it describes the workspace without
- * granting anything on it: opening the workspace is `AuthenticatedApi.openGadget(id)`, which
- * decides access from the workspace's own sharing.
+ * Derive a slug from a workspace title: lowercased, accents stripped, every run of characters
+ * other than the ASCII letters a-z and the digits 0-9 collapsed to one dash, trimmed of dashes,
+ * and capped at `MAX_SLUG_LENGTH`. Falls back to "workspace" when nothing remains, as for a title
+ * with no such letter or digit (one written wholly in another script, for instance). Pure and
+ * deterministic, so a client can preview the slug a title leads to; whether that slug is free is
+ * decided by the space, which gives one ending in a numeric suffix when it is not (see
+ * `SpaceWorkspaceInfo.slug`). A string is in slug form exactly when this returns it unchanged,
+ * which is what `Space.setWorkspaceSlug` requires.
+ */
+export function slugify(title: string): string {
+  const slug = title
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, MAX_SLUG_LENGTH)
+      .replace(/-+$/g, "");
+  return slug === "" ? "workspace" : slug;
+}
+
+/**
+ * One workspace in a space's listing, as returned by `Space.listWorkspaces`. Its `slug` is the
+ * space's own to give and change; the rest is what the space recorded when the workspace last
+ * registered with it. An entry describes the workspace without granting anything on it: opening
+ * the workspace is `AuthenticatedApi.openGadget(id)`, which decides access from the workspace's
+ * own sharing.
  *
  * No entry describes a workspace that holds restricted data or is owner-invites-only
  * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`): such a workspace is never
@@ -6139,6 +6174,32 @@ export interface SpaceWorkspaceInfo {
 
   /** When the workspace was created. */
   created: Date;
+
+  /**
+   * The workspace's current address within the space, unique within it. Absent until the
+   * workspace has been given a title of its own: a placeholder title, the one
+   * `AuthenticatedApi.newGadget` creates a workspace with ("Untitled Workspace") or the
+   * "Untitled Gadget" an older workspace may still carry, gives it none. The space derives the
+   * slug from the first other title it records for the workspace, as `slugify()` of that title
+   * or, when another workspace of the space uses or used to use that slug, ending in the first
+   * free of `-2`, `-3`, ..., cut where needed so that it stays within `MAX_SLUG_LENGTH` and in
+   * slug form. A later change of title does not move it: only `Space.setWorkspaceSlug` changes
+   * it, and the slugs a workspace had before keep resolving to it (see
+   * `Space.resolveWorkspace`).
+   */
+  slug?: string;
+}
+
+/** What a slug resolved to in a space, as returned by `Space.resolveWorkspace`. */
+export interface SpaceWorkspaceResolution {
+  /** The workspace the slug addresses, as the space lists it. */
+  workspace: SpaceWorkspaceInfo;
+
+  /**
+   * True when the slug asked for is the workspace's current one. False when it is one the
+   * workspace used to have: a client should then use `workspace.slug` in its place.
+   */
+  canonical: boolean;
 }
 
 /**
@@ -6161,7 +6222,9 @@ export interface Space extends RpcTarget {
    * List the workspaces that belong to the space, newest first by `created`. Available to every
    * member, whatever their role. A workspace is listed once it has seen activity, so one that is
    * still provisional (see `AuthenticatedApi.newGadget`) is absent, and it stays listed after
-   * its owner stops being a member.
+   * its owner stops being a member. An entry carries the workspace's address within the space
+   * once it has one (`SpaceWorkspaceInfo.slug`); a workspace that leaves the listing, for any of
+   * the reasons below or because it was moved or deleted, gives that address up.
    *
    * A workspace that holds restricted data or is owner-invites-only
    * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is never listed, because a
@@ -6186,6 +6249,39 @@ export interface Space extends RpcTarget {
    * the workspace.
    */
   listWorkspaces(): Promise<SpaceWorkspaceInfo[]>;
+
+  /**
+   * Find the workspace of this space that `slug` addresses: the one whose current slug it is,
+   * otherwise the one that used to have it (`canonical` false). Null when no workspace listed
+   * in the space has or had that slug. Available to every member, like the listing.
+   *
+   * Only listed workspaces resolve. One that left the listing, because it was deleted, moved to
+   * another space, came to hold restricted data or became owner-invites-only, no longer does,
+   * under any slug it had here: those slugs are free again, and nothing leads from them to where
+   * the workspace went.
+   *
+   * Resolving a slug grants nothing on the workspace, as with the listing: opening it is
+   * `AuthenticatedApi.openGadget(workspace.id)`, decided by the workspace's own sharing.
+   */
+  resolveWorkspace(slug: string): Promise<SpaceWorkspaceResolution | null>;
+
+  /**
+   * Change the address of the workspace `id` within this space to `slug`, and return its entry
+   * as it then is. Allowed to a member of the space who is the workspace's owner, as the listing
+   * records them, or an admin of the space. Any other member is refused, and so is an owner who
+   * is no longer a member, as on every method here. Works for a workspace that has no slug yet.
+   *
+   * `slug` must be non-empty and already in slug form (`slugify(slug) === slug`), or this
+   * throws. It also throws when the space does not list `id`, and when another workspace of the
+   * space uses `slug` now. A slug another workspace only used to have is taken over, and stops
+   * resolving to that other workspace.
+   *
+   * The slug the workspace had until then is kept as a former one and keeps resolving to it (see
+   * `resolveWorkspace`). A workspace keeps its 32 most recent former slugs; an older one stops
+   * resolving and is free again. Setting the slug the workspace already has changes nothing, and
+   * setting one of its own former slugs makes that one current again, no longer a former one.
+   */
+  setWorkspaceSlug(id: string, slug: string): Promise<SpaceWorkspaceInfo>;
 
   /**
    * Set the role of the user with this username/email to exactly `role`: adds them if they are
