@@ -143,7 +143,9 @@ async function queueReview(userObjectId: string) {
   const facet = `review-${++connections}`;
   const props = { userObjectId, resourceKind: "repo", owner: "octo", repo: "repo" } as const;
   const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"));
-  const submitted = await hooks.submitReview(facet, props, new RpcStub(new TestApprovalQueue()), {
+  // The caller keeps ownership of a stub it passes as a param (see capnweb's README).
+  using queue = new RpcStub(new TestApprovalQueue());
+  const submitted = await hooks.submitReview(facet, props, queue, {
     type: "postReview", approvalId: 1, submittedAt: 0, owner: "octo", repo: "repo",
     pullId: "7", provisionalReviewId: "~r1",
     review: {
@@ -155,7 +157,10 @@ async function queueReview(userObjectId: string) {
     },
   }, { title: "review", description: "test review", implementsRevert: false });
   expect(submitted).not.toHaveProperty("error");
-  return () => hooks.applyAction(facet, props, 1, new RpcStub(new UnusedGitCache()) as never);
+  return async () => {
+    using cache = new RpcStub(new UnusedGitCache());
+    return await hooks.applyAction(facet, props, 1, cache as never);
+  };
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
