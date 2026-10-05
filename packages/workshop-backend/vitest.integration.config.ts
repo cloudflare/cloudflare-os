@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { COMPATIBILITY_DATE } from "@gadgets/scripts/worker-config";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
 
@@ -6,6 +7,18 @@ const EXPECTED_OPEN_ERROR_CODES = new Set([
   "WORKSPACE_NOT_FOUND",
   "WORKSPACE_ACCESS_DENIED",
 ]);
+
+// The production config binds the platform-private notification proxy. These tests exercise the
+// Workshop RPC surface rather than notification delivery, but workerd still requires every service
+// binding target to exist before it will start the backend.
+const notificationProxy = `
+import { WorkerEntrypoint } from "cloudflare:workers";
+export default class NotificationProxy extends WorkerEntrypoint {
+  registerDevice() {}
+  deliverTaskCompleted() {}
+  deliverPermissionRequested() {}
+}
+`;
 
 export default defineConfig({
   esbuild: {
@@ -18,6 +31,14 @@ export default defineConfig({
       remoteBindings: false,
       wrangler: {
         configPath: "./wrangler.jsonc",
+      },
+      miniflare: {
+        workers: [{
+          name: "notification-proxy",
+          modules: true,
+          script: notificationProxy,
+          compatibilityDate: COMPATIBILITY_DATE,
+        }],
       },
     }),
   ],
