@@ -95,6 +95,10 @@ export type CreatePullRequestActionData = {
   options: GitHubCreatePullRequestOptions;
 };
 
+/** github.ts's (unexported) `PostReviewAction` record, read off the real submit signature. */
+export type PostReviewActionData = Extract<
+  Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "postReview" }>;
+
 type TestExports = {
   GitHubGatekeeperImpl(options: { props: GatekeeperProps }):
     DurableObjectClass<GitHubGatekeeperImpl>;
@@ -111,7 +115,7 @@ type GatekeeperFacet = {
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
     : Promise<CreatePullRequestActionData>;
   submitActionForApproval(
-    queue: unknown, action: PushActionData | CreatePullRequestActionData,
+    queue: unknown, action: PushActionData | CreatePullRequestActionData | PostReviewActionData,
     description: ActionDescription): Promise<void>;
   applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
@@ -211,6 +215,14 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async submitCreatePullRequest(
     facetName: string, props: GatekeeperProps,
     queue: unknown, action: CreatePullRequestActionData, description: ActionDescription,
+  ): Promise<Outcome<void>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  async submitReview(
+    facetName: string, props: GatekeeperProps,
+    queue: unknown, action: PostReviewActionData, description: ActionDescription,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));

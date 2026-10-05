@@ -1839,6 +1839,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return await withAccountApi(this.#userAccount(), fn);
   }
 
+  /**
+   * `#withApi` for reads safe to send twice: a token a refresh replaced in flight reruns `fn` once
+   * instead of failing. An apply's follow-up reads need this, since failing them after GitHub
+   * accepted the mutation leaves the action pending, and retrying it repeats the mutation.
+   */
+  async #readApi<T>(fn: (api: GitHubApi) => Promise<T>): Promise<T> {
+    return await withAccountApi(this.#userAccount(), fn, { replayable: true });
+  }
+
   #counterKey(name: string): string {
     return `counter:${name}`;
   }
@@ -2202,7 +2211,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     let changedCount = 0;
 
     for (let page = 1; ; page += 1) {
-      const batch = await this.#withApi(api =>
+      const batch = await this.#readApi(api =>
         api.listPullRequestReviewComments(
           this.ctx.props.owner,
           this.ctx.props.repo,
@@ -3489,7 +3498,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       cacheKey,
       ENTITY_CACHE_TTL_MS,
       async etag => {
-        const firstPage = await this.#withApi(api =>
+        const firstPage = await this.#readApi(api =>
           api.listReviewCommentsForReviewConditional(
             this.ctx.props.owner,
             this.ctx.props.repo,
@@ -3507,7 +3516,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         const results = [...firstPage.data];
         if (firstPage.data.length === 100) {
           const rest = await this.#fetchAllPages((page, perPage) =>
-            this.#withApi(api =>
+            this.#readApi(api =>
               api.listReviewCommentsForReview(
                 this.ctx.props.owner,
                 this.ctx.props.repo,

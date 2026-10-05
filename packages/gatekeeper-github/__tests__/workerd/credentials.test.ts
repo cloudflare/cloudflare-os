@@ -5,6 +5,7 @@
 // refresh was supported -- is served as it always was.
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -37,8 +38,10 @@ function tokens(n: number, expiresIn = EIGHT_HOURS): Record<string, unknown> {
 class FakeGitHub {
   /** Form parameters of every token-endpoint request, in order. */
   readonly tokenRequests: Record<string, string>[] = [];
-  /** Bearer tokens presented to the REST API, in order. */
+  /** Bearer tokens presented to REST API reads, in order. */
   readonly apiTokens: string[] = [];
+  /** Paths of REST API POSTs, in order. */
+  readonly posts: string[] = [];
   /** Access tokens revoked through `DELETE /applications/{client_id}/token`, in order. */
   readonly revoked: string[] = [];
   onRevoke: (token: string) => void | Promise<void> = () => {};
@@ -46,6 +49,8 @@ class FakeGitHub {
     () => json({ error: "unexpected_token_request" }, 500);
   respondApi: (token: string, path: string) => Response | Promise<Response> =
     () => json({ login: "octocat", name: "Octo Cat", avatar_url: "https://avatars.example/1" });
+  respondPost: (path: string) => Response | Promise<Response> =
+    () => json({ message: "unexpected POST" }, 500);
 
   constructor() {
     vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) =>
@@ -71,6 +76,10 @@ class FakeGitHub {
       const token = request.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
       this.apiTokens.push(token);
       return await this.respondApi(token, url.pathname);
+    }
+    if (url.hostname === "api.github.com" && request.method === "POST") {
+      this.posts.push(url.pathname);
+      return await this.respondPost(url.pathname);
     }
     if (url.pathname === "/applications/test-client/token" && request.method === "DELETE") {
       const token = (await request.json<{ access_token: string }>()).access_token;
@@ -116,6 +125,37 @@ async function describeAccount(userObjectId: string) {
 async function hasRepoAccess(userObjectId: string, owner: string, repo: string) {
   return await env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"))
     .hasRepoAccess(userObjectId, owner, repo);
+}
+
+/** Stands in for the overseer's approval queue, which a submit must reach. */
+class TestApprovalQueue extends RpcTarget {
+  async submitAction(): Promise<void> {}
+}
+
+/** The git cache an apply is handed; a review's apply never calls it. */
+class UnusedGitCache extends RpcTarget {}
+
+/**
+ * Queues a one-comment review of pull request #7 as the account.
+ * @returns Its apply, as plain data.
+ */
+async function queueReview(userObjectId: string) {
+  const facet = `review-${++connections}`;
+  const props = { userObjectId, resourceKind: "repo", owner: "octo", repo: "repo" } as const;
+  const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"));
+  const submitted = await hooks.submitReview(facet, props, new RpcStub(new TestApprovalQueue()), {
+    type: "postReview", approvalId: 1, submittedAt: 0, owner: "octo", repo: "repo",
+    pullId: "7", provisionalReviewId: "~r1",
+    review: {
+      revision: { baseSha: "a".repeat(40), headSha: "b".repeat(40) },
+      decision: "comment",
+      diffComments: [{
+        provisionalCommentId: "~c1", bodyMarkdown: "nit", target: { path: "a.ts", line: 3, side: "new" },
+      }],
+    },
+  }, { title: "review", description: "test review", implementsRevert: false });
+  expect(submitted).not.toHaveProperty("error");
+  return () => hooks.applyAction(facet, props, 1, new RpcStub(new UnusedGitCache()) as never);
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -247,13 +287,40 @@ describe("UserAccount with an expiring grant", () => {
     expect(events()).toEqual(["complete"]);
   });
 
-  it("still reads an observer check's 404 as no access", async () => {
+  it.each([403, 404])("still reads an observer check's %i as no access", async status => {
     const github = new FakeGitHub();
     const { id, events } = await connect(github, tokens(1));
-    github.respondApi = () => json({ message: "Not Found" }, 404);
+    github.respondApi = () => json({ message: "Not Found" }, status);
 
     expect(await hasRepoAccess(id.toString(), "octo", "private")).toEqual({ ok: false });
     expect(events()).toEqual(["complete"]);
+  });
+
+  it("finishes applying a review whose follow-up read lost its token to a refresh", async () => {
+    const github = new FakeGitHub();
+    const { account, id, events } = await connect(github, tokens(1));
+    github.respondToken = () => json(tokens(2));
+    github.respondPost = () => json({ id: 99 });
+    const release = Promise.withResolvers<void>();
+    github.respondApi = async token => {
+      if (token === "gho_2") return json([]);
+      await release.promise;
+      return json({ message: "Bad credentials" }, 401);
+    };
+    const apply = await queueReview(id.toString());
+
+    const applied = apply();
+    await vi.waitUntil(() => github.apiTokens.length > 0);
+    // Another request saw the token rejected and refreshed past it while this read was in flight.
+    expect(await account.reportTokenRejected("gho_1")).toBe("superseded");
+    release.resolve();
+
+    expect(await applied).not.toHaveProperty("error");
+    expect(github.posts).toEqual(["/repos/octo/repo/pulls/7/reviews"]);
+    expect(github.apiTokens).toEqual(["gho_1", "gho_2"]);
+    expect(events()).toEqual(["complete"]);
+    // Recorded as applied, so applying again cannot post a second review.
+    expect(await apply()).toEqual({ error: expect.stringContaining("no longer pending") });
   });
 
   it("heals a rejection of the current token by refreshing past it", async () => {
