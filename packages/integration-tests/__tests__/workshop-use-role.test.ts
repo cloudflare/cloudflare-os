@@ -88,6 +88,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   deleteSelf: ws => ws.deleteSelf(),
   createGadget: ws => ws.createGadget("App"),
   listTree: ws => ws.listTree(COMMIT),
+  listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),
   readFilesAtCommit: ws => ws.readFilesAtCommit(COMMIT, ["client.js"]),
   getCommitLog: ws => ws.getCommitLog(COMMIT),
   submitCodeChange: ws => ws.submitCodeChange(1, {
