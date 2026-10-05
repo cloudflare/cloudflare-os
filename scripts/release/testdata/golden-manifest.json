@@ -395,6 +395,12 @@
             "GoogleChatGatekeeperImpl"
           ],
           "tag": "v5"
+        },
+        {
+          "new_sqlite_classes": [
+            "ChatHookDriver"
+          ],
+          "tag": "v6"
         }
       ],
       "modules": [

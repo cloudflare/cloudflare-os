@@ -19,7 +19,7 @@
 // an action and only reaches Google from applyAction(). Reads meanwhile answer as though the
 // queued writes had already landed; chat-state.ts owns that simulation.
 
-import { DurableObject, RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, restore } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
@@ -49,6 +49,11 @@ import type {
   ChatSpace, ChatSpaceEntry, ChatSpaceInfo, ChatUser, ChatThread, ChatThreadEntry, ChatThreadInfo,
   ChatWindow,
 } from "./chat-types";
+import type { ChatMessageRaw } from "./chat-api";
+import {
+  chatHooksConfigured, type ChatHookDelivery, type ChatHookParams, type ChatHooksEnv,
+  type ChatMessageHookTarget,
+} from "./chat-hooks";
 import { getGoogleAccountProfile } from "./google-api";
 import { AccessTokenCache } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
@@ -60,7 +65,7 @@ import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat", vendorId: "google" });
 
-type Env = Cloudflare.Env;
+type Env = Cloudflare.Env & ChatHooksEnv;
 
 export type GoogleChatGatekeeperImplProps = {
   userObjectId: string;
@@ -292,6 +297,8 @@ type ChatContext = {
   readonly boundSpace?: string;
   /** Immutable thread boundary inherited by every capability descended from a thread. */
   readonly boundThread?: string;
+  /** Bind a hook on new messages in a conversation, or in one of its threads. */
+  subscribe(spaceName: string, threadName: string | undefined, hook: RpcStub<ChatMessageHookTarget>): Promise<void>;
 };
 
 type ChatScope = Pick<ChatContext, "store" | "boundSpace" | "boundThread">;
@@ -1047,6 +1054,10 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
   async post(text: string): Promise<ChatMessageEntry> {
     return postedEntry(this.ctx, await queueChatMessage(this.ctx, this.#spaceName, text));
   }
+
+  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>): Promise<void> {
+    await this.ctx.subscribe(this.#spaceName, undefined, hook);
+  }
 }
 
 // ── Thread capability ───────────────────────────────────────────────
@@ -1095,6 +1106,12 @@ class ChatThreadImpl extends ChatRpcTarget implements ChatThread {
     const thread = resolveThread(this.ctx, this.#name);
     return postedEntry(this.ctx,
       await queueChatMessage(this.ctx, thread.spaceName, text, { threadName: this.#name }));
+  }
+
+  async subscribeNewMessages(hook: RpcStub<ChatMessageHookTarget>): Promise<void> {
+    const thread = resolveThread(this.ctx, this.#name);
+    if (thread.pending) throw new Error("This thread's first message has not been sent yet.");
+    await this.ctx.subscribe(thread.spaceName, thread.name, hook);
   }
 }
 
@@ -1319,6 +1336,41 @@ class ChatAttachmentImpl extends ChatRpcTarget implements ChatAttachment {
   }
 }
 
+// ── Hook delivery ───────────────────────────────────────────────────
+
+/** What a hook's delivery stub restores to: one firing at a time, within the hook's scope. */
+@validateRpc()
+class ChatHookDeliveryImpl extends RpcTarget implements ChatHookDelivery {
+  constructor(
+    private readonly params: ChatHookParams,
+    private readonly context: (approvalQueue: RpcStub<ApprovalQueue>) => Promise<ChatContext>,
+  ) {
+    super();
+  }
+
+  async deliver(callback: RpcStub<ChatMessageHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
+                raw: ChatMessageRaw): Promise<void> {
+    const { spaceName, threadName } = this.params;
+    const ctx: ChatContext = {
+      ...await this.context(approvalQueue),
+      boundSpace: spaceName,
+      ...(threadName !== undefined ? { boundThread: threadName } : {}),
+    };
+    const info = chatMessageInfoFromRaw(raw);
+    requireMessageInScope(ctx, info);
+    const message = new ChatMessageImpl(ctx, info.id);
+    try {
+      await observe(ctx, "Receive a new Google Chat message",
+        `Read a new message from ${userLabel(info.sender)} in ${threadName ?? spaceName}, ` +
+        "including its text, attachments, and reactions.");
+    } catch (error) {
+      message[Symbol.dispose]();
+      throw error;
+    }
+    await callback.receiveMessage({ info, message });
+  }
+}
+
 // ── Gatekeeper Durable Object ───────────────────────────────────────
 
 @validateRpc()
@@ -1416,6 +1468,7 @@ export class GoogleChatGatekeeperImpl
         snippet: `Google Chat thread in ${spaceTitle}`,
         suggestedBindingName: "GOOGLE_CHAT_THREAD",
         tsType: "ChatThread",
+        hookTsType: "ChatMessageHook",
       };
     }
     return {
@@ -1424,6 +1477,7 @@ export class GoogleChatGatekeeperImpl
       snippet: `Google Chat conversation: ${spaceTitle}`,
       suggestedBindingName: "GOOGLE_CHAT_SPACE",
       tsType: "ChatSpace",
+      hookTsType: "ChatMessageHook",
     };
   }
 
@@ -1450,17 +1504,53 @@ export class GoogleChatGatekeeperImpl
         ? "Resolve the connected Google account behind this Chat connection."
         : `Resolve the connected Google account and open ${boundThread ?? boundSpace}.`,
     });
-    const ctx: ChatContext = {
-      api: this.#api(),
-      queue: new SharedApprovalQueue(approvalQueue.dup()),
-      store: new ChatStore(this.ctx.storage),
-      self,
-      ...(boundSpace !== undefined ? { boundSpace } : {}),
-    };
+    const ctx = this.#context(self, approvalQueue);
     if (boundThread !== undefined) return new ChatThreadImpl(ctx, boundThread);
     return boundSpace === undefined
       ? new ChatSessionImpl(ctx)
       : new ChatSpaceImpl(ctx, boundSpace);
+  }
+
+  [restore](params: ChatHookParams): ChatHookDelivery {
+    return new ChatHookDeliveryImpl(params,
+      async approvalQueue => this.#context(await this.#getSelf(), approvalQueue));
+  }
+
+  /** What every capability of this connection shares, over one approval queue. */
+  #context(self: ChatUser, approvalQueue: RpcStub<ApprovalQueue>): ChatContext {
+    const queue = new SharedApprovalQueue(approvalQueue.dup());
+    const boundSpace = this.#boundSpaceName();
+    return {
+      api: this.#api(),
+      queue,
+      store: new ChatStore(this.ctx.storage),
+      self,
+      ...(boundSpace !== undefined ? { boundSpace } : {}),
+      subscribe: (spaceName, threadName, hook) => this.#subscribe(queue, self, spaceName, threadName, hook),
+    };
+  }
+
+  async #subscribe(
+    queue: SharedApprovalQueue, self: ChatUser, spaceName: string, threadName: string | undefined,
+    hook: RpcStub<ChatMessageHookTarget>,
+  ): Promise<void> {
+    if (!chatHooksConfigured(this.env)) {
+      throw new Error("Google Chat hooks are not configured on this deployment.");
+    }
+    const params: ChatHookParams = { spaceName, ...(threadName !== undefined ? { threadName } : {}) };
+    using delivery: RpcStub<ChatHookDelivery> = await this.ctx.restore(params);
+    const controller = this.ctx.exports.ChatHookController({ props: {
+      ...params,
+      key: crypto.randomUUID(),
+      authority: self.id,
+      userObjectId: this.ctx.props.userObjectId,
+      delivery,
+    } });
+    await queue.bindHook(controller, hook, {
+      title: "Watch for new Google Chat messages",
+      description: `Call this hook with each new message anyone else posts in ${threadName ?? spaceName}, ` +
+        "letting it read the message and queue replies for approval.",
+    });
   }
 
   async applyAction(actionId: number): Promise<void> {

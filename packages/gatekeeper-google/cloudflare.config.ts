@@ -18,4 +18,5 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v3", new_sqlite_classes: ["GoogleSheetsGatekeeperImpl"] },
   { tag: "v4", new_sqlite_classes: ["GoogleDriveGatekeeperImpl", "GoogleDocGatekeeperImpl"] },
   { tag: "v5", new_sqlite_classes: ["GoogleChatGatekeeperImpl"] },
+  { tag: "v6", new_sqlite_classes: ["ChatHookDriver"] },
 ];

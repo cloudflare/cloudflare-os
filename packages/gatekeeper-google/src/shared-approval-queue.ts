@@ -9,7 +9,7 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import type {
-  ActionDescription, ApprovalQueue, Cursor, ObservationDescription,
+  ActionDescription, ApprovalQueue, Cursor, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { Pager } from "./cursor";
 
@@ -39,6 +39,13 @@ export class SharedApprovalQueue {
 
   submitAction(actionId: number, description: ActionDescription): Promise<void> {
     return this.#stub.submitAction(actionId, description);
+  }
+
+  bindHook<Hook extends RpcTarget>(
+    controller: Fetcher<HookController<Hook>>, callback: RpcStub<Hook>, description: HookDescription,
+  ): Promise<void> {
+    // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
+    return this.#stub.bindHook(controller, callback, description);
   }
 }
 

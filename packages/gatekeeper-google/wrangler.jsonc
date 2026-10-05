@@ -67,6 +67,12 @@
       "new_sqlite_classes": [
         "GoogleChatGatekeeperImpl"
       ]
+    },
+    {
+      "tag": "v6",
+      "new_sqlite_classes": [
+        "ChatHookDriver"
+      ]
     }
   ]
 }

@@ -75,7 +75,7 @@ const RPC_STATUS_NAMES = new Set([
   "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS",
 ]);
 
-async function chatApiFailure(operation: string, response: Response): Promise<never> {
+export async function chatApiFailure(operation: string, response: Response): Promise<never> {
   // Chat error prose can quote message text and filter values, so only the HTTP status and the
   // canonical google.rpc code — whitelisted against the closed enum above — travel to the caller.
   let rpcCode: string | undefined;

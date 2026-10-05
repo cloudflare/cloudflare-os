@@ -217,6 +217,52 @@ The same capabilities keep working once writes are committed. Temporary IDs can 
 with the getters after a worker restart. Reactions to new messages require the post to complete;
 until then `listReactions()` returns none.
 
+## New-message hooks
+
+`space.subscribeNewMessages(hook)` and `thread.subscribeNewMessages(hook)` ask to have a gadget's
+`ChatMessageHook` called with each new message anyone else posts, in the whole conversation or in
+that thread. The hook takes effect once the user enables it in the Workshop, and `hook` must be a
+persistent stub from the gadget's `ctx.restore()`:
+
+```ts
+// In the gadget's DurableObject; RpcTarget and restore come from cloudflare:workers.
+async [restore](params) {
+  if (params.type === "chat-hook") return new StatusHook();
+}
+
+await space.subscribeNewMessages(await this.ctx.restore({ type: "chat-hook" }));
+
+class StatusHook extends RpcTarget {
+  async receiveMessage({ info, message }) {
+    try {
+      if (info.text?.includes("status?")) await message.reply("All systems normal.");
+    } finally {
+      message[Symbol.dispose]();
+    }
+  }
+}
+```
+
+Each delivery is recorded as an observation on the hook's approval queue, and `message` is the
+ordinary message capability, so a reply queues an approval action as any other write does. Messages
+the connected account posts are never delivered, which keeps a hook from answering itself, but hooks
+of two connected accounts can still answer each other; approval is the only guard there.
+
+Delivery is at least once and unordered: Pub/Sub pushes are collapsed for 24 hours, but a failure
+after the hook ran redelivers the message. A firing that fails, whether the hook throws or the
+Workshop refuses to start it, is retried with backoff from one minute up to an hour, eight attempts
+in all, before the message is dropped; disabling or deleting the hook ends its retries.
+Actions a hook queued stay approvable after it is disabled.
+
+Underneath, each Google account has one Workspace Events subscription per conversation, shared by
+all of its hooks there, created with the account's own token when the first hook is enabled and
+renewed every three hours while any hook uses it, a failed renewal being retried every 15 minutes
+so one failure doesn't let it lapse; unused subscriptions lapse within four hours.
+If Google attributes a new subscription to a different account than the one the connection pinned,
+as after reconnecting another account, enabling deletes it and fails, so events are never attributed
+across accounts. Deployments that have not configured Pub/Sub (see the gatekeeper README) refuse to
+subscribe, and everything else works as before.
+
 ## Passing resources to callable agents
 
 These interfaces extend `RpcTarget`, so capabilities can be passed as RPC arguments with the
@@ -254,7 +300,10 @@ Attenuation regressions cover every message creation path and its thread, attach
 reaction descendants. Pure tests cover provider thread support, search keywords and mentions,
 conversation references, time bounds, scope filtering, and overlays. Durable `spawnCallable`
 handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
-Chat gatekeeper suite. An identity regression checks that Chat-provided names reach message,
+Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
+authentication, per-account and per-thread delivery, self-authored and duplicate messages,
+delivery and renewal retries, disable, the authority check, and a hook's reply applying as an
+action. An identity regression checks that Chat-provided names reach message,
 thread, member, and reaction results without extra identity lookups. DM tests cover on-demand
 peer resolution, lookup-free listings and picker searches, peer selection, pagination, and
 observer admission by space access.

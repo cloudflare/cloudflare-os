@@ -1,4 +1,4 @@
-import type { RpcTarget } from "cloudflare:workers";
+import type { RpcStub, RpcTarget } from "cloudflare:workers";
 
 /**
  * A pagination cursor.
@@ -454,6 +454,50 @@ export interface ChatSpace extends RpcTarget {
    * with its temporary ID until it is committed.
    */
   post(text: string): Promise<ChatMessageEntry>;
+
+  /**
+   * Have `hook.receiveMessage()` called with each new message anyone else posts in this
+   * conversation, including thread replies; the connected account's own posts are never
+   * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
+   * Every call creates a distinct hook, so subscribe once per conversation or thread to watch.
+   *
+   * `hook` must be a persistent stub: from `executeCode`, create it with
+   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
+   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
+   * delivery, so they can tell its subscriptions apart, as can each message's `spaceId` and
+   * `threadId`. The restored target is a separate object; pass it anything it needs, such as
+   * `this.ctx.storage`, from `[restore]()`.
+   *
+   * Throws if this deployment has not configured Google Chat hooks.
+   *
+   * @example
+   * // server.js
+   * import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+   * export class Gadget extends DurableObject {
+   *   async [restore](params) {
+   *     if (params.type === "chat") return new StatusHook(params.name);
+   *     throw new TypeError(`Unknown restore type: ${params.type}`);
+   *   }
+   * }
+   * class StatusHook extends RpcTarget {
+   *   constructor(name) {
+   *     super();
+   *     this.name = name;
+   *   }
+   *   async receiveMessage({ info, message }) {
+   *     if (info.text?.includes("status?")) await message.reply(`${this.name}: all systems normal.`);
+   *   }
+   * }
+   *
+   * // executeCode: one hook per conversation, told apart by its params
+   * import { restore } from "cloudflare:workers";
+   * export default async function(self, env) {
+   *   for (const [name, conversation] of [["standup", env.STANDUP_CHAT], ["ops", env.OPS_CHAT]]) {
+   *     await conversation.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "chat", name }));
+   *   }
+   * }
+   */
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
 }
 
 /**
@@ -481,6 +525,12 @@ export interface ChatThread extends RpcTarget {
    * `ChatSpace.post()`. Fails rather than starting a new thread.
    */
   post(text: string): Promise<ChatMessageEntry>;
+
+  /**
+   * As `ChatSpace.subscribeNewMessages()`, for replies in this thread only. Throws while the
+   * thread's first message is still pending.
+   */
+  subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
 }
 
 /**
@@ -545,4 +595,15 @@ export interface ChatAttachment extends RpcTarget {
    * 25 MiB safe-read limit.
    */
   getContent(): Promise<ArrayBuffer>;
+}
+
+/** Implemented by a gadget to receive new messages; see `ChatSpace.subscribeNewMessages()`. */
+export interface ChatMessageHook {
+  /**
+   * Called with each new message; `entry.message` can read it in full and reply, the reply
+   * queued for approval like any other write. Delivery is at least once and unordered, and a
+   * message this throws for is retried with backoff, eight attempts in all, so key any work on
+   * `entry.info.id` to keep it idempotent. Disabling the hook ends its retries.
+   */
+  receiveMessage(entry: ChatMessageEntry): Promise<void>;
 }

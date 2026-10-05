@@ -14,8 +14,12 @@ export default defineConfig({
       miniflare: {
         compatibilityDate,
         compatibilityFlags,
-        bindings: {CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret"},
+        bindings: {
+          CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
+          PUBSUB_TOPIC: "projects/test/topics/chat", PUBSUB_PUSH_SERVICE_ACCOUNT: "push@test.iam.gserviceaccount.com",
+        },
         durableObjects: {
+          ChatHookDriver: {className: "ChatHookDriver", useSQLite: true},
           GmailGatekeeperImpl: {className: "GmailGatekeeperImpl", useSQLite: true},
           GoogleChatGatekeeperImpl: {className: "GoogleChatGatekeeperImpl", useSQLite: true},
           TestHooks: {className: "TestHooks", useSQLite: true},
@@ -27,6 +31,7 @@ export default defineConfig({
   test: {
     include: [
       "__tests__/workerd/chat-actions.test.ts",
+      "__tests__/workerd/chat-hooks.test.ts",
       "__tests__/workerd/configurators.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
