@@ -1,0 +1,19 @@
+docs/sharing.md
+  s_8e6fbe783240b3::t_049f7fdd8ccac1 187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "14c18e244eac0efc5e956e81c6767d3f26bc6beb",
+  "prompts": {},
+  "sessions": {
+    "s_8e6fbe783240b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fcbdad2-d371-4e85-8a0c-659fcce6f58f",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
