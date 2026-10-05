@@ -193,17 +193,23 @@ describe("UserAccount with an expiring grant", () => {
   it("fails a request whose token a refresh replaced in flight as retryable, not expired",
     async () => {
       const github = new FakeGitHub();
-      const { id, events } = await connect(github, tokens(1, NEARLY_EXPIRED));
+      const { account, id, events } = await connect(github, tokens(1, NEARLY_EXPIRED));
       const issued = [tokens(2, NEARLY_EXPIRED), tokens(3)];
       github.respondToken = () => json(issued.shift());
-      // A concurrent read refreshes while the request is in flight, which makes GitHub reject the
-      // token the request presented. Through a fresh stub: this runs in the request's context.
+      const release = Promise.withResolvers<void>();
       github.respondApi = async () => {
-        await env.USER_ACCOUNT.get(id).getAccessToken();
+        await release.promise;
         return json({ message: "Bad credentials" }, 401);
       };
 
-      expect(await describeAccount(id.toString()))
+      const described = describeAccount(id.toString());
+      await vi.waitUntil(() => github.apiTokens.length > 0);
+      // A concurrent read refreshes while the request is in flight, which makes GitHub reject the
+      // token the request presented.
+      expect(await account.getAccessToken()).toBe("gho_3");
+      release.resolve();
+
+      expect(await described)
         .toEqual({ error: "GitHub credentials were renewed during this request. Please retry it." });
       expect(github.apiTokens).toEqual(["gho_2"]);
       expect(github.refreshes()).toEqual(["ghr_1", "ghr_2"]);
