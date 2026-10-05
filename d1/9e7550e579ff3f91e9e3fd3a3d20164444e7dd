@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/spaces/spaceRoles.ts
+  s_dd2417a6d5bd82::t_91463f04517dbc 12-13
+  s_dd2417a6d5bd82::t_7cd289ee645d8d 10-11,14,20
+  s_dd2417a6d5bd82::t_ab771fe0807c8c 15-19
+packages/workshop-frontend/src/features/spaces/SpaceMembersDialog.tsx
+  s_dd2417a6d5bd82::t_7cd289ee645d8d 17,38-39,234,285,287-291
+  s_dd2417a6d5bd82::t_ab771fe0807c8c 286
+  s_dd2417a6d5bd82::t_91463f04517dbc 40-42
+packages/workshop-frontend/src/features/spaces/SpaceSectionRows.tsx
+  s_dd2417a6d5bd82::t_7cd289ee645d8d 23-24
+packages/workshop-frontend/src/features/spaces/SpacePage.test.tsx
+  s_dd2417a6d5bd82::t_91463f04517dbc 219
+  s_dd2417a6d5bd82::t_ab771fe0807c8c 218
+packages/workshop-frontend/src/features/spaces/WorkspaceLink.tsx
+  s_dd2417a6d5bd82::t_27722f9f1f81ee 7-8
+packages/workshop-frontend/src/features/spaces/SpaceMembersDialog.test.tsx
+  s_dd2417a6d5bd82::t_ab771fe0807c8c 376,378-381
+  s_dd2417a6d5bd82::t_91463f04517dbc 375
+  s_dd2417a6d5bd82::t_90afa101d1539e 69-72,377,382
+  s_dd2417a6d5bd82::t_032e16d371c20e 383-384
+packages/workshop-frontend/src/features/spaces/MoveToSpaceDialog.tsx
+  s_dd2417a6d5bd82::t_ed96700a4eef49 100
+packages/workshop-frontend/src/features/spaces/NewSpaceDialog.tsx
+  s_dd2417a6d5bd82::t_7cd289ee645d8d 117
+packages/workshop-frontend/src/features/spaces/SpacePage.tsx
+  s_dd2417a6d5bd82::t_91463f04517dbc 43-44
+packages/workshop-frontend/src/features/spaces/useSpaceWorkspace.ts
+  s_dd2417a6d5bd82::t_7cd289ee645d8d 26-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d19e7550e579ff3f91e9e3fd3a3d20164444e7dd",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
