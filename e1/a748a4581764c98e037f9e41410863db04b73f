@@ -1,0 +1,19 @@
+packages/workshop-backend/src/git-codec.ts
+  s_5651d7166bfd76::t_2518961fadb876 22,80-84,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e1a748a4581764c98e037f9e41410863db04b73f",
+  "prompts": {},
+  "sessions": {
+    "s_5651d7166bfd76": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adf2bca7-d838-413b-817e-c5b33a2b4284",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
