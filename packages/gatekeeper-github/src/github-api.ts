@@ -1,7 +1,19 @@
+import type { RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import {
+  isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
+} from "@gadgets/gatekeeper-kit/oauth-client";
+
+/**
+ * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
+ * 2026, opt-in before -- also carries `refreshToken` and `expiresAt`: its access token lasts eight
+ * hours, and each refresh rotates both tokens. A grant without them does not expire.
+ */
 export type GitHubOAuthGrant = {
   accessToken: string;
   scopes: string[];
-  tokenType: string;
+  refreshToken?: string;
+  /** Absolute access-token expiry, epoch milliseconds. */
+  expiresAt?: number;
 };
 
 export type GitHubSimpleUser = {
@@ -357,60 +369,50 @@ async function request<T>(
   };
 }
 
+function oauthClient(clientId: string, clientSecret: string): OAuthClient {
+  return new OAuthClient({
+    label: "GitHub",
+    client: { method: "post", id: clientId, secret: clientSecret },
+    tokenEndpoint: `${LOGIN_BASE_URL}/login/oauth/access_token`,
+    headers: { "User-Agent": USER_AGENT },
+    scopeSeparator: ",",
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
+}
+
 export async function exchangeAuthCode(
   code: string,
   clientId: string,
   clientSecret: string,
   redirectUri: string,
 ): Promise<GitHubOAuthGrant> {
-  const body = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
-    code,
-    redirect_uri: redirectUri,
-  });
-
-  const response = await fetch(`${LOGIN_BASE_URL}/login/oauth/access_token`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": USER_AGENT,
-    },
-    body: body.toString(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  const parsed = await parseBody(response);
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    if (typeof parsed === "string" && parsed.length > 0) {
-      message = parsed;
-    } else if (parsed && typeof parsed === "object") {
-      const details = parsed as { error?: string; error_description?: string };
-      message = [details.error, details.error_description].filter(Boolean).join(": ") || message;
-    }
-    throw new GitHubApiError(response.status, message, parsed);
-  }
-
-  const result = parsed as {
-    access_token?: string;
-    scope?: string;
-    token_type?: string;
-    error?: string;
-    error_description?: string;
+  const tokens = await oauthClient(clientId, clientSecret).exchangeCode({ code, redirectUri });
+  const grant: GitHubOAuthGrant = {
+    accessToken: tokens.accessToken,
+    scopes: tokens.scopes?.map(scope => scope.trim()).filter(Boolean) ?? [],
   };
-  if (!result.access_token || !result.token_type || result.error) {
-    const message = [result.error, result.error_description].filter(Boolean).join(": ")
-      || "GitHub OAuth token exchange failed";
-    throw new GitHubApiError(400, message, parsed);
-  }
+  if (tokens.refreshToken !== undefined) grant.refreshToken = tokens.refreshToken;
+  if (tokens.expiresAt !== undefined) grant.expiresAt = tokens.expiresAt;
+  return grant;
+}
 
-  return {
-    accessToken: result.access_token,
-    scopes: result.scope?.split(",").map((scope: string) => scope.trim()).filter(Boolean) ?? [],
-    tokenType: result.token_type,
-  };
+/**
+ * Refreshes an expiring grant. The scopes are kept as stored, since GitHub never changes them on
+ * refresh. GitHub answers a refresh token that is expired, revoked, or already used with
+ * `bad_refresh_token` (in an HTTP 200), which proves the grant dead.
+ */
+export function refreshGitHubGrant(
+  clientId: string,
+  clientSecret: string,
+  expiredMessage: string,
+): RefreshCredentials<GitHubOAuthGrant> {
+  return oauthRefresh<GitHubOAuthGrant>(oauthClient(clientId, clientSecret), {
+    refreshToken: grant => grant.refreshToken,
+    merge: (grant, tokens) => ({ ...mergeOAuthTokens(grant, tokens), scopes: grant.scopes }),
+    isGrantDeath: error => isInvalidGrant(error)
+      || (error.oauthError === "bad_refresh_token" && error.httpStatus < 500),
+    expiredMessage,
+  });
 }
 
 /**

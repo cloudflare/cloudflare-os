@@ -35,6 +35,11 @@ your own GitHub OAuth app. This guide walks you through the process.
      (replace the host with your `PUBLIC_BASE_URL` when not running locally)
 4. Click **Register application**
 
+GitHub enables expiring user tokens by default for OAuth apps registered since August 2026
+(**Optional features** in the app's settings). The gatekeeper supports both kinds: it refreshes an
+expiring token shortly before its eight hours run out, and asks the user to reconnect only once
+GitHub rejects the refresh token itself (unused for six months, or revoked).
+
 ### Step 2: Generate a Client Secret
 
 On the app's settings page after registration:

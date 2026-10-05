@@ -7,10 +7,10 @@ const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 /**
  * The suite that has to run in workerd, because what it covers -- the session-side git-cache
- * wiring (where every commit id a read returns must be advertised) and the push action's
- * queue/simulate/apply/revert flow on the real gatekeeper Durable Object -- is built on
- * `RpcTarget`, `RpcStub`, and `DurableObject` props. The sibling `vitest.config.ts` keeps the
- * pure-logic tests in Node, where they are far cheaper.
+ * wiring (where every commit id a read returns must be advertised), the push action's
+ * queue/simulate/apply/revert flow on the real gatekeeper Durable Object, and the account's
+ * credential refresh and expiry -- is built on `RpcTarget`, `RpcStub`, and `DurableObject` props.
+ * The sibling `vitest.config.ts` keeps the pure-logic tests in Node, where they are far cheaper.
  */
 export default defineConfig({
   plugins: [
@@ -24,6 +24,8 @@ export default defineConfig({
         modulesRules: [
           { type: "Text", include: ["**/*.txt", "**/*.svg"] },
         ],
+        // Fake OAuth client credentials, so the account's code exchange and refresh can run.
+        bindings: { CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret" },
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITHUB_GATEKEEPER: { className: "GitHubGatekeeperImpl", useSQLite: true },

@@ -16,9 +16,9 @@ Keys:
 
 - `callback` -> stored `GatekeeperConnectCallback` fetcher for the connected Workshop account.
 - `nonce` -> `{ value: string, expiresAt: number, stage: "initiation" | "oauth" }`.
-- `accessToken` -> GitHub OAuth access token string.
-- `scopes` -> `string[]` of granted OAuth scopes.
-- `expiredNotified` -> boolean guard so `credentialsExpired()` is only sent once per expired credential set.
+- `credentials` -> the live `GitHubOAuthGrant`, `{ accessToken, scopes, refreshToken?, expiresAt? }`, owned by the kit's `CredentialCoordinator` along with its `credentials:*` fence keys. `refreshToken` and `expiresAt` are present only for an expiring grant (GitHub's default for OAuth apps since August 2026): its access token lasts eight hours and is refreshed shortly before it expires, and each refresh rotates both tokens.
+- `accessToken`, `scopes` -> the layout from before expiring grants were supported, migrated into `credentials` on first read and then deleted.
+- `expiredNotified`, `expiredNotifiedArm` -> the kit's expiry latch, so `credentialsExpired()` is only sent once per dead grant. Every credential replacement re-arms it.
 - `reconnecting` -> boolean flag indicating an in-progress reconnect flow.
 
 No per-user SQL tables are used.
