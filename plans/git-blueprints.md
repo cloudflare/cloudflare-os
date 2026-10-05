@@ -716,6 +716,8 @@ Load the `frontend-conventions` skill before starting.
 
 The same rules as Part 1: kernel commits first and apart from the UI, each commit passing the tests of the packages it modifies and only those, and no shims in between. The frontend stops compiling at commit 4, where `messageCount` goes, and is fixed in commit 6.
 
+**Status: commits 1 to 8 are implemented.**
+
 Commit 1 comes first because commit 3 writes the first two-parent commit that merged no release. From then on a reader that took every other parent for one would publish a chat's snapshot.
 
 ### 1. `workshop-backend`: a commit that merges a blueprint release says so
