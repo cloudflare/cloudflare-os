@@ -6,8 +6,7 @@ type UiFeatureFlagDefinition = {
 
 /** UI feature flags resolved by `workshop-backend` for `workshop-frontend`. */
 export const UI_FEATURE_FLAGS = [
-  // Replace this placeholder with the first real feature flag.
-  { key: "placeholder-flag", dev: false, default: false },
+  { key: "spaces", dev: true, default: false },
 ] as const satisfies readonly UiFeatureFlagDefinition[];
 
 type UiFeatureFlag = (typeof UI_FEATURE_FLAGS)[number];
