@@ -1657,7 +1657,7 @@ describe("applying a blueprint to a gadget", () => {
     // A file of 200K characters, whose every line both sides change: the conflict holds all
     // three versions, 600K characters in all, which is more than a file may.
     let [base, theirs, ours] =
-        ["aaaaa", "bbbbb", "ccccc"].map(word => `${word.repeat(20)}\n`.repeat(2000));
+        ["aaaaa", "bbbbb", "ccccc"].map(word => `${word.repeat(200)}\n`.repeat(200));
     let alice = await publishVersions("Alice's",
         [{ ...V1, "big.js": base }, { ...V1, "big.js": theirs }]);
     republish(alice, 0);

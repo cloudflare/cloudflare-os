@@ -442,7 +442,7 @@ describe("threeWayMerge", () => {
 
   it("reports a file both sides changed that is too large to merge, in place of merging it", () => {
     // Each version fits in a file, but the conflict holds all three.
-    let lines = (word: string) => `${word.repeat(25)}\n`.repeat(2000);
+    let lines = (word: string) => `${word.repeat(250)}\n`.repeat(200);
     // Fits as text, but not as a blob: each "€" takes three bytes.
     let wide = `${"€".repeat(399)}\n`.repeat(1000);
     let result = threeWayMerge(

@@ -1200,7 +1200,7 @@ describe("updateChatFromMainline", () => {
   describe("refuses a merge that needs a file too large to hold", () => {
     // A file of 200K characters, whose every line both sides change: the conflict holds all
     // three versions, 600K characters in all, which is more than a file may.
-    const lines = (word: string) => `${word.repeat(25)}\n`.repeat(2000);
+    const lines = (word: string) => `${word.repeat(250)}\n`.repeat(200);
     // Under the text limit, but a blob of more than 1 MiB: each "€" takes three bytes.
     const wide = `${"€".repeat(399)}\n`.repeat(1000);
 
