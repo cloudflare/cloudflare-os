@@ -39,6 +39,9 @@ class FakeGitHub {
   readonly tokenRequests: Record<string, string>[] = [];
   /** Bearer tokens presented to the REST API, in order. */
   readonly apiTokens: string[] = [];
+  /** Access tokens revoked through `DELETE /applications/{client_id}/token`, in order. */
+  readonly revoked: string[] = [];
+  onRevoke: (token: string) => void | Promise<void> = () => {};
   respondToken: (params: Record<string, string>) => Response | Promise<Response> =
     () => json({ error: "unexpected_token_request" }, 500);
   respondApi: (token: string) => Response | Promise<Response> =
@@ -69,7 +72,10 @@ class FakeGitHub {
       this.apiTokens.push(token);
       return await this.respondApi(token);
     }
-    if (url.hostname === "api.github.com" && request.method === "DELETE") {
+    if (url.pathname === "/applications/test-client/token" && request.method === "DELETE") {
+      const token = (await request.json<{ access_token: string }>()).access_token;
+      this.revoked.push(token);
+      await this.onRevoke(token);
       return new Response(null, { status: 204 });
     }
     throw new Error(`unexpected request: ${request.method} ${request.url}`);
@@ -216,6 +222,29 @@ describe("UserAccount with an expiring grant", () => {
     expect(await account.getAccessToken()).toBe("gho_2");
     expect(events()).toEqual(["complete"]);
   });
+
+  it("revokes a refresh that lands while a disconnect is revoking", async () => {
+    const github = new FakeGitHub();
+    const { account } = await connect(github, tokens(1, NEARLY_EXPIRED));
+    const release = Promise.withResolvers<void>();
+    github.respondToken = async () => {
+      await release.promise;
+      return json(tokens(2));
+    };
+    const read = rejection(account.getAccessToken());
+    // The refresh lands while the disconnect waits on GitHub to revoke the old token.
+    github.onRevoke = async token => {
+      if (token !== "gho_1") return;
+      release.resolve();
+      await read.catch(() => undefined);
+    };
+    await vi.waitUntil(() => github.tokenRequests.length > 0);
+    await account.revoke();
+
+    expect(isCredentialsExpired(await read)).toBe(true);
+    expect(github.revoked).toEqual(["gho_1", "gho_2"]);
+    expect(isCredentialsExpired(await rejection(account.getAccessToken()))).toBe(true);
+  });
 });
 
 describe("UserAccount with a non-expiring grant", () => {
@@ -241,6 +270,25 @@ describe("UserAccount with a non-expiring grant", () => {
     expect(await account.getAccessToken()).toBe("gho_legacy");
     expect(await account.getScopes()).toEqual(["repo"]);
     expect(github.tokenRequests).toEqual([]);
+  });
+
+  it("tells the Workshop of a death that a grant stored before refresh latched", async () => {
+    // That layout set its expiry latch before delivering the notice, so a failed delivery left
+    // the account showing as connected.
+    const github = new FakeGitHub();
+    const id = env.USER_ACCOUNT.newUniqueId();
+    await runInDurableObject(env.USER_ACCOUNT.get(id), async (_instance, state) => {
+      state.storage.kv.put("callback",
+        exportsOf(state).TestConnectCallback({ props: { name: "latched-legacy" } }));
+      state.storage.kv.put("accessToken", "gho_legacy");
+      state.storage.kv.put("scopes", ["repo"]);
+      state.storage.kv.put("expiredNotified", true);
+    });
+    github.respondApi = () => json({ message: "Bad credentials" }, 401);
+
+    expect(await describeAccount(id.toString())).toEqual(
+      { error: "GitHub credentials have expired or been revoked. Please reconnect the account." });
+    expect(connectCallbackEvents.get("latched-legacy")).toEqual(["credentialsExpired"]);
   });
 
   it("reports a rejected token to the Workshop as expired, once", async () => {

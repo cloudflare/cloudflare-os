@@ -24,7 +24,9 @@ import {
   ActionDescriptionBuilder, buildDescription, codeSpan, type RenderedDescription,
 } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
-import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import {
+  clearCredentialExpiryLatch, notifyCredentialsExpiredOnce,
+} from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   CredentialCoordinator, isCredentialsExpired, type RejectionVerdict,
@@ -1404,7 +1406,12 @@ export class UserAccount extends DurableObject<Env> {
     legacyKeys: ["accessToken", "scopes"],
     upgrade: kv => {
       const accessToken = kv.get<string>("accessToken");
-      return accessToken ? { accessToken, scopes: kv.get<string[]>("scopes") ?? [] } : undefined;
+      if (!accessToken) return undefined;
+      // That layout latched its expiry notice before delivering it, so a failed delivery left a
+      // dead account showing as connected. Re-arm the latch as the grant migrates: at worst the
+      // Workshop hears of one death twice.
+      clearCredentialExpiryLatch(this.ctx.storage.kv);
+      return { accessToken, scopes: kv.get<string[]>("scopes") ?? [] };
     },
     // GitHub revokes one token at a time (see revokeOAuthToken), so dropping a refresh that a
     // reconnect or revoke overtook cannot touch the grant that won.
@@ -1442,7 +1449,6 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("expiredNotified", false);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -1567,10 +1573,12 @@ export class UserAccount extends DurableObject<Env> {
 
   async revoke(): Promise<void> {
     const grant = this.#creds.stored();
-    if (grant) await this.#revokeToken(grant.accessToken);
-
+    // Fence before the first await: a refresh landing later is then discarded and its tokens
+    // revoked (see discardMint), rather than stored after this capture and deleted unrevoked.
+    this.#creds.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    if (grant) await this.#revokeToken(grant.accessToken);
   }
 
   async #revokeToken(accessToken: string): Promise<void> {
