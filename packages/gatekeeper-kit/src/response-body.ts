@@ -1,4 +1,4 @@
-/** Strict byte-capped response-body decoding. */
+/** Strict byte-capped body decoding. */
 
 import { requirePositiveInt } from "./positive-int";
 
@@ -9,11 +9,12 @@ export const MAX_RESPONSE_BYTES = 1024 * 1024;
 export class ResponseTooLargeError extends Error {}
 
 /**
- * Reads a response body up to a byte limit. Oversized bodies are rejected rather than truncated and
- * cancelled immediately; `Content-Length` is only an early check, not the authority.
- * @param response Response to consume.
+ * Reads a response body, or an inbound request body such as a connect form, up to a byte limit.
+ * Oversized bodies are rejected rather than truncated and cancelled immediately; `Content-Length`
+ * is only an early check, not the authority.
+ * @param response Response or request to consume.
  * @param maxBytes Maximum body bytes.
- * @returns The decoded response text.
+ * @returns The decoded body text.
  *
  * @example
  * ```ts
@@ -24,7 +25,7 @@ export class ResponseTooLargeError extends Error {}
  * ```
  */
 export async function readTextCapped(
-  response: Response, maxBytes: number = MAX_RESPONSE_BYTES,
+  response: Request | Response, maxBytes: number = MAX_RESPONSE_BYTES,
 ): Promise<string> {
   requirePositiveInt("maxBytes", maxBytes);
   const tooLarge = `The server's response exceeded ${maxBytes} bytes.`;

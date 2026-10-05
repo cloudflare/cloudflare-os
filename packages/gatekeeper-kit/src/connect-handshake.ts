@@ -1,4 +1,4 @@
-/** The initiation-to-OAuth nonce handoff for gatekeeper connect flows. */
+/** Connect-flow handshake state: the initiation-to-OAuth nonce handoff and the once-only `complete()`. */
 
 import {
   generateNonce,
@@ -14,6 +14,9 @@ export type ConnectNonceKv = KvMutable;
 
 /** KV key holding the in-flight connect nonce. Unchanged from every current gatekeeper. */
 export const NONCE_KEY = "nonce";
+
+// Unchanged from the gatekeepers that already record the attempt.
+const CONNECT_ATTEMPTED_KEY = "connectAttempted";
 
 /** Stages in the two-step connect handshake. */
 export type ConnectStage = "initiation" | "oauth";
@@ -114,4 +117,34 @@ export function claimOAuth<Extra extends object = Record<never, never>>(
 
   kv.delete(NONCE_KEY);
   return stored;
+}
+
+/**
+ * Whether this account has called `GatekeeperConnectCallback.complete()`. Each call stages another
+ * Workshop ticket, and an unredeemed ticket revokes the account, so a second call can destroy the
+ * connection the first made, even when the first threw or lost its reply. Refuse the connect when
+ * this is true.
+ * @param kv Durable Object storage.
+ * @returns Whether the account's one `complete()` was attempted.
+ */
+export function isConnectAttempted(kv: ConnectNonceKv): boolean {
+  return kv.get<boolean>(CONNECT_ATTEMPTED_KEY) === true;
+}
+
+/**
+ * Records the account's one `complete()` attempt. Re-check `isConnectAttempted`, write the live
+ * credential, and mark with no `await` among them, then await `complete()`. Never cleared; revoking
+ * the account deletes it with the rest of storage.
+ * @param kv Durable Object storage.
+ *
+ * @example
+ * ```ts
+ * if (isConnectAttempted(kv)) return refuse();
+ * creds.connect(grant);
+ * markConnectAttempted(kv);
+ * const handoff = await callback.complete(user);
+ * ```
+ */
+export function markConnectAttempted(kv: ConnectNonceKv): void {
+  kv.put(CONNECT_ATTEMPTED_KEY, true);
 }

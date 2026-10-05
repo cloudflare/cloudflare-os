@@ -24,7 +24,11 @@ journals and caches require a named keyspace; and `connect()` can fence the OAut
 window. The observation "set" vocabulary is now "collection".
 
 The browser-bound completion page and reconnect credential escrow are shipped Layer-1 leaves used
-by production gatekeepers. Layer 2 remains unimplemented.
+by production gatekeepers. Layer 2 remains unimplemented. A 2026-10-05 pass over both corpora added
+the once-only `complete()` marker (§4.2), moved supabase, linear, spotify, zoominfo and
+homeassistant onto `./credential-expiry` (each latched before notifying, so one failed callback
+silenced expiry for good), capped homeassistant's and gatekeeper-mcp's connect-form reads with
+`readTextCapped`, and recorded the candidates it did not build in §11.
 
 Google consumes the preview OAuth leaf; Layer 2 (§5, the assembly) and §7 steps 8–16 are still
 proposal, so no gatekeeper has been ported to the assembly and none of §5's ergonomics have met a
@@ -62,7 +66,10 @@ layers**:
 
 The escape hatch is structural. A gatekeeper that outgrows the assembly implements the canonical
 `workshop-shared/gatekeeper` interfaces by hand and keeps using whatever leaf modules still fit;
-`packages/mcp-shared` already proves the two styles coexist in one repo.
+`packages/mcp-shared` already proves the two styles coexist in one repo. The same rule decides
+what the kit admits: it abstracts behavior several gatekeepers share under one contract, and
+gives an unusual gatekeeper plain TypeScript seams (hooks, callbacks, hand-written interfaces)
+rather than a variant shaped for one provider.
 
 Provider *policy* and shared *sequencing* are deliberately separated. The kit never decides what a
 provider error means or which scopes to request; it does own the order of operations — nonce
@@ -74,7 +81,7 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
 ### v1 scope decisions (agreed)
 
 - **New package `@gadgets/gatekeeper-kit`**, private, non-deployable (no `wrangler.jsonc`).
-  `@gadgets/backend-utils` is not touched; it stays a logging/observability package with no
+  `@gadgets/observability` is not touched; it stays a logging/observability package with no
   `workshop-shared` dependency.
 - **Layer 2 parity goal: port `gatekeeper-supabase`** to the assembly, keeping every export name and
   the entire `wrangler.jsonc` (including migrations) byte-identical, and keeping live account DO
@@ -210,6 +217,21 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 
+```ts
+export function isConnectAttempted(kv): boolean;
+export function markConnectAttempted(kv): void;   // key "connectAttempted", as already stored
+```
+
+An account calls `GatekeeperConnectCallback.complete()` at most once. Each call stages another
+Workshop ticket (`stagePendingConnect`), and an unredeemed ticket revokes the account
+(`#dropPendingConnect`), so a second call can destroy the connection the first made, even one that
+threw or lost its reply. A flow that claimed a single-use nonce is already once-only; a link or form
+with none (internal gitlab, sentry, http, and eight more, plus `gatekeeper-shared`'s CF Access flow)
+checks early, then re-checks, writes the live credential, and marks in one synchronous section
+before awaiting `complete()`. Check and mark stay separate because every copy folds the check into a
+provider condition (an existing token, a live grant). The marker is never cleared; `deleteAll()` on
+revoke removes it with the account.
+
 ### 4.3 `./connect-pages`
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
@@ -242,7 +264,10 @@ HTML. A **missing** `Origin` is refused, not waved through: browsers send it on 
 absence means a non-browser caller on a URL whose whole authority is that a browser followed a
 link. This is the third copy of the same check — Marketo's `checkMutation`, and
 `workshop-backend/src/client-errors.ts:100-104` — and homeassistant, which accepts POSTs on its
-connect route, has none.
+connect route, has none. A page served `Referrer-Policy: no-referrer`, as `htmlResponse` pages are,
+submits its forms with `Origin: null` (checked in Chromium 154), so a guarded HTML form is served
+with `Referrer-Policy: same-origin`, which still keeps the bearer URL out of cross-origin `Referer`.
+`fetch()` posts keep their `Origin` under either policy, which is why Marketo's JSON flow works.
 
 The expected `origin` is **required and explicit** rather than derived from `req.url` (the shape
 client-errors uses): the form's action URL is built from the configured base URL, so the legitimate
@@ -293,7 +318,7 @@ RPC leaves a crash window in which the latch is set but nobody was notified, per
 silencing the account. With mark-on-success, the worst crash outcome is a duplicate notification,
 which the `GatekeeperConnectCallback` contract explicitly tolerates. Failures log `warn` with
 event `credentials.expiry.notify.failed` and the caller's `vendorId` via
-`@gadgets/backend-utils/logger` (component `"gatekeeper.connect"`). Existing stored `true` latch
+`@gadgets/observability/logger` (component `"gatekeeper.connect"`). Existing stored `true` latch
 values remain honored.
 `CredentialCoordinator.connect()` calls `clearCredentialExpiryLatch` itself before installing a new
 connection; the standalone export remains for hand-written account implementations.
@@ -1928,7 +1953,7 @@ for no new consumer.
 ```ts
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 export class ResponseTooLargeError extends Error {}
-export function readTextCapped(response: Response, maxBytes?: number): Promise<string>;
+export function readTextCapped(response: Request | Response, maxBytes?: number): Promise<string>;
 ```
 
 The one thing the competing `gatekeeper-factory-research` branch surfaced that belongs here — and it
@@ -2398,7 +2423,9 @@ everything else rethrows untouched. A config with provider evidence widens that 
 ### 5.4 `./auth-token`
 
 `tokenAuth<Creds, E>(config)` for user-pasted secrets (the shape internal gatekeepers like sentry
-need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE`, fields from
+need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE` and served with
+`Referrer-Policy: same-origin` (under `htmlResponse`'s `no-referrer` the browser sends
+`Origin: null` and every submission 403s, §4.3), fields from
 `config.fields: { name, label, secret?: boolean }[]`, a hidden `state`, posting to
 `${baseUrl}/connect/${accountId}`; `routes` handles that POST, first calls
 `connectMutationError(req, { origin: baseUrl, contentType: "application/x-www-form-urlencoded" })`
@@ -2795,7 +2822,7 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    `test:run: "vitest run && vitest run -c vitest.worker.config.ts"`,
    `test:watch:node: "vitest"`, and
    `test:watch:workerd: "vitest -c vitest.worker.config.ts"`; dependencies
-   `@gadgets/workshop-shared` and `@gadgets/backend-utils` (`workspace:*`) plus `jose`; devDependencies
+   `@gadgets/workshop-shared` and `@gadgets/observability` (`workspace:*`) plus `jose`; devDependencies
    `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`, `typescript`, and `vitest`
    (`catalog:`) plus `@gadgets/scripts` (`workspace:*`)). `build` (`tsc`) and `clean`
    (`rm -rf dist`, uncached) are Vite+ tasks, not package scripts. As landed the
@@ -3168,17 +3195,17 @@ preserved so the work is additive when its trigger port lands. Each entry names 
 evidence, and the trigger.
 
 - **Expiry-derived consumer credential cache** behind `CredentialSource`'s `get`/`run` surface.
-  Google caches a fetched token until expiry − 60s (`google/src/auth-retry.ts:181-213`) and slack
-  until expiry − 300s (`slack.ts:510-519`) — freshness derived from the credential rather than a
-  fixed TTL. *Trigger:* the google or slack port. Add an `expiresAt`-aware variant rather than
-  reintroducing a TTL knob; it needs an `expiresAt` projection the stored/public credential split
-  does not carry today (§4.6).
-- **Split-key handshake variant** behind the `putInitiation`/`advanceToOAuth`/`claimOAuth`
-  operations. Internal ironclad stores `initiationNonce` and `oauthNonce` under two keys
-  (`ironclad.ts:129-131,1634-1692`) where the kit uses one `nonce` record. *Trigger:* the ironclad
-  port — either a variant module or a one-time key migration. Salesforce
-  (`salesforce.ts:150-152,1210-1269`) already matches the kit shape exactly, PKCE verifier in the
-  record.
+  Google caches a fetched token until expiry − 60s (`google/src/auth-retry.ts`, `AccessTokenCache`)
+  and slack until expiry − 300s (`slack.ts`, `ACCESS_TOKEN_EXPIRY_SAFETY_MS`) — freshness derived
+  from the credential rather than a fixed TTL. *Trigger:* the google or slack port. Add an
+  `expiresAt`-aware variant rather than reintroducing a TTL knob; it needs an `expiresAt`
+  projection the stored/public credential split does not carry today (§4.6).
+- **Split-key handshake layout.** Internal ironclad stores `initiationNonce` and `oauthNonce` under
+  two keys (`ironclad.ts:129-131,1634-1692`) where the kit uses one `nonce` record. That is one
+  gatekeeper's layout, not a second contract, so the kit adds no variant for it. *Trigger:* the
+  ironclad port, which either migrates its keys once or keeps its hand-written handshake.
+  Salesforce (`salesforce.ts:150-152,1210-1269`) already matches the kit shape exactly, PKCE
+  verifier in the record.
 - **Per-action-id claim serialization** as an alternative to the facet's global `SerialTaskQueue`.
   The durable claim itself is now in the journal (§4.8, `claimBeforeApply`); what stays deferred is
   its granularity. `mcp-shared` stamps `applying` synchronously before awaiting
@@ -3203,8 +3230,50 @@ evidence, and the trigger.
   `OAuthClientOptions`. The internal Access client discovers its endpoints and registers itself,
   then speaks the same token protocol `./oauth-client` implements (§4.19); discovery would produce
   the endpoints and DCR the `OAuthClientAuth`, and a registered client is the case where
-  `invalid_client` is evidence for `isGrantDeath`. *Trigger:* the internal Access port, whose
-  submodule bump also migrates the internal OAuth gatekeepers to the connect handoff.
+  `invalid_client` is evidence for `isGrantDeath`. Only Access needs this outside the MCP SDK, so
+  until a second gatekeeper does, the Access port discovers and registers on its own and passes the
+  results into `OAuthClientOptions`. No kit change is needed for that. *Trigger:* a second
+  gatekeeper needing discovery or registration outside the MCP SDK.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
   interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
   Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth`) — the same doctrine at the auth seam.
+
+## 11. Candidate leaves reviewed and not built
+
+The 2026-10-05 pass looked for provider-independent plumbing the kit lacks. The leaf candidates are
+behavior several gatekeepers share that does not yet justify a leaf. Behavior only one gatekeeper
+has is not a candidate (§1). The first entry is different: it is a guard in the Workshop kernel,
+recorded here because the pass found it. Each entry names why it waits and what would revive it.
+
+- **Workshop-side once-only `complete()`.** The kernel could refuse a second `stagePendingConnect`
+  for one account id and protect every gatekeeper at once. No gatekeeper reaches a second
+  `complete()` today (§4.2). The guard would have to reserve the id synchronously, before
+  `describe()` is awaited, or two concurrent calls both pass it. *Trigger:* a gatekeeper found able
+  to call `complete()` twice.
+- **Connect-form reader** in `./connect-pages`. Homeassistant and gatekeeper-mcp read their forms
+  through `readTextCapped` (16 KiB): each route reads the body before the account checks the nonce,
+  so anyone holding one connect URL could otherwise buffer a request body as large as the plan
+  allows (5 GB on Enterprise) into a 128 MB isolate. Internal sentry and http still call
+  `formData()`. A kit reader would pair the cap with `connectMutationError`, but that guard does not
+  fit mcp's `htmlResponse` form (§4.3). *Trigger:* `tokenAuth` (§5.4), which owns the form read.
+- **Token memo** for `withAuthRetry`'s `getToken({ forceRefresh, staleToken })`. Zylo, the only
+  production caller, ignores `staleToken` and does not coalesce: redundant mints, not wrong
+  results, and `SingleFlight` fixes it locally. Google coalesces at the account (§4.13). *Trigger:*
+  a second consumer outside `CredentialSource`.
+- **`Retry-After` parser.** Slack, Google, Cloudflare observability and internal Jira parse it under
+  different fallbacks and caps; internal Zip and NetSuite pass it through. *Trigger:* the next
+  hand-written retry loop.
+- **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
+  with different policies. *Trigger:* a third producer.
+- **Simulated-item cursor overlay.** cf-wiki and GitHub's provisional items order differently.
+  *Trigger:* two kit-cursor ports writing the same wrapper.
+- **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
+  granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
+  that records requested and granted scopes the way Google does.
+- **Git push simulation.** GitHub walks first parents only; GitLab also collects side parents and
+  cascades a rejection through stacked pushes. *Trigger:* a third git gatekeeper. `parsePatch` dedupes
+  into `./git-diff` with the GitLab gatekeeper, keeping GitLab's trailing-newline handling.
+
+Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
+Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
+general retry executor (the policies differ, not the loops).

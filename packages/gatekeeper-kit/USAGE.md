@@ -76,6 +76,20 @@ return htmlResponse(connectHandoffPageHtml(handoff));
 Without `ifGeneration`, `connect()` writes unconditionally. That remains appropriate for a pasted
 token or form submission with no round trip to fence.
 
+Call `complete()` at most once per account. Each call stages another Workshop ticket, and an
+unredeemed ticket revokes the account, so a second call can destroy the connection the first made,
+even one that threw or lost its reply. A flow that claimed a single-use nonce reaches `complete()`
+once already. A flow whose link or form has no single-use nonce records the attempt: refuse when
+`isConnectAttempted(kv)` (early, to skip provider work, and again where the live credential is
+written), then mark it in that same synchronous section:
+
+```ts
+if (isConnectAttempted(kv)) return refuse();
+this.#creds.connect(grant);
+markConnectAttempted(kv);
+const handoff = await callback.complete(user, credentialsRefreshabilityExpiry);
+```
+
 RPC rejection does not prove that `complete()` failed. Workshop may already hold a pending handoff,
 or a sign-in may already have linked the account, so a blind rollback can delete credentials the
 Workshop is about to activate. The kit has no mechanism for this. An account that keeps its grant
@@ -811,8 +825,9 @@ cannot exceed the provider's page cap.
 - Use `isNoAccessError` or `probeAccess` for observer ACL checks. Do not use `isNoAccessError` as
   `CredentialSource.isAuthError`; it accepts 403 and 404.
 - Use `readTextCapped` for every textual, JSON, or error body — a provider can return more bytes
-  than the Worker can hold. It decodes UTF-8 and buffers, so binary downloads and streaming
-  protocols (SSE, Git) need their own byte-preserving limit instead.
+  than the Worker can hold — and for a connect form read before its nonce is checked. It decodes
+  UTF-8 and buffers, so binary downloads and streaming protocols (SSE, Git) need their own
+  byte-preserving limit instead.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the

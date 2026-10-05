@@ -71,7 +71,7 @@ import {
 | Subpath | Purpose | Use it when |
 | --- | --- | --- |
 | `./connect-nonce` | Nonce generation, expiry, and constant-time comparison. | A connect flow mints or checks its own nonce. The handshake and credential modules already use it. |
-| `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage. | A connect link or form redirects through an OAuth provider. |
+| `./connect-handshake` | Two-stage `initiation` to `oauth` nonce storage, and the once-only `complete()` marker. | A connect link or form redirects through an OAuth provider, or has no single-use nonce to keep `complete()` from running twice. |
 | `./credential-stage` | Durable reconnect escrow, exact commit, and exact-stage cleanup. | A reconnect must remain inert until Workshop commits the completed stage. |
 | `./connect-pages` | Hardened connect HTML, escaping, and browser mutation guards. | A gatekeeper serves HTML from its own origin. |
 | `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
@@ -89,7 +89,7 @@ import {
 | `./preview-oauth` | Signed OAuth state and stable-to-preview callback relay. | Preview Workers share one callback registered with the OAuth provider. |
 | `./endpoint` | User-supplied provider endpoint normalization. | A user enters a self-hosted provider URL. |
 | `./http-errors` | HTTP access-error classification and ACL probes. | A verifier distinguishes no access from provider failure. |
-| `./response-body` | Strict byte-capped response decoding. | A gatekeeper reads any provider response body. |
+| `./response-body` | Strict byte-capped body decoding. | A gatekeeper reads any provider response body, or a connect form posted to a route that reads the body before checking the nonce. |
 
 ## Internal modules
 

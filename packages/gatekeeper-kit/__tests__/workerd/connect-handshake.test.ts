@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   advanceToOAuth,
   claimOAuth,
+  isConnectAttempted,
+  markConnectAttempted,
   putInitiation,
   type ConnectNonceKv,
   type StoredNonce,
@@ -95,5 +97,19 @@ describe("two-stage connect handshake", () => {
     // ...and is single-use, so a replay of the same URL finds nothing.
     expect(claimOAuth(kv, "oauth", 100)).toBeNull();
     expect(kv.get("nonce")).toBeUndefined();
+  });
+});
+
+describe("once-only complete()", () => {
+  it("shares the connectAttempted marker gatekeepers already store", () => {
+    // A hand-rolled account's stored marker must keep its connect closed after adopting the kit.
+    const legacy = makeKv();
+    legacy.put("connectAttempted", true);
+    expect(isConnectAttempted(legacy)).toBe(true);
+
+    const kv = makeKv();
+    expect(isConnectAttempted(kv)).toBe(false);
+    markConnectAttempted(kv);
+    expect(kv.get("connectAttempted")).toBe(true);
   });
 });

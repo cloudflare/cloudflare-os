@@ -19,6 +19,7 @@ import {
 import { buildDescription, type RenderedDescription } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import {
   SpotifyApi,
   SpotifyApiError,
@@ -519,7 +520,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -609,7 +610,7 @@ export class UserAccount extends DurableObject<Env> {
     this.ctx.storage.kv.put("accessToken", credentials.accessToken);
     this.ctx.storage.kv.put("accessTokenExpiresAt", credentials.accessTokenExpiresAt);
     this.ctx.storage.kv.put("scopes", credentials.scopes);
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
   }
 
   async getAccessToken(): Promise<string> {
@@ -643,10 +644,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async noteCredentialsExpired(): Promise<void> {
-    if (this.ctx.storage.kv.get<boolean>("expiredNotified")) return;
-    this.ctx.storage.kv.put("expiredNotified", true);
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    if (callback) await callback.credentialsExpired();
+    await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
+      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), "spotify");
   }
 
   async alarm(): Promise<void> {

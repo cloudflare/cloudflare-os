@@ -305,9 +305,10 @@ export class UserAccount extends DurableObject<Env> {
       throw new Error("Cloudflare OAuth exchange returned no refresh token.");
     }
 
-    // Fail closed for the same reason as `beginOAuthFlow`: recording the full scope list here when
-    // the provider omitted `scope` would advertise an observability grant that was never made, and
-    // `ensureResources` would then short-circuit into a binding that 403s with no way to fix it.
+    // An omitted `scope` means the grant is exactly what this flow requested (RFC 6749 §5.1), so
+    // record the request, never the full capability set: a billing-only flow must not advertise an
+    // observability grant, or `ensureResources` would short-circuit into a binding that 403s with no
+    // way to fix it. A missing request fails closed to billing, as in `beginOAuthFlow`.
     const grant: StoredGrant = {
       refreshToken: tokens.refreshToken,
       accessToken: { token: tokens.accessToken, expires: tokens.expiresAt ?? 0 },

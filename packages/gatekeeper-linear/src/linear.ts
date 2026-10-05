@@ -22,6 +22,7 @@ import {
 } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import type {
   Cursor,
   LinearWorkspace,
@@ -537,7 +538,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -599,7 +600,7 @@ export class UserAccount extends DurableObject<Env> {
       handoff = await callback.reconnectComplete(stageId);
     } else {
       this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
-      this.ctx.storage.kv.put("expiredNotified", false);
+      clearCredentialExpiryLatch(this.ctx.storage.kv);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
@@ -618,7 +619,7 @@ export class UserAccount extends DurableObject<Env> {
     const grant = commitStagedCredentials<LinearOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.ctx.storage.kv.put<LinearOAuthGrant>("grant", grant);
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
   }
 
   /** Returns a currently-valid access token, refreshing it first if it is about to expire. */
@@ -653,19 +654,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async noteCredentialsExpired(): Promise<void> {
-    if (this.ctx.storage.kv.get<boolean>("expiredNotified")) return;
-    this.ctx.storage.kv.put("expiredNotified", true);
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    if (!callback) return;
-    // Best-effort: never let a failed/disposed callback RPC mask the real error the caller is about
-    // to throw (e.g. the auth error that triggered this notification).
-    try {
-      await callback.credentialsExpired();
-    } catch (err) {
-      logger.warn("failed to notify credential expiry", {
-        event: "credentials.expiry.notify.failed", error: err,
-      });
-    }
+    await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
+      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
   }
 
   async alarm(): Promise<void> {

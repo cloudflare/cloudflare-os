@@ -550,6 +550,9 @@ importers:
       '@gadgets/configurator-ui':
         specifier: workspace:*
         version: link:../configurator-ui
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/mcp-shared':
         specifier: workspace:*
         version: link:../mcp-shared
