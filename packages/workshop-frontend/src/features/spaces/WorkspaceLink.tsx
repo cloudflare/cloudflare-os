@@ -4,8 +4,8 @@ import type { WorkspaceAddress } from './workspaceAddress'
 
 /**
  * A link that opens a workspace: at its address within a space when the caller knows one, and at
- * /workspace/<id> otherwise. Both lead to the same editor, and whether it opens is the
- * workspace's to decide either way.
+ * /workspace/<id> otherwise. Both lead to the same editor, which opens the workspace under the
+ * same authorization either way.
  */
 export const WorkspaceLink = ({ id, address, className, onClick, children }: {
   id: string

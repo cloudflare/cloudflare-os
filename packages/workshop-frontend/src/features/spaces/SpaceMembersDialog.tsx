@@ -14,7 +14,7 @@ import { useDialogSelectPortalContainer } from '../../useDialogSelectPortalConta
 import { SpaceDialogFrame } from './SpaceDialogFrame'
 import { SpaceMemberList, type MemberFailure } from './SpaceMemberList'
 import { SpaceRoleSelect } from './SpaceRoleSelect'
-import { assignableRoles, SPACE_ROLE_LABELS } from './spaceRoles'
+import { assignableRoles, SPACE_ROLE_LABELS, SPACE_ROLES_DESCRIPTION } from './spaceRoles'
 import { useSpace } from './useSpace'
 
 const NO_MEMBERS: SpaceMemberInfo[] = []
@@ -35,10 +35,11 @@ const reasonNotAdded = (err: unknown) => {
 }
 
 /**
- * A space's members and their roles. Every member sees the list and can leave the space, except a
- * personal space's owner. An admin can also add people with a role, change a member's role and
- * remove a member. The server decides each of those when it is asked, so a refusal (the last
- * admin, a personal space's owner, a user with no account) is shown where the change was made.
+ * A space's members and their roles, with what a role lets a member do in the workspaces the
+ * space lists. Every member sees the list and can leave the space, except a personal space's
+ * owner. An admin can also add people with a role, change a member's role and remove a member.
+ * The server decides each of those when it is asked, so a refusal (the last admin, a personal
+ * space's owner, a user with no account) is shown where the change was made.
  */
 export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
   spaceKey: string
@@ -230,7 +231,7 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
     <SpaceDialogFrame
       layout="list"
       title={title}
-      description="Admins manage the space’s members."
+      description={SPACE_ROLES_DESCRIPTION}
       busy={busy}
       onClose={onClose}
     >
@@ -281,6 +282,13 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
                       : composer.recipients.length > 1 ? `Add ${composer.recipients.length} people` : 'Add'}
                   </WorkshopButton>
                 </PeopleComposer>
+                {/* A personal space lists every workspace its owner has not placed in a team
+                    space, which may be more than the owner has in mind when adding someone. */}
+                {ready.info.kind === 'personal' && (
+                  <p className="mt-2 text-[12px] leading-4 text-kumo-subtle">
+                    The people you add will be able to open every workspace this space lists.
+                  </p>
+                )}
               </div>
             )}
             <SpaceMemberList

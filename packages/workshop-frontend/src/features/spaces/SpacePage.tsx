@@ -40,7 +40,8 @@ const UnlistedWorkspaces = ({ children }: { children: ReactNode }) => {
           Not listed by this space
         </h2>
         <p className="text-[12px] leading-4 text-kumo-subtle">
-          Your workspaces here that the space does not list. Its other members do not see them.
+          Your workspaces here that the space does not list. Its other members do not see them and
+          cannot open them through the space.
         </p>
       </div>
       {children}

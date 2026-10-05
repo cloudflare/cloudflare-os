@@ -114,7 +114,7 @@ export const NewSpaceDialog = ({ onClose, onCreated }: {
     <SpaceDialogFrame
       layout="form"
       title="New space"
-      description="A space groups workspaces and has members, who see its list of workspaces. You will be its first admin."
+      description="A space groups workspaces and has members, who can open the workspaces it lists. You will be its first admin."
       busy={creating}
       onClose={onClose}
     >

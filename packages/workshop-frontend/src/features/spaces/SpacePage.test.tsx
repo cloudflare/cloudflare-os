@@ -215,7 +215,8 @@ describe('a space’s page', () => {
     expect(rowTitles()).toEqual(['Notes', 'Brief', 'Private notes'])
     const unlisted = [...document.body.querySelectorAll('section')]
       .find(section => section.querySelector('h2')?.textContent === 'Not listed by this space')!
-    expect(unlisted.textContent).toContain('Its other members do not see them.')
+    expect(unlisted.textContent).toContain(
+      'Its other members do not see them and cannot open them through the space.')
     expect([...unlisted.querySelectorAll('h3')].map(title => title.textContent)).toEqual(['Private notes'])
     expect(rowOf('Private notes').getAttribute('href')).toBe('/workspace/w-private')
   })

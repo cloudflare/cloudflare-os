@@ -66,6 +66,10 @@ const roleLabels = async (label: string) =>
 const peopleField = () =>
   document.body.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')
 
+// Whether the dialog says what adding someone to a personal space gives them.
+const saysEveryWorkspaceOpens = () => document.body.textContent
+  .includes('The people you add will be able to open every workspace this space lists.')
+
 const stage = async (username: string) => {
   await type(peopleField()!, username)
   await act(async () => peopleField()!.dispatchEvent(
@@ -366,6 +370,16 @@ describe('SpaceMembersDialog', () => {
       expect(hasButton('Role of Me')).toBe(false)
       expect(hasButton('Leave space')).toBe(false)
       expect(await roleLabels('Role for the people added')).toEqual(['Build', 'Use'])
+    })
+
+    it('says that the people added will open every workspace it lists, which a team space does not', async () => {
+      await render(personalSpace(ME, 'admin'), [member(ME, 'admin')])
+      expect(saysEveryWorkspaceOpens()).toBe(true)
+
+      unmountAll()
+      await openAsAdmin()
+      expect(peopleField()).not.toBeNull()
+      expect(saysEveryWorkspaceOpens()).toBe(false)
     })
 
     it('offers no admin role for an existing member either', async () => {

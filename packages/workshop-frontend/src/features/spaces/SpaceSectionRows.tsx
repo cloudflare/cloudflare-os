@@ -20,8 +20,8 @@ const emptyLine = (section: WorkspaceSection) => {
 }
 
 /**
- * A workspace that a space lists and the user's own list does not have: another member's. The
- * listing is all that is known of it, and whether it opens is the workspace's to decide.
+ * A workspace that a space lists and the user's own list does not have: another member's, which
+ * the user may open as a member of the space. The listing is all that is known of it.
  */
 const ListedWorkspaceRow = ({ workspace, listing }: {
   workspace: SpaceWorkspaceInfo

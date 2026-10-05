@@ -23,8 +23,8 @@ const LOADING: SpaceWorkspaceState = { status: 'loading' }
 const NOT_FOUND: SpaceWorkspaceState = { status: 'not-found' }
 
 /**
- * Resolves a slug in a space (`Space.resolveWorkspace`). Resolving authorizes nothing: opening
- * the workspace it finds is still decided by that workspace.
+ * Resolves a slug in a space (`Space.resolveWorkspace`). Resolving authorizes nothing of its own:
+ * the workspace it finds opens for the user as any that the space lists does.
  *
  * The workspace an address led to stays the answer for as long as the route is at that address.
  * A session that replaces another (a reconnect) is not asked about it again: an editor open at

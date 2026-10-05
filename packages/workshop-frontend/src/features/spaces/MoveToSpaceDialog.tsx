@@ -97,7 +97,7 @@ export const MoveToSpaceDialog = ({ workspace, spaces, onClose, onMoved, onMoveF
       title="Move to space"
       description={
         `Choose the space “${workspace.title}” belongs to. `
-        + 'A space’s members see the title, owner and creation date of each workspace in it.'
+        + 'That space’s Admin and Build members will be able to build in it, and its Use members to use it.'
       }
       busy={moving}
       onClose={onClose}
