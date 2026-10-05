@@ -1,6 +1,6 @@
 // Spaces end to end over the real RPC API: a user's personal space, team spaces and their keys,
-// the member list as the one authority on who may open a space and change it, and the workspaces
-// a space lists.
+// the member list as the one authority on who may open a space and change it, the workspaces a
+// space lists, and the slug each is addressed by within it.
 //
 // A user's listing of their spaces is a record their own account keeps, which each space writes
 // before the call that changed a membership returns. So these tests read it back directly, with
@@ -19,7 +19,7 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  isValidSpaceKey, PERSONAL_SPACE_PREFIX,
+  isValidSpaceKey, PERSONAL_SPACE_PREFIX, slugify,
   type AuthenticatedApi, type Space, type SpaceInfo, type SpaceMemberInfo,
 } from "@gadgets/workshop-shared/api";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
@@ -105,6 +105,7 @@ const KEEPS_AN_ADMIN = /at least one admin/i;
 const NOT_A_MEMBER = /not a member/i;
 const OWNER_IS_ONLY_ADMIN = /only admin/i;
 const OWNER_ONLY = /only the workspace owner/i;
+const NOT_OWNER_OR_ADMIN = /owner or an admin/i;
 
 /** The ids of the workspaces `space` lists, in its order. */
 const workspaceIds = async (space: RpcStub<Space>) =>
@@ -345,7 +346,7 @@ it.concurrent("a team space lists a member's workspace once it has seen activity
   const record = await ownRecord(bob, id);
   expect(record.spaceKey).toBe(key);
   expect(entry).toEqual({
-    id, title: "Roadmap", created: record.created,
+    id, title: "Roadmap", slug: slugify("Roadmap"), created: record.created,
     owner: expect.objectContaining({ type: "user", id: bobName, name: "Bob Example" }),
   });
   // Bob's account syncs his workspaces one at a time, so by now it is past the draft's change of
@@ -478,6 +479,83 @@ it.concurrent("only its owner moves a workspace, and only where they may add; de
 
   await workspace.deleteSelf();
   expect(await workspaceIds(team)).toEqual([]);
+});
+
+it.concurrent("a titled workspace gets a slug that only setWorkspaceSlug moves, and the slugs it "
+    + "had keep resolving while the space lists it", async () => {
+  const [aliceName, bobName, carolName] = usernames("alice", "bob", "carol");
+  const [key] = teamKeys("crew");
+  using stack = new DisposableStack();
+  const alice = await newAccount(stack, aliceName);
+  const bob = await newAccount(stack, bobName);
+  const carol = await newAccount(stack, carolName);
+  using space = await alice.createSpace(key, "Crew");
+  await space.setMemberRole(bobName, "use");
+  await space.setMemberRole(carolName, "use");
+  // Bob owns both workspaces. Carol, the member who owns neither, is who reads the space.
+  using asBob = await bob.openSpace(key);
+  using asCarol = await carol.openSpace(key);
+
+  // Listed under the title it was created with, a workspace has no slug, and nothing resolves
+  // to it.
+  using workspace = await bob.newGadget(key);
+  const { id, title: placeholder } = await workspace.getMetadata();
+  await workspace.newChat("Seen activity, with no agent", null);
+  expect(await listedAs(asCarol, id, placeholder)).not.toHaveProperty("slug");
+  expect(await asCarol.resolveWorkspace(slugify(placeholder))).toBeNull();
+
+  // The first title of its own gives it the slug of that title, which another member resolves.
+  const title = "Launch Plan";
+  const slug = slugify(title);
+  await workspace.setTitle(title);
+  const entry = await listedAs(asCarol, id, title);
+  expect(entry.slug).toBe(slug);
+  expect(await asCarol.resolveWorkspace(slug)).toEqual({ workspace: entry, canonical: true });
+
+  // A second workspace under the same title gets the first free suffix.
+  using second = await bob.newGadget(key);
+  const { id: secondId } = await second.getMetadata();
+  await second.setTitle(title);
+  await second.newChat("Seen activity, with no agent", null);
+  expect((await listedAs(asCarol, secondId, title)).slug).toBe(`${slug}-2`);
+
+  // A later title leaves the slug where it is.
+  await workspace.setTitle("Shipped");
+  const retitled = await listedAs(asCarol, id, "Shipped");
+  expect(retitled).toEqual({ ...entry, title: "Shipped" });
+
+  // Its owner, a plain member, changes its address, and the slug it had still leads to it.
+  const readdressed = await asBob.setWorkspaceSlug(id, "shipped");
+  expect(readdressed).toEqual({ ...retitled, slug: "shipped" });
+  expect(await asCarol.resolveWorkspace("shipped"))
+      .toEqual({ workspace: readdressed, canonical: true });
+  expect(await asCarol.resolveWorkspace(slug))
+      .toEqual({ workspace: readdressed, canonical: false });
+
+  // A plain member who does not own it is refused and changes nothing; an admin of the space is
+  // allowed, and both earlier slugs then lead to the workspace.
+  expect(await refusal(asCarol.setWorkspaceSlug(id, "taken-over"))).toMatch(NOT_OWNER_OR_ADMIN);
+  expect(await asCarol.resolveWorkspace("taken-over")).toBeNull();
+  const released = await space.setWorkspaceSlug(id, "released");
+  expect(released).toEqual({ ...retitled, slug: "released" });
+  for (const former of [slug, "shipped"]) {
+    expect(await asCarol.resolveWorkspace(former), former)
+        .toEqual({ workspace: released, canonical: false });
+  }
+
+  // Resolving is a member's: the stub Carol holds refuses her once she is removed, as an open
+  // would.
+  await space.removeMember(carolName);
+  expect(await refusal(asCarol.resolveWorkspace("released"))).toMatch(NOT_A_MEMBER);
+
+  // Moved out by its owner, the workspace leaves no slug behind: none of the three resolves in
+  // the space any more, while the workspace that stayed keeps its own.
+  await workspace.moveToSpace(null);
+  for (const gone of [slug, "shipped", "released"]) {
+    expect(await space.resolveWorkspace(gone), gone).toBeNull();
+  }
+  expect(await space.resolveWorkspace(`${slug}-2`))
+      .toMatchObject({ workspace: { id: secondId }, canonical: true });
 });
 
 it.concurrent("creates a workspace under a team key only, also from a blueprint", async () => {
