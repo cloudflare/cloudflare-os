@@ -13,7 +13,7 @@ import type { RpcStub } from "cloudflare:workers";
 import type {
   AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { GitHubGatekeeperImpl } from "../../src/github.js";
+import type { GitHubGatekeeperImpl, GitHubVerifierApi } from "../../src/github.js";
 import type {
   GitHubBranchSummary,
   GitHubCommitDetails,
@@ -29,8 +29,8 @@ import type {
 export { default } from "../../src/github.js";
 export * from "../../src/github.js";
 // Named as well, since the pool builds `ctx.exports` entrypoints only from exports it can see
-// statically, and the account mints this one in its connect flow.
-export { GatekeeperUserImpl } from "../../src/github.js";
+// statically, and the account and TestHooks mint these.
+export { GatekeeperUserImpl, GitHubVerifier } from "../../src/github.js";
 
 /** What each `TestConnectCallback` was told, by its `props.name`. */
 export const connectCallbackEvents = new Map<string, string[]>();
@@ -99,6 +99,7 @@ type TestExports = {
   GitHubGatekeeperImpl(options: { props: GatekeeperProps }):
     DurableObjectClass<GitHubGatekeeperImpl>;
   GatekeeperUserImpl(options: { props: { userObjectId: string } }): Fetcher<GatekeeperUser>;
+  GitHubVerifier(options: { props: { userObjectId: string } }): Fetcher<GitHubVerifierApi>;
 };
 
 // The facet methods TestHooks forwards to, spelled structurally: workers-types' `Fetcher<T>`
@@ -175,6 +176,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     const user = (this.ctx.exports as unknown as TestExports)
       .GatekeeperUserImpl({ props: { userObjectId } });
     return await outcome(() => user.describe());
+  }
+
+  /** `GitHubVerifier.hasRepoAccess()` as the account with id `userObjectId`. */
+  async hasRepoAccess(userObjectId: string, owner: string, repo: string): Promise<Outcome<boolean>> {
+    const verifier = (this.ctx.exports as unknown as TestExports)
+      .GitHubVerifier({ props: { userObjectId } });
+    return await outcome(() => verifier.hasRepoAccess(owner, repo));
   }
 
   async preparePush(

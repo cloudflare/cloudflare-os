@@ -122,6 +122,7 @@ import {
   GitHubIssueConfiguratorUI,
   GitHubPullRequestConfiguratorUI,
   GitHubRepoConfiguratorUI,
+  type GitHubApiRunner,
 } from "./github-configurators";
 import GITHUB_ISSUE_CONFIGURATOR_HTML from "./generated/github-issue-configurator-ui.txt";
 import GITHUB_PULL_REQUEST_CONFIGURATOR_HTML from "./generated/github-pull-request-configurator-ui.txt";
@@ -1596,30 +1597,42 @@ export class UserAccount extends DurableObject<Env> {
 /**
  * Runs `fn` against GitHub as `account`. GitHub's rejection of the token a request presented is
  * the account's to adjudicate, so a token replaced while the request was in flight fails as
- * retryable rather than marking the account expired.
+ * retryable rather than marking the account expired. With `replayable`, which only calls safe to
+ * run twice may pass, such a failure instead reruns `fn` once with the replacement token.
  */
 async function withAccountApi<T>(
   account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
+  options: { replayable?: true } = {},
 ): Promise<T> {
-  let presented: string | undefined;
-  const api = new GitHubApi(async () => (presented = await account.getAccessToken()));
-  try {
-    return await fn(api);
-  } catch (error) {
-    if (isCredentialsExpired(error)) {
-      throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-    }
-    if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
-      throw error;
-    }
-    const verdict = await account.reportTokenRejected(presented);
-    if (verdict === "expired") throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-    if (verdict === "superseded") {
+  for (let replays = options.replayable ? 1 : 0; ; replays--) {
+    let presented: string | undefined;
+    const api = new GitHubApi(async () => (presented = await account.getAccessToken()));
+    try {
+      return await fn(api);
+    } catch (error) {
+      if (isCredentialsExpired(error)) {
+        throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
+      }
+      if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
+        throw error;
+      }
+      const verdict = await account.reportTokenRejected(presented);
+      if (verdict === "expired") throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
+      if (verdict !== "superseded") throw error;
+      if (replays > 0) continue;
       throw new Error("GitHub credentials were renewed during this request. Please retry it.",
         { cause: error });
     }
-    throw error;
   }
+}
+
+/** Runs replay-safe GitHub reads as the account behind `userObjectId`; see withAccountApi. */
+function accountReader(
+  exports: Cloudflare.Exports, userObjectId: string,
+): GitHubApiRunner {
+  // The stub is made per call: a configurator outlives the request that created it.
+  return fn => withAccountApi(
+    exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId)), fn, { replayable: true });
 }
 
 type GatekeeperUserImplProps = {
@@ -1697,30 +1710,26 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async startResourceConfigurator(
     resourceUrlPattern: string,
   ): Promise<ResourceConfiguratorFrame> {
-    const getToken = async () => {
-      const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-      const account = this.ctx.exports.UserAccount.get(id);
-      return await account.getAccessToken();
-    };
+    const read = accountReader(this.ctx.exports, this.ctx.props.userObjectId);
 
     if (resourceUrlPattern === REPO_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_REPO_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubRepoConfiguratorUI(getToken)),
+        ui: new RpcStub(new GitHubRepoConfiguratorUI(read)),
       };
     }
 
     if (resourceUrlPattern === ISSUE_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_ISSUE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubIssueConfiguratorUI(getToken)),
+        ui: new RpcStub(new GitHubIssueConfiguratorUI(read)),
       };
     }
 
     if (resourceUrlPattern === PULL_REQUEST_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_PULL_REQUEST_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GitHubPullRequestConfiguratorUI(getToken)),
+        ui: new RpcStub(new GitHubPullRequestConfiguratorUI(read)),
       };
     }
 
@@ -1792,11 +1801,8 @@ export interface GitHubVerifierApi extends GatekeeperUserVerifier {
 export class GitHubVerifier extends WorkerEntrypoint<Env, GitHubVerifierProps>
     implements GitHubVerifierApi {
   async hasRepoAccess(owner: string, repo: string): Promise<boolean> {
-    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    const account = this.ctx.exports.UserAccount.get(id);
-    const api = new GitHubApi(async () => await account.getAccessToken());
     try {
-      await api.getRepo(owner, repo);
+      await accountReader(this.ctx.exports, this.ctx.props.userObjectId)(api => api.getRepo(owner, repo));
       return true;
     } catch (error) {
       // GitHub returns 404 for private repos the token cannot see (to avoid leaking existence), and

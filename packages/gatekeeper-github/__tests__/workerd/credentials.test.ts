@@ -44,7 +44,7 @@ class FakeGitHub {
   onRevoke: (token: string) => void | Promise<void> = () => {};
   respondToken: (params: Record<string, string>) => Response | Promise<Response> =
     () => json({ error: "unexpected_token_request" }, 500);
-  respondApi: (token: string) => Response | Promise<Response> =
+  respondApi: (token: string, path: string) => Response | Promise<Response> =
     () => json({ login: "octocat", name: "Octo Cat", avatar_url: "https://avatars.example/1" });
 
   constructor() {
@@ -67,10 +67,10 @@ class FakeGitHub {
       return await this.respondToken(params);
     }
     const url = new URL(request.url);
-    if (url.hostname === "api.github.com" && url.pathname === "/user") {
+    if (url.hostname === "api.github.com" && request.method === "GET") {
       const token = request.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
       this.apiTokens.push(token);
-      return await this.respondApi(token);
+      return await this.respondApi(token, url.pathname);
     }
     if (url.pathname === "/applications/test-client/token" && request.method === "DELETE") {
       const token = (await request.json<{ access_token: string }>()).access_token;
@@ -110,6 +110,12 @@ async function connect(github: FakeGitHub, exchange: Record<string, unknown>) {
 async function describeAccount(userObjectId: string) {
   return await env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"))
     .describeAccount(userObjectId);
+}
+
+/** `GitHubVerifier.hasRepoAccess()` as the account, as plain data. */
+async function hasRepoAccess(userObjectId: string, owner: string, repo: string) {
+  return await env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"))
+    .hasRepoAccess(userObjectId, owner, repo);
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -218,6 +224,37 @@ describe("UserAccount with an expiring grant", () => {
       github.respondApi = () => json({ login: "octocat", avatar_url: "https://avatars.example/1" });
       expect(await describeAccount(id.toString())).toMatchObject({ ok: { uniqueName: "octocat" } });
     });
+
+  it("replays an observer check whose token a refresh replaced in flight", async () => {
+    const github = new FakeGitHub();
+    const { account, id, events } = await connect(github, tokens(1, NEARLY_EXPIRED));
+    const issued = [tokens(2, NEARLY_EXPIRED), tokens(3)];
+    github.respondToken = () => json(issued.shift());
+    const release = Promise.withResolvers<void>();
+    github.respondApi = async token => {
+      if (token === "gho_3") return json({ full_name: "octo/repo" });
+      await release.promise;
+      return json({ message: "Bad credentials" }, 401);
+    };
+
+    const checked = hasRepoAccess(id.toString(), "octo", "repo");
+    await vi.waitUntil(() => github.apiTokens.length > 0);
+    expect(await account.getAccessToken()).toBe("gho_3");
+    release.resolve();
+
+    expect(await checked).toEqual({ ok: true });
+    expect(github.apiTokens).toEqual(["gho_2", "gho_3"]);
+    expect(events()).toEqual(["complete"]);
+  });
+
+  it("still reads an observer check's 404 as no access", async () => {
+    const github = new FakeGitHub();
+    const { id, events } = await connect(github, tokens(1));
+    github.respondApi = () => json({ message: "Not Found" }, 404);
+
+    expect(await hasRepoAccess(id.toString(), "octo", "private")).toEqual({ ok: false });
+    expect(events()).toEqual(["complete"]);
+  });
 
   it("heals a rejection of the current token by refreshing past it", async () => {
     const github = new FakeGitHub();
