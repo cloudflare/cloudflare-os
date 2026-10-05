@@ -145,7 +145,10 @@ describe("restarting sessions when verification scope widens", () => {
     // A "build" client interface whose blocked-connection check is the real impl's.
     let client = await openFakeOverseer(
         { gatekeepers: impl.storage.gatekeepers },
-        { impl: { assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id) } });
+        { impl: {
+          assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id),
+          getGatekeeperFacet: (id: number) => impl.getGatekeeperFacet(id),
+        } });
 
     let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     let id = await added.getId();
@@ -999,7 +1002,7 @@ describe("connections blocked pending restart", () => {
         resourceUrl: "https://example.com/1", typeUrlPattern: "https://*",
       },
     });
-    impl.getGatekeeperFacet = (id: number) => ({
+    impl.getGatekeeperFacet = async (id: number) => ({
       describe: async () =>
           ({ title: "Test", url: "https://example.com/new", hasSlashCommands: true }),
       ...slashProvider(id === 1 ? "usable" : "blocked"),

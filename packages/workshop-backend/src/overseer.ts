@@ -4656,9 +4656,20 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // `cls` is for the one caller that has the class in hand but has deliberately not published the
-  // record yet (`addGatekeeper`); everyone else resolves it from the record.
-  getGatekeeperFacet(id: number, cls?: GatekeeperClass): Fetcher<Gatekeeper<any>> {
+  // Every stub to a gatekeeper facet is minted through ctx.restore(), for the reason given at
+  // getGadgetFacetFetcher(): it lets the gatekeeper call its own ctx.restore() to mint persistent
+  // stubs to itself, e.g. a target its push handler delivers events through. The exception is
+  // `cls`, for the one caller that has the class in hand but has deliberately not published the
+  // record yet (`addGatekeeper`): [restore]() would find no record, so it gets the raw facet.
+  async getGatekeeperFacet(id: number, cls?: GatekeeperClass): Promise<Fetcher<Gatekeeper<any>>> {
+    if (cls) return this.#getGatekeeperFacetRaw(id, cls);
+    return await this.ctx.restore(  // validates the gatekeeper exists, in [restore]()
+        {type: "gatekeeper", gatekeeperId: id} satisfies OverseerRestoreParams);
+  }
+
+  // The bare facet stub behind getGatekeeperFacet(): a request made on it leaves the facet unable
+  // to call its own ctx.restore().
+  #getGatekeeperFacetRaw(id: number, cls?: GatekeeperClass): Fetcher<Gatekeeper<any>> {
     return this.ctx.facets.get(`gatekeeper${id}`, async () => {
       let resolved = cls ?? this.storage.gatekeepers.get(id)?.class;
       if (!resolved) {
@@ -4682,7 +4693,7 @@ class OverseerImpl implements AgentHooks {
     // gitPull is optional on Gatekeeper; view the facet through the same Required<Pick<...>>
     // pattern as CatalogGatekeeperFacet. A gatekeeper that doesn't implement it rejects the
     // call, which the pull driver treats as this source failing.
-    let facet = this.getGatekeeperFacet(gatekeeperId) as unknown as
+    let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
         Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "gitPull">>>;
     await facet.gitPull(oids, new GitCacheImpl(this.gitCache, gatekeeperId), hints);
   }
@@ -4698,7 +4709,7 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
-    let gatekeeper = this.getGatekeeperFacet(record.gatekeeperId);
+    let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
     // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
     // happen long after the session that queued it, so the queue-time stub is gone) -- the
     // binding that makes buildPack() serve exactly this action's pending-push closure.
@@ -4793,7 +4804,7 @@ class OverseerImpl implements AgentHooks {
     // input gate is open across the await, ids are allocated sequentially, so a live build session
     // can guess this one, and getGatekeeperById (OverseerClientInterface) gates on nothing but
     // existence.
-    let facet = this.getGatekeeperFacet(id, cls);
+    let facet = await this.getGatekeeperFacet(id, cls);
     try {
       let description = await facet.describe();
       gatekeeperRecord.resourceTitle = description.title;
@@ -4828,7 +4839,8 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    return new GatekeeperClientImpl<any>(this, id, facet, actorUserId, joinAs);
+    return new GatekeeperClientImpl<any>(
+        this, id, await this.getGatekeeperFacet(id), actorUserId, joinAs);
   }
 
   // Destroy a gatekeeper (connection) workpiece. Any binding edges pointing at it are severed so
@@ -4895,7 +4907,8 @@ class OverseerImpl implements AgentHooks {
       }
 
       case "gatekeeper":
-        return this.openGatekeeperSession(target.id, this.getGatekeeperFacet(target.id), caller);
+        return this.getGatekeeperFacet(target.id)
+            .then(facet => this.openGatekeeperSession(target.id, facet, caller));
 
       case "worktree": {
         // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
@@ -5915,13 +5928,13 @@ class OverseerImpl implements AgentHooks {
       // The id is client-supplied, so a connection blocked pending a scope-widening restart must
       // be refused here: the invoke below reads the connection AND mints an observation, both on
       // behalf of a session the reset is about to sever.
+      let facet = await this.getGatekeeperFacet(gatekeeperId);
       this.assertGatekeeperUsable(gatekeeperId);
       // Display-only, and from the browser, so a bad value is dropped rather than refused.
       message = {...message, commandPosition: sanitizeCommandPosition(message)};
       using authorizer = new NativeRpcStub<ObservationAuthorizer>(
           new SlashCommandAuthorizerImpl(this, gatekeeperId, {from: "user"}));
-      let result = await invokeSlashCommand(
-          this.getGatekeeperFacet(gatekeeperId), message, authorizer);
+      let result = await invokeSlashCommand(facet, message, authorizer);
       if (result.message === undefined) {
         return {slashCommand: message, skillName: result.skillName};
       }
@@ -6342,7 +6355,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async describeGatekeeper(name: string, gatekeeper: GatekeeperRecord): Promise<string> {
-    let facet = this.getGatekeeperFacet(gatekeeper.id);
+    let facet = await this.getGatekeeperFacet(gatekeeper.id);
 
     let desc = await facet.describe();
     let types = await facet.getTypeScriptTypes();
@@ -7169,7 +7182,7 @@ class OverseerImpl implements AgentHooks {
         if (!gk) continue;  // disconnected since the freeze -- inert, no name needed
         let suggested: string | undefined;
         try {
-          suggested = (await this.getGatekeeperFacet(id).describe()).suggestedBindingName;
+          suggested = (await (await this.getGatekeeperFacet(id)).describe()).suggestedBindingName;
         } catch (err) {
           this.logger.warn("failed to fetch suggested binding name for ambient resource", {
             event: "chat.binding.ambient.describe.failed", gatekeeperId: id, error: err,
@@ -7283,7 +7296,7 @@ class OverseerImpl implements AgentHooks {
           if (target !== undefined && this.storage.gatekeepers.get(target)) {
             try {
               suggested =
-                  (await this.getGatekeeperFacet(target).describe()).suggestedBindingName;
+                  (await (await this.getGatekeeperFacet(target)).describe()).suggestedBindingName;
             } catch {
               // Fall through to the generic fallback.
             }
@@ -7339,7 +7352,8 @@ class OverseerImpl implements AgentHooks {
             // getAgentCatalog is optional on Gatekeeper; ambient resources always implement it (the
             // agent relies on it for discovery), answering null when they have none, so we view the
             // facet through CatalogGatekeeperFacet (derived from the contract) to call it directly.
-            let facet = this.getGatekeeperFacet(gatekeeperId) as unknown as CatalogGatekeeperFacet;
+            let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
+                CatalogGatekeeperFacet;
             let catalog = await facet.getAgentCatalog();
             if (!catalog) {
               this.#catalogless.add(gatekeeperId);
@@ -7395,14 +7409,15 @@ class OverseerImpl implements AgentHooks {
 
   async listSlashCommands(): Promise<SlashCommandChoice[]> {
     // A connection blocked pending a scope-widening restart is silently omitted (its commands
-    // reappear once the reset lands and clients reconnect) rather than failing the whole listing.
-    let sources = [...this.storage.gatekeepers.list()]
+    // reappear once the reset lands and clients reconnect) rather than failing the whole listing,
+    // as is one removed before its facet is reached.
+    let sources = (await Promise.all([...this.storage.gatekeepers.list()]
       .filter(record => record.hasSlashCommands && this.gatekeeperUsable(record.id))
-      .map(record => ({
+      .map(record => this.getGatekeeperFacet(record.id).then(gatekeeper => ({
         gatekeeperId: record.id,
         providerLabel: record.resourceTitle || `Gatekeeper ${record.id}`,
-        gatekeeper: this.getGatekeeperFacet(record.id),
-      }));
+        gatekeeper,
+      }), () => null)))).filter(source => source !== null);
     return [{
       selection: {builtin: true, commandId: "compact"},
       name: "compact",
@@ -8745,8 +8760,8 @@ class OverseerImpl implements AgentHooks {
   async #removeObserverFromGatekeepers(observerId: string, gatekeeperIds: number[]): Promise<void> {
     await Promise.all(gatekeeperIds.map(async id => {
       try {
-        await this.#withObserverGatekeeperLock(
-            observerId, id, () => this.getGatekeeperFacet(id).removeObserver(observerId));
+        await this.#withObserverGatekeeperLock(observerId, id,
+            async () => (await this.getGatekeeperFacet(id)).removeObserver(observerId));
       } catch (err) {
         this.logger.warn("failed to remove observer from gatekeeper", {
           event: "gatekeeper.observer.remove.failed", gatekeeperId: id, observerId, error: err,
@@ -8981,7 +8996,7 @@ class OverseerImpl implements AgentHooks {
             // exclusion teardown's removeObserver for the same pair is still in flight (which
             // would delete it moments later); see #withObserverGatekeeperLock.
             await this.#withObserverGatekeeperLock(observerId, gk.id,
-                () => this.getGatekeeperFacet(gk.id).addObserver(observerId, verifier));
+                async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
             newlyAdded.add(gk.id);
             // Keep `invalidated` meaning "failed and has not verified since": this binding just
             // verified on a repaired pass, so the catch below must not roll its registration back.
@@ -9174,25 +9189,38 @@ class OverseerImpl implements AgentHooks {
     return targets?.size === 1 ? targets.values().next().value : undefined;
   }
 
-  restore(params: OverseerRestoreParams): Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> {
-    if (params.type !== "gadget") {
-      throw new TypeError("Unknown restore params type: " + params.type);
-    }
+  restore(params: OverseerRestoreParams)
+      : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> {
+    switch (params.type) {
+      case "gadget": {
+        if (params.codeId) {
+          // The forger worker being loaded through ctx.restore() by forgeRestoreStubForBinding().
+          let code = this.#codeIdMap.get(params.codeId);
+          if (code) {
+            return this.env.LOADER.load(code).getEntrypoint<RestoreForgerEntrypoint>();
+          }
+        }
 
-    if (params.codeId) {
-      // The forger worker being loaded through ctx.restore() by forgeRestoreStubForBinding().
-      let code = this.#codeIdMap.get(params.codeId);
-      if (code) {
-        return this.env.LOADER.load(code).getEntrypoint<RestoreForgerEntrypoint>();
+        // Old params (persisted before multi-gadget support, sealed inside hook callbacks) have
+        // no gadgetId; they resolve to the default gadget. If that gadget was deleted (or there
+        // is no default), this fails with an explicit error rather than silently retargeting.
+        let gadgetId = this.resolveGadgetId(params.gadgetId);
+        this.getGadgetRecord(gadgetId);  // validate it exists
+        return this.#getGadgetFacetRaw(
+            gadgetId, this.#resolveGadgetChatId(gadgetId, params.chatId));
       }
-    }
 
-    // Old params (persisted before multi-gadget support, sealed inside hook callbacks) have no
-    // gadgetId; they resolve to the default gadget. If that gadget was deleted (or there is no
-    // default), this fails with an explicit error rather than silently retargeting.
-    let gadgetId = this.resolveGadgetId(params.gadgetId);
-    this.getGadgetRecord(gadgetId);  // validate it exists
-    return this.#getGadgetFacetRaw(gadgetId, this.#resolveGadgetChatId(gadgetId, params.chatId));
+      case "gatekeeper":
+        // Existence only: whether the connection may be used is still decided where it is used
+        // (assertGatekeeperUsable, startHook).
+        if (!this.storage.gatekeepers.get(params.gatekeeperId)) {
+          throw new Error("This connection has been removed from the workspace.");
+        }
+        return this.#getGatekeeperFacetRaw(params.gatekeeperId);
+
+      default:
+        throw new TypeError("Unknown restore params: " + JSON.stringify(params));
+    }
   }
 }
 
@@ -9225,6 +9253,12 @@ type OverseerRestoreParams = {
   // stub is persisted with these params as its self-token -- which, `codeId` no longer matching,
   // now restores through the gadget's [restore]() method.
   codeId?: string;
+} | {
+  // A stub pointing at a gatekeeper (connection) facet, minted by getGatekeeperFacet(). Like a
+  // gadget's, the gatekeeper's own ctx.restore() chains off it, so the persistent stubs it mints
+  // to itself stop restoring once the connection is removed.
+  type: "gatekeeper";
+  gatekeeperId: WorkpieceId;
 };
 
 export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
@@ -10477,9 +10511,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
     // A connection published moments before a scope-widening restart is not usable by the
     // sessions that restart is about to sever (see #gatekeepersPendingRestart).
+    let facet = await this.impl.getGatekeeperFacet(id);
     this.impl.assertGatekeeperUsable(id);
-    return new GatekeeperClientImpl(this.impl, id, this.impl.getGatekeeperFacet(id),
-        this.clientUserId, this.#mintedCapabilityKind());
+    return new GatekeeperClientImpl(
+        this.impl, id, facet, this.clientUserId, this.#mintedCapabilityKind());
   }
 
   private async recordConnectionCreated(
@@ -10796,7 +10831,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error(`Can't reject an observation: ${id}`);
     }
 
-    let gatekeeper = this.impl.getGatekeeperFacet(action.gatekeeperId);
+    let gatekeeper = await this.impl.getGatekeeperFacet(action.gatekeeperId);
 
     // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
@@ -10875,7 +10910,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         .map(id => this.impl.storage.gatekeepers.get(id))
         .filter(gk => gk !== undefined)
         .map(async (gk): Promise<PreApprovableAction[]> => {
-      let facet = this.impl.getGatekeeperFacet(gk.id);
+      let facet = await this.impl.getGatekeeperFacet(gk.id);
       let kinds = await facet.getAutoApprovableActions();
       return kinds.map(actionKind => ({
         gatekeeperId: gk.id,
@@ -12105,7 +12140,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (!edge || edge.pending || !this.impl.storage.gatekeepers.get(edge.target)) return null;
     // The child capability counts exactly as this one does: it can outlive this object.
     return new GatekeeperClientImpl(
-        this.impl, edge.target, this.impl.getGatekeeperFacet(edge.target),
+        this.impl, edge.target, await this.impl.getGatekeeperFacet(edge.target),
         this.clientUserId, this.joinedAs);
   }
 
@@ -12138,9 +12173,10 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     }
 
     // The target is client-supplied, so refuse one blocked pending a scope-widening restart
-    // before reaching its facet (metadata-only, but every client-reachable route is gated).
+    // before describing it (metadata-only, but every client-reachable route is gated).
+    let facet = await this.impl.getGatekeeperFacet(target);
     this.impl.assertGatekeeperUsable(target);
-    let description = await this.impl.getGatekeeperFacet(target).describe();
+    let description = await facet.describe();
     let suggestedName = description.suggestedBindingName;
     let i = 1;
     // Re-read the record after the describe() await, in case bindings changed meanwhile. Dedupe

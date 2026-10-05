@@ -123,7 +123,7 @@ async function spawnerBinding(impl: any, config = SPAWNER_CONFIG): Promise<Agent
   let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: {
     overseerId: impl.ctx.id.toString(), config, creatorUserId: OWNER_USER_ID,
   } });
-  return impl.getGatekeeperFacet(900, cls).startSession(undefined);
+  return (await impl.getGatekeeperFacet(900, cls)).startSession(undefined);
 }
 
 describe("durable agent calls", () => {

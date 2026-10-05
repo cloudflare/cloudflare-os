@@ -67,7 +67,8 @@ async function spawnChat(impl: any, config: AgentSpawnerConfig): Promise<number>
   let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: {
     overseerId: impl.ctx.id.toString(), config, creatorUserId: OWNER_USER_ID,
   } });
-  let binding: AgentSpawnerBinding = await impl.getGatekeeperFacet(900, cls).startSession(undefined);
+  let facet = await impl.getGatekeeperFacet(900, cls);
+  let binding: AgentSpawnerBinding = await facet.startSession(undefined);
   await binding.spawn("Task", "Do the task.");
   let [meta] = [...impl.storage.chatMeta.list()];
   return meta.id;

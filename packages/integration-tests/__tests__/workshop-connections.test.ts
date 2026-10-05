@@ -12,8 +12,9 @@ import {
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  accountLabel, connect, listConnectedAccounts, nextUsernames, restartWorkspace, RpcTarget,
-  signUp, stubFor, waitFor, waitForIdleChat, withOwnerWorkspace, type ConnectedAccount,
+  accountLabel, connect, listConnectedAccounts, logIn, nextUsernames, restartWorkspace, RpcTarget,
+  signUp, streamGeneration, stubFor, waitFor, waitForIdleChat, withOwnerWorkspace,
+  type ConnectedAccount,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -205,7 +206,7 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
     await thing.remove();
 
     expect((await app.listBindings()).some(binding => binding.target === thingId)).toBe(false);
-    await expect(ws.approveAction(action.id)).rejects.toThrow(/no such gatekeeper/i);
+    await expect(ws.approveAction(action.id)).rejects.toThrow(/removed from the workspace/);
     expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
         .toEqual([action.id]);
     expect(await actionState(label)).toEqual({
@@ -233,6 +234,45 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
   });
 
   expect(model.remainingSteps()).toBe(0);
+});
+
+it.concurrent("a connection's stubs to itself outlive its session and a restart, not its removal",
+    async () => {
+  const [username] = nextUsernames("selfstub");
+  const callSelfStub = () => testControl(harness, "call-self-stub", { key: username });
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, username);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the test account", async () =>
+    (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
+  using ws = await api.newGadget();
+  const { id: workspaceId } = await ws.getMetadata();
+  using thing = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/self");
+  if (!thing) throw new Error("Failed to create the test connection");
+  const thingId = await thing.getId();
+  {
+    using session = await thing.openSession() as RpcStub<TestSession>;
+    await session.keepSelfStub(username);
+  }
+  const reached = { label: accountLabel(account) };
+  expect(await callSelfStub()).toEqual(reached);
+
+  let restarted = false;
+  ws.onRpcBroken(() => { restarted = true; });
+  const generation = await streamGeneration(ws);
+  await restartWorkspace(harness.url, ws);
+  await waitFor("the workspace restart", async () => restarted || null);
+
+  // The restart ends the whole RPC session, not just the workspace.
+  using reconnected = connect(harness.url);
+  using reopenedApi = await logIn(reconnected, username);
+  using reopened = await reopenedApi.openGadget(workspaceId);
+  expect(await streamGeneration(reopened)).not.toBe(generation);
+  expect(await callSelfStub()).toEqual(reached);
+  using connection = await reopened.getGatekeeperById(thingId);
+  await connection.remove();
+  expect(await callSelfStub())
+      .toEqual({ error: "This connection has been removed from the workspace." });
 });
 
 it.concurrent("the agent resumes once, only after every connection request of its turn is accepted",
