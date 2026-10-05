@@ -7,9 +7,14 @@
 // no polling.
 //
 // A space's listing of workspaces is read back directly too after a move or a deletion, which
-// are finished when their call returns. A workspace's first activity and a change of its title
-// reach the listing through a sync its owner's account runs apart from the call that caused it,
-// so there, and only there, the tests poll with a bounded wait (`listedAs`).
+// are finished when their call returns. A workspace's first activity, a change of its title and
+// its coming to hold restricted data or to be owner-invites-only reach the listing through a sync
+// its owner's account runs apart from the call that caused it, so there, and only there, the
+// tests poll with a bounded wait (`listedAs`, `unlisted`).
+//
+// The fixture gatekeeper is bound for the one thing it is the cheapest real way to do: record an
+// observation marked as restricted data, or as owner-invites-only, through a session on one of
+// its connections (`TestSession.readValue`).
 
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -17,16 +22,19 @@ import {
   isValidSpaceKey, PERSONAL_SPACE_PREFIX,
   type AuthenticatedApi, type Space, type SpaceInfo, type SpaceMemberInfo,
 } from "@gadgets/workshop-shared/api";
-import { type Harness, startHarness } from "../src/harness.js";
+import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
+import { type Harness, startTestGatekeeperHarness, TEST_VENDOR_ID } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
+import {
+  connect, listConnectedAccounts, logIn, nextUsernames, signUp, waitFor,
+} from "../src/rpc-client.js";
 
 let harness: Harness | undefined;
 const network = new NetworkInterceptor();
 
 beforeAll(async () => {
   network.install();
-  harness = await startHarness({ gatekeepers: [] });
+  harness = await startTestGatekeeperHarness();
 });
 
 afterAll(async () => {
@@ -108,6 +116,11 @@ const listedAs = (space: RpcStub<Space>, id: string, title: string) =>
     const entry = (await space.listWorkspaces()).find(workspace => workspace.id === id);
     return entry?.title === title ? entry : null;
   });
+
+/** Polls, for a bounded time, until `space` no longer lists workspace `id`. */
+const unlisted = (space: RpcStub<Space>, id: string) =>
+  waitFor(`workspace ${id} to leave the space's listing`, async () =>
+    (await workspaceIds(space)).includes(id) ? null : true);
 
 /** The caller's own record of workspace `id`, which never shows what a space acknowledged. */
 async function ownRecord(api: RpcStub<AuthenticatedApi>, id: string) {
@@ -341,6 +354,75 @@ it.concurrent("a team space lists a member's workspace once it has seen activity
 
   await workspace.setTitle("Revised");
   expect(await listedAs(space, id, "Revised")).toEqual({ ...entry, title: "Revised" });
+});
+
+it.concurrent("a workspace that holds restricted data or is owner-invites-only leaves the listing",
+    async () => {
+  const [aliceName, bobName] = usernames("alice", "bob");
+  const [key] = teamKeys("crew");
+  using stack = new DisposableStack();
+  const alice = await newAccount(stack, aliceName);
+  const bob = await newAccount(stack, bobName);
+  using space = await alice.createSpace(key, "Crew");
+  await space.setMemberRole(bobName, "use");
+  // The listing is read as Bob throughout: the member who owns neither workspace.
+  using listing = await bob.openSpace(key);
+  await alice.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the fixture account to be provisioned", async () =>
+    (await listConnectedAccounts(alice)).find(({ vendorId }) => vendorId === TEST_VENDOR_ID) ?? null);
+
+  // A workspace of Alice's that the space lists, and a session to observe through on a fixture
+  // connection of its own.
+  const listedWorkspace = async (title: string) => {
+    const workspace = stack.use(await alice.newGadget(key));
+    const { id } = await workspace.getMetadata();
+    await workspace.setTitle(title);
+    await workspace.newChat("Seen activity, with no agent", null);
+    await listedAs(listing, id, title);
+    using connection = await workspace.newGatekeeper(
+        account.id, `https://gadgets-test.example/things/${id}`);
+    if (connection === null) throw new Error("Failed to create the test connection");
+    const session = stack.use(await connection.openSession() as RpcStub<TestSession>);
+    return { id, workspace, session };
+  };
+  const restricted = await listedWorkspace("Plan");
+  const invitesOnly = await listedWorkspace("Budget");
+
+  // An observation marked as restricted data takes its workspace off the listing.
+  expect(await restricted.session.readValue(true)).toBe(42);
+  await unlisted(listing, restricted.id);
+
+  // No later title brings it back. Alice's account syncs her workspaces one at a time, so once
+  // the listing shows the other workspace's change of title, made after this one's, it is past
+  // this one's.
+  await restricted.workspace.setTitle("Plan, from the data");
+  await invitesOnly.workspace.setTitle("Budget, revised");
+  await listedAs(listing, invitesOnly.id, "Budget, revised");
+  expect(await workspaceIds(listing)).toEqual([invitesOnly.id]);
+
+  // An observation marked as owner-invites-only, and as nothing else, does the same.
+  expect(await invitesOnly.session.readValue(false, true)).toBe(42);
+  await unlisted(listing, invitesOnly.id);
+  // Nor does a later title bring this one back. A move is finished when its call returns, and
+  // Alice's account takes it up after the sync that title started, so by then that sync has run.
+  await invitesOnly.workspace.setTitle("Budget, from the data");
+  await restricted.workspace.moveToSpace(key);
+  expect(await listing.listWorkspaces()).toEqual([]);
+
+  // Alice's own records still say where she grouped the two, now with the flags each workspace
+  // reported, and she opens both as before.
+  expect(await ownRecord(alice, restricted.id)).toMatchObject({
+    title: "Plan, from the data", spaceKey: key,
+    containsRestrictedData: true, ownerInvitesOnly: false,
+  });
+  expect(await ownRecord(alice, invitesOnly.id)).toMatchObject({
+    title: "Budget, from the data", spaceKey: key,
+    containsRestrictedData: false, ownerInvitesOnly: true,
+  });
+  for (const { id } of [restricted, invitesOnly]) {
+    using reopened = await alice.openGadget(id);
+    expect(await reopened.getMetadata()).toMatchObject({ id });
+  }
 });
 
 it.concurrent("only its owner moves a workspace, and only where they may add; deleting unlists it",
