@@ -394,6 +394,16 @@ describe("parseResourceUrl", () => {
         expect(messageFor("http://mail.google.com/#search/sekrit"))
           .toBe("Google resource URLs must use https, not http:");
       });
+
+      // A bare % survives URL parsing (fragments tolerate it) but makes decodeURIComponent
+      // throw a raw URIError. The user gets the same friendly shape as every other rejection.
+      it.each([
+        "https://mail.google.com/mail/u/0/#search/50%off",
+        "https://mail.google.com/mail/u/0/#label/100%",
+      ])("reports a malformed percent-escape as a friendly error for %s", (url) => {
+        expect(messageFor(url))
+          .toBe("Malformed percent-escape in resource URL: mail.google.com/mail/u/0/");
+      });
     });
   });
 
