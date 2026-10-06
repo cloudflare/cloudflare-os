@@ -62,13 +62,14 @@ function mockGoogle() {
      * The account's subscription to the space that Google holds but the driver never learned of,
      * as when a create's response is lost; Google refuses to create another while it exists.
      */
-    unrecorded: undefined as {name: string; topic: string} | undefined,
+    unrecorded: undefined as {name: string; topic: string; state?: string} | undefined,
     /** Make the conversation a group chat, whose messages have no threads. */
     unthreaded: false,
     messages: new Map<string, ChatMessageRaw>(),
     posted: [] as Array<{text: string; thread?: {name: string}}>,
-    /** Subscriptions created and deleted, renewal attempts, and how many more renewals fail. */
+    /** Subscriptions created, reactivated and deleted, renewal attempts, and how many more renewals fail. */
     creates: 0,
+    reactivated: [] as string[],
     deleted: [] as string[],
     renewals: 0,
     failRenewals: 0,
@@ -89,14 +90,18 @@ function mockGoogle() {
       }});
     }
     if (url.hostname === "workspaceevents.googleapis.com" && url.pathname === "/v1/subscriptions" && method === "GET") {
-      const {name, topic} = google.unrecorded ?? {};
+      const {name, topic, state = "ACTIVE"} = google.unrecorded ?? {};
       const matches = name && url.searchParams.get("filter")?.includes(`"//chat.googleapis.com/${SPACE}"`);
-      return json({subscriptions: matches ? [{name, authority: `users/${subject}`, state: "ACTIVE",
+      return json({subscriptions: matches ? [{name, authority: `users/${subject}`, state,
         expireTime: new Date(Date.now() + 60_000).toISOString(), notificationEndpoint: {pubsubTopic: topic}}] : []});
     }
-    const subscription = /^\/v1\/(subscriptions\/[^/]+)$/.exec(url.pathname)?.[1];
+    const subscription = /^\/v1\/(subscriptions\/[^/:]+)(?::reactivate)?$/.exec(url.pathname)?.[1];
     const live = {name: subscription, authority: `users/${subject}`, state: "ACTIVE",
       expireTime: new Date(Date.now() + 3_600_000).toISOString()};
+    if (url.hostname === "workspaceevents.googleapis.com" && subscription && method === "POST") {
+      google.reactivated.push(subscription);
+      return json({name: "operations/reactivate", done: true, response: live});
+    }
     if (url.hostname === "workspaceevents.googleapis.com" && subscription && method === "GET") {
       if (!google.stallGet) return json(live);
       google.stallGet.started = true;
@@ -352,15 +357,16 @@ it("retries a failed subscription renewal before the subscription lapses", async
   expect(google.renewals).toBe(2);
 });
 
-it("adopts the subscription Google holds for the account when an earlier create went unanswered", async () => {
+it("adopts, and reactivates, the suspended subscription an unanswered earlier create left", async () => {
   const google = mockGoogle();
-  google.unrecorded = {name: "subscriptions/unrecorded", topic: "projects/test/topics/chat"};
+  google.unrecorded = {name: "subscriptions/unrecorded", topic: "projects/test/topics/chat", state: "SUSPENDED"};
   const ada = await connect("ada");
   await ada.hooks.chatEnableHook();
 
   await push("unrecorded", [chatMessage("bob")]);
   await deliver();
   expect((await ada.hooks.readHook()).received).toHaveLength(1);
+  expect(google.reactivated).toEqual(["subscriptions/unrecorded"]);
   // Renewed at once: it may be in its last minutes.
   expect(google.renewals).toBe(1);
 });

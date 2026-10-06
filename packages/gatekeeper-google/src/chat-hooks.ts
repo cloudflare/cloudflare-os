@@ -217,9 +217,8 @@ export class ChatHookDriver extends DurableObject<Env> {
       if (!row || "deliveredAt" in row) return;
       const attempts = pending.attempts + 1;
       if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-        logger.warn("dropped a Chat message after repeated delivery failures", {
-          event: "chat.hooks.delivery.dropped", error,
-        });
+        // No `error`: a hook's exception can quote the private message it failed on.
+        logger.warn("dropped a Chat message after repeated delivery failures", { event: "chat.hooks.delivery.dropped" });
         this.ctx.storage.kv.put<Delivered>(key, { deliveredAt: Date.now() });
       } else {
         const delay = Math.min(MINUTE_MS * 2 ** (attempts - 1), HOUR_MS);
@@ -252,8 +251,7 @@ export class ChatHookDriver extends DurableObject<Env> {
     if (!current || current.state === "DELETED" || Date.parse(current.expireTime) <= Date.now()) {
       return this.#subscribe(registration);
     }
-    if (current.state === "SUSPENDED") await api.reactivate(subscription.name);
-    this.#putSubscription(registration.authority, await api.renew(subscription.name));
+    this.#putSubscription(registration.authority, await api.renew(current));
   }
 
   #putSubscription(authority: string, subscription: SubscriptionRaw): void {
@@ -330,7 +328,7 @@ class WorkspaceEventsApi {
         "subscriptions.list", `/subscriptions?filter=${encodeURIComponent(filter)}`);
       const existing = subscriptions.find(candidate => candidate.notificationEndpoint?.pubsubTopic === topic);
       if (!existing) throw error;
-      return this.renew(existing.name);
+      return this.renew(existing);
     }
   }
 
@@ -344,12 +342,9 @@ class WorkspaceEventsApi {
     }
   }
 
-  reactivate(name: string): Promise<SubscriptionRaw> {
-    return this.#operation("subscriptions.reactivate", `/${name}:reactivate`, "POST", {});
-  }
-
-  /** Extend the subscription to its maximum lifetime. */
-  renew(name: string): Promise<SubscriptionRaw> {
+  /** Extend the subscription to its maximum lifetime, reactivating it first if Google suspended it. */
+  async renew({ name, state }: SubscriptionRaw): Promise<SubscriptionRaw> {
+    if (state === "SUSPENDED") await this.#operation("subscriptions.reactivate", `/${name}:reactivate`, "POST", {});
     return this.#operation("subscriptions.patch", `/${name}?updateMask=ttl`, "PATCH", { ttl: "0s" });
   }
 
