@@ -1,12 +1,13 @@
-// Agent turns emit the spans Cloudflare's Agents dashboard reads (src/agent-tracing.ts). Drives
-// real turns on a real OverseerDurableObject, with the model provider's HTTP API stubbed, and
-// reads the spans back from the streaming tail worker in vitest.config.ts.
+// Agent turns emit the spans Cloudflare's Agents dashboard reads (src/agent-tracing.ts) and notify
+// the user how they ended. Drives real turns on a real OverseerDurableObject, with the model
+// provider's HTTP API stubbed, and reads the spans back from the streaming tail worker in
+// vitest.config.ts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig,
+  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -19,19 +20,18 @@ interface OverseerInternals {
   ownerId: string;
   users: {
     idFromString(id: string): string;
-    get(): {
+    get(id: string): {
       getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
       getCloudflareGatekeeperAccount(): Promise<null>;
       consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
-      publishTaskCompletedNotification(): Promise<void>;
-      publishPermissionRequestedNotification(): Promise<void>;
+      publishNotification(notification: UserNotification): Promise<void>;
     };
   };
   storage: {
     chatMeta: { put(meta: AiChatMetadata): void };
     chats: { put(message: AiChatMessage): void };
     gatekeepers: { put(record: object): void };
-    actions: { list(): Iterable<ActionRecord> };
+    actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
   };
   nextChatSequence(chatId: number): number;
@@ -70,6 +70,8 @@ declare module "cloudflare:workers" {
 }
 
 const OWNER_USER_ID = "owner-user-do";
+// A collaborator, so a notification routed to the workspace owner instead is caught.
+const INITIATOR_USER_ID = "collaborator-user-do";
 const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.com", name: "Owner" };
 const MODEL: AiChatAuthorInfo = { type: "agent", id: "claude", name: "Claude" };
 const MODEL_ID = "claude-tracing-test";
@@ -83,6 +85,8 @@ interface Turn {
   gadgetId: string;
   // The request that started the turn, which stays open until the turn ends.
   session: Promise<void>;
+  // The user each notification of the turn went to, and what it said.
+  notifications: [string, UserNotification][];
   // Resolves once the turn has started its first model request.
   requested: Promise<void>;
   // Lets that first request respond.
@@ -168,18 +172,20 @@ function startTurn(responses: (() => Response)[], {
   usageLimited = false,
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
+  let notifications: [string, UserNotification][] = [];
   let workspace = `agent-tracing-${crypto.randomUUID()}`;
   let session = inOverseer(workspace, async impl => {
     if (usageLimited) impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({
+      get: (userId: string) => ({
         getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
         getCloudflareGatekeeperAccount: async () => null,
         consumeDailyLlmCall: async () => ({ withinLimits: false }),
-        publishTaskCompletedNotification: async () => {},
-        publishPermissionRequestedNotification: async () => {},
+        publishNotification: async notification => {
+          notifications.push([userId, notification]);
+        },
       }),
     };
     impl.storage.chatMeta.put({
@@ -190,11 +196,11 @@ function startTurn(responses: (() => Response)[], {
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
     });
-    impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, OWNER_USER_ID);
+    impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, INITIATOR_USER_ID);
     await impl.waitForAllAgentsToComplete();
   });
   let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
-  return { workspace, gadgetId, session, ...provider };
+  return { workspace, gadgetId, session, notifications, ...provider };
 }
 
 async function inOverseer(
@@ -429,5 +435,65 @@ describe("agent tracing", () => {
       ["tool_approval testvendor", { "cloudflare.agents.tool.approval.state": "approved" }],
     ]);
     for (let span of approvals) expect(JSON.stringify(span.attributes)).not.toContain(SECRET);
+  });
+});
+
+describe("turn notifications", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  let reply = () => anthropicResponse([{ type: "text", text: "Done." }], "end_turn",
+      { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 });
+  let notification = (turn: Turn, kind: UserNotification["kind"]) => [INITIATOR_USER_ID, {
+    id: expect.any(String), kind, workspaceId: turn.gadgetId, chatId: CHAT_ID, chatTitle: "Chat",
+  }];
+
+  it("tells the initiator a turn completed, but not a callback turn nobody started", async () => {
+    let turn = startTurn([reply, reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, impl =>
+        impl.deliverAgentCallback(CHAT_ID, "ping", [], OWNER_USER_ID, MODEL.id));
+    turn.release();
+
+    await turnSpans(turn, 2);
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  it("sends nothing for a turn that failed", async () => {
+    let turn = startTurn([() => Response.json(
+        { type: "error", error: { type: "invalid_request_error", message: "bad" } },
+        { status: 400 })]);
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
+  });
+
+  // The agent submits an action that waits for the user's decision while its step runs; the user
+  // decides (or not) before the step ends.
+  it.each([
+    { decision: "is still pending", state: "pending", kind: "permissionRequested" },
+    { decision: "was rejected", state: "rejected", kind: "taskCompleted" },
+  ] as const)("asks for permission only while the awaited action $decision",
+      async ({ state, kind }) => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, async impl => {
+      impl.storage.gatekeepers.put({
+        id: 7, resourceTitle: "Repository", class: {},
+        creationSpec: {
+          type: "gatekeeper", vendorId: "testvendor",
+          resourceUrl: "https://example.com/repo", typeUrlPattern: "https://*",
+        },
+      });
+      await impl.submitAction(7, 1, {
+        title: "Send", description: "", implementsRevert: false, awaitDecision: true,
+      }, { from: "agent", chatId: CHAT_ID });
+      let [record] = impl.storage.actions.list();
+      impl.storage.actions.put({ ...record, state });
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, kind)]);
   });
 });
