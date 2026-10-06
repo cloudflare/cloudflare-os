@@ -163,6 +163,8 @@ interface TurnOptions {
   config?: AiModelConfig;
   // Turns on the free-tier usage limit, which the owner has used up.
   usageLimited?: boolean;
+  // Who starts the turn: the owner by default, or a gadget, as for a spawned agent.
+  initiator?: AiChatAuthorInfo;
 }
 
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
@@ -170,6 +172,7 @@ interface TurnOptions {
 function startTurn(responses: (() => Response)[], {
   config = { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
   usageLimited = false,
+  initiator = OWNER,
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
   let notifications: [string, UserNotification][] = [];
@@ -196,7 +199,7 @@ function startTurn(responses: (() => Response)[], {
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
     });
-    impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, INITIATOR_USER_ID);
+    impl.startAgent(CHAT_ID, { profile: MODEL, config }, initiator, INITIATOR_USER_ID);
     await impl.waitForAllAgentsToComplete();
   });
   let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
@@ -456,6 +459,16 @@ describe("turn notifications", () => {
 
     await turnSpans(turn, 2);
     expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  it("does not tell anyone a spawned agent's turn completed", async () => {
+    let turn = startTurn([reply], {
+      initiator: { type: "gadget", id: "spawner", name: "Spawner" },
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
   });
 
   it("sends nothing for a turn that failed", async () => {

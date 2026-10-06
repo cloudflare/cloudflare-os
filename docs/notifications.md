@@ -98,8 +98,8 @@ subscription id, and same-origin deep-link path cross the central boundary durin
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
 visible browser tab is offered the notification first, and push is sent only if no tab acknowledges
-it within three seconds. Turns started by a gadget callback, such as a schedule, notify only when
-they need the user's permission.
+it within three seconds. Only turns a person started announce completion; callback turns, such as a
+schedule, and spawned agents notify only when they need the user's permission.
 
 ## Deployment contract
 
