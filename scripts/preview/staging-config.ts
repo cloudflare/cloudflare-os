@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
+  gatekeeperShortName, isGatekeeperPackage, isSystemPackage, readDeployablePackages,
   type BindingDecl, type DeployablePackage, type ObservabilityConfig, type ServiceBinding,
   type WranglerConfig,
 } from "../release/manifest-lib.ts";
@@ -103,11 +103,7 @@ interface PreviewContext {
   baseUrl: string;
   /** Every gatekeeper package name, sorted. */
   gatekeepers: string[];
-  /** Platform-private system workers reached only over service bindings. */
-  systemWorkers: string[];
 }
-
-const SYSTEM_WORKERS = new Set(["notification-proxy"]);
 
 /** The repository root. */
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -291,29 +287,18 @@ function previewObservability(config: StagingConfig): ObservabilityConfig {
   };
 }
 
-// How the backend calls gatekeepers and platform-private system workers.
-function backendServices(
-  gatekeepers: string[],
-  systemWorkers: string[],
-  baseUrl: string,
-): PreviewService[] {
-  return [
-    ...gatekeepers.map((pkgName) => ({
-      binding: gatekeeperBindingName(pkgName),
-      service: pkgName,
-      entrypoint: "GatekeeperVendor",
-      // The Context gatekeeper namespaces each workshop's shared data by a "sharingDomain" carried
-      // in its binding props (packages/gatekeeper-context/src/domain.ts). Using the preview's own
-      // origin — as manifest-lib.ts does with $PUBLIC_BASE_URL — keeps each preview's collections
-      // isolated from every other preview sharing the baseline gatekeeper.
-      ...(pkgName === "gatekeeper-context" ? { props: { sharingDomain: baseUrl } } : {}),
-    })),
-    ...systemWorkers.map((pkgName) => ({
-      binding: pkgName === "notification-proxy" ? "NOTIFICATION_DELIVERY" :
-        gatekeeperBindingName(pkgName),
-      service: pkgName,
-    })),
-  ];
+// How the backend calls gatekeepers: the GatekeeperVendor RPC entrypoint.
+function backendGatekeeperServices(gatekeepers: string[], baseUrl: string): PreviewService[] {
+  return gatekeepers.map((pkgName) => ({
+    binding: gatekeeperBindingName(pkgName),
+    service: pkgName,
+    entrypoint: "GatekeeperVendor",
+    // The Context gatekeeper namespaces each workshop's shared data by a "sharingDomain" carried
+    // in its binding props (packages/gatekeeper-context/src/domain.ts). Using the preview's own
+    // origin — as manifest-lib.ts does with $PUBLIC_BASE_URL — keeps each preview's collections
+    // isolated from every other preview sharing the baseline gatekeeper.
+    ...(pkgName === "gatekeeper-context" ? { props: { sharingDomain: baseUrl } } : {}),
+  }));
 }
 
 // How the router calls gatekeepers: the default entrypoint, since it forwards whole HTTP
@@ -355,12 +340,14 @@ function applyGatekeeper(
 
 function applyBackend(
   config: StagingConfig,
-  { baseUrl, gatekeepers, systemWorkers }: PreviewContext,
+  { baseUrl, gatekeepers }: PreviewContext,
 ): void {
   // Injected rather than read from wrangler.jsonc, mirroring what manifest-lib.ts hardcodes for
   // every deployed backend (webFetch's toMarkdown conversion depends on it).
   config.ai = { binding: "WORKERS_AI" };
-  config.services = backendServices(gatekeepers, systemWorkers, baseUrl);
+  // The committed config already binds the backend's system workers; gatekeepers are discovered.
+  config.services =
+      [...(config.services ?? []), ...backendGatekeeperServices(gatekeepers, baseUrl)];
   // The origin is the only value the backend needs that is safe to write down here: ADMINS and the
   // Cloudflare Access pair are uploaded as *secrets* instead, out of band, because Wrangler prints
   // every plain-text var's value in its deploy summary and this workflow's logs are public. See
@@ -374,7 +361,7 @@ function applyBackend(
     vars: { ...config.vars },
     ...(config.unsafe ? { unsafe: config.unsafe } : {}),
     // preview.ts patches each entry's preview_id once the dependency previews exist.
-    services: backendServices(gatekeepers, systemWorkers, baseUrl),
+    services: structuredClone(config.services),
     kv_namespaces: previewResourceBindings(config.kv_namespaces),
     r2_buckets: previewResourceBindings(config.r2_buckets),
     worker_loaders: previewResourceBindings(config.worker_loaders),
@@ -426,9 +413,7 @@ export function buildPreviewConfigs({
   }
   const baseUrl = routerPreviewUrl(previewName, workersDevHost);
   const gatekeepers = packages.map((pkg) => pkg.name).filter(isGatekeeperPackage).toSorted();
-  const systemWorkers = packages.map((pkg) => pkg.name)
-      .filter((name) => SYSTEM_WORKERS.has(name)).toSorted();
-  const context: PreviewContext = { baseUrl, gatekeepers, systemWorkers };
+  const context: PreviewContext = { baseUrl, gatekeepers };
   const configs = new Map<string, StagingConfig>();
 
   for (const pkg of packages) {
@@ -456,7 +441,7 @@ export function buildPreviewConfigs({
     stripBaselineResources(config);
 
     if (isGatekeeperPackage(pkg.name)) applyGatekeeper(pkg.name, config, context);
-    else if (SYSTEM_WORKERS.has(pkg.name)) applySystem(config);
+    else if (isSystemPackage(pkg.name)) applySystem(config);
     else if (pkg.name === "workshop-backend") applyBackend(config, context);
     else if (pkg.name === "router") applyRouter(config, context);
     else throw new Error(`cannot build a preview config for package: ${pkg.name}`);

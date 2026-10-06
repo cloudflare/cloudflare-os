@@ -25,14 +25,15 @@ import { getDevServerConfig } from "./dev-server-config.ts";
 import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
-import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
+import {
+  isSystemPackage, type ServiceBinding, type WranglerBuild,
+} from "./release/manifest-lib.ts";
 import { vpRunEnv } from "./vp/concurrency.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 const WORKSHOP_BACKEND_DIR = join(PACKAGES_DIR, "workshop-backend");
-const SYSTEM_WORKER_NAMES = ["notification-proxy"];
 
 /** A gatekeeper package as {@link findGatekeepers} discovers it. */
 interface Gatekeeper {
@@ -106,7 +107,7 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
 await generateWorkerConfigs({ check: false });
 
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
-const systemWorkers = SYSTEM_WORKER_NAMES.map(name => ({
+const systemWorkers = readdirSync(PACKAGES_DIR).filter(isSystemPackage).map(name => ({
   name,
   dir: join(PACKAGES_DIR, name),
 }));
