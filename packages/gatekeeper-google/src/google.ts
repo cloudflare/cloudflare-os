@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -376,6 +376,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "your data.",
       providesAuth: true,
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>,
