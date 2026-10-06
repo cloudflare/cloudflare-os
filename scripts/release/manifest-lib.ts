@@ -170,7 +170,7 @@ export type ManifestBinding = { type: string; name: string } & Record<string, un
 /** Everything the manifest says about one worker in the release. */
 export interface WorkerEntry {
   /** Which role this worker plays in a deployment. */
-  kind: "backend" | "router" | "gatekeeper" | "system";
+  kind: "backend" | "router" | "gatekeeper";
   /** Gatekeepers only: the path segment the router routes `/gatekeeper/<shortName>/*` on. */
   shortName?: string;
   /** Whether the deploy wizard offers this worker for installation. */
@@ -318,7 +318,6 @@ export const DEFAULT_CRED_INPUTS: DeployInput[] = [
 ];
 
 const GATEKEEPER_PREFIX = "gatekeeper-";
-const SYSTEM_WORKERS = new Set(["notification-proxy"]);
 
 /** Read every deployable package and its Wrangler configuration, sorted by package name. */
 export function readDeployablePackages(packagesDir: string): DeployablePackage[] {
@@ -341,11 +340,6 @@ export function readDeployablePackages(packagesDir: string): DeployablePackage[]
 /** True when a deployable package is a gatekeeper worker. */
 export function isGatekeeperPackage(pkgName: string): boolean {
   return pkgName.startsWith(GATEKEEPER_PREFIX);
-}
-
-/** True when a deployable package is a platform-private system worker, reached only by core. */
-export function isSystemPackage(pkgName: string): boolean {
-  return SYSTEM_WORKERS.has(pkgName);
 }
 
 /** Return a gatekeeper package's vendor id used in its routed URL. */
@@ -399,7 +393,6 @@ function workerKind(pkgName: string): WorkerEntry["kind"] {
   if (pkgName === "workshop-backend") return "backend";
   if (pkgName === "router") return "router";
   if (isGatekeeperPackage(pkgName)) return "gatekeeper";
-  if (isSystemPackage(pkgName)) return "system";
   throw new Error(`cannot classify deployable package: ${pkgName}`);
 }
 
@@ -500,7 +493,7 @@ export function buildWorkerEntry(
     // The router routes /gatekeeper/<short>/* by scanning its own GATEKEEPER_* bindings
     // (default entrypoint — it forwards whole HTTP requests, not vendor RPC).
     gatekeeperBindingExpansion = { propsByPackage: {} };
-  } else if (kind === "gatekeeper") {
+  } else {
     vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${releaseShortName(pkgName)}`;
     installable = !NOT_INSTALLABLE.has(pkgName);
     if (installable) {
@@ -519,18 +512,13 @@ export function buildWorkerEntry(
       throw new Error(`${pkgName} is preinstalled but declares input(s); preinstalls run ` +
           `with no user interaction, so this release would be broken`);
     }
-  } else {
-    // Platform-private workers are deployed with core but receive no public route, gatekeeper
-    // binding expansion, or user-supplied inputs. Their operational configuration is injected by
-    // the trusted deploy service.
-    installable = false;
   }
 
   return {
     kind,
     ...(kind === "gatekeeper" ? { shortName: releaseShortName(pkgName) } : {}),
     installable,
-    ...(kind === "system" || PREINSTALL.has(pkgName) ? { preinstall: true } : {}),
+    ...(PREINSTALL.has(pkgName) ? { preinstall: true } : {}),
     ...(SINGLETON.has(pkgName) ? { singleton: true } : {}),
     mainModule,
     modules: modules.map(({ name, type, sha256, size }) => ({

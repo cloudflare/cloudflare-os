@@ -25,9 +25,7 @@ import { getDevServerConfig } from "./dev-server-config.ts";
 import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
-import {
-  isSystemPackage, type ServiceBinding, type WranglerBuild,
-} from "./release/manifest-lib.ts";
+import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
 import { vpRunEnv } from "./vp/concurrency.ts";
 
 const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -107,10 +105,6 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
 await generateWorkerConfigs({ check: false });
 
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
-const systemWorkers = readdirSync(PACKAGES_DIR).filter(isSystemPackage).map(name => ({
-  name,
-  dir: join(PACKAGES_DIR, name),
-}));
 
 // The Context Library (packages/gatekeeper-context) is discovered by findGatekeepers and bound
 // like any other gatekeeper (GATEKEEPER_CONTEXT -> GatekeeperVendor). Its describe() reports
@@ -390,18 +384,6 @@ for (const gk of gatekeepers) {
   }
 }
 
-// System workers are explicit: unlike GATEKEEPER_* workers they are never public router bindings
-// or agent capabilities. They still need a dev config with a package-relative build cwd because
-// Wrangler starts every config from the repository root.
-for (const worker of systemWorkers) {
-  const srcPath = join(worker.dir, "wrangler.jsonc");
-  const config = parse(readFileSync(srcPath, "utf8"));
-  config.build = devBuildConfig(config.build, worker.dir);
-  const outPath = join(worker.dir, "wrangler.dev.jsonc");
-  writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
-  console.log(`generated: ${outPath}`);
-}
-
 // Helper: "gatekeeper-github" -> "GATEKEEPER_GITHUB"
 function bindingName(gk: Gatekeeper): string {
   return gk.name.toUpperCase().replaceAll("-", "_");
@@ -632,7 +614,6 @@ const configs = [
   "wrangler.dev.jsonc",
   join("packages", "workshop-backend", "wrangler.dev.jsonc"),
   ...gatekeepers.map(gk => join(gk.dir, "wrangler.dev.jsonc")),
-  ...systemWorkers.map(worker => join(worker.dir, "wrangler.dev.jsonc")),
 ];
 
 const args = configs.flatMap(c => ["-c", c]);

@@ -101,10 +101,9 @@ function workshopConfig(
   // started. Rebuilding it in each fork would race on that directory.
   if (process.env.WORKSHOP_INTEGRATION_PREBUILT === "1") delete config.build;
 
-  // The checked-in config's only service is the notification proxy, which no suite exercises (no
-  // device is registered, so nothing is pushed); run-dev-server.ts adds one per gatekeeper. We bind
-  // only the gatekeepers the suite asked for, so buildGatekeeperVendorMap() discovers exactly those
-  // vendors and the observer-config prompt has no surprise rows.
+  // The checked-in config declares no services; run-dev-server.ts adds one per gatekeeper. We add
+  // only the ones the suite asked for, so buildGatekeeperVendorMap() discovers exactly those vendors
+  // and the observer-config prompt has no surprise rows.
   config.services = gatekeepers.map(gk => ({
     binding: `GATEKEEPER_${gk.binding}`,
     service: gk.name,

@@ -18,6 +18,7 @@ import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import { deliver, registerDevice } from "./notification-service.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -348,7 +349,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
     this.storage.notificationSubscriptionId.put(
-        await this.env.NOTIFICATION_DELIVERY.registerDevice(deviceRegistrationId));
+        await registerDevice(this.env, deviceRegistrationId));
   }
 
   /** Subscribe a visible authenticated client to live user notifications. */
@@ -377,7 +378,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     ]).finally(() => clearTimeout(timeout));
     let subscriptionId = this.storage.notificationSubscriptionId.get();
     if (!acknowledged && subscriptionId) {
-      await this.env.NOTIFICATION_DELIVERY.deliver(subscriptionId, notification);
+      await deliver(this.env, subscriptionId, notification);
     }
   }
 

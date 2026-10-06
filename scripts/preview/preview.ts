@@ -22,8 +22,8 @@
 // previous tier returned. Everything else — every URL in the config — is derived up front from
 // the router's preview name, which is deterministic, so the tiers only have to exchange ids.
 //
-// The router is the only worker with a hostname. Preview URLs are public, so the
-// others set `preview_urls: false` and are reached over service bindings alone; the
+// The router is the only one of the eighteen with a hostname. Preview URLs are public, so the
+// other seventeen set `preview_urls: false` and are reached over service bindings alone; the
 // deploy asserts that, since a URL appearing on one of them is a way around the router.
 //
 // Secrets — the backend's admins and the Cloudflare Access application that authenticates the
@@ -37,7 +37,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import {
-  gatekeeperShortName, isGatekeeperPackage, isSystemPackage, type DeployablePackage,
+  gatekeeperShortName, isGatekeeperPackage, type DeployablePackage,
 } from "../release/manifest-lib.ts";
 import {
   ROOT,
@@ -571,7 +571,6 @@ function writePreviewComment(
 
 function tiers(packages: readonly DeployablePackage[]): {
   gatekeepers: DeployablePackage[];
-  systemWorkers: DeployablePackage[];
   backend: DeployablePackage;
   router: DeployablePackage;
 } {
@@ -583,7 +582,6 @@ function tiers(packages: readonly DeployablePackage[]): {
   return {
     gatekeepers: packages.filter((pkg) => isGatekeeperPackage(pkg.name))
         .toSorted((a, b) => a.name.localeCompare(b.name)),
-    systemWorkers: packages.filter((pkg) => isSystemPackage(pkg.name)),
     backend: byName("workshop-backend"),
     router: byName("router"),
   };
@@ -591,30 +589,28 @@ function tiers(packages: readonly DeployablePackage[]): {
 
 async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
   // First, before a single config is written: a missing CF_ACCESS_AUD/CF_ACCESS_ISS has to fail
-  // here rather than after all previews are live with whatever auth they defaulted to, and a
+  // here rather than after eighteen previews are live with whatever auth they defaulted to, and a
   // gatekeeper's OAuth app split across a renamed secret rather than after that gatekeeper is live
   // holding half of one.
   const secrets = backendSecrets();
   const oauthApps = resolveGatekeeperSecrets();
   const { previewName, workersDevHost, baseUrl, packages } = generatePreviewConfigs();
-  const { gatekeepers, systemWorkers, backend, router } = tiers(packages);
+  const { gatekeepers, backend, router } = tiers(packages);
 
   if (dryRun) {
     console.log(`\ndry-run plan for preview "${previewName}" at ${baseUrl}:`);
-    console.log(`  tier 1 (${gatekeepers.length} gatekeepers and ` +
-        `${systemWorkers.length} system workers, concurrently):`);
+    console.log(`  tier 1 (${gatekeepers.length} gatekeepers, concurrently):`);
     for (const pkg of gatekeepers) {
       const oauth = oauthApps.get(pkg.name);
       console.log(`    ${pkg.name} ` +
           `(no hostname; served at ${baseUrl}/gatekeeper/${gatekeeperShortName(pkg.name)})` +
           (oauth ? `, holding the ${Object.keys(oauth).join(", ")} secrets` : ""));
     }
-    for (const pkg of systemWorkers) console.log(`    ${pkg.name} (platform-private system worker)`);
     console.log(`  tier 2: ${backend.name} (no hostname; served at ` +
         `${baseUrl}/api), bound to the tier 1 previews, holding the ` +
         `${Object.keys(secrets).join(", ")} secrets`);
     console.log(`  tier 3: ${router.name} -> ${baseUrl}, ` +
-        "bound to the backend and gatekeeper previews");
+        "bound to every preview above");
     return;
   }
 
@@ -623,9 +619,8 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
     await waitForAll([wrangler.ready, buildWorkspace()]);
 
     // Keyed by worker name, because that is what a service binding names.
-    const dependencyPreviews = await mapWithConcurrency(
-        [...gatekeepers, ...systemWorkers], GATEKEEPER_CONCURRENCY,
-        async (pkg): Promise<[string, string]> => {
+    const gatekeeperPreviews = await mapWithConcurrency(gatekeepers, GATEKEEPER_CONCURRENCY,
+        async (pkg) => {
           // Before this gatekeeper's preview, not after, and for the same reason the backend's go
           // before its own: a preview inherits the Preview base config as it stands when it is
           // created.
@@ -635,11 +630,10 @@ async function deploy({ dryRun }: { dryRun: boolean }): Promise<void> {
           assertNoPreviewUrl(pkg, preview.url);
           return [pkg.name, preview.id];
         });
-    const dependencyIds = Object.fromEntries(dependencyPreviews);
+    const gatekeeperIds = Object.fromEntries(gatekeeperPreviews);
 
-    patchPreviewServiceBindings(backend, dependencyIds);
-    patchPreviewServiceBindings(router, Object.fromEntries(
-        Object.entries(dependencyIds).filter(([name]) => isGatekeeperPackage(name))));
+    patchPreviewServiceBindings(backend, gatekeeperIds);
+    patchPreviewServiceBindings(router, gatekeeperIds);
     // Before the backend's preview, not after: a preview inherits the Preview base config as it
     // stands when it is created.
     await uploadPreviewSecrets(backend, wrangler.command, secrets);
@@ -665,11 +659,11 @@ async function remove({ dryRun }: { dryRun: boolean }): Promise<void> {
   // Regenerate rather than assume: `delete` runs in its own CI job with a fresh checkout, and
   // wrangler needs a config to know which worker and account the preview belongs to.
   const { packages } = generatePreviewConfigs({ previewName });
-  const { gatekeepers, systemWorkers, backend, router } = tiers(packages);
+  const { gatekeepers, backend, router } = tiers(packages);
 
   if (dryRun) {
     console.log(`\ndry-run: would delete preview "${previewName}" for ` +
-        [router, backend, ...gatekeepers, ...systemWorkers].map((pkg) => pkg.name).join(", "));
+        [router, backend, ...gatekeepers].map((pkg) => pkg.name).join(", "));
     return;
   }
 

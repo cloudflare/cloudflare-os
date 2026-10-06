@@ -5,8 +5,8 @@
 // gitignored (.gitignore) — they are build output, regenerated on every `preview.ts`
 // invocation.
 //
-// This is the preview-side counterpart of scripts/release/manifest-lib.ts: the same deployable
-// packages and binding topology, but resolved to concrete staging values instead of the
+// This is the preview-side counterpart of scripts/release/manifest-lib.ts: same 18 deployable
+// packages, same binding topology, but resolved to concrete staging values instead of the
 // manifest's `$PLACEHOLDER` templates. Where the deploy service would substitute
 // `$PUBLIC_BASE_URL`, a preview substitutes the router preview's workers.dev URL.
 //
@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  gatekeeperShortName, isGatekeeperPackage, isSystemPackage, readDeployablePackages,
+  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
   type BindingDecl, type DeployablePackage, type ObservabilityConfig, type ServiceBinding,
   type WranglerConfig,
 } from "../release/manifest-lib.ts";
@@ -345,9 +345,7 @@ function applyBackend(
   // Injected rather than read from wrangler.jsonc, mirroring what manifest-lib.ts hardcodes for
   // every deployed backend (webFetch's toMarkdown conversion depends on it).
   config.ai = { binding: "WORKERS_AI" };
-  // The committed config already binds the backend's system workers; gatekeepers are discovered.
-  config.services =
-      [...(config.services ?? []), ...backendGatekeeperServices(gatekeepers, baseUrl)];
+  config.services = backendGatekeeperServices(gatekeepers, baseUrl);
   // The origin is the only value the backend needs that is safe to write down here: ADMINS and the
   // Cloudflare Access pair are uploaded as *secrets* instead, out of band, because Wrangler prints
   // every plain-text var's value in its deploy summary and this workflow's logs are public. See
@@ -360,19 +358,13 @@ function applyBackend(
     observability: previewObservability(config),
     vars: { ...config.vars },
     ...(config.unsafe ? { unsafe: config.unsafe } : {}),
-    // preview.ts patches each entry's preview_id once the dependency previews exist.
-    services: structuredClone(config.services),
+    // preview.ts patches each entry's preview_id once the gatekeeper previews exist.
+    services: backendGatekeeperServices(gatekeepers, baseUrl),
     kv_namespaces: previewResourceBindings(config.kv_namespaces),
     r2_buckets: previewResourceBindings(config.r2_buckets),
     worker_loaders: previewResourceBindings(config.worker_loaders),
     ai: config.ai,
     ...(config.browser ? { browser: config.browser } : {}),
-  };
-}
-
-function applySystem(config: StagingConfig): void {
-  config.previews = {
-    observability: previewObservability(config),
   };
 }
 
@@ -441,7 +433,6 @@ export function buildPreviewConfigs({
     stripBaselineResources(config);
 
     if (isGatekeeperPackage(pkg.name)) applyGatekeeper(pkg.name, config, context);
-    else if (isSystemPackage(pkg.name)) applySystem(config);
     else if (pkg.name === "workshop-backend") applyBackend(config, context);
     else if (pkg.name === "router") applyRouter(config, context);
     else throw new Error(`cannot build a preview config for package: ${pkg.name}`);
