@@ -12,6 +12,7 @@ import { useDocumentTitle } from './useDocumentTitle'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
+import { latestReads } from './features/deployment-updates/latestReads'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -92,6 +93,9 @@ export default function AdminPage() {
   // The update status of a deployment the deploy flow installed, null for any other deployment.
   // Loaded beside the settings but never holding them up, so it may still be pending.
   const [updateStatus, setUpdateStatus] = useState<DeploymentUpdateStatus | null | 'pending'>('pending')
+  // Only the latest re-read applies, and a setting whose re-read a later one replaced is shown as
+  // saved only once that later one has applied.
+  const [reloadUpdateStatus] = useState(() => latestReads<DeploymentUpdateStatus | null>(setUpdateStatus))
 
   // The tab lives in the URL so the notice can link to one; changing it replaces the history entry
   // on the same route, which keeps this component and its drafts.
@@ -475,7 +479,13 @@ export default function AdminPage() {
               <Loader size="lg" />
             </div>
           )
-          : <AdminUpdatesPanel status={updateStatus} />
+          : (
+            <AdminUpdatesPanel
+              admin={admin.api}
+              status={updateStatus}
+              onChanged={() => reloadUpdateStatus(() => admin.api.getUpdateStatus())}
+            />
+          )
       )}
 
       {/* Standard output formats */}

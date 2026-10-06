@@ -10,7 +10,10 @@ import { logRpcFailure } from '../../rpcErrors'
  */
 export const useUpdateStatus = (): DeploymentUpdateStatus | null => {
   const { authenticatedApi, isAdmin } = useAuthenticatedApi()
-  const [status, setStatus] = useState<DeploymentUpdateStatus | null>(null)
+  // Kept with the connection it was read over, so a reconnect (after an update, say) shows no
+  // notice until the new connection's read answers, rather than the old connection's.
+  const [read, setRead] =
+    useState<{ api: typeof authenticatedApi; status: DeploymentUpdateStatus | null } | null>(null)
 
   useEffect(() => {
     if (!isAdmin) return
@@ -34,11 +37,11 @@ export const useUpdateStatus = (): DeploymentUpdateStatus | null => {
         return await api.getUpdateStatus()
       })
       .then(
-        (next) => { if (!cancelled) setStatus(next) },
+        (next) => { if (!cancelled) setRead({ api: authenticatedApi, status: next }) },
         (err) => {
           if (cancelled) return
           logRpcFailure('Failed to check for a deployment update:', err)
-          setStatus(null)
+          setRead({ api: authenticatedApi, status: null })
         },
       )
       .finally(release)
@@ -49,5 +52,5 @@ export const useUpdateStatus = (): DeploymentUpdateStatus | null => {
     }
   }, [authenticatedApi, isAdmin])
 
-  return isAdmin ? status : null
+  return isAdmin && read?.api === authenticatedApi ? read.status : null
 }

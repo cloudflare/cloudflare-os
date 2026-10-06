@@ -104,21 +104,41 @@ describe('useUpdateStatus', () => {
     expect(admin[Symbol.dispose]).toHaveBeenCalledTimes(1)
   })
 
-  it('disposes the admin stub at once when unmounted mid-call, and keeps no late answer', async () => {
+  it('disposes the admin stub at once when unmounted mid-call', async () => {
     const pending = deferred<DeploymentUpdateStatus | null>()
     const admin = fakeAdmin(() => pending.promise)
     await render(fakeAuthenticatedApi(async () => admin), true)
     expect(admin.getUpdateStatus).toHaveBeenCalledTimes(1)
-    const rendersBeforeUnmount = seen.length
 
     act(() => root.unmount())
     expect(admin[Symbol.dispose]).toHaveBeenCalledTimes(1)
 
     await act(async () => { pending.resolve(testUpdateStatus()) })
     expect(admin[Symbol.dispose]).toHaveBeenCalledTimes(1)
-    expect(seen.length).toBe(rendersBeforeUnmount)
     root = createRoot(container) // for afterEach, which unmounts it
   })
+
+  it.each(['answers', 'fails'] as const)(
+    'keeps what a new connection read when the old connection’s call %s late',
+    async (outcome) => {
+      const pending = deferred<DeploymentUpdateStatus | null>()
+      const first = fakeAdmin(() => pending.promise)
+      await render(fakeAuthenticatedApi(async () => first), true)
+
+      const second = fakeAdmin(async () => testUpdateStatus({ latestReleaseId: 'r102-ccccccc' }))
+      await render(fakeAuthenticatedApi(async () => second), true)
+      expect(first[Symbol.dispose]).toHaveBeenCalledTimes(1)
+      expect(latest()?.latestReleaseId).toBe('r102-ccccccc')
+
+      await act(async () => {
+        if (outcome === 'answers') pending.resolve(testUpdateStatus({ latestReleaseId: 'r101-bbbbbbb' }))
+        else pending.reject(new Error('connection lost'))
+      })
+
+      expect(latest()?.latestReleaseId).toBe('r102-ccccccc')
+      expect(auth.logRpcFailure).not.toHaveBeenCalled()
+    },
+  )
 
   it('disposes a stub minted after the run was cancelled without calling it', async () => {
     const minting = deferred<unknown>()
@@ -157,6 +177,22 @@ describe('useUpdateStatus', () => {
     expect(latest()?.latestReleaseId).toBe('r102-ccccccc')
     expect(first[Symbol.dispose]).toHaveBeenCalledTimes(1)
     expect(second[Symbol.dispose]).toHaveBeenCalledTimes(1)
+  })
+
+  // After an update the backend restarts and the session reconnects; until the new connection
+  // answers, the old notice would advertise the release the deployment now runs.
+  it('reports null after a reconnect until the new connection’s read answers', async () => {
+    const first = fakeAdmin(async () => testUpdateStatus({ latestReleaseId: 'r101-bbbbbbb' }))
+    await render(fakeAuthenticatedApi(async () => first), true)
+    expect(latest()?.latestReleaseId).toBe('r101-bbbbbbb')
+
+    let answer!: (status: DeploymentUpdateStatus) => void
+    const second = fakeAdmin(() => new Promise((resolve) => { answer = resolve }))
+    await render(fakeAuthenticatedApi(async () => second), true)
+
+    expect(latest()).toBeNull()
+    await act(async () => answer(testUpdateStatus({ latestReleaseId: 'r102-ccccccc' })))
+    expect(latest()?.latestReleaseId).toBe('r102-ccccccc')
   })
 
   it('reports null once the user is no longer an admin', async () => {
