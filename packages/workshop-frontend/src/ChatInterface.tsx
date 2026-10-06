@@ -5370,9 +5370,18 @@ function ChatInterface({
                             className="min-w-0 flex-1 bg-transparent text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                           />
                         ) : (
-                          <span className="truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
+                          // The row's click handler serves pointer users; this button is the keyboard entry point.
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onNavigateToChat(chat.id);
+                            }}
+                            aria-current={sidebarMode && chat.id === selectedChatId ? "true" : undefined}
+                            className="-my-1 min-w-0 cursor-pointer truncate rounded-sm py-1 text-left text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-contrast"
+                          >
                             {chat.title}
-                          </span>
+                          </button>
                         )}
                         {!isRenaming && chat.activeAgent ? (
                           <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-brand">
