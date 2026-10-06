@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useKumoToastManager } from "@cloudflare/kumo";
+import { useRouter } from "@tanstack/react-router";
 import { RpcStub, RpcTarget } from "capnweb";
 import type {
   AuthenticatedApi,
@@ -46,6 +47,8 @@ export const NotificationBridge = ({
   const toasts = useKumoToastManager();
   const addToast = useRef(toasts.add);
   addToast.current = toasts.add;
+  const router = useRouter();
+  const askedNative = useRef(false);
 
   useEffect(() => {
     let lastRegistered: string | undefined;
@@ -74,9 +77,15 @@ export const NotificationBridge = ({
       void register(eventDeviceRegistration(event));
     };
 
-    void register(nativeWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__);
+    let injected = nativeWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
+    void register(injected);
     window.addEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
-    nativeWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+    // Each id costs a central registration, and this Effect reruns on every reconnect: ask at most
+    // once per mount, and not at all when native already injected one.
+    if (!askedNative.current) {
+      askedNative.current = true;
+      if (!injected) nativeWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+    }
     return () => window.removeEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
   }, [authenticatedApi]);
 
@@ -89,15 +98,17 @@ export const NotificationBridge = ({
       if (document.visibilityState !== "visible") return;
 
       let subscriber = new NotificationSubscriberImpl(notification => {
+        let { id, kind, workspaceId, chatId, chatTitle } = notification;
+        let completed = kind === "taskCompleted";
         addToast.current({
-          id: notification.id,
-          title: notification.kind === "taskCompleted"
-            ? `${notification.chatTitle || "Task"} completed`
-            : `${notification.chatTitle || "Task"} needs permission`,
-          variant: notification.kind === "taskCompleted" ? "success" : "info",
+          id,
+          title: `${chatTitle || "Task"} ${completed ? "completed" : "needs permission"}`,
+          variant: completed ? "success" : "info",
           actions: [{
             children: "Open task",
-            onClick: () => window.location.assign(notification.targetPath),
+            onClick: () => router.navigate({
+              to: "/workspace/$id", params: { id: workspaceId }, search: { chat: chatId },
+            }),
           }],
         });
       }) as unknown as RpcStub<NotificationSubscriber>;
@@ -115,7 +126,7 @@ export const NotificationBridge = ({
       document.removeEventListener("visibilitychange", updateSubscription);
       subscription?.[Symbol.dispose]();
     };
-  }, [authenticatedApi]);
+  }, [authenticatedApi, router]);
 
   return null;
 };
