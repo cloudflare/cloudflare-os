@@ -1,45 +1,67 @@
 // @vitest-environment jsdom
+/* eslint-disable react/react-in-jsx-scope */
 
-import React, { act } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuthenticatedApi, NotificationSubscriber } from "@gadgets/workshop-shared/api";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { RpcStub } from "capnweb";
+import type {
+  AuthenticatedApi, NotificationSubscriber, UserNotification,
+} from "@gadgets/workshop-shared/api";
 import { NotificationBridge } from "./NotificationBridge";
 
-const addToast = vi.fn<(options: unknown) => void>();
+const addToast = vi.fn<(options: { actions: { onClick: () => void }[] }) => void>();
+const router = { navigate: vi.fn<(options: object) => void>() };
 
-vi.mock("@cloudflare/kumo", () => ({
-  useKumoToastManager: () => ({ add: addToast }),
-}));
+vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
+vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
 
-type TestSubscription = RpcStub<{}> & { dispose: ReturnType<typeof vi.fn> };
-
-const subscription = (): TestSubscription => {
-  let dispose = vi.fn<() => void>();
-  let catchResult = vi.fn<(handler: (error: unknown) => void) => unknown>();
-  let value = {
-    catch: catchResult,
-    dispose,
-    [Symbol.dispose]: dispose,
-  };
-  catchResult.mockReturnValue(value);
-  return value as unknown as TestSubscription;
+const notification: UserNotification = {
+  id: "notification-1",
+  kind: "taskCompleted",
+  workspaceId: "workspace-1",
+  chatId: 1,
+  chatTitle: "Build the demo",
 };
+
+const setVisibility = (visibilityState: DocumentVisibilityState) => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: visibilityState });
+  document.dispatchEvent(new Event("visibilitychange"));
+};
+
+type Subscribe = (subscriber: RpcStub<NotificationSubscriber>) => unknown;
 
 describe("NotificationBridge", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let subscribers: RpcStub<NotificationSubscriber>[];
+  let dispose: Mock<() => void>;
+  let authenticatedApi: {
+    registerNotificationDevice: Mock<(deviceRegistrationId: string) => Promise<void>>;
+    subscribeToNotifications: Mock<Subscribe>;
+  };
+
+  const render = () => act(async () => root.render(
+    <NotificationBridge
+      authenticatedApi={authenticatedApi as unknown as RpcStub<AuthenticatedApi>} />,
+  ));
 
   beforeEach(() => {
+    addToast.mockClear();
+    router.navigate.mockClear();
+    setVisibility("visible");
+    subscribers = [];
+    dispose = vi.fn<() => void>();
+    authenticatedApi = {
+      registerNotificationDevice: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(),
+      subscribeToNotifications: vi.fn<Subscribe>(subscriber => {
+        subscribers.push(subscriber);
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]: dispose });
+      }),
+    };
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    addToast.mockClear();
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    delete (window as NativeWindow).__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
-    delete (window as NativeWindow).__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__;
-    delete (window as NativeWindow).webkit;
   });
 
   afterEach(async () => {
@@ -47,79 +69,62 @@ describe("NotificationBridge", () => {
     container.remove();
   });
 
-  it("registers native subscriptions and subscribes only while visible", async () => {
-    let liveSubscription = subscription();
-    let registerNotificationDevice = vi.fn<(id: string) => Promise<void>>()
-      .mockResolvedValue(undefined);
-    let subscriber: RpcStub<NotificationSubscriber> | undefined;
-    let subscribeToNotifications = vi.fn<
-      (next: RpcStub<NotificationSubscriber>) => TestSubscription
-    >((next) => {
-      subscriber = next;
-      return liveSubscription;
+  it("keeps one subscription across rerenders and declines while hidden", async () => {
+    await render();
+    // Kumo returns a new toast manager whenever its consumer renders; resubscribing on each one
+    // would fan a single notification out through accumulated subscribers.
+    await render();
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
+
+    await act(async () => setVisibility("hidden"));
+    expect(dispose).toHaveBeenCalledTimes(1);
+    await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it("opens a notified task in the app", async () => {
+    await render();
+    await act(() => subscribers[0].notify(notification));
+    addToast.mock.calls[0][0].actions[0].onClick();
+    expect(router.navigate).toHaveBeenCalledWith({
+      to: "/workspace/$id", params: { id: "workspace-1" }, search: { chat: 1 },
     });
-    let authenticatedApi = {
-      registerNotificationDevice,
-      subscribeToNotifications,
-    } as unknown as RpcStub<AuthenticatedApi>;
-    let requestSubscription = vi.fn<() => void>();
-    let notificationReady = vi.fn<(message: { type: "ready" | "failed" }) => void>();
-    (window as NativeWindow).__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__ =
-      requestSubscription;
-    (window as NativeWindow).webkit = {
-      messageHandlers: { cloudflareOSNotificationReady: { postMessage: notificationReady } },
-    };
+  });
 
-    await act(async () => root.render(React.createElement(
-      NotificationBridge, { authenticatedApi },
-    )));
-    expect(subscribeToNotifications).toHaveBeenCalledTimes(1);
-    expect(requestSubscription).toHaveBeenCalledTimes(1);
-
-    // Kumo returns a new manager wrapper whenever its consumer renders. It must not restart this
-    // long-lived subscription or one completion fans out through accumulated subscribers.
-    await act(async () => root.render(React.createElement(
-      NotificationBridge, { authenticatedApi },
-    )));
-    expect(subscribeToNotifications).toHaveBeenCalledTimes(1);
-    expect(liveSubscription.dispose).not.toHaveBeenCalled();
-
+  it("registers the native app's device and reports the outcome", async () => {
+    let postMessage = vi.fn<(message: { type: string }) => void>();
+    Object.assign(window, {
+      webkit: { messageHandlers: { cloudflareOSNotificationReady: { postMessage } } },
+    });
+    await render();
     await act(async () => window.dispatchEvent(new CustomEvent(
       "cloudflare-os:notification-device-registration",
-      { detail: { deviceRegistrationId: "a".repeat(64) } },
+      { detail: { deviceRegistrationId: "registration-1" } },
     )));
-    expect(registerNotificationDevice).toHaveBeenCalledWith("a".repeat(64));
-    expect(notificationReady).toHaveBeenCalledWith({ type: "ready" });
+    expect(authenticatedApi.registerNotificationDevice).toHaveBeenCalledWith("registration-1");
+    expect(postMessage).toHaveBeenCalledWith({ type: "ready" });
+    Reflect.deleteProperty(window, "webkit");
+  });
 
-    await act(async () => subscriber!.notify({
-      id: "notification-1",
-      kind: "taskCompleted",
-      workspaceId: "workspace-1",
-      chatId: 1,
-      workspaceTitle: "Demo",
-      chatTitle: "Build the demo",
-      createdAt: new Date(),
-      targetPath: "/workspace/workspace-1?chat=1",
-    }));
-    expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
-      id: "notification-1",
-      title: "Build the demo completed",
-      variant: "success",
-      actions: [expect.objectContaining({ children: "Open task" })],
-    }));
-    let toast = addToast.mock.calls[0]?.[0] as {
-      actions: [{ onClick: () => void }];
-    };
-    expect(toast.actions[0].onClick).toBeTypeOf("function");
+  it("asks the native app for a registration once, not again on reconnect", async () => {
+    let request = vi.fn<() => void>();
+    Object.assign(window, { __CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__: request });
+    await render();
+    authenticatedApi = { ...authenticatedApi };
+    await render();
+    expect(request).toHaveBeenCalledTimes(1);
+    Reflect.deleteProperty(window, "__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__");
+  });
 
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
-    expect(liveSubscription.dispose).toHaveBeenCalledTimes(1);
+  it("registers an injected id without asking for another", async () => {
+    let request = vi.fn<() => void>();
+    Object.assign(window, {
+      __CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__: "registration-1",
+      __CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__: request,
+    });
+    await render();
+    expect(authenticatedApi.registerNotificationDevice).toHaveBeenCalledWith("registration-1");
+    expect(request).not.toHaveBeenCalled();
+    Reflect.deleteProperty(window, "__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__");
   });
 });
-
-type NativeWindow = Window & {
-  __CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__?: string;
-  __CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?: () => void;
-  webkit?: unknown;
-};
