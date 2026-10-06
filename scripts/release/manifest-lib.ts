@@ -343,6 +343,11 @@ export function isGatekeeperPackage(pkgName: string): boolean {
   return pkgName.startsWith(GATEKEEPER_PREFIX);
 }
 
+/** True when a deployable package is a platform-private system worker, reached only by core. */
+export function isSystemPackage(pkgName: string): boolean {
+  return SYSTEM_WORKERS.has(pkgName);
+}
+
 /** Return a gatekeeper package's vendor id used in its routed URL. */
 export function gatekeeperShortName(pkgName: string): string {
   return pkgName.slice(GATEKEEPER_PREFIX.length);
@@ -394,7 +399,7 @@ function workerKind(pkgName: string): WorkerEntry["kind"] {
   if (pkgName === "workshop-backend") return "backend";
   if (pkgName === "router") return "router";
   if (isGatekeeperPackage(pkgName)) return "gatekeeper";
-  if (SYSTEM_WORKERS.has(pkgName)) return "system";
+  if (isSystemPackage(pkgName)) return "system";
   throw new Error(`cannot classify deployable package: ${pkgName}`);
 }
 

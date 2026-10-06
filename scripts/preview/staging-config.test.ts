@@ -394,16 +394,16 @@ test("every gatekeeper is bound to the backend by RPC and to the router by HTTP"
   // router and the backend actually scan for — is the uppercased form.
   const backend = previewsOf(configs, "workshop-backend").services;
   assert.ok(backend, "the backend preview declares no service bindings");
-  assert.deepEqual(backend.map((service) => service.service),
-      [...gatekeepers, "notification-proxy"]);
-  for (const [index, service] of backend.slice(0, gatekeepers.length).entries()) {
+  const [notificationProxy, ...gatekeeperServices] = backend;
+  assert.deepEqual(notificationProxy, {
+    binding: "NOTIFICATION_DELIVERY",
+    service: "notification-proxy",
+  }, "the backend keeps its committed system-worker binding");
+  assert.deepEqual(gatekeeperServices.map((service) => service.service), gatekeepers);
+  for (const [index, service] of gatekeeperServices.entries()) {
     assert.equal(service.binding, gatekeeperBindingName(gatekeepers[index]));
     assert.equal(service.entrypoint, "GatekeeperVendor", service.service);
   }
-  assert.deepEqual(backend.at(-1), {
-    binding: "NOTIFICATION_DELIVERY",
-    service: "notification-proxy",
-  });
 
   const router = previewsOf(configs, "router").services;
   assert.ok(router, "the router preview declares no service bindings");

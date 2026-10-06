@@ -37,7 +37,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import {
-  gatekeeperShortName, isGatekeeperPackage, type DeployablePackage,
+  gatekeeperShortName, isGatekeeperPackage, isSystemPackage, type DeployablePackage,
 } from "../release/manifest-lib.ts";
 import {
   ROOT,
@@ -583,7 +583,7 @@ function tiers(packages: readonly DeployablePackage[]): {
   return {
     gatekeepers: packages.filter((pkg) => isGatekeeperPackage(pkg.name))
         .toSorted((a, b) => a.name.localeCompare(b.name)),
-    systemWorkers: packages.filter((pkg) => pkg.name === "notification-proxy"),
+    systemWorkers: packages.filter((pkg) => isSystemPackage(pkg.name)),
     backend: byName("workshop-backend"),
     router: byName("router"),
   };
