@@ -23,6 +23,7 @@ import {
   type ResourceConfiguratorFrame,
   type SupportedResource,
   type VendorDescription,
+  workerVersionTag,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
@@ -229,6 +230,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "and reviews, and pull from and push to the projects you choose.",
       providesAuth: true,
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>,

@@ -18,6 +18,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import { search } from "./search.js";
 import type { WebSearchResult, WebSearchSession } from "./types.js";
 import TYPES_CODE from "./types.txt";
@@ -189,6 +190,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       autoProvisionsAccount: true,
       providesAuth: false,
     };
+  }
+
+  /** The version tag of this Worker's running version, for the deployment's admins. */
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   /** Mints a new account. All accounts are alike: none holds credentials or state. */

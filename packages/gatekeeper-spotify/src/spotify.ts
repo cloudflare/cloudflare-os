@@ -3,6 +3,7 @@ import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import {
   ApprovalQueue,
   stripTrailingSlashes,
+  workerVersionTag,
   type AccountDescription,
   type ConnectHandoff,
   type Gatekeeper,
@@ -482,6 +483,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
         "library and playlists, and control playback on your devices. Grant whole-account access " +
         "or scope a Gadget to a single playlist.",
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(
