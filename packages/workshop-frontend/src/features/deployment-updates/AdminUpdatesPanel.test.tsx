@@ -10,9 +10,12 @@ import type { AdminApi, DeploymentUpdateStatus } from '@gadgets/workshop-shared/
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { testUpdateStatus } from './updateStatusFixture'
 
-const { addToast } = vi.hoisted(() => ({
+const { addToast, probeRouterTag } = vi.hoisted(() => ({
   addToast: vi.fn<(toast: { title: string; description?: string; variant: string }) => void>(),
+  probeRouterTag: vi.fn<() => Promise<void>>(async () => {}),
 }))
+
+vi.mock('./probeRouterTag', () => ({ probeRouterTag }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cloudflare/kumo')>()),
@@ -115,6 +118,11 @@ describe('AdminUpdatesPanel', () => {
 
   const updateLink = () =>
     [...container.querySelectorAll('a')].find(link => link.textContent?.trim() === 'Update')
+
+  // The outermost element whose text begins with the notice's title: the notice itself.
+  const unfinishedNotice = () =>
+    [...container.querySelectorAll('div')]
+      .find(element => element.textContent?.startsWith('An update did not finish'))
 
   const button = (name: string) => {
     const element = [...container.querySelectorAll('button')]
@@ -235,20 +243,57 @@ describe('AdminUpdatesPanel', () => {
       expect(container.querySelector('a')).toBeNull()
     })
 
-    it('warns, as an alert, that a modified deployment cannot be upgraded', async () => {
-      await render(testUpdateStatus({ modified: true, notify: false }))
+    it('warns, as an alert, that a modified deployment cannot be upgraded, naming its modified Workers', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend', 'google2', 'router'],
+        notify: false,
+      }))
 
       const alert = container.querySelector('[role="alert"]')
       expect(alert?.textContent).toContain('This deployment was changed outside the deploy flow')
+      expect(alert?.textContent)
+        .toContain('Not running what the deploy flow installed: the backend, the “google2” gatekeeper, and the router.')
       expect(alert?.textContent).toContain('refuse to upgrade')
       // Still offered: the deploy flow explains the refusal itself.
       expect(updateLink()).toBeDefined()
     })
 
-    it('shows no warning for an unmodified deployment', async () => {
-      await render(testUpdateStatus({ modified: false }))
+    it('says, apart from any warning, that an update did not finish, naming the Workers behind', async () => {
+      await render(testUpdateStatus({ unfinishedWorkers: ['github', 'router'] }))
+
+      const notice = unfinishedNotice()
+      expect(notice?.textContent)
+        .toContain('Still running another release of this deployment: the “github” gatekeeper and the router.')
+      expect(notice?.textContent).toContain('The deploy flow can finish the update.')
+      expect(notice?.getAttribute('role')).not.toBe('alert')
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(updateLink()).toBeDefined()
+    })
+
+    it('shows both the warning and the unfinished update when both apply, without contradicting the refusal', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend'],
+        unfinishedWorkers: ['router'],
+        notify: false,
+      }))
+
+      expect(container.querySelector('[role="alert"]')?.textContent)
+        .toContain('Not running what the deploy flow installed: the backend.')
+      const notice = unfinishedNotice()?.textContent
+      expect(notice).toContain('Still running another release of this deployment: the router.')
+      expect(notice)
+        .toContain('The deploy flow can finish the update once the Workers changed outside it are restored.')
+      expect(notice).not.toContain('The deploy flow can finish the update.')
+    })
+
+    it('shows neither a warning nor an unfinished update for a deployment that runs what was installed', async () => {
+      await render(testUpdateStatus({ modified: false, modifiedWorkers: [], unfinishedWorkers: [] }))
 
       expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(unfinishedNotice()).toBeUndefined()
+      expect(container.textContent).not.toContain('Still running another release')
     })
   })
 
@@ -262,6 +307,18 @@ describe('AdminUpdatesPanel', () => {
       expect(onChanged).toHaveBeenCalledOnce()
       expect(checkForUpdates.mock.invocationCallOrder[0])
         .toBeLessThan(onChanged.mock.invocationCallOrder[0])
+    })
+
+    // The status names a modified router by the tag the backend recorded for it.
+    it('has the backend record the router’s tag before checking', async () => {
+      probeRouterTag.mockClear()
+      const { checkForUpdates } = await render()
+
+      await click(button('Check now'))
+
+      expect(probeRouterTag).toHaveBeenCalledOnce()
+      expect(probeRouterTag.mock.invocationCallOrder[0])
+        .toBeLessThan(checkForUpdates.mock.invocationCallOrder[0]!)
     })
 
     it('announces the update a check found', async () => {

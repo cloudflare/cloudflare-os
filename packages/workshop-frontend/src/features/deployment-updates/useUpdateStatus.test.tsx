@@ -10,10 +10,12 @@ import { testUpdateStatus } from './updateStatusFixture'
 const auth = vi.hoisted(() => ({
   value: { authenticatedApi: {} as unknown, isAdmin: false },
   logRpcFailure: vi.fn<(message: string, err: unknown) => boolean>(),
+  probeRouterTag: vi.fn<() => Promise<void>>(async () => {}),
 }))
 
 vi.mock('../../AuthContext', () => ({ useAuthenticatedApi: () => auth.value }))
 vi.mock('../../rpcErrors', () => ({ logRpcFailure: auth.logRpcFailure }))
+vi.mock('./probeRouterTag', () => ({ probeRouterTag: auth.probeRouterTag }))
 
 import { useUpdateStatus } from './useUpdateStatus'
 
@@ -93,6 +95,18 @@ describe('useUpdateStatus', () => {
     expect(admin.getUpdateStatus).toHaveBeenCalledTimes(1)
     expect(admin[Symbol.dispose]).toHaveBeenCalledTimes(1)
     expect(latest()).toEqual(status)
+  })
+
+  // The status names a modified router by the tag the backend recorded for it.
+  it('has the backend record the router’s tag before reading the status', async () => {
+    auth.probeRouterTag.mockClear()
+    const admin = fakeAdmin(async () => testUpdateStatus())
+
+    await render(fakeAuthenticatedApi(async () => admin), true)
+
+    expect(auth.probeRouterTag).toHaveBeenCalledOnce()
+    expect(auth.probeRouterTag.mock.invocationCallOrder[0])
+      .toBeLessThan(admin.getUpdateStatus.mock.invocationCallOrder[0]!)
   })
 
   it('reads null for a deployment the deploy flow did not install', async () => {
