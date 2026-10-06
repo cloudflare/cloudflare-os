@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { AdminSettings } from "../src/admin-settings.js";
+import { MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS } from "@gadgets/workshop-shared/api";
 import {
   deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, type DeployServiceInstall,
+  type UpdateSettings,
 } from "../src/deployment-updates.js";
 import type { UpdateCheck } from "../src/storage-schema/admin-settings-storage.js";
 import type { UserDirectoryDurableObject } from "../src/user-directory.js";
@@ -14,7 +16,8 @@ declare module "cloudflare:workers" {
   }
 }
 
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 const CHECK_URL = "https://deploy.example/api/releases/latest";
 const INSTALL: DeployServiceInstall = {
   releaseId: "r10-aaaaaaa",
@@ -25,6 +28,13 @@ const INSTALL: DeployServiceInstall = {
 const VERSION = { id: "version-id", tag: "tag-r10", timestamp: "2026-10-01T00:00:00.000Z" };
 const DEPLOYED = { CLOUDFLARE_OS_DEPLOYMENT: INSTALL, CF_VERSION_METADATA: VERSION };
 const T0 = Date.UTC(2026, 9, 5, 12);
+const SETTINGS: UpdateSettings = {
+  updateChecksEnabled: true, updateCheckIntervalMinutes: 60, updateMinimumAgeHours: 24,
+  updateNoticeSnoozeHours: 24,
+};
+// How a status reports SETTINGS.
+const REPORTED =
+    { checksEnabled: true, checkIntervalMinutes: 60, minimumAgeHours: 24, noticeSnoozeHours: 24 };
 
 function envWith(value: unknown): Cloudflare.Env {
   return { CLOUDFLARE_OS_DEPLOYMENT: value } as unknown as Cloudflare.Env;
@@ -218,45 +228,45 @@ describe("deploymentUpdateStatus", () => {
     ["no binding, where a tag is recorded", undefined, "tag-r10", true],
   ])("with %s, modified is %s", (_label, runningTag, versionTag, modified) => {
     const status = deploymentUpdateStatus(
-        { ...INSTALL, versionTag }, available(48 * HOUR), runningTag, T0);
+        { ...INSTALL, versionTag }, SETTINGS, available(48 * HOUR), runningTag, T0);
     expect(status.modified).toBe(modified);
     expect(status.notify).toBe(!modified);
   });
 
   it("reports no update before any check", () => {
-    expect(deploymentUpdateStatus(INSTALL, null, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, null, "tag-r10", T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      noticeSnoozeHours: 24, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("ignores a check made for another release", () => {
     const stale = { ...available(48 * HOUR), from: "r09-0000000" };
-    expect(deploymentUpdateStatus(INSTALL, stale, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, stale, "tag-r10", T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      noticeSnoozeHours: 24, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("ignores a failed attempt with no success for this release", () => {
-    expect(deploymentUpdateStatus(INSTALL, { from: INSTALL.releaseId, attemptedAt: T0 },
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, { from: INSTALL.releaseId, attemptedAt: T0 },
         "tag-r10", T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      noticeSnoozeHours: 24, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("reports an up-to-date check without notifying", () => {
     const check = checked({ latestReleaseId: INSTALL.releaseId, upgradeAvailable: false });
-    expect(deploymentUpdateStatus(INSTALL, check, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, check, "tag-r10", T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: INSTALL.releaseId,
-      updateAvailable: false, notify: false, noticeSnoozeHours: 24, modified: false,
+      updateAvailable: false, notify: false, ...REPORTED, modified: false,
       updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0 - HOUR),
     });
   });
 
   it("reports an update but does not notify while modified", () => {
-    const status = deploymentUpdateStatus(INSTALL, available(48 * HOUR), "edited", T0);
+    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(48 * HOUR), "edited", T0);
     expect(status).toMatchObject({ updateAvailable: true, modified: true, notify: false });
   });
 
@@ -266,11 +276,43 @@ describe("deploymentUpdateStatus", () => {
     ["exactly 24h", 24 * HOUR, true],
     ["25h", 25 * HOUR, true],
   ])("notifies of an update available for %s: %s", (_label, sinceMs, notify) => {
-    expect(deploymentUpdateStatus(INSTALL, available(sinceMs), "tag-r10", T0)).toStrictEqual({
+    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(sinceMs), "tag-r10", T0);
+    expect(status).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12", updateAvailable: true,
-      availableSince: new Date(T0 - sinceMs), notify, noticeSnoozeHours: 24, modified: false,
+      availableSince: new Date(T0 - sinceMs), notify, ...REPORTED, modified: false,
       updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0 - HOUR),
     });
+  });
+
+  it("reports the settings it is given", () => {
+    const settings = {
+      updateChecksEnabled: false, updateCheckIntervalMinutes: 1, updateMinimumAgeHours: 0,
+      updateNoticeSnoozeHours: 720,
+    };
+    expect(deploymentUpdateStatus(INSTALL, settings, null, "tag-r10", T0)).toMatchObject({
+      checksEnabled: false, checkIntervalMinutes: 1, minimumAgeHours: 0, noticeSnoozeHours: 720,
+    });
+  });
+
+  it("does not notify while automatic checks are off", () => {
+    const off = { ...SETTINGS, updateChecksEnabled: false };
+    expect(deploymentUpdateStatus(INSTALL, off, available(48 * HOUR), "tag-r10", T0))
+        .toMatchObject({ updateAvailable: true, notify: false, checksEnabled: false });
+  });
+
+  it("notifies at once with a minimum age of 0", () => {
+    const atOnce = { ...SETTINGS, updateMinimumAgeHours: 0 };
+    expect(deploymentUpdateStatus(INSTALL, atOnce, available(0), "tag-r10", T0).notify).toBe(true);
+  });
+
+  it.each([
+    ["1ms short of 3h", 3 * HOUR - 1, false],
+    ["exactly 3h", 3 * HOUR, true],
+  ])("with a minimum age of 3 hours, notifies of an update available for %s: %s",
+      (_label, sinceMs, notify) => {
+    const threeHours = { ...SETTINGS, updateMinimumAgeHours: 3 };
+    expect(deploymentUpdateStatus(INSTALL, threeHours, available(sinceMs), "tag-r10", T0).notify)
+        .toBe(notify);
   });
 });
 
@@ -306,7 +348,7 @@ describe("AdminSettings.getUpdateStatus", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("checks once, serves the check for 6 hours, then checks again", async () => {
+  it("checks once, serves the check for the default hour, then checks again", async () => {
     stubClock();
     const { requests } = stubFetch(() => release(NEWER));
     const inDo = adminSettingsStorage();
@@ -315,18 +357,68 @@ describe("AdminSettings.getUpdateStatus", () => {
     expect(requests).toHaveLength(1);
     expect(first).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12-ccccccc", updateAvailable: true,
-      availableSince: new Date(NEWER.availableSince), notify: true, noticeSnoozeHours: 24,
+      availableSince: new Date(NEWER.availableSince), notify: true, ...REPORTED,
       modified: false, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
     });
 
-    now = T0 + 6 * HOUR - 1;
+    now = T0 + HOUR - 1;
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual(first);
     expect(requests).toHaveLength(1);
 
-    now = T0 + 6 * HOUR;
+    now = T0 + HOUR;
     const third = await inDo(DEPLOYED, admin => admin.getUpdateStatus());
     expect(requests).toHaveLength(2);
-    expect(third?.checkedAt).toStrictEqual(new Date(T0 + 6 * HOUR));
+    expect(third?.checkedAt).toStrictEqual(new Date(T0 + HOUR));
+  });
+
+  it("serves a check for the check interval an admin set", async () => {
+    stubClock();
+    const { requests } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(48 * 60));
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+
+    now = T0 + 48 * HOUR - 1;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(1);
+
+    now = T0 + 48 * HOUR;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(2);
+
+    // A shorter interval applies to the check already stored.
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1));
+    now = T0 + 48 * HOUR + MINUTE;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(3);
+  });
+
+  it("checks every minute at a 1-minute interval, and retries a failure a minute later", async () => {
+    stubClock();
+    let failing = false;
+    const { requests } = stubFetch(() =>
+      failing ? new Response("unavailable", { status: 503 }) : release(NEWER));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(1));
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+
+    now = T0 + MINUTE - 1;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(1);
+
+    failing = true;
+    now = T0 + MINUTE;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(2);
+
+    // A failure waits the interval, being shorter than 15 minutes, not 15 minutes.
+    now = T0 + 2 * MINUTE - 1;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(2);
+    now = T0 + 2 * MINUTE;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(3);
   });
 
   it("reports modified when the backend has no version binding", async () => {
@@ -360,7 +452,7 @@ describe("AdminSettings.getUpdateStatus", () => {
     expect(new URL(requests[1]!.url).searchParams.get("from")).toBe("r11-bbbbbbb");
     expect(status).toStrictEqual({
       currentReleaseId: "r11-bbbbbbb", updateAvailable: false, notify: false,
-      noticeSnoozeHours: 24, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
     });
 
     // The failed attempt is recorded for r11, so it waits to retry like any other.
@@ -445,6 +537,245 @@ describe("AdminSettings.getUpdateStatus", () => {
       await vi.waitFor(() => expect(requests).toHaveLength(2));
       respond();
       await later;
+    });
+  });
+});
+
+describe("AdminSettings update settings", () => {
+  const SETTERS = [
+    ["minimum age", "setUpdateMinimumAgeHours", "updateMinimumAgeHours"],
+    ["notice snooze", "setUpdateNoticeSnoozeHours", "updateNoticeSnoozeHours"],
+  ] as const;
+
+  it.each(SETTERS)("stores a %s from 0 to the maximum", async (_name, setter, field) => {
+    const inDo = adminSettingsStorage();
+    for (const hours of [0, 7, MAX_UPDATE_HOURS]) {
+      await inDo({}, admin => admin[setter](hours));
+      expect(await inDo({}, admin => admin.getAdminConfig()[field])).toBe(hours);
+    }
+  });
+
+  it.each(SETTERS)("refuses a %s that is not a whole number of hours in range",
+      async (name, setter, field) => {
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin[setter](5));
+    for (const hours of [-1, MAX_UPDATE_HOURS + 1, 1.5, NaN, Infinity, -Infinity]) {
+      await expect(inDo({}, admin => admin[setter](hours)), String(hours)).rejects.toThrow(
+          `The ${name} must be a whole number of hours from 0 to ${MAX_UPDATE_HOURS}.`);
+    }
+    expect(await inDo({}, admin => admin.getAdminConfig()[field])).toBe(5);
+  });
+
+  it("stores a check interval from 1 minute to the maximum, and refuses any other", async () => {
+    const inDo = adminSettingsStorage();
+    for (const minutes of [1, 90, MAX_UPDATE_CHECK_INTERVAL_MINUTES]) {
+      await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes));
+      expect(await inDo({}, admin => admin.getAdminConfig().updateCheckIntervalMinutes))
+          .toBe(minutes);
+    }
+    await inDo({}, admin => admin.setUpdateCheckIntervalMinutes(5));
+    for (const minutes of [0, -1, MAX_UPDATE_CHECK_INTERVAL_MINUTES + 1, 1.5, NaN, Infinity]) {
+      await expect(inDo({}, admin => admin.setUpdateCheckIntervalMinutes(minutes)),
+          String(minutes)).rejects.toThrow("The check interval must be a whole number of minutes " +
+          `from 1 to ${MAX_UPDATE_CHECK_INTERVAL_MINUTES}.`);
+    }
+    expect(await inDo({}, admin => admin.getAdminConfig().updateCheckIntervalMinutes)).toBe(5);
+  });
+
+  it("stores whether automatic checks are on", async () => {
+    const inDo = adminSettingsStorage();
+    expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(true);
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(false);
+    await inDo({}, admin => admin.setUpdateChecksEnabled(true));
+    expect(await inDo({}, admin => admin.getAdminConfig().updateChecksEnabled)).toBe(true);
+  });
+
+  it("reports the settings in the status", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject(REPORTED);
+    await inDo({}, async admin => {
+      await admin.setUpdateCheckIntervalMinutes(12);
+      await admin.setUpdateMinimumAgeHours(72);
+      await admin.setUpdateNoticeSnoozeHours(0);
+    });
+    // NEWER has been available for 48 hours, short of the new minimum age.
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject({
+      updateAvailable: true, notify: false,
+      checksEnabled: true, checkIntervalMinutes: 12, minimumAgeHours: 72, noticeSnoozeHours: 0,
+    });
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject({
+      checksEnabled: false, checkIntervalMinutes: 12, minimumAgeHours: 72, noticeSnoozeHours: 0,
+    });
+  });
+});
+
+describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
+  it("asks no one before any check, and does not notify", async () => {
+    stubClock();
+    const { spy } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual({
+      currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
+      ...REPORTED, checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl,
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("serves the last check past 6 hours without asking again or notifying", async () => {
+    stubClock();
+    const { requests } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    const first = await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(first?.notify).toBe(true);
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+
+    now = T0 + 30 * 24 * HOUR;
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual({
+      ...first, notify: false, checksEnabled: false,
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not ask for a new release, and never serves the old release's check", async () => {
+    stubClock();
+    const { requests } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+
+    now = T0 + HOUR;
+    const upgraded = {
+      CLOUDFLARE_OS_DEPLOYMENT: { ...INSTALL, releaseId: "r11-bbbbbbb", versionTag: "tag-r11" },
+      CF_VERSION_METADATA: { ...VERSION, tag: "tag-r11" },
+    };
+    expect(await inDo(upgraded, admin => admin.getUpdateStatus())).toStrictEqual({
+      currentReleaseId: "r11-bbbbbbb", updateAvailable: false, notify: false,
+      ...REPORTED, checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl,
+    });
+    expect(requests).toHaveLength(1);
+  });
+});
+
+describe("AdminSettings.checkForUpdates", () => {
+  it("is null, with no request, unless the deploy flow installed the deployment", async () => {
+    const { spy } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    expect(await inDo({}, admin => admin.checkForUpdates())).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("asks with automatic checks off, and returns the status it produces", async () => {
+    stubClock();
+    const { requests } = stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.setUpdateChecksEnabled(false));
+    expect(await inDo(DEPLOYED, admin => admin.checkForUpdates())).toStrictEqual({
+      currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12-ccccccc", updateAvailable: true,
+      availableSince: new Date(NEWER.availableSince), notify: false, ...REPORTED,
+      checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
+    });
+    expect(requests).toHaveLength(1);
+    // What it stored is what getUpdateStatus serves.
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus()))
+        .toMatchObject({ updateAvailable: true, checkedAt: new Date(T0) });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("asks within the check interval of a check, and within 15 minutes of a failed one", async () => {
+    stubClock();
+    let failing = false;
+    const { requests } = stubFetch(() =>
+      failing ? new Response("unavailable", { status: 503 }) : release(NEWER));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inDo = adminSettingsStorage();
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+
+    now = T0 + 1;
+    const checked = await inDo(DEPLOYED, admin => admin.checkForUpdates());
+    expect(requests).toHaveLength(2);
+    expect(checked?.checkedAt).toStrictEqual(new Date(T0 + 1));
+
+    failing = true;
+    now = T0 + 2;
+    await expect(inDo(DEPLOYED, admin => admin.checkForUpdates())).rejects.toThrow();
+    failing = false;
+    now = T0 + 3;
+    expect((await inDo(DEPLOYED, admin => admin.checkForUpdates()))?.checkedAt)
+        .toStrictEqual(new Date(T0 + 3));
+    expect(requests).toHaveLength(4);
+  });
+
+  it("rejects a failed check with a fixed message, recording the attempt and logging once",
+      async () => {
+    stubClock();
+    let failing = false;
+    const { requests } = stubFetch(() =>
+      failing ? new Response("<!doctype html>", { status: 502 }) : release(NEWER));
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inDo = adminSettingsStorage();
+    const fresh = await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+
+    failing = true;
+    now = T0 + 7 * HOUR;
+    const error = await inDo(DEPLOYED, admin => admin.checkForUpdates()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("The update check failed.");
+    expect(requests).toHaveLength(2);
+    const logged = failures(warned);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.error).toContain("status 502");
+
+    // The attempt holds back the automatic check, which serves the earlier result meanwhile.
+    now = T0 + 7 * HOUR + 15 * 60 * 1000 - 1;
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual(fresh);
+    expect(requests).toHaveLength(2);
+    expect(failures(warned)).toHaveLength(1);
+  });
+
+  it("records a failed attempt that holds back automatic checks for 15 minutes", async () => {
+    stubClock();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { requests } = stubFetch(() => new Response("{}", { status: 500 }));
+    const inDo = adminSettingsStorage();
+    await expect(inDo(DEPLOYED, admin => admin.checkForUpdates()))
+        .rejects.toThrow("The update check failed.");
+    now = T0 + 15 * 60 * 1000 - 1;
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus()))
+        .toMatchObject({ updateAvailable: false, notify: false });
+    expect(requests).toHaveLength(1);
+    now = T0 + 15 * 60 * 1000;
+    await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(requests).toHaveLength(2);
+  });
+
+  it("shares the check in flight", async () => {
+    stubClock();
+    let respond!: (answer: Response) => void;
+    const { requests } = stubFetch(() => new Promise<Response>(resolve => { respond = resolve; }));
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inDo = adminSettingsStorage();
+    await inDo(DEPLOYED, async admin => {
+      const calls = [admin.getUpdateStatus(), admin.checkForUpdates(), admin.checkForUpdates()];
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      respond(release(NEWER));
+      const [a, b, c] = await Promise.all(calls);
+      expect(a?.updateAvailable).toBe(true);
+      expect(b).toStrictEqual(a);
+      expect(c).toStrictEqual(a);
+      expect(requests).toHaveLength(1);
+
+      // A shared check that fails rejects every Check now waiting on it, and is logged once.
+      const failing = [admin.checkForUpdates(), admin.checkForUpdates()];
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      respond(new Response("unavailable", { status: 503 }));
+      for (const call of failing) await expect(call).rejects.toThrow("The update check failed.");
+      expect(requests).toHaveLength(2);
+      expect(failures(warned)).toHaveLength(1);
     });
   });
 });
