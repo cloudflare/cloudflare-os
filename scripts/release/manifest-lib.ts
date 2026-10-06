@@ -482,8 +482,8 @@ export function buildWorkerEntry(
   let gatekeeperBindingExpansion: WorkerEntry["gatekeeperBindingExpansion"];
   if (kind === "backend") {
     // Deliberate contract: the manifest carries only $PUBLIC_BASE_URL. The backend's other
-    // instance-state vars (ADMINS, DEPLOY_URL, CF_ACCESS_*, CF_AI_GATEWAY*) are injected by
-    // the deploy service's backendExtraVars at PUT time, never manifest-templated.
+    // instance-state vars (ADMINS, CLOUDFLARE_OS_DEPLOYMENT, CF_ACCESS_*, CF_AI_GATEWAY*) are
+    // injected by the deploy service's backendExtraVars at PUT time, never manifest-templated.
     vars.PUBLIC_BASE_URL = "$PUBLIC_BASE_URL";
     if (config.ai) {
       throw new Error(`${pkgName} declares an ai binding, but the backend's WORKERS_AI is ` +
