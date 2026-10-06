@@ -752,9 +752,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * personal space. Nothing else about the space is checked here. A workspace is listed by its
    * space (`Space.listWorkspaces`) only once it has seen activity, and whether the caller may add
    * workspaces to that space is checked then: a workspace whose owner may not ends up in their
-   * personal space instead, with no error. Once its space lists it, the workspace is open to
-   * that space's members in the role their membership gives them (see `SpaceMemberRole`), and
-   * that holds for a personal space that has members as for a team space.
+   * personal space instead, with no error. Once a team space lists it, the workspace is open to
+   * that space's members in the role their membership gives them (see `SpaceMemberRole`); a
+   * personal space has no members besides its owner, so it opens the workspace to nobody else.
    *
    * A workspace that holds restricted data or is owner-invites-only
    * (`GadgetMetadata.containsRestrictedData`, `ownerInvitesOnly`) is listed by no space. For such
@@ -6138,11 +6138,11 @@ export type ShareLinkInfo = {
  * Whether a space belongs to one user or to a team. Fixed when the space is created.
  *
  * - "personal": one per user, created the first time it is needed (see
- *   `AuthenticatedApi.listSpaces`). Its owner is its only admin: the owner can be neither demoted
- *   nor removed, and nobody else can be made admin. It can have other members, but only its
- *   owner adds workspaces to it. It is where the owner's workspaces belong unless placed in a
- *   team space, so a member added to it gets their role (see `SpaceMemberRole`) on every one
- *   of those that it lists.
+ *   `AuthenticatedApi.listSpaces`). It has no members besides its owner, who is its only admin
+ *   and can be neither demoted nor removed, and only its owner adds workspaces to it. It is
+ *   where the owner's workspaces belong unless placed in a team space; a workspace in it is
+ *   shared by publishing it (`Overseer.setPublicAccess`) or sharing it directly, and teams use
+ *   team spaces.
  * - "team": created with `AuthenticatedApi.createSpace` and administered by its "admin" members,
  *   of whom there is always at least one. Any member, whatever their role, may add workspaces
  *   they own to it.
@@ -6189,8 +6189,8 @@ export function isValidSpaceKey(key: string): boolean {
  * how the member may open those workspaces.
  *
  * - "admin": opens the space's workspaces to build, exactly as "build" does. May also change the
- *   member list (`Space.setMemberRole`, `Space.removeMember`) and the address of any workspace
- *   the space lists (`Space.setWorkspaceSlug`).
+ *   member list of a team space (`Space.setMemberRole`, `Space.removeMember`) and the address of
+ *   any workspace the space lists (`Space.setWorkspaceSlug`).
  * - "build" and "use": ordinary members, named after the `CollaboratorRole` levels each confers
  *   on the space's workspaces: "build" opens them to build, "use" to use. In the space itself
  *   the two confer the same thing: reading its info, its member list and its listing of
@@ -6385,7 +6385,7 @@ export interface Space extends RpcTarget {
 
   /**
    * List the space's members and their roles. Available to every member; a visitor is refused.
-   * A personal space's owner is listed too, as its sole admin.
+   * A personal space lists only its owner, as admin.
    */
   listMembers(): Promise<SpaceMemberInfo[]>;
 
@@ -6471,13 +6471,13 @@ export interface Space extends RpcTarget {
    * username is looked up, so they cannot use the call to find out which accounts exist.
    *
    * The role applies as well to the workspaces that the space lists and that belong to it (see
-   * `SpaceMemberRole`), so adding a member lets them open every one of those, in a personal
-   * space as in a team space. Lowering a member to "use" takes effect on the sessions they have
-   * open too, a moment later: such a workspace is restarted and each of its sessions is
-   * authorized afresh. Raising a member applies from their next open.
+   * `SpaceMemberRole`), so adding a member lets them open every one of those. Lowering a member
+   * to "use" takes effect on the sessions they have open too, a moment later: such a workspace
+   * is restarted and each of its sessions is authorized afresh. Raising a member applies from
+   * their next open.
    *
-   * Throws rather than demote the space's last admin. In a personal space the owner stays the
-   * only admin: the owner cannot be demoted and nobody else can be made admin.
+   * Throws rather than demote the space's last admin. In a personal space it always throws
+   * ("A personal space has no members."), whoever the target, its owner included.
    */
   setMemberRole(username: string, role: SpaceMemberRole): Promise<SpaceMemberInfo | null>;
 
@@ -6492,7 +6492,8 @@ export interface Space extends RpcTarget {
    * sharing and its publication, if it is published, still give them. In the space itself they
    * are a visitor from then on.
    *
-   * Throws rather than remove the space's last admin, which in a personal space is its owner.
+   * Throws rather than remove the space's last admin, so the owner of a personal space can
+   * neither leave it nor be removed.
    */
   removeMember(profileId: string): Promise<void>;
 }
