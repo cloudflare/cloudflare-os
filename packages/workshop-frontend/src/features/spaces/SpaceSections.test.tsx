@@ -45,7 +45,7 @@ vi.mock('../../components/PersonAvatar', () => ({
 
 const ADA = person('ada@example.com', 'Ada')
 const PERSONAL = personalSpace(ME, 'admin')
-const ADAS = personalSpace(ADA, 'use')
+const ATLAS = teamSpace('atlas', 'Atlas', 'use')
 const DESIGN = teamSpace('design', 'Design', 'use')
 const PLATFORM = teamSpace('platform', 'Platform')
 
@@ -63,9 +63,9 @@ const GADGETS: GadgetMetadataWithTimestamps[] = [
   { id: 'w-brief', title: 'Brief', created: DAY, lastActive: DAY, owner: ADA },
 ]
 
-// What each space lists. Ada's personal space lists the workspace she also shared with the user.
+// What each space lists. Atlas lists the workspace Ada also shared with the user.
 const LISTED: Record<string, SpaceWorkspaceInfo[]> = {
-  [ADAS.key]: [listedBy(ADA, 'w-brief', 'Brief')],
+  atlas: [listedBy(ADA, 'w-brief', 'Brief')],
   design: [],
   platform: [listedBy(ME, 'w-roadmap', 'Roadmap'), listedBy(ADA, 'w-plan', 'Ada’s plan')],
 }
@@ -82,7 +82,7 @@ const renderPage = async ({ at = '/workspaces', spacesFlag = true, gadgets = GAD
   api?: Partial<{ [K in keyof AuthenticatedApi]: unknown }>
   chrome?: ReactNode
 } = {}) => {
-  let spaces = [PERSONAL, ADAS, DESIGN, PLATFORM]
+  let spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
   const openSpace = vi.fn<(key: string) => unknown>((key) => {
     const info = spaces.find(space => space.key === key)!
@@ -170,7 +170,7 @@ const searchField = () => document.body.querySelector<HTMLInputElement>('input[p
 const replaceSession = async ({ router, rerender }: Awaited<ReturnType<typeof renderPage>>) => {
   const flags = deferred<{ spaces: boolean }>()
   const gadgets = deferred<GadgetMetadataWithTimestamps[]>()
-  const spaces = [PERSONAL, ADAS, DESIGN, PLATFORM]
+  const spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
   const openSpace = vi.fn<(key: string) => unknown>((key) => {
     const info = spaces.find(space => space.key === key)!
@@ -240,14 +240,14 @@ describe('the workspaces page', () => {
 
       expect(sections()).toEqual([
         ['Personal', ['Solo notes']],
-        ['Ada’s personal space', ['Brief']],
+        ['Atlas', ['Brief']],
         ['Design', []],
         ['Platform', ['Roadmap', 'Ada’s plan']],
       ])
       expect(sectionNamed('Design').textContent).toContain('No workspaces in this space yet.')
       expect(sectionNamed('Platform').textContent).toContain('Your role: Admin')
       // The user's own personal space is not opened: its section is their own records.
-      expect(openSpace.mock.calls.map(([key]) => key)).toEqual([ADAS.key, 'design', 'platform'])
+      expect(openSpace.mock.calls.map(([key]) => key)).toEqual(['atlas', 'design', 'platform'])
     })
 
     it('says which workspaces are published, and with what role', async () => {
@@ -258,7 +258,7 @@ describe('the workspaces page', () => {
         ],
         api: {
           openSpace: (key: string) => {
-            const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
             return fakeSpace(info, [member(ME, info.role)], key === 'platform'
               ? [
                   listedBy(ME, 'w-roadmap', 'Roadmap'),
@@ -302,7 +302,7 @@ describe('the workspaces page', () => {
       await renderPage({
         api: {
           openSpace: (key: string) => {
-            const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
             return fakeSpace(info, [member(ME, info.role)], key === 'platform'
               ? [
                   { ...listedBy(ME, 'w-roadmap', 'Roadmap'), slug: 'roadmap' },
@@ -327,7 +327,7 @@ describe('the workspaces page', () => {
       await renderPage()
 
       expect(link('Platform').getAttribute('href')).toBe('/spaces/platform')
-      expect(link('Ada’s personal space').getAttribute('href')).toBe('/spaces/~ada')
+      expect(link('Atlas').getAttribute('href')).toBe('/spaces/atlas')
       expect(link('Personal').getAttribute('href')).toBe('/spaces/~me')
     })
 
@@ -372,9 +372,9 @@ describe('the workspaces page', () => {
     })
 
     it('closes the members of a space the user leaves, and drops its section and its sidebar link', async () => {
-      let spaces = [PERSONAL, ADAS, DESIGN, PLATFORM]
+      let spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
       const openSpace = (key: string) => {
-        const info = [PERSONAL, ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [PERSONAL, ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         const space = fakeSpace(info, [member(ME, info.role)], LISTED[key] ?? [])
         space.removeMember.mockImplementation(async () => {
           spaces = spaces.filter(listed => listed.key !== key)
@@ -395,7 +395,7 @@ describe('the workspaces page', () => {
       // The one dialog left is the toast that says what happened.
       expect([...document.body.querySelectorAll('[role="dialog"]')].map(dialog => dialog.textContent))
         .toEqual(['You left Design'])
-      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Ada’s personal space', 'Platform'])
+      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Atlas', 'Platform'])
       expect(sidebarLinkTo('design')).toBeNull()
       // The button the dialog was opened from went with the section, so the page's heading has
       // the focus.
@@ -403,7 +403,7 @@ describe('the workspaces page', () => {
     })
 
     it('leaves focus where the user has put it by the time the list is read again after a leave', async () => {
-      let spaces = [PERSONAL, ADAS, DESIGN, PLATFORM]
+      let spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
       const readAgain = deferred<void>()
       const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>()
         .mockImplementationOnce(async () => spaces)
@@ -412,7 +412,7 @@ describe('the workspaces page', () => {
           return spaces
         })
       const openSpace = (key: string) => {
-        const info = [PERSONAL, ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [PERSONAL, ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         const space = fakeSpace(info, [member(ME, info.role)], LISTED[key] ?? [])
         space.removeMember.mockImplementation(async () => {
           spaces = spaces.filter(listed => listed.key !== key)
@@ -431,19 +431,35 @@ describe('the workspaces page', () => {
       await act(async () => readAgain.resolve())
       await settle()
 
-      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Ada’s personal space', 'Platform'])
+      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Atlas', 'Platform'])
       expect(document.activeElement).toBe(search)
     })
 
-    it('opens the user’s own personal space’s members from the Personal section', async () => {
-      const { openSpace } = await renderPage()
+    it('offers members for every team space, and none for the user’s own personal space', async () => {
+      await renderPage()
 
-      await click(button('Members of Personal'))
-      await settle()
+      expect(['Atlas', 'Design', 'Platform'].map(name => hasButton(`Members of ${name}`)))
+        .toEqual([true, true, true])
+      // A personal space has no members besides its owner.
+      expect(hasButton('Members of Personal')).toBe(false)
+    })
 
-      expect(openSpace).toHaveBeenLastCalledWith(PERSONAL.key)
-      expect(document.body.querySelector('[role="dialog"]')?.textContent)
-        .toContain('Members of your personal space')
+    it('offers neither members nor a new workspace in another person’s personal space the user’s list still has', async () => {
+      // The user's list has them as a member of Ada's personal space, which no longer has members
+      // besides its owner, so it reads them as a visitor.
+      const adas = personalSpace(ADA, 'use')
+      const openSpace = (key: string) => {
+        if (key === adas.key) {
+          return fakeSpace(adas, [member(ADA, 'admin')], [{ ...listedBy(ADA, 'w-brief', 'Brief'), published: 'use' }])
+        }
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        return fakeSpace(info, [member(ME, info.role)], LISTED[key])
+      }
+      await renderPage({ api: { listSpaces: async () => [PERSONAL, adas, DESIGN, PLATFORM], openSpace } })
+
+      const section = sectionNamed('Ada’s personal space')
+      expect(hasButton('Members of Ada’s personal space')).toBe(false)
+      expect(section.querySelector('a[aria-label^="New workspace"]')).toBeNull()
     })
 
     it('links a new workspace to the home page with the space it is for', async () => {
@@ -451,8 +467,8 @@ describe('the workspaces page', () => {
 
       expect(link('New workspace in Platform').getAttribute('href')).toBe('/?space=platform')
       expect(link('New workspace in Personal').getAttribute('href')).toBe('/')
-      // Only its owner adds workspaces to a personal space.
-      expect(sectionNamed('Ada’s personal space').querySelector('a[aria-label^="New workspace"]')).toBeNull()
+      // A member in any role adds workspaces to a team space.
+      expect(link('New workspace in Atlas').getAttribute('href')).toBe('/?space=atlas')
     })
 
     it('creates a space from the page header, then lands on the space’s page', async () => {
@@ -488,7 +504,7 @@ describe('the workspaces page', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let failing = true
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
-        const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         const space = fakeSpace(info, [member(ME, info.role)], LISTED[key])
         if (key === 'platform' && failing) space.listWorkspaces.mockRejectedValue(new Error('boom'))
         return space
@@ -497,7 +513,7 @@ describe('the workspaces page', () => {
 
       expect(sections()).toEqual([
         ['Personal', ['Solo notes']],
-        ['Ada’s personal space', ['Brief']],
+        ['Atlas', ['Brief']],
         ['Design', []],
         ['Platform', ['Roadmap']],
       ])
@@ -516,7 +532,7 @@ describe('the workspaces page', () => {
       const again = deferred<SpaceWorkspaceInfo[]>()
       let platformReads = 0
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
-        const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         const space = fakeSpace(info, [member(ME, info.role)], LISTED[key])
         if (key === 'platform') {
           space.listWorkspaces.mockImplementation(platformReads++ === 0
@@ -541,7 +557,7 @@ describe('the workspaces page', () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>()
         .mockRejectedValueOnce(new Error('boom'))
-        .mockResolvedValue([PERSONAL, ADAS, DESIGN, PLATFORM])
+        .mockResolvedValue([PERSONAL, ATLAS, DESIGN, PLATFORM])
       await renderPage({ api: { listSpaces } })
 
       // The user's own list is still on show, with no space to lay it out under.
@@ -557,7 +573,7 @@ describe('the workspaces page', () => {
 
       expect(alerts()).toEqual([])
       expect(sections().map(([name]) => name))
-        .toEqual(['Personal', 'Ada’s personal space', 'Design', 'Platform'])
+        .toEqual(['Personal', 'Atlas', 'Design', 'Platform'])
     })
 
     it('shows the list of spaces being read again as busy until the read settles', async () => {
@@ -571,14 +587,14 @@ describe('the workspaces page', () => {
       await click(button('Try again'))
       expect(button('Try again').disabled).toBe(true)
 
-      await act(async () => again.resolve([PERSONAL, ADAS, DESIGN, PLATFORM]))
+      await act(async () => again.resolve([PERSONAL, ATLAS, DESIGN, PLATFORM]))
       await settle()
       expect(alerts()).toEqual([])
     })
 
     it('says so when a space no longer counts the user as a member', async () => {
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
-        const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         return fakeSpace(info, key === 'design' ? [] : [member(ME, info.role)], LISTED[key])
       })
       await renderPage({ api: { openSpace } })
@@ -590,7 +606,7 @@ describe('the workspaces page', () => {
     it('says so when a space in the user’s list now shows them only the workspaces published in it', async () => {
       // The user's list still has them as Platform's admin; the space reads them as a visitor.
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
-        const info = [ADAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         return fakeSpace(info, key === 'platform' ? [] : [member(ME, info.role)], key === 'platform'
           ? [listedBy(ME, 'w-roadmap', 'Roadmap'), { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), published: 'use' }]
           : LISTED[key])
@@ -660,7 +676,7 @@ describe('the workspaces page', () => {
       expect(overseer.moveToSpace).toHaveBeenCalledWith('design')
       expect(sections().slice(0, 3)).toEqual([
         ['Personal', []],
-        ['Ada’s personal space', ['Brief']],
+        ['Atlas', ['Brief']],
         ['Design', ['Solo notes']],
       ])
       // The row is under another section now, and its menu there has the focus the dialog held.
@@ -694,12 +710,12 @@ describe('the workspaces page', () => {
       expect(listGadgets).toHaveBeenCalledTimes(2)
       expect(sections().slice(0, 3)).toEqual([
         ['Personal', []],
-        ['Ada’s personal space', ['Brief']],
+        ['Atlas', ['Brief']],
         ['Design', ['Solo notes']],
       ])
       const targets = [...document.body.querySelectorAll('[role="dialog"] label')]
         .map(label => label.textContent)
-      expect(targets).toEqual(['Personal', 'Design (current)', 'Platform'])
+      expect(targets).toEqual(['Personal', 'Atlas', 'Design (current)', 'Platform'])
 
       // The row is under another section now, and its menu there takes the focus the dialog held.
       await click(button('Cancel'))
@@ -723,7 +739,7 @@ describe('the workspaces page', () => {
     ])('offers %s move on a workspace of a user with no team space: %s', async (_which, title, offered) => {
       await renderPage({
         gadgets: [mine('w-solo', 'Solo notes'), mine('w-old', 'Old plan', 'left-team')],
-        api: { listSpaces: async () => [PERSONAL, ADAS] },
+        api: { listSpaces: async () => [PERSONAL] },
       })
 
       const actions = await rowActions(title)
@@ -770,7 +786,7 @@ describe('the workspaces page', () => {
       expect(listSpaces).toHaveBeenCalledOnce()
       // Each section's listing, and the open members dialog's space.
       expect(openSpace.mock.calls.map(([key]) => key).toSorted())
-        .toEqual(['design', 'platform', 'platform', ADAS.key])
+        .toEqual(['atlas', 'design', 'platform', 'platform'])
     })
 
     it('asks a session that replaces another, and has the flag off, about no space at all', async () => {

@@ -51,10 +51,11 @@ const UnlistedWorkspaces = ({ children }: { children: ReactNode }) => {
 }
 
 /**
- * A space's own page: its name, the user's role in it, the entry points to its members and to a
- * new workspace in it, and its workspaces. The workspaces are the rows the space's section of
- * the workspaces page has (see `spaceRows`), each linking to its address in the space once it
- * has one, and the rows of the entries the user may change the address of offer that.
+ * A space's own page: its name, the user's role in it, the entry points to a team space's
+ * members and to a new workspace in it, and its workspaces. The workspaces are the rows the
+ * space's section of the workspaces page has (see `spaceRows`), each linking to its address in
+ * the space once it has one, and the rows of the entries the user may change the address of
+ * offer that.
  *
  * Those rows place the user's own workspaces by the user's records, so one may be here that the
  * space does not list: one it never lists, or one whose registration it has not seen. Once the

@@ -8,21 +8,22 @@ import { isOwnPersonalSpace } from './spaceKinds'
 export const SPACE_ACTION_CLASS_NAME = '!h-7 gap-1.5 !px-2.5 !text-[12px]'
 
 /**
- * The entry points beside a space's name: to its members, and to a new workspace in it. Only its
- * owner adds workspaces to a personal space, so another person's offers no new workspace.
+ * The entry points beside a space's name: to a team space's members, and to a new workspace in
+ * the space. A personal space has no members besides its owner, so it offers no members, and
+ * only its owner adds workspaces to it.
  */
 export const SpaceEntryPoints = ({ label, space, onMembersOpen }: {
   /** What the space is called where these are shown, which names the two entry points. */
   label: string
   /**
-   * Undefined for the user's own personal space while the list of spaces does not have it: there
-   * is nothing to open the members of, and a new workspace goes there all the same.
+   * Undefined for the user's own personal space while the list of spaces does not have it: a new
+   * workspace goes there all the same.
    */
   space: SpaceInfo | undefined
   onMembersOpen: (spaceKey: string) => void
 }) => (
   <>
-    {space && (
+    {space?.kind === 'team' && (
       <WorkshopButton
         className={SPACE_ACTION_CLASS_NAME}
         aria-label={`Members of ${label}`}

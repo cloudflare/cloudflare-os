@@ -14,7 +14,6 @@ import {
   fakeApi,
   hasButton,
   mountRouted,
-  person,
   personalSpace,
   teamSpace,
   unmountAll,
@@ -22,7 +21,7 @@ import {
 
 const SPACES = [
   personalSpace(ME, 'admin'),
-  personalSpace(person('ada@example.com', 'Ada'), 'use'),
+  teamSpace('atlas', 'Atlas', 'use'),
   teamSpace('design', 'Design', 'use'),
   teamSpace('platform', 'Platform'),
 ]
@@ -61,7 +60,7 @@ describe('the sidebar’s Spaces section', () => {
 
     expect(hasButton('Spaces')).toBe(true)
     expect(spaceLinks().map(link => [link.textContent, link.getAttribute('href')])).toEqual([
-      ['AAda’s personal space', '/spaces/~ada'],
+      ['AAtlas', '/spaces/atlas'],
       ['DDesign', '/spaces/design'],
       ['PPlatform', '/spaces/platform'],
     ])
@@ -97,7 +96,7 @@ describe('the sidebar’s Spaces section', () => {
 
     expect(spaceLinks().map(link => [link.getAttribute('aria-label'), link.title, link.textContent]))
       .toEqual([
-        ['Ada’s personal space', 'Ada’s personal space', 'A'],
+        ['Atlas', 'Atlas', 'A'],
         ['Design', 'Design', 'D'],
         ['Platform', 'Platform', 'P'],
       ])

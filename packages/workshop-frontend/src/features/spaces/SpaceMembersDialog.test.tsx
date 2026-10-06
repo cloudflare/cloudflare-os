@@ -24,7 +24,6 @@ import {
   mount,
   notAMember,
   person,
-  personalSpace,
   pressEscape,
   selectOptions,
   settle,
@@ -71,10 +70,6 @@ const roleLabels = async (label: string) =>
 
 const peopleField = () =>
   document.body.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')
-
-// Whether the dialog says what adding someone to a personal space gives them.
-const saysEveryWorkspaceOpens = () => document.body.textContent
-  .includes('The people you add will be able to open every workspace this space lists.')
 
 const stage = async (username: string) => {
   await type(peopleField()!, username)
@@ -386,47 +381,6 @@ describe('SpaceMembersDialog', () => {
 
       expect(alerts()).toEqual(['A space must keep at least one admin.'])
       expect(onLeft).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('in a personal space', () => {
-    it('offers its owner no admin role to give, no change to their own row and no way to leave', async () => {
-      await render(personalSpace(ME, 'admin'), [member(ME, 'admin'), member(ADA, 'build')])
-
-      expect(document.body.querySelector('h2')?.textContent).toBe('Members of your personal space')
-      expect(hasButton('Role of Me')).toBe(false)
-      expect(hasButton('Leave space')).toBe(false)
-      expect(await roleLabels('Role for the people added')).toEqual(['Build', 'Use'])
-    })
-
-    it('says that the people added will open every workspace it lists, which a team space does not', async () => {
-      await render(personalSpace(ME, 'admin'), [member(ME, 'admin')])
-      expect(saysEveryWorkspaceOpens()).toBe(true)
-
-      unmountAll()
-      await openAsAdmin()
-      expect(peopleField()).not.toBeNull()
-      expect(saysEveryWorkspaceOpens()).toBe(false)
-    })
-
-    it('offers no admin role for an existing member either', async () => {
-      await render(personalSpace(ME, 'admin'), [member(ME, 'admin'), member(ADA, 'build')])
-
-      expect(await roleLabels('Role of Ada')).toEqual(['Build', 'Use'])
-      expect(hasButton('Remove Ada')).toBe(true)
-    })
-
-    it('lets a member who is not the owner leave', async () => {
-      const { space, onLeft } = await render(
-        personalSpace(ADA, 'use'), [member(ADA, 'admin'), member(ME, 'use')])
-      expect(document.body.querySelector('h2')?.textContent).toBe('Members of Ada’s personal space')
-
-      await click(button('Leave space'))
-      await click(button('Leave'))
-      await settle()
-
-      expect(space.removeMember).toHaveBeenCalledExactlyOnceWith(ME.id)
-      expect(onLeft).toHaveBeenCalledOnce()
     })
   })
 

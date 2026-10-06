@@ -234,6 +234,8 @@ describe('a space’s page', () => {
 
     expect(heading()).toBe('Personal')
     expect(link('New workspace in Personal').getAttribute('href')).toBe('/')
+    // A personal space has no members besides its owner.
+    expect(hasButton('Members of Personal')).toBe(false)
     expect(rowTitles()).toEqual(['Solo notes'])
     expect(rowOf('Solo notes').getAttribute('href')).toBe(`/spaces/${PERSONAL.key}/solo-notes`)
   })
@@ -453,6 +455,21 @@ describe('a space’s page', () => {
       expect(heading()).toBe('Design')
       expect(rowTitles()).toEqual(['Brief', 'Handbook'])
       expect(hasButton('Members of Design')).toBe(false)
+    })
+
+    it('names another person’s personal space as theirs, and shows what they published in it', async () => {
+      const adas = fakeSpace({ ...personalSpace(ADA, 'admin'), role: undefined }, [member(ADA, 'admin')], [
+        { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' },
+        listedBy(ADA, 'w-draft', 'Draft', 'draft'),
+      ])
+      await renderAt('/spaces/~ada', { api: { openSpace: () => adas } })
+
+      expect(heading()).toBe('Ada’s personal space')
+      expect(rowTitles()).toEqual(['Brief'])
+      expect(rowOf('Brief').getAttribute('href')).toBe('/spaces/~ada/brief')
+      expect(hasButton('Members of Ada’s personal space')).toBe(false)
+      expect([...document.body.querySelectorAll('a')].map(anchor => anchor.getAttribute('aria-label')))
+        .not.toContain('New workspace in Ada’s personal space')
     })
 
     it('is not found once the space no longer lists anything published', async () => {

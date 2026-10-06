@@ -11,10 +11,10 @@ const ME: AiChatAuthorInfo = { type: 'user', id: 'me@example.com', name: 'Me' }
 const ADA: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', name: 'Ada' }
 
 const PERSONAL = { key: '~me', name: 'Me', kind: 'personal', owner: ME, role: 'admin' } as const
-const ADAS = { key: '~ada', name: 'Ada', kind: 'personal', owner: ADA, role: 'use' } as const
+const ATLAS = { key: 'atlas', name: 'Atlas', kind: 'team', role: 'use' } as const
 const DESIGN = { key: 'design', name: 'Design', kind: 'team', role: 'use' } as const
 const PLATFORM = { key: 'platform', name: 'Platform', kind: 'team', role: 'admin' } as const
-const SPACES = [PERSONAL, ADAS, DESIGN, PLATFORM]
+const SPACES = [PERSONAL, ATLAS, DESIGN, PLATFORM]
 
 const DAY = new Date('2026-09-01T00:00:00Z')
 
@@ -66,7 +66,7 @@ describe('groupWorkspaces', () => {
 
     expect(layout(sections)).toEqual({
       personal: ['record:solo'],
-      '~ada': [],
+      atlas: [],
       design: [],
       platform: ['record:roadmap'],
     })
@@ -89,12 +89,12 @@ describe('groupWorkspaces', () => {
   it('shows another member’s workspace as a listed row of the space that lists it', () => {
     const sections = group([mine('roadmap', 'platform')], {
       platform: ready(listedBy(ADA, 'adas-notes'), listedBy(ME, 'roadmap')),
-      '~ada': ready(listedBy(ADA, 'adas-own')),
+      atlas: ready(listedBy(ADA, 'adas-own')),
     })
 
     expect(layout(sections)).toMatchObject({
       platform: ['record:roadmap', 'listed:adas-notes'],
-      '~ada': ['listed:adas-own'],
+      atlas: ['listed:adas-own'],
     })
   })
 
@@ -159,7 +159,7 @@ describe('groupWorkspaces', () => {
       sharedWithMe('adas-notes'), sharedWithMe('adas-other'),
     ]
     const sections = group(gadgets, {
-      '~ada': ready(listedBy(ADA, 'adas-own'), listedBy(ADA, 'adas-notes')),
+      atlas: ready(listedBy(ADA, 'adas-own'), listedBy(ADA, 'adas-notes')),
       design: ready(listedBy(ADA, 'adas-notes'), listedBy(ADA, 'moving'), listedBy(ME, 'solo')),
       platform: ready(listedBy(ME, 'roadmap'), listedBy(ADA, 'moving')),
     })

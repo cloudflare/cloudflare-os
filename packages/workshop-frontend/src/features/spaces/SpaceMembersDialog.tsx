@@ -14,7 +14,7 @@ import { useDialogSelectPortalContainer } from '../../useDialogSelectPortalConta
 import { SpaceDialogFrame } from './SpaceDialogFrame'
 import { SpaceMemberList, type MemberFailure } from './SpaceMemberList'
 import { SpaceRoleSelect } from './SpaceRoleSelect'
-import { assignableRoles, SPACE_ROLE_LABELS, SPACE_ROLES_DESCRIPTION } from './spaceRoles'
+import { SPACE_ROLE_LABELS, SPACE_ROLES_DESCRIPTION } from './spaceRoles'
 import { useSpace } from './useSpace'
 
 const NO_MEMBERS: SpaceMemberInfo[] = []
@@ -35,11 +35,11 @@ const reasonNotAdded = (err: unknown) => {
 }
 
 /**
- * A space's members and their roles, with what a role lets a member do in the workspaces the
- * space lists. Every member sees the list and can leave the space, except a personal space's
- * owner. An admin can also add people with a role, change a member's role and remove a member.
- * The server decides each of those when it is asked, so a refusal (the last admin, a personal
- * space's owner, a user with no account) is shown where the change was made.
+ * A team space's members and their roles, with what a role lets a member do in the workspaces
+ * the space lists. Every member sees the list and can leave the space. An admin can also add
+ * people with a role, change a member's role and remove a member. The server decides each of
+ * those when it is asked, so a refusal (the last admin, a user with no account) is shown where
+ * the change was made. A personal space has no members besides its owner, so it is not offered.
  */
 export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
   spaceKey: string
@@ -80,8 +80,7 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
   // Memoized because the composer restarts its search whenever this array changes identity.
   const memberIds = useMemo(() => members.map(({ profile }) => profile.id), [members])
   const isAdmin = ready?.info.role === 'admin'
-  const personalOwnerId = ready?.info.kind === 'personal' ? ready.info.owner?.id : undefined
-  const canLeave = currentUser !== null && ready !== null && currentUser.id !== personalOwnerId
+  const canLeave = currentUser !== null && ready !== null
   const busy = adding || changing || leaving
   const composer = usePeopleComposer({
     api: authenticatedApi,
@@ -222,18 +221,10 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
     }
   }
 
-  const title = !ready
-    ? 'Members'
-    : ready.info.kind === 'team'
-      ? `Members of ${ready.info.name}`
-      : personalOwnerId === currentUser?.id
-        ? 'Members of your personal space'
-        : `Members of ${ready.info.name}’s personal space`
-
   return (
     <SpaceDialogFrame
       layout="list"
-      title={title}
+      title={ready ? `Members of ${ready.info.name}` : 'Members'}
       description={SPACE_ROLES_DESCRIPTION}
       busy={busy}
       onClose={onClose}
@@ -265,7 +256,6 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
                   <SpaceRoleSelect
                     label="Role for the people added"
                     value={addRole}
-                    roles={assignableRoles(ready.info.kind)}
                     disabled={adding}
                     container={selectContainer}
                     onValueChange={setAddRole}
@@ -285,21 +275,12 @@ export const SpaceMembersDialog = ({ spaceKey, onClose, onLeft }: {
                       : composer.recipients.length > 1 ? `Add ${composer.recipients.length} people` : 'Add'}
                   </WorkshopButton>
                 </PeopleComposer>
-                {/* A personal space lists every workspace its owner has not placed in a team
-                    space, which may be more than the owner has in mind when adding someone. */}
-                {ready.info.kind === 'personal' && (
-                  <p className="mt-2 text-[12px] leading-4 text-kumo-subtle">
-                    The people you add will be able to open every workspace this space lists.
-                  </p>
-                )}
               </div>
             )}
             <SpaceMemberList
               members={members}
               currentUserId={currentUser?.id}
-              fixedAdminId={personalOwnerId}
               manage={isAdmin ? {
-                roles: assignableRoles(ready.info.kind),
                 pending: busy,
                 selectContainer,
                 onRoleChange: handleRoleChange,

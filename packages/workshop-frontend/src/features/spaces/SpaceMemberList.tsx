@@ -11,8 +11,6 @@ export type MemberFailure = { profileId: string; message: string }
 
 /** What an admin can do to the listed members. */
 export type MemberManagement = {
-  /** The roles a member can be given in this space. */
-  roles: readonly SpaceMemberRole[]
   /** A change is in flight, so no other can be started. */
   pending: boolean
   selectContainer: HTMLElement | null
@@ -27,12 +25,10 @@ export type MemberManagement = {
  * theirs, so none has a remove button: on the viewer's own row it would be a leave that asks
  * nothing first.
  */
-export const SpaceMemberList = ({ members, currentUserId, fixedAdminId, manage, failure }: {
+export const SpaceMemberList = ({ members, currentUserId, manage, failure }: {
   members: SpaceMemberInfo[]
   /** The viewer's profile id, once known. */
   currentUserId: string | undefined
-  /** A personal space's owner: always its admin, so their row offers no change. */
-  fixedAdminId: string | undefined
   manage?: MemberManagement
   failure: MemberFailure | null
 }) => {
@@ -42,7 +38,6 @@ export const SpaceMemberList = ({ members, currentUserId, fixedAdminId, manage, 
       {members.map((member, index) => {
         const { profile, role } = member
         const isViewer = profile.id === currentUserId
-        const editable = manage !== undefined && profile.id !== fixedAdminId
         return (
           <li
             key={profile.id}
@@ -59,11 +54,10 @@ export const SpaceMemberList = ({ members, currentUserId, fixedAdminId, manage, 
                   <p className="truncate font-mono text-[11px] leading-4 text-kumo-subtle">{profile.id}</p>
                 )}
               </div>
-              {editable ? (
+              {manage ? (
                 <SpaceRoleSelect
                   label={`Role of ${profile.name}`}
                   value={role}
-                  roles={manage.roles}
                   disabled={manage.pending}
                   container={manage.selectContainer}
                   onValueChange={(next) => manage.onRoleChange(member, next)}
@@ -73,7 +67,7 @@ export const SpaceMemberList = ({ members, currentUserId, fixedAdminId, manage, 
                   {SPACE_ROLE_LABELS[role]}
                 </span>
               )}
-              {editable && currentUserId !== undefined && !isViewer && (
+              {manage && currentUserId !== undefined && !isViewer && (
                 <WorkshopIconButton
                   danger
                   className="!h-7 !w-7"
