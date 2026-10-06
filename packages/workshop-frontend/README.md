@@ -65,4 +65,3 @@ pnpm exec vp run --cache @gadgets/workshop-frontend#build:assets
 ```
 
 Then hard-refresh the browser (Cmd+Shift+R) so cached chunk hashes are dropped.
-

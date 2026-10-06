@@ -24,7 +24,7 @@ const en = {
     change: 'Change',
     upload: 'Upload',
     custom: 'Custom',
-  
+
     error: 'Error',
     cantUndo: "You can't undo this.",
     thisRemoves: 'This removes',
@@ -91,7 +91,7 @@ language: 'Language',
     languageEn: 'English',
     languageKo: '한국어',
 
-  
+
     workspaceActions: 'Workspace actions',
 
     untitledWorkspace: 'Untitled workspace',
@@ -427,7 +427,7 @@ accessFromSources: 'Access from {count} sources',
     joinedThroughLink: 'Joined through a share link',
     copyLinkFailed: 'Could not copy share link.',
 
-  
+
     linkCopiedClipboard: 'Link copied to clipboard.',
     linkCopiedHint: 'Link copied to your clipboard',
     sendThemLink: 'Send them this link to open it',
@@ -483,7 +483,7 @@ bindingName: 'Binding name',
     removeFailed: 'Failed to remove connection',
     settingsSaved: 'Blueprint settings saved.',
 
-  
+
     connectionName: 'Connection name',
     connectionNameAria: 'Name for {name}',
     connectHerePlaceholder: 'What should people connect here?',
@@ -538,7 +538,7 @@ modelIdHint: "The model identifier as specified by the provider (e.g., '{id}')",
     emptyHint: 'Add a provider to start building workspaces with AI.',
     addFirst: 'Add your first provider',
     noneFound: 'No providers found',
-  
+
     actions: 'Provider actions',
     builtIn: 'built-in',
     quick: 'quick',
@@ -571,7 +571,7 @@ outputs: 'Outputs',
     noExports: 'This Gadget does not support exports.',
     tryAgain: 'Try again',
 
-  
+
     uiTitle: 'Gadget UI',
     resourceConfigurator: 'Resource configurator',
 },
@@ -581,7 +581,7 @@ outputs: 'Outputs',
     filename: 'Filename',
     deleteTitle: 'Delete file?',
     agentEditing: 'Agent is editing this file',
-  
+
     filenamePlaceholder: 'filename.ts',
     deleteRemovesSuffix: 'from the gadget.',
     renameAria: 'Rename {name}',
@@ -685,7 +685,7 @@ deleted: 'Deleted',
     previewUnavailable: "This file can't be previewed here.",
     loadingImage: 'Loading image…',
 
-  
+
     selectAllRows: 'Select all rows',
 },
 
@@ -780,7 +780,7 @@ configureBinding: 'Configure {name}',
     emptyYet: 'No gatekeepers yet',
     emptyMatchHint: "We couldn't find anything matching your search.",
     emptyYetHint: 'Gatekeepers will appear here as they become available in your workspace.',
-  
+
     shieldAria: 'Gatekeeper keeps Gadget access limited to connected resources',
     shieldTitle: 'Gatekeeper',
     shieldBody:
@@ -865,7 +865,7 @@ howAgentPicksDetail: "Standard formats are listed first in the agent's catalog, 
     loadFailed: 'Failed to load blueprints',
     selectImage: 'Please select an image file.',
     screenshotFailed: 'Failed to process screenshot',
-  
+
     titleAria: 'Blueprint title',
     descriptionAria: 'Blueprint description',
 },
@@ -945,7 +945,7 @@ stackedDiff: 'Stacked diff',
     agentBindings: 'Agent bindings',
     agentBindingsHint: 'What spawned agents may use, and the names they see it under.',
     nothingToOffer: 'Nothing is available to offer spawned agents here. Create the agent from a gadget\'s Connections tab to give it access to that gadget and its resources.',
-  
+
     chooseModelDesc: 'Choose the model this connection can use.',
     selectAiModel: 'Select an AI model',
 },
@@ -983,7 +983,7 @@ stackedDiff: 'Stacked diff',
     comingSoonTitle: 'Context & Skills are coming soon to {siteName}',
     comingSoonBody:
       "A preview of how you'll author knowledge collections and skills for your agents to draw on.",
-  
+
     subtitle: 'Curated collections of knowledge your agents read, plus reusable skills they can apply.',
 },
   home: {
@@ -1589,7 +1589,7 @@ stackedDiff: 'Stacked diff',
     appDesc: 'A small interactive app, calculator, or dashboard',
     appPrompt:
       'Build a small interactive tool I can use right here — a calculator, dashboard, or explorer. Ask me what it should do, then create it.',
-  
+
     getStarted: 'Get started',
 },
 } as const satisfies MessageTree

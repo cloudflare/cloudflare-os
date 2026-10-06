@@ -87,4 +87,3 @@ export function translate(locale: Locale, key: string, vars?: TranslateVars): st
 export function getCatalog(locale: Locale): MessageTree {
   return catalogs[locale]
 }
-

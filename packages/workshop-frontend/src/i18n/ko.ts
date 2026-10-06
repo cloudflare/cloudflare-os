@@ -24,7 +24,7 @@ const ko = {
     change: '변경',
     upload: '업로드',
     custom: '사용자 지정',
-  
+
     error: '오류',
     cantUndo: '이 작업은 되돌릴 수 없습니다.',
     thisRemoves: '다음을 삭제합니다',
@@ -91,7 +91,7 @@ language: '언어',
     languageEn: 'English',
     languageKo: '한국어',
 
-  
+
     workspaceActions: '워크스페이스 작업',
 
     untitledWorkspace: '제목 없는 워크스페이스',
@@ -423,7 +423,7 @@ accessFromSources: '{count}개 출처의 접근',
     joinedThroughLink: '공유 링크로 참여',
     copyLinkFailed: '공유 링크를 복사하지 못했습니다.',
 
-  
+
     linkCopiedClipboard: '링크가 클립보드에 복사되었습니다.',
     linkCopiedHint: '클립보드에 링크가 복사되었습니다',
     sendThemLink: '이 링크로 열어보라고 보내세요',
@@ -479,7 +479,7 @@ bindingName: '바인딩 이름',
     removeFailed: '연결 제거에 실패했습니다',
     settingsSaved: 'Blueprint 설정을 저장했습니다.',
 
-  
+
     connectionName: '연결 이름',
     connectionNameAria: '{name} 이름',
     connectHerePlaceholder: '여기에 무엇을 연결해야 하나요?',
@@ -534,7 +534,7 @@ modelIdHint: "제공자가 지정한 모델 식별자(예: '{id}')",
     emptyHint: '프로바이더를 추가해 AI Workspace를 시작하세요.',
     addFirst: '첫 프로바이더 추가',
     noneFound: '프로바이더를 찾을 수 없습니다',
-  
+
     actions: '프로바이더 작업',
     builtIn: '내장',
     quick: '퀵',
@@ -567,7 +567,7 @@ outputs: '출력',
     noExports: '이 Gadget은 내보내기를 지원하지 않습니다.',
     tryAgain: '다시 시도',
 
-  
+
     uiTitle: 'Gadget UI',
     resourceConfigurator: '리소스 구성',
 },
@@ -577,7 +577,7 @@ outputs: '출력',
     filename: '파일 이름',
     deleteTitle: '파일을 삭제할까요?',
     agentEditing: '에이전트가 이 파일을 편집 중입니다',
-  
+
     filenamePlaceholder: 'filename.ts',
     deleteRemovesSuffix: '파일을 가젯에서 삭제합니다.',
     renameAria: '{name} 이름 바꾸기',
@@ -681,7 +681,7 @@ deleted: '삭제됨',
     previewUnavailable: '이 파일은 여기서 미리볼 수 없습니다.',
     loadingImage: '이미지 불러오는 중…',
 
-  
+
     selectAllRows: '모든 행 선택',
 },
 
@@ -776,7 +776,7 @@ configureBinding: '{name} 구성',
     emptyYet: '아직 게이트키퍼가 없습니다',
     emptyMatchHint: '검색과 일치하는 항목을 찾지 못했습니다.',
     emptyYetHint: '워크스페이스에서 사용할 수 있게 되면 여기에 게이트키퍼가 표시됩니다.',
-  
+
     shieldAria: '게이트키퍼는 연결된 리소스로만 Gadget 접근을 제한합니다',
     shieldTitle: '게이트키퍼',
     shieldBody:
@@ -861,7 +861,7 @@ howAgentPicksDetail: '표준 형식은 에이전트 카탈로그에 먼저 표�
     loadFailed: '블루프린트를 불러오지 못했습니다',
     selectImage: '이미지 파일을 선택하세요.',
     screenshotFailed: '스크린샷 처리에 실패했습니다',
-  
+
     titleAria: '블루프린트 제목',
     descriptionAria: '블루프린트 설명',
 },
@@ -941,7 +941,7 @@ stackedDiff: '스택 비교',
     agentBindings: '에이전트 바인딩',
     agentBindingsHint: '생성된 에이전트가 사용할 수 있는 항목과 표시 이름입니다.',
     nothingToOffer: '여기에 생성된 에이전트에 제공할 항목이 없습니다. Gadget의 Connections 탭에서 에이전트를 만들어 해당 Gadget과 리소스에 접근을 주세요.',
-  
+
     chooseModelDesc: '이 연결에서 사용할 모델을 선택하세요.',
     selectAiModel: 'AI 모델 선택',
 },
@@ -979,7 +979,7 @@ stackedDiff: '스택 비교',
     comingSoonTitle: 'Context & Skills가 곧 {siteName}에 제공됩니다',
     comingSoonBody:
       '에이전트가 참고할 지식 컬렉션과 스킬을 작성하는 방식을 미리 보여 줍니다.',
-  
+
     subtitle: '에이전트가 읽는 지식 컬렉션과 적용할 수 있는 재사용 스킬입니다.',
 },
   home: {
@@ -1579,7 +1579,7 @@ stackedDiff: '스택 비교',
     appDesc: '작은 인터랙티브 앱, 계산기, 대시보드',
     appPrompt:
       '바로 여기서 쓸 수 있는 작은 인터랙티브 도구를 만들어 주세요 — 계산기, 대시보드, 탐색기 등. 무엇을 해야 하는지 물어본 뒤 만들어 주세요.',
-  
+
     getStarted: '시작하기',
 },
 } as const satisfies MessageTree
