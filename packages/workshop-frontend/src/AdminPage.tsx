@@ -13,6 +13,7 @@ import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 import { AdminUpdatesPanel } from './features/deployment-updates/AdminUpdatesPanel'
 import { latestReads } from './features/deployment-updates/latestReads'
+import { probeRouterTag } from './features/deployment-updates/probeRouterTag'
 import { isAdminTab, resolveAdminTab } from './adminTab'
 import { logRpcFailure } from './rpcErrors'
 
@@ -163,7 +164,7 @@ export default function AdminPage() {
         setAdmin({ api })
         // A backend older than the update check rejects this as an unknown method mid-rollout; any
         // failure means no Updates tab rather than a page that fails to load.
-        api.getUpdateStatus().then(
+        probeRouterTag().then(() => api.getUpdateStatus()).then(
           (status) => { if (!cancelled) setUpdateStatus(status) },
           (err) => {
             if (cancelled) return
