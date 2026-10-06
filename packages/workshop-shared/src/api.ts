@@ -1060,6 +1060,12 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
 /** Maximum width or height of an admin-uploaded site logo in pixels. */
 export const MAX_SITE_LOGO_DIMENSION = 512;
 
+/** How long a newer release must have been available before admins are notified of it. */
+export const DEFAULT_UPDATE_MINIMUM_AGE_HOURS = 24;
+
+/** How long a dismissed update notice stays hidden in the browser that dismissed it. */
+export const DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS = 24;
+
 /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
 export type AdminSettingsView = {
   /** Whether new account signups are allowed. */
@@ -1146,6 +1152,43 @@ export type AdminFormat = {
    * removed, nor resets their overrides.
    */
   bundled: boolean;
+};
+
+/**
+ * Whether a newer release is available for a deployment the deploy flow installed, returned by
+ * AdminApi.getUpdateStatus(). The check fields describe the last successful update check made for
+ * the release this backend runs: until one succeeds, `latestReleaseId`, `availableSince` and
+ * `checkedAt` are absent and `updateAvailable` is false.
+ */
+export type DeploymentUpdateStatus = {
+  /** The release this backend runs. */
+  currentReleaseId: string;
+  /** The newest release the last successful check for `currentReleaseId` reported. */
+  latestReleaseId?: string;
+  /** Whether that check said a release newer than `currentReleaseId` exists. */
+  updateAvailable: boolean;
+  /**
+   * When the first release newer than `currentReleaseId` was published. Absent unless
+   * `updateAvailable`.
+   */
+  availableSince?: Date;
+  /**
+   * Whether the home page should show admins the update notice now, before the browser applies
+   * its own dismissal (see `noticeSnoozeHours`).
+   */
+  notify: boolean;
+  /** How many hours a browser hides the notice after an admin dismisses it there. */
+  noticeSnoozeHours: number;
+  /**
+   * Whether this deployment's running code differs from what the deploy flow installed: the
+   * backend's own version tag is not the one the deploy flow recorded. The deploy flow refuses to
+   * upgrade a modified deployment.
+   */
+  modified: boolean;
+  /** The opaque link that opens the deploy flow for this installation. */
+  updateUrl: string;
+  /** When the last successful check for `currentReleaseId` was made. */
+  checkedAt?: Date;
 };
 
 /**
@@ -1394,6 +1437,9 @@ export interface AdminApi {
    * eight requests, each of which may use the whole response cap.
    */
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]>;
+
+  /** Whether a newer release is available. Null unless the deploy flow installed this deployment. */
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
