@@ -465,8 +465,8 @@ export interface ChatSpace extends RpcTarget {
    * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
    * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
    * delivery, so they can tell its subscriptions apart, as can each message's `spaceId` and
-   * `threadId`. The restored target is a separate object; pass it anything it needs, such as
-   * `this.ctx.storage`, from `[restore]()`.
+   * `threadId`. The restored target is a separate object; pass it what it needs from
+   * `[restore]()`, such as `this`, the Gadget, to use its storage and methods.
    *
    * Throws if this deployment has not configured Google Chat hooks.
    *
@@ -476,6 +476,7 @@ export interface ChatSpace extends RpcTarget {
    * export class Gadget extends DurableObject {
    *   async [restore](params) {
    *     if (params.type === "chat") return new StatusHook(params.name);
+   *     if (params.type === "report") return new Reporter(params.callback);
    *     throw new TypeError(`Unknown restore type: ${params.type}`);
    *   }
    * }
@@ -489,12 +490,26 @@ export interface ChatSpace extends RpcTarget {
    *   }
    * }
    *
-   * // executeCode: one hook per conversation, told apart by its params
+   * // Forwards each message to the chat that subscribed it. Pass on only `info`: `message` and
+   * // `conversation` are live capabilities, which `self` cannot store.
+   * class Reporter extends RpcTarget {
+   *   constructor(callback) {
+   *     super();
+   *     this.callback = callback;
+   *   }
+   *   async receiveMessage({ info }) {
+   *     await this.callback.newMessage(info);
+   *   }
+   * }
+   *
+   * // executeCode: one hook per conversation, told apart by its params, and one that reports
+   * // each ops message back to this chat through `self`
    * import { restore } from "cloudflare:workers";
    * export default async function(self, env) {
    *   for (const [name, conversation] of [["standup", env.STANDUP_CHAT], ["ops", env.OPS_CHAT]]) {
    *     await conversation.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "chat", name }));
    *   }
+   *   await env.OPS_CHAT.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "report", callback: self }));
    * }
    */
   subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
@@ -597,13 +612,24 @@ export interface ChatAttachment extends RpcTarget {
   getContent(): Promise<ArrayBuffer>;
 }
 
+/** A new message delivered to a `ChatMessageHook`, with what the hook watches. */
+export type ChatNewMessageEntry = ChatMessageEntry & {
+  /**
+   * The `ChatSpace` or `ChatThread` whose `subscribeNewMessages()` created the hook. Use it to
+   * read around the message, or to post where the conversation has no threads and
+   * `message.reply()` throws.
+   */
+  conversation: ChatSpace | ChatThread;
+};
+
 /** Implemented by a gadget to receive new messages; see `ChatSpace.subscribeNewMessages()`. */
 export interface ChatMessageHook {
   /**
-   * Called with each new message; `entry.message` can read it in full and reply, the reply
-   * queued for approval like any other write. Delivery is at least once and unordered, and a
-   * message this throws for is retried with backoff, eight attempts in all, so key any work on
-   * `entry.info.id` to keep it idempotent. Disabling the hook ends its retries.
+   * Called with each new message. `entry.message` can read it in full and reply, and
+   * `entry.conversation` reaches the rest of what the hook watches; writes through either are
+   * queued for approval, and both are released when this call returns. Delivery is at least once
+   * and unordered, and a message this throws for is retried with backoff, eight attempts in all,
+   * so key any work on `entry.info.id` to keep it idempotent. Disabling the hook ends its retries.
    */
-  receiveMessage(entry: ChatMessageEntry): Promise<void>;
+  receiveMessage(entry: ChatNewMessageEntry): Promise<void>;
 }

@@ -234,19 +234,18 @@ await space.subscribeNewMessages(await this.ctx.restore({ type: "chat-hook" }));
 
 class StatusHook extends RpcTarget {
   async receiveMessage({ info, message }) {
-    try {
-      if (info.text?.includes("status?")) await message.reply("All systems normal.");
-    } finally {
-      message[Symbol.dispose]();
-    }
+    if (info.text?.includes("status?")) await message.reply("All systems normal.");
   }
 }
 ```
 
-Each delivery is recorded as an observation on the hook's approval queue, and `message` is the
-ordinary message capability, so a reply queues an approval action as any other write does. Messages
-the connected account posts are never delivered, which keeps a hook from answering itself, but hooks
-of two connected accounts can still answer each other; approval is the only guard there.
+Each delivery is recorded as an observation on the hook's approval queue. `message` is the ordinary
+message capability, and `conversation` the `ChatSpace` or `ChatThread` the hook subscribed through,
+which can read around the message or post where a conversation has no threads and `reply()` throws.
+A write through either queues an approval action as any other write does, and both are released
+when `receiveMessage()` returns. Messages the connected account posts are never delivered, which
+keeps a hook from answering itself, but hooks of two connected accounts can still answer each other;
+approval is the only guard there.
 
 Delivery is at least once and unordered: Pub/Sub pushes are collapsed for 24 hours, but a failure
 after the hook ran redelivers the message. A firing that fails, whether the hook throws or the

@@ -1359,15 +1359,19 @@ class ChatHookDeliveryImpl extends RpcTarget implements ChatHookDelivery {
     const info = chatMessageInfoFromRaw(raw);
     requireMessageInScope(ctx, info);
     const message = new ChatMessageImpl(ctx, info.id);
+    const conversation = threadName === undefined
+      ? new ChatSpaceImpl(ctx, spaceName)
+      : new ChatThreadImpl(ctx, threadName);
     try {
       await observe(ctx, "Receive a new Google Chat message",
         `Read a new message from ${userLabel(info.sender)} in ${threadName ?? spaceName}, ` +
         "including its text, attachments, and reactions.");
     } catch (error) {
       message[Symbol.dispose]();
+      conversation[Symbol.dispose]();
       throw error;
     }
-    await callback.receiveMessage({ info, message });
+    await callback.receiveMessage({ info, message, conversation });
   }
 }
 
@@ -1546,10 +1550,11 @@ export class GoogleChatGatekeeperImpl
       userObjectId: this.ctx.props.userObjectId,
       delivery,
     } });
+    const watched = threadName === undefined ? "conversation" : "thread";
     await queue.bindHook(controller, hook, {
       title: "Watch for new Google Chat messages",
       description: `Call this hook with each new message anyone else posts in ${threadName ?? spaceName}, ` +
-        "letting it read the message and queue replies for approval.",
+        `letting it read that ${watched} and queue writes there for approval.`,
     });
   }
 

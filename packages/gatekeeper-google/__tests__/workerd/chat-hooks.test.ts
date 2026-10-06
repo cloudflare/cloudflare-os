@@ -63,6 +63,8 @@ function mockGoogle() {
      * as when a create's response is lost; Google refuses to create another while it exists.
      */
     unrecorded: undefined as {name: string; topic: string} | undefined,
+    /** Make the conversation a group chat, whose messages have no threads. */
+    unthreaded: false,
     messages: new Map<string, ChatMessageRaw>(),
     posted: [] as Array<{text: string; thread?: {name: string}}>,
     /** Subscriptions created and deleted, renewal attempts, and how many more renewals fail. */
@@ -111,8 +113,8 @@ function mockGoogle() {
       return json({name: "operations/renew", done: true, response: live});
     }
     if (url.hostname === "chat.googleapis.com" && url.pathname === `/v1/${SPACE}`) {
-      return json({name: SPACE, displayName: "Project", spaceType: "SPACE",
-        spaceThreadingState: "THREADED_MESSAGES"});
+      return json({name: SPACE, displayName: "Project", spaceType: google.unthreaded ? "GROUP_CHAT" : "SPACE",
+        spaceThreadingState: google.unthreaded ? "UNTHREADED_MESSAGES" : "THREADED_MESSAGES"});
     }
     if (url.hostname === "chat.googleapis.com" && url.pathname === `/v1/${SPACE}/messages` && method === "POST") {
       const body = JSON.parse(init.body as string) as {text: string; thread?: {name: string}};
@@ -213,6 +215,21 @@ it("delivers each new message from someone else once, and the hook's reply appli
   await push("ada", [chatMessage("bob")]);
   await deliver();
   expect((await ada.hooks.readHook()).received).toHaveLength(1);
+});
+
+it("lets a hook answer through the conversation it watches, where messages have no threads", async () => {
+  const google = mockGoogle();
+  google.unthreaded = true;
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  await ada.hooks.setHookBehavior({post: "On it."});
+
+  await push("ada", [chatMessage("bob")]);
+  await deliver();
+
+  const {submissions} = await ada.hooks.readHook();
+  await ada.hooks.chatApplyAction(ada.facetName, ada.id, ada.props, submissions[0].actionId);
+  expect(google.posted).toEqual([{text: "On it."}]);
 });
 
 it("delivers a subscription's events only to hooks of the account that created it", async () => {

@@ -12,7 +12,7 @@ import type {
   GmailSession,
 } from "../../src/types";
 import type {
-  ChatListMessagesOptions, ChatMessageEntry, ChatMessageInfo, ChatSession, ChatSpace, ChatThread,
+  ChatListMessagesOptions, ChatMessageInfo, ChatNewMessageEntry, ChatSession, ChatSpace, ChatThread,
 } from "../../src/chat-types";
 import type { ChatMessageRaw } from "../../src/chat-api";
 import type { ChatHookParams } from "../../src/chat-hooks";
@@ -190,15 +190,17 @@ class HookBindingQueue extends TestApprovalQueue {
   }
 }
 
-type HookState = { received: ChatMessageInfo[]; reply?: string; failures: number; admissionFailures?: number };
+type HookState = {
+  received: ChatMessageInfo[]; reply?: string; post?: string; failures: number; admissionFailures?: number;
+};
 
-/** A gadget's message hook: records each entry, optionally failing first or replying. */
+/** A gadget's message hook: records each entry, optionally failing first, replying or posting. */
 class RecordingHook extends RpcTarget {
   constructor(private readonly state: HookState) {
     super();
   }
 
-  async receiveMessage(entry: ChatMessageEntry): Promise<void> {
+  async receiveMessage(entry: ChatNewMessageEntry): Promise<void> {
     try {
       if (this.state.failures > 0) {
         this.state.failures--;
@@ -206,8 +208,10 @@ class RecordingHook extends RpcTarget {
       }
       this.state.received.push(entry.info);
       if (this.state.reply !== undefined) await entry.message.reply(this.state.reply);
+      if (this.state.post !== undefined) await entry.conversation.post(this.state.post);
     } finally {
       disposeRpc(entry.message);
+      disposeRpc(entry.conversation);
     }
   }
 }
@@ -548,7 +552,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return { callback: new RecordingHook(this.#hook), approvalQueue: new RpcStub(this.#hookQueue) };
   }
 
-  setHookBehavior(behavior: { reply?: string; failures?: number; admissionFailures?: number }): void {
+  setHookBehavior(behavior: Partial<Omit<HookState, "received">>): void {
     Object.assign(this.#hook, behavior);
   }
 
