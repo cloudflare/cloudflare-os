@@ -489,9 +489,9 @@ export interface AuthenticatedApi extends RpcTarget {
   hasPasswordLogin(): Promise<boolean>;
 
   /**
-   * Connect the native app's one-time central device registration to this authenticated user,
-   * replacing any previously registered device. The deployment never receives an APNs device
-   * token or Cloudflare account token.
+   * Connect the native app's one-time central device registration to this authenticated user. Each
+   * registered device gets push; a device that registers again replaces its own subscription. The
+   * deployment never receives an APNs device token or Cloudflare account token.
    */
   registerNotificationDevice(deviceRegistrationId: string): Promise<void>;
 

@@ -18,7 +18,8 @@ function threadTitle(title: string): string | undefined {
   return bounded.trimEnd() || undefined;
 }
 
-async function signedPost(env: Cloudflare.Env, pathname: string, payload: object) {
+async function signedPost(
+    env: Cloudflare.Env, pathname: string, payload: object): Promise<Response> {
   let {
     NOTIFICATION_SERVICE_URL: serviceUrl, CFOS_INSTALL_ID: installId,
     CFOS_INSTALL_KEY_ID: keyId, CFOS_INSTALL_PRIVATE_KEY: privateKey,
@@ -26,6 +27,9 @@ async function signedPost(env: Cloudflare.Env, pathname: string, payload: object
   if (!serviceUrl || !installId || !keyId || !privateKey) {
     throw new Error("Notification service is not configured.");
   }
+  let url = new URL(pathname, serviceUrl);
+  // The signature authenticates this install, not the service; only TLS keeps the request private.
+  if (url.protocol !== "https:") throw new Error("Notification service URL must use HTTPS.");
   let body = JSON.stringify(payload);
   let digest = base64url(await crypto.subtle.digest("SHA-256", encoder.encode(body)));
   let timestamp = String(Math.floor(Date.now() / 1000));
@@ -36,7 +40,7 @@ async function signedPost(env: Cloudflare.Env, pathname: string, payload: object
   let canonical = ["CFOS1", "POST", pathname, installId, keyId, timestamp, nonce, digest].join("\n");
   let signature = base64url(await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" }, key, encoder.encode(canonical)));
-  let response = await fetch(new URL(pathname, serviceUrl), {
+  return fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -48,30 +52,44 @@ async function signedPost(env: Cloudflare.Env, pathname: string, payload: object
       "x-cfos-timestamp": timestamp,
     },
     body,
+    // A followed redirect would resend the signed request, possibly over plaintext; a 3xx is not
+    // ok, so callers fail as for any other bad status. (Workers has no `redirect: "error"`.)
+    redirect: "manual",
   });
-  if (!response.ok) {
-    throw new Error(`Notification service ${pathname} failed with status ${response.status}.`);
-  }
-  return response;
 }
 
-/** Exchange the native app's one-time device registration for an install-bound subscription id. */
+// The service's ids are 64 lowercase hex characters. The device key indexes the stored
+// subscriptions, so a missing one would merge every device into one entry; hold the service to it.
+const isServiceId = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+/**
+ * Exchange the native app's one-time device registration for an install-bound subscription, along
+ * with the install-scoped key of the device it reaches.
+ */
 export async function registerDevice(
-    env: Cloudflare.Env, deviceRegistrationId: string): Promise<string> {
+    env: Cloudflare.Env, deviceRegistrationId: string,
+): Promise<{ deviceKey: string; subscriptionId: string }> {
   let response = await signedPost(env, "/v1/subscriptions", { deviceRegistrationId });
-  let { subscriptionId } = await response.json<{ subscriptionId?: unknown }>();
-  // Stored as-is: an empty id would silently skip push, so hold the service to its id format.
-  if (typeof subscriptionId !== "string" || !/^[0-9a-f]{64}$/.test(subscriptionId)) {
+  if (!response.ok) {
+    throw new Error(`Notification registration failed with status ${response.status}.`);
+  }
+  let { deviceKey, subscriptionId } =
+      await response.json<{ deviceKey?: unknown; subscriptionId?: unknown }>();
+  if (!isServiceId(deviceKey) || !isServiceId(subscriptionId)) {
     throw new Error("Notification service returned an invalid subscription.");
   }
-  return subscriptionId;
+  return { deviceKey, subscriptionId };
 }
 
-/** Push a notification to the device behind `subscriptionId`. */
+/**
+ * Push a notification to the device behind `subscriptionId`. Resolves to false when the service
+ * reports it will never deliver to that subscription again.
+ */
 export async function deliver(
     env: Cloudflare.Env, subscriptionId: string,
-    { id, kind, workspaceId, chatId, chatTitle }: UserNotification): Promise<void> {
-  await signedPost(env, "/v1/deliveries", {
+    { id, kind, workspaceId, chatId, chatTitle }: UserNotification): Promise<boolean> {
+  let response = await signedPost(env, "/v1/deliveries", {
     type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
     eventId: id,
     taskId: `${workspaceId}:${chatId}`,
@@ -79,4 +97,12 @@ export async function deliver(
     path: `/workspace/${workspaceId}?chat=${chatId}`,
     subscriptionId,
   });
+  if (response.ok) return true;
+  // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
+  // which must not discard every device's subscription.
+  if (response.status === 401 || response.status === 410) {
+    let { status } = await response.json<{ status?: unknown }>();
+    if (status === "invalid_subscription" || status === "device_gone") return false;
+  }
+  throw new Error(`Notification delivery failed with status ${response.status}.`);
 }

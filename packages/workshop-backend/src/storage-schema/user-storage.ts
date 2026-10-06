@@ -174,9 +174,10 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       preferredModel: <string | null>null,
       onboardingCompleted: false,
 
-      // Install-bound central push subscription for the most recently registered device. Only this
-      // installation's signing key can deliver to it.
-      notificationSubscriptionId: <string | null>null,
+      // Central push subscriptions, keyed by the install-scoped device key the service returns, so a
+      // device that registers again replaces its own subscription. Only this installation's signing
+      // key can deliver to them.
+      notificationSubscriptions: <Record<string, string>>{},
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.

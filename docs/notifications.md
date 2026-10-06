@@ -2,11 +2,11 @@
 
 Notifications are a platform feature, not a gatekeeper. The Workshop backend signs each request to
 the Cloudflare-operated notification service with the installation's signing key. Each User
-Durable Object stores the opaque subscription id of the device it most recently registered;
-registering another device replaces it, so push reaches one device per user. The central service
-owns APNs delivery and the device/subscription directory, and accepts only fixed, typed
-notification templates. It does not accept arbitrary notification text or any provider OAuth
-credential.
+Durable Object stores one opaque subscription id per registered device, keyed by the
+install-scoped device key the service returns with it, so a device that registers again replaces
+its own subscription. The central service owns APNs delivery and the device/subscription
+directory, and accepts only fixed, typed notification templates. It does not accept arbitrary
+notification text or any provider OAuth credential.
 
 ## Registration
 
@@ -25,7 +25,7 @@ flowchart LR
   subgraph Install[One customer CFOS installation]
     Browser[Authenticated Workshop session]
     User[User Durable Object]
-    UserState[(Opaque subscription id)]
+    UserState[(Device key to subscription id)]
     Key[Install signing private key]
   end
 
@@ -38,7 +38,7 @@ flowchart LR
   User -->|signed POST /v1/subscriptions| Device
   Key -->|sign request locally| User
   Device -->|validate install; consume one-time id| Registry
-  Device -->|opaque subscription id| User
+  Device -->|device key and opaque subscription id| User
   User --> UserState
 ```
 
@@ -47,8 +47,8 @@ Data boundaries:
 - The APNs device token and Dashboard OAuth bearer never enter the customer installation.
 - The install signing private key is a backend secret, held like `CF_AI_GATEWAY_API_TOKEN`; gadget
   and agent code run in isolates whose env never includes it.
-- Workshop core stores only the opaque central subscription id, which is bound to the installation
-  and useless without the install signing key.
+- Workshop core stores only opaque central subscription ids, which are bound to the installation
+  and useless without the install signing key, and the install-scoped device key each one reaches.
 - A one-time device registration id is short-lived and cannot send a notification.
 
 The native app hands the SPA a one-time registration id by setting
@@ -97,15 +97,18 @@ Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat 
 subscription id, and same-origin deep-link path cross the central boundary during a send, plus the
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
-visible browser tab is offered the notification first, and push is sent only if no tab acknowledges
-it within three seconds. Only turns a person started announce completion; callback turns, such as a
-schedule, and spawned agents notify only when they need the user's permission.
+visible browser tab is offered the notification first, and push is sent to every registered device
+only if no tab acknowledges it within three seconds. When the service answers `device_gone` or
+`invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
+app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
+started announce completion; callback turns, such as a schedule, and spawned agents notify only
+when they need the user's permission.
 
 ## Deployment contract
 
 The trusted deploy service injects these into the backend; the private key is a secret:
 
-- `NOTIFICATION_SERVICE_URL`
+- `NOTIFICATION_SERVICE_URL` (an `https:` origin; requests to any other are refused)
 - `CFOS_INSTALL_ID`
 - `CFOS_INSTALL_KEY_ID`
 - `CFOS_INSTALL_PRIVATE_KEY` (base64 PKCS#8 P-256)

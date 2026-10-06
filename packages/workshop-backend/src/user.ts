@@ -344,13 +344,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.passwordHashHash.get() !== null;
   }
 
-  /**
-   * Exchange the native app's one-time device registration for a push subscription, replacing the
-   * previously registered device.
-   */
+  /** Exchange the native app's one-time device registration for that device's push subscription. */
   async registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    this.storage.notificationSubscriptionId.put(
-        await registerDevice(this.env, deviceRegistrationId));
+    let { deviceKey, subscriptionId } = await registerDevice(this.env, deviceRegistrationId);
+    this.storage.notificationSubscriptions.put(
+        { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
 
   /** Subscribe a visible authenticated client to live user notifications. */
@@ -369,7 +367,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
   }
 
-  /** Offer a notification to visible clients; push it unless one acknowledges within 3s. */
+  /**
+   * Offer a notification to visible clients; push it to every registered device unless one
+   * acknowledges within 3s.
+   */
   async publishNotification(notification: UserNotification): Promise<void> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let acknowledged = await Promise.race([
@@ -377,9 +378,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
       new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 3_000); }),
     ]).finally(() => clearTimeout(timeout));
-    let subscriptionId = this.storage.notificationSubscriptionId.get();
-    if (!acknowledged && subscriptionId) {
-      await deliver(this.env, subscriptionId, notification);
+    if (acknowledged) return;
+    let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
+    let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
+      if (await deliver(this.env, subscriptionId, notification)) return;
+      // This subscription is dead; the device gets a new one when its app next opens. Keep one it
+      // registered while this delivery was in flight.
+      let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
+      if (current === subscriptionId) this.storage.notificationSubscriptions.put(others);
+    }));
+    for (let result of results) {
+      if (result.status === "rejected") throw result.reason;
     }
   }
 
