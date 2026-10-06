@@ -8,7 +8,7 @@ packages:
 # needing to hand edit a bunch of different package.json files.
 catalog:
   '@cloudflare/vitest-pool-workers': ^0.22.0
-  '@cloudflare/workers-types': ^5.20260924.1
+  '@cloudflare/workers-types': ^5.20261001.1
   capnweb: ^0.12.0
   # jsdiff: line diffs in workshop-backend (formatUnifiedDiff) and gatekeeper-github (the
   # simulated PR diff's hunks). One catalog entry so the two can't drift apart.
@@ -16,7 +16,7 @@ catalog:
   # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
   capnweb-validate: 0.3.0
   # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
-  miniflare: 5.20260921.1-alpha
+  miniflare: 5.20261001.0-alpha
   # Exact: TypeScript 7 (tsgo). Type-checking runs on the native compiler. Build-time
   # transpilers that need the JS compiler API (scripts/build-gatekeeper-configurator.ts)
   # use the "typescript6" npm alias below instead; capnweb-validate
@@ -34,7 +34,7 @@ catalog:
   vite: 7.3.6
   vite-plus: ^1.0.0
   vitest: ^4.1.11
-  wrangler: ^4.138.0
+  wrangler: ^4.147.0
   zod: ^4.6.5
 
 overrides:
