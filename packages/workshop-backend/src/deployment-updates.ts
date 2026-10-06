@@ -1,18 +1,15 @@
 // Whether a deployment the deploy flow installed has a newer release to take. The service that
 // installed it describes the install in CLOUDFLARE_OS_DEPLOYMENT and answers the update check;
-// AdminSettings.getUpdateStatus() stores the last check and reports it to admins.
+// AdminSettings stores the last check and reports it to admins.
 
 import { z } from "zod";
-import {
-  DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
-  type DeploymentUpdateStatus,
-} from "@gadgets/workshop-shared/api";
-import type { UpdateCheck } from "./storage-schema/admin-settings-storage.js";
+import type { DeploymentUpdateStatus } from "@gadgets/workshop-shared/api";
+import type { AdminConfig, UpdateCheck } from "./storage-schema/admin-settings-storage.js";
 
-const HOUR_MS = 60 * 60 * 1000;
-// How long a successful check is served before the next, and how long a failed one waits.
-const CHECK_INTERVAL_MS = 6 * HOUR_MS;
-const RETRY_INTERVAL_MS = 15 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+// The longest a failed check waits before the next. A successful one waits the check interval.
+const RETRY_INTERVAL_MS = 15 * MINUTE_MS;
 const CHECK_TIMEOUT_MS = 5_000;
 
 /** The install, as the service that installed this deployment describes it. */
@@ -84,22 +81,30 @@ export async function fetchLatestRelease(updateCheckUrl: string, runningReleaseI
 }
 
 /**
- * Whether to check again: the stored check is for another release, or its success is over 6 hours
- * old and its last attempt over 15 minutes old.
+ * Whether to check again: the stored check is for another release, or its success is over
+ * `intervalMinutes` old and its last attempt is older than the interval or 15 minutes, whichever is
+ * shorter. A success is its own last attempt, so only a failure makes the second wait.
  */
-export function updateCheckDue(check: UpdateCheck | null, releaseId: string, now: number): boolean {
+export function updateCheckDue(check: UpdateCheck | null, releaseId: string,
+                               intervalMinutes: number, now: number): boolean {
   if (check?.from !== releaseId) return true;
-  if (check.checkedAt !== undefined && now - check.checkedAt < CHECK_INTERVAL_MS) return false;
-  return now - check.attemptedAt >= RETRY_INTERVAL_MS;
+  let interval = intervalMinutes * MINUTE_MS;
+  if (check.checkedAt !== undefined && now - check.checkedAt < interval) return false;
+  return now - check.attemptedAt >= Math.min(interval, RETRY_INTERVAL_MS);
 }
 
+/** The deployment's settings for the update notice. */
+export type UpdateSettings = Pick<AdminConfig, "updateChecksEnabled" | "updateCheckIntervalMinutes" |
+    "updateMinimumAgeHours" | "updateNoticeSnoozeHours">;
+
 /**
- * What admins are told about `install`, from the stored check, if it was made for the running
- * release, and the running backend's version tag, which differs from the recorded one once the
- * backend was changed outside the deploy flow.
+ * What admins are told about `install` under `settings`, from the stored check, if it was made for
+ * the running release, and the running backend's version tag, which differs from the recorded one
+ * once the backend was changed outside the deploy flow.
  */
-export function deploymentUpdateStatus(install: DeployServiceInstall, check: UpdateCheck | null,
-                                       runningTag: string | undefined, now: number)
+export function deploymentUpdateStatus(install: DeployServiceInstall, settings: UpdateSettings,
+                                       check: UpdateCheck | null, runningTag: string | undefined,
+                                       now: number)
     : DeploymentUpdateStatus {
   let current = check?.from === install.releaseId ? check : undefined;
   let result = current?.result;
@@ -111,9 +116,12 @@ export function deploymentUpdateStatus(install: DeployServiceInstall, check: Upd
     ...(result && { latestReleaseId: result.latestReleaseId }),
     updateAvailable,
     ...(since !== undefined && { availableSince: new Date(since) }),
-    notify: updateAvailable && !modified && since !== undefined &&
-        now - since >= DEFAULT_UPDATE_MINIMUM_AGE_HOURS * HOUR_MS,
-    noticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+    notify: settings.updateChecksEnabled && updateAvailable && !modified && since !== undefined &&
+        now - since >= settings.updateMinimumAgeHours * HOUR_MS,
+    checksEnabled: settings.updateChecksEnabled,
+    checkIntervalMinutes: settings.updateCheckIntervalMinutes,
+    minimumAgeHours: settings.updateMinimumAgeHours,
+    noticeSnoozeHours: settings.updateNoticeSnoozeHours,
     modified,
     updateUrl: install.updateUrl,
     ...(current?.checkedAt !== undefined && { checkedAt: new Date(current.checkedAt) }),
