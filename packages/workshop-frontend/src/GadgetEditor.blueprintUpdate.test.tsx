@@ -10,9 +10,9 @@ import type {
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 
-// Covers which gadgets the editor offers "Update from blueprint" for, and what it does once that
-// has produced a proposal: the proposal lives in a new chat, which the editor has to bring into
-// view. Everything the editor composes is stubbed down to the callbacks that drive its layout.
+// Covers which gadgets the editor offers "Update from blueprint" for, and how the editor brings a
+// chat into view: the one a blueprint update was proposed in, or the one a notification opens.
+// Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -29,7 +29,11 @@ const GADGET: GadgetSummary = { id: 1, type: 'gadget', title: 'Itinerary', commi
 const mocks = vi.hoisted(() => {
   const disposable = { [Symbol.dispose]() {} }
   return {
-    navigate: vi.fn<(options: { search: (prev: Record<string, unknown>) => unknown }) => void>(),
+    navigate: vi.fn<(options: {
+      search: (prev: Record<string, unknown>) => unknown
+      replace?: boolean
+    }) => void>(),
+    search: {} as Record<string, unknown>,
     workspace: {
       overseer: {
         stub: {
@@ -58,7 +62,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('@tanstack/react-router', () => ({
   useParams: () => ({ id: 'workspace' }),
   useNavigate: () => mocks.navigate,
-  useSearch: () => ({}),
+  useSearch: () => mocks.search,
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
 }))
 
@@ -180,6 +184,7 @@ async function proposeUpdate() {
 
 beforeEach(() => {
   mocks.navigate.mockReset()
+  mocks.search = {}
   localStorage.clear()
   container = document.createElement('div')
   document.body.append(container)
@@ -259,5 +264,22 @@ describe('GadgetEditor, once a blueprint update is proposed', () => {
     await proposeUpdate()
 
     expect(currentView()).toEqual(['Preview'])
+  })
+})
+
+// A notification's "Open task" arrives as ?showChat.
+describe('GadgetEditor, opening a chat from a notification', () => {
+  it.each([
+    { screen: 'phone', view: 'Chat' },
+    { screen: 'desktop', view: 'Preview' },
+  ] as const)('shows the chat on a $screen, then drops the request', async ({ screen, view }) => {
+    mocks.search = { chat: 3, showChat: true }
+
+    await openEditor(screen)
+
+    expect(currentView()).toEqual([view])
+    const [{ search, replace }] = mocks.navigate.mock.calls.at(-1)!
+    expect(replace).toBe(true)
+    expect(search(mocks.search)).toEqual({ chat: 3, showChat: undefined })
   })
 })

@@ -88,7 +88,7 @@ describe("notification service", () => {
       eventId: NOTIFICATION.id,
       taskId: "abc123:7",
       threadTitle: "Build the demo",
-      path: "/workspace/abc123?chat=7",
+      path: "/workspace/abc123?chat=7&showChat=true",
       subscriptionId: SUBSCRIPTION_ID,
     });
     expect(headers.get("x-cfos-install-id")).toBe(INSTALL.CFOS_INSTALL_ID);

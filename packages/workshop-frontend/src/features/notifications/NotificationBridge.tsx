@@ -107,7 +107,9 @@ export const NotificationBridge = ({
           actions: [{
             children: "Open task",
             onClick: () => router.navigate({
-              to: "/workspace/$id", params: { id: workspaceId }, search: { chat: chatId },
+              to: "/workspace/$id",
+              params: { id: workspaceId },
+              search: { chat: chatId, showChat: true },
             }),
           }],
         });

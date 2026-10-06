@@ -94,7 +94,7 @@ export async function deliver(
     eventId: id,
     taskId: `${workspaceId}:${chatId}`,
     threadTitle: threadTitle(chatTitle),
-    path: `/workspace/${workspaceId}?chat=${chatId}`,
+    path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
     subscriptionId,
   });
   if (response.ok) return true;

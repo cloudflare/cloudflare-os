@@ -87,7 +87,7 @@ describe("NotificationBridge", () => {
     await act(() => subscribers[0].notify(notification));
     addToast.mock.calls[0][0].actions[0].onClick();
     expect(router.navigate).toHaveBeenCalledWith({
-      to: "/workspace/$id", params: { id: "workspace-1" }, search: { chat: 1 },
+      to: "/workspace/$id", params: { id: "workspace-1" }, search: { chat: 1, showChat: true },
     });
   });
 
