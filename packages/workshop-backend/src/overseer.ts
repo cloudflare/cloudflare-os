@@ -6209,8 +6209,8 @@ class OverseerImpl implements AgentHooks {
         let awaitingPermission = await runAgent(
             this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
         let meta = this.storage.chatMeta.get(chatId);
-        // No one waits on a callback turn (e.g. a schedule) to complete.
-        if (meta && (awaitingPermission || !callbackInitiated)) {
+        // Only a person waits on their own turn: callbacks and spawned agents finish unattended.
+        if (meta && (awaitingPermission || initiator.type === "user")) {
           notification = {
             id: crypto.randomUUID(),
             kind: awaitingPermission ? "permissionRequested" : "taskCompleted",
