@@ -92,6 +92,8 @@ export default function AdminPage() {
   // The update status of a deployment the deploy flow installed, null for any other deployment.
   // Loaded beside the settings but never holding them up, so it may still be pending.
   const [updateStatus, setUpdateStatus] = useState<DeploymentUpdateStatus | null | 'pending'>('pending')
+  // As with gatewayModelsRead: an earlier re-read answering last must not replace a later one.
+  const updateStatusRead = useRef(0)
 
   // The tab lives in the URL so the notice can link to one; changing it replaces the history entry
   // on the same route, which keeps this component and its drafts.
@@ -475,7 +477,17 @@ export default function AdminPage() {
               <Loader size="lg" />
             </div>
           )
-          : <AdminUpdatesPanel status={updateStatus} />
+          : (
+            <AdminUpdatesPanel
+              admin={admin.api}
+              status={updateStatus}
+              onChanged={async () => {
+                const read = ++updateStatusRead.current
+                const next = await admin.api.getUpdateStatus()
+                if (read === updateStatusRead.current) setUpdateStatus(next)
+              }}
+            />
+          )
       )}
 
       {/* Standard output formats */}
