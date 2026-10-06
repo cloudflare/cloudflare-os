@@ -196,12 +196,11 @@ export type ChatHistory = {
   measuredTokens: number;
 };
 
-// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop, possibly to await
-// the user's permission; a persisted tool step left the next request over the compaction trigger,
-// so the pass ended for a reload; or the pass summarized instead of prompting the model and this
-// is the checkpoint to publish.
+// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop; a persisted tool
+// step left the next request over the compaction trigger, so the pass ended for a reload; or the
+// pass summarized instead of prompting the model and this is the checkpoint to publish.
 type AgentPassOutcome =
-  | {type: "finished"; awaitingPermission?: boolean}
+  | {type: "finished"}
   | {type: "reloadForCompaction"}
   | {type: "compacted"; checkpoint: CompactionCheckpoint}
   | {type: "transientFailure"; error: AgentTurnError};
@@ -513,8 +512,7 @@ export interface AgentHooks {
                    onOutputText?: (delta: string) => void,
                    worktreeTurn?: WorktreeTurnAccess): Promise<string>;
   consumeCapturedActions(chatId: number)
-      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean,
-         pendingDecision: boolean} | undefined;
+      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
 
   /**
@@ -1427,8 +1425,7 @@ const TRANSIENT_FAILURE_RETRIES = 2;
  * which the next pass compacts first, and goes again. Each compaction moves the boundary strictly
  * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
  * it has compacted; the model is never prompted. A pass whose model request failed transiently is
- * also run again, a bounded number of times. Resolves to whether the turn stopped to await the
- * user's permission for a connection or action.
+ * also run again, a bounded number of times.
  */
 export async function runAgent(
     hooks: AgentHooks,
@@ -1437,7 +1434,7 @@ export async function runAgent(
     author: AiChatAuthorInfo,
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    modelConfig: AiModelConfig): Promise<boolean> {
+    modelConfig: AiModelConfig): Promise<void> {
   let retries = 0;
   while (true) {
     let history = hooks.loadChatHistory(chatId);
@@ -1451,8 +1448,7 @@ export async function runAgent(
       await scheduler.wait(1000 * retries);
     }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
-    if (outcome.type === "finished") return outcome.awaitingPermission ?? false;
-    if (isCompactionTurn(history.chatMessages)) return false;
+    if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
     abortSignal.throwIfAborted();
   }
 }
@@ -2780,8 +2776,6 @@ async function runAgentPass(
   // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
   // barrier persists the action before the loop ends and waits for approval to resume it.
   let awaitingActionDecision = false;
-  // Latched with it while such an action is still pending rather than already rejected.
-  let pendingActionDecision = false;
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
   // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
@@ -4084,7 +4078,6 @@ async function runAgentPass(
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
-      if (capturedActionsForStep?.pendingDecision) pendingActionDecision = true;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (
@@ -4139,8 +4132,7 @@ async function runAgentPass(
     throw error;
   }
 
-  if (reloadForCompaction) return {type: "reloadForCompaction"};
-  return {type: "finished", awaitingPermission: connectionRequested || pendingActionDecision};
+  return {type: reloadForCompaction ? "reloadForCompaction" : "finished"};
 }
 
 /**

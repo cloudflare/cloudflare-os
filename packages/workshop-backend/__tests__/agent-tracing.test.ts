@@ -35,6 +35,7 @@ interface OverseerInternals {
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
   };
   nextChatSequence(chatId: number): number;
+  commitAgentStep(...args: unknown[]): Promise<boolean>;
   startAgent(chatId: number, aiModel: AiModel, initiator: AiChatAuthorInfo,
              initiatorUserId: string): void;
   deliverAgentCallback(chatId: number, methodName: string, args: unknown[],
@@ -482,12 +483,13 @@ describe("turn notifications", () => {
   });
 
   // The agent submits an action that waits for the user's decision while its step runs; the user
-  // decides (or not) before the step ends.
+  // decides (or not) during the step, or once it is over and persisting.
   it.each([
-    { decision: "is still pending", state: "pending", kind: "permissionRequested" },
-    { decision: "was rejected", state: "rejected", kind: "taskCompleted" },
-  ] as const)("asks for permission only while the awaited action $decision",
-      async ({ state, kind }) => {
+    { state: "pending", when: "during its step", kind: "permissionRequested" },
+    { state: "rejected", when: "during its step", kind: "taskCompleted" },
+    { state: "rejected", when: "as its step persists", kind: "taskCompleted" },
+  ] as const)("sends $kind when the awaited action is $state $when",
+      async ({ state, when, kind }) => {
     let turn = startTurn([reply]);
     await turn.requested;
     await inOverseer(turn.workspace, async impl => {
@@ -502,7 +504,16 @@ describe("turn notifications", () => {
         title: "Send", description: "", implementsRevert: false, awaitDecision: true,
       }, { from: "agent", chatId: CHAT_ID });
       let [record] = impl.storage.actions.list();
-      impl.storage.actions.put({ ...record, state });
+      let decide = () => impl.storage.actions.put({ ...record, state });
+      if (when === "as its step persists") {
+        let commit = impl.commitAgentStep.bind(impl);
+        impl.commitAgentStep = (...args) => {
+          decide();
+          return commit(...args);
+        };
+      } else {
+        decide();
+      }
     });
     turn.release();
 

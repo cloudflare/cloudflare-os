@@ -79,7 +79,7 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import type { GadgetExportFormat, UserNotification } from "@gadgets/workshop-shared/api";
+import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
@@ -6530,7 +6530,7 @@ class OverseerImpl implements AgentHooks {
     // balance once the turn completes (see the `finally` below) so the next billing decision
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
-    let notification: UserNotification | undefined;
+    let finished = false;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -6600,19 +6600,9 @@ class OverseerImpl implements AgentHooks {
         let controller = liveChat.cancelController;
         controller.signal.throwIfAborted();
 
-        let awaitingPermission = await runAgent(
+        await runAgent(
             this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
-        let meta = this.storage.chatMeta.get(chatId);
-        // Only a person waits on their own turn: callbacks and spawned agents finish unattended.
-        if (meta && (awaitingPermission || initiator.type === "user")) {
-          notification = {
-            id: crypto.randomUUID(),
-            kind: awaitingPermission ? "permissionRequested" : "taskCompleted",
-            workspaceId: this.ctx.id.toString(),
-            chatId,
-            chatTitle: meta.title,
-          };
-        }
+        finished = true;
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "ok",
           durationMs: Date.now() - startedAt,
@@ -6684,13 +6674,25 @@ class OverseerImpl implements AgentHooks {
       // re-register everything consistently.
       this.#unregisterRunningAgent(chatId);
 
-      if (notification) {
-        this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
-            .publishNotification(notification).catch(error => {
-              turnLogger.warn("notification publish failed", {
-                event: "notification.publish.failed", error,
-              });
-            }));
+      if (finished && meta) {
+        // Classified here, past the turn's last await, so a decision made as it ended counts.
+        let awaitingDecision = this.#awaitsDecision(chatId);
+        // Only a person waits on their own turn, including one their approval resumed: callbacks
+        // and spawned agents finish unattended.
+        if (awaitingDecision || initiator.type === "user") {
+          this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
+              .publishNotification({
+                id: crypto.randomUUID(),
+                kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
+                workspaceId: this.ctx.id.toString(),
+                chatId,
+                chatTitle: meta.title,
+              }).catch(error => {
+                turnLogger.warn("notification publish failed", {
+                  event: "notification.publish.failed", error,
+                });
+              }));
+        }
       }
 
       this.#finishAgentTurn(chatId);
@@ -8265,23 +8267,40 @@ class OverseerImpl implements AgentHooks {
   }
 
   consumeCapturedActions(chatId: number)
-      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean,
-         pendingDecision: boolean} | undefined {
+      : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined {
     let result = this.#capturedActions.get(chatId);
     this.#capturedActions.delete(chatId);
-    if (!result) return undefined;
     // Submission latched this, but the user may decide while the tool still runs, before the step's
     // action cards exist for an approval to resume from. So stop only for an awaited action that is
     // still pending, or was rejected (which ends the turn).
-    let states = result.awaitDecision ? result.actions.flatMap(id => {
-      let record = this.storage.actions.get(id);
-      return record?.type === "action" && record.description.awaitDecision ? [record.state] : [];
-    }) : [];
-    return {
-      ...result,
-      awaitDecision: states.some(state => state !== "approved"),
-      pendingDecision: states.includes("pending"),
-    };
+    if (result) {
+      result.awaitDecision &&= result.actions.some(id => {
+        let record = this.storage.actions.get(id);
+        return record?.type === "action" && record.description.awaitDecision &&
+            record.state !== "approved";
+      });
+    }
+    return result;
+  }
+
+  // Whether the chat's current turn waits on the user's decision on a connection or action. Scans
+  // back to whatever started the turn, as #maybeResumeAfterActionDecision does.
+  #awaitsDecision(chatId: number): boolean {
+    for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
+      if (msg.type === "agentCallback") return false;
+      if (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget")) {
+        return false;
+      }
+      if (msg.type === "connectionRequest" && msg.state === "pending") return true;
+      if (msg.type === "action") {
+        let record = this.storage.actions.get(msg.actionId);
+        if (record?.type === "action" && record.caller.from === "agent" &&
+            record.description.awaitDecision && record.state === "pending") {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // --- Connection-request hooks ---
