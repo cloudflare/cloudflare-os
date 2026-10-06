@@ -5,10 +5,12 @@ install-local `notification-proxy` through the explicit `NOTIFICATION_DELIVERY` 
 but the proxy has no public route and is never included in `GATEKEEPER_*` discovery, connector UI,
 or agent bindings.
 
-The proxy isolates the installation signing key from Workshop core and stores only an opaque
-subscription id for each Workshop user. The Cloudflare-operated notification service owns APNs
-delivery and the device/subscription directory. It accepts only fixed, typed notification templates;
-it does not accept arbitrary notification text or any provider OAuth credential.
+The proxy is stateless: it holds the installation signing key, so Workshop core never sees it, and
+signs each request to the Cloudflare-operated notification service. Each User Durable Object
+stores the opaque subscription id of the device it most recently registered; registering another
+device replaces it, so push reaches one device per user. The central service owns APNs delivery
+and the device/subscription directory, and accepts only fixed, typed notification templates. It
+does not accept arbitrary notification text or any provider OAuth credential.
 
 ## Registration
 
@@ -27,8 +29,8 @@ flowchart LR
   subgraph Install[One customer CFOS installation]
     Browser[Authenticated Workshop session]
     User[User Durable Object]
+    UserState[(Opaque subscription id)]
     Proxy[notification-proxy]
-    ProxyState[(Opaque subscription id)]
     Key[Install signing private key]
   end
 
@@ -38,21 +40,31 @@ flowchart LR
   Device -->|one-time registration id| App
   App -->|inject opaque id| Browser
   Browser -->|registerNotificationDevice| User
-  User -->|account id plus one-time id| Proxy
+  User -->|one-time id| Proxy
   Key -->|sign request locally| Proxy
   Proxy -->|signed POST /v1/subscriptions| Device
   Device -->|validate install; consume one-time id| Registry
   Device -->|opaque subscription id| Proxy
-  Proxy --> ProxyState
+  Proxy -->|opaque subscription id| User
+  User --> UserState
 ```
 
 Data boundaries:
 
 - The APNs device token and Dashboard OAuth bearer never enter the customer installation.
 - The install signing private key never leaves `notification-proxy`.
-- Workshop core stores only a random proxy account id; the proxy stores only the opaque central
-  subscription id.
+- Workshop core stores only the opaque central subscription id, which is bound to the installation
+  and useless without the install signing key.
 - A one-time device registration id is short-lived and cannot send a notification.
+
+The native app hands the SPA a one-time registration id by setting
+`window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a
+`cloudflare-os:notification-device-registration` `CustomEvent` with
+`detail.deviceRegistrationId`. If none was injected, the SPA calls
+`window.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__()`, when present, once each
+time the signed-in app mounts (a WebSocket reconnect does not remount it) to request one.
+The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
+`{type: "ready"}` or `{type: "failed"}`.
 
 ## Delivery
 
@@ -89,10 +101,12 @@ flowchart LR
   APNS --> App
 ```
 
-Only the event id, event type, bounded chat title, opaque subscription id, and same-origin deep-link
-path cross the central boundary during a send. Permission details, chat content, gatekeeper grants,
-and provider credentials do not. The browser is attempted first; successful visible presentation
-suppresses mobile push.
+Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
+subscription id, and same-origin deep-link path cross the central boundary during a send.
+Permission details, chat content, gatekeeper grants, and provider credentials do not. A visible
+browser tab is offered the notification first, and push is sent only if no tab acknowledges it
+within three seconds. Turns started by a gadget callback, such as a schedule, notify only when
+they need the user's permission.
 
 ## Deployment contract
 
@@ -104,5 +118,5 @@ worker. The trusted deploy service must inject these values only into that worke
 - `CFOS_INSTALL_KEY_ID`
 - `CFOS_INSTALL_PRIVATE_KEY`
 
-Self-hosted deployments may omit them. Browser notifications continue to work, while native device
-registration reports that push delivery is unavailable.
+Self-hosted deployments may omit them. Browser notifications continue to work; native device
+registration fails and the SPA reports `{type: "failed"}` to the app.
