@@ -194,19 +194,14 @@ export type ChatHistory = {
   measuredTokens: number;
 };
 
-// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop; a persisted tool
-// step left the next request over the compaction trigger, so the pass ended for a reload; or the
-// pass summarized instead of prompting the model and this is the checkpoint to publish.
+// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop, possibly to await
+// the user's permission; a persisted tool step left the next request over the compaction trigger,
+// so the pass ended for a reload; or the pass summarized instead of prompting the model and this
+// is the checkpoint to publish.
 type AgentPassOutcome =
-  | {type: "finished"; disposition: AgentTurnDisposition}
+  | {type: "finished"; awaitingPermission?: boolean}
   | {type: "reloadForCompaction"}
   | {type: "compacted"; checkpoint: CompactionCheckpoint};
-
-/** Why an otherwise-successful agent loop stopped. */
-export type AgentTurnDisposition =
-  | "completed"
-  | "awaitingActionDecision"
-  | "awaitingConnection";
 
 /**
  * Summary of one of the workspace's gadgets, as needed by the agent: identity and its named
@@ -506,7 +501,7 @@ export interface AgentHooks {
                    worktreeTurn?: WorktreeTurnAccess): Promise<string>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean,
-         endsTurn: boolean} | undefined;
+         pendingDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
 
   /**
@@ -1172,7 +1167,8 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
  * request would cross the compaction trigger; either way the loop reloads the durable history,
  * which the next pass compacts first, and goes again. Each compaction moves the boundary strictly
  * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
- * it has compacted; the model is never prompted.
+ * it has compacted; the model is never prompted. Resolves to whether the turn stopped to await the
+ * user's permission for a connection or action.
  */
 export async function runAgent(
     hooks: AgentHooks,
@@ -1181,14 +1177,14 @@ export async function runAgent(
     author: AiChatAuthorInfo,
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    modelConfig: AiModelConfig): Promise<AgentTurnDisposition> {
+    modelConfig: AiModelConfig): Promise<boolean> {
   while (true) {
     let history = hooks.loadChatHistory(chatId);
     let outcome = await runAgentPass(
         hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
-    if (outcome.type === "finished") return outcome.disposition;
-    if (isCompactionTurn(history.chatMessages)) return "completed";
+    if (outcome.type === "finished") return outcome.awaitingPermission ?? false;
+    if (isCompactionTurn(history.chatMessages)) return false;
     abortSignal.throwIfAborted();
   }
 }
@@ -2450,11 +2446,11 @@ async function runAgentPass(
   // thus no resume).
   let connectionRequested = false;
 
-  // Latched by finishTurn when this step submitted an awaitDecision action that still prevents
-  // another model request. Both a pending decision and a rejection end the turn, but only the
-  // pending case is reported as waiting for permission after the loop ends.
-  let actionDecisionEndedTurn = false;
+  // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
+  // barrier persists the action before the loop ends and waits for approval to resume it.
   let awaitingActionDecision = false;
+  // Latched with it while such an action is still pending rather than already rejected.
+  let pendingActionDecision = false;
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
   // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
@@ -2781,7 +2777,7 @@ async function runAgentPass(
     }
   }
   // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
-  if (compactionTurn) return {type: "finished", disposition: "completed"};
+  if (compactionTurn) return {type: "finished"};
 
   // Wraps a plain-text tool result (the exact text the model sees) with optional recorded notes
   // (see AiToolCall: observedCodeVersion, recorded output) riding along as pi `details` for the
@@ -3722,7 +3718,7 @@ async function runAgentPass(
     logger.warn("agent turn skipped: history ends with a completed assistant message", {
       event: "agent.turn.skipped", chatId,
     });
-    return {type: "finished", disposition: "completed"};
+    return {type: "finished"};
   }
 
   let context: AgentContext = {
@@ -3742,8 +3738,8 @@ async function runAgentPass(
     finishTurn: ({message, toolResults}) => {
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
-      if (capturedActionsForStep?.endsTurn) actionDecisionEndedTurn = true;
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
+      if (capturedActionsForStep?.pendingDecision) pendingActionDecision = true;
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (
@@ -3757,7 +3753,7 @@ async function runAgentPass(
           // in the same turn.
           connectionRequested ||
           // Wait for approval before continuing against state that may not reflect the action.
-          actionDecisionEndedTurn) {
+          awaitingActionDecision) {
         return {action: "end"};
       }
       // The model stopped on its own; there is no next request to make room for.
@@ -3797,11 +3793,7 @@ async function runAgentPass(
   }
 
   if (reloadForCompaction) return {type: "reloadForCompaction"};
-  if (connectionRequested) return {type: "finished", disposition: "awaitingConnection"};
-  if (awaitingActionDecision) {
-    return {type: "finished", disposition: "awaitingActionDecision"};
-  }
-  return {type: "finished", disposition: "completed"};
+  return {type: "finished", awaitingPermission: connectionRequested || pendingActionDecision};
 }
 
 /**

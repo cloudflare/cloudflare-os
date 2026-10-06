@@ -987,20 +987,11 @@
     "notification-proxy": {
       "bindings": [],
       "compatibilityDate": "2026-09-04",
-      "compatibilityFlags": [
-        "nodejs_als"
-      ],
+      "compatibilityFlags": [],
       "installable": false,
       "kind": "system",
       "mainModule": "worker.js",
-      "migrations": [
-        {
-          "new_sqlite_classes": [
-            "NotificationAccountState"
-          ],
-          "tag": "v0"
-        }
-      ],
+      "migrations": [],
       "modules": [
         {
           "name": "worker.js",

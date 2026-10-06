@@ -35,9 +35,9 @@ declare global {
       // discovers them generically by scanning env for the GATEKEEPER_ prefix (buildGatekeeperVendorMap)
       // and never references a specific gatekeeper by name, so naming one here would be wrong.
 
-      // Optional platform-private notification delivery. This is deliberately not a GATEKEEPER_*
-      // binding: it is not routed publicly, offered to users, or made available to agents.
-      NOTIFICATION_DELIVERY?: Service<
+      // Platform-private notification delivery. Deliberately not a GATEKEEPER_* binding: it is not
+      // routed publicly, offered to users, or made available to agents.
+      NOTIFICATION_DELIVERY: Service<
         import("@gadgets/workshop-shared/notification-delivery").NotificationDeliveryService
       >;
 

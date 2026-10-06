@@ -4,9 +4,6 @@
   "name": "notification-proxy",
   "main": ".wrangler/validate/src/worker.ts",
   "compatibility_date": "2026-09-04",
-  "compatibility_flags": [
-    "nodejs_als"
-  ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -17,13 +14,5 @@
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"
-  },
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": [
-        "NotificationAccountState"
-      ]
-    }
-  ]
+  }
 }

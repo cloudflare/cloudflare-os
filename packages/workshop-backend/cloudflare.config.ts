@@ -31,8 +31,7 @@ export default defineGadgetsWorker({
   ],
 
   // Gatekeeper service bindings and the Workers AI binding are added by run-dev-server.ts in dev
-  // and by the release manifest (scripts/release/manifest-lib.ts) in production. Platform-private
-  // system services are explicit so they cannot enter generic gatekeeper discovery.
+  // and by the release manifest (scripts/release/manifest-lib.ts) in production.
   env: {
     // Wrangler will launch a Chrome instance locally to emulate the Browser Run API during
     // local development. Add `remote: true` to use a remote browser running on Cloudflare instead.

@@ -13,11 +13,7 @@ const EXPECTED_OPEN_ERROR_CODES = new Set([
 // binding target to exist before it will start the backend.
 const notificationProxy = `
 import { WorkerEntrypoint } from "cloudflare:workers";
-export default class NotificationProxy extends WorkerEntrypoint {
-  registerDevice() {}
-  deliverTaskCompleted() {}
-  deliverPermissionRequested() {}
-}
+export default class NotificationProxy extends WorkerEntrypoint {}
 `;
 
 export default defineConfig({

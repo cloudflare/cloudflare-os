@@ -178,13 +178,13 @@ export interface ConnectedAccountsSubscriber {
   ready(): void;
 }
 
-/** A live notification emitted when an agent turn finishes normally. */
-export type TaskCompletedNotification = {
+/** A notification delivered to one authenticated user. */
+export type UserNotification = {
   /** Stable identifier shared by the live and push delivery attempts. */
   id: string;
 
-  /** Discriminator for task-completion notifications. */
-  kind: "taskCompleted";
+  /** Whether the task finished or is paused on a connection or action-approval prompt. */
+  kind: "taskCompleted" | "permissionRequested";
 
   /** Workspace containing the task. */
   workspaceId: string;
@@ -192,39 +192,16 @@ export type TaskCompletedNotification = {
   /** Chat containing the task. */
   chatId: number;
 
-  /** Current human-readable workspace title. */
-  workspaceTitle: string;
-
   /** Current human-readable chat title. */
   chatTitle: string;
-
-  /** Time at which the backend observed the completed turn. */
-  createdAt: Date;
-
-  /** Same-origin path a client should open when the notification is selected. */
-  targetPath: string;
 };
-
-/** A live notification for a task paused on a permission prompt. */
-export type PermissionRequestedNotification = Omit<
-  TaskCompletedNotification,
-  "kind" | "createdAt"
-> & {
-  /** Discriminator for connection and action-approval prompts. */
-  kind: "permissionRequested";
-
-  /** Time at which the backend observed the task waiting for permission. */
-  createdAt: Date;
-};
-
-/** A notification delivered to one authenticated user. */
-export type UserNotification = TaskCompletedNotification | PermissionRequestedNotification;
 
 /** Callback used by `AuthenticatedApi.subscribeToNotifications()`. */
 export interface NotificationSubscriber extends RpcTarget {
   /**
-   * Present a notification to the active user. Resolve only after it has actually been surfaced;
-   * if no subscriber resolves promptly, the backend falls back to mobile push delivery.
+   * Present a notification to the active user. Resolve only once the user has seen it, or is
+   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to mobile
+   * push delivery.
    */
   notify(notification: UserNotification): Promise<void>;
 }
@@ -512,8 +489,9 @@ export interface AuthenticatedApi extends RpcTarget {
   hasPasswordLogin(): Promise<boolean>;
 
   /**
-   * Connect the native app's one-time central device registration to this authenticated user.
-   * The deployment never receives an APNs device token or Cloudflare account token.
+   * Connect the native app's one-time central device registration to this authenticated user,
+   * replacing any previously registered device. The deployment never receives an APNs device
+   * token or Cloudflare account token.
    */
   registerNotificationDevice(deviceRegistrationId: string): Promise<void>;
 
