@@ -28,6 +28,7 @@ declare module "cloudflare:workers" {
 const NO_SUCH_SPACE = "No such space, or you are not a member of it.";
 const ADMINS_ONLY = "Only an admin of this space can change its members.";
 const LAST_ADMIN = "A space must keep at least one admin.";
+const NO_MEMBERS = "A personal space has no members.";
 
 function profile(id: string, name = id): AiChatAuthorInfo {
   return { type: "user", id, name };
@@ -135,14 +136,13 @@ describe("SpaceModel.claim", () => {
   it("grants a personal space again to its owner only, changing nothing", () => {
     let model = personalSpace();
     expect(model.info).toEqual({ key: "~alice", name: "Alice", kind: "personal", owner: ALICE });
-    model.setMemberRole(ALICE.id, BOB, "build");
     let members = model.listMembers(ALICE.id);
-    expect(members).toMatchObject([{ profile: ALICE, role: "admin" }, { profile: BOB, role: "build" }]);
+    expect(members).toMatchObject([{ profile: ALICE, role: "admin" }]);
 
     // The owner's retry is granted. A claim under a name they have since changed leaves the
     // space as it was first claimed.
     expect(model.claim(personalSpaceClaim(profile("alice", "Alice II"), 1), ALICE)).toBe(true);
-    // Nobody else's is, whether a member or not, and the owner cannot turn it into a team space.
+    // Nobody else's is, and the owner cannot turn it into a team space.
     expect(model.claim(personalSpaceClaim(ALICE, 1), BOB)).toBe(false);
     expect(model.claim(personalSpaceClaim(ALICE, 1), CAROL)).toBe(false);
     expect(model.claim({ key: "~alice", name: "Team", kind: "team" }, ALICE)).toBe(false);
@@ -167,9 +167,9 @@ describe("SpaceModel membership", () => {
   it("refuses anyone but an admin before a username is looked up", () => {
     let model = teamSpace();
     model.setMemberRole(ALICE.id, BOB, "build");
-    model.requireAdmin(ALICE.id);
-    expect(() => model.requireAdmin(BOB.id)).toThrow(ADMINS_ONLY);
-    expect(() => model.requireAdmin(CAROL.id)).toThrow(NO_SUCH_SPACE);
+    model.requireMembershipAdmin(ALICE.id);
+    expect(() => model.requireMembershipAdmin(BOB.id)).toThrow(ADMINS_ONLY);
+    expect(() => model.requireMembershipAdmin(CAROL.id)).toThrow(NO_SUCH_SPACE);
     expect(() => model.setMemberRole(BOB.id, CAROL, "use")).toThrow(ADMINS_ONLY);
     expect(() => model.setMemberRole(CAROL.id, CAROL, "admin")).toThrow(NO_SUCH_SPACE);
     expect(roles(model)).toEqual({ alice: "admin", bob: "build" });
@@ -224,21 +224,60 @@ describe("SpaceModel membership", () => {
     expect(model.listMembers(BOB.id)).toMatchObject([{ profile: BOB, role: "admin" }]);
   });
 
-  it("keeps a personal space's owner as its only admin", () => {
+  it("gives a personal space no member besides its owner, whoever the target and role", () => {
     let model = personalSpace();
-    expect(model.setMemberRole(ALICE.id, BOB, "build")).toMatchObject({ role: "build" });
-    expect(() => model.setMemberRole(ALICE.id, BOB, "admin"))
-        .toThrow("The owner of a personal space is its only admin.");
-    expect(() => model.setMemberRole(ALICE.id, ALICE, "build")).toThrow(LAST_ADMIN);
+    for (let target of [BOB, ALICE]) {
+      for (let role of ["admin", "build", "use"] as const) {
+        expect(() => model.setMemberRole(ALICE.id, target, role)).toThrow(NO_MEMBERS);
+      }
+    }
+    // Refused before any username is looked up, and to anyone else as to a stranger.
+    expect(() => model.requireMembershipAdmin(ALICE.id)).toThrow(NO_MEMBERS);
+    expect(() => model.requireMembershipAdmin(BOB.id)).toThrow(NO_SUCH_SPACE);
+    expect(() => model.setMemberRole(BOB.id, BOB, "admin")).toThrow(NO_SUCH_SPACE);
+    // Its owner, its only admin, can neither leave nor be removed.
     expect(() => model.removeMember(ALICE.id, ALICE.id)).toThrow(LAST_ADMIN);
-    // Setting the owner to the role they hold is allowed and changes nothing.
-    expect(model.setMemberRole(ALICE.id, ALICE, "admin")).toMatchObject({ role: "admin" });
-    expect(roles(model)).toEqual({ alice: "admin", bob: "build" });
-
-    // Its other members are ordinary: they see the member list and can leave.
-    expect(model.infoFor(BOB.id)).toMatchObject({ kind: "personal", owner: ALICE, role: "build" });
-    expect(model.removeMember(BOB.id, BOB.id)).toBe(true);
     expect(roles(model)).toEqual({ alice: "admin" });
+    expect(model.infoFor(ALICE.id))
+        .toMatchObject({ kind: "personal", owner: ALICE, role: "admin" });
+  });
+
+  it("gives a member a personal space holds besides its owner nothing, then prunes them", () => {
+    let storage = makeSpaceStorage(makeMockStorage());
+    let model = new SpaceModel(storage);
+    model.claim(personalSpaceClaim(ALICE, 1), ALICE);
+    model.attachWorkspaces(ALICE, [{ id: "a1", title: "Plan", created: new Date("2026-01-01") }]);
+    // A member and a lease of theirs, as the space's storage can hold them.
+    storage.members.put({ profile: BOB, role: "build", added: new Date("2026-01-01") });
+    storage.leases.put({ workspace: "a1", profile: BOB.id });
+
+    expect(model.roleOf(BOB.id)).toBeUndefined();
+    expect(model.infoFor(BOB.id)).toBeUndefined();
+    expect(model.canAddWorkspaces(BOB.id)).toBe(false);
+    expect(model.workspaceRole("a1", ALICE.id, BOB.id)).toBeUndefined();
+    for (let refused of [
+      () => model.listMembers(BOB.id), () => model.listWorkspaces(BOB.id),
+      () => model.resolveWorkspace(BOB.id, "plan"), () => model.removeMember(BOB.id, BOB.id),
+    ]) {
+      expect(refused).toThrow(NO_SUCH_SPACE);
+    }
+    expect(roles(model)).toEqual({ alice: "admin" });
+
+    // Removed as the owner would remove them: their leases are revoked.
+    expect(model.pruneNonOwnerMembers()).toEqual([BOB.id]);
+    expect([...storage.members.list()].map(m => m.profile.id)).toEqual([ALICE.id]);
+    expect([...storage.leases.list()]).toEqual([]);
+    expect([...storage.revocations.list()]).toMatchObject([{ workspace: "a1", profile: BOB.id }]);
+    expect(model.pruneNonOwnerMembers()).toEqual([]);
+    expect([...storage.revocations.list()]).toHaveLength(1);
+  });
+
+  it("prunes no member of a team space, nor of a key nobody has claimed", () => {
+    let model = teamSpace();
+    model.setMemberRole(ALICE.id, BOB, "build");
+    expect(model.pruneNonOwnerMembers()).toEqual([]);
+    expect(roles(model)).toEqual({ alice: "admin", bob: "build" });
+    expect(new SpaceModel(makeSpaceStorage(makeMockStorage())).pruneNonOwnerMembers()).toEqual([]);
   });
 });
 
@@ -257,7 +296,6 @@ describe("SpaceModel workspaces", () => {
     expect(titles(team)).toEqual({ b1: "bob: b1" });
 
     let personal = personalSpace();
-    personal.setMemberRole(ALICE.id, BOB, "build");
     expect(personal.attachWorkspaces(ALICE, [ws("a1")])).toBe(true);
     expect(personal.attachWorkspaces(BOB, [ws("b1")])).toBe(false);
     expect(titles(personal)).toEqual({ a1: "alice: a1" });
@@ -509,18 +547,38 @@ describe("personal space allocation", () => {
     expect(await env.TEST_SPACE.getByName(`~${name}-2`).open(dana.id)).toBeNull();
   });
 
+  it("refuses every member change of a personal space, before any username is looked up",
+      async () => {
+    let name = `fay-${unique()}`;
+    let [fay, bob] = await Promise.all([signUp(`${name}@a.example`), signUp(`bob-${unique()}`)]);
+    let [{ key }] = await env.TEST_USER.getByName(fay.id).listSpaces();
+    using space = await open(key, fay.id);
+    let lookups = vi.spyOn(UserDurableObject.prototype, "whoamiIfExists");
+    try {
+      for (let username of [bob.id, fay.id, `nobody-${unique()}`]) {
+        for (let role of ["admin", "build", "use"] as const) {
+          await expectRejection(space.setMemberRole(username, role), NO_MEMBERS);
+        }
+      }
+      expect(lookups).not.toHaveBeenCalled();
+    } finally {
+      lookups.mockRestore();
+    }
+    expect(await space.listMembers()).toMatchObject([{ profile: fay, role: "admin" }]);
+    expect(await listed(bob.id, key)).toBeUndefined();
+  });
+
   it("gives a user whose key is taken the next one, and lists other spaces after their own", async () => {
     let name = `sam-${unique()}`;
     let first = await signUp(`${name}@a.example`);
     let second = await signUp(`${name}@b.example`);
     expect((await env.TEST_USER.getByName(first.id).listSpaces()).map(s => s.key)).toEqual([`~${name}`]);
 
-    // The second user is a member of the first's personal space and of two team spaces before
-    // their own exists; it still comes first, and the rest follow by name.
-    using asFirst = await open(`~${name}`, first.id);
-    await asFirst.setMemberRole(second.id, "build");
-    for (let teamName of ["Zebra", "Aardvark"]) {
-      let key = `team-${unique()}`;
+    // The second user is in three team spaces before their own exists, one named as their own
+    // is; it still comes first, and the rest follow by name.
+    let named: Record<string, string> = {};
+    for (let teamName of ["Zebra", name, "Aardvark"]) {
+      let key = named[teamName] = `team-${unique()}`;
       await env.TEST_SPACE.getByName(key).claim(teamSpaceClaim(key, teamName), second);
       (await open(key, second.id))[Symbol.dispose]();
     }
@@ -528,8 +586,7 @@ describe("personal space allocation", () => {
     expect(spaces.map(s => s.name)).toEqual([name, "Aardvark", name, "Zebra"]);
     expect(spaces[0]).toEqual(
         { key: `~${name}-2`, name, kind: "personal", owner: second, role: "admin" });
-    expect(spaces[2]).toEqual(
-        { key: `~${name}`, name, kind: "personal", owner: first, role: "build" });
+    expect(spaces[2]).toEqual({ key: named[name], name, kind: "team", role: "admin" });
     expect(await env.TEST_SPACE.getByName(`~${name}`).claim(personalSpaceClaim(second, 1), second))
         .toBe(false);
   });

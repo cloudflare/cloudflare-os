@@ -5,7 +5,7 @@
 // which combines the answer with its own sharing.
 
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type {
   AiChatAuthorInfo, CollaboratorRole, Overseer, SpaceMemberRole,
@@ -423,52 +423,153 @@ describe("a space's alarm", () => {
 
 describe("the owner's User DO, asked which role a space gives on a workspace", () => {
   it("asks no space about a workspace that none may list", async () => {
-    let [alice, bob, dana] =
-        await Promise.all([signUp("alice"), signUp("bob"), signUp("dana", false)]);
-    // Bob would hold "build" on anything Alice's personal space listed.
-    await space(alice.personal).setMemberRole(alice.profile.id, bob.profile.id, "build");
-    let [provisional, shared, unknown, restricted, invitesOnly, danas] =
-        Array.from({ length: 6 }, workspaceId);
-    await alice.user.newGadget(provisional, "Untitled");
+    let [alice, bob] = await Promise.all([signUp("alice"), signUp("bob")]);
+    // Bob would hold "build" on anything this team space of Alice's listed.
+    let key = await teamSpace(alice, [bob, "build"]);
+    let [provisional, shared, unknown, restricted, invitesOnly] =
+        Array.from({ length: 5 }, workspaceId);
+    await alice.user.newGadget(provisional, "Untitled", key);
     // Someone else's, with the flags that would let a space list it were it Alice's own.
-    await plant(alice, { id: shared, owner: bob.profile, role: "build", ...NEITHER });
-    await plant(alice, { id: unknown });
-    await plant(alice, { id: restricted, ...NEITHER, containsRestrictedData: true });
-    await plant(alice, { id: invitesOnly, ...NEITHER, ownerInvitesOnly: true });
-    // One that a space may list, of a user for whom no personal space was ever allocated.
-    await plant(dana, { id: danas, ...NEITHER });
+    await plant(
+        alice, { id: shared, owner: bob.profile, role: "build", spaceKey: key, ...NEITHER });
+    await plant(alice, { id: unknown, spaceKey: key });
+    await plant(alice, { id: restricted, spaceKey: key, ...NEITHER, containsRestrictedData: true });
+    await plant(alice, { id: invitesOnly, spaceKey: key, ...NEITHER, ownerInvitesOnly: true });
 
     let asked = vi.spyOn(SpaceDurableObject.prototype, "workspaceRole");
     for (let id of [provisional, shared, unknown, restricted, invitesOnly, workspaceId()]) {
       expect(await alice.user.workspaceRoleInSpace(id, bob.profile.id)).toBeNull();
     }
-    expect(await dana.user.workspaceRoleInSpace(danas, bob.profile.id)).toBeNull();
     expect(asked).not.toHaveBeenCalled();
-    expect(await runInDurableObject(dana.user, (_instance, state) =>
-        makeUserStorage(state.storage).personalSpaceKey.get())).toBeNull();
   });
 
-  it("asks the space its record points at, as the workspace's owner", async () => {
-    let [alice, bob, mallory] = await Promise.all(["alice", "bob", "mallory"].map(n => signUp(n)));
+  it("asks the team space its record points at, as the owner, and no space for a personal one",
+      async () => {
+    let [alice, bob, mallory, dana] = await Promise.all(
+        [signUp("alice"), signUp("bob"), signUp("mallory"), signUp("dana", false)]);
     let key = await teamSpace(alice, [bob, "use"]);
-    await space(alice.personal).setMemberRole(alice.profile.id, bob.profile.id, "build");
     let inTeam = await listedWorkspace(alice, key);
     let inPersonal = await listedWorkspace(alice);
+    // One that a space may list, of a user for whom no personal space was ever allocated.
+    let danas = workspaceId();
+    await plant(dana, { id: danas, ...NEITHER });
 
     let asked = vi.spyOn(SpaceDurableObject.prototype, "workspaceRole");
     expect(await alice.user.workspaceRoleInSpace(inTeam, bob.profile.id)).toBe("use");
-    expect(await alice.user.workspaceRoleInSpace(inPersonal, bob.profile.id)).toBe("build");
+    expect(await alice.user.workspaceRoleInSpace(inPersonal, bob.profile.id)).toBeNull();
     expect(await alice.user.workspaceRoleInSpace(inTeam, mallory.profile.id)).toBeNull();
+    expect(await dana.user.workspaceRoleInSpace(danas, bob.profile.id)).toBeNull();
     expect(asked.mock.calls).toEqual([
-      [inTeam, alice.profile.id, bob.profile.id], [inPersonal, alice.profile.id, bob.profile.id],
-      [inTeam, alice.profile.id, mallory.profile.id],
+      [inTeam, alice.profile.id, bob.profile.id], [inTeam, alice.profile.id, mallory.profile.id],
     ]);
-    expect(asked.mock.contexts.map(objectId)).toEqual(
-        [key, alice.personal, key].map(name => env.TEST_SPACE.idFromName(name).toString()));
+    expect(asked.mock.contexts.map(objectId))
+        .toEqual([key, key].map(name => env.TEST_SPACE.idFromName(name).toString()));
+    expect(await runInDurableObject(dana.user, (_instance, state) =>
+        makeUserStorage(state.storage).personalSpaceKey.get())).toBeNull();
 
     // The record still points at the space, which no longer lists the workspace: no role.
     await space(key).detachWorkspace(inTeam, alice.profile.id);
     expect(await alice.user.workspaceRoleInSpace(inTeam, bob.profile.id)).toBeNull();
+  });
+});
+
+// What a space's storage holds of its members and their leases, and of the revocations it has
+// queued.
+const holding = (key: string) => runInDurableObject(space(key), (_instance, state) => {
+  let storage = makeSpaceStorage(state.storage);
+  return {
+    members: [...storage.members.list()].map(member => `${member.profile.id}:${member.role}`),
+    leases: [...storage.leases.list()].map(pair),
+    queued: [...storage.revocations.list()].map(pair),
+  };
+});
+// Evicts a space's object, so that the next call wakes a new instance over the same storage, and
+// what that instance finds once its constructor's work is done.
+const wake = async (key: string) => {
+  await evictDurableObject(space(key));
+  return holding(key);
+};
+// What a call comes to, awaited with a single handler.
+const settled = (call: PromiseLike<unknown>) =>
+    call.then(() => "answered", (error: Error) => error.message);
+// The keys of the spaces a user's own list of spaces holds.
+const spacesOf = async (of: Account) => (await of.user.listSpaces()).map(info => info.key);
+
+// Alice's personal space, listing a workspace of hers, with Bob written into its storage as a
+// "build" member holding a lease on that workspace.
+async function leftover() {
+  let [alice, bob] = await Promise.all([signUp("alice"), signUp("bob")]);
+  let ws = await workspace(alice);
+  await runInDurableObject(space(alice.personal), (_instance, state) => {
+    let storage = makeSpaceStorage(state.storage);
+    storage.members.put({ profile: bob.profile, role: "build", added: DAY });
+    storage.leases.put({ workspace: ws.id, profile: bob.profile.id });
+  });
+  return { alice, bob, ws };
+}
+
+describe("a personal space holding a member besides its owner", () => {
+  it("gives that member nothing before the space removes them", async () => {
+    let { alice, bob, ws } = await leftover();
+    let personal = space(alice.personal);
+    let asked = vi.spyOn(SpaceDurableObject.prototype, "workspaceRole");
+    let as = bob.profile.id;
+    expect(await Promise.all([
+      personal.getInfo(as), personal.listMembers(as), personal.listWorkspaces(as),
+      personal.resolveWorkspace(as, "untitled"), personal.removeMember(as, as),
+    ].map(settled))).toEqual(Array(5).fill("No such space, or you are not a member of it."));
+    expect((await personal.listMembers(alice.profile.id)).map(member => member.profile.id))
+        .toEqual([alice.profile.id]);
+    expect(await personal.workspaceRole(ws.id, alice.profile.id, bob.profile.id)).toBeNull();
+    expect(await alice.user.workspaceRoleInSpace(ws.id, bob.profile.id)).toBeNull();
+    await ws.run(async (_impl, instance) => expect(await opening(instance, bob)).toBe(DENIED));
+    // The space was asked only here, directly, and gave out no lease.
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(await holding(alice.personal)).toEqual({
+      members: [`${alice.profile.id}:admin`, `${bob.profile.id}:build`],
+      leases: [`${ws.id}:${bob.profile.id}`], queued: [],
+    });
+  });
+
+  it("removes them when it wakes: revokes their leases and drops it from their spaces",
+      async () => {
+    let { alice, bob, ws } = await leftover();
+    let info = await space(alice.personal).getInfo(alice.profile.id);
+    await bob.user.recordSpaceMembership({ ...info, role: "build" });
+    expect(await spacesOf(bob)).toContain(alice.personal);
+    let revoke = vi.spyOn(OverseerDurableObject.prototype, "revokeSpaceAccess");
+    // The revocations the workspace's Overseer has been told of.
+    let told = () => revoke.mock.calls.filter((_call, nth) =>
+        objectId(revoke.mock.contexts[nth]) === ws.id);
+
+    expect(await wake(alice.personal))
+        .toMatchObject({ members: [`${alice.profile.id}:admin`], leases: [] });
+    // Their lease was queued as a revocation, which the alarm delivers.
+    await vi.waitFor(async () => {
+      expect(told()).toEqual([[bob.profile.id]]);
+      expect(await queue(alice.personal)).toEqual([]);
+    }, WAIT);
+    await vi.waitFor(async () => expect(await spacesOf(bob)).not.toContain(alice.personal), WAIT);
+    await vi.waitFor(async () => expect(await alarm(alice.personal)).toBeNull(), WAIT);
+
+    // Waking again finds nobody to remove, and queues nothing.
+    expect(await wake(alice.personal))
+        .toEqual({ members: [`${alice.profile.id}:admin`], leases: [], queued: [] });
+    expect(await alarm(alice.personal)).toBeNull();
+    expect(told()).toHaveLength(1);
+  });
+
+  it("leaves the members of a team space as they are when it wakes", async () => {
+    let [alice, bob] = await Promise.all([signUp("alice"), signUp("bob")]);
+    let key = await teamSpace(alice, [bob, "build"]);
+    let id = await listedWorkspace(alice, key);
+    expect(await space(key).workspaceRole(id, alice.profile.id, bob.profile.id)).toBe("build");
+    let before = await holding(key);
+    expect(before.members).toHaveLength(2);
+
+    expect(await wake(key)).toEqual(before);
+    expect(await alarm(key)).toBeNull();
+    expect(await spacesOf(bob)).toContain(key);
   });
 });
 

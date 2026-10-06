@@ -40,7 +40,8 @@ export function makeSpaceStorage(storage: DurableObjectStorage) {
     },
     collections: {
       // The authority on who belongs to the space and in what role. A personal space's owner is
-      // stored here too, as its only admin.
+      // stored here too, as its only admin and its only member: any other profile here holds no
+      // role (see SpaceModel.roleOf()) and is removed when the space wakes.
       members: collection<SpaceMemberInfo>()({
         primaryKey: record => record.profile.id,
       }),

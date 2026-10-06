@@ -165,8 +165,13 @@ export class SpaceModel {
     return this.storage.info.get();
   }
 
-  /** The role `profileId` holds in the space, if they are a member of it. */
+  /**
+   * The role `profileId` holds in the space, if they are a member of it. A personal space has no
+   * members besides its owner, whatever else its member list holds (see `pruneNonOwnerMembers`).
+   */
   roleOf(profileId: string): SpaceMemberRole | undefined {
+    let info = this.info;
+    if (info?.kind === "personal" && info.owner?.id !== profileId) return undefined;
     return this.storage.members.get(profileId)?.role;
   }
 
@@ -208,35 +213,36 @@ export class SpaceModel {
     return published && info;
   }
 
-  /** Space.listMembers: any member. */
+  /** Space.listMembers: any member. A personal space lists its owner alone (see `roleOf`). */
   listMembers(caller: string): SpaceMemberInfo[] {
     this.#requireMember(caller);
-    return [...this.storage.members.list()];
+    let { kind, owner } = this.info!;
+    let members = [...this.storage.members.list()];
+    return kind === "team" ? members : members.filter(m => m.profile.id === owner?.id);
   }
 
   /**
-   * Refuses a `caller` who may not change other members: anyone but an admin. Callers check
-   * this before resolving a username, so that only an admin learns whether an account exists.
+   * Refuses a `caller` who may not set members' roles: anyone but an admin, and everyone in a
+   * personal space, which has no members besides its owner (who may still `removeMember` one
+   * left there). Callers check this before resolving a username, so that only an admin of a team
+   * space learns whether an account exists.
    */
-  requireAdmin(caller: string): void {
+  requireMembershipAdmin(caller: string): void {
     if (this.#requireMember(caller) !== "admin") {
       throw new Error("Only an admin of this space can change its members.");
     }
+    if (this.info!.kind === "personal") throw new Error("A personal space has no members.");
   }
 
   /**
    * Space.setMemberRole, once the username has been resolved to the existing account `profile`:
    * makes them a member in exactly `role`, whether that adds, raises or lowers them. Lowering
-   * them to a role that gives less on the space's workspaces revokes their leases.
+   * them to a role that gives less on the space's workspaces revokes their leases. Refused in a
+   * personal space, whoever the target (see `requireMembershipAdmin`).
    */
   setMemberRole(caller: string, profile: AiChatAuthorInfo, role: SpaceMemberRole): SpaceMemberInfo {
-    this.requireAdmin(caller);
-    let info = this.info!;
-    if (role !== "admin") {
-      this.#keepAnAdmin(profile.id);
-    } else if (info.kind === "personal" && info.owner?.id !== profile.id) {
-      throw new Error("The owner of a personal space is its only admin.");
-    }
+    this.requireMembershipAdmin(caller);
+    if (role !== "admin") this.#keepAnAdmin(profile.id);
     let existing = this.storage.members.get(profile.id);
     let member: SpaceMemberInfo = { profile, role, added: existing?.added ?? new Date() };
     this.storage.members.put(member);
@@ -257,6 +263,21 @@ export class SpaceModel {
     this.#keepAnAdmin(profileId);
     this.#revoke(this.storage.leases.byProfile.get(profileId));
     return this.storage.members.delete(profileId);
+  }
+
+  /**
+   * Removes every member a personal space holds besides its owner, who hold no role there (see
+   * `roleOf`), as the owner removing them would: their leases are revoked. Returns their profile
+   * ids, whose mirrors may still list the space. A team space has none to remove.
+   */
+  pruneNonOwnerMembers(): string[] {
+    let info = this.info;
+    let owner = info?.kind === "personal" ? info.owner : undefined;
+    if (!owner) return [];
+    let others = [...this.storage.members.list()]
+        .map(({ profile }) => profile.id).filter(id => id !== owner.id);
+    for (let id of others) this.removeMember(owner.id, id);
+    return others;
   }
 
   /**
@@ -469,7 +490,8 @@ export class SpaceModel {
   }
 
   // Refuses to take the admin role from `profileId` if they are the space's last admin. A
-  // personal space's owner is always its only admin, so this is also what keeps the owner in.
+  // personal space's owner is its only member, and so its only admin: this is also what keeps
+  // the owner from leaving it or being removed.
   #keepAnAdmin(profileId: string): void {
     if (this.roleOf(profileId) !== "admin") return;
     for (let member of this.storage.members.list()) {
@@ -486,6 +508,21 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     this.#model = new SpaceModel(makeSpaceStorage(ctx.storage));
+    // A personal space's members besides its owner are removed before any event is delivered,
+    // their mirrors told without waiting (`#mirror` logs a failure, healed on the member's next
+    // open). A failure is logged, not thrown, which would reset the object: whoever it leaves has
+    // no role and is removed on a later wake.
+    void ctx.blockConcurrencyWhile(async () => {
+      try {
+        let pruned = this.#model.pruneNonOwnerMembers();
+        if (pruned.length > 0) await this.#deliverRevocations();
+        for (let profileId of pruned) void this.#mirror(profileId);
+      } catch (error) {
+        logger.error("failed to remove the members of a personal space", {
+          event: "space.members.prune.failed", durableObjectId: this.ctx.id.toString(), error,
+        });
+      }
+    });
   }
 
   /**
@@ -526,7 +563,7 @@ export class SpaceDurableObject extends DurableObject<Cloudflare.Env> {
       : Promise<SpaceMemberInfo | null> {
     // Authorize before the lookup, so a caller who is not an admin learns nothing about which
     // accounts exist.
-    this.#model.requireAdmin(caller);
+    this.#model.requireMembershipAdmin(caller);
     let profile = await this.ctx.exports.UserDurableObject.getByName(username).whoamiIfExists();
     if (!profile) return null;
     let member = this.#model.setMemberRole(caller, profile, role);
