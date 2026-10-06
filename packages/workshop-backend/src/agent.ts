@@ -790,7 +790,7 @@ To construct a persistent stub, you must use the \`ctx.restore(params)\` API, wh
 Here is an example Gadget implementing the restore pattern:
 
 \`\`\`
-import { DurableObject, Greeter, restore } from "cloudflare:workers";
+import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
 
 export class Gadget extends DurableObject {
   constructor(ctx, env) {
@@ -822,7 +822,7 @@ class Greeter extends RpcTarget {
 
 Notice that the restore method is named using a symbol. This allows the system to access it, without making the method directly available over RPC.
 
-Within a Gadget class with a restore method, you can call \`this.ctx.restore(params)\`. The given \`params\` (which must be serializable) will be passed back to the Gadget's restore method, and the resulting persistent RpcStub will be returned. This can then be passed to an API that requires persistent stubs, e.g.:
+Within a Gadget class with a restore method, you can call \`this.ctx.restore(params)\`. The given \`params\` (which must be serializable, though they may include persistent stubs) will be passed back to the Gadget's restore method, and the resulting persistent RpcStub will be returned. This can then be passed to an API that requires persistent stubs, e.g.:
 
 \`\`\`
 let greeter = await this.ctx.restore({type: "greeter", greeting: "Howdy"});
@@ -841,6 +841,8 @@ export default async function(self, env, ctx) {
 \`\`\`
 
 The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
+
+A Gadget can hold many persistent stubs at once, such as one hook per conversation it watches. Each is restored from its own \`params\`, so put whatever tells them apart there.
 `.trim();
 
 let SPAWNER_SYSTEM_PROMPT = `
@@ -1213,7 +1215,7 @@ Executes one-off JavaScript code, returning the output it logs to the console. T
 `.trim();
 
 let EXECUTE_CODE_SELF_PARAM = `
-The function also receives a \`self\` parameter which is a magic object that points back to this chat thread. Calling any method on \`self\`, like \`self.foo(123)\`, records a callback to this chat, which is delivered to you as a message on a later turn and activates you to respond. The call resolves as soon as the callback is recorded and returns nothing; it never waits for you (so awaiting it within the same executeCode run is fine, but it cannot yield a result). The arguments must be storable: any RPC stubs among them must be persistent stubs. \`self\` can be passed over RPC (e.g. to a subscription method) and stored in a Durable Object's KV storage for long-term callbacks. When a callback is received, its arguments appear in your env as an array, under a name like \`foo_ARGS\` given in the callback message.
+The function also receives a \`self\` parameter which is a magic object that points back to this chat thread. Calling any method on \`self\`, like \`self.foo(123)\`, records a callback to this chat, which is delivered to you as a message on a later turn and activates you to respond. The call resolves as soon as the callback is recorded and returns nothing; it never waits for you (so awaiting it within the same executeCode run is fine, but it cannot yield a result). The arguments must be storable: any RPC stubs among them must be persistent stubs. \`self\` is itself a persistent stub: it can be passed over RPC, stored in a Durable Object's KV storage, or included in \`[restore]\` params for long-term callbacks. Code that receives it should store it as is, without \`.dup()\`. When a callback is received, its arguments appear in your env as an array, under a name like \`foo_ARGS\` given in the callback message.
 `.trim();
 
 let EXECUTE_CODE_TOOL_DESCRIPTION = `
