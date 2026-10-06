@@ -149,6 +149,17 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   modelsDevSuggestions: false,
 };
 
+/**
+ * The last update check (see deployment-updates.ts), made for the running release `from`. Times
+ * are epoch milliseconds. `checkedAt` and `result` are those of the last check that succeeded.
+ */
+export type UpdateCheck = {
+  from: string;
+  attemptedAt: number;
+  checkedAt?: number;
+  result?: { latestReleaseId: string; upgradeAvailable: boolean; availableSince?: number };
+};
+
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
@@ -173,6 +184,10 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // exactly once per blueprint: an admin who then removes a format keeps it removed, while a
       // deployment that installed before curation existed still gets promoted.
       promotedFormatBlueprints: <string[]>[],
+
+      // The last check for a newer release, or null before the first. Only a deployment the
+      // deploy flow installed makes one.
+      updateCheck: <UpdateCheck | null>null,
     },
   });
 }

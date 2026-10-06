@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -18,6 +18,7 @@ import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
+import { type DeployServiceInstall, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
 
@@ -275,6 +276,42 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (this.storage.featuredBlueprints.get(blueprintId)) {
       this.storage.featuredBlueprints.delete(blueprintId);
       await this.#writeFeaturedSnapshot();
+    }
+  }
+
+  // --- Deployment updates ---
+
+  /**
+   * Whether a newer release is available, or null, with no request made, unless the deploy flow
+   * installed this deployment. Answered from the last update check for the running release, made
+   * again when updateCheckDue() says so; concurrent callers share one check.
+   */
+  async getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    let install = deployServiceInstall(this.env);
+    if (!install) return null;
+    if (updateCheckDue(this.storage.updateCheck.get(), install.releaseId, Date.now())) {
+      await (this.#updateCheckInFlight ??= this.#checkForUpdate(install)
+          .finally(() => { this.#updateCheckInFlight = undefined; }));
+    }
+    return deploymentUpdateStatus(
+        install, this.storage.updateCheck.get(), this.env.CF_VERSION_METADATA?.tag, Date.now());
+  }
+
+  #updateCheckInFlight?: Promise<void>;
+
+  // Never throws. A failure keeps the last success only if it was for the running release.
+  async #checkForUpdate({ releaseId, updateCheckUrl }: DeployServiceInstall): Promise<void> {
+    let attemptedAt = Date.now();
+    try {
+      let result = await fetchLatestRelease(updateCheckUrl, releaseId);
+      this.storage.updateCheck.put({ from: releaseId, attemptedAt, checkedAt: attemptedAt, result });
+    } catch (error) {
+      logger.warn("failed to check for a newer release", {
+        event: "deployment.update-check.failed", error,
+      });
+      let previous = this.storage.updateCheck.get();
+      this.storage.updateCheck.put(previous?.from === releaseId
+          ? { ...previous, attemptedAt } : { from: releaseId, attemptedAt });
     }
   }
 
@@ -879,8 +916,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
 // gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
 // stub to the DO's internal methods. Covers branding, agent instructions, signups, gatekeeper
-// connector/resource availability, and AI Gateway models; authentication config stays env-var
-// driven.
+// connector/resource availability, AI Gateway models, and whether an update is available;
+// authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   /**
@@ -1023,5 +1060,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]> {
     return this.admin.testNewGatewayModel(model, this.adminUserId);
+  }
+
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    return this.admin.getUpdateStatus();
   }
 }
