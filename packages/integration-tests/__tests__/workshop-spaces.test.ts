@@ -103,7 +103,7 @@ const KEY_TAKEN = /already exists/i;
 const NOT_ADMIN = /only an admin/i;
 const KEEPS_AN_ADMIN = /at least one admin/i;
 const NOT_A_MEMBER = /not a member/i;
-const OWNER_IS_ONLY_ADMIN = /only admin/i;
+const NO_PERSONAL_MEMBERS = /a personal space has no members\./i;
 const OWNER_ONLY = /only the workspace owner/i;
 const NOT_OWNER_OR_ADMIN = /owner or an admin/i;
 
@@ -299,7 +299,7 @@ it.concurrent("a member's role and removal reach their listing and their open st
   expect(roles(await space.listMembers())).toEqual([{ id: aliceName, role: "admin" }]);
 });
 
-it.concurrent("a personal space takes members but keeps its owner as its only admin", async () => {
+it.concurrent("a personal space takes no members besides its owner", async () => {
   const [aliceName, bobName] = usernames("alice", "bob");
   using stack = new DisposableStack();
   const alice = await newAccount(stack, aliceName);
@@ -307,19 +307,20 @@ it.concurrent("a personal space takes members but keeps its owner as its only ad
   const personal = await personalSpaceOf(alice);
   using space = await alice.openSpace(personal.key);
 
-  expect(await refusal(space.setMemberRole(bobName, "admin"))).toMatch(OWNER_IS_ONLY_ADMIN);
-  expect(await space.setMemberRole(bobName, "build")).toMatchObject({ role: "build" });
-  // The owner is neither demoted nor removed, not even by herself.
-  expect(await refusal(space.setMemberRole(aliceName, "build"))).toMatch(KEEPS_AN_ADMIN);
+  // Not another account in any role, nor the owner herself.
+  for (const role of ["admin", "build", "use"] as const) {
+    expect(await refusal(space.setMemberRole(bobName, role))).toMatch(NO_PERSONAL_MEMBERS);
+    expect(await refusal(space.setMemberRole(aliceName, role))).toMatch(NO_PERSONAL_MEMBERS);
+  }
+  // The owner stays its one admin: she cannot leave it.
   expect(await refusal(space.removeMember(aliceName))).toMatch(KEEPS_AN_ADMIN);
-  expect(roles(await space.listMembers())).toEqual(sorted(
-      { id: aliceName, role: "admin" }, { id: bobName, role: "build" }));
+  expect(roles(await space.listMembers())).toEqual([{ id: aliceName, role: "admin" }]);
 
-  // Bob lists his own personal space ahead of the one he was added to.
+  // Bob lists only his own personal space, and is no member of Alice's.
   const bobSpaces = await bob.listSpaces();
-  expect(bobSpaces).toHaveLength(2);
+  expect(bobSpaces).toHaveLength(1);
   expect(bobSpaces[0]).toMatchObject({ kind: "personal", owner: { id: bobName }, role: "admin" });
-  expect(bobSpaces[1]).toEqual({ ...personal, role: "build" });
+  expect(await refusal(bob.openSpace(personal.key))).toMatch(NOT_A_MEMBER);
 });
 
 it.concurrent("a team space lists a member's workspace once it has seen activity, under its title",
