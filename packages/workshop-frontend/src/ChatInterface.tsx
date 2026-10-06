@@ -122,6 +122,7 @@ import {
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
+import { useT, translate, getLocale } from "./i18n";
 
 /**
  * The selected chat's live (accepted but not yet materialized) change row stream, delivered via
@@ -967,7 +968,7 @@ function buildToolCallGroups(
       return describeToolCallCount(toolName, count);
     }));
   } else if (toolCalls.length > 0) {
-    labelParts.push(`${toolCalls.length} tool calls`);
+    labelParts.push(toolCalls.length === 1 ? translate(getLocale(), 'chat.toolCallOne', { count: toolCalls.length }) : translate(getLocale(), 'chat.toolCalls', { count: toolCalls.length }));
   }
 
   if (observations.length > 0) {
@@ -1242,6 +1243,7 @@ export const MarkdownMessage = memo(function MarkdownMessage(
 
 // Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
 function useAttachmentObjectUrl(content: Uint8Array | undefined, mimeType: string): string | null {
+
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!content) {
@@ -1338,7 +1340,7 @@ const AttachmentPreviewModal = memo(function AttachmentPreviewModal(
           type="button"
           onClick={onClose}
           className="absolute right-3 top-3 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-kumo-line bg-kumo-base/90 text-kumo-subtle shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-sm transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-base hover:text-kumo-default active:scale-[0.96]"
-          aria-label="Close preview"
+          aria-label={translate(getLocale(), 'chat.closePreview')}
         >
           <X size={18} />
         </button>
@@ -1360,7 +1362,7 @@ const AttachmentPreviewModal = memo(function AttachmentPreviewModal(
                 <div className="text-[12px] leading-5 text-kumo-subtle">
                   {attachment.mimeType || "Unknown file type"}{sizeLabel ? ` · ${sizeLabel}` : ""}
                 </div>
-                <div className="text-[12px] leading-5 text-kumo-inactive">This file can’t be previewed here.</div>
+                <div className="text-[12px] leading-5 text-kumo-inactive">{translate(getLocale(), 'chat.previewUnavailable')}</div>
                 {onDownload && (
                   <button
                     type="button"
@@ -1413,7 +1415,7 @@ const ChatAttachmentThumbnail = memo(function ChatAttachmentThumbnail(
             onError={() => setImageState("error")}
           />
           {imageState !== "loaded" && (
-            <div className="absolute inset-0 grid place-items-center bg-kumo-elevated text-[11px] text-kumo-inactive">Loading image…</div>
+            <div className="absolute inset-0 grid place-items-center bg-kumo-elevated text-[11px] text-kumo-inactive">{translate(getLocale(), 'chat.loadingImage')}</div>
           )}
         </>
       ) : (
@@ -2710,6 +2712,7 @@ function ChatInterface({
   outputOfWorkpiece,
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
+  const t = useT();
   const toasts = useKumoToastManager();
   const { currentUser } = useAuthenticatedApi();
   const getOverseer = useCallback(() => overseer, [overseer]);
@@ -3169,7 +3172,7 @@ function ChatInterface({
       }
     } catch (err: any) {
       console.error("Failed to download chat attachment:", err);
-      toasts.add({ title: err?.message || "Failed to download attachment", variant: "error" });
+      toasts.add({ title: err?.message || t('chat.downloadFailed'), variant: "error" });
     }
   }, [overseer, toasts]);
 
@@ -3980,7 +3983,7 @@ function ChatInterface({
       forceUpdate();
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
-      toasts.add({ title: "Failed to load earlier messages", variant: "error" });
+      toasts.add({ title: t('chat.loadEarlierFailed'), variant: "error" });
     } finally {
       setIsLoadingEarlier(false);
     }
@@ -4022,7 +4025,7 @@ function ChatInterface({
     } catch (err) {
       if (!logRpcFailure("Failed to send message:", err, { reportSite: "chat.send" })) {
         toasts.add({
-          title: "Failed to send message",
+          title: t('chat.sendFailed'),
           description: rpcFailureDescription(err),
           variant: "error",
         });
@@ -4049,7 +4052,7 @@ function ChatInterface({
     } catch (err) {
       if (!logRpcFailure("Failed to create new chat:", err, { reportSite: "chat.new" })) {
         toasts.add({
-          title: "Failed to start conversation",
+          title: t('chat.startFailed'),
           description: rpcFailureDescription(err),
           variant: "error",
         });
@@ -4072,7 +4075,7 @@ function ChatInterface({
       await overseer.stopAgent(selectedChatId);
     } catch (err) {
       console.error("Failed to stop agent:", err);
-      toasts.add({ title: "Failed to stop agent", variant: "error" });
+      toasts.add({ title: t('chat.stopFailed'), variant: "error" });
     }
   };
 
@@ -4099,7 +4102,7 @@ function ChatInterface({
       toasts.add({ title: "Chat title updated successfully", variant: "success" });
     } catch (err) {
       console.error("Failed to update chat title:", err);
-      toasts.add({ title: "Failed to update chat title", variant: "error" });
+      toasts.add({ title: t('chat.titleFailed'), variant: "error" });
     }
   };
 
@@ -4126,7 +4129,7 @@ function ChatInterface({
       toasts.add({ title: "Chat deleted successfully", variant: "success" });
     } catch (err) {
       console.error("Failed to delete chat:", err);
-      toasts.add({ title: "Failed to delete chat", variant: "error" });
+      toasts.add({ title: t('chat.deleteChatFailed'), variant: "error" });
     }
     setIsDeleting(false);
     setDeleteTarget(null);
@@ -4168,7 +4171,7 @@ function ChatInterface({
       toasts.add({ title: "Chat title updated successfully", variant: "success" });
     } catch (err) {
       console.error("Failed to update chat title:", err);
-      toasts.add({ title: "Failed to update chat title", variant: "error" });
+      toasts.add({ title: t('chat.titleFailed'), variant: "error" });
     }
   };
 
@@ -4189,7 +4192,7 @@ function ChatInterface({
       toasts.add({ title: "Changes accepted", variant: "success" });
     } catch (err) {
       console.error("Failed to accept changes:", err);
-      toasts.add({ title: "Failed to accept changes", variant: "error" });
+      toasts.add({ title: t('chat.acceptFailed'), variant: "error" });
     }
   };
 
@@ -4285,7 +4288,7 @@ function ChatInterface({
       toasts.add({ title: "Changes saved", variant: "success" });
     } catch (err) {
       console.error("Failed to save changes:", err);
-      toasts.add({ title: "Failed to save changes", variant: "error" });
+      toasts.add({ title: t('chat.saveFailed'), variant: "error" });
     }
   };
 
@@ -4299,7 +4302,7 @@ function ChatInterface({
       toasts.add({ title: "Changes discarded", variant: "success" });
     } catch (err) {
       console.error("Failed to discard changes:", err);
-      toasts.add({ title: "Failed to discard changes", variant: "error" });
+      toasts.add({ title: t('chat.discardFailed'), variant: "error" });
     }
   };
 
@@ -4322,7 +4325,7 @@ function ChatInterface({
       // See handleRevertChanges: the server's refusals are instructive, so surface them.
       toasts.add({
         title: err instanceof Error && err.message
-          ? err.message : "Failed to discard pending changes",
+          ? err.message : t('chat.discardPendingFailed'),
         variant: "error",
       });
     } finally {
@@ -4427,7 +4430,7 @@ function ChatInterface({
       // The server's refusals here are instructive (e.g. a still-proposed update-from-mainline
       // batch can't be reverted), so surface them rather than a generic failure.
       toasts.add({
-        title: err instanceof Error && err.message ? err.message : "Failed to rewind draft",
+        title: err instanceof Error && err.message ? err.message : t('chat.rewindFailed'),
         variant: "error",
       });
     }
@@ -4502,7 +4505,7 @@ function ChatInterface({
       setConnectionAccept(null);
     } catch (err) {
       console.error("Failed to finalize connection:", err);
-      toasts.add({ title: "Failed to add connection", variant: "error" });
+      toasts.add({ title: t('chat.addConnectionFailed'), variant: "error" });
     } finally {
       gk[Symbol.dispose]();
       setProcessingConnections((prev) => {
@@ -4523,7 +4526,7 @@ function ChatInterface({
       }
     } catch (err) {
       console.error("Failed to deny connection:", err);
-      toasts.add({ title: "Failed to deny connection", variant: "error" });
+      toasts.add({ title: t('chat.denyConnectionFailed'), variant: "error" });
     } finally {
       setProcessingConnections((prev) => {
         const next = new Set(prev);
@@ -4604,7 +4607,7 @@ function ChatInterface({
     } catch (err) {
       console.error("Failed to retry agent:", err);
       toasts.add({
-        title: "Failed to retry agent",
+        title: t('chat.retryFailed'),
         description: rpcFailureDescription(err),
         variant: "error",
       });
@@ -4856,7 +4859,7 @@ function ChatInterface({
     const isDenied = msg.state === "denied";
     const isProc = processingConnections.has(msg.requestId);
 
-    const stateLabel = isAccepted ? "Connected" : isDenied ? "Denied" : null;
+    const stateLabel = isAccepted ? "Connected" : isDenied ? t('chat.denied') : null;
     const stateLabelCls = isDenied ? "text-kumo-danger" : "text-kumo-success";
     const scope = msg.resourceTitle ?? msg.resourceUrl;
 
@@ -4930,10 +4933,10 @@ function ChatInterface({
     if (log.type === "bindHook") {
       const isDeleted = log.hookId === undefined;
       const stateLabel = isDeleted
-        ? "Deleted"
+        ? t('chat.deleted')
         : log.enabled
-          ? "Enabled"
-          : "Disabled";
+          ? t('admin.enabled')
+          : t('admin.off');
       const stateLabelCls = isDeleted
         ? "text-kumo-inactive"
         : log.enabled
@@ -5049,9 +5052,9 @@ function ChatInterface({
     const showDescription = isPending || open;
     const metadata = log.resourceTitle;
     const stateLabel = isApproved
-      ? "Approved"
+      ? t('chat.approved')
       : isRejected
-        ? "Denied"
+        ? t('chat.denied')
         : null;
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
@@ -5097,7 +5100,7 @@ function ChatInterface({
       <>
         {autoApproveTarget &&
           !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
-          <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
+          <Tooltip content={t('chat.alwaysApproveTooltip')} asChild>
             <span className="flex">
               <AlwaysApproveButton
                 onClick={() => setAutoApproveConfirm(autoApproveTarget)}
@@ -5259,7 +5262,7 @@ function ChatInterface({
               <button
                 type="button"
                 className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-none data-[popup-open]:bg-kumo-tint/60"
-                aria-label="Filter conversations"
+                aria-label={t('chat.filterConversations')}
               >
                 <span className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
                   {CHAT_LIST_SCOPE_LABELS[chatListScope]}
@@ -5302,7 +5305,7 @@ function ChatInterface({
           </div>
         ) : chatList.length === 0 ? (
           <p className="text-sm text-kumo-inactive text-center py-8">
-            No conversations yet
+            {t('chat.noConversationsYet')}
           </p>
         ) : (
           <div className="flex flex-col gap-1">
@@ -5311,7 +5314,7 @@ function ChatInterface({
               // the all-empty case is handled by the outer chatList.length check.
               <div className="py-8 text-center">
                 <p className="text-[13px] leading-[18px] text-kumo-inactive">
-                  No conversations started by {chatListScope === "agents" ? "agents" : "people"} yet
+                  {chatListScope === "agents" ? t('chat.noConversationsByAgents') : t('chat.noConversationsByPeople')}
                 </p>
                 <button
                   type="button"
@@ -5380,7 +5383,7 @@ function ChatInterface({
                             Working
                           </span>
                         ) : !isRenaming && chatHasProposedChanges(chat) ? (
-                          <Tooltip content="This conversation has pending changes" asChild>
+                          <Tooltip content={t('chat.pendingChanges')} asChild>
                             <span className="inline-flex flex-shrink-0 cursor-pointer items-center gap-1 text-[11px] leading-4 font-medium text-kumo-warning">
                               <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
                               Pending changes
@@ -5430,7 +5433,7 @@ function ChatInterface({
                             onClick={() => startListRename(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
                           >
-                            Rename
+                            {t('chat.rename')}
                           </DropdownMenu.Item>
                           <DropdownMenu.Item
                             icon={<Trash size={12} className="mr-2" />}
@@ -5438,7 +5441,7 @@ function ChatInterface({
                             onClick={() => handleDeleteChat(chat.id, chat.title)}
                             className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] transition-colors data-highlighted:bg-kumo-danger-tint"
                           >
-                            Delete
+                            {t('chat.deleteChat')}
                           </DropdownMenu.Item>
                         </DropdownMenu.Content>
                       </DropdownMenu>
@@ -5564,8 +5567,8 @@ function ChatInterface({
                   <WorkshopIconButton
                     onClick={() => onNavigateToChat(null)}
                     className="!h-8 !w-8 flex-shrink-0"
-                    title="Back to conversations"
-                    aria-label="Back to conversations"
+                    title={t('chat.backToConversations')}
+                    aria-label={t('chat.backToConversations')}
                   >
                     <CaretLeft size={14} />
                   </WorkshopIconButton>
@@ -5588,14 +5591,14 @@ function ChatInterface({
                         onClick={handleSaveChatTitle}
                         disabled={!titleInput.trim()}
                         className="!h-8 !w-8 hover:text-kumo-brand disabled:opacity-30"
-                        aria-label="Save chat title"
+                        aria-label={t('chat.saveChatTitle')}
                       >
                         <Check size={13} />
                       </WorkshopIconButton>
                       <WorkshopIconButton
                         onClick={handleCancelTitleEdit}
                         className="!h-8 !w-8"
-                        aria-label="Cancel title edit"
+                        aria-label={t('chat.cancelTitleEdit')}
                       >
                         <X size={13} />
                       </WorkshopIconButton>
@@ -5603,13 +5606,13 @@ function ChatInterface({
                   ) : (
                     <>
                       <span className="min-w-0 flex-1 truncate text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                        {currentChatMetadata?.title || "Chat"}
+                        {currentChatMetadata?.title || t('chat.chatFallback')}
                       </span>
                       <WorkshopIconButton
                         onClick={() => setIsEditingTitle(true)}
                         className="!h-8 !w-8 flex-shrink-0 text-kumo-inactive hover:text-kumo-subtle"
-                        title="Rename chat"
-                        aria-label="Rename chat"
+                        title={t('chat.renameChat')}
+                        aria-label={t('chat.renameChat')}
                       >
                         <Pencil size={11} />
                       </WorkshopIconButton>
@@ -5620,8 +5623,8 @@ function ChatInterface({
                     onClick={() => handleDeleteChat()}
                     danger
                     className="!h-8 !w-8 flex-shrink-0 text-kumo-inactive"
-                    title="Delete chat"
-                    aria-label="Delete chat"
+                    title={t('chat.deleteChat')}
+                    aria-label={t('chat.deleteChat')}
                   >
                     <Trash size={14} />
                   </WorkshopIconButton>
@@ -5644,7 +5647,7 @@ function ChatInterface({
                   >
                     {isLoadingEarlier && (
                       <div className="mx-auto mb-6 text-[12px] leading-4 font-medium text-kumo-inactive">
-                        Loading earlier messages…
+                        {t('chat.loadingEarlier')}
                       </div>
                     )}
 
@@ -5659,7 +5662,7 @@ function ChatInterface({
                             <div className="flex items-center gap-3" role="separator">
                               <span className="h-px flex-1 bg-kumo-line/60" aria-hidden="true" />
                               <span className="flex-shrink-0 text-[11px] leading-4 font-medium tracking-[0.6px] text-kumo-inactive uppercase">
-                                Kept in full from here
+                                {t('chat.keptInFull')}
                               </span>
                               <span className="h-px flex-1 bg-kumo-line/60" aria-hidden="true" />
                             </div>
@@ -5678,7 +5681,7 @@ function ChatInterface({
                               <p className="mb-3 text-[12px] leading-[17px] text-kumo-subtle">
                                 The agent reads this in place of everything earlier in the chat.{" "}
                                 {kept === 0
-                                  ? "Nothing after it was kept."
+                                  ? t('chat.nothingKept')
                                   : `The ${kept === 1 ? "message" : `${kept} messages`} after the cut ${kept === 1 ? "was" : "were"} kept in full.`}
                               </p>
                             )}
@@ -5719,7 +5722,7 @@ function ChatInterface({
 
                         return (
                           <div key={entry.key} className={`${entryTopClass} mb-4 max-w-[860px]`}>
-                            <div className="flex items-center gap-3" role="separator" aria-label="Context compacted">
+                            <div className="flex items-center gap-3" role="separator" aria-label={t('chat.compactionNotice')}>
                               <span className="h-px flex-1 bg-kumo-line" aria-hidden="true" />
                               <button
                                 type="button"
@@ -5728,7 +5731,7 @@ function ChatInterface({
                                 className="flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-[11px] leading-4 font-medium tracking-[0.6px] text-kumo-inactive uppercase transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
                               >
                                 <Brain size={13} aria-hidden="true" />
-                                Context compacted
+                                {t('chat.compactionNotice')}
                                 <CaretRight
                                   size={11}
                                   weight="bold"
@@ -6030,12 +6033,12 @@ function ChatInterface({
                                     : "opacity-100 sm:opacity-0 sm:group-hover/agentMessage:opacity-100 sm:group-focus-within/agentMessage:opacity-100"
                                 }`}>
                                   {hasMessageText && (
-                                    <Tooltip content="Copy message" asChild>
+                                    <Tooltip content={t('chat.copyMessage')} asChild>
                                       <button
                                         type="button"
                                         onClick={() => handleCopyMessage(msg.message)}
                                         className="flex cursor-pointer items-center rounded-md p-1 text-kumo-inactive transition-[color,transform] duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.96]"
-                                        aria-label="Copy message"
+                                        aria-label={t('chat.copyMessage')}
                                       >
                                         <Copy size={15} />
                                       </button>
@@ -6643,8 +6646,8 @@ function ChatInterface({
 
       <DeleteConfirmationDialog
         open={deleteTarget !== null}
-        title="Delete conversation?"
-        description={<>This removes <span className="font-medium text-kumo-default">{deleteTarget?.title}</span>. You can&apos;t undo this.</>}
+        title={t('chat.deleteChat')}
+        description={<>{t('common.thisRemoves')} <span className="font-medium text-kumo-default">{deleteTarget?.title}</span>. {t('common.cantUndo')}</>}
         isDeleting={isDeleting}
         onOpenChange={(open) => {
           if (!open) setDeleteTarget(null);

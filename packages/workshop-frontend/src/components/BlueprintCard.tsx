@@ -1,3 +1,4 @@
+import { useT, localizeBlueprintDisplay, localizeVendorDisplay } from '../i18n'
 import { Link } from "@tanstack/react-router";
 import {
   Hexagon,
@@ -71,6 +72,7 @@ export function BindingBadge({
   badge: BindingBadgeInfo;
   vendorDescriptions?: Map<string, VendorDescription>;
 }) {
+  const t = useT()
   const vendorDescription = badge.vendorKey
     ? vendorDescriptions?.get(badge.vendorKey)
     : undefined;
@@ -96,10 +98,16 @@ export function BindingBadge({
     );
   }
 
+  const vendorLabel = vendorDescription
+    ? localizeVendorDisplay(t, {
+        id: badge.vendorKey,
+        displayName: vendorDescription.displayName,
+      }).displayName
+    : badge.label
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-kumo-fill px-2 py-[3px] text-[11px] font-medium leading-none tracking-[-0.1px] text-kumo-subtle">
       <span className="flex items-center text-kumo-inactive">{icon}</span>
-      {vendorDescription?.displayName ?? badge.label}
+      {vendorLabel}
     </span>
   );
 }
@@ -115,6 +123,8 @@ export function BlueprintCard({
   featured?: boolean;
   vendorDescriptions?: Map<string, VendorDescription>;
 }) {
+  const t = useT()
+  const display = localizeBlueprintDisplay(t, { id, metadata })
   const badges = uniqueBindingBadges(metadata.bindings);
 
   return (
@@ -129,7 +139,7 @@ export function BlueprintCard({
       <Link
         to="/blueprint/$id"
         params={{ id }}
-        aria-label={`Open blueprint ${metadata.title}`}
+        aria-label={`Open blueprint ${display.title}`}
         className="absolute inset-0 z-10 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-brand"
       />
       <div className="pointer-events-none relative z-20 flex flex-1 flex-col p-4">
@@ -141,10 +151,10 @@ export function BlueprintCard({
           </div>
           <div className="min-w-0 flex-1">
             <p className="m-0 line-clamp-2 text-[15px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
-              {metadata.title}
+              {display.title}
             </p>
-            <p className={`mt-1.5 line-clamp-2 min-h-8 text-[12px] leading-4 font-normal tracking-[-0.2px] ${metadata.description ? "text-kumo-subtle" : "text-kumo-inactive italic"}`}>
-              {metadata.description || "No description"}
+            <p className={`mt-1.5 line-clamp-2 min-h-8 text-[12px] leading-4 font-normal tracking-[-0.2px] ${metadata.description || display.description ? "text-kumo-subtle" : "text-kumo-inactive italic"}`}>
+              {display.description || t('workspaces.noDescription')}
             </p>
           </div>
         </div>

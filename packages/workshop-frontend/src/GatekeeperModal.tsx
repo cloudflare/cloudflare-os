@@ -37,6 +37,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { useT } from './i18n'
 
 export interface GatekeeperModalProps {
   open: boolean
@@ -188,6 +189,7 @@ export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern,
 }: GatekeeperModalProps) {
+  const t = useT()
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
 
@@ -588,11 +590,11 @@ export default function GatekeeperModal({
     setConnectingVendor(vendorId)
     try {
       openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
-      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
+      toasts.add({ title: t('gatekeeperModal.startConnection'), variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       reportIssue('gatekeeper.connect-start', error, { gatekeeperVendorId: vendorId })
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.startConnectionFailed'), variant: 'error' })
     } finally {
       setConnectingVendor(null)
     }
@@ -610,7 +612,7 @@ export default function GatekeeperModal({
       const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
       if (flow) {
         openConnectWindow(flow)
-        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
+        toasts.add({ title: t('gatekeeperModal.grantAccess'), variant: 'success' })
       }
       // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
       // the account's flag then clears and the configurator loads automatically.
@@ -619,7 +621,7 @@ export default function GatekeeperModal({
       reportIssue('gatekeeper.resource-grant', error, {
         gatekeeperVendorId: selectedConnection?.vendorId,
       })
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.grantAccessFailed'), variant: 'error' })
     } finally {
       setGrantingAccountId(null)
     }
@@ -629,13 +631,13 @@ export default function GatekeeperModal({
     setReconnectingAccountId(accountId)
     try {
       openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
-      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
+      toasts.add({ title: t('gatekeeperModal.startReconnect'), variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)
       reportIssue('gatekeeper.reconnect-start', error, {
         gatekeeperVendorId: selectedConnection?.vendorId,
       })
-      toasts.add({ title: 'Failed to start reconnect flow', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.startReconnectFailed'), variant: 'error' })
     } finally {
       setReconnectingAccountId(null)
     }
@@ -643,7 +645,7 @@ export default function GatekeeperModal({
 
   const handleCreateAiModel = async () => {
     if (!selectedModelId) {
-      toasts.add({ title: 'Please select an AI model', variant: 'warning' })
+      toasts.add({ title: t('gatekeeperModal.selectModel'), variant: 'warning' })
       return
     }
     setCreating(true)
@@ -657,11 +659,11 @@ export default function GatekeeperModal({
         transferred = true
         onClose()
       } else {
-        toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
+        toasts.add({ title: t('gatekeeperModal.createModelFailed'), variant: 'error' })
       }
     } catch (err) {
       console.error('Failed to create AI model gatekeeper:', err)
-      toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.createModelFailed'), variant: 'error' })
     } finally {
       if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
@@ -670,7 +672,7 @@ export default function GatekeeperModal({
 
   const handleCreateAgentSpawner = async () => {
     if (!spawnerDisplayName.trim()) {
-      toasts.add({ title: 'Please enter a display name', variant: 'warning' })
+      toasts.add({ title: t('gatekeeperModal.displayNameRequired'), variant: 'warning' })
       return
     }
     if (spawnerEnvError) {
@@ -694,11 +696,11 @@ export default function GatekeeperModal({
         transferred = true
         onClose()
       } else {
-        toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
+        toasts.add({ title: t('gatekeeperModal.createSpawnerFailed'), variant: 'error' })
       }
     } catch (err) {
       console.error('Failed to create agent spawner gatekeeper:', err)
-      toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.createSpawnerFailed'), variant: 'error' })
     } finally {
       if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
@@ -727,7 +729,7 @@ export default function GatekeeperModal({
         transferred = true
         onClose()
       } else {
-        toasts.add({ title: 'Failed to create connection', variant: 'error' })
+        toasts.add({ title: t('gatekeeperModal.createFailed'), variant: 'error' })
       }
     } catch (err) {
       console.error('Failed to create resource gatekeeper:', err)
@@ -784,17 +786,17 @@ export default function GatekeeperModal({
         <div ref={headerRef} className="shrink-0 flex items-start justify-between gap-4 border-b border-kumo-line px-5 py-4">
           <div className="min-w-0">
             <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-              {selectedConnection ? selectedConnection.title : 'Create New Connection'}
+              {selectedConnection ? selectedConnection.title : t('gatekeeperModal.createTitle')}
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
               {selectedConnection
                 ? selectedConnection.description
-                : 'Choose what this gadget should be able to use.'}
+                : t('gatekeeperModal.createSubtitle')}
             </Dialog.Description>
           </div>
           <Dialog.Close
             render={(props) => (
-              <WorkshopIconButton {...props} aria-label="Close">
+              <WorkshopIconButton {...props} aria-label={t('common.close')}>
                 <X size={16} />
               </WorkshopIconButton>
             )}
@@ -810,7 +812,7 @@ export default function GatekeeperModal({
                 className="mb-4 inline-flex cursor-pointer items-center gap-1.5 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:text-kumo-default"
               >
                 <CaretLeft size={13} />
-                All connection types
+                {t('gatekeeperModal.allTypes')}
               </button>
 
               <div className="space-y-4">
@@ -884,7 +886,7 @@ export default function GatekeeperModal({
                 <input
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="Search services, apps, data sources..."
+                  placeholder={t('gatekeeperModal.searchPlaceholder')}
                   autoFocus
                   className="h-10 w-full rounded-xl border border-kumo-line bg-kumo-base pl-9 pr-3 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive shadow-none outline-none transition-[border-color,box-shadow] focus:border-kumo-ring focus:ring-2 focus:ring-kumo-ring/10"
                 />

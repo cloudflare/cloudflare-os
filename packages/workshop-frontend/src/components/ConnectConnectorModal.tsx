@@ -1,4 +1,6 @@
 import { Dialog, Switch } from '@cloudflare/kumo'
+import { useT, localizeAccountDisplayName, localizeVendorDisplay, localizeSupportedResource } from '../i18n'
+
 import { X, ShieldCheck } from '@phosphor-icons/react'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -12,6 +14,7 @@ interface ConnectConnectorModalProps {
   open: boolean
   mode: 'connect' | 'manage'
   vendorDescription: VendorDescription
+  vendorId?: string
   supportedResources: SupportedResource[]
   logoUrl?: string
   color?: string
@@ -39,6 +42,7 @@ export default function ConnectConnectorModal({
   open,
   mode,
   vendorDescription,
+  vendorId,
   supportedResources,
   logoUrl,
   color,
@@ -54,7 +58,16 @@ export default function ConnectConnectorModal({
   onEnsureResources,
   ensuringResourceUrlPatterns = [],
 }: ConnectConnectorModalProps) {
+  const t = useT()
   const isManage = mode === 'manage'
+  // Localize known vendor label, tagline, and long description; server metadata remains fallback.
+  const vendorDisplay = localizeVendorDisplay(t, {
+    id: vendorId,
+    displayName: vendorDescription.displayName,
+    tagline: vendorDescription.tagline,
+    description: vendorDescription.description,
+  })
+  const vendorName = vendorDisplay.displayName
 
   // Resource types the user can individually enable/disable at connect time. Resources without
   // `grantable` are shown for information but aren't toggleable -- the account grant covers them
@@ -143,14 +156,14 @@ export default function ConnectConnectorModal({
     onDisconnect?.()
   }
 
-  const accountDisplayName =
-    accountDescription?.displayName ??
-    accountDescription?.uniqueName ??
-    'Connected'
+  const accountDisplayName = localizeAccountDisplayName(
+    t,
+    accountDescription?.displayName ?? accountDescription?.uniqueName,
+  )
 
   const headerTitle = isManage
-    ? vendorDescription.displayName
-    : `Connect ${vendorDescription.displayName}`
+    ? vendorName
+    : t('connectors.connect', { name: vendorName })
 
   const headerSubline = isManage ? (
     <div className="mt-0.5 flex items-center gap-1.5 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
@@ -165,13 +178,13 @@ export default function ConnectConnectorModal({
           ? accountDescription?.uniqueName
             ? `${accountDisplayName} / ${accountDescription.uniqueName}`
             : accountDisplayName
-          : 'Credentials expired; reconnect from the Gatekeepers page'}
+          : t('connectors.credentialsExpiredReconnect')}
       </span>
     </div>
   ) : (
-    vendorDescription.tagline && (
+    vendorDisplay.tagline && (
       <Dialog.Description className="mt-0.5 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-        {vendorDescription.tagline}
+        {vendorDisplay.tagline}
       </Dialog.Description>
     )
   )
@@ -217,7 +230,7 @@ export default function ConnectConnectorModal({
                 <img src={logoUrl} alt="" className="h-5 w-5 object-contain" />
               ) : (
                 <span className="text-sm font-semibold text-kumo-strong">
-                  {vendorDescription.displayName[0]}
+                  {vendorName[0] || '?'}
                 </span>
               )}
             </div>
@@ -230,7 +243,7 @@ export default function ConnectConnectorModal({
           </div>
           <Dialog.Close
             render={(props) => (
-              <WorkshopIconButton {...props} disabled={busy} aria-label="Close">
+              <WorkshopIconButton {...props} disabled={busy} aria-label={t('common.close')}>
                 <X size={16} />
               </WorkshopIconButton>
             )}
@@ -238,9 +251,9 @@ export default function ConnectConnectorModal({
         </div>
 
         <div className="new-gatekeeper-scroll-balanced min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {vendorDescription.description && (
+          {vendorDisplay.description && (
             <p className="text-[13px] leading-[19px] font-normal tracking-[-0.25px] text-kumo-default">
-              {vendorDescription.description}
+              {vendorDisplay.description}
             </p>
           )}
 
@@ -249,9 +262,9 @@ export default function ConnectConnectorModal({
               <h3 className="mb-2 text-[12px] leading-4 font-semibold uppercase tracking-[0.6px] text-kumo-inactive">
                 {granular
                   ? isManage
-                    ? 'Resources'
-                    : 'Resources to enable'
-                  : 'What this gatekeeper can do'}
+                    ? t('connectors.resources')
+                    : t('connectors.resourcesToEnable')
+                  : t('connectors.whatCanDo')}
               </h3>
               <ul className="space-y-2">
                 {supportedResources.map((resource) => {
@@ -264,6 +277,7 @@ export default function ConnectConnectorModal({
                     grantable &&
                     (selected.has(resource.urlPattern) || ensuring)
                   const disabled = isManage && (granted || ensuring)
+                  const localizedResource = localizeSupportedResource(t, resource)
                   return (
                     <li
                       key={resource.urlPattern}
@@ -272,10 +286,10 @@ export default function ConnectConnectorModal({
                       {resourceIcon(resource)}
                       <div className="min-w-0 flex-1">
                         <p className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                          {resource.title}
+                          {localizedResource.title}
                         </p>
                         <p className="mt-0.5 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-                          {resource.description}
+                          {localizedResource.description}
                         </p>
                       </div>
                       {grantable && (
@@ -284,8 +298,8 @@ export default function ConnectConnectorModal({
                           className="shrink-0"
                           aria-label={
                             isManage
-                              ? `Grant ${resource.title}`
-                              : `Enable ${resource.title}`
+                              ? t('connectors.grantResource', { title: localizedResource.title })
+                              : t('connectors.enableResource', { title: localizedResource.title })
                           }
                           checked={checked}
                           disabled={disabled}
@@ -317,12 +331,10 @@ export default function ConnectConnectorModal({
                 />
                 <div className="text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-default">
                   <span className="font-medium">
-                    Gatekeeper sits between {vendorDescription.displayName} and your Gadgets.
+                    {t('connectors.sitsBetween', { name: vendorName })}
                   </span>{' '}
                   <span className="text-kumo-subtle">
-                    Each Gadget only sees the resources you connect. If the workspace is shared,
-                    Gatekeeper verifies other users have the required permissions before they can
-                    access those resources.
+                    {t('connectors.sitsBetweenBody')}
                   </span>
                 </div>
               </div>
@@ -331,8 +343,7 @@ export default function ConnectConnectorModal({
 
           {isManage && (
             <div className="mt-5 rounded-lg border border-kumo-line bg-kumo-elevated px-4 py-3 text-[12px] leading-[17px] font-normal tracking-[-0.2px] text-kumo-subtle">
-              This account can be used by Gadgets you connect it to. Shared users must have the
-              required permissions before they can access those connected resources.
+              {t('connectors.sharedAccountBody')}
             </div>
           )}
         </div>
@@ -340,15 +351,17 @@ export default function ConnectConnectorModal({
         <div className="shrink-0 flex items-center justify-between gap-3 border-t border-kumo-line bg-kumo-base px-5 py-3">
           {isManage && confirmingDisconnect ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-default">
-              Disconnect {vendorDescription.displayName}? Gadgets using this will lose access.
+              {t('connectors.disconnectConfirm', { name: vendorName })}
             </p>
           ) : isManage && hasPending ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {pendingPatterns.length} resource{pendingPatterns.length === 1 ? '' : 's'} to add
+              {pendingPatterns.length === 1
+                ? t('connectors.pendingResourceToAdd', { count: pendingPatterns.length })
+                : t('connectors.pendingResourcesToAdd', { count: pendingPatterns.length })}
             </p>
           ) : !isManage && granular && noneSelected ? (
             <p className="m-0 min-w-0 flex-1 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              Select at least one resource to continue.
+              {t('connectors.selectResourceToContinue')}
             </p>
           ) : (
             <span aria-hidden />
@@ -363,7 +376,7 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9"
                     >
-                      Cancel
+                      {t('connectors.cancel')}
                     </WorkshopButton>
                     <WorkshopButton
                       tone="danger"
@@ -371,13 +384,15 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9 min-w-[140px]"
                     >
-                      {disconnecting ? 'Disconnecting...' : 'Yes, disconnect'}
+                      {disconnecting
+                        ? t('connectors.disconnecting')
+                        : t('connectors.yesDisconnect')}
                     </WorkshopButton>
                   </>
                 ) : hasPending ? (
                   <>
                     <WorkshopButton onClick={discardPending} disabled={ensuringBusy} className="!h-9">
-                      Cancel
+                      {t('connectors.cancel')}
                     </WorkshopButton>
                     <WorkshopButton
                       tone="primary"
@@ -386,8 +401,8 @@ export default function ConnectConnectorModal({
                       className="min-w-[140px]"
                     >
                       {ensuringBusy
-                        ? 'Opening...'
-                        : `Continue to ${vendorDescription.displayName}`}
+                        ? t('connectors.opening')
+                        : t('connectors.continueTo', { name: vendorName })}
                     </WorkshopButton>
                   </>
                 ) : (
@@ -395,7 +410,7 @@ export default function ConnectConnectorModal({
                     <Dialog.Close
                       render={(props) => (
                         <WorkshopButton {...props} className="!h-9">
-                          Close
+                          {t('connectors.close')}
                         </WorkshopButton>
                       )}
                     />
@@ -405,7 +420,7 @@ export default function ConnectConnectorModal({
                       disabled={disconnecting}
                       className="!h-9"
                     >
-                      Disconnect
+                      {t('connectors.disconnect')}
                     </WorkshopButton>
                   </>
                 )}
@@ -415,7 +430,7 @@ export default function ConnectConnectorModal({
                 <Dialog.Close
                   render={(props) => (
                     <WorkshopButton {...props} disabled={connecting} className="!h-9">
-                      Cancel
+                      {t('connectors.cancel')}
                     </WorkshopButton>
                   )}
                 />
@@ -427,11 +442,11 @@ export default function ConnectConnectorModal({
                 >
                   {autoProvisions
                     ? connecting
-                      ? 'Adding...'
-                      : `Add ${vendorDescription.displayName}`
+                      ? t('connectors.adding')
+                      : t('connectors.add', { name: vendorName })
                     : connecting
-                    ? 'Opening...'
-                    : `Continue to ${vendorDescription.displayName}`}
+                    ? t('connectors.opening')
+                    : t('connectors.continueTo', { name: vendorName })}
                 </WorkshopButton>
               </>
             )}

@@ -5,7 +5,7 @@
 // installs the act environment and the rAF stub.
 
 import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { createRoot, type Root } from './i18n/testRoot'
 import { vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {

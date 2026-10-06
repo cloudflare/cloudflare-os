@@ -2,7 +2,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act, type ComponentProps } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { createRoot } from '../../i18n/testRoot'
+import { type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GadgetSummary } from '@gadgets/workshop-shared/api'
 import type { ChatCodeChanges } from '../../ChatInterface'

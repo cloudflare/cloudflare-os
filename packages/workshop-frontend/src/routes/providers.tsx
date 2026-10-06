@@ -14,6 +14,7 @@ import {
 } from '@phosphor-icons/react'
 import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
+import { useT } from '../i18n'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
@@ -47,6 +48,7 @@ function ModelRow({
   onDelete: () => void
   onSetQuick: () => void
 }) {
+  const t = useT()
   return (
     <div
       role="button"
@@ -58,7 +60,7 @@ function ModelRow({
           onSetQuick()
         }
       }}
-      title={isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
+      title={isQuick ? t('providers.quickTitleClear') : t('providers.quickTitleSet')}
       className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
     >
       {/* Neutral monogram — matches the sidebar/workspaces treatment */}
@@ -74,13 +76,13 @@ function ModelRow({
           </span>
           {isBuiltIn && (
             <span className="shrink-0 rounded-full bg-kumo-tint px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-subtle">
-              built-in
+              {t('providers.builtIn')}
             </span>
           )}
           {isQuick && (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[rgba(255,72,1,0.10)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-brand">
               <Lightning size={9} weight="fill" />
-              quick
+              {t('providers.quick')}
             </span>
           )}
         </div>
@@ -95,7 +97,7 @@ function ModelRow({
           <DropdownMenu.Trigger
             render={
               <button
-                aria-label="Provider actions"
+                aria-label={t('providers.actions')}
                 className="cursor-pointer rounded-md p-1.5 text-kumo-subtle transition-colors hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
               >
                 <DotsThreeVertical size={16} />
@@ -105,7 +107,7 @@ function ModelRow({
           <DropdownMenu.Content className={MENU_CONTENT}>
             <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
               <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
-              {isQuick ? 'Clear quick model' : 'Set as quick model'}
+              {isQuick ? t('providers.clearQuick') : t('providers.setQuick')}
             </DropdownMenu.Item>
             {!isBuiltIn && canEdit && (
               <>
@@ -145,7 +147,8 @@ function Notice({ children }: { children: React.ReactNode }) {
 // ─── main page ────────────────────────────────────────────────────────────────
 
 function ProvidersPage() {
-  useDocumentTitle('AI Providers')
+  const t = useT()
+  useDocumentTitle(t('providers.documentTitle'))
 
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -257,9 +260,9 @@ function ProvidersPage() {
     <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-3 sm:px-10">
       <header className="flex flex-col items-stretch gap-4 px-3 pb-3 pt-6 sm:flex-row sm:items-end sm:justify-between sm:pt-10">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">AI providers</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">{t('providers.title')}</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Configure the AI models available to your workspaces.
+            {t('providers.subtitle')}
           </p>
         </div>
         {canAddModels && (
@@ -271,7 +274,7 @@ function ProvidersPage() {
             className={`${PRIMARY_BTN} h-11 justify-center text-[14px] disabled:cursor-not-allowed disabled:opacity-60 sm:h-9 sm:text-[13px]`}
           >
             <Plus size={14} weight="bold" />
-            Add provider
+            {t('providers.add')}
           </button>
         )}
       </header>
@@ -285,7 +288,7 @@ function ProvidersPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search providers…"
+              placeholder={t('providers.searchPlaceholder')}
               className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
           </div>
@@ -334,9 +337,9 @@ function ProvidersPage() {
           </div>
         ) : loadError ? (
           <div className="py-12 text-center text-sm">
-            <p className="text-kumo-danger">Something went wrong loading your providers.</p>
+            <p className="text-kumo-danger">{t('providers.loadError')}</p>
             <button type="button" onClick={fetchAll} className="mt-1 cursor-pointer text-kumo-brand underline">
-              Try again
+              {t('common.tryAgain')}
             </button>
           </div>
         ) : models.length === 0 ? (
@@ -346,23 +349,23 @@ function ProvidersPage() {
             </div>
             <div>
               <p className="text-sm font-medium text-kumo-default">
-                {canAddModels ? 'No AI providers yet' : 'No AI models available'}
+                {canAddModels ? t('providers.emptyTitle') : t('providers.noModelsAvailable')}
               </p>
               <p className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
                 {canAddModels
-                  ? 'Add a provider to start building workspaces with AI.'
-                  : 'Your deployment’s administrator offers no models at the moment.'}
+                  ? t('providers.emptyHint')
+                  : t('providers.adminNoModels')}
               </p>
             </div>
             {canAddModels && (
               <button type="button" onClick={openAdd} className={PRIMARY_BTN}>
                 <Plus size={14} weight="bold" />
-                Add your first provider
+                {t('providers.addFirst')}
               </button>
             )}
           </div>
         ) : filtered.length === 0 ? (
-          <div className="py-12 text-center text-sm text-kumo-inactive">No providers found</div>
+          <div className="py-12 text-center text-sm text-kumo-inactive">{t('providers.noneFound')}</div>
         ) : (
           filtered.map((model) => (
             <div

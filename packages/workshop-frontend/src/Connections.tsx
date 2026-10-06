@@ -22,6 +22,7 @@ import {
 } from './components/BlueprintBindingCard'
 import { reportIssue } from './errorReporting'
 import { isImeComposing } from './keyboardEvent'
+import { useT } from './i18n'
 
 interface ConnectionsProps {
   overseer: RpcStub<Overseer>
@@ -41,6 +42,7 @@ interface ConnectionsProps {
  * scoped to one gadget.
  */
 export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
+  const t = useT()
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
   const [gadgetInfo, setGadgetInfo] = useState<{ id: WorkpieceId; title: string } | null>(null)
@@ -77,7 +79,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       // silently render "no connected resources".
       console.error('Failed to load gatekeepers:', err)
       reportIssue('connections.load', err)
-      toasts.add({ title: 'Failed to load connections', variant: 'error' })
+      toasts.add({ title: t('connections.loadError'), variant: 'error' })
     } finally {
       setLoading(false)
     }
@@ -115,7 +117,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       await loadGatekeepers()
     } catch (err) {
       console.error('Failed to delete hook:', err)
-      toasts.add({ title: 'Failed to delete hook', variant: 'error' })
+      toasts.add({ title: t('connections.deleteHookFailed'), variant: 'error' })
     } finally {
       setDeleteHookTarget(null)
     }
@@ -163,7 +165,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   const handleEditSave = async (name: string) => {
     const newName = editValue.trim()
     if (!newName) {
-      toasts.add({ title: 'Binding name cannot be empty', variant: 'error' })
+      toasts.add({ title: t('connections.bindingNameEmpty'), variant: 'error' })
       return
     }
     if (newName === name) {
@@ -177,7 +179,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       onConnectionsChange?.()
     } catch (err) {
       console.error('Failed to rename binding:', err)
-      toasts.add({ title: 'Failed to update binding name', variant: 'error' })
+      toasts.add({ title: t('connections.updateBindingFailed'), variant: 'error' })
     } finally {
       setEditingBinding(null)
     }
@@ -196,7 +198,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       onConnectionsChange?.()
     } catch (err) {
       console.error('Failed to remove binding:', err)
-      toasts.add({ title: 'Failed to remove connection', variant: 'error' })
+      toasts.add({ title: t('connections.removeFailed'), variant: 'error' })
     } finally {
       setDeleteTarget(null)
     }
@@ -209,10 +211,10 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <h2 className="m-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-                Connections
+                {t('connections.title')}
               </h2>
               <p className="mt-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-                External resources this gadget can use.
+                {t('connections.subtitle')}
               </p>
             </div>
             <WorkshopButton
@@ -220,19 +222,19 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
               onClick={() => setIsNewConnectionModalVisible(true)}
               className="self-start"
             >
-              Connect resource
+              {t('connections.connectResource')}
             </WorkshopButton>
           </div>
 
           {loading ? (
             <div className="rounded-xl border border-kumo-line bg-kumo-base px-4 py-6 text-center text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
-              Loading connections...
+              {t('connections.loading')}
             </div>
           ) : bindings.length === 0 ? (
             <EmptyState
-              title="No connected resources"
-              description="Connect Google Docs, GitHub, Google Sheets, and other services so this gadget can safely use external data."
-              actionLabel="Connect resource"
+              title={t('connections.emptyTitle')}
+              description={t('connections.emptyBody')}
+              actionLabel={t('connections.connectResource')}
               onAction={() => setIsNewConnectionModalVisible(true)}
             />
           ) : (
@@ -282,8 +284,8 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                             if (e.key === 'Enter') handleEditSave(gk.name)
                             if (e.key === 'Escape') handleEditCancel()
                           }}
-                          placeholder="Binding name"
-                          aria-label="Binding name"
+                          placeholder={t('connections.bindingName')}
+                          aria-label={t('connections.bindingName')}
                           autoFocus
                           className="min-w-0 flex-1 font-mono"
                         />
@@ -327,7 +329,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                           <Tooltip content="Edit name used in code" asChild>
                             <WorkshopIconButton
                               onClick={() => handleEditStart(gk.name)}
-                              aria-label="Edit name used in code"
+                              aria-label={t('connections.editNameInCode')}
                             >
                               <Pencil size={14} />
                             </WorkshopIconButton>
@@ -336,7 +338,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                             <Tooltip content="Edit blueprint settings" asChild>
                               <WorkshopIconButton
                                 onClick={() => setAnnotationTarget(gk)}
-                                aria-label="Edit blueprint settings"
+                                aria-label={t('connections.editBlueprintSettings')}
                               >
                                 <Blueprint size={14} />
                               </WorkshopIconButton>
@@ -346,7 +348,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                             <WorkshopIconButton
                               danger
                               onClick={() => setDeleteTarget({ name: gk.name, resourceTitle: gk.resourceTitle })}
-                              aria-label="Delete connection"
+                              aria-label={t('connections.deleteConnection')}
                             >
                               <Trash size={14} />
                             </WorkshopIconButton>
@@ -437,7 +439,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                             <WorkshopIconButton
                               danger
                               onClick={() => setDeleteHookTarget({ id: hook.id, title: hook.description.title })}
-                              aria-label="Delete hook"
+                              aria-label={t('connections.deleteHook')}
                             >
                               <Trash size={14} />
                             </WorkshopIconButton>
@@ -465,8 +467,8 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
             await gadget.bindWithSuggestedName(gatekeeperId, chatId)
             toasts.add({
               title: chatId === undefined
-                ? 'Connection created successfully'
-                : "Connection created — accept the chat's changes to keep it",
+                ? t('connections.created')
+                : t('connections.createdPending'),
               variant: 'success',
             })
             await loadGatekeepers()
@@ -482,7 +484,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
         gadget={gadget}
         onClose={() => setAnnotationTarget(null)}
         onSaved={() => {
-          toasts.add({ title: 'Blueprint settings saved.', variant: 'success' })
+          toasts.add({ title: t('connections.settingsSaved'), variant: 'success' })
           setAnnotationTarget(null)
         }}
       />
@@ -502,6 +504,7 @@ function BlueprintAnnotationModal({
   onClose: () => void
   onSaved: () => void
 }) {
+  const t = useT()
   const [data, setData] = useState<BindingCardData | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -569,7 +572,7 @@ function BlueprintAnnotationModal({
             </div>
             <Dialog.Close
               render={(props) => (
-                <WorkshopIconButton {...props} aria-label="Close">
+                <WorkshopIconButton {...props} aria-label={t('common.close')}>
                   <X size={16} />
                 </WorkshopIconButton>
               )}
@@ -580,7 +583,7 @@ function BlueprintAnnotationModal({
             {loadError ? (
               <div className="text-[13px] text-kumo-subtle">{loadError}</div>
             ) : !data ? (
-              <div className="py-2 text-center text-[13px] text-kumo-subtle">Loading...</div>
+              <div className="py-2 text-center text-[13px] text-kumo-subtle">{t('common.loading')}</div>
             ) : (
               <>
                 <BlueprintBindingCard

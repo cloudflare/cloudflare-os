@@ -1,5 +1,6 @@
 import { File as FileIcon, X } from "@phosphor-icons/react";
 import type { ComposerAttachment } from "./useComposerAttachments";
+import { useT } from '../../../../i18n'
 
 export const ComposerAttachmentTray = ({
   attachments,
@@ -10,6 +11,7 @@ export const ComposerAttachmentTray = ({
   disabled?: boolean;
   onRemove: (attachmentId: string) => void;
 }) => {
+  const t = useT()
   if (attachments.length === 0) return null;
 
   return (
@@ -40,7 +42,7 @@ export const ComposerAttachmentTray = ({
           )}
           <button
             type="button"
-            aria-label="Remove attachment"
+            aria-label={t('chat.removeAttachment')}
             disabled={disabled}
             onClick={() => onRemove(attachment.id)}
             className="absolute right-0.5 top-0.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 disabled:cursor-not-allowed disabled:opacity-50"

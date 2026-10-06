@@ -1,3 +1,4 @@
+import { useT, localizeGatekeeperAppTitle } from '../i18n'
 import { Link } from '@tanstack/react-router'
 import { Hexagon, List, X } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../AuthContext'
@@ -10,6 +11,7 @@ import SiteLogo from './SiteLogo'
 
 export default function Header() {
   const auth = useOptionalAuthenticatedApi()
+  const t = useT()
   const gatekeeperApps = useGatekeeperApps()
   const siteName = useSiteName()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -87,7 +89,7 @@ export default function Header() {
                 className={navLinkClass}
                 activeProps={{ className: navLinkActiveClass }}
               >
-                {app.title}
+                {localizeGatekeeperAppTitle(t, app)}
               </Link>
             ))}
           </nav>
@@ -153,7 +155,7 @@ export default function Header() {
                 className={navLinkClass}
                 activeProps={{ className: navLinkActiveClass }}
               >
-                {app.title}
+                {localizeGatekeeperAppTitle(t, app)}
               </Link>
             ))}
 

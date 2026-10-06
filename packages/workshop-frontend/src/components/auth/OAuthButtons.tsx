@@ -3,6 +3,7 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
 import { Button, Banner } from '@cloudflare/kumo'
 import { openDisownedPopup, uniquePopupName } from '../../connectHandoff'
+import { useT } from '../../i18n'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -33,6 +34,7 @@ const RECEIVE_POLL_MS = 1000
  * that had already been handed out, leaving the user to sign in twice.
  */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
+  const t = useT()
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
 
@@ -140,7 +142,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       else window.location.reload()
     } catch (err) {
       if (err === CANCELLED || !mountedRef.current) return
-      setError(err instanceof Error ? err.message : 'Could not sign in')
+      setError(err instanceof Error ? err.message : t('auth.couldNotSignIn'))
       setPending(null)
     }
   }
@@ -165,7 +167,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
               style={{ height: 18, width: 'auto' }}
             />
           )}
-          Continue with {vendor.displayName}
+          {t('auth.continueWith', { name: vendor.displayName })}
         </Button>
       ))}
     </div>

@@ -62,6 +62,7 @@ import {
 import { useComposerResources } from "./useComposerResources";
 import { useComposerEditorLayout } from "./useComposerEditorLayout";
 import styles from "./ChatComposer.module.css";
+import { useT } from '../../../i18n'
 
 // A capsule's text begins with an em space, which reserves the box the mirror paints the vendor
 // logo into, and a no-break space, which is the gap between the logo and the title. The word
@@ -161,6 +162,7 @@ export const ChatComposer = ({
   /** Called after a gatekeeper is connected via the attach flow, so the parent can refresh the
    * pre-approval catalog and proactively offer to pre-approve its actions. */
 }) => {
+  const t = useT();
   const toasts = useKumoToastManager();
   const {
     attachments: pendingAttachments,
@@ -783,10 +785,10 @@ export const ChatComposer = ({
                 isBlocked
                   ? blockedReason
                   : isAgentActive
-                    ? "Waiting for agent…"
+                    ? t('chat.waitingForAgent')
                     : newChat
-                      ? "Start a new conversation…"
-                      : "Ask a follow-up…"
+                      ? t('chat.startConversation')
+                      : t('chat.askFollowUp')
               }
               autoFocus={autoFocus}
               rows={minRows}
@@ -942,7 +944,7 @@ export const ChatComposer = ({
                       <Brain size={14} />
                     </span>
                     <span className="flex-1">
-                      {showThinkingTraces ? "Hide thinking" : "Show thinking"}
+                      {showThinkingTraces ? t('chat.hideThinking') : t('chat.showThinking')}
                     </span>
                   </DropdownMenu.Item>
                 )}
@@ -962,7 +964,7 @@ export const ChatComposer = ({
                   onClick={onStop}
                   tone="primary"
                   className="!h-10 !w-10 sm:!h-8 sm:!w-8"
-                  aria-label="Stop agent"
+                  aria-label={t('chat.stopAgent')}
                 >
                   <svg
                     width="14"
@@ -979,7 +981,7 @@ export const ChatComposer = ({
                   disabled={!canSend}
                   tone="primary"
                   className="!h-10 !w-10 disabled:cursor-not-allowed disabled:opacity-30 sm:!h-8 sm:!w-8"
-                  aria-label="Send message"
+                  aria-label={t('chat.sendMessage')}
                 >
                   {/* Arrow-up icon */}
                   <svg

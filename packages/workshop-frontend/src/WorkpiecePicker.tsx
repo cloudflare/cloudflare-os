@@ -8,6 +8,7 @@ import type { GadgetSummary, WorkpieceId, WorktreeSummary } from '@gadgets/works
 import { CountBadge } from './components/CountBadge'
 import { WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { isImeComposing } from './keyboardEvent'
+import { useT } from './i18n'
 
 export const WORKPIECE_RAIL_COLLAPSED_WIDTH = 48
 export const WORKPIECE_RAIL_EXPANDED_WIDTH = 220
@@ -45,6 +46,7 @@ export default function WorkpiecePicker({
   pendingActivityCount,
   onOpenActivity,
 }: WorkpiecePickerProps) {
+  const t = useT()
   const [editing, setEditing] = useState<{ id: WorkpieceId; value: string } | null>(null)
 
   const commitRename = () => {
@@ -75,7 +77,7 @@ export default function WorkpiecePicker({
         }`}
       >
         {expanded && (
-          <span className="text-[11px] font-medium uppercase tracking-[0.06em]">Outputs</span>
+          <span className="text-[11px] font-medium uppercase tracking-[0.06em]">{t('gadget.outputs')}</span>
         )}
         {expanded ? <CaretRight size={14} /> : <CaretLeft size={14} />}
       </button>
@@ -106,14 +108,14 @@ export default function WorkpiecePicker({
                   onClick={commitRename}
                   disabled={!editing.value.trim()}
                   className="!h-6 !w-6"
-                  aria-label="Save gadget name"
+                  aria-label={t('gadget.saveName')}
                 >
                   <Check size={13} />
                 </WorkshopIconButton>
                 <WorkshopIconButton
                   onClick={() => setEditing(null)}
                   className="!h-6 !w-6"
-                  aria-label="Cancel rename"
+                  aria-label={t('gadget.cancelRename')}
                 >
                   <X size={13} />
                 </WorkshopIconButton>
@@ -132,7 +134,7 @@ export default function WorkpiecePicker({
                   : 'text-kumo-default hover:bg-kumo-tint'
               }`}
             >
-              <Tooltip content={`${gadget.title}${!expanded && isPending ? ' (Draft)' : ''}${hasHook ? ' · Hooks enabled' : ''}`} asChild>
+              <Tooltip content={`${gadget.title}${!expanded && isPending ? ` (${t('gadget.draft')})` : ''}${hasHook ? ` · ${t('gadget.hooksEnabled')}` : ''}`} asChild>
                 <button
                   type="button"
                   onClick={() => onSelect(gadget.id)}
@@ -158,7 +160,7 @@ export default function WorkpiecePicker({
                   {isPending && (
                     expanded ? (
                       <span className="flex-shrink-0 rounded-full bg-kumo-base px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
-                        Draft
+                        {t('gadget.draft')}
                       </span>
                     ) : (
                       <span className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full border border-kumo-base bg-kumo-brand" />
@@ -167,7 +169,7 @@ export default function WorkpiecePicker({
                   {hasHook && (
                     <span
                       role="img"
-                      aria-label="Hooks enabled"
+                      aria-label={t('gadget.hooksEnabled')}
                       className={expanded
                         ? 'flex-shrink-0 text-kumo-inactive'
                         : 'absolute bottom-0.5 left-0.5 rounded-full border border-kumo-base bg-kumo-base text-kumo-inactive'}
@@ -181,7 +183,7 @@ export default function WorkpiecePicker({
                 <WorkshopIconButton
                   onClick={() => setEditing({ id: gadget.id, value: gadget.title })}
                   className="!h-6 !w-6 flex-shrink-0 opacity-0 transition-opacity duration-150 ease-out group-hover/workpiece:opacity-100 focus-visible:opacity-100"
-                  title="Rename gadget"
+                  title={t('gadget.renameGadget')}
                   aria-label={`Rename ${gadget.title}`}
                 >
                   <PencilSimple size={13} />
@@ -242,7 +244,7 @@ export default function WorkpiecePicker({
           </>
         )}
 
-        <Tooltip content="View activity" asChild>
+        <Tooltip content={t('gadget.viewActivity')} asChild>
           <button
             type="button"
             onClick={onOpenActivity}
@@ -251,7 +253,7 @@ export default function WorkpiecePicker({
             }`}
           >
             <Pulse size={expanded ? 15 : 17} className="flex-shrink-0 text-kumo-inactive" />
-            {expanded && <span className="min-w-0 flex-1 truncate">View activity</span>}
+            {expanded && <span className="min-w-0 flex-1 truncate">{t('gadget.viewActivity')}</span>}
             {expanded ? (
               <CountBadge count={pendingActivityCount} />
             ) : pendingActivityCount > 0 && (

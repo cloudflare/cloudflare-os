@@ -48,3 +48,21 @@ VITE_CF_ACCESS_MODE=true
 ```
 
 The backend also needs to be configured with the `CF_ACCESS_ISS` and `CF_ACCESS_AUD` environment variables (see the workshop-backend package) for the JWT verification to work.
+
+## i18n (KO/EN)
+
+Catalogs live under `src/i18n/` (`en.ts`, `ko.ts`). Display overlays for API-sourced
+blueprint / vendor / format strings use `localizeDisplay.ts`.
+
+`run-local` serves the **built** `dist/` bundle (not a Vite HMR watch of this package).
+Gatekeeper `vite.app.config.ts` watches do **not** rebuild workshop-frontend. After any
+i18n (or other frontend) source change, refresh assets explicitly:
+
+```sh
+# from repo root
+pnpm exec vp run --cache @gadgets/workshop-frontend#build:assets
+# or restart `pnpm run-local` (it runs build:assets before serving)
+```
+
+Then hard-refresh the browser (Cmd+Shift+R) so cached chunk hashes are dropped.
+

@@ -12,6 +12,7 @@ import type { GadgetMetadataWithTimestamps, OutputFormatOffer } from '@gadgets/w
 import { FormatGlyph } from '../format/FormatVisuals'
 import { createFromFormat } from '../format/useOutputFormats'
 import { isImeComposing } from '../../keyboardEvent'
+import { useT, localizeFormatOutput, localizeBlueprintDisplay } from '../../i18n'
 
 // A ⌘K command palette: jump to a workspace or a primary destination. Because it's keyboard-driven
 // and opened many times a day, it deliberately has *no* open/close animation (instant feels faster
@@ -141,6 +142,7 @@ export default function CommandPalette({
   open: boolean
   onClose: () => void
 }) {
+  const t = useT()
   const { authenticatedApi } = useAuthenticatedApi()
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
@@ -226,31 +228,34 @@ export default function CommandPalette({
 
     // One entry per standard format. "New workspace" remains the first action because it is the
     // general starting point; the format shortcuts follow it in the admin's configured order.
-    const formatCommands: Command[] = formats.map((format) => ({
-      id: `format-${format.blueprintId}`,
-      label: `New ${format.output.noun}`,
-      hint: 'Format',
-      icon: <FormatGlyph output={format.output} size="md" />,
-      run: () => { void createFormat(format) },
-    }))
+    const formatCommands: Command[] = formats.map((format) => {
+      const { noun } = localizeFormatOutput(t, format.output)
+      return {
+        id: `format-${format.blueprintId}`,
+        label: t('commandPalette.newFormat', { noun }),
+        hint: t('commandPalette.formatHint'),
+        icon: <FormatGlyph output={format.output} size="md" />,
+        run: () => { void createFormat(format) },
+      }
+    })
 
     const nav: Command[] = [
       {
         id: 'nav-new',
-        label: 'New workspace',
+        label: t('commandPalette.newWorkspace'),
         icon: <Plus size={15} weight="bold" />,
         run: () => navigate({ to: '/' }),
       },
       ...formatCommands,
       {
         id: 'nav-workspaces',
-        label: 'Workspaces',
+        label: t('nav.workspaces'),
         icon: <SquaresFour size={15} />,
         run: () => navigate({ to: '/workspaces' }),
       },
       {
         id: 'nav-blueprints',
-        label: 'Blueprints',
+        label: t('nav.blueprints'),
         icon: <Blueprint size={15} />,
         run: () => navigate({ to: '/explore' }),
       },
@@ -260,21 +265,27 @@ export default function CommandPalette({
       .toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
       .map((g) => ({
         id: `ws-${g.id}`,
-        label: g.title || 'Untitled workspace',
-        hint: 'Workspace',
+        label: g.title || t('nav.untitledWorkspace'),
+        hint: t('commandPalette.workspaceHint'),
         icon: <SquaresFour size={15} className="text-kumo-inactive" />,
         run: () => navigate({ to: '/workspace/$id', params: { id: g.id } }),
       }))
 
     const bpBase: Command[] = blueprints
       .toSorted((a, b) => b.recency - a.recency)
-      .map((b) => ({
-        id: `bp-${b.id}`,
-        label: b.title,
-        hint: 'Blueprint',
-        icon: <Blueprint size={15} className="text-kumo-inactive" />,
-        run: () => navigate({ to: '/blueprint/$id', params: { id: b.id } }),
-      }))
+      .map((b) => {
+        const display = localizeBlueprintDisplay(t, {
+          id: b.id,
+          metadata: { title: b.title },
+        })
+        return {
+          id: `bp-${b.id}`,
+          label: display.title,
+          hint: t('commandPalette.blueprintHint'),
+          icon: <Blueprint size={15} className="text-kumo-inactive" />,
+          run: () => navigate({ to: '/blueprint/$id', params: { id: b.id } }),
+        }
+      })
 
     // Empty state shows a short, curated list (actions + a few recent workspaces). Once the user
     // types, we fuzzy-match across everything and rank by score, expanding the per-group limits.
@@ -291,19 +302,19 @@ export default function CommandPalette({
 
     const built: Group[] = searching
       ? [
-          { heading: 'Actions', items: refine(nav, nav.length) },
-          { heading: 'Workspaces', items: refine(wsBase, 8) },
-          { heading: 'Blueprints', items: refine(bpBase, 8) },
+          { heading: t('nav.actions'), items: refine(nav, nav.length) },
+          { heading: t('nav.workspaces'), items: refine(wsBase, 8) },
+          { heading: t('nav.blueprints'), items: refine(bpBase, 8) },
         ]
       : [
-          { heading: 'Actions', items: refine(nav, nav.length) },
-          { heading: 'Recent workspaces', items: refine(wsBase, 4) },
+          { heading: t('nav.actions'), items: refine(nav, nav.length) },
+          { heading: t('nav.recentWorkspaces'), items: refine(wsBase, 4) },
         ]
 
     const groups = built.filter((g) => g.items.length > 0)
     const flat = groups.flatMap((g) => g.items)
     return { groups, flat }
-  }, [query, gadgets, blueprints, formats, navigate, createFormat])
+  }, [query, gadgets, blueprints, formats, navigate, createFormat, t])
 
   // Keep the active index in range as the result set changes.
   useEffect(() => {
@@ -344,7 +355,7 @@ export default function CommandPalette({
       className="fixed inset-0 z-[1500] flex items-start justify-center px-4 pt-[12vh]"
       role="dialog"
       aria-modal="true"
-      aria-label="Command palette"
+      aria-label={t("nav.commandPalette")}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
@@ -358,7 +369,7 @@ export default function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Search workspaces and actions…"
+            placeholder={t("nav.searchWorkspacesActions")}
             className="h-12 w-full bg-transparent text-[14px] leading-5 tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive focus:outline-none"
           />
           <kbd className="shrink-0 rounded border border-kumo-line px-1.5 py-0.5 font-sans text-[10px] leading-none text-kumo-inactive">
@@ -368,7 +379,7 @@ export default function CommandPalette({
 
         <div ref={listRef} className="sidebar-scroll max-h-[min(60vh,420px)] overflow-y-auto p-1.5">
           {flat.length === 0 ? (
-            <p className="px-3 py-6 text-center text-[13px] text-kumo-inactive">No results.</p>
+            <p className="px-3 py-6 text-center text-[13px] text-kumo-inactive">{t("nav.noResults")}</p>
           ) : (
             groups.map((group, gi) => {
               // Compute the flat index offset for this group so keyboard nav stays in sync.

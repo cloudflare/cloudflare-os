@@ -1,4 +1,6 @@
 import { Link } from '@tanstack/react-router'
+import { useT } from '../../i18n'
+
 import { DotsThree, Star, ShareNetwork, Trash, Pencil } from '@phosphor-icons/react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
@@ -33,6 +35,7 @@ export default function SidebarGadgetRow({
   onShare: (g: GadgetMetadataWithTimestamps) => void
   onDelete: (g: GadgetMetadataWithTimestamps) => void
 }) {
+  const t = useT()
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -61,7 +64,7 @@ export default function SidebarGadgetRow({
       onClick={(e) => {
         if (renaming) e.preventDefault()
       }}
-      title={collapsed ? gadget.title || 'Untitled workspace' : undefined}
+      title={collapsed ? gadget.title || t('workspaces.untitled') : undefined}
     >
       <div
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle"
@@ -87,7 +90,7 @@ export default function SidebarGadgetRow({
               onClick={(e) => e.preventDefault()}
             />
           ) : (
-            <span className="min-w-0 flex-1 truncate">{gadget.title || 'Untitled workspace'}</span>
+            <span className="min-w-0 flex-1 truncate">{gadget.title || t('workspaces.untitled')}</span>
           )}
 
           {/* Inside the row's <Link>: stopPropagation blocks the Link's SPA handler, so preventDefault
@@ -98,7 +101,7 @@ export default function SidebarGadgetRow({
                 render={
                   <button
                     type="button"
-                    aria-label="Workspace actions"
+                    aria-label={t('nav.workspaceActions')}
                     className="flex h-6 w-6 items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
                   >
                     <DotsThree size={14} weight="bold" />
@@ -110,20 +113,20 @@ export default function SidebarGadgetRow({
                   onClick={startRename}
                   className={MENU_ITEM}
                 >
-                  <Pencil size={13} className="mr-2" /> Rename
+                  <Pencil size={13} className="mr-2" /> {t('workspaces.rename')}
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={() => onTogglePin(gadget)}
                   className={MENU_ITEM}
                 >
                   <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
-                  {gadget.pinned ? 'Unfavorite' : 'Favorite'}
+                  {gadget.pinned ? t('workspaces.unfavorite') : t('workspaces.favorite')}
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={() => onShare(gadget)}
                   className={MENU_ITEM}
                 >
-                  <ShareNetwork size={13} className="mr-2" /> Share
+                  <ShareNetwork size={13} className="mr-2" /> {t('workspaces.share')}
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator />
                 <DropdownMenu.Item
@@ -132,7 +135,7 @@ export default function SidebarGadgetRow({
                   className={MENU_ITEM_DANGER}
                 >
                   <Trash size={13} className="mr-2" />
-                  {gadget.owner ? 'Dismiss' : 'Delete'}
+                  {gadget.owner ? t('workspaces.dismiss') : t('workspaces.delete')}
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu>
@@ -141,7 +144,7 @@ export default function SidebarGadgetRow({
       )}
 
       {/* Collapsed rows show only the monogram (aria-hidden), so name the link for screen readers. */}
-      {collapsed && <span className="sr-only">{gadget.title || 'Untitled workspace'}</span>}
+      {collapsed && <span className="sr-only">{gadget.title || t('workspaces.untitled')}</span>}
     </Link>
   )
 }

@@ -3,16 +3,19 @@
 
 import { FormatGlyph } from './FormatVisuals'
 import { useOutputFormats } from './useOutputFormats'
+import { useT, localizeFormatOutput } from '../../i18n'
 
-export default function NewFormatRow({ label = 'Start with' }: { label?: string }) {
+export default function NewFormatRow({ label }: { label?: string }) {
+  const t = useT()
   const { formats, creating, create } = useOutputFormats()
+  const rowLabel = label ?? t('outputs.startWith')
 
   if (formats.length === 0) return null
 
   return (
     <div className="flex flex-col items-center gap-2.5">
       <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-kumo-inactive">
-        {label}
+        {rowLabel}
       </span>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {formats.map((format) => (
@@ -29,7 +32,9 @@ export default function NewFormatRow({ label = 'Start with' }: { label?: string 
               size="md"
               className={creating === format.blueprintId ? 'animate-pulse' : 'text-kumo-subtle'}
             />
-            {creating === format.blueprintId ? `Creating…` : `New ${format.output.noun}`}
+            {creating === format.blueprintId
+              ? t('common.creating')
+              : t('commandPalette.newFormat', { noun: localizeFormatOutput(t, format.output).noun })}
           </button>
         ))}
       </div>

@@ -6,6 +6,7 @@ import { useOptionalAuthenticatedApi } from '../../AuthContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
 import { openConnectWindow } from '../../connectHandoff'
+import { useT } from '../../i18n'
 
 interface OutOfCreditsModalProps {
   open: boolean
@@ -18,6 +19,7 @@ interface OutOfCreditsModalProps {
  * up credits in the Cloudflare dashboard (if connected but low balance).
  */
 export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalProps) {
+  const t = useT()
   const auth = useOptionalAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [usage, setUsage] = useState<CloudflareUsageInfo | null>(null)
@@ -183,10 +185,10 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
                   </Button>
                 </>
               ) : needsSelection ? (
-                <Button variant="secondary" onClick={onClose}>Close</Button>
+                <Button variant="secondary" onClick={onClose}>{t('common.close')}</Button>
               ) : (
                 <>
-                  <Button variant="secondary" onClick={onClose}>Close</Button>
+                  <Button variant="secondary" onClick={onClose}>{t('common.close')}</Button>
                   <Button
                     variant="primary"
                     onClick={() => window.open(buildAddCreditsUrl(usage.accountId), '_blank')}

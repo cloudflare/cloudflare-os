@@ -70,6 +70,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import { useT, translate, getLocale } from './i18n'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -181,8 +182,8 @@ function rightTabs(summary: WorkpieceSummary | undefined): { value: RightTab; la
   if (summary?.type === 'worktree') return [{ value: 'code', label: 'Code' }]
   return [
     { value: 'app', label: formatOf(summary?.output).noun },
-    { value: 'code', label: 'Code' },
-    { value: 'connections', label: 'Connections' },
+    { value: 'code', label: translate(getLocale(), 'editor.code') },
+    { value: 'connections', label: translate(getLocale(), 'editor.connections') },
   ]
 }
 
@@ -194,10 +195,10 @@ function WorkpieceGlyph({ summary, className }: { summary: WorkpieceSummary; cla
   return <FormatGlyph output={summary.output} size="sm" className={className} weight="regular" />
 }
 
-const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
-  { value: 'review', label: 'Needs review' },
-  { value: 'auto', label: 'Auto-approval' },
-  { value: 'history', label: 'History' },
+const ACTIVITY_TAB_KEYS: { value: ActivityView; labelKey: 'editor.needsReview' | 'editor.autoApproval' | 'editor.history' }[] = [
+  { value: 'review', labelKey: 'editor.needsReview' },
+  { value: 'auto', labelKey: 'editor.autoApproval' },
+  { value: 'history', labelKey: 'editor.history' },
 ]
 
 // Names what the pane is showing. `icon` is for the workspace-level views (Activity); a workpiece
@@ -458,6 +459,7 @@ function NoGadgetPlaceholder({ height }: { height: string }) {
 // ─── component ────────────────────────────────────────────────────────────────
 
 export default function GadgetEditor() {
+  const t = useT()
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
@@ -509,7 +511,7 @@ export default function GadgetEditor() {
       if (id) navigate({ to: '/workspace/$id', params: { id }, search: {}, replace: true })
     },
     onInvalidShareKey: () => {
-      toasts.add({ title: 'Invalid or expired share link.', variant: 'error' })
+      toasts.add({ title: t('editor.invalidShareLink'), variant: 'error' })
     },
   })
   const [userInfo, setUserInfo] = useState<AiChatAuthorInfo | null>(null)
@@ -1337,7 +1339,7 @@ export default function GadgetEditor() {
     try {
       await target.setTitle(title)
     } catch {
-      toasts.add({ title: 'Failed to rename gadget', variant: 'error' })
+      toasts.add({ title: t('editor.renameFailed'), variant: 'error' })
     } finally {
       target[Symbol.dispose]()
     }
@@ -1383,7 +1385,7 @@ export default function GadgetEditor() {
       await overseer.stub.setTitle(titleInput.trim())
       updateTitle(titleInput.trim())
       setIsEditingTitle(false)
-    } catch { toasts.add({ title: 'Failed to update title', variant: 'error' }) }
+    } catch { toasts.add({ title: t('editor.titleFailed'), variant: 'error' }) }
     finally { titleSaveInFlight.current = false }
   }
   const handleCancelEdit = () => {
@@ -1407,7 +1409,7 @@ export default function GadgetEditor() {
       await overseer.stub.deleteSelf()
       navigate({ to: '/' })
     } catch {
-      toasts.add({ title: 'Failed to delete workspace', variant: 'error' })
+      toasts.add({ title: t('editor.deleteFailed'), variant: 'error' })
       setIsDeleting(false)
       setDeleteDialogOpen(false)
     }
@@ -1455,7 +1457,7 @@ export default function GadgetEditor() {
       <div className="flex min-h-full items-center justify-center bg-kumo-base">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-kumo-subtle">Loading workspace…</p>
+          <p className="text-sm text-kumo-subtle">{t('editor.loadingWorkspace')}</p>
         </div>
         {observerConfig && (
           <ObserverConfigModal
@@ -1510,7 +1512,7 @@ export default function GadgetEditor() {
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <Link
             to="/"
-            aria-label="Home"
+            aria-label={t('editor.home')}
             className="flex-shrink-0 hover:opacity-80 transition-opacity"
           >
             <SiteLogo size={22}>
@@ -1538,14 +1540,14 @@ export default function GadgetEditor() {
                 onClick={handleSaveTitle}
                 disabled={!titleInput.trim()}
                 className="!h-9 !w-9 hover:text-kumo-brand disabled:opacity-30 md:!h-7 md:!w-7"
-                aria-label="Save workspace title"
+                aria-label={t('editor.saveTitle')}
               >
                 <Check size={14} />
               </WorkshopIconButton>
               <WorkshopIconButton
                 onClick={handleCancelEdit}
                 className="!h-9 !w-9 md:!h-7 md:!w-7"
-                aria-label="Cancel title edit"
+                aria-label={t('editor.cancelTitleEdit')}
               >
                 <X size={14} />
               </WorkshopIconButton>
@@ -1559,8 +1561,8 @@ export default function GadgetEditor() {
                 <WorkshopIconButton
                   onClick={() => setIsEditingTitle(true)}
                   className="!h-7 !w-7 flex-shrink-0"
-                  title="Rename workspace"
-                  aria-label="Rename workspace"
+                  title={t('editor.renameWorkspace')}
+                  aria-label={t('editor.renameWorkspace')}
                 >
                   <Pencil size={16} />
                 </WorkshopIconButton>
@@ -1599,8 +1601,8 @@ export default function GadgetEditor() {
 
           <WorkshopIconButton
             onClick={() => setShareModalOpen(true)}
-            title="Share workspace"
-            aria-label="Share workspace"
+            title={t('editor.shareWorkspace')}
+            aria-label={t('editor.shareWorkspace')}
           >
             <ShareNetwork size={15} />
           </WorkshopIconButton>
@@ -1610,8 +1612,8 @@ export default function GadgetEditor() {
               render={
                 <WorkshopIconButton
                   disabled={!selectedGadgetStub}
-                  title={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
-                  aria-label={blueprintUpdateAvailable ? 'Blueprints (update available)' : 'Blueprints'}
+                  title={blueprintUpdateAvailable ? t('editor.blueprintsUpdateAvailable') : t('editor.blueprints')}
+                  aria-label={blueprintUpdateAvailable ? t('editor.blueprintsUpdateAvailable') : t('editor.blueprints')}
                   className="relative"
                 >
                   <Blueprint size={16} />
@@ -1626,7 +1628,7 @@ export default function GadgetEditor() {
             />
             <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE}>
               <DropdownMenu.Item onClick={() => setBlueprintModalOpen(true)} className={MENU_ITEM}>
-                Publish as blueprint…
+                {t('editor.publishBlueprint')}
               </DropdownMenu.Item>
               {!builtFromScratch && (
                 <DropdownMenu.Item
@@ -1644,8 +1646,8 @@ export default function GadgetEditor() {
             <WorkshopIconButton
               danger
               onClick={() => setDeleteDialogOpen(true)}
-              title="Delete workspace"
-              aria-label="Delete workspace"
+              title={t('editor.deleteWorkspace')}
+              aria-label={t('editor.deleteWorkspace')}
             >
               <Trash size={16} />
             </WorkshopIconButton>
@@ -1873,7 +1875,7 @@ export default function GadgetEditor() {
                 <div className="absolute inset-0 flex items-center justify-center bg-kumo-base">
                   <div className="flex flex-col items-center gap-3">
                     <div className="w-6 h-6 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
-                    <p className="text-sm text-kumo-subtle">Loading conversation…</p>
+                    <p className="text-sm text-kumo-subtle">{t('editor.loadingConversation')}</p>
                   </div>
                 </div>
               )}
@@ -1912,7 +1914,7 @@ export default function GadgetEditor() {
           >
             <div className="flex min-w-0 flex-1 items-center overflow-hidden">
               {paneShowsActivity ? (
-                <PaneLabel icon={Pulse} title="Activity" />
+                <PaneLabel icon={Pulse} title={t('editor.activity')} />
               ) : visibleWorkpieces.length > 1 ? (
                 <PaneWorkpieceTabs
                   gadgets={visibleWorkpieces}
@@ -1932,11 +1934,11 @@ export default function GadgetEditor() {
             <div className="flex flex-shrink-0 items-center gap-1.5">
               <div className="flex items-center rounded-lg border border-kumo-line p-0.5">
                 {paneShowsActivity
-                  ? ACTIVITY_TABS.map(tab => (
+                  ? ACTIVITY_TAB_KEYS.map(tab => (
                     <PaneTab
                       key={tab.value}
                       active={activityView === tab.value}
-                      label={tab.label}
+                      label={t(tab.labelKey)}
                       count={tab.value === 'review' ? pendingActionCount : undefined}
                       onClick={() => setActivityView(tab.value)}
                     />
@@ -1961,7 +1963,7 @@ export default function GadgetEditor() {
 
               {!paneShowsActivity && selectedWorkpieceSummary?.type !== 'worktree' && (
                 <WorkshopIconButton
-                  aria-label="Enter full screen"
+                  aria-label={t('editor.enterFullscreen')}
                   title={activeTab === 'app' && !previewMode
                     ? 'Full screen'
                     : `Full screen is available in ${formatOf(selectedGadgetSummary?.output).noun} view`}
@@ -1974,9 +1976,9 @@ export default function GadgetEditor() {
 
               <WorkshopIconButton
                 aria-label={paneShowsActivity
-                  ? 'Close activity'
-                  : selectedWorkpieceSummary?.type === 'worktree' ? 'Close worktree pane' : 'Close gadget pane'}
-                title="Close"
+                  ? t('editor.closeActivity')
+                  : selectedWorkpieceSummary?.type === 'worktree' ? 'Close worktree pane' : t('editor.closeGadgetPane')}
+                title={t('common.close')}
                 onClick={closeWorkspacePane}
               >
                 <X size={16} />
@@ -1987,11 +1989,11 @@ export default function GadgetEditor() {
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {paneShowsActivity && (
               <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-kumo-line px-2 md:hidden">
-                {ACTIVITY_TABS.map(tab => (
+                {ACTIVITY_TAB_KEYS.map(tab => (
                   <PaneTab
                     key={tab.value}
                     active={activityView === tab.value}
-                    label={tab.label}
+                    label={t(tab.labelKey)}
                     count={tab.value === 'review' ? pendingActionCount : undefined}
                     onClick={() => setActivityView(tab.value)}
                   />
@@ -2180,8 +2182,8 @@ export default function GadgetEditor() {
 
       <DeleteConfirmationDialog
         open={deleteDialogOpen}
-        title="Delete workspace?"
-        description={<>This removes <span className="font-medium text-kumo-default">{metadata.title}</span>. You can&apos;t undo this.</>}
+        title={t('editor.deleteWorkspaceQ')}
+        description={<>{t('common.thisRemoves')} <span className="font-medium text-kumo-default">{metadata.title}</span>. {t('common.cantUndo')}</>}
         isDeleting={isDeleting}
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}

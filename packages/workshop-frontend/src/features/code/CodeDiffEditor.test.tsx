@@ -2,7 +2,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { StrictMode, act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { createRoot } from '../../i18n/testRoot'
+import { type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import type { FileChange } from '@gadgets/workshop-shared/code-change'

@@ -3,6 +3,7 @@ import type { RpcStub } from "capnweb";
 import type { ChatAttachmentHandle, Overseer } from "@gadgets/workshop-shared/api";
 import { reportIssue } from "../../../../errorReporting";
 import { formatAttachmentSize } from "../../attachmentFormatting";
+import { useT } from '../../../../i18n'
 import {
   MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
   prepareChatAttachment,
@@ -35,6 +36,8 @@ export const useComposerAttachments = ({
   modelId,
   onError,
 }: ComposerAttachmentsOptions) => {
+  const t = useT()
+
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
   const stagedCleanupRef = useRef(new Map<string, () => void>());
@@ -98,7 +101,7 @@ export const useComposerAttachments = ({
       const message = errorMessage(error, "Upload failed");
       updateAttachments((current) => current.map((item) =>
         item.id === id ? { ...item, uploadState: "error", error: message } : item));
-      onErrorRef.current(errorMessage(error, "Failed to upload attachment"));
+      onErrorRef.current(errorMessage(error, t('chat.attachFailed')));
     }
   };
 
@@ -125,7 +128,7 @@ export const useComposerAttachments = ({
     for (const result of prepared) {
       if (result.status === "rejected") {
         console.error("Failed to process chat attachment:", result.reason);
-        onErrorRef.current(errorMessage(result.reason, "Failed to process attachment"));
+        onErrorRef.current(errorMessage(result.reason, t('chat.attachFailed')));
         continue;
       }
 

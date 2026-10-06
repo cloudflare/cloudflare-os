@@ -1,10 +1,13 @@
 import { useState } from 'react'
+import { useT } from '../../i18n'
+
 import { Table } from '@cloudflare/kumo'
 import { Badge } from '@cloudflare/kumo'
 import { Button } from '@cloudflare/kumo'
 import { sampleDataRows } from '../../data/chat'
 
 export default function DataTab() {
+  const t = useT()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   function toggleRow(id: string) {
@@ -52,7 +55,7 @@ export default function DataTab() {
                 checked={selectedIds.size === sampleDataRows.length}
                 indeterminate={selectedIds.size > 0 && selectedIds.size < sampleDataRows.length}
                 onValueChange={toggleAll}
-                aria-label="Select all rows"
+                aria-label={t('chat.selectAllRows')}
               />
               <Table.Head>Channel</Table.Head>
               <Table.Head>Messages</Table.Head>

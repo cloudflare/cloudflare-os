@@ -18,6 +18,7 @@ import { diffRenderExtension, setDiffRender } from './diff/diffRenderer'
 import { getLanguage } from './getLanguage'
 import { useTheme } from '../../ThemeContext'
 import './CodeDiffEditor.css'
+import { useT } from '../../i18n'
 
 /**
  * The in-chat diff editor.
@@ -80,6 +81,7 @@ export default function CodeDiffEditor({
   readOnly = false,
   height = '100%',
 }: CodeDiffEditorProps) {
+  const t = useT()
   const { resolvedThemeMode } = useTheme()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const modifiedHostRef = useRef<HTMLDivElement | null>(null)
@@ -433,8 +435,8 @@ export default function CodeDiffEditor({
             <button
               type="button"
               className={layoutButtonClass(diffLayoutPreference === 'stacked')}
-              title="Stacked diff"
-              aria-label="Use stacked diff layout"
+              title={t('code.stackedDiff')}
+              aria-label={t('code.stackedDiffAria')}
               aria-pressed={diffLayoutPreference === 'stacked'}
               onClick={() => setDiffLayoutPreference('stacked')}
             >
@@ -443,8 +445,8 @@ export default function CodeDiffEditor({
             <button
               type="button"
               className={layoutButtonClass(diffLayoutPreference === 'split' && canSplitDiff, !canSplitDiff)}
-              title={canSplitDiff ? 'Split diff' : 'Split diff needs more space'}
-              aria-label="Use split diff layout"
+              title={canSplitDiff ? t('code.splitDiff') : t('code.splitDiffNeedsSpace')}
+              aria-label={t('code.splitDiffAria')}
               aria-pressed={diffLayoutPreference === 'split' && canSplitDiff}
               disabled={!canSplitDiff}
               onClick={() => setDiffLayoutPreference('split')}

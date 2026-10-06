@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useEffectEvent } from 'react'
 import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -18,6 +18,7 @@ import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { openConnectWindow } from './connectHandoff'
+import { useT, localizeVendorDisplay } from './i18n'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -40,8 +41,12 @@ interface AccountInfo {
 
 // How to name one of the user's accounts in the UI. Falls back to the id, which is all we can show
 // for an account that has since been disconnected (so `accounts` no longer has it).
-function accountLabel(account: AccountInfo | undefined, accountId: number): string {
-  return account?.description.uniqueName || account?.description.displayName || `Account ${accountId}`
+function accountLabel(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  account: AccountInfo | undefined,
+  accountId: number,
+): string {
+  return account?.description.uniqueName || account?.description.displayName || t('observerModal.accountFallback', { id: accountId })
 }
 
 // Return the grantable resource type needed to verify one observer binding. Account metadata is
@@ -81,7 +86,11 @@ export default function ObserverConfigModal({
   onConfirm,
   onCancel,
 }: ObserverConfigModalProps) {
+  const t = useT()
   const toasts = useKumoToastManager()
+  const notifyAccountsLoadFailed = useEffectEvent(() => {
+    toasts.add({ title: t('observerModal.loadAccountsFailed'), variant: 'error' })
+  })
 
   const [accounts, setAccounts] = useState<Map<number, AccountInfo>>(new Map())
   const [ready, setReady] = useState(false)
@@ -135,7 +144,7 @@ export default function ObserverConfigModal({
       // Loud on purpose: the modal has no retry path, so a quieted transient failure would
       // strand the user on a permanent loader.
       console.error('Failed to subscribe to connected accounts:', err)
-      toasts.add({ title: 'Failed to load your connected accounts', variant: 'error' })
+      notifyAccountsLoadFailed()
     })
 
     return () => {
@@ -210,7 +219,7 @@ export default function ObserverConfigModal({
       }
     } catch (err) {
       console.error('Failed to initiate connection:', err)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: t('connections.startFailed'), variant: 'error' })
     } finally {
       setConnecting(null)
     }
@@ -223,7 +232,7 @@ export default function ObserverConfigModal({
       openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
     } catch (err) {
       console.error('Failed to initiate reconnection:', err)
-      toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.startReconnectFailed'), variant: 'error' })
     } finally {
       setReconnecting(null)
     }
@@ -265,7 +274,7 @@ export default function ObserverConfigModal({
       }
     } catch (err) {
       console.error('Failed to request additional access:', err)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: t('gatekeeperModal.grantAccessFailed'), variant: 'error' })
     } finally {
       setGranting(null)
     }
@@ -307,15 +316,10 @@ export default function ObserverConfigModal({
       <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0" size="lg">
         <div className="shrink-0 px-6 pt-6">
           <Dialog.Title className="mb-2 text-lg font-semibold">
-            {isRetry ? 'Verify your access again' : 'Verify your access'}
+            {isRetry ? t('observerModal.verifyAccessAgain') : t('observerModal.verifyAccess')}
           </Dialog.Title>
           <Text variant="secondary" size="sm" as="p">
-            {isRetry
-              ? 'We couldn’t confirm your access to everything this workspace has read. Depending on ' +
-                'the reason below, re-authenticate an expired account, choose a different one, or ask ' +
-                'the workspace owner to share what your account can’t access.'
-              : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
-                'data it uses.'}
+            {isRetry ? t('observerModal.retryDescription') : t('observerModal.description')}
           </Text>
         </div>
 
@@ -330,7 +334,9 @@ export default function ObserverConfigModal({
                 const matching = [...accounts.values()].filter(a => a.vendorId === need.vendorId)
                 const vendorInfo = vendorsById.get(need.vendorId)
                 const vendor = matching[0]?.vendor ?? vendorInfo?.description
-                const vendorName = vendor?.displayName || need.vendorId || 'service'
+                const vendorName = vendor
+                  ? localizeVendorDisplay(t, { id: need.vendorId, displayName: vendor.displayName }).displayName
+                  : need.vendorId || t('observerModal.service')
                 const chosen = accountFor(need.gatekeeperId)
                 const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
                 const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
@@ -360,7 +366,7 @@ export default function ObserverConfigModal({
                           onClick={() => handleConnect(need)}
                           disabled={connecting === need.vendorId}
                         >
-                          {connecting === need.vendorId ? 'Connecting…' : 'Connect'}
+                          {connecting === need.vendorId ? t('observerModal.connecting') : t('observerModal.connect')}
                         </WorkshopButton>
                       )}
                     </div>
@@ -372,7 +378,7 @@ export default function ObserverConfigModal({
                         <Warning size={14} className="mt-0.5 shrink-0" />
                         <div className="min-w-0">
                           <span className="font-medium">
-                            {accountLabel(accounts.get(need.failure.accountId), need.failure.accountId)}
+                            {accountLabel(t, accounts.get(need.failure.accountId), need.failure.accountId)}
                           </span>
                           {' — '}
                           {need.failure.reason}
@@ -385,16 +391,16 @@ export default function ObserverConfigModal({
                         {matching.length === 1 ? (
                           <div className="flex min-h-10 items-center gap-3 rounded-lg border border-kumo-line bg-kumo-elevated/50 px-3 py-2">
                             <div className="min-w-0 flex-1">
-                              <div className="text-[11px] leading-4 text-kumo-subtle">Using your account</div>
+                              <div className="text-[11px] leading-4 text-kumo-subtle">{t('observerModal.usingYourAccount')}</div>
                               <div className="truncate text-sm font-medium text-kumo-default">
-                                {accountLabel(matching[0], matching[0].id)}
+                                {accountLabel(t, matching[0], matching[0].id)}
                               </div>
                             </div>
                             {/* Never for the account verification just refused, whatever it has been granted. */}
                             {accountSatisfies(need, matching[0]) &&
                               matching[0].id !== need.failure?.accountId && (
                               <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-kumo-success">
-                                <CheckCircle size={15} weight="fill" /> Ready
+                                <CheckCircle size={15} weight="fill" /> {t('observerModal.ready')}
                               </span>
                             )}
                           </div>
@@ -406,16 +412,16 @@ export default function ObserverConfigModal({
                                 ? String(choices[need.gatekeeperId])
                                 : undefined
                             }
-                            placeholder={`Choose a ${vendorName} account…`}
+                            placeholder={t('observerModal.chooseAccount', { vendor: vendorName })}
                             onValueChange={v =>
                               setChoices(prev => ({ ...prev, [need.gatekeeperId]: Number(v) }))
                             }
-                            renderValue={v => accountLabel(accounts.get(Number(v)), Number(v))}
+                            renderValue={v => accountLabel(t, accounts.get(Number(v)), Number(v))}
                           >
                             {matching.map(acct => (
                               <Select.Option key={acct.id} value={String(acct.id)}>
-                                {accountLabel(acct, acct.id)}
-                                {!acct.credentialsValid ? ' (expired)' : ''}
+                                {accountLabel(t, acct, acct.id)}
+                                {!acct.credentialsValid ? t('observerModal.expiredSuffix') : ''}
                               </Select.Option>
                             ))}
                           </Select>
@@ -436,8 +442,8 @@ export default function ObserverConfigModal({
                               <Warning size={12} />
                             )}
                             {granting === chosen.id
-                              ? 'Requesting access…'
-                              : 'Grant the access needed to verify this resource'}
+                              ? t('observerModal.requestingAccess')
+                              : t('observerModal.grantAccessNeeded')}
                           </button>
                         )}
 
@@ -466,10 +472,10 @@ export default function ObserverConfigModal({
                               <Warning size={12} />
                             )}
                             {reconnecting === chosen.id
-                              ? 'Re-authenticating…'
+                              ? t('observerModal.reauthenticating')
                               : chosen.credentialsValid
-                                ? 'Re-authenticate this account'
-                                : 'This account has expired — click to re-authenticate'}
+                                ? t('observerModal.reauthenticateAccount')
+                                : t('observerModal.expiredReauthenticate')}
                           </button>
                         )}
 
@@ -481,7 +487,7 @@ export default function ObserverConfigModal({
                             className="flex items-center gap-1 text-xs text-kumo-subtle hover:text-kumo-default disabled:opacity-60 self-start"
                           >
                             <Plus size={11} />
-                            {connecting === need.vendorId ? 'Connecting…' : 'Connect a different account'}
+                            {connecting === need.vendorId ? t('observerModal.connecting') : t('observerModal.connectDifferentAccount')}
                           </button>
                         )}
                       </div>
@@ -495,14 +501,14 @@ export default function ObserverConfigModal({
 
         <div className="flex shrink-0 justify-end gap-2 border-t border-kumo-line px-6 py-4">
           <WorkshopButton tone="secondary" onClick={onCancel}>
-            Cancel
+            {t('observerModal.cancel')}
           </WorkshopButton>
           <WorkshopButton
             tone="primary"
             onClick={handleConfirm}
             disabled={!ready || !vendorsReady || !allSatisfied}
           >
-            {isRetry ? 'Verify again' : 'Verify and open'}
+            {isRetry ? t('observerModal.verifyAgain') : t('observerModal.verifyAndOpen')}
           </WorkshopButton>
         </div>
       </Dialog>

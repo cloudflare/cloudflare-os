@@ -2,7 +2,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from '../../../i18n/testRoot'
+import { type Root } from 'react-dom/client';
 import type { RpcStub } from "capnweb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Overseer, SlashCommandChoice } from "@gadgets/workshop-shared/api";

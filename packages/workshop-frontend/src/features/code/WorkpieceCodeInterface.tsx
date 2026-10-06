@@ -25,6 +25,7 @@ import {
 import { reportIssue } from '../../errorReporting'
 import { saveTextToFile } from '../../fileTransfers'
 import { isTransientRpcError } from '../../rpcErrors'
+import { useT } from '../../i18n'
 
 // The code view over a workpiece's git-backed files -- a gadget's code or a worktree's checkout.
 // The two differ here in exactly two places: which summary field names the *accepted commit*
@@ -218,6 +219,7 @@ export default function WorkpieceCodeInterface({
   liveRows, liveEditPreviews, pendingGadgetIds, streamingActiveFile, isAgentActive,
   isVisible = true, onHasCodeChange, onChatContentChange,
 }: WorkpieceCodeInterfaceProps) {
+  const t = useT()
   const toasts = useKumoToastManager()
   const toastsRef = useRef(toasts)
   toastsRef.current = toasts
@@ -1235,7 +1237,7 @@ export default function WorkpieceCodeInterface({
   const handleFileDelete = (filename: string) => {
     if (isEditingLocked) return
     if (!fileExists(filename)) {
-      toasts.add({ title: 'File not found', variant: 'error' })
+      toasts.add({ title: t('code.fileNotFound'), variant: 'error' })
       return
     }
     if (applyLocalFileChanges([[filename, { remove: true }]])) {
@@ -1274,7 +1276,7 @@ export default function WorkpieceCodeInterface({
     const text = chatFilesNow?.get(oldName) ??
       (target.client.getRemovedPaths(target.gadgetId).has(oldName) ? null : baseText)
     if (text === null) {
-      toasts.add({ title: 'File not found', variant: 'error' })
+      toasts.add({ title: t('code.fileNotFound'), variant: 'error' })
       return
     }
     if (chatFilesNow?.has(newName) || fileExists(newName)) {
@@ -1410,7 +1412,7 @@ export default function WorkpieceCodeInterface({
       {hasUnsavedChanges && (
         <div className="bg-kumo-tint border-b border-kumo-line px-4 py-2 flex items-center gap-2 text-sm text-kumo-warning">
           <span className="text-base">&#9888;&#65039;</span>
-          <span>Connection issue - changes will be saved when connection is restored</span>
+          <span>{t('code.connectionIssue')}</span>
         </div>
       )}
       <div className="relative flex min-h-0 flex-1">
@@ -1502,7 +1504,7 @@ export default function WorkpieceCodeInterface({
             {activeFile && (
               <WorkshopIconButton
                 aria-label={`Download ${activeFile}`}
-                title="Download file"
+                title={t('code.downloadFile')}
                 onClick={() => handleFileDownload(activeFile)}
                 disabled={!activeFileDownloadable}
                 className="!h-9 !w-9 md:!h-6 md:!w-6"

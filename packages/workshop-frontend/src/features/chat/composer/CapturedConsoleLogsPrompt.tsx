@@ -1,5 +1,6 @@
 import { Tooltip } from "@cloudflare/kumo";
 import { X } from "@phosphor-icons/react";
+import { useT } from '../../../i18n'
 
 type CapturedConsoleLogsPromptProps = {
   count: number;
@@ -16,6 +17,7 @@ export const CapturedConsoleLogsPrompt = ({
   onAttach,
   onDiscard,
 }: CapturedConsoleLogsPromptProps) => {
+  const t = useT()
   if (count <= 0) return null;
 
   // Keep the chip neutral and communicate severity with the dot so noisy errors do not paint the
@@ -55,7 +57,7 @@ export const CapturedConsoleLogsPrompt = ({
           type="button"
           onClick={onDiscard}
           className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full opacity-60 transition-opacity hover:bg-kumo-tint hover:opacity-100"
-          aria-label="Discard captured logs"
+          aria-label={t('chat.discardLogs')}
         >
           <X size={10} />
         </button>

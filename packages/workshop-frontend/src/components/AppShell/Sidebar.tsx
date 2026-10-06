@@ -21,6 +21,7 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
+import { useT, localizeGatekeeperAppTitle } from '../../i18n'
 
 /**
  * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
@@ -41,6 +42,7 @@ export default function Sidebar({
   collapsed: boolean
   onToggleCollapsed: () => void
 }) {
+  const t = useT()
   const siteName = useSiteName()
   // Gatekeeper-served management apps the user can reach now (one per gatekeeper that provides a UI
   // and is connected / enabled for everyone). Disabled or not-yet-connected ones aren't returned, so
@@ -49,7 +51,7 @@ export default function Sidebar({
 
   return (
     <aside
-      aria-label="Primary"
+      aria-label={t("nav.primary")}
       className={[
         // Sidebar is the app chrome: a hair greyer than the (lighter) content canvas so the two
         // surfaces read as distinct without a heavy divider.
@@ -80,8 +82,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={() => openCommandPalette()}
-              aria-label="Search"
-              title="Search (⌘K)"
+              aria-label={t("common.search")}
+              title={t("common.searchShortcut")}
               className="press flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <MagnifyingGlass size={15} />
@@ -89,8 +91,8 @@ export default function Sidebar({
             <button
               type="button"
               onClick={onToggleCollapsed}
-              aria-label="Collapse sidebar"
-              title="Collapse sidebar"
+              aria-label={t("nav.collapseSidebar")}
+              title={t("nav.collapseSidebar")}
               className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
             >
               <SidebarSimple size={15} />
@@ -104,8 +106,8 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          aria-label="Expand sidebar"
-          title="Expand sidebar"
+          aria-label={t("nav.expandSidebar")}
+          title={t("nav.expandSidebar")}
           className="mx-auto mt-2 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
         >
           <SidebarSimple size={15} className="rotate-180" />
@@ -119,25 +121,25 @@ export default function Sidebar({
           <nav className="flex flex-col gap-0.5 px-2">
             <SidebarItem
               to="/"
-              label="Home"
+              label={t("nav.home")}
               icon={<House size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/workspaces"
-              label="Workspaces"
+              label={t("nav.workspaces")}
               icon={<SquaresFour size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/blueprints"
-              label="Blueprints"
+              label={t("nav.blueprints")}
               icon={<Blueprint size={14} weight="regular" />}
               collapsed={collapsed}
             />
             <SidebarItem
               to="/outputs"
-              label="Outputs"
+              label={t("nav.outputs")}
               icon={<Stack size={14} weight="regular" />}
               collapsed={collapsed}
             />
@@ -152,7 +154,7 @@ export default function Sidebar({
                 key={app.id}
                 to="/gatekeepers/$appId"
                 params={{ appId: app.id }}
-                label={app.title}
+                label={localizeGatekeeperAppTitle(t, app)}
                 icon={
                   maskUrl ? (
                     // Render the (monochrome) app icon as a CSS mask filled with the row's current
@@ -182,7 +184,7 @@ export default function Sidebar({
             })}
             <SidebarItem
               to="/explore"
-              label="Explore"
+              label={t("nav.explore")}
               icon={<Compass size={14} weight="regular" />}
               collapsed={collapsed}
             />

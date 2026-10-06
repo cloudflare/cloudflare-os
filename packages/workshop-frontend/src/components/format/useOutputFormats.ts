@@ -7,6 +7,7 @@ import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import type { Overseer, OutputFormatOffer } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
+import { getLocale, translate, localizeFormatOutput } from '../../i18n'
 
 type AuthenticatedApiStub = ReturnType<typeof useAuthenticatedApi>['authenticatedApi']
 type Navigate = ReturnType<typeof useNavigate>
@@ -70,7 +71,10 @@ export async function createFromFormat(
     navigate({ to: '/workspace/$id', params: { id } })
   } catch (err) {
     console.error('Failed to create from format:', err)
-    toasts.add({ title: `Couldn't create a new ${format.output.noun}`, variant: 'error' })
+    const locale = getLocale()
+    const tFn = (key: string, vars?: Record<string, string | number>) => translate(locale, key, vars)
+    const { noun } = localizeFormatOutput(tFn, format.output)
+    toasts.add({ title: tFn('formats.createFailed', { noun }), variant: 'error' })
     throw err
   } finally {
     overseer?.[Symbol.dispose]()

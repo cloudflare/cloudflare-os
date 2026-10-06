@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
+import { useT, localizeBlueprintDisplay } from '../i18n'
 
 // A unified row item, merged from the user's published blueprints (`listOwnBlueprints`) and their
 // library (`listLibraryBlueprints`). Mirrors the sidebar's SidebarBlueprintItem but adds the bits
@@ -60,6 +61,11 @@ function BlueprintRow({
   onTogglePin: (b: BlueprintItem) => void
   onRemoveFromLibrary: (b: BlueprintItem) => void
 }) {
+  const t = useT()
+  const display = localizeBlueprintDisplay(t, {
+    id: item.id,
+    metadata: { title: item.title, description: item.description },
+  })
   return (
     <Link
       to="/blueprint/$id"
@@ -75,11 +81,11 @@ function BlueprintRow({
         <div className="flex items-center gap-2">
           {item.pinned && <Star size={12} weight="fill" className="flex-shrink-0 text-kumo-brand" />}
           <h3 className="truncate text-sm font-medium text-kumo-default">
-            {item.title || 'Untitled blueprint'}
+            {display.title || t('blueprintList.untitled')}
           </h3>
         </div>
-        {item.description && (
-          <p className="mt-0.5 truncate text-xs text-kumo-subtle">{item.description}</p>
+        {display.description && display.description !== t('workspaces.noDescription') && (
+          <p className="mt-0.5 truncate text-xs text-kumo-subtle">{display.description}</p>
         )}
       </div>
 
@@ -121,6 +127,7 @@ function BlueprintRow({
 }
 
 export default function BlueprintList() {
+  const t = useT()
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
 
@@ -146,7 +153,7 @@ export default function BlueprintList() {
         const ensure = (id: string): BlueprintItem => {
           let it = map.get(id)
           if (!it) {
-            it = { id, title: 'Untitled blueprint', description: '', recency: 0, pinned: false, inLibrary: false, isOwn: false }
+            it = { id, title: t('blueprintList.untitled'), description: '', recency: 0, pinned: false, inLibrary: false, isOwn: false }
             map.set(id, it)
           }
           return it
@@ -193,11 +200,11 @@ export default function BlueprintList() {
     setUploading(true)
     try {
       await authenticatedApi.importBlueprint(file.stream() as ReadableStream<Uint8Array>)
-      toasts.add({ title: 'Blueprint uploaded', variant: 'success' })
+      toasts.add({ title: t('blueprintList.uploaded'), variant: 'success' })
       load()
     } catch (err) {
       console.error('Failed to upload blueprint:', err)
-      toasts.add({ title: 'Failed to upload blueprint', variant: 'error' })
+      toasts.add({ title: t('blueprintList.uploadFailed'), variant: 'error' })
     } finally {
       setUploading(false)
     }
@@ -216,7 +223,7 @@ export default function BlueprintList() {
     } catch (err) {
       console.error('Failed to update blueprint pin:', err)
       setItems((prev) => sortItems(prev.map((b) => (b.id === item.id ? { ...b, pinned: item.pinned } : b))))
-      toasts.add({ title: 'Failed to update favorite', variant: 'error' })
+      toasts.add({ title: t('blueprintList.favoriteFailed'), variant: 'error' })
     } finally {
       pinsInFlight.current.delete(item.id)
     }
@@ -232,17 +239,26 @@ export default function BlueprintList() {
           .map((b) => (b.id === item.id ? { ...b, inLibrary: false } : b))
           .filter((b) => b.inLibrary || b.isOwn),
       )
-      toasts.add({ title: 'Removed from library', variant: 'success' })
+      toasts.add({ title: t('blueprintList.removed'), variant: 'success' })
     } catch (err) {
       console.error('Failed to remove blueprint from library:', err)
-      toasts.add({ title: 'Failed to remove blueprint', variant: 'error' })
+      toasts.add({ title: t('blueprintList.removeFailed'), variant: 'error' })
     }
   }
 
   const filtered = items.filter((b) => {
     if (!search) return true
     const q = search.toLowerCase()
-    return b.title.toLowerCase().includes(q) || b.description.toLowerCase().includes(q)
+    const display = localizeBlueprintDisplay(t, {
+      id: b.id,
+      metadata: { title: b.title, description: b.description },
+    })
+    return (
+      b.title.toLowerCase().includes(q) ||
+      b.description.toLowerCase().includes(q) ||
+      display.title.toLowerCase().includes(q) ||
+      display.description.toLowerCase().includes(q)
+    )
   })
 
   return (
@@ -266,7 +282,7 @@ export default function BlueprintList() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search blueprints…"
+              placeholder={t('blueprintList.searchPlaceholder')}
               className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />
           </div>
@@ -275,17 +291,17 @@ export default function BlueprintList() {
           <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:shrink-0">
             <Link to="/explore" className={ACTION_BUTTON}>
               <Compass size={14} />
-              Explore
+              {t('blueprintList.explore')}
             </Link>
             <button
               type="button"
               onClick={() => uploadInputRef.current?.click()}
               disabled={uploading}
-              title="Upload a .gadget archive"
+              title={t('blueprintList.upload')}
               className={ACTION_BUTTON}
             >
               <UploadSimple size={14} weight="bold" />
-              {uploading ? 'Uploading…' : 'Upload'}
+              {uploading ? t('blueprintList.uploading') : t('blueprintList.uploadShort')}
             </button>
           </div>
         </div>
@@ -302,27 +318,27 @@ export default function BlueprintList() {
           </div>
         ) : loadError ? (
           <div className="py-12 text-center text-sm">
-            <p className="text-kumo-danger">Something went wrong loading your blueprints.</p>
-            <button type="button" onClick={load} className="mt-1 text-kumo-brand underline">Try again</button>
+            <p className="text-kumo-danger">{t('blueprintList.loadError')}</p>
+            <button type="button" onClick={load} className="mt-1 text-kumo-brand underline">{t('common.tryAgain')}</button>
           </div>
         ) : filtered.length === 0 ? (
           search ? (
-            <div className="py-12 text-center text-sm text-kumo-inactive">No blueprints found</div>
+            <div className="py-12 text-center text-sm text-kumo-inactive">{t('blueprintList.noneFound')}</div>
           ) : (
             <div className="flex flex-col items-center gap-3 px-3 py-16 text-center">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-kumo-fill text-kumo-subtle">
                 <BlueprintIcon size={18} />
               </div>
               <div>
-                <p className="text-sm font-medium text-kumo-default">No blueprints yet</p>
+                <p className="text-sm font-medium text-kumo-default">{t('blueprintList.noneYet')}</p>
                 <p className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
-                  Publish a workspace as a blueprint, or add one from Explore.
+                  {t('blueprintList.emptyHint')}
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <Link to="/explore" className={ACTION_BUTTON}>
                   <Compass size={14} />
-                  Explore blueprints
+                  {t('blueprintList.exploreBlueprints')}
                 </Link>
                 <button
                   type="button"
@@ -331,7 +347,7 @@ export default function BlueprintList() {
                   className={ACTION_BUTTON}
                 >
                   <UploadSimple size={14} weight="bold" />
-                  {uploading ? 'Uploading…' : 'Upload .gadget'}
+                  {uploading ? t('blueprintList.uploading') : t('blueprintList.uploadGadget')}
                 </button>
               </div>
             </div>

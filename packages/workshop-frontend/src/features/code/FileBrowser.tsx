@@ -7,6 +7,7 @@ import {
 import DeleteConfirmationDialog from '../../components/DeleteConfirmationDialog'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from '../../components/WorkshopControls'
 import { isImeComposing } from '../../keyboardEvent'
+import { useT } from '../../i18n'
 import {
   ancestorDirs, resolveRenamePath, type BrowserNode, type BrowserTree, type ChangedFile,
   type FileChangeStatus, type LeafKind,
@@ -114,6 +115,7 @@ export default function FileBrowser({
     openCreateModal: () => setIsCreateModalOpen(true),
   }), [])
 
+  const t = useT()
   const toasts = useKumoToastManager()
 
   // Per-directory expansion: explicit toggles over a size-dependent default (small trees open,
@@ -266,8 +268,8 @@ export default function FileBrowser({
           <WorkshopIconButton
             onClick={() => setIsCreateModalOpen(true)}
             disabled={editLocked}
-            aria-label="New file"
-            title={lockedHint ?? 'New file'}
+            aria-label={t('files.newFile')}
+            title={lockedHint ?? t('files.newFile')}
             className="!h-8 !w-8 text-kumo-subtle hover:bg-kumo-tint hover:text-kumo-default md:!h-6 md:!w-6"
           >
             <Plus size={14} weight="bold" />
@@ -275,7 +277,7 @@ export default function FileBrowser({
           {onRequestClose && (
             <WorkshopIconButton
               onClick={onRequestClose}
-              aria-label="Close files"
+              aria-label={t('files.close')}
               className="!h-8 !w-8 md:!hidden"
             >
               <X size={16} />
@@ -352,8 +354,8 @@ export default function FileBrowser({
           <div className="px-5 py-4">
             <WorkshopInput
               autoFocus
-              placeholder="src/filename.ts"
-              aria-label="Filename"
+              placeholder={t('files.filenamePlaceholder')}
+              aria-label={t('files.filename')}
               value={newFileName}
               onChange={(e) => setNewFileName(e.target.value)}
               onKeyDown={(e) => {
@@ -397,8 +399,8 @@ export default function FileBrowser({
         onOpenChange={(o) => {
           if (!o) setDeletingFile(null)
         }}
-        title="Delete file?"
-        description={<>This removes <span className="font-mono text-kumo-default">{deletingFile}</span> from the {workpieceNoun}. You can&apos;t undo this.</>}
+        title={t('files.deleteTitle')}
+        description={<>{t('common.thisRemoves')} <span className="font-mono text-kumo-default">{deletingFile}</span> {t('files.deleteRemovesSuffix')} {t('common.cantUndo')}</>}
         onConfirm={confirmDelete}
       />
     </div>
@@ -457,6 +459,7 @@ function FileRow({
   onRenameSubmit,
   onRenameCancel,
 }: FileRowProps) {
+  const t = useT()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [renameValue, setRenameValue] = useState(label)
   const openable = isOpenableKind(kind)
@@ -528,7 +531,7 @@ function FileRow({
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          aria-label={`Rename ${path}`}
+          aria-label={t('files.renameAria', { name: path })}
           className="min-w-0 flex-1 bg-transparent text-[16px] leading-5 text-kumo-default outline-none placeholder:text-kumo-inactive md:text-[13px] md:leading-[18px]"
         />
       ) : openable ? (
@@ -550,8 +553,8 @@ function FileRow({
           {isStreamingActive && (
             <span
               className="h-1.5 w-1.5 shrink-0 rounded-full bg-kumo-success"
-              aria-label={`${path} is being edited`}
-              title="Agent is editing this file"
+              aria-label={t('files.beingEditedAria', { name: path })}
+              title={t('files.agentEditing')}
             />
           )}
         </button>
@@ -577,7 +580,7 @@ function FileRow({
           <DropdownMenu.Trigger
             render={(
               <WorkshopIconButton
-                aria-label={`Actions for ${path}`}
+                aria-label={t('files.actionsForAria', { name: path })}
                 onClick={(event) => event.stopPropagation()}
                 className="!h-8 !w-8 text-kumo-inactive opacity-100 hover:bg-kumo-tint hover:text-kumo-default focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100 md:!h-5 md:!w-5 md:opacity-0"
               >

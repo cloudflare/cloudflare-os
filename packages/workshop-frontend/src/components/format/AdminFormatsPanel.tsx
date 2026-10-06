@@ -23,6 +23,7 @@ import { MENU_CONTENT } from '../menuStyles'
 import { FORMAT_ICONS, GENERIC_OUTPUT } from './formats'
 import { FormatGlyph, FormatPreview } from './FormatVisuals'
 import { isImeComposing } from '../../keyboardEvent'
+import { useT, localizeFormatOutput } from '../../i18n'
 
 // A blueprint the admin could promote. `declared` is what it says it produces, when we know --
 // known for the deployment's featured blueprints, unknown for the admin's own published ones.
@@ -41,6 +42,7 @@ export default function AdminFormatsPanel({
    */
   onChanged: () => Promise<void>
 }) {
+  const t = useT()
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
   const [busy, setBusy] = useState(false)
@@ -81,7 +83,7 @@ export default function AdminFormatsPanel({
       await onChanged()
     } catch (err) {
       console.error('Format update failed:', err)
-      toasts.add({ title: "Couldn't update standard formats", variant: 'error' })
+      toasts.add({ title: t('formats.updateFailed'), variant: 'error' })
     } finally {
       setBusy(false)
     }
@@ -97,7 +99,7 @@ export default function AdminFormatsPanel({
 
   return (
     <div className="rounded-xl border border-kumo-line bg-kumo-elevated p-6">
-      <h2 className="mb-1 text-lg font-semibold text-kumo-strong">Standard formats</h2>
+      <h2 className="mb-1 text-lg font-semibold text-kumo-strong">{t('formats.title')}</h2>
       <p className="mb-5 text-sm text-kumo-subtle">
         A promoted blueprint is offered by name (“New Doc”, “New Slides”) wherever people start
         something, and the agent is told to prefer it over building the same thing from scratch.
@@ -139,7 +141,7 @@ export default function AdminFormatsPanel({
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
           <p className="px-2 pb-1.5 pt-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
-            Offer as a standard format
+            {t('formats.offerAs')}
           </p>
           {available.map((candidate) => (
             <DropdownMenu.Item
@@ -150,12 +152,12 @@ export default function AdminFormatsPanel({
               <FormatGlyph output={candidate.declared} size="lg" className="shrink-0 text-kumo-subtle" />
               <span className="min-w-0">
                 <span className="block truncate text-[13px] text-kumo-default">
-                  {candidate.title || 'Untitled blueprint'}
+                  {candidate.title || t('blueprintList.untitled')}
                 </span>
                 <span className="block truncate text-[11px] text-kumo-inactive">
                   {candidate.declared
-                    ? `Produces ${candidate.declared.plural}`
-                    : 'No declared format. You’ll name it.'}
+                    ? t('formats.produces', { plural: candidate.declared.plural })
+                    : t('formats.noDeclaredFormat')}
                 </span>
               </span>
             </DropdownMenu.Item>
@@ -168,6 +170,7 @@ export default function AdminFormatsPanel({
 
 // What users will actually get, drawn with the same components the real surfaces use.
 function PreviewStrip({ formats }: { formats: AdminFormat[] }) {
+  const t = useT()
   return (
     <div className="mb-5 rounded-lg border border-dashed border-kumo-line bg-kumo-tint/40 p-4">
       <p className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
@@ -185,7 +188,7 @@ function PreviewStrip({ formats }: { formats: AdminFormat[] }) {
               className="flex items-center gap-2 rounded-full border border-kumo-line bg-kumo-base px-3.5 py-2 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default"
             >
               <FormatGlyph output={format.output} size="md" className="text-kumo-subtle" />
-              New {format.output!.noun}
+              {t('commandPalette.newFormat', { noun: localizeFormatOutput(t, format.output!).noun })}
             </span>
           ))}
         </div>
@@ -198,9 +201,10 @@ function PreviewStrip({ formats }: { formats: AdminFormat[] }) {
 }
 
 function EmptyState() {
+  const t = useT()
   return (
     <div className="mb-5 rounded-lg border border-kumo-line bg-kumo-base px-4 py-5 text-center">
-      <p className="text-sm font-medium text-kumo-default">No standard formats yet</p>
+      <p className="text-sm font-medium text-kumo-default">{t('formats.empty')}</p>
       <p className="mx-auto mt-1 max-w-md text-[13px] leading-[18px] text-kumo-subtle">
         Promote a blueprint to offer it by name wherever people start something, and to have the
         agent prefer it over building the same thing from scratch.
@@ -230,6 +234,7 @@ function FormatRow({
   onPatch: (patch: Parameters<AdminApi['updateFormat']>[1]) => void
   onRemove: () => void
 }) {
+  const t = useT()
   const needsNaming = !format.missing && !format.output
 
   return (
@@ -244,7 +249,7 @@ function FormatRow({
           {format.missing ? (
             <span
               className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-kumo-tint text-kumo-danger"
-              title="This blueprint no longer exists"
+              title={t('formats.missingBlueprint')}
             >
               <Warning size={16} />
             </span>
@@ -257,18 +262,20 @@ function FormatRow({
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-2">
               <span className="truncate text-sm font-medium text-kumo-default">
-                {format.output ? `New ${format.output.noun}` : format.blueprintTitle || format.blueprintId}
+                {format.output
+                  ? t('commandPalette.newFormat', { noun: localizeFormatOutput(t, format.output).noun })
+                  : format.blueprintTitle || format.blueprintId}
               </span>
-              {format.bundled && <Badge>Bundled</Badge>}
-              {!format.enabled && !format.missing && <Badge>Off</Badge>}
-              {needsNaming && <Badge tone="warn">Needs a name</Badge>}
+              {format.bundled && <Badge>{t('formats.bundled')}</Badge>}
+              {!format.enabled && !format.missing && <Badge>{t('formats.off')}</Badge>}
+              {needsNaming && <Badge tone="warn">{t('formats.needsName')}</Badge>}
             </span>
             <span className="mt-0.5 block truncate text-xs text-kumo-subtle">
               {format.missing
-                ? 'Blueprint deleted. Remove this entry.'
+                ? t('formats.deletedRemove')
                 : needsNaming
-                ? 'This blueprint doesn’t declare what it produces. Give it a name to offer it.'
-                : `${format.blueprintTitle} · shown under ${format.output!.plural} on Outputs`}
+                ? t('formats.needsDeclare')
+                : t('formats.shownUnder', { title: format.blueprintTitle, plural: format.output!.plural })}
             </span>
           </span>
 
@@ -284,10 +291,10 @@ function FormatRow({
             open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
           }`}
         >
-          <IconButton label="Move up" disabled={busy || isFirst} onClick={() => onMove(-1)}>
+          <IconButton label={t('formats.moveUp')} disabled={busy || isFirst} onClick={() => onMove(-1)}>
             <ArrowUp size={13} />
           </IconButton>
-          <IconButton label="Move down" disabled={busy || isLast} onClick={() => onMove(1)}>
+          <IconButton label={t('formats.moveDown')} disabled={busy || isLast} onClick={() => onMove(1)}>
             <ArrowDown size={13} />
           </IconButton>
         </div>
@@ -303,22 +310,13 @@ function FormatRow({
         <div className="flex flex-col gap-4 border-t border-kumo-line px-3 py-4">
           {format.missing ? (
             <p className="text-[13px] text-kumo-subtle">
-              The blueprint behind this format was deleted, so nobody is offered it. Remove the
-              entry.
+              {t('formats.missingBody')}
             </p>
           ) : (
             <>
               <Fieldset
-                title="How it’s presented"
-                detail={
-                  'Leave a field empty to use the name the blueprint declares. ' +
-                  (format.bundled
-                    ? 'A bundled blueprint can change its declared names when this deployment ' +
-                      'updates; a value you type here stays as you set it. '
-                    : '') +
-                  'Applies to outputs made from now on — existing ones keep the name they were ' +
-                  'made with.'
-                }
+                title={t('formats.howPresented')}
+                detail={t('formats.howPresentedDetail')}
               >
                 <div className="flex items-center gap-4">
                   <div className="grid flex-1 gap-2 sm:grid-cols-[auto_1fr_1fr]">
@@ -334,14 +332,14 @@ function FormatRow({
                       onPick={(icon) => onPatch({ overrides: { icon } })}
                     />
                     <OverrideField
-                      label="Name"
+                      label={t('formats.name')}
                       value={format.output?.noun ?? format.overrides?.noun ?? ''}
                       declared={format.declared?.noun}
                       disabled={busy}
                       onCommit={(noun) => onPatch({ overrides: { noun } })}
                     />
                     <OverrideField
-                      label="Plural"
+                      label={t('formats.plural')}
                       value={format.output?.plural ?? format.overrides?.plural ?? ''}
                       declared={format.declared?.plural}
                       disabled={busy}
@@ -362,12 +360,12 @@ function FormatRow({
               </Fieldset>
 
               <Fieldset
-                title="How the agent picks it"
-                detail="Standard formats are listed first in the agent’s catalog, as the entry below — the blueprint’s own description does most of the work. Add a hint only if the agent needs to know when to prefer this format over another one."
+                title={t('formats.howAgentPicks')}
+                detail={t('formats.howAgentPicksDetail')}
               >
                 <OverrideField
-                  label="Hint"
-                  placeholder="e.g. prefer for customer-facing decks"
+                  label={t('formats.hint')}
+                  placeholder={t('formats.hintPlaceholder')}
                   value={format.agentHint}
                   disabled={busy}
                   onCommit={(agentHint) => onPatch({ agentHint: agentHint ?? '' })}
@@ -400,16 +398,16 @@ function FormatRow({
               <div className="flex items-end justify-between gap-4 border-t border-kumo-line pt-3">
                 <p className="text-[12px] leading-4 text-kumo-subtle">
                   {(format.enabled
-                    ? 'Turning this off removes it from the menus above and from the agent’s catalog. Outputs already made from it keep working. '
-                    : 'Currently hidden from the menus above and from the agent’s catalog. ') +
+                    ? t('formats.disableHelp')
+                    : t('formats.enableHelp')) +
                     (format.bundled
-                      ? 'It ships with the deployment, so it stays in this list either way.'
+                      ? t('formats.bundledStays')
                       : '')}
                 </p>
                 {!format.bundled && (
                   <Button variant="secondary" disabled={busy} onClick={onRemove}>
                     <Trash size={13} className="mr-1.5" />
-                    Stop offering
+                    {t('formats.stopOffering')}
                   </Button>
                 )}
               </div>
@@ -420,7 +418,7 @@ function FormatRow({
             <div className="flex justify-end">
               <Button variant="secondary" disabled={busy} onClick={onRemove}>
                 <Trash size={13} className="mr-1.5" />
-                Remove
+                {t('formats.remove')}
               </Button>
             </div>
           )}
@@ -526,6 +524,7 @@ function IconPicker({
   disabled?: boolean
   onPick: (icon: OutputIcon | null) => void
 }) {
+  const t = useT()
   return (
     <label className="flex flex-col gap-1">
       <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
@@ -537,7 +536,7 @@ function IconPicker({
             <button
               type="button"
               disabled={disabled}
-              aria-label="Choose icon"
+              aria-label={t('formats.chooseIcon')}
               className="grid h-9 w-9 cursor-pointer place-items-center rounded-lg border border-kumo-line bg-kumo-base text-kumo-subtle transition-colors hover:text-kumo-default disabled:cursor-default"
             >
               <FormatGlyph output={selected && { ...GENERIC_OUTPUT, icon: selected }} size="lg" />

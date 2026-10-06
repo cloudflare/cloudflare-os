@@ -8,17 +8,18 @@ import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
+import { useI18n, useT, localizeSupportedResource, type Locale } from './i18n'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
 import { AdminModelsPanel } from './features/ai-models/AdminModelsPanel'
 
 // Preset accent colors offered in the Theme section ('' = default brand).
-const ACCENT_PRESETS: { label: string; value: string }[] = [
-  { label: 'Default', value: '' },
-  { label: 'Blue', value: '#3b82f6' },
-  { label: 'Green', value: '#16a34a' },
-  { label: 'Purple', value: '#7c3aed' },
-  { label: 'Pink', value: '#db2777' },
-  { label: 'Teal', value: '#0d9488' },
+const ACCENT_PRESETS: { labelKey: string; value: string }[] = [
+  { labelKey: 'admin.accentDefault', value: '' },
+  { labelKey: 'admin.accentBlue', value: '#3b82f6' },
+  { labelKey: 'admin.accentGreen', value: '#16a34a' },
+  { labelKey: 'admin.accentPurple', value: '#7c3aed' },
+  { labelKey: 'admin.accentPink', value: '#db2777' },
+  { labelKey: 'admin.accentTeal', value: '#0d9488' },
 ]
 
 // Swatch background per banner color, matching AnnouncementBanner's accent styles.
@@ -31,10 +32,21 @@ const BANNER_SWATCH: Record<BannerColor, string> = {
   brand: 'var(--color-accent-100)',
 }
 
+const BANNER_COLOR_KEYS: Record<BannerColor, string> = {
+  neutral: 'admin.bannerNeutral',
+  info: 'admin.bannerInfo',
+  success: 'admin.bannerSuccess',
+  warning: 'admin.bannerWarning',
+  danger: 'admin.bannerDanger',
+  brand: 'admin.bannerBrand',
+}
+
 export default function AdminPage() {
+  const t = useT()
+  const { locale, setLocale } = useI18n()
   const { authenticatedApi, isAdmin } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
-  useDocumentTitle('Admin')
+  useDocumentTitle(t('admin.title'))
 
   // The admin capability (minted once via getAdminApi; null until loaded / for non-admins). Wrapped
   // in an object so useState doesn't treat the (callable) RPC stub as a state updater function.
@@ -187,7 +199,7 @@ export default function AdminPage() {
     try {
       await admin.api.setResourceEnabled(vendorId, urlPattern, enabled)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Update failed'
+      const message = err instanceof Error ? err.message : t('admin.updateFailed')
       toasts.add({ title: message, variant: 'error' })
       await reloadResources().catch(() => {})
     } finally {
@@ -209,7 +221,7 @@ export default function AdminPage() {
     try {
       await admin.api.setGatekeeperMode(vendorId, enabled ? 'enabled' : 'disabled')
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Update failed'
+      const message = err instanceof Error ? err.message : t('admin.updateFailed')
       toasts.add({ title: message, variant: 'error' })
       await reloadResources().catch(() => {})
     } finally {
@@ -231,7 +243,7 @@ export default function AdminPage() {
     try {
       await admin.api.setGatekeeperMode(vendorId, mode)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Update failed'
+      const message = err instanceof Error ? err.message : t('admin.updateFailed')
       toasts.add({ title: message, variant: 'error' })
       await reloadResources().catch(() => {})
     } finally {
@@ -249,9 +261,9 @@ export default function AdminPage() {
     try {
       await admin.api.setAnnouncement(announcementDraft)
       setSavedAnnouncement(announcementDraft)
-      toasts.add({ title: 'Announcement saved', variant: 'success' })
+      toasts.add({ title: t('admin.announcementSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save announcement'
+      const message = err instanceof Error ? err.message : t('admin.saveAnnouncementFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingAnnouncement(false)
@@ -267,9 +279,9 @@ export default function AdminPage() {
     try {
       await admin.api.setBanner(bannerTextDraft, bannerColorDraft)
       setSavedBanner({ text: bannerTextDraft, color: bannerColorDraft })
-      toasts.add({ title: 'Banner saved', variant: 'success' })
+      toasts.add({ title: t('admin.bannerSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save banner'
+      const message = err instanceof Error ? err.message : t('admin.saveBannerFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingBanner(false)
@@ -284,9 +296,9 @@ export default function AdminPage() {
     try {
       await admin.api.setAccentColor(accentDraft)
       setSavedAccent(accentDraft)
-      toasts.add({ title: 'Accent color saved', variant: 'success' })
+      toasts.add({ title: t('admin.accentSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save accent color'
+      const message = err instanceof Error ? err.message : t('admin.saveAccentFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingAccent(false)
@@ -301,7 +313,7 @@ export default function AdminPage() {
       await admin.api.setSignupsEnabled(enabled)
     } catch (err) {
       setSignupsEnabled(!enabled) // revert
-      const message = err instanceof Error ? err.message : 'Update failed'
+      const message = err instanceof Error ? err.message : t('admin.updateFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingSignups(false)
@@ -316,7 +328,7 @@ export default function AdminPage() {
       await admin.api.setUserSearchEnabled(enabled)
     } catch (err) {
       setUserSearchEnabled(!enabled) // revert
-      const message = err instanceof Error ? err.message : 'Update failed'
+      const message = err instanceof Error ? err.message : t('admin.updateFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingUserSearch(false)
@@ -329,9 +341,9 @@ export default function AdminPage() {
     try {
       await admin.api.setSiteName(siteNameDraft)
       setSavedSiteName(siteNameDraft)
-      toasts.add({ title: 'Site name saved', variant: 'success' })
+      toasts.add({ title: t('admin.siteNameSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save site name'
+      const message = err instanceof Error ? err.message : t('admin.saveSiteNameFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingSiteName(false)
@@ -348,9 +360,9 @@ export default function AdminPage() {
       const data = await prepareSiteLogo(file)
       const logo = await admin.api.setSiteLogo(data)
       setSiteLogoUrl(logo ? cacheBustSiteLogoUrl(logo.url) : null)
-      toasts.add({ title: 'Logo saved', variant: 'success' })
+      toasts.add({ title: t('admin.logoSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save logo'
+      const message = err instanceof Error ? err.message : t('admin.saveLogoFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingSiteLogo(false)
@@ -363,9 +375,9 @@ export default function AdminPage() {
     try {
       await admin.api.setSiteLogo(null)
       setSiteLogoUrl(null)
-      toasts.add({ title: 'Default logo restored', variant: 'success' })
+      toasts.add({ title: t('admin.logoRestored'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to remove logo'
+      const message = err instanceof Error ? err.message : t('admin.removeLogoFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingSiteLogo(false)
@@ -378,9 +390,9 @@ export default function AdminPage() {
     try {
       await admin.api.setInstanceInstructions(instructionsDraft)
       setSavedInstructions(instructionsDraft)
-      toasts.add({ title: 'System prompt instructions saved', variant: 'success' })
+      toasts.add({ title: t('admin.instructionsSaved'), variant: 'success' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to save instructions'
+      const message = err instanceof Error ? err.message : t('admin.saveInstructionsFailed')
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingInstructions(false)
@@ -391,7 +403,7 @@ export default function AdminPage() {
     return (
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-16 text-center">
         <ShieldWarning size={32} className="mx-auto text-kumo-subtle mb-3" />
-        <p className="text-sm text-kumo-default">You don't have access to this page.</p>
+        <p className="text-sm text-kumo-default">{t('admin.noAccess')}</p>
       </div>
     )
   }
@@ -399,7 +411,7 @@ export default function AdminPage() {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-[60vh]">
-        <p className="text-kumo-subtle">Loading admin settings...</p>
+        <p className="text-kumo-subtle">{t('admin.loading')}</p>
       </div>
     )
   }
@@ -407,9 +419,9 @@ export default function AdminPage() {
   if (loadError || !admin) {
     return (
       <div className="mx-auto w-full max-w-[1040px] px-4 sm:px-8 py-16 text-center">
-        <p className="text-sm text-kumo-danger">Something went wrong loading admin settings.</p>
+        <p className="text-sm text-kumo-danger">{t('admin.loadError')}</p>
         <button onClick={() => window.location.reload()} className="text-kumo-brand mt-2 text-sm underline">
-          Try again
+          {t('common.tryAgain')}
         </button>
       </div>
     )
@@ -418,9 +430,9 @@ export default function AdminPage() {
   return (
     <div className="mx-auto w-full max-w-[1040px] px-4 sm:px-8 py-8 space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-kumo-default">Admin</h1>
+        <h1 className="text-2xl font-semibold text-kumo-default">{t('admin.title')}</h1>
         <p className="text-sm text-kumo-subtle mt-1">
-          Deployment-wide settings. Changes apply to all users on their next connection.
+          {t('admin.subtitle')}
         </p>
       </div>
 
@@ -429,13 +441,46 @@ export default function AdminPage() {
         value={activeTab}
         onValueChange={setActiveTab}
         tabs={[
-          { value: 'general', label: 'General' },
-          { value: 'gatekeepers', label: 'Gatekeepers' },
-          { value: 'formats', label: 'Formats' },
-          { value: 'models', label: 'Models' },
-          { value: 'access', label: 'Access' },
+          { value: 'general', label: t('admin.tabGeneral') },
+          { value: 'gatekeepers', label: t('admin.tabGatekeepers') },
+          { value: 'formats', label: t('admin.tabFormats') },
+          { value: 'models', label: t('admin.tabModels') },
+          { value: 'access', label: t('admin.tabAccess') },
         ]}
       />
+
+
+      {/* Interface language (browser-local; not a deployment setting) */}
+      {activeTab === 'general' && (
+        <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.language')}</h2>
+          <p className="text-sm text-kumo-subtle mb-4">{t('admin.languageHint')}</p>
+          <div className="flex gap-2" role="group" aria-label={t('admin.language')}>
+            {([
+              { id: 'en' as Locale, label: t('settings.languageEn') },
+              { id: 'ko' as Locale, label: t('settings.languageKo') },
+            ]).map((opt) => {
+              const active = locale === opt.id
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setLocale(opt.id)}
+                  aria-pressed={active}
+                  className={[
+                    'press inline-flex h-9 cursor-pointer items-center justify-center rounded-lg border px-3.5 text-[13px] font-medium tracking-[-0.25px] transition-colors',
+                    active
+                      ? 'border-kumo-brand bg-kumo-brand text-white'
+                      : 'border-kumo-line bg-kumo-base text-kumo-default hover:bg-kumo-tint',
+                  ].join(' ')}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Standard output formats */}
       {activeTab === 'formats' && admin && (
@@ -468,13 +513,13 @@ export default function AdminPage() {
                 <UserPlus size={18} className="text-kumo-subtle" />
               </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-lg font-semibold text-kumo-strong">Allow new sign-ups</h2>
+                <h2 className="text-lg font-semibold text-kumo-strong">{t('admin.allowSignups')}</h2>
                 <p className="text-sm text-kumo-subtle mt-0.5">
-                  When off, existing users can still log in but no new accounts can be created.
+                  {t('admin.allowSignupsHint')}
                 </p>
               </div>
               <Switch
-                aria-label="Allow new sign-ups"
+                aria-label={t('admin.allowSignups')}
                 checked={signupsEnabled}
                 disabled={savingSignups}
                 onCheckedChange={handleSignupsToggle}
@@ -488,15 +533,13 @@ export default function AdminPage() {
                 <MagnifyingGlass size={18} className="text-kumo-subtle" />
               </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-lg font-semibold text-kumo-strong">Allow user search</h2>
+                <h2 className="text-lg font-semibold text-kumo-strong">{t('admin.allowUserSearch')}</h2>
                 <p className="text-sm text-kumo-subtle mt-0.5">
-                  Let users find other accounts by name or email when sharing a workspace. When off,
-                  people can only be invited by their exact username or email. Applies on each
-                  user&rsquo;s next connection.
+                  {t('admin.allowUserSearchHint')}
                 </p>
               </div>
               <Switch
-                aria-label="Allow user search"
+                aria-label={t('admin.allowUserSearch')}
                 checked={userSearchEnabled}
                 disabled={savingUserSearch}
                 onCheckedChange={handleUserSearchToggle}
@@ -509,10 +552,9 @@ export default function AdminPage() {
       {/* Site name */}
       {activeTab === 'general' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Site name</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.siteName')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            Shown next to the logo in the top bar. Leave empty to use the default
-            (&ldquo;{DEFAULT_SITE_NAME}&rdquo;). Applies on each user&rsquo;s next connection.
+            {t('admin.siteNameHint')} (&ldquo;{DEFAULT_SITE_NAME}&rdquo;)
           </p>
 
           <Input
@@ -530,7 +572,7 @@ export default function AdminPage() {
                 onClick={() => setSiteNameDraft(savedSiteName)}
                 disabled={savingSiteName}
               >
-                Reset
+                {t('common.reset')}
               </Button>
             )}
             <Button
@@ -540,7 +582,7 @@ export default function AdminPage() {
               loading={savingSiteName}
               disabled={siteNameDraft === savedSiteName}
             >
-              Save
+              {t('common.save')}
             </Button>
           </div>
         </div>
@@ -549,11 +591,9 @@ export default function AdminPage() {
       {/* Site logo */}
       {activeTab === 'general' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Logo</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.logo')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            Shown in the app chrome, sign-in screens, and browser tab. Images are scaled without
-            cropping and converted to a static PNG. Square images work best. Applies on each
-            user&rsquo;s next connection.
+            {t('admin.logoHint')}
           </p>
 
           <div className="flex flex-wrap items-center gap-4">
@@ -578,7 +618,7 @@ export default function AdminPage() {
                 loading={savingSiteLogo}
                 disabled={savingSiteLogo}
               >
-                {siteLogoUrl ? 'Change logo' : 'Upload logo'}
+                {siteLogoUrl ? t('admin.changeLogo') : t('admin.uploadLogo')}
               </Button>
               {siteLogoUrl && (
                 <Button
@@ -587,7 +627,7 @@ export default function AdminPage() {
                   onClick={handleRemoveSiteLogo}
                   disabled={savingSiteLogo}
                 >
-                  Restore default
+                  {t('admin.restoreDefault')}
                 </Button>
               )}
             </div>
@@ -598,11 +638,9 @@ export default function AdminPage() {
       {/* Theme / accent color */}
       {activeTab === 'general' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Theme</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.theme')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            Accent color used for buttons, links, and highlights. Changes preview live here; click
-            Save to apply for everyone (on their next connection). Backgrounds keep the default
-            warm theme.
+            {t('admin.themeHint')}
           </p>
 
           <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -611,7 +649,7 @@ export default function AdminPage() {
               const swatch = preset.value || DEFAULT_ACCENT_COLOR
               return (
                 <button
-                  key={preset.label}
+                  key={preset.labelKey}
                   type="button"
                   onClick={() => setAccentDraft(preset.value)}
                   className={`flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
@@ -624,7 +662,7 @@ export default function AdminPage() {
                     className="w-4 h-4 rounded-full border border-kumo-line"
                     style={{ background: swatch }}
                   />
-                  {preset.label}
+                  {t(preset.labelKey)}
                 </button>
               )
             })}
@@ -638,10 +676,10 @@ export default function AdminPage() {
                 onChange={(e) => setAccentDraft(e.target.value)}
                 className="w-9 h-9 rounded-md border border-kumo-line bg-transparent cursor-pointer p-0.5"
               />
-              Custom
+              {t('common.custom')}
             </label>
             <span className="text-xs font-mono text-kumo-subtle">
-              {accentDraft || `${DEFAULT_ACCENT_COLOR} (default)`}
+              {accentDraft || t('admin.accentDefaultValue', { color: DEFAULT_ACCENT_COLOR })}
             </span>
             <div className="flex-1" />
             {accentDirty && (
@@ -651,7 +689,7 @@ export default function AdminPage() {
                 onClick={() => setAccentDraft(savedAccent)}
                 disabled={savingAccent}
               >
-                Reset
+                {t('common.reset')}
               </Button>
             )}
             <Button
@@ -661,7 +699,7 @@ export default function AdminPage() {
               loading={savingAccent}
               disabled={!accentDirty}
             >
-              Save
+              {t('common.save')}
             </Button>
           </div>
         </div>
@@ -670,11 +708,9 @@ export default function AdminPage() {
       {/* Full-width banner */}
       {activeTab === 'general' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Banner</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.banner')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            A dismissible bar across the very top of the app (logged in or not). Markdown is
-            supported, so you can include links. Leave empty to hide it. Applies on each
-            user&rsquo;s next connection.
+            {t('admin.bannerHint')}
           </p>
 
           <Textarea
@@ -682,18 +718,18 @@ export default function AdminPage() {
             value={bannerTextDraft}
             onValueChange={setBannerTextDraft}
             rows={1}
-            placeholder={'e.g. \uD83C\uDF89 New: blueprints now support imports \u2014 [learn more](https://example.com).'}
+            placeholder={t('admin.bannerPlaceholder')}
             maxLength={MAX_ANNOUNCEMENT_LENGTH}
             error={
               bannerTextDraft.length > MAX_ANNOUNCEMENT_LENGTH
-                ? `Too long by ${bannerTextDraft.length - MAX_ANNOUNCEMENT_LENGTH} characters`
+                ? t('admin.tooLongBy', { count: bannerTextDraft.length - MAX_ANNOUNCEMENT_LENGTH })
                 : undefined
             }
           />
 
           <div className="mt-4 flex items-end justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-xs font-medium text-kumo-subtle mb-2">Type</p>
+              <p className="text-xs font-medium text-kumo-subtle mb-2">{t('admin.bannerType')}</p>
               <div className="flex flex-wrap items-center gap-2">
                 {BANNER_COLORS.map((c) => {
                   const selected = bannerColorDraft === c
@@ -712,7 +748,7 @@ export default function AdminPage() {
                         className="w-4 h-4 rounded-full border border-kumo-line"
                         style={{ background: BANNER_SWATCH[c] }}
                       />
-                      {c.charAt(0).toUpperCase() + c.slice(1)}
+                      {t(BANNER_COLOR_KEYS[c])}
                     </button>
                   )
                 })}
@@ -730,7 +766,7 @@ export default function AdminPage() {
                   }}
                   disabled={savingBanner}
                 >
-                  Reset
+                  {t('common.reset')}
                 </Button>
               )}
               <Button
@@ -740,7 +776,7 @@ export default function AdminPage() {
                 loading={savingBanner}
                 disabled={!bannerDirty || bannerTextDraft.length > MAX_ANNOUNCEMENT_LENGTH}
               >
-                Save
+                {t('common.save')}
               </Button>
             </div>
           </div>
@@ -750,11 +786,9 @@ export default function AdminPage() {
       {/* Top-bar notice */}
       {activeTab === 'general' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Top-bar notice</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.topBarNotice')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            Shown centered in the top navigation bar. Markdown is supported, so you can include
-            links. Keep it short — it renders on a single line. Leave empty to show nothing. Applies
-            on each user&rsquo;s next connection.
+            {t('admin.topBarNoticeHint')}
           </p>
 
           <Textarea
@@ -762,18 +796,18 @@ export default function AdminPage() {
             value={announcementDraft}
             onValueChange={setAnnouncementDraft}
             rows={1}
-            placeholder={'e.g. Heads up: scheduled maintenance Saturday \u2014 see [status](https://status.example.com).'}
+            placeholder={t('admin.topBarNoticePlaceholder')}
             maxLength={MAX_ANNOUNCEMENT_LENGTH}
             error={
               announcementDraft.length > MAX_ANNOUNCEMENT_LENGTH
-                ? `Too long by ${announcementDraft.length - MAX_ANNOUNCEMENT_LENGTH} characters`
+                ? t('admin.tooLongBy', { count: announcementDraft.length - MAX_ANNOUNCEMENT_LENGTH })
                 : undefined
             }
           />
 
           <div className="flex items-center justify-between mt-3">
             <span className="text-xs text-kumo-subtle">
-              {announcementDraft.length.toLocaleString()} / {MAX_ANNOUNCEMENT_LENGTH.toLocaleString()} characters
+              {t('admin.charCount', { current: announcementDraft.length.toLocaleString(), max: MAX_ANNOUNCEMENT_LENGTH.toLocaleString() })}
             </span>
             <div className="flex items-center gap-2">
               {announcementDraft !== savedAnnouncement && (
@@ -783,7 +817,7 @@ export default function AdminPage() {
                   onClick={() => setAnnouncementDraft(savedAnnouncement)}
                   disabled={savingAnnouncement}
                 >
-                  Reset
+                  {t('common.reset')}
                 </Button>
               )}
               <Button
@@ -796,7 +830,7 @@ export default function AdminPage() {
                   announcementDraft.length > MAX_ANNOUNCEMENT_LENGTH
                 }
               >
-                Save
+                {t('common.save')}
               </Button>
             </div>
           </div>
@@ -806,10 +840,9 @@ export default function AdminPage() {
       {/* Agent system prompt additions */}
       {activeTab === 'general' && (
       <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-        <h2 className="text-lg font-semibold text-kumo-strong mb-1">Agent instructions</h2>
+        <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.agentInstructions')}</h2>
         <p className="text-sm text-kumo-subtle mb-5">
-          Extra instructions added to every agent&rsquo;s system prompt on this deployment. Use this
-          for instance-specific context, conventions, or guardrails.
+          {t('admin.agentInstructionsHint')}
         </p>
 
         <Textarea
@@ -817,18 +850,18 @@ export default function AdminPage() {
           value={instructionsDraft}
           onValueChange={setInstructionsDraft}
           rows={6}
-          placeholder={'e.g. ACME Corp is a logistics company that helps small businesses ship\ninternationally. Our team builds internal tools and dashboards to track shipments.'}
+          placeholder={t('admin.agentInstructionsPlaceholder')}
           maxLength={MAX_INSTANCE_INSTRUCTIONS_LENGTH}
           error={
             instructionsDraft.length > MAX_INSTANCE_INSTRUCTIONS_LENGTH
-              ? `Too long by ${instructionsDraft.length - MAX_INSTANCE_INSTRUCTIONS_LENGTH} characters`
+              ? t('admin.tooLongBy', { count: instructionsDraft.length - MAX_INSTANCE_INSTRUCTIONS_LENGTH })
               : undefined
           }
         />
 
         <div className="flex items-center justify-between mt-3">
           <span className="text-xs text-kumo-subtle">
-            {instructionsDraft.length.toLocaleString()} / {MAX_INSTANCE_INSTRUCTIONS_LENGTH.toLocaleString()} characters
+            {t('admin.charCount', { current: instructionsDraft.length.toLocaleString(), max: MAX_INSTANCE_INSTRUCTIONS_LENGTH.toLocaleString() })}
           </span>
           <div className="flex items-center gap-2">
             {instructionsDraft !== savedInstructions && (
@@ -838,7 +871,7 @@ export default function AdminPage() {
                 onClick={() => setInstructionsDraft(savedInstructions)}
                 disabled={savingInstructions}
               >
-                Reset
+                {t('common.reset')}
               </Button>
             )}
             <Button
@@ -851,7 +884,7 @@ export default function AdminPage() {
                 instructionsDraft.length > MAX_INSTANCE_INSTRUCTIONS_LENGTH
               }
             >
-              Save
+              {t('common.save')}
             </Button>
           </div>
         </div>
@@ -861,17 +894,14 @@ export default function AdminPage() {
       {/* Gatekeeper resources */}
       {activeTab === 'gatekeepers' && (
         <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-kumo-strong mb-1">Gatekeepers</h2>
+          <h2 className="text-lg font-semibold text-kumo-strong mb-1">{t('admin.gatekeepersHeading')}</h2>
           <p className="text-sm text-kumo-subtle mb-5">
-            Turn connectors and resource types on or off for each service. Auto-provisioned
-            gatekeepers (like the Context Library) have three modes &mdash; disabled, optional, or
-            enabled for everyone. Changes are soft: they don&rsquo;t revoke access a gadget already
-            holds.
+            {t('admin.gatekeepersHint')}
           </p>
 
           {resourceVendors.length === 0 && (
             <p className="text-sm text-kumo-subtle">
-              No configurable gatekeepers are installed on this deployment.
+              {t('admin.gatekeepersEmpty')}
             </p>
           )}
 
@@ -883,9 +913,9 @@ export default function AdminPage() {
               if (vendor.autoProvisions) {
                 const mode = vendor.ambientMode ?? 'optional'
                 const options: { value: AmbientGatekeeperMode; label: string; hint: string }[] = [
-                  { value: 'disabled', label: 'Disabled', hint: 'Off for everyone' },
-                  { value: 'optional', label: 'Optional', hint: 'Users can add it themselves' },
-                  { value: 'enabled', label: 'Enabled', hint: 'On for everyone automatically' },
+                  { value: 'disabled', label: t('admin.modeDisabled'), hint: t('admin.modeDisabledHint') },
+                  { value: 'optional', label: t('admin.modeOptional'), hint: t('admin.modeOptionalHint') },
+                  { value: 'enabled', label: t('admin.modeEnabled'), hint: t('admin.modeEnabledHint') },
                 ]
                 return (
                   <div key={vendor.vendorId}>
@@ -901,7 +931,7 @@ export default function AdminPage() {
                         {vendor.displayName}
                       </h3>
                       <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-kumo-tint text-kumo-subtle border border-kumo-line">
-                        auto-provisioned
+                        {t('admin.autoProvisioned')}
                       </span>
                     </div>
                     <div className="flex gap-2 px-3 py-1">
@@ -959,7 +989,7 @@ export default function AdminPage() {
                     )}
                   </h3>
                   <span className="text-xs text-kumo-subtle">
-                    {vendor.enabled ? 'Enabled' : 'Off'}
+                    {vendor.enabled ? t('admin.enabled') : t('admin.off')}
                   </span>
                   <span onClick={(e) => e.stopPropagation()}>
                     <Switch
@@ -975,6 +1005,7 @@ export default function AdminPage() {
                   <div className="space-y-1">
                     {vendor.resources.map((resource) => {
                       const key = resourceKey(vendor.vendorId, resource.urlPattern)
+                      const localizedResource = localizeSupportedResource(t, resource)
                       return (
                         <div
                           key={resource.urlPattern}
@@ -992,9 +1023,9 @@ export default function AdminPage() {
                         >
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-kumo-default truncate">
-                              {resource.title}
+                              {localizedResource.title}
                             </p>
-                            <p className="text-xs text-kumo-subtle mt-0.5">{resource.description}</p>
+                            <p className="text-xs text-kumo-subtle mt-0.5">{localizedResource.description}</p>
                           </div>
                           <span onClick={(e) => e.stopPropagation()}>
                             <Switch
@@ -1011,7 +1042,7 @@ export default function AdminPage() {
                   </div>
                 ) : (
                   <p className="text-xs text-kumo-subtle px-3 py-1">
-                    {vendor.resources.length} resource{vendor.resources.length === 1 ? '' : 's'} hidden while disabled.
+                    {t('admin.resourcesHidden')}
                   </p>
                 )}
               </div>

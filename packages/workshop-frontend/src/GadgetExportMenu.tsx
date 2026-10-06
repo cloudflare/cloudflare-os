@@ -6,6 +6,7 @@ import type { GadgetClient } from '@gadgets/workshop-shared/api'
 import type { GadgetExportFormat } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from './components/WorkshopControls'
 import { makeExportFilename, saveStreamToFile } from './fileTransfers'
+import { useT } from './i18n'
 
 type Props = {
   gadget: RpcStub<GadgetClient> | null
@@ -14,6 +15,7 @@ type Props = {
 }
 
 export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props) {
+  const t = useT()
   const [formats, setFormats] = useState<GadgetExportFormat[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -82,7 +84,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
   if (!gadget) return null
 
   const exportingFormat = formats?.find(format => format.id === exportingId)
-  const tooltip = exportingFormat ? `Exporting to ${exportingFormat.label}` : 'Export Gadget'
+  const tooltip = exportingFormat ? t('gadget.exportingTo', { label: exportingFormat.label }) : t('gadget.exportGadget')
 
   return (
     <Tooltip content={tooltip} asChild>
@@ -91,7 +93,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
           <DropdownMenu.Trigger
             render={(
               <WorkshopIconButton
-                aria-label="Export Gadget"
+                aria-label={t('gadget.exportGadget')}
                 disabled={exportingId !== null}
               >
                 <DownloadSimple size={17} />
@@ -100,7 +102,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
           />
           <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
             {loading ? (
-              <div role="status" aria-label="Loading export formats" className="space-y-1 py-0.5">
+              <div role="status" aria-label={t('gadget.loadingExportFormats')} className="space-y-1 py-0.5">
                 {['w-20', 'w-14'].map(width => (
                   <div key={width} className="flex h-7 items-center gap-2 px-2.5">
                     <span className="h-3 w-3 animate-pulse rounded bg-kumo-elevated" />
@@ -110,18 +112,18 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
               </div>
             ) : loadFailed ? (
               <div className="px-2.5 py-2 text-[12px] leading-4 text-kumo-subtle">
-                <p>Export formats could not be loaded.</p>
+                <p>{t('gadget.exportLoadFailed')}</p>
                 <button
                   type="button"
                   onClick={loadFormats}
                   className="mt-1 font-medium text-kumo-default hover:underline"
                 >
-                  Try again
+                  {t('gadget.tryAgain')}
                 </button>
               </div>
             ) : formats?.length === 0 ? (
               <p className="px-2.5 py-2 text-[12px] leading-4 text-kumo-subtle">
-                This Gadget does not support exports.
+                {t('gadget.noExports')}
               </p>
             ) : formats?.map(format => (
               <DropdownMenu.Item

@@ -16,6 +16,7 @@ import {
   loadSlashCommandCatalog,
   slashCommandKey,
 } from "../../../../components/chat/slash-command-catalog";
+import { useT } from "../../../../i18n";
 
 type SlashCommandPopupLayout = {
   left: number;
@@ -72,6 +73,7 @@ export function useSlashCommandPicker({
    */
   chatExists: boolean;
 }) {
+  const t = useT();
   const [choices, setChoices] = useState<SlashCommandChoice[]>([]);
   const [choicesQuery, setChoicesQuery] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -228,14 +230,14 @@ export function useSlashCommandPicker({
         ref={listRef}
         id={listboxId}
         role="listbox"
-        aria-label="Slash commands"
+        aria-label={t('chat.slashCommands')}
         aria-busy={loading}
         className="sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2"
       >
         {error ? (
-          <p className={PICKER_EMPTY}>{`Couldn’t load commands. ${error}`}</p>
+          <p className={PICKER_EMPTY}>{t('chat.slashLoadError', { error })}</p>
         ) : loading && choices.length === 0 ? (
-          <p className={PICKER_EMPTY}>Loading commands…</p>
+          <p className={PICKER_EMPTY}>{t('chat.slashLoading')}</p>
         ) : choices.length > 0 ? (
           choices.map((choice, optionIndex) => (
             <button
@@ -273,7 +275,7 @@ export function useSlashCommandPicker({
           ))
         ) : (
           <p className={PICKER_EMPTY}>
-            {query ? "No commands match your search." : "No commands are available."}
+            {query ? t('chat.slashNoneMatch') : t('chat.slashNoneAvailable')}
           </p>
         )}
       </div>
@@ -298,10 +300,12 @@ export function useSlashCommandPicker({
     setIndex: selectIndex,
     status: open
       ? loading
-        ? "Loading slash commands"
+        ? t('chat.slashLoadingStatus')
         : error
-          ? `Slash commands unavailable: ${error}`
-          : `${choices.length} slash command${choices.length === 1 ? "" : "s"} found`
+          ? t('chat.slashUnavailable', { error })
+          : (choices.length === 1
+              ? t('chat.slashFoundOne', { count: choices.length })
+              : t('chat.slashFound', { count: choices.length }))
       : "",
   };
 }
