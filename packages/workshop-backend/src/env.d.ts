@@ -35,11 +35,13 @@ declare global {
       // discovers them generically by scanning env for the GATEKEEPER_ prefix (buildGatekeeperVendorMap)
       // and never references a specific gatekeeper by name, so naming one here would be wrong.
 
-      // Platform-private notification delivery. Deliberately not a GATEKEEPER_* binding: it is not
-      // routed publicly, offered to users, or made available to agents.
-      NOTIFICATION_DELIVERY: Service<
-        import("@gadgets/workshop-shared/notification-delivery").NotificationDeliveryService
-      >;
+      // Push delivery through the Cloudflare-operated notification service. The deploy service
+      // injects all four for installs it provisions; when any is missing, push is unavailable and
+      // notifications reach open browser tabs only. See docs/notifications.md.
+      NOTIFICATION_SERVICE_URL?: string;  // service origin
+      CFOS_INSTALL_ID?: string;           // this installation's central identity
+      CFOS_INSTALL_KEY_ID?: string;       // active signing-key generation
+      CFOS_INSTALL_PRIVATE_KEY?: string;  // secret: base64 PKCS#8 P-256 key that signs requests
 
       // Optional product analytics stream. Deployments can bind this to a
       // structured Cloudflare Pipelines stream; local/dev configs omit it and analytics no-op.

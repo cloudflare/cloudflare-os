@@ -174,8 +174,8 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       preferredModel: <string | null>null,
       onboardingCompleted: false,
 
-      // Install-bound central push subscription for the most recently registered device. Only the
-      // notification proxy's signing key can deliver to it.
+      // Install-bound central push subscription for the most recently registered device. Only this
+      // installation's signing key can deliver to it.
       notificationSubscriptionId: <string | null>null,
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index

@@ -96,7 +96,6 @@ test("worker entries carry the deploy contract", () => {
   // Core workers exist with the right kinds.
   assert.equal(workers["workshop-backend"].kind, "backend");
   assert.equal(workers["router"].kind, "router");
-  assert.equal(workers["notification-proxy"].kind, "system");
 
   // Backend: provisioned resources are placeholders; gatekeeper calls use GatekeeperVendor.
   const backend = workers["workshop-backend"];
@@ -113,10 +112,6 @@ test("worker entries carry the deploy contract", () => {
   assert.deepEqual(
       backend.bindings.find((b) => b.name === "WORKERS_AI"),
       { type: "ai", name: "WORKERS_AI" });
-  assert.deepEqual(
-      backend.bindings.find((b) => b.name === "NOTIFICATION_DELIVERY"),
-      { type: "service", name: "NOTIFICATION_DELIVERY",
-        service: "$WORKER_NAME(notification-proxy)" });
   assert.ok(backend.gatekeeperBindingExpansion);
   assert.equal(backend.gatekeeperBindingExpansion.entrypoint, "GatekeeperVendor");
   assert.equal(backend.vars.PUBLIC_BASE_URL, "$PUBLIC_BASE_URL");
@@ -177,20 +172,11 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(google.preinstall, undefined);
   assert.equal(google.singleton, undefined);
   for (const [name, entry] of Object.entries(workers)) {
-    if (entry.preinstall && entry.kind === "gatekeeper") {
+    if (entry.preinstall) {
       assert.ok(entry.installable, `${name}: preinstall requires installable`);
       assert.deepEqual(entry.inputs, [], `${name}: preinstall requires no inputs`);
     }
   }
-
-  // System services are core infrastructure, not user-installable connectors. They receive no
-  // public route or generic gatekeeper binding expansion.
-  const notifications = workers["notification-proxy"];
-  assert.equal(notifications.preinstall, true);
-  assert.equal(notifications.installable, false);
-  assert.equal(notifications.shortName, undefined);
-  assert.equal(notifications.inputs, undefined);
-  assert.equal(notifications.gatekeeperBindingExpansion, undefined);
 
   // The MCP connectors are install-once for SINGLETON's second reason: they take no inputs, so a
   // second install could not differ from the first — it would only mint a second vendor id.
