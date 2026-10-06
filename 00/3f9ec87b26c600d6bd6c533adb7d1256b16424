@@ -1,0 +1,21 @@
+docs/space-connectors.md
+  s_dd2417a6d5bd82::t_029f90cd6292c5 1-18,20-27,29-36,38-42,44-52,54-69,71-90,92-122
+  s_dd2417a6d5bd82::t_742af3f1e100da 19,28,37,43,53,91
+  s_dd2417a6d5bd82::t_024bd4b34e0f82 70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "003f9ec87b26c600d6bd6c533adb7d1256b16424",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,106 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_dd2417a6d5bd82::t_acfc6b1060945d 20,47-51,312-314,1091-1096
+packages/workshop-frontend/src/features/spaces/PublishedBadge.tsx
+  s_dd2417a6d5bd82::t_7a636819aa69fa 1-18
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.ts
+  s_dd2417a6d5bd82::t_ed7bd0a055baf2 7,118
+packages/workshop-frontend/src/features/spaces/SpaceMembersDialog.tsx
+  s_dd2417a6d5bd82::t_b3ef4ccb601790 75-78,249
+packages/workshop-frontend/src/features/spaces/useSpaceWorkspace.ts
+  s_dd2417a6d5bd82::t_ed74a32cc99cea 12-13
+packages/workshop-frontend/src/features/spaces/SpaceSections.test.tsx
+  s_dd2417a6d5bd82::t_a5ffcbc449440c 219-227
+  s_dd2417a6d5bd82::t_8eeac8de3b317f 591-601
+  s_dd2417a6d5bd82::t_997792a60191e3 253-277,299,602
+  s_dd2417a6d5bd82::t_5f447d44e9fbc3 85
+  s_dd2417a6d5bd82::t_58bd4b53c01aad 278-298
+  s_dd2417a6d5bd82::t_736d7f2ba795af 300,590,603
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_dd2417a6d5bd82::t_e5cb3fd80158df 7,10,53,69-73,135,431-434,599-600
+packages/workshop-frontend/src/features/spaces/NewSpaceDialog.tsx
+  s_dd2417a6d5bd82::t_8839b04508ad99 67-70
+  s_dd2417a6d5bd82::t_bf72dd67d61e78 84
+  s_dd2417a6d5bd82::t_5ceb1ce3ff79b2 85
+packages/workshop-frontend/src/features/spaces/VisitedSpace.tsx
+  s_dd2417a6d5bd82::t_e5cb3fd80158df 21-25
+  s_dd2417a6d5bd82::t_46550e2738168e 1-20,26-53,55-90
+  s_dd2417a6d5bd82::t_57cac12689573f 54
+packages/workshop-frontend/src/features/spaces/PublicAccessRow.tsx
+  s_dd2417a6d5bd82::t_5ca7fcb6ab980b 1-2,33-34,54,83,122-123,126-130,165,199-200
+  s_dd2417a6d5bd82::t_816ae38bf4969e 3-17,29-32,35-39,42-53,57-67,72,78-82,84,86,88-89,91,93-95,104-108,110-112,116,118-121,125,131-158,160-164,166-192,201,203-208,210-220
+  s_dd2417a6d5bd82::t_7d98a20f91a658 109,194-198,202
+  s_dd2417a6d5bd82::t_5806d1a1302f13 41,96-98,124,209
+  s_dd2417a6d5bd82::t_3e18381a648315 101
+  s_dd2417a6d5bd82::t_2d9ed26ec0fd7c 18-28,40,55-56,68-71,73-77,85,87,90,99-100,102-103,113-115,117
+  s_dd2417a6d5bd82::t_acfc6b1060945d 92,159,193
+packages/workshop-frontend/src/features/spaces/useSpaceListings.test.tsx
+  s_dd2417a6d5bd82::t_5033ab9394bdaf 19,53-54,78,83-99,110,128,149-150,176,195,205
+packages/workshop-frontend/src/features/spaces/NewSpaceDialog.test.tsx
+  s_dd2417a6d5bd82::t_bf72dd67d61e78 18,27,191-193
+  s_dd2417a6d5bd82::t_8839b04508ad99 190,194
+  s_dd2417a6d5bd82::t_5d5b7bfecd6389 195
+packages/workshop-frontend/src/features/spaces/SpaceSection.tsx
+  s_dd2417a6d5bd82::t_b3ef4ccb601790 53
+packages/workshop-frontend/src/features/spaces/spacesTestUtils.tsx
+  s_dd2417a6d5bd82::t_e5cb3fd80158df 45-48,55,79-82,92-98,101-102,108,110
+packages/workshop-frontend/src/features/spaces/SpaceMembersDialog.test.tsx
+  s_dd2417a6d5bd82::t_a5ffcbc449440c 6-11,47,49
+  s_dd2417a6d5bd82::t_117501e27e6d0e 327-346
+  s_dd2417a6d5bd82::t_7765979665627d 347
+packages/workshop-frontend/src/features/spaces/useSpaceWorkspace.test.tsx
+  s_dd2417a6d5bd82::t_a5ffcbc449440c 195-208
+packages/workshop-frontend/src/features/spaces/useSpace.ts
+  s_dd2417a6d5bd82::t_ed74a32cc99cea 13-19,44-54,62-63,100-105
+packages/workshop-frontend/src/features/spaces/SpacePage.tsx
+  s_dd2417a6d5bd82::t_2ad70feb1ca0c8 20,64-67,94,102-104,158-165,179
+  s_dd2417a6d5bd82::t_1d7489aff50c81 18,96-98,195,201,209
+  s_dd2417a6d5bd82::t_5f447d44e9fbc3 157
+packages/workshop-frontend/src/features/spaces/SpacePage.test.tsx
+  s_dd2417a6d5bd82::t_57cac12689573f 403-404,413,418
+  s_dd2417a6d5bd82::t_5f447d44e9fbc3 94
+  s_dd2417a6d5bd82::t_997792a60191e3 28,80-82,84,87,96,385-402,405-412,414-417,419-434,440-443,445-467
+  s_dd2417a6d5bd82::t_a5ffcbc449440c 435-439,444
+  s_dd2417a6d5bd82::t_91dcbb4f56cd8a 270-289
+  s_dd2417a6d5bd82::t_c276392487435c 18
+  s_dd2417a6d5bd82::t_2bdb2e135f0add 468
+packages/workshop-frontend/src/features/spaces/useSpaceListings.ts
+  s_dd2417a6d5bd82::t_ed74a32cc99cea 16-17
+  s_dd2417a6d5bd82::t_660c6722776ca2 29
+  s_dd2417a6d5bd82::t_ed7bd0a055baf2 13-15,22-28,67-69,73-74
+packages/workshop-frontend/src/features/spaces/useSpace.test.tsx
+  s_dd2417a6d5bd82::t_a5ffcbc449440c 166-190
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_dd2417a6d5bd82::t_1ffca13a0dcbb8 260-264,271-272
+  s_dd2417a6d5bd82::t_0dcc0ba022cac2 265-270,273
+  s_dd2417a6d5bd82::t_d51e4292da5a1e 1419,1475,1481-1482,1487,1546-1574
+  s_dd2417a6d5bd82::t_2dbb5378338309 1476-1480,1483-1486,1488-1489,1504-1506
+  s_dd2417a6d5bd82::t_750d21433bf385 1423,1490-1503
+  s_dd2417a6d5bd82::t_7631e1e8590a08 24-29,146-147,165-166,1379-1418,1426-1474,1507-1545,1575-1589
+  s_dd2417a6d5bd82::t_cd7a851e734887 1420-1422,1424-1425
+  s_dd2417a6d5bd82::t_bfffa5eed77c8c 274,1590
+packages/workshop-frontend/src/features/spaces/ListedWorkspaceRow.tsx
+  s_dd2417a6d5bd82::t_60322ad7d2e128 1-67
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.test.ts
+  s_dd2417a6d5bd82::t_51dd0b27120bb1 31
+  s_dd2417a6d5bd82::t_870f1bcfba2e29 30
+packages/workshop-frontend/src/features/spaces/SpaceSectionRows.tsx
+  s_dd2417a6d5bd82::t_69856d8c0d4258 6,34-35,46-49,52
+packages/workshop-frontend/src/features/spaces/workspaceAddress.ts
+  s_dd2417a6d5bd82::t_34dacfa5e56c60 1-2,22-23,28-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "835b8b18343257839c453eaf677a8ee46701ebb0",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
