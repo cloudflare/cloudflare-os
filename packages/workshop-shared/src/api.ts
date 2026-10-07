@@ -560,6 +560,28 @@ export interface AuthenticatedApi extends RpcTarget {
   createSpace(key: string, name: string): Promise<RpcStub<Space>>;
 
   /**
+   * Browse the directory of spaces, personal and team, that have at least one workspace everyone
+   * signed in can see: a space is listed while it lists a workspace published to the deployment
+   * at the top of its tree, which is exactly when a visitor may open it (see `openSpace`). The
+   * caller's own spaces are included like any other.
+   *
+   * `query` keeps the spaces whose name, key or owner's display name contains it, ignoring case
+   * and surrounding whitespace; omitted, empty or blank, every listed space is returned. Rejects
+   * a `query` longer than 1000 characters or containing a line break. Results are ordered by
+   * name, ignoring case, then key, in pages of at most 50. Pass a returned `cursor` back, with
+   * the same `query`, for the next page; it is opaque, absent on the last page, and refused if
+   * malformed.
+   *
+   * For presentation only: opening a listed space is still decided by the space. Each space
+   * pushes to the directory from its alarm whenever it comes to be listed or stops being, and
+   * retries with a growing wait when the push fails, so the directory is eventually consistent:
+   * a space appears once its push has landed, and one that is no longer open to visitors may
+   * linger until then; opening it fails meanwhile for anyone not its member.
+   */
+  listPublishedSpaces(query?: string, cursor?: string):
+      Promise<{ spaces: PublishedSpaceInfo[]; cursor?: string }>;
+
+  /**
    * Change the user's password, if using password-based authentication.
    *
    * See `PublicApi.login()` for an explanation of the hashing algorithm.
@@ -6326,6 +6348,12 @@ export interface SpaceInfo {
    */
   role?: SpaceMemberRole;
 }
+
+/**
+ * A space as `AuthenticatedApi.listPublishedSpaces` shows it: a `SpaceInfo` without the caller's
+ * role, since the directory is the same for everyone.
+ */
+export type PublishedSpaceInfo = Omit<SpaceInfo, "role">;
 
 /** One member of a space, as returned by `Space.listMembers` and `Space.setMemberRole`. */
 export interface SpaceMemberInfo {
