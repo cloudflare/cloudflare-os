@@ -69,7 +69,7 @@ export type RestPageElement = {
   video?: unknown;
   line?: unknown;
   sheetsChart?: unknown;
-  wordArt?: unknown;
+  wordArt?: { renderedText?: string };
   speakerSpotlight?: unknown;
 };
 

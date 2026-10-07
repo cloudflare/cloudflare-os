@@ -78,15 +78,17 @@ describe("Slides model", () => {
     });
   });
 
-  it("keeps grouped elements nested and alt text on any element", () => {
-    let [group, image] = onlySlide(
+  it("keeps grouped elements nested, word art's text, and alt text on any element", () => {
+    let [group, wordArt, image] = onlySlide(
       { objectId: "g1", elementGroup: { children: [shape("c1", text(["inside"])), shape("c2")] } },
+      { objectId: "wa", wordArt: { renderedText: "Quarterly revenue: $10M" } },
       { objectId: "img", title: "Logo", description: "Company logo", image: {} },
     ).elements;
 
     expect(group).toMatchObject({
       kind: "group", children: [{ id: "c1", text: "inside" }, { id: "c2", text: "" }],
     });
+    expect(wordArt).toEqual({ id: "wa", kind: "wordArt", text: "Quarterly revenue: $10M" });
     expect(image).toEqual({
       id: "img", kind: "image", altTitle: "Logo", altDescription: "Company logo",
     });

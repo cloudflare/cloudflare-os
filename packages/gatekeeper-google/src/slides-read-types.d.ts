@@ -10,7 +10,7 @@ export type SlideSize = {
 export type SlideSummary = {
   /** Stable slide object ID. Pass it to `getSlides()`. */
   id: string;
-  /** Zero-based position in the presentation. */
+  /** Zero-based position in the presentation when it was read. */
   index: number;
   /** Display name of the layout the slide was made from, such as `Title and body`. */
   layout?: string;
@@ -93,13 +93,21 @@ export type GroupElement = SlideElementBase & {
   children: SlideElement[];
 };
 
+/** Word art: text drawn as a graphic. */
+export type WordArtElement = SlideElementBase & {
+  kind: "wordArt";
+  /** The text the word art shows. */
+  text: string;
+};
+
 /** A page element whose content is not text, such as an image or a chart. */
 export type OtherElement = SlideElementBase & {
-  kind: "image" | "video" | "line" | "sheetsChart" | "wordArt" | "other";
+  kind: "image" | "video" | "line" | "sheetsChart" | "other";
 };
 
 /** One element on a slide. */
-export type SlideElement = ShapeElement | TableElement | GroupElement | OtherElement;
+export type SlideElement =
+  ShapeElement | TableElement | GroupElement | WordArtElement | OtherElement;
 
 /** One slide's content. */
 export type Slide = SlideSummary & {

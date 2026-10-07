@@ -92,7 +92,7 @@ function elementOf(element: RestPageElement): SlideElement {
   if (element.video) return { ...base, kind: "video" };
   if (element.line) return { ...base, kind: "line" };
   if (element.sheetsChart) return { ...base, kind: "sheetsChart" };
-  if (element.wordArt) return { ...base, kind: "wordArt" };
+  if (element.wordArt) return { ...base, kind: "wordArt", text: element.wordArt.renderedText ?? "" };
   return { ...base, kind: "other" };
 }
 
