@@ -346,8 +346,9 @@ it.concurrent("a team space lists a member's workspace once it has seen activity
   const entry = await listedAs(space, id, "Roadmap");
   const record = await ownRecord(bob, id);
   expect(record.spaceKey).toBe(key);
+  // The space's first entry sits at the top of its tree, first among the entries there.
   expect(entry).toEqual({
-    id, title: "Roadmap", slug: slugify("Roadmap"), created: record.created,
+    id, title: "Roadmap", slug: slugify("Roadmap"), created: record.created, position: 0,
     owner: expect.objectContaining({ type: "user", id: bobName, name: "Bob Example" }),
   });
   // Bob's account syncs his workspaces one at a time, so by now it is past the draft's change of
