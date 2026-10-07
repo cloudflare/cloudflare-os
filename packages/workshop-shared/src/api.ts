@@ -978,18 +978,24 @@ export interface AuthenticatedApi extends RpcTarget {
    *
    * The returned Overseer can be used immediately (pipelining-friendly).
    *
-   * `spaceKey` is the team space the new workspace belongs to, exactly as for `newGadget()`: it
-   * must satisfy `isValidTeamSpaceKey()` or this throws, and omitted means the caller's personal
-   * space. The workspace is listed by its space only once it has seen activity; whether the
-   * caller may add workspaces to that space is checked then, and a workspace whose owner may not
-   * ends up in their personal space instead, with no error. A workspace that holds restricted
-   * data or is owner-invites-only is listed by no space, and for such a workspace `spaceKey` only
-   * records where its owner grouped it, also as for `newGadget()`.
+   * `options.spaceKey` and `options.parentId` place the new workspace exactly as `spaceKey` and
+   * `parentId` do for `newGadget()`: `spaceKey` must satisfy `isValidTeamSpaceKey()` or this
+   * throws, and omitted means the caller's personal space. Whether the caller may add workspaces
+   * to that space is checked when the space first lists the workspace, and a workspace that holds
+   * restricted data or is owner-invites-only is listed by no space, also as for `newGadget()`.
+   * A string in place of `options` is a `spaceKey`; it is accepted for one release, for clients
+   * built before the object form.
+   *
+   * A blueprint the deployment ships may declare a default publication
+   * (`BlueprintMetadata.publication`). `options.publish: false` opts out of it; omitted or true
+   * applies it. It never publishes a workspace created from a blueprint that declares none. The
+   * default applies before the workspace is first listed by its space, so it is listed published
+   * from the start (see `Overseer.setPublicAccess`).
    */
   newWorkspaceFromBlueprint(
     blueprintId: string,
     bindings: Record<string, BlueprintBindingAssignment>,
-    spaceKey?: string
+    options?: string | { spaceKey?: string; parentId?: string; publish?: boolean }
   ): Promise<RpcStub<Overseer>>;
 
   /**
@@ -5743,6 +5749,15 @@ export type BlueprintMetadata = {
    * created from this blueprint, and preserved when such a gadget is republished as a blueprint.
    */
   output?: BlueprintOutput;
+
+  /**
+   * The role a workspace created from this blueprint is published with to everyone signed in
+   * (see `Overseer.setPublicAccess`), unless its creator opts out
+   * (`AuthenticatedApi.newGadgetFromBlueprint`). Present only on blueprints the deployment ships,
+   * and honored only for those: it is never stored for an uploaded blueprint or one published
+   * from a workspace.
+   */
+  publication?: CollaboratorRole;
 
   /** Key = binding name. */
   bindings: Record<string, BlueprintBinding>;
