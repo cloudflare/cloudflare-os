@@ -583,8 +583,8 @@ describe("merge requests", () => {
     await expect(unwrap(await hooks().applyAction(name, props, forbidden.approvalId))).rejects.toThrow(/not allowed to merge !133/);
     await runInDurableObject(env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(props.userObjectId)), async (_i, state) => {
       expect(state.storage.kv.get("expiredNotified")).not.toBe(true);
-      expect(state.storage.kv.get("accessToken")).toBe("test-token");
     });
+    expect(await unwrap(await hooks().accountToken(props.userObjectId))).toBe("test-token");
     // A read still works afterwards: nothing was retired.
     expect((await unwrap(await hooks().openMergeRequest(name, props, "133"))).id).toBe("133");
   });

@@ -7,14 +7,15 @@
 // documentation. Everything in this module is provider plumbing; gitlab.ts owns the agent-facing
 // behaviour (caching, actions, simulation).
 
+import { CredentialsExpiredError } from "@gadgets/gatekeeper-kit/credentials";
 import { readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 
 /** A grant returned by the token endpoint. GitLab's documented response carries no `scope`. */
 export type GitLabOAuthGrant = {
   accessToken: string;
   refreshToken: string;
-  /** Absolute expiry, from the response's `expires_in` (never a hard-coded 7200: admins can change it). */
-  expiresAt: Date;
+  /** Absolute expiry in epoch ms, from the response's `expires_in` (never a hard-coded 7200: admins can change it). */
+  expiresAt: number;
 };
 
 /** The current user, `GET /user`. `email` is the primary address; `confirmed_at` proves it. */
@@ -269,9 +270,7 @@ export type GitLabCompareResponse = {
 
 /**
  * A failed GitLab request. `status` is the HTTP status. `isAuthError` marks a 401 that means the
- * *credentials* were rejected, which callers treat as "revoked, reconnect" -- not "refresh":
- * expiry is handled ahead of time from `expires_in`, so a 401 on a token still fresh by our
- * clock means it was revoked, and a refresh would only come back `invalid_grant`. GitLab also
+ * *credentials* were rejected, which the account adjudicates (see `withAccountApi`). GitLab also
  * answers 401 for things that are not credential rejections -- documented for `PUT …/merge` as
  * "this user does not have permission to accept this merge request", and the approvals endpoint
  * requires an eligible approver -- so only a 401 from `GET /user`, the one request that asserts
@@ -286,18 +285,15 @@ export class GitLabApiError extends Error {
   details?: unknown;
   /** Whether the credentials themselves were refused (see `CREDENTIAL_PROBE_PATH`). */
   isAuthError: boolean;
-  /** The token the failed request carried, when its credential named one (see `GitLabCredential`). */
-  credentialId?: string;
   movedTo?: string;
 
   constructor(status: number, message: string,
-              options: { details?: unknown; movedTo?: string; isAuthError?: boolean; credentialId?: string } = {}) {
+              options: { details?: unknown; movedTo?: string; isAuthError?: boolean } = {}) {
     super(message);
     this.name = "GitLabApiError";
     this.status = status;
     this.details = options.details;
     this.isAuthError = options.isAuthError ?? false;
-    this.credentialId = options.credentialId;
     this.movedTo = options.movedTo;
   }
 }
@@ -305,18 +301,8 @@ export class GitLabApiError extends Error {
 /** The one path whose 401 means the credentials themselves were refused. */
 const CREDENTIAL_PROBE_PATH = "/user";
 
-/**
- * A bearer token and, when its source keeps one, an id naming that token. A request's failure is
- * a fact about the token it carried, so an error reports the id back, and a caller acts on it only
- * while that token is still the live one. The id names the token rather than the authorization
- * behind it because a refresh replaces the token and GitLab invalidates the old one: a request
- * still in flight with the old token can be refused after its replacement is stored, and that
- * refusal says nothing about the replacement.
- */
-export type GitLabCredential = { token: string; credentialId?: string };
-
-/** Supplies the credential for each request; called per request, so a rotated token is picked up. */
-export type GitLabCredentialSource = () => Promise<GitLabCredential>;
+/** Supplies the bearer token for each request; called per request, so a rotated token is picked up. */
+export type GitLabCredentialSource = () => Promise<string>;
 
 /** Where a `GitLabApi` sends requests and what it attaches to each. */
 export type GitLabInstance = {
@@ -514,12 +500,7 @@ async function send(
   for (const [key, value] of Object.entries(options.headers ?? {})) {
     if (value !== undefined) headers.set(key, value);
   }
-  let credentialId: string | undefined;
-  if (credentials) {
-    const credential = await credentials();
-    credentialId = credential.credentialId;
-    headers.set("Authorization", `Bearer ${credential.token}`);
-  }
+  if (credentials) headers.set("Authorization", `Bearer ${await credentials()}`);
 
   let body: BodyInit | undefined;
   if (options.body !== undefined) {
@@ -549,7 +530,6 @@ async function send(
     throw new GitLabApiError(response.status, message, {
       details: parsed,
       isAuthError: response.status === 401 && path === CREDENTIAL_PROBE_PATH,
-      credentialId,
     });
   }
 
@@ -571,20 +551,6 @@ async function request<T>(
 
 // ---------------------------------------------------------------------------
 // OAuth
-
-function base64UrlEncode(bytes: ArrayBuffer | Uint8Array): string {
-  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let binary = "";
-  for (const byte of arr) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/** Generate a PKCE code verifier (43 chars of base64url) and its S256 challenge. */
-export async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
-  const verifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  return { verifier, challenge: base64UrlEncode(digest) };
-}
 
 /**
  * The `GET /oauth/authorize` URL on the *browser-facing* instance origin (the user's own session
@@ -647,7 +613,7 @@ function grantFromResponse(parsed: unknown, now: number): GitLabOAuthGrant {
   return {
     accessToken: result.access_token,
     refreshToken: result.refresh_token,
-    expiresAt: new Date(now + result.expires_in * 1000),
+    expiresAt: now + result.expires_in * 1000,
   };
 }
 
@@ -676,38 +642,35 @@ export async function exchangeAuthCode(
   return grantFromResponse(await parseBody(response), now);
 }
 
-/** Outcome of a refresh: a new grant, or `revoked` when GitLab reports the refresh token is dead. */
-export type RefreshResult =
-  | { ok: true; grant: GitLabOAuthGrant }
-  | { ok: false; revoked: true; message: string };
-
 /**
  * `grant_type=refresh_token`. GitLab rotates: the response carries a new refresh token and the
- * old one is invalidated, so the caller must persist the new pair before using either. An
- * `invalid_grant` error means the refresh token was already used, expired, or revoked.
+ * old one is invalidated. `invalid_grant` in a 4xx other than 429 -- the refresh token was already
+ * used, expired, or revoked -- proves the grant dead and throws `CredentialsExpiredError`, the
+ * same rule as the kit's `isInvalidGrant`; every other failure (network, 429, 5xx whatever its
+ * body, an Access redirect) throws as itself and leaves the grant alive.
  */
 export async function refreshAccessToken(
   instance: GitLabInstance,
-  params: { refreshToken: string; clientId: string; clientSecret: string; redirectUri: string },
+  params: { refreshToken: string; clientId: string; clientSecret: string },
   now = Date.now(),
-): Promise<RefreshResult> {
+): Promise<GitLabOAuthGrant> {
   const response = await postForm(instance, "/oauth/token", {
     grant_type: "refresh_token",
     refresh_token: params.refreshToken,
     client_id: params.clientId,
     client_secret: params.clientSecret,
-    redirect_uri: params.redirectUri,
   });
   if (!response.ok) {
     const parsed = await parseErrorBody(response);
-    const body = parsed as RawTokenResponse | string;
-    if (typeof body === "object" && body?.error === "invalid_grant") {
-      return { ok: false, revoked: true, message: errorMessageFromBody(parsed, "invalid_grant") };
+    const refused = response.status >= 400 && response.status < 500 && response.status !== 429;
+    if (refused && (parsed as RawTokenResponse | undefined)?.error === "invalid_grant") {
+      throw new CredentialsExpiredError(
+        `GitLab refused the refresh token (${errorMessageFromBody(parsed, "invalid_grant")}).`);
     }
     throw new GitLabApiError(response.status,
       errorMessageFromBody(parsed, "GitLab OAuth token refresh failed"), { details: parsed });
   }
-  return { ok: true, grant: grantFromResponse(await parseBody(response), now) };
+  return grantFromResponse(await parseBody(response), now);
 }
 
 /** `POST /oauth/revoke`. Returns 200 with `{}` on success; a failure throws. */
@@ -1218,13 +1181,13 @@ export class GitLabApi {
     verb: "fetch" | "push",
   ): Promise<Response> {
     const url = `${this.#instance.apiOrigin}/${gitRepoPath(projectPath)}.git/${service}`;
-    const credential = await this.#credentials();
+    const token = await this.#credentials();
     const response = await fetch(url, {
       method: "POST",
       headers: {
         ...headers,
         "User-Agent": USER_AGENT,
-        Authorization: `Basic ${encodeBasicAuth("oauth2", credential.token)}`,
+        Authorization: `Basic ${encodeBasicAuth("oauth2", token)}`,
         ...this.#instance.headers,
       },
       body,
@@ -1244,7 +1207,7 @@ export class GitLabApi {
       // A git endpoint has no per-operation 401: the only thing it authenticates is the bearer.
       throw new GitLabApiError(response.status,
         `git ${verb} failed: ${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
-        { isAuthError: response.status === 401, credentialId: credential.credentialId });
+        { isAuthError: response.status === 401 });
     }
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.startsWith(headers.Accept)) {

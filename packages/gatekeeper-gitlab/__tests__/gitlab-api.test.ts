@@ -1,10 +1,11 @@
 // gitlab-api.ts coverage: URL and query composition for every endpoint the gatekeeper uses,
 // the documented error-body shapes and the caps on what is read, redirect refusal, pagination,
-// OAuth request bodies and grant parsing, PKCE, Access-header passthrough, and the git
-// smart-HTTP request framing. GitLab is faked at `fetch`; response bodies come from the
+// OAuth request bodies and grant parsing, Access-header passthrough, and the git smart-HTTP
+// request framing. GitLab is faked at `fetch`; response bodies come from the
 // documentation-derived fixtures.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import {
   GitLabApi,
   GitLabApiError,
@@ -13,7 +14,6 @@ import {
   encodeRefName,
   errorMessageFromBody,
   exchangeAuthCode,
-  generatePkce,
   gitRepoPath,
   lineCode,
   refreshAccessToken,
@@ -58,7 +58,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const api = (instance = INSTANCE) => new GitLabApi(instance, async () => ({ token: "tok-1", credentialId: "cred-1" }));
+const api = (instance = INSTANCE) => new GitLabApi(instance, async () => "tok-1");
 
 describe("path encoding", () => {
   it("encodes a nested project path as one segment", () => {
@@ -182,8 +182,6 @@ describe("error bodies", () => {
     ]);
     const probe = await api().getCurrentUser().catch(e => e);
     expect(probe.isAuthError).toBe(true);
-    // The refusal is a fact about the token the request carried, so the error names it.
-    expect(probe.credentialId).toBe("cred-1");
     // GitLab's documented "this user does not have permission to accept this merge request" is a
     // 401 too; it is the merge's own answer, not a revoked token.
     expect((await api().mergeMergeRequest("g/p", 1, {}).catch(e => e)).isAuthError).toBe(false);
@@ -191,7 +189,6 @@ describe("error bodies", () => {
     // The git endpoints authenticate nothing but the bearer.
     const git = await api().fetchGitUploadPack("g/p", new Uint8Array()).catch(e => e);
     expect(git.isAuthError).toBe(true);
-    expect(git.credentialId).toBe("cred-1");
   });
 
   it("appends Retry-After on a 429", async () => {
@@ -543,15 +540,6 @@ describe("git smart-HTTP", () => {
 });
 
 describe("OAuth", () => {
-  it("generates a 43-char base64url verifier and its S256 challenge", async () => {
-    const { verifier, challenge } = await generatePkce();
-    expect(verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-    const expected = btoa(String.fromCharCode(...new Uint8Array(digest)))
-      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    expect(challenge).toBe(expected);
-  });
-
   it("builds the authorize URL on the browser-facing origin with every documented param", () => {
     const url = new URL(buildAuthorizeUrl("https://gitlab.example.com", {
       clientId: "app", redirectUri: "https://os.example/gatekeeper/gitlab/oauth",
@@ -586,7 +574,7 @@ describe("OAuth", () => {
     expect(grant).toEqual({
       accessToken: fx.oauthTokenResponse.data.access_token,
       refreshToken: fx.oauthTokenResponse.data.refresh_token,
-      expiresAt: new Date(now + 7200 * 1000),
+      expiresAt: now + 7200 * 1000,
     });
   });
 
@@ -595,7 +583,7 @@ describe("OAuth", () => {
     const grant = await exchangeAuthCode(INSTANCE, {
       code: "c", clientId: "a", clientSecret: "s", redirectUri: "r", codeVerifier: "v",
     }, 0);
-    expect(grant.expiresAt.getTime()).toBe(300_000);
+    expect(grant.expiresAt).toBe(300_000);
   });
 
   it("refuses a redirect from the token endpoint (Access turning the service token away) without quoting the login page", async () => {
@@ -625,36 +613,46 @@ describe("OAuth", () => {
     expect(error.message).toMatch(/incomplete/);
   });
 
-  it("refreshes with redirect_uri and returns the rotated pair", async () => {
+  it("refreshes without redirect_uri and returns the rotated pair", async () => {
     const calls = fakeFetch([json(fx.oauthRefreshResponse.data)]);
-    const result = await refreshAccessToken(INSTANCE, {
-      refreshToken: "old", clientId: "app", clientSecret: "s", redirectUri: "https://os/oauth",
-    }, 0);
+    const grant = await refreshAccessToken(INSTANCE, { refreshToken: "old", clientId: "app", clientSecret: "s" }, 0);
     expect(Object.fromEntries(new URLSearchParams(calls[0].body))).toEqual({
       grant_type: "refresh_token", refresh_token: "old", client_id: "app", client_secret: "s",
-      redirect_uri: "https://os/oauth",
     });
-    expect(result).toEqual({
-      ok: true,
-      grant: {
-        accessToken: fx.oauthRefreshResponse.data.access_token,
-        refreshToken: fx.oauthRefreshResponse.data.refresh_token,
-        expiresAt: new Date(7200 * 1000),
-      },
+    expect(grant).toEqual({
+      accessToken: fx.oauthRefreshResponse.data.access_token,
+      refreshToken: fx.oauthRefreshResponse.data.refresh_token,
+      expiresAt: 7200 * 1000,
     });
   });
 
-  it("classifies invalid_grant as revoked and throws on other refresh failures", async () => {
+  it("reports only invalid_grant as the grant's death: a 5xx or an Access redirect is the request failing", async () => {
     fakeFetch([
       json(fx.oauthInvalidGrantResponse.data, { status: 400 }),
       new Response("upstream down", { status: 502 }),
+      new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login/x" } }),
     ]);
-    const params = { refreshToken: "old", clientId: "a", clientSecret: "s", redirectUri: "r" };
-    const revoked = await refreshAccessToken(INSTANCE, params);
-    expect(revoked).toMatchObject({ ok: false, revoked: true });
-    const failure = await refreshAccessToken(INSTANCE, params).catch(e => e);
-    expect(failure).toBeInstanceOf(GitLabApiError);
-    expect(failure.status).toBe(502);
+    const params = { refreshToken: "old", clientId: "a", clientSecret: "s" };
+    expect(isCredentialsExpired(await refreshAccessToken(INSTANCE, params).catch(e => e))).toBe(true);
+    const unavailable = await refreshAccessToken(INSTANCE, params).catch(e => e);
+    expect(unavailable).toBeInstanceOf(GitLabApiError);
+    expect(unavailable.status).toBe(502);
+    expect(isCredentialsExpired(unavailable)).toBe(false);
+    const turnedAway = await refreshAccessToken(INSTANCE, params).catch(e => e);
+    expect(turnedAway).toBeInstanceOf(GitLabApiError);
+    expect(turnedAway.movedTo).toMatch(/cloudflareaccess/);
+    expect(isCredentialsExpired(turnedAway)).toBe(false);
+  });
+
+  it.each([429, 500, 503])("does not take invalid_grant in a %i body for the grant's death", async status => {
+    // A rate limiter or an unhealthy upstream can answer with an OAuth-shaped body; only a 4xx
+    // from the token endpoint itself is evidence about the refresh token.
+    fakeFetch([json(fx.oauthInvalidGrantResponse.data, { status })]);
+    const error = await refreshAccessToken(INSTANCE, { refreshToken: "old", clientId: "a", clientSecret: "s" })
+      .catch(e => e);
+    expect(error).toBeInstanceOf(GitLabApiError);
+    expect(error.status).toBe(status);
+    expect(isCredentialsExpired(error)).toBe(false);
   });
 
   it("revokes with client credentials and the token", async () => {

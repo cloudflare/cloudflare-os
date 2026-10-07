@@ -148,9 +148,18 @@ the connection to the project's new path.
 ### "GitLab credentials have expired or been revoked"
 
 GitLab access tokens last two hours and are refreshed automatically; the refresh token behind them
-is single-use and rotates on every refresh. This error means the refresh token itself was rejected
-(`invalid_grant`) — typically because the application was revoked in GitLab, or the account sat
-idle past the instance's refresh-token lifetime. Reconnect the account.
+is single-use and rotates on every refresh. When GitLab refuses an access token the gatekeeper
+first refreshes past it. This error means the refresh token itself was rejected (`invalid_grant`)
+— typically because the application was revoked in GitLab, or the account sat idle past the
+instance's refresh-token lifetime. Reconnect the account. A token endpoint that is unreachable,
+answers 5xx, or is turned away by Cloudflare Access fails the request with "Could not refresh
+GitLab credentials" instead and leaves the connection intact.
+
+### "GitLab credentials were renewed during this request"
+
+GitLab invalidates an access token when it issues its replacement, so a request in flight while
+the gatekeeper refreshed can be refused. Reads are rerun once with the new token; anything else
+fails with this message and is safe to retry.
 
 ### The redirect URI does not match
 

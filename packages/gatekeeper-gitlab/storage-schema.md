@@ -8,20 +8,14 @@ as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape th
 | Key | Value | Notes |
 |---|---|---|
 | `callback` | `Fetcher<GatekeeperConnectCallback>` | Stored at connect; used for `complete`, `reconnectComplete`, `credentialsExpired`. |
-| `nonce` | `{ value, expiresAt, stage: "initiation" \| "oauth", reconnect?: true, replacesGrantId?, redirectUri? }` | Two-stage connect nonce. A reconnect's records the `grantId` that was live when it started: the grant it replaces. At the `oauth` stage `redirectUri` is the `redirect_uri` the authorize request carried (the stable Worker's, on a preview), repeated verbatim in the code exchange. |
-| `codeVerifier` | `string` | PKCE verifier, written with the `oauth`-stage nonce and deleted at code exchange. |
+| `nonce` | kit `connect-handshake` record: `{ value, expiresAt, stage: "initiation" \| "oauth" }`, plus at the `oauth` stage `{ codeVerifier, redirectUri, startedUnder, reconnect }` | Two-stage connect nonce, consumed by the callback (or by GitLab's refusal). `codeVerifier` is the PKCE verifier; `redirectUri` the `redirect_uri` the authorize request carried (the stable Worker's, on a preview), repeated verbatim in the code exchange; `startedUnder` the connection generation the attempt began under; `reconnect` whether the grant is staged rather than made live, fixed when the attempt starts. |
 | `requestedScopes` | `string[]` | Scopes requested for this flow (auth-only or full). |
 | `ephemeral` | `boolean` | Auth-only sign-in grant; self-destructs two minutes after `complete()`. |
-| `accessToken` | `string` | Current access token. |
-| `accessTokenExpiresAt` | `number` | Epoch ms, from the token response's `expires_in`. |
-| `refreshToken` | `string` | Current refresh token. Rotates on every refresh; the new value is written with the new access token in one transaction. |
-| `scopes` | `string[]` | Scopes the live grant was requested with. Absent on stub-era accounts, which is the reconnect trigger. |
-| `grantId` | `string` | Names the live authorization: minted by connect/reconnect, kept across refreshes. Derived facts (`userId`, `deadGrantId`) are trusted only while it is unchanged. |
-| `credentialId` | `string` | Names the live access token: minted by every grant write, refresh included. |
-| `userId` | `number` | The GitLab user the live grant belongs to, read from `GET /user` on first need (the observer probe) and dropped with `grantId`. |
-| `deadGrantId` | `string` | The `grantId` whose refresh token GitLab refused (`invalid_grant`), so the dead token is not sent again -- not by a burst of callers, nor by a restarted object. A connect or reconnect writes a new `grantId`, which retires it. |
-| `expiredNotified`, `expiredNotifiedArm` | kit `credential-expiry` latch | `credentialsExpired()` sent once per grant: latched after the Workshop acknowledges, re-armed by every grant write. A refusal is reported against the `credentialId` whose token was refused and dropped if that token is no longer live. |
-| `stagedCredentials` | kit `credential-stage` record | A reconnect's grant and the `grantId` it replaces, until `commitReconnect(stageId)`. Once another reconnect has replaced that grant, the commit revokes the staged tokens instead. |
+| `credentials` | `{ accessToken, refreshToken, expiresAt, scopes }` | The live grant, owned by the kit's `CredentialCoordinator` with its `credentials:*` keys (identity fence, connection generation, recorded death, migration marker). `expiresAt` is epoch ms from the token response's `expires_in`; the coordinator refreshes a minute before it, redeeming the single-use refresh token once and storing the rotated pair before serving either. `scopes` are the scopes requested at grant time (the token response carries none); empty on a stub-era grant, which is the reconnect trigger. |
+| `accessToken`, `accessTokenExpiresAt`, `refreshToken`, `scopes` | | The layout before the kit, which the deployed internal stub also wrote (minus `scopes`): migrated into `credentials` on first read, then deleted. A missing expiry refreshes on first use. |
+| `user` | `{ id, generation }` | The GitLab user behind the connection, read from `GET /user` on first need (the observer probe) and trusted only while the connection generation is unchanged. |
+| `expiredNotified`, `expiredNotifiedArm` | kit `credential-expiry` latch | `credentialsExpired()` sent once per dead grant: latched after the Workshop acknowledges, re-armed by every credential replacement. |
+| `stagedCredentials` | kit `credential-stage` record of `{ grant, startedUnder }` | A reconnect's grant and the connection generation it replaces, until `commitReconnect(stageId)`. Once another reconnect has moved the generation, the commit revokes the staged tokens instead. |
 
 ## GitLabGatekeeperImpl
 

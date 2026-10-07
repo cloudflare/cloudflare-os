@@ -4,10 +4,10 @@
 // with the same redirect_uri it authorized under. The relay itself is the kit's
 // (`gatekeeper-kit/preview-oauth`); these tests pin how this Worker wires it and what it stores.
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/gitlab.js";
-import { FakeGitLab, json } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json } from "./fake-gitlab.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -33,15 +33,12 @@ function envFor(baseUrl: string, preview: { relayTo: string } | undefined): Env 
 /** The stable staging Worker may relay to its previews. */
 const stableEnv = { ...envFor(STABLE, undefined), OAUTH_ALLOW_PREVIEW_REDIRECTS: "true" } as Env;
 
+/** A new account at the start of a connect flow, as `connectAccount` leaves it. */
 async function seedInitiation(): Promise<{ doId: string; nonce: string }> {
-  const id = env.USER_ACCOUNT.newUniqueId();
+  const doId = env.USER_ACCOUNT.newUniqueId().toString();
   const nonce = "b".repeat(64);
-  await runInDurableObject(env.USER_ACCOUNT.get(id), async (_i, state) => {
-    state.storage.kv.put("nonce", { value: nonce, expiresAt: Date.now() + 60_000, stage: "initiation" });
-    state.storage.kv.put("requestedScopes", ["api", "write_repository"]);
-    state.storage.kv.put("callback", "placeholder");
-  });
-  return { doId: id.toString(), nonce };
+  await hooks().installCallback(doId, 0, nonce);
+  return { doId, nonce };
 }
 
 function ctxFor() {
@@ -99,6 +96,20 @@ describe("OAuth on a Worker Preview", () => {
     const shown = await worker.fetch(new Request(relayed.toString()), previewEnv, ctxFor());
     expect(shown.status).toBe(400);
     expect(await shown.text()).toMatch(/GitLab authorization failed/);
+    // The refusal ended the attempt: a code arriving on the same state afterwards finds it gone.
+    const replayed = new URL(relayed);
+    replayed.searchParams.delete("error");
+    replayed.searchParams.set("code", "late-code");
+    const late = await worker.fetch(new Request(replayed.toString()), previewEnv, ctxFor());
+    expect(await late.text()).toMatch(/Authorization Link Expired/);
+  });
+
+  it("answers a callback whose state names no account with a 400, not an exception", async () => {
+    const production = { ...env, BASE_URL: "https://gadgets.example.com/gatekeeper/gitlab" } as Env;
+    const response = await worker.fetch(
+      new Request(`https://gadgets.example.com/gatekeeper/gitlab/oauth?code=c&state=${"0".repeat(64)}:${"b".repeat(64)}`),
+      production, ctxFor());
+    expect(response.status).toBe(400);
   });
 
   it("runs direct when the preview variables are unset, as in production: its own callback, the plain state", async () => {

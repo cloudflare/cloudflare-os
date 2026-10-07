@@ -6,7 +6,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchesResourceUrlPattern, resolveRequestedResource } from "@gadgets/workshop-shared/gatekeeper";
-import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, hooks, json, projectProps, seedAccount, stageReconnect, unwrap } from "./fake-gitlab.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -175,37 +175,34 @@ describe("observer admission", () => {
   });
 
   it("does not admit a reconnected user on the previous user's membership", async () => {
-    // Reporter `alice` connects; her /user read is slow. While it is in flight the account is
-    // reconnected as `bob`, a non-member. A probe that kept alice's id and used bob's token would
-    // look up alice's Reporter row and admit bob. Instead the id is fenced to the grant that
-    // answered it, and the probe re-reads under the new grant -- and denies bob.
+    // Reporter `alice` connects; while her /user read is in flight the account is reconnected as
+    // `bob`, a non-member. A probe that kept alice's id and used bob's token would look up alice's
+    // Reporter row and admit bob. Instead the id is fenced to the connection that answered it, and
+    // the probe re-reads under the new one -- and denies bob.
     const gitlab = fakeMembers({ alice: { access_level: 20 }, bob: null });
-    let released!: () => void;
-    const holdAlice = new Promise<void>(resolve => { released = resolve; });
     gitlab.on("GET", /^\/api\/v4\/user$/, async request => {
       const name = request.headers.get("authorization")!.replace("Bearer ", "");
-      if (name === "alice") await holdAlice;
+      if (name === "alice") {
+        // The reconnect commits before alice's answer is sent. The handler runs in the object
+        // making the probe, so the account stub is made here: one made in the test's own context
+        // is an I/O object of another context and cannot be used from this one.
+        const account = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(id));
+        await runInDurableObject(account, async instance => {
+          await instance.commitReconnect(await stageReconnect(instance, "code-bob"));
+        });
+      }
       return json({ id: name === "alice" ? 100 : 101, username: name, name, web_url: `https://gitlab.example.com/${name}` });
     });
+    // The reconnect's code exchange mints bob's token.
+    gitlab.on("POST", /^\/oauth\/token/, () => json({ access_token: "bob", refresh_token: "bob-refresh", expires_in: 7200 }));
     gitlab.install();
     const id = await seedAccount({ accessToken: "alice" });
-    const stub = env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(id));
-    await runInDurableObject(stub, async (_i, state) => { state.storage.kv.put("grantId", "grant-alice"); });
+    await hooks().installCallback(id);
 
-    const probe = hooks().hasProjectAccess(id, "group/sub/project");
-    // The reconnect lands mid-read: bob's tokens under a new grant id.
-    for (let i = 0; i < 50 && gitlab.count("GET", /\/api\/v4\/user$/) === 0; i++) await new Promise(r => setTimeout(r, 5));
-    await runInDurableObject(stub, async (_i, state) => {
-      state.storage.kv.put("accessToken", "bob");
-      state.storage.kv.put("grantId", "grant-bob");
-      state.storage.kv.delete("userId");
-    });
-    released();
-    expect(await unwrap(await probe)).toBe(false);
-    // Alice's id was never stored against bob's grant.
-    await runInDurableObject(stub, async (_i, state) => {
-      expect(state.storage.kv.get("userId")).toBe(101);
-    });
+    expect(await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"))).toBe(false);
+    // Alice's id was never stored against bob's connection: probing again reuses bob's.
+    expect(await unwrap(await hooks().hasProjectAccess(id, "group/sub/project"))).toBe(false);
+    expect(gitlab.count("GET", /\/api\/v4\/user$/)).toBe(2);
   });
 
   it("is what addObserver enforces", async () => {

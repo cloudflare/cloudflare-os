@@ -1,11 +1,7 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import {
-  GitLabApi,
-  type GitLabIssueResponse,
-  type GitLabMergeRequestResponse,
-  type GitLabProjectResponse,
-} from "./gitlab-api";
+import type { GitLabIssueResponse, GitLabMergeRequestResponse, GitLabProjectResponse } from "./gitlab-api";
+import type { GitLabApiRunner } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
 import type { GitLabIssueConfiguratorRpc } from "./configurator/gitlab-issue-configurator-types";
 import type { GitLabMergeRequestConfiguratorRpc } from "./configurator/gitlab-merge-request-configurator-types";
@@ -17,10 +13,10 @@ const AUTOCOMPLETE_OPTION_LIMIT = 100;
 // A full project path: two or more segments of GitLab's namespace/project character set.
 const PROJECT_PATH_PATTERN = /^[A-Za-z0-9_.][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/;
 
-/** What every configurator capability needs: where the instance is and how to call it. */
+/** What every configurator capability needs: where the instance is and how to read it as the account. */
 export type ConfiguratorContext = {
   instanceUrl: string;
-  api: GitLabApi;
+  read: GitLabApiRunner;
 };
 
 const contexts = new WeakMap<object, ConfiguratorContext>();
@@ -89,24 +85,24 @@ export class GitLabProjectConfiguratorUI extends RpcTarget implements GitLabProj
   }
 
   async listProjects(query: string): Promise<ConfiguratorOption[]> {
-    const { instanceUrl, api } = contextOf(this);
+    const { instanceUrl, read } = contextOf(this);
     const trimmedQuery = query.trim();
     const exactPath = exactProjectPath(instanceUrl, trimmedQuery);
 
     // Membership listing, most recently active first; `search` narrows it server-side and
     // `search_namespaces` lets a group name in the query match too.
-    const projects = await api.listMemberProjects({
+    const projects = await read(api => api.listMemberProjects({
       search: exactPath ?? (trimmedQuery || undefined),
       perPage: AUTOCOMPLETE_OPTION_LIMIT,
       page: 1,
-    });
+    }));
     const options = projects.items.map(projectToOption);
 
     // Fall back to a direct lookup for an exact path or URL the membership search didn't return
     // (a public or internal project the user is not a member of).
     if (exactPath && !options.some(option => option.value.toLowerCase() === exactPath.toLowerCase())) {
       try {
-        options.unshift(projectToOption(await api.getProject(exactPath)));
+        options.unshift(projectToOption(await read(api => api.getProject(exactPath))));
       } catch {
         // Ignore exact lookup failures; the dropdown will show search matches or "No matches".
       }
@@ -120,26 +116,26 @@ export class GitLabProjectConfiguratorUI extends RpcTarget implements GitLabProj
 export class GitLabIssueConfiguratorUI extends GitLabProjectConfiguratorUI implements GitLabIssueConfiguratorRpc {
   async listIssues(projectPath: string | null | undefined, query: string): Promise<ConfiguratorOption[]> {
     if (!projectPath) return [];
-    const { instanceUrl, api } = contextOf(this);
+    const { instanceUrl, read } = contextOf(this);
     const path = exactProjectPath(instanceUrl, projectPath);
     if (!path) return [];
     const trimmedQuery = query.trim();
 
-    const issues = await api.listIssues(path, {
+    const issues = await read(api => api.listIssues(path, {
       state: "all",
       search: trimmedQuery || undefined,
       orderBy: "updated_at",
       sort: "desc",
       perPage: AUTOCOMPLETE_OPTION_LIMIT,
       page: 1,
-    });
+    }));
     // Searched server-side, so nothing to re-filter here.
     const options = issues.items.map(issueOption);
 
     const iid = iidFromQuery(query);
     if (iid && !options.some(option => option.value === String(iid))) {
       try {
-        options.unshift(issueOption(await api.getIssue(path, iid)));
+        options.unshift(issueOption(await read(api => api.getIssue(path, iid))));
       } catch {}
     }
 
@@ -151,25 +147,25 @@ export class GitLabIssueConfiguratorUI extends GitLabProjectConfiguratorUI imple
 export class GitLabMergeRequestConfiguratorUI extends GitLabProjectConfiguratorUI implements GitLabMergeRequestConfiguratorRpc {
   async listMergeRequests(projectPath: string | null | undefined, query: string): Promise<ConfiguratorOption[]> {
     if (!projectPath) return [];
-    const { instanceUrl, api } = contextOf(this);
+    const { instanceUrl, read } = contextOf(this);
     const path = exactProjectPath(instanceUrl, projectPath);
     if (!path) return [];
     const trimmedQuery = query.trim();
 
-    const mergeRequests = await api.listMergeRequests(path, {
+    const mergeRequests = await read(api => api.listMergeRequests(path, {
       state: "all",
       search: trimmedQuery || undefined,
       orderBy: "updated_at",
       sort: "desc",
       perPage: AUTOCOMPLETE_OPTION_LIMIT,
       page: 1,
-    });
+    }));
     const options = mergeRequests.items.map(mergeRequestOption);
 
     const iid = iidFromQuery(query);
     if (iid && !options.some(option => option.value === String(iid))) {
       try {
-        options.unshift(mergeRequestOption(await api.getMergeRequest(path, iid)));
+        options.unshift(mergeRequestOption(await read(api => api.getMergeRequest(path, iid))));
       } catch {}
     }
 

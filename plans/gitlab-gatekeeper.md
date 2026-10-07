@@ -103,7 +103,8 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   cheap, documented as "recommended for both client and server apps", and
   `gatekeeper-cloudflare/src/oauth.ts` is the in-repo reference; we send `client_secret` *and*
   `code_verifier` (the docs neither require nor forbid the combination). The refresh request
-  carries `redirect_uri`, as the documented example does. Auth-only grants are transient
+  carries no `redirect_uri`: RFC 6749 §6 defines none, and Doorkeeper, the provider underneath,
+  ignores the one GitLab's documented example sends. Auth-only grants are transient
   (2-minute self-destruct alarm), exactly as GitHub's. The `read_user` scope is described as
   exposing the "public email", which reads as though `/user` would omit the private primary
   address; GitLab's source says otherwise: `read_user` admits `GET /user` (`lib/api/users.rb`),
@@ -112,48 +113,49 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   live (an EE override of the entity was not checked), so the first live checkpoint confirms it;
   if it fails, the transient sign-in grant requests `read_api` instead (still read-only, still
   discarded within two minutes).
-- **Refresh under a mutex, rotation persisted before use.** `UserAccount.getAccessToken()`
-  returns the cached token while it has more than `ACCESS_TOKEN_EXPIRY_SAFETY_MS` left; otherwise
-  it takes the account's `Mutex`, re-checks, refreshes, **writes the new refresh token and access
-  token in one storage transaction**, and only then returns. A refresh that fails with
-  `invalid_grant` marks the account expired (`credentialsExpired()`, once) and throws the
-  reconnect message, and the refusal is stored with the grant (`deadGrantId`), so a restarted
-  object does not send the dead refresh token again; other failures set a short cooldown so a
-  storm of callers doesn't hammer the token endpoint. Modeled on `gatekeeper-google`'s
-  `UserAccount`, minus its "if a new refresh token is returned, use it" TODO — GitLab always
-  returns one, and losing it strands the account.
+- **The grant lives in the kit's `CredentialCoordinator`, as GitHub's has since #661.**
+  `UserAccount.getAccessToken()` is the coordinator's `snapshot`: the stored token while it is
+  outside the kit's expiry safety window, otherwise one refresh, redeeming the single-use refresh
+  token once however many callers are waiting and **storing the rotated pair before serving
+  either**. A refresh GitLab answers `invalid_grant` in a 4xx other than 429 (the kit's
+  `isInvalidGrant` rule) is the grant's death: the coordinator records it with the grant, so a
+  restarted object does not send the dead refresh token again, and announces it once through the
+  kit's `credential-expiry` latch (`notifyCredentialsExpiredOnce`, which latches only after the
+  Workshop acknowledges, so a callback that fails transiently is retried by the next refusal).
+  Every other refresh failure — a network error, a 429 or 5xx whatever its body, an Access 3xx —
+  is transient, and `#mintFailure` repeats it for a minute to a burst of callers rather than
+  asking GitLab again. `discardMint` revokes a mint only when a disconnect overtook it: the
+  disconnect revoked the pair it found, which the refresh had already rotated out, and nothing
+  survives for the revocation to harm. A mint a reconnect overtook is dropped unrevoked, since
+  GitLab does not document that revoking one refresh token leaves the rest of the authorization
+  standing (RFC 7009 lets it revoke the lot) and the reconnect's connection must survive.
+  The stub-era keys (`accessToken`, `accessTokenExpiresAt`, `refreshToken`, `scopes`) migrate into
+  the coordinator's `credentials` record on first read; a stub grant has no `scopes`, reads as
+  none, and so `ensureResources` offers the reconnect that widens it while its token keeps serving.
   A `401` is a credential rejection only from `GET /user` (the one request that asserts nothing
-  but authentication) and the git endpoints (which authenticate nothing but the bearer); those go
-  straight to `credentialsExpired()` and the reconnect message, with no refresh-and-replay —
-  expiry is handled proactively from `expires_in`, so a `401` on a token our clock still considers
-  fresh means it was revoked, and a refresh would only come back `invalid_grant`. Every other
-  endpoint's `401` is that operation's own answer: GitLab documents `PUT …/merge` answering 401 for
-  "this user does not have permission to accept this merge request", and the approvals endpoint
-  requires an eligible approver, so a Reporter trying to merge must not retire their healthy
-  connection. A revoked token still surfaces on the next `describe()` or observer probe, both of
-  which read `/user`.
-- **Facts derived from a grant are fenced to it.** A connect or reconnect mints a `grantId`; a
-  refresh keeps it. The observer probe's user id is read from `/user` once per grant and stored
-  against it, and the probe discards a membership row when the grant moved between reading the id
-  and reading the row — a reconnect as a different GitLab user landing in that window would
-  otherwise pair one user's Reporter membership with another's token and admit the wrong person.
-  What GitLab *says* about a token is fenced one level finer, to the token itself:
-  `UserAccount.getCredential()` hands out `{ token, credentialId }`, where `credentialId` is new
-  on every write, refresh included (GitLab invalidates the old access token when it issues the
-  new one, so a refusal of the old one says nothing about its successor); `GitLabApi` stamps the
-  `credentialId` a failed request carried onto its `GitLabApiError`, and the one reporting path —
-  `withAccountApi` in `gitlab-env.ts`, shared by the entrypoint and the DO — calls
-  `credentialsRejected(credentialId)`, which drops the report if that token is no longer live. A
-  401 for token A arriving after a refresh or a reconnect replaced A therefore says nothing about
-  the account. A reconnect is fenced to the grant it replaces: it records the `grantId` live when
-  it started (`replacesGrantId`), and `commitReconnect` revokes rather than commits a staged
-  grant whose predecessor a newer reconnect has already replaced, so a slow flow cannot land over
-  a faster one. The notice itself is the kit's `credential-expiry` latch
-  (`notifyCredentialsExpiredOnce`, re-armed by `clearCredentialExpiryLatch` in the one place a
-  grant is written): it latches only after the Workshop has acknowledged, so a callback that
-  fails transiently is retried by the next refusal instead of silencing the account, and a grant
-  written mid-notification is not latched against. This is the credentials half of the kit
-  review asked for; the coordinator itself stays deferred (Punted).
+  but authentication) and the git endpoints (which authenticate nothing but the bearer). Every
+  other endpoint's `401` is that operation's own answer: GitLab documents `PUT …/merge` answering
+  401 for "this user does not have permission to accept this merge request", and the approvals
+  endpoint requires an eligible approver, so a Reporter trying to merge neither retires their
+  connection nor spends a refresh rotation. A credential rejection goes, by the one path —
+  `withAccountApi` in `gitlab-env.ts`, shared by the entrypoints and the DO — to
+  `reportTokenRejected(presentedToken)`, which the coordinator adjudicates against the token the
+  request actually sent. GitLab invalidates an access token when it issues the successor, so a
+  token the account no longer holds failed stale: `superseded`, and a `replayable` read runs once
+  more with the new token while any other call fails as retryable. A refusal of the token still
+  held is refreshed past rather than taken for death (it is also what a request sees while that
+  token's refresh is in flight); only an `invalid_grant` on that refresh makes it `expired`.
+- **Facts derived from a connection are fenced to it.** The coordinator's
+  `connectionGeneration()` moves on every connect, reconnect and disconnect, not on a refresh.
+  The observer probe's user id is read from `/user` once per generation and stored against it
+  (`user: { id, generation }`), a read that finished under a newer generation is neither stored
+  nor returned, and the probe discards a membership row when the generation moved between
+  reading the id and reading the row — a reconnect as a different GitLab user landing in that
+  window would otherwise pair one user's Reporter membership with another's token and admit the
+  wrong person. A connect attempt records the generation it began under (`startedUnder`), and
+  both an initial connect and `commitReconnect` write through `connect(grant, { ifGeneration })`:
+  a disconnect, or a reconnect that overtook a slower one, wins, and the losing flow's tokens are
+  revoked rather than committed over the newer grant.
 - **An expired membership admits nobody.** GitLab documents that from a member row's `expires_at`
   onward the user can no longer access the project, but the row is swept by a daily worker, so
   `members/all` can still list it with the date passed. The probe reads the date (a day, taken as
@@ -442,9 +444,9 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   (3xx → "project moved" or "an access proxy answered"; see the locked decision), and error-body
   parsing that handles the three documented shapes — `{"message": "404 …"}`, the validation hash
   `{"message": {"field": ["…"]}}`, and OAuth-style `{"error", "error_description"}` — into
-  `GitLabApiError { status, details, isAuthError, credentialId }`, `isAuthError` marking a `401`
+  `GitLabApiError { status, details, isAuthError }`, `isAuthError` marking a `401`
   from `GET /user` or a git endpoint, the only requests whose 401 is about the credential (see
-  the refresh decision); a `429` appends the documented `Retry-After`. Project paths are passed
+  the credential decision); a `429` appends the documented `Retry-After`. Project paths are passed
   already URL-encoded
   (`encodeURIComponent(pathWithNamespace)`) — GitLab's `:id` is either the numeric id or the
   encoded full path, and we always use the path; branch and tag names are encoded whole, slashes
@@ -461,10 +463,11 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   redirectUri, codeVerifier})` → `GitLabOAuthGrant { accessToken, refreshToken, expiresAt }`
   (`expiresAt` from the response's `expires_in` — never a hard-coded 7200, since admins can
   change it from 19.1; the documented response has no `scope` field, so requested scopes are
-  recorded by the caller), `refreshAccessToken(...)` (sends `redirect_uri` too, per the
-  documented example) → grant or `{ revoked: true }` on a 4xx whose body is
-  `error: "invalid_grant"`, `revokeToken(apiOrigin, headers, token, clientId, clientSecret)`
-  (called for both tokens — the docs don't say revoking one revokes the other), and
+  recorded by the caller), `refreshAccessToken(...)` (no `redirect_uri`; see the OAuth decision)
+  → grant, throwing the kit's `CredentialsExpiredError` on a 4xx other than 429 whose body is
+  `error: "invalid_grant"` and an ordinary error otherwise, `revokeToken(apiOrigin, headers,
+  token, clientId, clientSecret)` (called for both tokens — the docs don't say revoking one
+  revokes the other), and
   `fetchCurrentUser(apiOrigin, headers, token)` → `{ username, name, avatarUrl, email?,
   confirmedAt? }` for both `describe()` and `getAuthenticatedEmail()`. All POSTs are
   `application/x-www-form-urlencoded`.
@@ -509,7 +512,7 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   | git fetch | `POST github.com/{o}/{r}.git/git-upload-pack`, Basic `x-access-token:` | `POST {apiOrigin}/{path}.git/git-upload-pack`, Basic `oauth2:<token>` (the documented username), `Git-Protocol: version=2` (v2 "enabled by default in GitLab for HTTP requests") |
   | git push | `…/git-receive-pack` | same host/auth, classic protocol; requires the `write_repository` scope |
   | authorize | `github.com/login/oauth/authorize` | `{instanceUrl}/oauth/authorize?response_type=code&scope=&state=&code_challenge=&code_challenge_method=S256` |
-  | token / refresh / revoke | `…/login/oauth/access_token`, `DELETE /applications/{id}/token` | `{apiOrigin}/oauth/token` (`grant_type=authorization_code` + `code_verifier`; `grant_type=refresh_token` + `redirect_uri`), `{apiOrigin}/oauth/revoke {client_id, client_secret, token}` |
+  | token / refresh / revoke | `…/login/oauth/access_token`, `DELETE /applications/{id}/token` | `{apiOrigin}/oauth/token` (`grant_type=authorization_code` + `code_verifier` + `redirect_uri`; `grant_type=refresh_token`), `{apiOrigin}/oauth/revoke {client_id, client_secret, token}` |
 
   Every cell above is taken from the current GitLab documentation (see [Verification](#verification)).
   The `author` history filter and `with_labels_details` carry no "introduced in" note on the
@@ -539,21 +542,20 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   it live and calls `callback.complete(GatekeeperUserImpl({props}))`; the browser lands on
   `connectHandoffPageHtml`. Auth-only grants set the 2-minute alarm. All from
   `gatekeeper-kit/connect-pages` and `credential-stage`; nothing hand-rolled.
-- **Grant storage**: `accessToken`, `accessTokenExpiresAt`, `refreshToken`, `scopes`, the ids
-  the fencing decision above describes (`grantId`, `credentialId`, and `userId` and `deadGrantId`
-  kept against the grant), `expiredNotified`, `stagedCredentials` (kit key).
-  `commitReconnect(stageId)` writes the staged grant, or revokes it when the grant it was staged
-  to replace is no longer the live one. The scope guard lives in `ensureResources()`, not
+- **Grant storage**: the coordinator's `credentials` record (`{ accessToken, refreshToken,
+  expiresAt, scopes }`) and its `credentials:*` fence keys, `user` (`{ id, generation }`),
+  `expiredNotified` (kit latch), `stagedCredentials` (kit key, `{ grant, startedUnder }`).
+  `commitReconnect(stageId)` writes the staged grant, or revokes it when the connection it was
+  staged to replace is no longer the live one. The scope guard lives in `ensureResources()`, not
   `getAccessToken()`: a grant whose recorded `scopes` (missing → empty) lack `api` or
   `write_repository` is answered with the `reconnect()` URL, and reads the grant can serve are
   never refused (auth-only grants never get here — they're consumed via `getAuthenticatedEmail`
   and destroyed).
-- **Refresh** per the locked decision: `Mutex` (as `gatekeeper-google`), fast path when
-  `expiresAt − now > ACCESS_TOKEN_EXPIRY_SAFETY_MS`, in-lock re-check, `refreshAccessToken`,
-  `ctx.storage.transactionSync` writing both tokens and the new expiry, `#mintFailure` cooldown
-  on non-`invalid_grant` errors, `credentialsExpired()` (once, via `expiredNotified`) and
-  `deadGrantId` on `invalid_grant`. `revoke()` revokes both tokens (the docs don't say revoking
-  one revokes its partner), logs failures, `deleteAll()`.
+- **Refresh** per the locked decision: the coordinator's `snapshot` and `adjudicateRejection`,
+  both given the same `refresh` (`refreshAccessToken` behind the `#mintFailure` cooldown) so a
+  refused live token is refreshed past; `notify` is `notifyCredentialsExpiredOnce`. `revoke()`
+  clears the coordinator before its first await, `deleteAll()`s, then revokes both tokens (the
+  docs don't say revoking one revokes its partner), logging failures.
 - **`GatekeeperVendor.describe()`**: `displayName: "GitLab"`, `url: instanceUrl(env)`, the
   GitLab logo (from the internal stub's `gitlab-logo.svg`), `tagline: "Triage issues, review
   merge requests, and push to projects"`, `providesAuth: true`.
@@ -1259,33 +1261,14 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 - **A shared `GitHubApi`/`GitLabApi` HTTP-client base in the kit** — the `request()`/
   `conditionalGet()`/error-class trio is now duplicated twice; a third copy is when it earns a
   module.
-- **`gatekeeper-kit/credentials` for both git gatekeepers.** Review asked why `UserAccount`
-  hand-rolls its refresh mutex, cooldown, superseded-write check, and disconnect-during-exchange
-  guard when `CredentialCoordinator`/`CredentialSource` exist for exactly that. Considered and
-  deferred, for reasons that should be settled before either gatekeeper adopts it: (1) the kit
-  heals a `401` by refreshing before it will call a grant dead, so GitLab's permission-`401`s
-  (merge, approve) would each burn a single-use refresh rotation and surface as "credentials
-  changed" — the per-endpoint classification above is needed with or without the kit, and once
-  it is there the kit's heal is not what fixes that case; (2) `discardMint` revokes a fenced-out
-  refresh token, and RFC 7009 lets a provider treat that as revoking the whole grant — whether
-  GitLab does is a live-checkpoint question the kit's own docs say to answer first; (3) the
-  coordinator owns a canonical `credentials` record, so adoption is a storage migration on top of
-  the stub-era one; (4) no production gatekeeper has adopted it yet. The `grantId` and
-  `credentialId` fences above are the kit's identity fence in miniature; adopting the kit would
-  replace them, not add to them.
-  The kit's *leaf* `credential-expiry` module is adopted (same `expiredNotified` key, no
-  migration): the third review round found the hand-rolled latch written before the callback,
-  which is the bug that module exists to remove.
 - **The kit's `OAuthClient` for both git gatekeepers' token requests.** Review asked for the
   kit's production-tested client in place of `gitlab-api.ts`'s hand-written exchange, refresh
-  and revoke (GitHub hand-writes its exchange too). Deferred, because today it would cost three
+  and revoke (GitHub hand-writes its exchange too). Deferred, because today it would cost two
   things this port does: it refuses any endpoint that is not `https`, where this port accepts
-  loopback `http` for a GitLab run on the developer's machine; it reserves `redirect_uri`, so a
-  refresh cannot send the one GitLab's documented refresh example sends (Doorkeeper, the
-  provider underneath, ignores it there, so this one is cosmetic); and its 3xx refusal drops the
-  `Location`, so it cannot say that Access, not GitLab, answered. Each is a small kit change. The
-  client does not wait on the coordinator above — gatekeeper-cloudflare and mcp-shared use
-  `OAuthClient` without it — so moving both gatekeepers to it is a change of its own.
+  loopback `http` for a GitLab run on the developer's machine; and its 3xx refusal drops the
+  `Location`, so it cannot say that Access, not GitLab, answered. Each is a small kit change, and
+  the client is independent of the coordinator (gatekeeper-cloudflare and mcp-shared use
+  `OAuthClient` without it), so moving both gatekeepers to it is a change of its own.
 - **Replies to provisional diff comments, in both gatekeepers.** Each session's
   `replyToDiffComment()` refuses a `~` id up front, so the machinery behind it — the
   `diffAlias:` keys written at apply, the hop-bounded chain walk in the reply resolver, and the
@@ -1362,24 +1345,20 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   order that puts `9` after `10`, where the provider orders by id — immaterial for timestamp
   sorts, decisive for `popularity`/`comments`, where most rows tie. From the third round: the
   reject cascade follows the action's *target* only, so an action whose body cites a rejected
-  `#~N` stays pending and fails every apply (this port's `referenceBearingTexts`); the
-  `expiredNotified` latch is written *before* `credentialsExpired()` is called, so a callback that
-  fails transiently silences the account for good (the kit's `credential-expiry` module is the
-  fix, adopted here); and a 401 arriving for a token that a reconnect has since replaced retires
-  the new grant (this port's `credentialId` on `GitLabApiError` +
-  `credentialsRejected(credentialId)`). From the fourth round: rejecting a push leaves the
-  pushes stacked on it pending, though their compare-and-swap can no longer succeed, and while
-  they wait their expected old heads — commits GitHub never received — pass as GitHub's
-  (`knownShas` in `#collectPendingChain`) and their push marks keep the rejected commits
-  readable as pushed (this port's `#rejectActionsStrandedByPush`); a merge whose reply was lost
-  is sent again by the retried apply, with no re-read to recognise the pull request as merged
-  (this port re-reads on a 405 and accepts a merge at its bound head); `acceptAuthCode` frees
-  the nonce before its code exchange and stages the result without asking whether the grant it
-  replaces is still live, so a reconnect that starts and commits during that exchange is
-  overwritten when the slower one commits (this port's `replacesGrantId`); and `removeLabels`
-  applies `setLabels` with the set computed at prepare from the overlay, so a label an
-  unapproved `addLabels` queued reaches GitHub and one a human added since is dropped (this
-  port sends GitLab's `remove_labels` delta).
+  `#~N` stays pending and fails every apply (this port's `referenceBearingTexts`). From the fourth
+  round: rejecting a push leaves the pushes stacked on it pending, though their compare-and-swap
+  can no longer succeed, and while they wait their expected old heads — commits GitHub never
+  received — pass as GitHub's (`knownShas` in `#collectPendingChain`) and their push marks keep the
+  rejected commits readable as pushed (this port's `#rejectActionsStrandedByPush`); a merge whose
+  reply was lost is sent again by the retried apply, with no re-read to recognise the pull request
+  as merged (this port re-reads on a 405 and accepts a merge at its bound head); `acceptAuthCode`
+  frees the nonce before its code exchange and stages the result without asking whether the grant
+  it replaces is still live, so a reconnect that starts and commits during that exchange is
+  overwritten when the slower one commits (this port stages the connection generation the
+  attempt began under and commits through `connect(grant, { ifGeneration })`); and `removeLabels`
+  applies `setLabels` with the set computed at prepare from the overlay, so a label an unapproved
+  `addLabels` queued reaches GitHub and one a human added since is dropped (this port sends
+  GitLab's `remove_labels` delta).
   Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
   which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential

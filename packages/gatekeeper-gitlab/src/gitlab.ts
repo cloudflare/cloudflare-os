@@ -5,8 +5,9 @@
 //
 // A mirror of gatekeeper-github (see plans/gitlab-gatekeeper.md). What differs is instance
 // configuration (any GitLab, optionally behind Cloudflare Access) and credentials: GitLab access
-// tokens expire and refresh tokens rotate, so `UserAccount` refreshes under a lock and persists
-// the rotated pair before using either.
+// tokens expire and refresh tokens rotate, so `UserAccount` keeps its grant in the kit's
+// `CredentialCoordinator`, which redeems a refresh token once and persists the rotated pair
+// before serving either.
 
 import { DurableObject, RpcStub, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
@@ -24,42 +25,41 @@ import {
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
+import { CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
-  INITIATION_NONCE_LIFETIME_MS,
-  NONCE_BYTES,
-  OAUTH_NONCE_LIFETIME_MS,
-  constantTimeEqual,
-  generateNonce,
-} from "@gadgets/gatekeeper-kit/connect-nonce";
-import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+  CredentialCoordinator,
+  isConnectionSuperseded,
+  isCredentialsExpired,
+  type RejectionVerdict,
+} from "@gadgets/gatekeeper-kit/credentials";
+import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { createPkce } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import {
-  GitLabApi,
   GitLabApiError,
   buildAuthorizeUrl,
   exchangeAuthCode,
-  generatePkce,
   refreshAccessToken,
   revokeToken,
-  type GitLabCredential,
   type GitLabOAuthGrant,
 } from "./gitlab-api";
 import {
   AUTH_SCOPES,
   OAUTH_SCOPES,
-  RECONNECT_MESSAGE,
   VENDOR_ID,
-  ensureConfigured,
   getBasePath,
   getBaseUrl,
   getRedirectUri,
   gitlabInstance,
   instanceUrl,
+  oauthApp,
   supportedResources,
   withAccountApi,
   type AccountCredentials,
   type Env,
+  type GitLabApiRunner,
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
@@ -82,33 +82,30 @@ const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorI
 
 const GITLAB_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GITLAB_LOGO_SVG)}`;
 
-/** Refresh when less than this remains; GitLab's default lifetime is 7200s. */
-const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
 /** Back-off after a non-terminal refresh failure so a burst of callers doesn't hammer the token endpoint. */
 const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** Auth-only sign-in grants self-destruct shortly after the email is read. */
 const EPHEMERAL_GRANT_LIFETIME_MS = 2 * 60 * 1000;
-/** An account whose connect flow never completes is dropped. */
-const CONNECT_TIMEOUT_MS = 60 * 60 * 1000;
 
-type StoredNonce = {
-  value: string;
-  expiresAt: number;
-  stage: "initiation" | "oauth";
+/**
+ * What a connect attempt carries from the authorize redirect to the callback, with the kit's
+ * OAuth-stage nonce (`advanceToOAuth`).
+ */
+type ConnectAttempt = {
+  codeVerifier: string;
   /**
-   * The `redirect_uri` the authorize request carried, kept for the code exchange, which must
-   * repeat it exactly. Usually this Worker's own callback; on a Worker Preview it is the stable
-   * Worker's, which relays the callback here (`PreviewOAuth`). Set at the `oauth` stage.
+   * The `redirect_uri` the authorize request carried, which the code exchange must repeat
+   * exactly. Usually this Worker's own callback; on a Worker Preview it is the stable Worker's,
+   * which relays the callback here (`PreviewOAuth`).
    */
-  redirectUri?: string;
+  redirectUri: string;
+  /** The connection generation the attempt began under; a disconnect or reconnect since wins. */
+  startedUnder: string;
   /**
-   * Set when this flow reconnects an existing account, so its grant is staged rather than made
-   * live. The mode travels with the flow instead of living on the account: committing one
-   * reconnect while another is in flight must not change how that other flow lands.
+   * Whether the grant is staged rather than made live. Fixed when the attempt starts, so
+   * committing one reconnect while another is in flight does not change how that other lands.
    */
-  reconnect?: true;
-  /** For a reconnect, the `grantId` that was live when it started: the grant it replaces. */
-  replacesGrantId?: string;
+  reconnect: boolean;
 };
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
@@ -141,27 +138,6 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
     </div>
   </body>
 </html>`;
-
-/**
- * Serializes operations against each other, so none observes another's mid-flight state. A
- * promise chain rather than `blockConcurrencyWhile`: that would freeze the whole object for the
- * duration of a fetch, and an exception inside it resets the Durable Object.
- */
-class Mutex {
-  #tail: Promise<void> = Promise.resolve();
-
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.#tail;
-    let release!: () => void;
-    this.#tail = new Promise(resolve => { release = resolve; });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-}
 
 /**
  * The OAuth callback policy for this Worker: direct in production, a relay through the stable
@@ -232,7 +208,16 @@ export default {
         return new Response("Error: malformed state", { status: 400 });
       }
 
+      let stub: DurableObjectStub<UserAccount>;
+      try {
+        stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
+      } catch {
+        return new Response("Error: malformed state", { status: 400 });
+      }
+
       if (url.searchParams.get("error")) {
+        // The refusal ends the attempt: its nonce is consumed so a replayed callback cannot resume it.
+        if (!await stub.consumeOAuthNonce(oauthNonce)) return htmlResponse(INVALID_LINK_HTML);
         return new Response("GitLab authorization failed. Please restart the connection flow from Cloudflare OS.", {
           status: 400,
           headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -241,9 +226,6 @@ export default {
       const code = url.searchParams.get("code");
       if (!code) return new Response("Error: no 'code' provided", { status: 400 });
 
-      const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
-        ctx.exports.UserAccount.idFromString(doId),
-      );
       const handoff = await stub.acceptAuthCode(code, oauthNonce);
       if (!handoff) {
         return htmlResponse(INVALID_LINK_HTML);
@@ -298,35 +280,82 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 }
 
-/** The live grant, as `UserAccount` stores it. */
-type StoredGrant = {
-  accessToken: string;
-  accessTokenExpiresAt: number;
-  refreshToken: string;
-  /** Scopes the grant was requested with; the token response carries none. */
-  scopes: string[];
-};
+/** The live grant: the token pair and the scopes it was requested with (the token response carries none). */
+type GitLabGrant = GitLabOAuthGrant & { scopes: string[] };
 
-type StagedGrant = GitLabOAuthGrant & { scopes: string[]; replacesGrantId?: string };
+/** A reconnect's grant, staged until the Workshop confirms it, and the connection it replaces. */
+type ReconnectStage = { grant: GitLabGrant; startedUnder: string };
+
+/** The GitLab user behind a connection, kept against the generation it was read under. */
+type StoredUser = { id: number; generation: string };
+
+/**
+ * Stands in for the identity of a token the account no longer serves, so the coordinator's
+ * moved-past gate adjudicates it. Never equal to a real identity, which is a hex nonce.
+ */
+const REPLACED_TOKEN_IDENTITY = "replaced-token";
 
 export class UserAccount extends DurableObject<Env> implements AccountCredentials {
-  /**
-   * Serializes refresh, reconnect, and revoke against each other. GitLab rotates refresh tokens,
-   * so two callers racing a refresh would redeem the same single-use token: the second redemption
-   * fails, and the first's new pair could be overwritten by a stale write. The re-check inside the
-   * lock is what collapses a burst of expired callers into one exchange.
-   */
-  #credentials = new Mutex();
+  readonly #creds = new CredentialCoordinator<GitLabGrant>(this.ctx.storage.kv, {
+    expiresAt: grant => grant.expiresAt,
+    // The layout before the kit, which the deployed internal stub wrote too, minus `scopes`.
+    legacyKeys: ["accessToken", "accessTokenExpiresAt", "refreshToken", "scopes"],
+    upgrade: kv => {
+      const accessToken = kv.get<string>("accessToken");
+      const refreshToken = kv.get<string>("refreshToken");
+      if (!accessToken || !refreshToken) return undefined;
+      return {
+        accessToken,
+        refreshToken,
+        // No recorded expiry: refreshed on first use.
+        expiresAt: kv.get<number>("accessTokenExpiresAt") ?? 0,
+        // The stub never recorded scopes. Its `read_api` token still serves reads, and reads as no
+        // scopes so `ensureResources` offers the reconnect that widens it.
+        scopes: kv.get<string[]>("scopes") ?? [],
+      };
+    },
+    // A mint a disconnect overtook is revoked: the disconnect revoked only the pair it found, which
+    // the refresh had already rotated out, and nothing survives it for the revocation to harm. One
+    // a reconnect overtook, or a death recorded meanwhile, is dropped unrevoked: GitLab does not
+    // document that revoking one refresh token leaves the rest of the authorization standing.
+    discardMint: async mint => {
+      if (this.#creds.stored() === undefined) await this.#revokeTokens(mint.refreshToken, mint.accessToken);
+    },
+    vendorId: VENDOR_ID,
+  });
 
   /**
-   * The last refresh that failed transiently, so a burst of callers fails the same way without
-   * re-asking GitLab. A terminal failure is kept in storage instead (`deadGrantId`).
+   * The last refresh that failed transiently, by the refresh token it tried, so a burst of
+   * callers fails the same way without re-asking GitLab. A dead grant is the coordinator's.
    */
-  #mintFailure: { error: Error; at: number } | undefined;
+  #mintFailure: { refreshToken: string; error: Error; at: number } | undefined;
+
+  /** How the coordinator refreshes a grant and announces its death to the Workshop. */
+  readonly #recovery = {
+    refresh: async (grant: GitLabGrant): Promise<GitLabGrant> => {
+      const failure = this.#mintFailure;
+      if (failure?.refreshToken === grant.refreshToken && Date.now() - failure.at < MINT_FAILURE_COOLDOWN_MS) {
+        throw failure.error;
+      }
+      logger.info("refreshing GitLab access token", { event: "gitlab.token.refresh" });
+      try {
+        const refreshed = await refreshAccessToken(gitlabInstance(this.env),
+          { refreshToken: grant.refreshToken, ...oauthApp(this.env) });
+        return { ...refreshed, scopes: grant.scopes };
+      } catch (error) {
+        if (isCredentialsExpired(error)) throw error;
+        const wrapped = new Error("Could not refresh GitLab credentials; please try again shortly.", { cause: error });
+        this.#mintFailure = { refreshToken: grant.refreshToken, error: wrapped, at: Date.now() };
+        throw wrapped;
+      }
+    },
+    notify: () => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
+      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID),
+  };
 
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string,
                     requestedScopes: string[], ephemeral: boolean): Promise<void> {
-    if (!this.ctx.storage.kv.get<string>("refreshToken")) {
+    if (!this.#creds.stored()) {
       await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
     }
 
@@ -334,50 +363,39 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
     // Auth-only sign-in grants are transient: dropped shortly after the email is read.
     this.ctx.storage.kv.put<boolean>("ephemeral", ephemeral);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-    });
+    putInitiation(this.ctx.storage.kv, initiationNonce, Date.now());
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
     // A reconnect always requests the full scopes, whatever the account was first connected with.
     this.ctx.storage.kv.put<string[]>("requestedScopes", OAUTH_SCOPES);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-      reconnect: true,
-      replacesGrantId: this.ctx.storage.kv.get<string>("accessToken") === undefined ? undefined : this.#grantId(),
-    });
+    putInitiation(this.ctx.storage.kv, initiationNonce, Date.now());
   }
 
   /**
    * Swap the initiation nonce for the OAuth-stage nonce and mint this flow's PKCE verifier. The
-   * challenge goes into the authorize URL; the verifier waits in storage for the code exchange.
+   * challenge goes into the authorize URL; the verifier waits with the attempt for the code exchange.
    */
   async beginOAuthFlow(initiationNonce: string, redirectUri: string):
       Promise<{ oauthNonce: string; scopes: string[]; codeChallenge: string } | null> {
-    const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "initiation" || Date.now() >= stored.expiresAt ||
-        !constantTimeEqual(stored.value, initiationNonce)) {
-      return null;
-    }
-
-    const oauthNonce = generateNonce();
-    const pkce = await generatePkce();
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: oauthNonce,
-      expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
-      stage: "oauth",
-      reconnect: stored.reconnect,
-      replacesGrantId: stored.replacesGrantId,
+    // Reading the generation below writes one, which an old link to a deleted account must not.
+    if (this.ctx.storage.kv.get(NONCE_KEY) === undefined) return null;
+    const pkce = await createPkce();
+    const oauthNonce = advanceToOAuth<ConnectAttempt>(this.ctx.storage.kv, initiationNonce, Date.now(), {
+      codeVerifier: pkce.codeVerifier,
       redirectUri,
+      startedUnder: this.#creds.connectionGeneration(),
+      // Only a reconnect finds a grant here: an initial connect's account is new.
+      reconnect: this.#creds.stored() !== undefined,
     });
-    this.ctx.storage.kv.put("codeVerifier", pkce.verifier);
+    if (oauthNonce === null) return null;
     const scopes = this.ctx.storage.kv.get<string[]>("requestedScopes") ?? OAUTH_SCOPES;
-    return { oauthNonce, scopes, codeChallenge: pkce.challenge };
+    return { oauthNonce, scopes, codeChallenge: pkce.codeChallenge };
+  }
+
+  /** Ends an attempt GitLab refused; returns whether `oauthNonce` named the live one. */
+  async consumeOAuthNonce(oauthNonce: string): Promise<boolean> {
+    return claimOAuth(this.ctx.storage.kv, oauthNonce, Date.now()) !== null;
   }
 
   /**
@@ -385,72 +403,59 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * null when the callback's nonce doesn't match.
    */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
-    const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
-        !constantTimeEqual(stored.value, oauthNonce)) {
-      return null;
-    }
-    this.ctx.storage.kv.delete("nonce");
-    const codeVerifier = this.ctx.storage.kv.get<string>("codeVerifier");
-    this.ctx.storage.kv.delete("codeVerifier");
+    const kv = this.ctx.storage.kv;
+    const attempt = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
+    if (attempt === null) return null;
 
-    ensureConfigured(this.env);
-    const clientId = this.env.CLIENT_ID;
-    const clientSecret = this.env.CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      throw new Error("GitLab OAuth is not configured.");
-    }
-    if (!codeVerifier) {
-      throw new Error("The authorization flow was not started properly. Please try again.");
-    }
-
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    const callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
     if (!callback) {
       throw new Error("Took too long to complete authorization. Please try again.");
     }
 
-    const scopes = this.ctx.storage.kv.get<string[]>("requestedScopes") ?? OAUTH_SCOPES;
-    const grant = await exchangeAuthCode(gitlabInstance(this.env), {
-      code, clientId, clientSecret, codeVerifier,
-      // The exchange must repeat the authorize request's redirect_uri exactly (RFC 6749 §4.1.3).
-      redirectUri: stored.redirectUri ?? getRedirectUri(this.env),
-    });
+    const scopes = kv.get<string[]>("requestedScopes") ?? OAUTH_SCOPES;
+    const grant: GitLabGrant = {
+      ...await exchangeAuthCode(gitlabInstance(this.env), {
+        code, ...oauthApp(this.env), codeVerifier: attempt.codeVerifier,
+        // The exchange must repeat the authorize request's redirect_uri exactly (RFC 6749 §4.1.3).
+        redirectUri: attempt.redirectUri,
+      }),
+      scopes,
+    };
 
-    // The exchange ran outside the lock (it is a network call no other operation waits on), so
-    // the account may have been revoked meanwhile -- a disconnect clicked while the reconnect
-    // popup was finishing. The grant lands under the lock, and only into an account that still
-    // exists, so a revoked account never holds a live token nobody knows about. The lock covers
-    // just that check and write; the Workshop callback below is another RPC and runs outside it.
-    const stageId = await this.#credentials.run(async () => {
-      if (this.ctx.storage.kv.get("callback") === undefined) {
-        await this.#revokeTokens(grant.refreshToken, grant.accessToken);
-        throw new Error("The GitLab account was disconnected while it was being authorized. Please connect it again.");
-      }
-      if (stored.reconnect) {
-        // The reconnect URL is a bearer capability, so the new grant is only staged until the
-        // Workshop has confirmed the browser that finished the flow is the owner's (see
-        // commitReconnect). Bound gadgets keep reading the current token meanwhile.
-        const staged: StagedGrant = { ...grant, scopes, replacesGrantId: stored.replacesGrantId };
-        return stageCredentials(this.ctx.storage.kv, staged, Date.now());
-      }
-      this.#writeGrant(grant, scopes);
-      return undefined;
-    });
+    // A disconnect may have landed during the exchange: a finished one wiped the account and its
+    // callback, one still running has moved the connection generation `connect` fences on. The
+    // new tokens are revoked rather than left live where nobody knows about them.
+    const disconnected = async (cause?: unknown) => {
+      await this.#revokeTokens(grant.refreshToken, grant.accessToken);
+      return new Error("The GitLab account was disconnected while it was being authorized. Please connect it again.",
+        { cause });
+    };
+    if (kv.get("callback") === undefined) throw await disconnected();
 
     let handoff: ConnectHandoff;
-    if (stageId !== undefined) {
+    if (attempt.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the
+      // Workshop has confirmed the browser that finished the flow is the owner's (see
+      // commitReconnect). Bound gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials<ReconnectStage>(kv, { grant, startedUnder: attempt.startedUnder }, Date.now());
       handoff = await callback.reconnectComplete(stageId);
     } else {
+      try {
+        this.#creds.connect(grant, { ifGeneration: attempt.startedUnder });
+      } catch (error) {
+        if (!isConnectionSuperseded(error)) throw error;
+        throw await disconnected(error);
+      }
       try {
         const props = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (error) {
-        this.#clearGrant();
+        this.#creds.clear();
         throw error;
       }
       // Auth-only sign-in grants are transient: the caller read the email via complete(), so
       // schedule a prompt self-destruct (the alarm revokes the tokens too).
-      if (this.ctx.storage.kv.get<boolean>("ephemeral")) {
+      if (kv.get<boolean>("ephemeral")) {
         await this.ctx.storage.setAlarm(Date.now() + EPHEMERAL_GRANT_LIFETIME_MS);
         return handoff;
       }
@@ -462,235 +467,73 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
 
   /**
    * Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. A reconnect
-   * replaces the grant that was live when it started, so one that another reconnect has
+   * replaces the connection that was live when it started, so one that another reconnect has
    * overtaken -- its code exchange was still running while the newer flow finished -- is not
    * committed over the newer grant: its tokens are revoked instead.
    */
   async commitReconnect(stageId: string): Promise<void> {
-    await this.#credentials.run(async () => {
-      const staged = commitStagedCredentials<StagedGrant>(this.ctx.storage.kv, Date.now(), stageId);
-      if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-      if (staged.replacesGrantId !== this.ctx.storage.kv.get<string>("grantId")) {
-        await this.#revokeTokens(staged.refreshToken, staged.accessToken);
-        throw new Error("This GitLab account was reconnected again while this reconnect was finishing, so this one was discarded.");
-      }
-      this.#writeGrant(staged, staged.scopes);
-      this.#mintFailure = undefined;
-    });
+    const staged = commitStagedCredentials<ReconnectStage>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    try {
+      this.#creds.connect(staged.grant, { ifGeneration: staged.startedUnder });
+    } catch (error) {
+      if (!isConnectionSuperseded(error)) throw error;
+      await this.#revokeTokens(staged.grant.refreshToken, staged.grant.accessToken);
+      throw new Error("This GitLab account was reconnected again while this reconnect was finishing, so this one was discarded.",
+        { cause: error });
+    }
   }
 
   /**
-   * Writes a grant as the live one. Two ids are kept with it. `grantId` names *which
-   * authorization* the tokens belong to: a refresh rotates the tokens but keeps it (same user,
-   * same authorization), a connect or reconnect mints a new one (possibly a different GitLab
-   * user), and what is derived from the authorization -- the user id, a refusal of its refresh
-   * token -- is stored against it and trusted only while it is still the live one.
-   * `credentialId` names the access token itself, so it is new on every write, refresh
-   * included: GitLab invalidates the old token when it issues the new one, and a request still in
-   * flight with the old one can be refused after that, which says nothing about the new one
-   * (`credentialsRejected`).
+   * The GitLab user behind the live connection: read from `GET /user` the first time it is
+   * needed and kept. It is what the observer probe looks up memberships for, on every workspace
+   * open, so it is worth keeping; and it is a fact about one connection, so it is fenced to its
+   * generation. A read that started under one connection and finished under another (a
+   * reconnect landed in between, possibly as a different GitLab user) is neither stored nor
+   * returned -- the caller re-reads under the live one.
    */
-  #writeGrant(grant: GitLabOAuthGrant, scopes: string[], grantId = generateNonce()): void {
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.kv.put("accessToken", grant.accessToken);
-      this.ctx.storage.kv.put("accessTokenExpiresAt", grant.expiresAt.getTime());
-      this.ctx.storage.kv.put("refreshToken", grant.refreshToken);
-      this.ctx.storage.kv.put<string[]>("scopes", scopes);
-      this.ctx.storage.kv.put("credentialId", generateNonce());
-      // New tokens are not the expired ones: re-arm the expiry notice, and let a notification
-      // that was already in flight for the old tokens finish without latching against these.
-      clearCredentialExpiryLatch(this.ctx.storage.kv);
-      if (this.ctx.storage.kv.get<string>("grantId") !== grantId) {
-        this.ctx.storage.kv.put("grantId", grantId);
-        this.ctx.storage.kv.delete("userId");
-        this.ctx.storage.kv.delete("deadGrantId");
-      }
-    });
-  }
-
-  #clearGrant(): void {
-    this.ctx.storage.transactionSync(() => {
-      for (const key of ["accessToken", "accessTokenExpiresAt", "refreshToken", "scopes", "credentialId",
-                         "grantId", "userId", "deadGrantId"]) {
-        this.ctx.storage.kv.delete(key);
-      }
-    });
-  }
-
-  /**
-   * The GitLab user the live grant belongs to, as `{ id, grantId }`: read from `GET /user` with
-   * the grant's own token the first time it is needed and kept with the grant. It is what the
-   * observer probe looks up memberships for, on every workspace open, so it is worth keeping;
-   * and it is a fact about one authorization, so it is fenced to it. A read that started under
-   * one grant and finished under another (a reconnect landed in between, possibly as a different
-   * GitLab user) is neither stored nor returned -- the caller re-reads under the live grant.
-   */
-  async getUser(): Promise<{ id: number; grantId: string }> {
+  async getUser(): Promise<StoredUser> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const grantId = this.#grantId();
-      const stored = this.ctx.storage.kv.get<number>("userId");
-      if (stored !== undefined) return { id: stored, grantId };
-      const api = new GitLabApi(gitlabInstance(this.env), async () => await this.getCredential());
-      const user = await api.getCurrentUser();
-      if (this.ctx.storage.kv.get<string>("grantId") === grantId) {
-        this.ctx.storage.kv.put("userId", user.id);
-        return { id: user.id, grantId };
+      const generation = this.#creds.connectionGeneration();
+      const stored = this.ctx.storage.kv.get<StoredUser>("user");
+      if (stored?.generation === generation) return stored;
+      const { id } = await withAccountApi(this.env, this, api => api.getCurrentUser(), { replayable: true });
+      if (this.#creds.connectionGeneration() === generation) {
+        const user = { id, generation };
+        this.ctx.storage.kv.put<StoredUser>("user", user);
+        return user;
       }
-      // The grant moved under the read: the id may be another user's. Once more, under the new one.
+      // The connection moved under the read: the id may be another user's. Once more, under the new one.
     }
     throw new Error("GitLab credentials changed while they were being read. Please try again.");
   }
 
-  #grantId(): string {
-    return this.#liveId("grantId");
-  }
-
-  #credentialId(): string {
-    return this.#liveId("credentialId");
-  }
-
   /**
-   * One of the live grant's ids (see `#writeGrant`), minted on first use for a grant written
-   * before ids were kept (one left by the incubating gatekeeper this package replaced): the
-   * tokens are whoever's they were, and the id only has to be stable from here on.
+   * @returns The current access token, refreshed when it is within the kit's safety window of expiry.
+   * @throws `CredentialsExpiredError` when the account is disconnected or its grant is dead, after
+   * notifying the Workshop of a death.
    */
-  #liveId(key: "grantId" | "credentialId"): string {
-    const existing = this.ctx.storage.kv.get<string>(key);
-    if (existing !== undefined) return existing;
-    if (this.ctx.storage.kv.get<string>("accessToken") === undefined) {
-      throw new Error("GitLab credentials have not been configured for this account.");
-    }
-    const minted = generateNonce();
-    this.ctx.storage.kv.put(key, minted);
-    return minted;
+  async getAccessToken(): Promise<string> {
+    const { creds } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
+    return creds.accessToken;
   }
 
-  #readGrant(): StoredGrant | null {
-    const accessToken = this.ctx.storage.kv.get<string>("accessToken");
-    const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
-    if (!accessToken || !refreshToken) return null;
-    return {
-      accessToken,
-      refreshToken,
-      scopes: this.getScopes(),
-      accessTokenExpiresAt: this.ctx.storage.kv.get<number>("accessTokenExpiresAt") ?? 0,
-    };
-  }
-
-  #tokenIsFresh(grant: StoredGrant): boolean {
-    return grant.accessTokenExpiresAt > Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS;
-  }
-
-  /**
-   * The current access token with its id, refreshed when it is within the safety window of
-   * expiry. The fast path is outside the lock; refresh is serialized and re-checked inside it,
-   * and the rotated pair is written in one transaction before any caller sees the new token. The
-   * id travels with the token so that what GitLab says about the token -- a 401 -- is reported
-   * against that token and no other (`credentialsRejected`).
-   */
-  async getCredential(): Promise<GitLabCredential> {
-    const grant = this.#readGrant();
-    if (!grant) {
-      throw new Error("GitLab credentials have not been configured for this account.");
-    }
-    if (this.#tokenIsFresh(grant)) return { token: grant.accessToken, credentialId: this.#credentialId() };
-
-    return await this.#credentials.run(async () => {
-      const current = this.#readGrant();
-      if (!current) {
-        throw new Error("GitLab credentials have not been configured for this account.");
-      }
-      if (this.#tokenIsFresh(current)) return { token: current.accessToken, credentialId: this.#credentialId() };
-
-      // A refresh token GitLab has refused stays refused. The refusal is kept with the grant, not
-      // in memory, so a restarted object does not send the dead token again; the report repeats
-      // (the kit's latch makes that free once the Workshop has acknowledged it).
-      const grantId = this.#grantId();
-      if (this.ctx.storage.kv.get<string>("deadGrantId") === grantId) {
-        await this.#reportRejected(this.#credentialId());
-        throw new Error(RECONNECT_MESSAGE);
-      }
-      if (this.#mintFailure && Date.now() - this.#mintFailure.at < MINT_FAILURE_COOLDOWN_MS) {
-        throw this.#mintFailure.error;
-      }
-
-      ensureConfigured(this.env);
-      logger.info("refreshing GitLab access token", { event: "gitlab.token.refresh" });
-      let result;
-      try {
-        result = await refreshAccessToken(gitlabInstance(this.env), {
-          refreshToken: current.refreshToken,
-          clientId: this.env.CLIENT_ID!,
-          clientSecret: this.env.CLIENT_SECRET!,
-          redirectUri: getRedirectUri(this.env),
-        });
-      } catch (error) {
-        // Transient: the token endpoint was unreachable or answered 5xx. Back off, but do not
-        // declare the account dead -- the refresh token is still good.
-        const wrapped = new Error("Could not refresh GitLab credentials; please try again shortly.", { cause: error });
-        this.#mintFailure = { error: wrapped, at: Date.now() };
-        throw wrapped;
-      }
-
-      if (!result.ok) {
-        // Terminal: the refresh token was already used, expired, or revoked. The lock holds the
-        // grant that failed, so the report is for it.
-        this.ctx.storage.kv.put("deadGrantId", grantId);
-        await this.#reportRejected(this.#credentialId());
-        throw new Error(RECONNECT_MESSAGE);
-      }
-
-      // Backstop: the mutex keeps mutators from interleaving with a refresh, so the stored
-      // refresh token should still be the one just redeemed. If it isn't, a reconnect landed
-      // meanwhile and its pair wins.
-      if (this.ctx.storage.kv.get<string>("refreshToken") !== current.refreshToken) {
-        logger.warn("discarded a GitLab token refreshed against superseded credentials", {
-          event: "gitlab.token.refresh.superseded",
-        });
-        const replaced = this.#readGrant();
-        if (replaced) return { token: replaced.accessToken, credentialId: this.#credentialId() };
-        throw new Error("GitLab credentials changed while refreshing. Please try again.");
-      }
-
-      this.#writeGrant(result.grant, current.scopes, grantId);
-      this.#mintFailure = undefined;
-      return { token: result.grant.accessToken, credentialId: this.#credentialId() };
-    });
-  }
-
-  /**
-   * The scopes the live grant was requested with. The current code always writes this record;
-   * a grant without one is from the earlier incubating gatekeeper this package replaced, whose
-   * `read_api` tokens can serve reads but not writes or push -- reported as no scopes, so
-   * `ensureResources` offers the reconnect that widens it.
-   */
   getScopes(): string[] {
-    return this.ctx.storage.kv.get<string[]>("scopes") ?? [];
+    return this.#creds.stored()?.scopes ?? [];
   }
 
   /**
-   * GitLab refused the access token `credentialId`: tell the Workshop the account needs
-   * reconnecting, once. The report is fenced to that token, because only the live token's refusal
-   * says anything about the account: a request that took token A, then a refresh or reconnect
-   * that replaced A while the request was in flight, then A's delayed 401 -- that 401 is about a
-   * token already gone, and is dropped. It waits for the lock, so a refusal that arrives while a
-   * refresh is still storing A's replacement is judged against the replacement. A credential
-   * without an id (none is ever handed out without one) is reported unfenced.
+   * Adjudicates GitLab's refusal of `accessToken`, notifying the Workshop when the grant is dead.
+   * GitLab invalidates an access token when it issues the next one, so a request that presented a
+   * token this account has since replaced -- by a refresh or a reconnect -- failed stale. A refusal
+   * of the current token refreshes past it; one arriving while that refresh is already in flight
+   * joins it rather than being taken for the grant's death.
    */
-  async credentialsRejected(credentialId: string | undefined): Promise<void> {
-    await this.#credentials.run(async () => await this.#reportRejected(credentialId));
-  }
-
-  /**
-   * `credentialsRejected` for a caller that already holds the lock. The notice itself is the
-   * kit's: it latches only after the Workshop has acknowledged, so a callback that fails
-   * transiently is retried by the next refusal rather than silenced, and a grant written during
-   * the call is not latched against.
-   */
-  async #reportRejected(credentialId: string | undefined): Promise<void> {
-    if (credentialId !== undefined && this.ctx.storage.kv.get<string>("credentialId") !== credentialId) return;
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    await notifyCredentialsExpiredOnce(this.ctx.storage.kv, callback, VENDOR_ID);
+  async reportTokenRejected(accessToken: string): Promise<RejectionVerdict> {
+    const identity = this.#creds.stored()?.accessToken === accessToken
+      ? this.#creds.identity()
+      : REPLACED_TOKEN_IDENTITY;
+    return await this.#creds.adjudicateRejection(identity, this.#recovery);
   }
 
   async alarm(): Promise<void> {
@@ -699,28 +542,28 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     // are revoked rather than left to expire.
     if (this.ctx.storage.kv.get<boolean>("ephemeral")) {
       await this.revoke();
-    } else if (!this.ctx.storage.kv.get<string>("refreshToken")) {
+    } else if (!this.#creds.stored()) {
       await this.ctx.storage.deleteAll();
     }
   }
 
   async revoke(): Promise<void> {
-    await this.#credentials.run(async () => {
-      await this.#revokeTokens(
-        this.ctx.storage.kv.get<string>("refreshToken"), this.ctx.storage.kv.get<string>("accessToken"));
-      await this.ctx.storage.deleteAlarm();
-      await this.ctx.storage.deleteAll();
-    });
+    const grant = this.#creds.stored();
+    // Fence before the first await, so a refresh still in flight is never stored -- not even into
+    // the wiped account. Its mint is revoked when it lands (`discardMint`).
+    this.#creds.clear();
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    if (grant) await this.#revokeTokens(grant.refreshToken, grant.accessToken);
   }
 
   /**
    * Revoke a grant's tokens on GitLab. The docs don't say revoking one token revokes its
    * partner, so both are; failures are logged, not fatal -- the caller drops its copy regardless.
    */
-  async #revokeTokens(...tokens: Array<string | undefined>): Promise<void> {
+  async #revokeTokens(...tokens: string[]): Promise<void> {
     if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) return;
     for (const token of tokens) {
-      if (!token) continue;
       try {
         await revokeToken(gitlabInstance(this.env), {
           token, clientId: this.env.CLIENT_ID, clientSecret: this.env.CLIENT_SECRET,
@@ -734,6 +577,13 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
   }
 }
 
+/** Runs replay-safe GitLab reads as the account behind `userObjectId`; see withAccountApi. */
+function accountReader(env: Env, exports: Cloudflare.Exports, userObjectId: string): GitLabApiRunner {
+  // The stub is made per call: a configurator outlives the request that created it.
+  return fn => withAccountApi(env,
+    exports.UserAccount.get(exports.UserAccount.idFromString(userObjectId)), fn, { replayable: true });
+}
+
 type GatekeeperUserImplProps = {
   userObjectId: string;
 };
@@ -745,29 +595,23 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     return this.ctx.exports.UserAccount.get(id);
   }
 
-  async #withApi<T>(fn: (api: GitLabApi) => Promise<T>): Promise<T> {
-    return await withAccountApi(this.env, this.#account(), fn);
-  }
-
   async describe(): Promise<AccountDescription> {
-    return await this.#withApi(async api => {
-      const user = await api.getCurrentUser();
-      return {
-        displayName: user.name || user.username,
-        uniqueName: user.username,
-        avatar: { url: user.avatar_url ?? "" },
-      };
-    });
+    const user = await accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId)(
+      api => api.getCurrentUser());
+    return {
+      displayName: user.name || user.username,
+      uniqueName: user.username,
+      avatar: { url: user.avatar_url ?? "" },
+    };
   }
 
   async getAuthenticatedEmail(): Promise<string | null> {
     // The primary email, which GitLab only makes primary once confirmed: `confirmed_at` is the
     // provider's verification, so this is safe as a sign-in identity. `public_email` is not used
     // -- the user chose to publish it; the provider did not verify it for this purpose.
-    return await this.#withApi(async api => {
-      const user = await api.getCurrentUser();
-      return user.email && user.confirmed_at ? user.email : null;
-    });
+    const user = await accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId)(
+      api => api.getCurrentUser());
+    return user.email && user.confirmed_at ? user.email : null;
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
@@ -799,10 +643,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    const account = this.#account();
     const context = {
       instanceUrl: instanceUrl(this.env),
-      api: new GitLabApi(gitlabInstance(this.env), async () => await account.getCredential()),
+      read: accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId),
     };
     const resources = supportedResources(this.env);
 
@@ -929,19 +772,19 @@ export function membershipGrantsFullRead(
 export class GitLabVerifier extends WorkerEntrypoint<Env, GitLabVerifierProps>
     implements GitLabVerifierApi {
   async hasProjectAccess(projectPath: string): Promise<boolean> {
-    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    const account = this.ctx.exports.UserAccount.get(id);
-    const api = new GitLabApi(gitlabInstance(this.env), async () => await account.getCredential());
+    const { userObjectId } = this.ctx.props;
+    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
     try {
       // What the observer holds on the project, read with their own token: nothing (`[]`) for a
       // non-member, 404 for a project the token cannot see at all (GitLab hides existence) -- the
-      // same answer here. Their user id comes from the account, fenced to the grant that answered
-      // it: if a reconnect (possibly as another GitLab user) lands between the two reads, the
-      // membership row would be one user's and the token another's, so the answer is discarded
-      // and the probe fails closed -- the overseer re-runs it on the next open.
+      // same answer here. Their user id comes from the account, fenced to the connection that
+      // answered it: if a reconnect (possibly as another GitLab user) lands between the two reads,
+      // the membership row would be one user's and the token another's, so the answer is
+      // discarded and the probe fails closed -- the overseer re-runs it on the next open.
       const user = await account.getUser();
-      const member = await api.getProjectMember(projectPath, user.id);
-      if ((await account.getUser()).grantId !== user.grantId) return false;
+      const member = await accountReader(this.env, this.ctx.exports, userObjectId)(
+        api => api.getProjectMember(projectPath, user.id));
+      if ((await account.getUser()).generation !== user.generation) return false;
       return membershipGrantsFullRead(member);
     } catch (error) {
       // 403 in some policy cases; the observer lacks access either way.

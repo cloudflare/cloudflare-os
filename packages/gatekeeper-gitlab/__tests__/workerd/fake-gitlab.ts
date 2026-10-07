@@ -12,6 +12,8 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { vi } from "vitest";
+import { getRedirectUri } from "../../src/gitlab-env.js";
+import type { UserAccount } from "../../src/gitlab.js";
 import type { GatekeeperProps } from "./worker.js";
 
 /** The instance users visit (`GITLAB_URL`): links in results are built from it. */
@@ -85,8 +87,9 @@ export class FakeGitLab {
 }
 
 /**
- * Seed a connected account with a live grant that will not need refreshing, and return the props
- * a gatekeeper facet for `projectPath` needs.
+ * Seed a connected account with a live grant that will not need refreshing, in the layout this
+ * package (and the internal stub, which wrote no `scopes`) stored before the kit: the account
+ * migrates it on first read, as it does a deployed account's. Returns the account id.
  */
 export async function seedAccount(options: {
   accessToken?: string;
@@ -102,6 +105,24 @@ export async function seedAccount(options: {
     if (options.scopes !== null) state.storage.kv.put("scopes", options.scopes ?? ["api", "write_repository"]);
   });
   return accountId.toString();
+}
+
+/** GitLab's token response for grant `n`: `access-n` / `refresh-n`, two hours. */
+export function tokenResponse(n: number) {
+  return { access_token: `access-${n}`, refresh_token: `refresh-${n}`, expires_in: 7200, token_type: "bearer" };
+}
+
+/**
+ * Run a reconnect inside the account up to the stage it leaves, GitLab answering authorization
+ * code `code`; returns the stage id its handoff names (see TestCallback), which `commitReconnect`
+ * takes. The flow authorizes under the Worker's own callback, as production does. The account
+ * needs a Workshop callback (`hooks().installCallback`).
+ */
+export async function stageReconnect(account: UserAccount, code: string): Promise<string> {
+  await account.prepareReconnect(`initiation-${code}`);
+  const flow = await account.beginOAuthFlow(`initiation-${code}`, getRedirectUri(env));
+  const handoff = await account.acceptAuthCode(code, flow!.oauthNonce);
+  return handoff!.ticket;
 }
 
 export function projectProps(userObjectId: string, projectPath = "group/sub/project"): GatekeeperProps {

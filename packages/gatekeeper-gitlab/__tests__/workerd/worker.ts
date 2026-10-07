@@ -13,7 +13,6 @@ import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GitCache, GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
-import type { GitLabCredential } from "../../src/gitlab-api.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
 import type { GitLabGatekeeperImplProps } from "../../src/gitlab-env.js";
 import type {
@@ -369,33 +368,33 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   // -- account ----------------------------------------------------------------------------
 
-  /** `UserAccount.getCredential()`, with the rejection carried back as data. */
-  async accountCredential(userObjectId: string): Promise<Outcome<GitLabCredential>> {
+  /** `UserAccount.getAccessToken()`, with the rejection carried back as data. */
+  async accountToken(userObjectId: string): Promise<Outcome<string>> {
     const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-    return await outcome(async () => await account.getCredential());
+    return await outcome(async () => await account.getAccessToken());
   }
 
   /**
-   * Give the account a Workshop callback (the seed writes none). `failNext` makes that many
-   * notices throw, as an unreachable Workshop would.
+   * Give the account a Workshop callback and a connect link nonce (the seed writes neither).
+   * `failNext` makes that many notices throw, as an unreachable Workshop would.
    */
-  async installCallback(userObjectId: string, failNext = 0): Promise<void> {
+  async installCallback(userObjectId: string, failNext = 0, initiationNonce = "nonce"): Promise<void> {
     callbackTallies.set(userObjectId, { expiredNotices: 0, failNext });
     const callback = (this.ctx.exports as unknown as TestExports).TestCallback({ props: { userObjectId } });
     const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-    // The production entry: on a seeded account (a refresh token exists) it stores the callback
-    // and a connect nonce, and schedules nothing.
-    await account.setCallback(callback, "nonce", ["api"], false);
+    // The production entry: it stores the callback and a connect nonce, and on an account with no
+    // grant yet schedules the connect timeout.
+    await account.setCallback(callback, initiationNonce, ["api", "write_repository"], false);
   }
 
   async expiredNotices(userObjectId: string): Promise<number> {
     return callbackTallies.get(userObjectId)?.expiredNotices ?? 0;
   }
 
-  /** `UserAccount.credentialsRejected(credentialId)`: what a wrapper reports after a refused token. */
-  async credentialsRejected(userObjectId: string, credentialId: string | undefined): Promise<void> {
+  /** `UserAccount.reportTokenRejected(accessToken)`: what `withAccountApi` reports after a refused token. */
+  async reportTokenRejected(userObjectId: string, accessToken: string): Promise<string> {
     const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-    await account.credentialsRejected(credentialId);
+    return await account.reportTokenRejected(accessToken);
   }
 
   // -- account entrypoint -----------------------------------------------------------------

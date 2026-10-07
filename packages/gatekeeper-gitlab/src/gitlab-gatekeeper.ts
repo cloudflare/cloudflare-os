@@ -292,6 +292,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return await withAccountApi(this.env, this.#userAccount(), fn);
   }
 
+  /**
+   * `#withApi` for reads safe to send twice: a token a refresh replaced in flight reruns `fn` once
+   * instead of failing. Only `/user` and the git endpoints classify a 401 as a credential
+   * refusal, so the viewer read is where this matters.
+   */
+  async #readApi<T>(fn: (api: GitLabApi) => Promise<T>): Promise<T> {
+    return await withAccountApi(this.env, this.#userAccount(), fn, { replayable: true });
+  }
+
   // -- caches -----------------------------------------------------------------------------
 
   #cacheKey(kind: string, ...parts: string[]): string {
@@ -484,7 +493,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   async #getViewer(): Promise<StoredViewer> {
     return await this.#cached<StoredViewer>(this.#cacheKey("viewer"), VIEWER_CACHE_TTL_MS, async () => {
-      const user = await this.#withApi(api => api.getCurrentUser());
+      const user = await this.#readApi(api => api.getCurrentUser());
       const actor = actorFromUser(this.#instanceUrl(), user);
       if (!actor) throw new Error("Failed to identify the connected GitLab account.");
       return { id: user.id, actor, fetchedAt: Date.now() };

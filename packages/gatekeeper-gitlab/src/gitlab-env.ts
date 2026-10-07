@@ -4,7 +4,8 @@
 
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabCredential, type GitLabInstance } from "./gitlab-api";
+import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
+import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance } from "./gitlab-api";
 
 /**
  * The Worker's environment. `PreviewOAuthEnv` adds the kit's three optional preview-relay
@@ -107,44 +108,55 @@ export function gitlabInstance(env: Env): GitLabInstance {
   };
 }
 
-export function ensureConfigured(env: Env): void {
+/** The OAuth application's credentials; throws when they are not configured. */
+export function oauthApp(env: Env): { clientId: string; clientSecret: string } {
   if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
     throw new Error("The GitLab gatekeeper is not configured.");
   }
+  return { clientId: env.CLIENT_ID, clientSecret: env.CLIENT_SECRET };
 }
 
-export const RECONNECT_MESSAGE = "GitLab credentials have expired or been revoked. Please reconnect the account.";
+const RECONNECT_MESSAGE = "GitLab credentials have expired or been revoked. Please reconnect the account.";
 
 /**
- * What the account half of `UserAccount` looks like to the code that calls GitLab on its behalf:
- * a credential to send, and one place to report that GitLab refused it. Structural, so the
- * entrypoints and the gatekeeper DO reach the account through its stub without importing the
- * class.
+ * What `UserAccount` looks like to the code that calls GitLab on its behalf: a token to send, and
+ * one place to report that GitLab refused it. Structural, so the entrypoints and the gatekeeper DO
+ * reach the account through its stub without importing the class.
  */
 export type AccountCredentials = {
-  getCredential(): Promise<GitLabCredential>;
-  credentialsRejected(credentialId: string | undefined): Promise<void>;
+  getAccessToken(): Promise<string>;
+  reportTokenRejected(accessToken: string): Promise<RejectionVerdict>;
 };
 
+/** Runs `fn` against GitLab as one account; `fn` may run twice, so it must only read. */
+export type GitLabApiRunner = <T>(fn: (api: GitLabApi) => Promise<T>) => Promise<T>;
+
 /**
- * Run `fn` against GitLab with the account's credential. A refused credential (a 401 from the
- * probe or the git endpoints -- see `GitLabApiError.isAuthError`) is reported to the account
- * *for the token that was refused*: the error names the token it carried, so a stale answer to
- * a token that a refresh or reconnect has since replaced cannot retire the account. The caller
- * sees the reconnect message either way.
+ * Runs `fn` against GitLab as `account`. GitLab's refusal of the token a request presented (a 401
+ * from the probe or the git endpoints -- see `GitLabApiError.isAuthError`) is the account's to
+ * adjudicate: GitLab invalidates an access token when it issues the next one, so a token a refresh
+ * replaced while the request was in flight fails as retryable rather than retiring the account.
+ * With `replayable`, which only calls safe to run twice may pass, such a failure instead reruns
+ * `fn` once with the replacement token.
  */
 export async function withAccountApi<T>(
   env: Env, account: AccountCredentials, fn: (api: GitLabApi) => Promise<T>,
+  options: { replayable?: true } = {},
 ): Promise<T> {
-  const api = new GitLabApi(gitlabInstance(env), async () => await account.getCredential());
-  try {
-    return await fn(api);
-  } catch (error) {
-    if (error instanceof GitLabApiError && error.isAuthError) {
-      await account.credentialsRejected(error.credentialId);
-      throw new Error(RECONNECT_MESSAGE, { cause: error });
+  for (let replays = options.replayable ? 1 : 0; ; replays--) {
+    let presented: string | undefined;
+    const api = new GitLabApi(gitlabInstance(env), async () => (presented = await account.getAccessToken()));
+    try {
+      return await fn(api);
+    } catch (error) {
+      if (isCredentialsExpired(error)) throw new Error(RECONNECT_MESSAGE, { cause: error });
+      if (!(error instanceof GitLabApiError && error.isAuthError) || presented === undefined) throw error;
+      const verdict = await account.reportTokenRejected(presented);
+      if (verdict === "expired") throw new Error(RECONNECT_MESSAGE, { cause: error });
+      if (verdict !== "superseded") throw error;
+      if (replays > 0) continue;
+      throw new Error("GitLab credentials were renewed during this request. Please retry it.", { cause: error });
     }
-    throw error;
   }
 }
 
