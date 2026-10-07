@@ -11,6 +11,29 @@ const WEEKDAYS: Record<Weekday, string> = {
   SA: "Sat",
 };
 
+// Building an Intl formatter costs far more than formatting with one, and every row formats several
+// values per render, so formatters are shared per locale and options.
+const formatters = new Map<string, unknown>();
+
+function cachedFormatter<T>(key: string, create: () => T): T {
+  let formatter = formatters.get(key) as T | undefined;
+  if (formatter === undefined) {
+    formatter = create();
+    formatters.set(key, formatter);
+  }
+  return formatter;
+}
+
+function dateTimeFormat(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  // A formatter with no `timeZone` keeps the host zone it was built in, and reading the host's zone
+  // costs as much as building one, so only an explicit zone is shared.
+  if (options.timeZone === undefined) return new Intl.DateTimeFormat(locale, options);
+  return cachedFormatter(
+    `date:${locale}:${JSON.stringify(options)}`,
+    () => new Intl.DateTimeFormat(locale, options),
+  );
+}
+
 export type ScheduleTiming = {
   relative: string;
   absolute?: string;
@@ -20,13 +43,13 @@ export type ScheduleTiming = {
 export function formatCadence(cadence: ScheduleCadence, locale = "en-US"): string {
   if (cadence.kind === "interval") return formatInterval(cadence.everyMs);
   if (cadence.kind === "once") {
-    const date = new Intl.DateTimeFormat(locale, {
+    const date = dateTimeFormat(locale, {
       timeZone: cadence.timeZone,
       year: "numeric",
       month: "short",
       day: "numeric",
     }).format(cadence.fireAt);
-    const time = new Intl.DateTimeFormat(locale, {
+    const time = dateTimeFormat(locale, {
       timeZone: cadence.timeZone,
       hour: "numeric",
       minute: "2-digit",
@@ -46,9 +69,10 @@ export function formatCadence(cadence: ScheduleCadence, locale = "en-US"): strin
   if (rule.interval === 1 && rule.byDay.join(",") === "MO,TU,WE,TH,FR") {
     return `Weekdays at ${time}`;
   }
-  const days = new Intl.ListFormat(locale, { style: "short", type: "conjunction" }).format(
-    rule.byDay.map((day) => WEEKDAYS[day]),
-  );
+  const days = cachedFormatter(
+    `list:${locale}`,
+    () => new Intl.ListFormat(locale, { style: "short", type: "conjunction" }),
+  ).format(rule.byDay.map((day) => WEEKDAYS[day]));
   const prefix = rule.interval === 1 ? "Weekly" : `Every ${rule.interval} weeks`;
   return `${prefix} on ${days} at ${time}`;
 }
@@ -123,7 +147,7 @@ function formatInterval(milliseconds: number): string {
 }
 
 function formatClock(hour: number, minute: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale, {
+  return dateTimeFormat(locale, {
     timeZone: "UTC",
     hour: "numeric",
     minute: "2-digit",
@@ -141,11 +165,14 @@ function formatRelative(milliseconds: number, locale: string): string {
           ? ([60_000, "minute"] as const)
           : ([1_000, "second"] as const);
   const value = Math.round(milliseconds / size);
-  return new Intl.RelativeTimeFormat(locale, { numeric: "always" }).format(value, unit);
+  return cachedFormatter(
+    `relative:${locale}`,
+    () => new Intl.RelativeTimeFormat(locale, { numeric: "always" }),
+  ).format(value, unit);
 }
 
 function formatAbsolute(timestamp: number, timeZone: string | undefined, locale: string): string {
-  return new Intl.DateTimeFormat(locale, {
+  return dateTimeFormat(locale, {
     timeZone,
     year: "numeric",
     month: "short",
