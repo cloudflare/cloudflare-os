@@ -8,12 +8,16 @@ import { NewSpaceButton } from '../features/spaces/NewSpaceButton'
 import { SpaceMembersDialog } from '../features/spaces/SpaceMembersDialog'
 import { SpaceSections } from '../features/spaces/SpaceSections'
 import { spaceLabel } from '../features/spaces/spaceKinds'
+import { PersonalTree } from '../features/spaces/tree/PersonalTree'
+import { SpaceViewToggle } from '../features/spaces/tree/SpaceViewToggle'
+import { useSpaceViewMode } from '../features/spaces/tree/useSpaceViewMode'
 import { useSpaces } from '../features/spaces/useSpaces'
 import { useDocumentTitle } from '../useDocumentTitle'
 
 /**
  * Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
- * the "see them all" destination linked from the rail.
+ * the "see them all" destination linked from the rail. With the `spaces` flag on, the user may
+ * switch it to their personal space's tree beside a preview (`PersonalTree`).
  */
 export const Route = createFileRoute('/workspaces')({
   component: WorkspacesPage,
@@ -24,6 +28,8 @@ function WorkspacesPage() {
   const navigate = useNavigate()
   const toasts = useKumoToastManager()
   const spaces = useSpaces()
+  const [viewMode, setViewMode] = useSpaceViewMode()
+  const tree = spaces.enabled && viewMode === 'tree'
   // Held here and not with the sections: the list unmounts them while it loads again, and an
   // open dialog outlasts that.
   const [membersOf, setMembersOf] = useState<string | null>(null)
@@ -71,7 +77,7 @@ function WorkspacesPage() {
   )
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-3 sm:px-10">
+    <div className={`mx-auto flex w-full flex-col px-3 sm:px-10 ${tree ? 'min-h-full md:h-full' : 'h-full max-w-4xl'}`}>
       <header className="flex flex-col items-stretch gap-4 px-3 pb-3 pt-6 sm:flex-row sm:items-end sm:justify-between sm:pt-10">
         <div className="min-w-0">
           <h1
@@ -86,7 +92,8 @@ function WorkspacesPage() {
           </p>
         </div>
         {spaces.enabled ? (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <SpaceViewToggle mode={viewMode} onModeChange={setViewMode} />
             <NewSpaceButton
               className="!h-11 flex-1 sm:!h-9 sm:flex-none"
               onCreated={handleSpaceCreated}
@@ -95,17 +102,23 @@ function WorkspacesPage() {
           </div>
         ) : createWorkspaceLink}
       </header>
-      <div className="min-h-0 flex-1">
-        <GadgetList
-          showHeader={false}
-          sections={spaces.enabled ? {
-            spaces: spaces.spaces,
-            render: (rows) => (
-              <SpaceSections {...rows} spaces={spaces} onMembersOpen={setMembersOf} />
-            ),
-          } : undefined}
-        />
-      </div>
+      {tree ? (
+        <div className="flex-1 px-3 pb-6 md:min-h-0">
+          <PersonalTree spaces={spaces} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1">
+          <GadgetList
+            showHeader={false}
+            sections={spaces.enabled ? {
+              spaces: spaces.spaces,
+              render: (rows) => (
+                <SpaceSections {...rows} spaces={spaces} onMembersOpen={setMembersOf} />
+              ),
+            } : undefined}
+          />
+        </div>
+      )}
       {spaces.enabled && membersOf !== null && (
         <SpaceMembersDialog
           spaceKey={membersOf}

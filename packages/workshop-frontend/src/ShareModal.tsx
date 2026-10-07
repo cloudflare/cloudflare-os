@@ -1091,6 +1091,7 @@ export default function ShareModal({
               })}
               <PublicAccessRow
                 overseer={overseer}
+                authenticatedApi={authenticatedApi}
                 metadata={metadata}
                 container={menuContainer}
                 onChange={onPublicAccessChange}

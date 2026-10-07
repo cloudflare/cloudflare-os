@@ -25,8 +25,18 @@ import type {
 import { AuthProvider } from '../../AuthContext'
 import { FeatureFlagsProvider } from '../../FeatureFlagsContext'
 import { ServerConfigContext } from '../../ServerConfigContext'
+import { applyMove } from './tree/workspaceTree'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+// jsdom implements neither; the List / Tree toggle's active indicator watches its tabs with the
+// one and reveals the chosen tab with the other.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+Element.prototype.scrollIntoView ??= () => {}
 
 /** The signed-in user of every test. */
 export const ME: AiChatAuthorInfo = { type: 'user', id: 'me@example.com', name: 'Me' }
@@ -41,6 +51,18 @@ export const member = (profile: AiChatAuthorInfo, role: SpaceMemberRole): SpaceM
   role,
   added: new Date('2026-09-01T00:00:00Z'),
 })
+
+/**
+ * An entry of a space's listing, owned by `owner` and created on the same day as every other.
+ * `fields` places it in the tree (`parentId`, `position`) and says what is published
+ * (`published`, `hiddenBy`), as a listing in pre-order gives them.
+ */
+export const listingEntry = (
+  id: string,
+  title: string,
+  owner: AiChatAuthorInfo = ME,
+  fields: Partial<SpaceWorkspaceInfo> = {},
+): SpaceWorkspaceInfo => ({ id, title, owner, created: new Date('2026-09-01T00:00:00Z'), ...fields })
 
 /** A space's info as it is produced for one of its members, whose role it has. */
 export type MemberSpaceInfo = SpaceInfo & { role: SpaceMemberRole }
@@ -78,9 +100,10 @@ export function fakeApi(methods: FakeApi = {}, { spacesFlag = true } = {}): RpcS
 /**
  * A `Space` as `ME` holds it, over a member list the test can read back and a listing. While
  * `ME` is not in the member list they are a visitor: the space shows them its info with no role
- * and the published entries of its listing, refuses them its members, and refuses them
- * everything once no entry is published.
- * `setMemberRole`, `removeMember` and `setWorkspaceSlug` apply the change and enforce no rule: a
+ * and the entries of its listing visible to everyone (published, with no `hiddenBy`), refuses
+ * them its members, and refuses them everything once no entry is visible.
+ * `setMemberRole`, `removeMember`, `setWorkspaceSlug` and `moveWorkspace` apply the change and
+ * enforce no rule (a move goes where the tree shows it before the space confirms it): a
  * test that needs a refusal replaces the method (`space.setMemberRole.mockRejectedValueOnce(...)`).
  * A slug resolves to the entry that has it, as its current one; a test that needs a former slug
  * replaces `resolveWorkspace`.
@@ -92,9 +115,9 @@ export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspace
   // The entries the space shows `ME`.
   const shown = () => {
     if (roleOf(ME.id)) return listed
-    const published = listed.filter(entry => entry.published !== undefined)
-    if (published.length === 0) throw notAMember()
-    return published
+    const visible = listed.filter(entry => entry.published !== undefined && entry.hiddenBy === undefined)
+    if (visible.length === 0) throw notAMember()
+    return visible
   }
   const space = {
     getInfo: vi.fn<Space['getInfo']>(async () => {
@@ -114,6 +137,9 @@ export function fakeSpace(info: SpaceInfo, members: SpaceMemberInfo[], workspace
       const updated = { ...listed.find(entry => entry.id === id)!, slug }
       listed = listed.map(entry => (entry.id === id ? updated : entry))
       return updated
+    }),
+    moveWorkspace: vi.fn<Space['moveWorkspace']>(async (id, parentId, beforeId) => {
+      listed = applyMove(listed, id, { parentId, ...(beforeId !== undefined && { beforeId }) })
     }),
     setMemberRole: vi.fn<Space['setMemberRole']>(async (username, role) => {
       const existing = current.find(entry => entry.profile.id === username)

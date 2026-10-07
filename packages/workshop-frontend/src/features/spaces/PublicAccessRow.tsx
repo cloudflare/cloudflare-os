@@ -1,16 +1,25 @@
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { DropdownMenu } from '@cloudflare/kumo'
 import type { PortalContainer } from '@cloudflare/kumo'
 import { CaretDown, Check, GlobeSimple } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { CollaboratorRole, GadgetMetadata, Overseer } from '@gadgets/workshop-shared/api'
+import type {
+  AuthenticatedApi,
+  CollaboratorRole,
+  GadgetMetadata,
+  Overseer,
+  SpaceWorkspaceInfo,
+} from '@gadgets/workshop-shared/api'
 import { MENU_CONTENT, MENU_ITEM } from '../../components/menuStyles'
 import { WorkshopButton } from '../../components/WorkshopControls'
 import { useUiFeatureFlag } from '../../FeatureFlagsContext'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
 import { PUBLIC_ACCESS_LABELS } from './PublishedBadge'
 import { SPACE_ACTION_CLASS_NAME } from './SpaceEntryPoints'
+import { isNotAMemberError } from './spaceErrors'
+import { isOwnPersonalSpace } from './spaceKinds'
+import { hiddenByTitle, pathTo } from './tree/workspaceTree'
 
 /** The role a workspace is published with, or null while it is not published. */
 type PublicAccess = CollaboratorRole | null
@@ -41,6 +50,94 @@ const DESCRIPTIONS: Record<CollaboratorRole, string> = {
     + 'who has access to it, its share links and who is in it, but cannot share, move, publish or delete it.',
 }
 
+const UNTITLED = 'Untitled Workspace'
+
+// The title of the unpublished entry above `entry` that a publication of it waits for: the one
+// the space names (`hiddenBy`) for a published entry, and the nearest unpublished ancestor for one
+// the space has not seen published yet, which is what `hiddenBy` will name once it has.
+const blockedByTitle = (listing: readonly SpaceWorkspaceInfo[], entry: SpaceWorkspaceInfo) => {
+  const title = entry.published !== undefined
+    ? hiddenByTitle(listing, entry)
+    : pathTo(listing, entry.id).slice(0, -1).findLast(above => above.published === undefined)?.title
+  return title === undefined ? undefined : title || UNTITLED
+}
+
+// The keys of the spaces that may list the workspace for the user. The owner's own record says
+// which one holds it (`GadgetMetadata.spaceKey`, their personal space when absent); anyone else's
+// records do not, so for them it is each team space they are a member of, since a personal space
+// lists only its owner's workspaces.
+const spacesThatMayList = async (
+  authenticatedApi: RpcStub<AuthenticatedApi>,
+  workspaceId: string,
+  isOwner: boolean,
+): Promise<string[]> => {
+  if (!isOwner) {
+    const spaces = await authenticatedApi.listSpaces()
+    return spaces.filter(space => space.kind === 'team').map(space => space.key)
+  }
+  const [records, spaces] = await Promise.all([authenticatedApi.listGadgets(), authenticatedApi.listSpaces()])
+  const record = records.find(candidate => candidate.id === workspaceId && !candidate.owner)
+  const spaceKey = record && (record.spaceKey ?? spaces.find(isOwnPersonalSpace)?.key)
+  return spaceKey === undefined ? [] : [spaceKey]
+}
+
+// What `blockedByTitle` says of the workspace in the space `spaceKey`, or null when that space
+// does not list it for the user. A space that refuses the user (one they have left) lists nothing.
+const blockerIn = async (
+  authenticatedApi: RpcStub<AuthenticatedApi>,
+  spaceKey: string,
+  workspaceId: string,
+): Promise<{ title: string | undefined } | null> => {
+  const space = authenticatedApi.openSpace(spaceKey)
+  try {
+    const listing = await space.listWorkspaces()
+    const entry = listing.find(candidate => candidate.id === workspaceId)
+    return entry ? { title: blockedByTitle(listing, entry) } : null
+  } catch (err) {
+    if (isNotAMemberError(err)) return null
+    throw err
+  } finally {
+    space[Symbol.dispose]()
+  }
+}
+
+// What `blockedByTitle` says of the workspace, read each time `active` becomes true: undefined
+// while nothing above it is unpublished, or that is not known yet. A visitor's listing has no entry
+// with an unpublished workspace above it, so only the owner and the space's members are told.
+const usePublicationBlocker = (
+  authenticatedApi: RpcStub<AuthenticatedApi>,
+  workspaceId: string,
+  isOwner: boolean,
+  active: boolean,
+): string | undefined => {
+  const [found, setFound] = useState<{
+    api: RpcStub<AuthenticatedApi>
+    workspaceId: string
+    title: string | undefined
+  } | null>(null)
+  // What was read for one publication says nothing of the next: the tree may have changed between.
+  if (!active && found !== null) setFound(null)
+
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    const read = async () => {
+      const keys = await spacesThatMayList(authenticatedApi, workspaceId, isOwner)
+      const answers = await Promise.all(keys.map(key => blockerIn(authenticatedApi, key, workspaceId)))
+      return answers.find(answer => answer !== null)?.title
+    }
+    read().then(
+      (title) => { if (!cancelled) setFound({ api: authenticatedApi, workspaceId, title }) },
+      (err: unknown) => { if (!cancelled) logRpcFailure('Failed to read a workspace’s place in its space:', err) },
+    )
+    return () => { cancelled = true }
+  }, [authenticatedApi, workspaceId, isOwner, active])
+
+  return active && found?.api === authenticatedApi && found.workspaceId === workspaceId
+    ? found.title
+    : undefined
+}
+
 /**
  * The row of the Share dialog for publishing the workspace: what anyone signed in to the
  * deployment may open it with, without being invited (`GadgetMetadata.publicAccess`). Behind
@@ -52,13 +149,18 @@ const DESCRIPTIONS: Record<CollaboratorRole, string> = {
  * the row says why in place of the control. Anyone else is told the role while the workspace is
  * published, and shown nothing otherwise: their metadata may not say whether it is.
  *
+ * While the workspace is published and an unpublished workspace above it in its space's tree
+ * keeps that from taking effect, the row says so under the role, to the owner and to the space's
+ * members, reading the space's listing to learn it.
+ *
  * The second step takes the focus when it appears, in a group named by its warning, so that the
  * warning is heard, and gives it back to the trigger when it is gone: its buttons go with it.
  */
-export const PublicAccessRow = ({ overseer, metadata, container, onChange }: {
+export const PublicAccessRow = ({ overseer, authenticatedApi, metadata, container, onChange }: {
   overseer: RpcStub<Overseer>
+  authenticatedApi: RpcStub<AuthenticatedApi>
   /** The workspace as the dialog has it. With no `owner`, the user is its owner. */
-  metadata: Pick<GadgetMetadata, 'owner' | 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly'>
+  metadata: Pick<GadgetMetadata, 'id' | 'owner' | 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly'>
   /** Where the control's options are rendered, so they sit above the dialog the row is in. */
   container?: PortalContainer
   /** The workspace is now published with this role, or with null no longer published. */
@@ -90,6 +192,7 @@ export const PublicAccessRow = ({ overseer, metadata, container, onChange }: {
   const access = unavailable ? null : current.publicAccess ?? null
   const isOwner = !metadata.owner
   const offered = isOwner && !unavailable
+  const blockedBy = usePublicationBlocker(authenticatedApi, metadata.id, isOwner, flag.enabled && access !== null)
 
   if (!flag.enabled || (!isOwner && access === null)) return null
 
@@ -190,6 +293,11 @@ export const PublicAccessRow = ({ overseer, metadata, container, onChange }: {
           </DropdownMenu>
         )}
       </div>
+      {access !== null && blockedBy !== undefined && (
+        <p className="mt-2 pl-11 text-[12px] leading-4 text-kumo-subtle">
+          {`Not visible to others until '${blockedBy}' is published`}
+        </p>
+      )}
       {offered && confirming && (
         <div
           role="group"

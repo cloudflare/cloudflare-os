@@ -3,7 +3,7 @@
 
 import { act, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RouterProvider } from '@tanstack/react-router'
+import { createRoute, RouterProvider, type AnyRoute } from '@tanstack/react-router'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
@@ -34,6 +34,7 @@ import {
   type,
   unmountAll,
 } from './spacesTestUtils'
+import { VisitedSpace } from './VisitedSpace'
 
 // The members dialog's avatars load when scrolled into view, which jsdom has no observer for.
 vi.mock('../../components/PersonAvatar', () => ({
@@ -497,5 +498,135 @@ describe('a space’s page', () => {
     expect(heading()).toBeUndefined()
     expect(openSpace).not.toHaveBeenCalled()
     expect(listSpaces).not.toHaveBeenCalled()
+  })
+})
+
+const tab = (name: string) => [...document.body.querySelectorAll<HTMLElement>('[role="tab"]')]
+  .find(candidate => candidate.textContent === name)
+const treeLabel = () => document.body.querySelector('[data-hierarchical-list]')?.getAttribute('aria-label')
+const treeRows = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-item]')]
+  .map(item => item.dataset.itemId)
+const unlistedTitles = () => [...document.body.querySelectorAll('aside section')]
+  .find(section => section.querySelector('h2')?.textContent === 'Unlisted')
+  ?.querySelectorAll('button')
+const draggableRows = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]')]
+  .filter(row => row.draggable)
+
+describe('the List / Tree toggle', () => {
+  afterEach(() => {
+    unmountAll()
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('switches the workspaces page to the personal space’s tree, and back to the list', async () => {
+    await renderAt('/workspaces')
+    expect(tab('List')?.getAttribute('aria-selected')).toBe('true')
+    expect(treeLabel()).toBeUndefined()
+
+    await click(tab('Tree')!)
+    await settle()
+    expect(treeLabel()).toBe('Workspaces in Personal')
+    expect(treeRows()).toEqual(['w-solo'])
+    expect(searchField()).toBeNull()
+
+    await click(tab('List')!)
+    await settle()
+    expect(treeLabel()).toBeUndefined()
+    expect(rowTitles()).toContain('Solo notes')
+  })
+
+  it('remembers the choice for the user, on every page that offers it', async () => {
+    await renderAt('/workspaces')
+    await click(tab('Tree')!)
+    unmountAll()
+
+    await renderAt('/workspaces')
+    expect(treeLabel()).toBe('Workspaces in Personal')
+    unmountAll()
+
+    await renderAt('/spaces/design')
+    expect(tab('Tree')?.getAttribute('aria-selected')).toBe('true')
+    expect(treeLabel()).toBe('Workspaces in Design')
+    expect(treeRows()).toEqual(['w-notes', 'w-brief'])
+  })
+
+  it('lets a member of a space move what the space lets them move in its tree', async () => {
+    await renderAt('/spaces/design')
+    await click(tab('Tree')!)
+    await settle()
+
+    // In Design the user's role is 'use', and only Notes is theirs.
+    expect(draggableRows().map(row => row.closest<HTMLElement>('[data-hierarchical-list-item]')?.dataset.itemId))
+      .toEqual(['w-notes'])
+  })
+
+  it('shows apart, in a space’s tree, the user’s own workspaces grouped there that it does not list', async () => {
+    await renderAt('/spaces/design', {
+      api: { listGadgets: async () => [...GADGETS, mine('w-payroll', 'Payroll notes', 'design')] },
+    })
+    await click(tab('Tree')!)
+    await settle()
+
+    expect(treeRows()).toEqual(['w-notes', 'w-brief'])
+    // Notes is listed, Solo notes and Roadmap are grouped in other spaces.
+    expect([...unlistedTitles() ?? []].map(item => item.textContent)).toEqual(['Payroll notes'])
+  })
+
+  it('gives a visitor the visible part of the space’s tree, read-only', async () => {
+    const listed = {
+      design: [
+        { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' as const },
+        { ...listedBy(ADA, 'w-draft', 'Draft', 'draft') },
+        { ...listedBy(ADA, 'w-hidden', 'Hidden', 'hidden'), parentId: 'w-draft', published: 'use' as const, hiddenBy: 'w-draft' },
+      ],
+    }
+    await renderAt('/spaces/design', { strangerTo: 'design', listed })
+    await click(tab('Tree')!)
+    await settle()
+
+    expect(treeLabel()).toBe('Workspaces in Design')
+    expect(treeRows()).toEqual(['w-brief'])
+    expect(draggableRows()).toEqual([])
+  })
+
+  it('is not offered while the flag is off, even to a user who chose the tree while it was on', async () => {
+    localStorage.setItem(`space-view:${ME.id}`, 'tree')
+    await renderAt('/workspaces', { spacesFlag: false })
+
+    expect(tab('Tree')).toBeUndefined()
+    expect(treeLabel()).toBeUndefined()
+    expect(rowTitles()).toContain('Solo notes')
+  })
+})
+
+describe('a visited space’s tree', () => {
+  afterEach(() => {
+    unmountAll()
+    localStorage.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('leaves out a published entry under an unpublished one, even from a listing read as a member', async () => {
+    const listing = {
+      status: 'ready' as const,
+      asMember: true,
+      workspaces: [
+        { ...listedBy(ADA, 'w-brief', 'Brief', 'brief'), published: 'use' as const },
+        { ...listedBy(ADA, 'w-draft', 'Draft', 'draft') },
+        { ...listedBy(ADA, 'w-hidden', 'Hidden', 'hidden'), parentId: 'w-draft', published: 'use' as const, hiddenBy: 'w-draft' },
+      ],
+    }
+    const Page = () => (
+      <VisitedSpace space={{ key: 'design', kind: 'team' }} label="Design" listing={listing} onListingReload={async () => {}} />
+    )
+    await mountRouted(fakeApi(), {
+      at: '/spaces/design',
+      pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/spaces/$spaceKey', component: Page })],
+    })
+    await click(tab('Tree')!)
+    await settle()
+
+    expect(treeRows()).toEqual(['w-brief'])
   })
 })

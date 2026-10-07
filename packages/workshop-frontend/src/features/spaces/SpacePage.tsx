@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
-import type { SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
+import type { GadgetMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import GadgetList, { type GadgetListRows } from '../../components/GadgetList'
 import { WorkshopButton } from '../../components/WorkshopControls'
@@ -9,11 +9,14 @@ import { useDocumentTitle } from '../../useDocumentTitle'
 import { matchingRows, spaceRows, type WorkspaceRow } from './groupWorkspaces'
 import { takeLostFocus } from './lostFocus'
 import { SPACE_ACTION_CLASS_NAME, SpaceEntryPoints } from './SpaceEntryPoints'
-import { spaceLabel } from './spaceKinds'
+import { isOwnPersonalSpace, spaceLabel } from './spaceKinds'
 import { SpaceMembersDialog } from './SpaceMembersDialog'
 import { SpaceNotFound } from './SpaceNotFound'
 import { SPACE_ROLE_LABELS } from './spaceRoles'
 import { SpaceSectionRows } from './SpaceSectionRows'
+import { SpaceTreeLayout } from './tree/SpaceTreeLayout'
+import { SpaceViewToggle } from './tree/SpaceViewToggle'
+import { useSpaceViewMode } from './tree/useSpaceViewMode'
 import { useSpace } from './useSpace'
 import { asMemberListing, useSpaceListings, type SpaceListing } from './useSpaceListings'
 import { useLastKnown, type Spaces } from './useSpaces'
@@ -21,6 +24,8 @@ import { VisitedSpace } from './VisitedSpace'
 import { WorkspaceAddressDialog } from './WorkspaceAddressDialog'
 
 const LISTING_LOADING: SpaceListing = { status: 'loading' }
+
+const UNLISTED_DESCRIPTION = 'Yours, and grouped here, but not listed by the space: its other members do not see them.'
 
 // A workspace of the user's own that the listing has no entry for. Only the user's own are placed
 // without one (see `spaceRows`).
@@ -62,6 +67,10 @@ const UnlistedWorkspaces = ({ children }: { children: ReactNode }) => {
  * listing has been read these are shown apart and said to be so, since no other member sees
  * them here.
  *
+ * A member may switch the workspaces to the space's tree beside a preview of the one selected
+ * (`SpaceTreeLayout`), a choice remembered for the user. The user's own workspaces the space does
+ * not list are shown apart under the tree there too.
+ *
  * A user who is not a member of the space is a visitor, to whom the space is open while it
  * lists a workspace published to everyone signed in: they get its name and those workspaces
  * (see `VisitedSpace`), and none of the above.
@@ -86,6 +95,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
   const [membersOpen, setMembersOpen] = useState(false)
   const [addressOf, setAddressOf] = useState<SpaceWorkspaceInfo | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [viewMode, setViewMode] = useSpaceViewMode()
 
   // The space as last read, while a read of it is under way: a session that replaces another (a
   // reconnect) has read nothing yet, and the header and the list stay up through that, with what
@@ -129,13 +139,20 @@ export const SpacePage = ({ spaceKey, spaces }: {
     void navigate({ to: '/workspaces', replace: true })
   }
 
+  // The user's own workspaces grouped in this space that it does not list, once it has been read.
+  // A record names only a team space; the user's own personal space is where it names none.
+  const isUnlistedHere = (record: GadgetMetadataWithTimestamps) =>
+    memberListing.status === 'ready'
+    && record.spaceKey === (info && isOwnPersonalSpace(info) ? undefined : spaceKey)
+    && !memberListing.workspaces.some(entry => entry.id === record.id)
+
   const handleAddressChanged = () => {
     setAddressOf(null)
     void reload(spaceKey)
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col px-3 sm:px-10">
+    <div className={`mx-auto flex w-full flex-col px-3 sm:px-10 ${viewMode === 'tree' ? 'min-h-full md:h-full' : 'h-full max-w-4xl'}`}>
       {state.status === 'loading' && !info && (
         <div role="status" aria-label="Loading the space" className="flex flex-col gap-0.5 pt-10">
           {[1, 2, 3].map(row => (
@@ -157,7 +174,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
       )}
       {info && label && role === undefined && (
         <VisitedSpace
-          spaceKey={spaceKey}
+          space={{ key: spaceKey, kind: info.kind }}
           label={label}
           listing={listing}
           onListingReload={() => reload(spaceKey)}
@@ -180,51 +197,64 @@ export const SpacePage = ({ spaceKey, spaces }: {
                 Your role: {SPACE_ROLE_LABELS[role]}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              <SpaceViewToggle mode={viewMode} onModeChange={setViewMode} />
               <SpaceEntryPoints label={label} space={info} onMembersOpen={() => setMembersOpen(true)} />
             </div>
           </header>
-          <div className="min-h-0 flex-1">
-            <GadgetList
-              showHeader={false}
-              sections={{
-                spaces: spaces.spaces,
-                render: ({ gadgets, search, renderRow }: GadgetListRows) => {
-                  const rows = matchingRows(spaceRows({
-                    gadgets,
-                    space: info,
-                    workspaces: memberListing.status === 'ready' ? memberListing.workspaces : [],
-                    userId: currentUser?.id,
-                  }), search)
-                  if (search !== '' && rows.length === 0) {
-                    return <div className="py-12 text-center text-sm text-kumo-inactive">No workspaces found</div>
-                  }
-                  const read = memberListing.status === 'ready'
-                  const unlisted = read ? rows.filter(isUnlisted) : []
-                  const listed = read ? rows.filter(row => !isUnlisted(row)) : rows
-                  return (
-                    <>
-                      {/* A space whose only rows are unlisted ones is not said to have none. */}
-                      {(listed.length > 0 || unlisted.length === 0) && (
-                        <SpaceSectionRows
-                          section={{ kind: 'space', space: info, listing: memberListing.status, rows: listed }}
-                          label={label}
-                          renderRow={renderRow}
-                          onListingReload={reload}
-                          onAddressChange={setAddressOf}
-                        />
-                      )}
-                      {unlisted.length > 0 && (
-                        <UnlistedWorkspaces>
-                          {unlisted.map(row => renderRow(row.gadget))}
-                        </UnlistedWorkspaces>
-                      )}
-                    </>
-                  )
-                },
-              }}
-            />
-          </div>
+          {viewMode === 'tree' ? (
+            <div className="flex-1 px-3 pb-6 md:min-h-0">
+              <SpaceTreeLayout
+                space={{ key: spaceKey, kind: info.kind, label }}
+                role={role}
+                listing={memberListing}
+                onListingReload={() => reload(spaceKey)}
+                unlisted={{ includes: isUnlistedHere, description: UNLISTED_DESCRIPTION }}
+              />
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1">
+              <GadgetList
+                showHeader={false}
+                sections={{
+                  spaces: spaces.spaces,
+                  render: ({ gadgets, search, renderRow }: GadgetListRows) => {
+                    const rows = matchingRows(spaceRows({
+                      gadgets,
+                      space: info,
+                      workspaces: memberListing.status === 'ready' ? memberListing.workspaces : [],
+                      userId: currentUser?.id,
+                    }), search)
+                    if (search !== '' && rows.length === 0) {
+                      return <div className="py-12 text-center text-sm text-kumo-inactive">No workspaces found</div>
+                    }
+                    const read = memberListing.status === 'ready'
+                    const unlisted = read ? rows.filter(isUnlisted) : []
+                    const listed = read ? rows.filter(row => !isUnlisted(row)) : rows
+                    return (
+                      <>
+                        {/* A space whose only rows are unlisted ones is not said to have none. */}
+                        {(listed.length > 0 || unlisted.length === 0) && (
+                          <SpaceSectionRows
+                            section={{ kind: 'space', space: info, listing: memberListing.status, rows: listed }}
+                            label={label}
+                            renderRow={renderRow}
+                            onListingReload={reload}
+                            onAddressChange={setAddressOf}
+                          />
+                        )}
+                        {unlisted.length > 0 && (
+                          <UnlistedWorkspaces>
+                            {unlisted.map(row => renderRow(row.gadget))}
+                          </UnlistedWorkspaces>
+                        )}
+                      </>
+                    )
+                  },
+                }}
+              />
+            </div>
+          )}
         </>
       )}
       {membersOpen && (
