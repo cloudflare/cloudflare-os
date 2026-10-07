@@ -15,7 +15,11 @@ import ViewToggle from "./components/ViewToggle";
 
 type VendorMap = Map<string, VendorDescription>;
 
-export default function BlueprintsPage() {
+/**
+ * The featured blueprints. With `showHeader` off the page leaves out its own "Explore" heading and
+ * page frame, for a host that supplies both, and keeps the view toggle in its toolbar.
+ */
+export default function BlueprintsPage({ showHeader = true }: { showHeader?: boolean }) {
   const { authenticatedApi } = useAuthenticatedApi();
   const toasts = useKumoToastManager();
   const toastsRef = useRef(toasts);
@@ -76,17 +80,23 @@ export default function BlueprintsPage() {
   });
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-3 sm:px-10">
-      <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-6 sm:pt-10">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Explore</h1>
-          <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Discover featured blueprints to use as starting points. Open one to create a workspace
-            from it, or save it to reuse later.
-          </p>
-        </div>
-        <ViewToggle view={view} onChange={setView} />
-      </header>
+    <div
+      className={showHeader
+        ? "mx-auto flex h-full w-full max-w-5xl flex-col px-3 sm:px-10"
+        : "flex min-h-0 flex-1 flex-col"}
+    >
+      {showHeader && (
+        <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-6 sm:pt-10">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Explore</h1>
+            <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
+              Discover featured blueprints to use as starting points. Open one to create a workspace
+              from it, or save it to reuse later.
+            </p>
+          </div>
+          <ViewToggle view={view} onChange={setView} />
+        </header>
+      )}
 
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
@@ -106,6 +116,7 @@ export default function BlueprintsPage() {
             className="h-10 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[16px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15 sm:h-9 sm:text-[13px]"
           />
         </div>
+        {!showHeader && <ViewToggle view={view} onChange={setView} />}
       </div>
 
       <div className="chat-panel min-h-0 flex-1 overflow-y-auto pb-8 pt-1">
