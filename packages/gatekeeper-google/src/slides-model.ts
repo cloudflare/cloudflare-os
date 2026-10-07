@@ -1,5 +1,6 @@
 /**
- * Turns a Slides `presentations.get` response into the presentation agents read.
+ * Turns Slides responses into the presentation agents read: slide summaries from a presentation,
+ * and one slide's content from its page.
  *
  * Text is projected from the text runs' and AutoTexts' content, concatenated, minus the newline
  * Slides always keeps at the end of a shape or table cell. This is for reading, not for addressing
@@ -7,20 +8,17 @@
  * spans [0, 1)), so offsets past one stop matching the provider's UTF-16 text indices.
  */
 
-import type { RestPageElement, RestPresentation, RestText } from "./slides-api";
+import type { RestPageElement, RestPresentation, RestSlide, RestText } from "./slides-api";
 import type {
-  PresentationInfo, Slide, SlideElement, SlideSize, TableCell,
+  PresentationInfo, Slide, SlideElement, SlideSummary, TableCell,
 } from "./slides-read-types";
 
-/** A presentation as one read saw it. */
-export type NormalizedPresentation = {
-  info: PresentationInfo;
-  /** Every slide's content, in presentation order. */
-  slides: Slide[];
-};
+/** Layout display names by layout object ID. */
+export type LayoutNames = Map<string, string>;
 
 const EMU_PER_POINT = 12_700;
 const MAX_TITLE_LENGTH = 200;
+const TITLE_PLACEHOLDERS = new Set(["TITLE", "CENTERED_TITLE"]);
 
 const INVALID_ELEMENT = "Google Slides returned an invalid page element";
 
@@ -98,59 +96,67 @@ function elementOf(element: RestPageElement): SlideElement {
   return { ...base, kind: "other" };
 }
 
-/** Normalize a presentation read with `GoogleSlidesApi.getPresentation()`. */
-export function normalizePresentation(rest: RestPresentation): NormalizedPresentation {
-  let layoutNames = new Map<string, string>();
-  for (let layout of rest.layouts ?? []) {
-    let name = layout.layoutProperties?.displayName;
-    if (layout.objectId && name) layoutNames.set(layout.objectId, name);
+/** The layout names a presentation or its outline lists. */
+export function layoutNames(rest: RestPresentation): LayoutNames {
+  let names: LayoutNames = new Map();
+  for (let { objectId, layoutProperties } of rest.layouts ?? []) {
+    let name = layoutProperties?.displayName;
+    if (objectId && name) names.set(objectId, name);
   }
+  return names;
+}
 
-  let slides = (rest.slides ?? []).map((slide, index): Slide => {
-    if (typeof slide.objectId !== "string" || slide.objectId.length === 0) {
-      throw new Error("Google Slides returned an invalid slide");
-    }
-    let properties = slide.slideProperties;
-    let elements = (slide.pageElements ?? []).map(elementOf);
-
-    // The notes shape is absent until someone first writes notes.
-    let notes = properties?.notesPage;
-    let notesId = notes?.notesProperties?.speakerNotesObjectId;
-    let notesShape = notesId === undefined
-      ? undefined
-      : notes?.pageElements?.find(element => element.objectId === notesId);
-    let speakerNotes = textOf(notesShape?.shape?.text);
-
-    let title = elements.find(element =>
-      element.kind === "shape" &&
-      (element.placeholder === "TITLE" || element.placeholder === "CENTERED_TITLE") &&
-      element.text.length > 0);
-    let layout = properties?.layoutObjectId && layoutNames.get(properties.layoutObjectId);
-
-    return {
-      id: slide.objectId,
-      index,
-      ...(layout ? { layout } : {}),
-      skipped: properties?.isSkipped === true,
-      ...(title?.kind === "shape" ? { title: title.text.slice(0, MAX_TITLE_LENGTH) } : {}),
-      hasSpeakerNotes: speakerNotes.length > 0,
-      elements,
-      speakerNotes,
-    };
+/** The IDs of a presentation's slides, in presentation order. */
+export function slideIds(rest: RestPresentation): string[] {
+  return (rest.slides ?? []).map(slide => {
+    if (!slide.objectId) throw new Error("Google Slides returned an invalid slide");
+    return slide.objectId;
   });
+}
 
-  let pageSize: SlideSize = {
-    width: points(rest.pageSize?.width),
-    height: points(rest.pageSize?.height),
-  };
+// The notes shape is absent until someone first writes notes.
+function speakerNotesOf(slide: RestSlide): string {
+  let notes = slide.slideProperties?.notesPage;
+  let id = notes?.notesProperties?.speakerNotesObjectId;
+  return textOf(notes?.pageElements?.find(element => id && element.objectId === id)?.shape?.text);
+}
+
+// Works on a summary read too, whose elements carry only placeholders and text.
+function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): SlideSummary {
+  if (!slide.objectId) throw new Error("Google Slides returned an invalid slide");
+  let properties = slide.slideProperties;
+  let layout = properties?.layoutObjectId && layouts.get(properties.layoutObjectId);
+  let title = (slide.pageElements ?? [])
+    .filter(({ shape }) => TITLE_PLACEHOLDERS.has(shape?.placeholder?.type ?? ""))
+    .map(({ shape }) => textOf(shape?.text))
+    .find(text => text.length > 0);
   return {
-    info: {
-      id: rest.presentationId,
-      title: rest.title ?? "Untitled presentation",
-      ...(rest.locale ? { locale: rest.locale } : {}),
-      pageSize,
-      slides: slides.map(({ elements: _elements, speakerNotes: _notes, ...summary }) => summary),
-    },
-    slides,
+    id: slide.objectId,
+    index,
+    ...(layout ? { layout } : {}),
+    skipped: properties?.isSkipped === true,
+    ...(title ? { title: title.slice(0, MAX_TITLE_LENGTH) } : {}),
+    hasSpeakerNotes: speakerNotesOf(slide).length > 0,
+  };
+}
+
+/** Summarize a presentation read with `GoogleSlidesApi.getPresentation()`. */
+export function presentationInfo(rest: RestPresentation): PresentationInfo {
+  let layouts = layoutNames(rest);
+  return {
+    id: rest.presentationId,
+    title: rest.title ?? "Untitled presentation",
+    ...(rest.locale ? { locale: rest.locale } : {}),
+    pageSize: { width: points(rest.pageSize?.width), height: points(rest.pageSize?.height) },
+    slides: (rest.slides ?? []).map((slide, index) => summaryOf(slide, index, layouts)),
+  };
+}
+
+/** One slide's content, read with `GoogleSlidesApi.getSlide()`, at its place in the deck. */
+export function slideOf(page: RestSlide, index: number, layouts: LayoutNames): Slide {
+  return {
+    ...summaryOf(page, index, layouts),
+    elements: (page.pageElements ?? []).map(elementOf),
+    speakerNotes: speakerNotesOf(page),
   };
 }

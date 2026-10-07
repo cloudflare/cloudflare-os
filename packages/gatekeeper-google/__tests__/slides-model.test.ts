@@ -1,30 +1,36 @@
 import { describe, expect, it } from "vitest";
-import type { RestPresentation } from "../src/slides-api";
-import { normalizePresentation } from "../src/slides-model";
+import type { RestPageElement, RestPresentation } from "../src/slides-api";
+import { layoutNames, presentationInfo, slideOf } from "../src/slides-model";
 import type { ShapeElement } from "../src/slides-read-types";
 import { presentation, shape, slide, text } from "./slides-fixture";
+import liveOutline from "./slides-live-outline.json";
 import liveSample from "./slides-live-sample.json";
 
-function onlySlide(...elements: Parameters<typeof slide>[1]) {
-  return normalizePresentation(presentation([slide("s1", elements)])).slides[0];
+function onlySlide(...elements: RestPageElement[]) {
+  return slideOf(slide("s1", elements), 0, new Map());
 }
 
-describe("normalizePresentation", () => {
+describe("Slides model", () => {
   it("concatenates runs and AutoText content, dropping only the final newline", () => {
     let body = text(["Revenue ", "up 👍"], ["Page ", { slideNumber: "11" }, " of 12"]);
     let [element] = onlySlide(shape("box", body)).elements as ShapeElement[];
     expect(element.text).toBe("Revenue up 👍\nPage 11 of 12");
   });
 
-  // A response recorded from a real deck: a slide number, a table whose top-left cell's location is
+  // Responses recorded from a real deck: a slide number, a table whose top-left cell's location is
   // `{}` and whose merged-over cell is absent, soft line breaks, and speaker notes written through
-  // the API.
-  it("reads a recorded Google Slides response", () => {
-    let { info, slides } = normalizePresentation(liveSample as RestPresentation);
-    let [withTable, withBreaks] = slides;
+  // the API. The outline is the same two slides through the summary field mask, which leaves
+  // elements without IDs and text elements without indices.
+  it("reads recorded Google Slides responses", () => {
+    let sample = liveSample as RestPresentation;
+    let layouts = layoutNames(sample);
+    let [withTable, withBreaks] = sample.slides!.map((page, i) => slideOf(page, i, layouts));
 
-    expect(info.slides.map(s => s.title)).toEqual([
-      "The £330M API Meltdown", "This Isn't Just Their Problem",
+    expect(presentationInfo(liveOutline as RestPresentation).slides).toEqual([
+      { id: "g7c11224212bb9f2f_8", index: 0, layout: "G| Big Copy White", skipped: false,
+        title: "The £330M API Meltdown", hasSpeakerNotes: true },
+      { id: "g722ffecb27484c70_34", index: 1, layout: "H| Chart + Copy Left Column",
+        skipped: false, title: "This Isn't Just Their Problem", hasSpeakerNotes: false },
     ]);
     expect(withTable.speakerNotes).toBe("Mention the £330M\nthen demo");
     expect(withTable.elements).toContainEqual(
@@ -87,11 +93,11 @@ describe("normalizePresentation", () => {
   });
 
   it("reads speaker notes from the notes page's speaker-notes shape only", () => {
-    let { slides } = normalizePresentation(presentation([
+    let slides = [
       slide("with-notes", [], { notes: text(["Mention Q3"], ["then demo"]) }),
       slide("no-notes-shape", [], { notes: null }),
       slide("empty-notes", [], { notes: text([""]) }),
-    ]));
+    ].map((page, i) => slideOf(page, i, new Map()));
 
     expect(slides.map(s => [s.speakerNotes, s.hasSpeakerNotes])).toEqual([
       ["Mention Q3\nthen demo", true],
@@ -102,7 +108,7 @@ describe("normalizePresentation", () => {
 
   it("summarizes slides in order with layout names, skip state and a bounded title", () => {
     let long = "T".repeat(250);
-    let { info } = normalizePresentation(presentation([
+    let info = presentationInfo(presentation([
       slide("s1", [shape("t", text([long]), { placeholder: "TITLE" })], {
         layoutObjectId: "layout-title",
       }),

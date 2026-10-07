@@ -49,6 +49,11 @@ function png(width: number, height: number): Uint8Array {
   return bytes;
 }
 
+const DECK = presentation([
+  slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })]),
+  slide("s2", [shape("b2", text(["Body"]))], { notes: text(["Say hello"]) }),
+]);
+
 beforeEach(() => {
   providerFetches = [];
   imageRequests = [];
@@ -68,10 +73,10 @@ beforeEach(() => {
       // Google's reported height is not trusted: a live 200-wide render reported 113 for 112.
       return Response.json({ width: 800, height: 451, contentUrl: thumbnailContentUrl });
     }
-    return Response.json(presentation([
-      slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })]),
-      slide("s2", [shape("b2", text(["Body"]))], { notes: text(["Say hello"]) }),
-    ]));
+    let pageId = url.pathname.match(/\/pages\/([^/]+)$/)?.[1];
+    if (pageId === undefined) return Response.json(DECK);
+    let page = DECK.slides!.find(s => s.objectId === pageId);
+    return page ? Response.json(page) : new Response(null, { status: 404 });
   }));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -88,14 +93,19 @@ function newSession(wrap: (read: NativeRead) => NativeRead = read => read) {
 }
 
 describe("Google Slides presentation session", () => {
-  it("returns requested slides in request order after authorizing the read", async () => {
+  it("reads only the requested slides, in request order, after authorizing the read", async () => {
     let { queue, session } = newSession();
     using _session = session;
 
     let slides = await session.getSlides(["s2", "s1"]);
 
-    expect(slides.map(s => [s.id, s.speakerNotes])).toEqual([["s2", "Say hello"], ["s1", ""]]);
+    expect(slides.map(s => [s.id, s.index, s.speakerNotes]))
+      .toEqual([["s2", 1, "Say hello"], ["s1", 0, ""]]);
     expect(queue.observations).toHaveLength(1);
+    let [outline, ...pages] = providerFetches;
+    expect(outline.searchParams.get("fields")).not.toContain("pageElements");
+    expect(pages.map(url => url.pathname).toSorted()).toEqual(
+      ["/v1/presentations/deck-1/pages/s1", "/v1/presentations/deck-1/pages/s2"]);
   });
 
   // The error says which IDs are not slides, which is itself something read from the deck.

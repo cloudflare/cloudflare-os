@@ -7,7 +7,7 @@ import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { GoogleSlidesApi, type ThumbnailSize } from "./slides-api";
-import { normalizePresentation, type NormalizedPresentation } from "./slides-model";
+import { layoutNames, presentationInfo, slideIds, slideOf } from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
@@ -133,70 +133,73 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     this.#approvalQueue[Symbol.dispose]();
   }
 
-  async #fetch(): Promise<NormalizedPresentation> {
-    return normalizePresentation(await this.#api.getPresentation(this.#presentationId));
+  /** The deck's title and slide order, and the first of `ids` that names no slide. */
+  async #outline(ids: string[]) {
+    let outline = await this.#api.getOutline(this.#presentationId);
+    let order = slideIds(outline);
+    return {
+      title: outline.title ?? "Untitled presentation",
+      order,
+      layouts: layoutNames(outline),
+      missing: ids.find(id => !order.includes(id)),
+    };
   }
 
   async getPresentation(): Promise<PresentationInfo> {
-    let { info } = await this.#read(
-      () => this.#fetch(),
-      ({ info }) => ({
+    return this.#read(
+      async () => presentationInfo(await this.#api.getPresentation(this.#presentationId)),
+      info => ({
         title: "Read Google Slides presentation outline",
         description:
           `Read the outline of "${info.title}": its ${info.slides.length} slide(s), their ` +
           "layouts, and their titles.",
       }));
-    return info;
   }
 
-  async getSlides(slideIds: string[]): Promise<Slide[]> {
-    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_READ) {
+  async getSlides(ids: string[]): Promise<Slide[]> {
+    if (ids.length === 0 || ids.length > MAX_SLIDES_PER_READ) {
       throw new Error(`Request between 1 and ${MAX_SLIDES_PER_READ} slides at a time.`);
     }
-    // Authorized before an unknown ID is reported, since that reveals which slides exist.
-    let { info, slides } = await this.#read(
-      () => this.#fetch(),
-      ({ info }) => ({
-        title: slideIds.length === 1
+    // Each slide is fetched on its own, so a read costs what it returns, not the whole deck. An
+    // unknown ID is reported only after authorization, since that reveals which slides exist.
+    let { title, missing, slides } = await this.#read(
+      async () => {
+        let { title, order, layouts, missing } = await this.#outline(ids);
+        let slides = missing !== undefined ? [] : await Promise.all(ids.map(async id =>
+          slideOf(await this.#api.getSlide(this.#presentationId, id), order.indexOf(id), layouts)));
+        return { title, missing, slides };
+      },
+      ({ title }) => ({
+        title: ids.length === 1
           ? "Read one Google Slides slide"
-          : `Read ${slideIds.length} Google Slides slides`,
-        description:
-          `Read the text and speaker notes of ${slideIds.length} slide(s) in "${info.title}".`,
+          : `Read ${ids.length} Google Slides slides`,
+        description: `Read the text and speaker notes of ${ids.length} slide(s) in "${title}".`,
       }));
-    let byId = new Map(slides.map(slide => [slide.id, slide]));
-    return slideIds.map(id => {
-      let slide = byId.get(id);
-      if (!slide) {
-        throw new Error(
-          `No slide with ID "${id}" in "${info.title}". Call getPresentation() for slide IDs.`);
-      }
-      return slide;
-    });
+    if (missing !== undefined) throw noSlide(missing, title);
+    return slides;
   }
 
   async getSlideThumbnail(
     slideId: string, size: SlideThumbnailSize = "medium",
   ): Promise<SlideThumbnail> {
     // The render happens inside the read, so a scope check bracketing it covers the image too.
-    // An unknown ID is reported only after authorization, as in getSlides().
     let { title, thumbnail } = await this.#read(
       async () => {
-        let { title = "Untitled presentation", slideIds } =
-          await this.#api.getOutline(this.#presentationId);
-        let index = slideIds.indexOf(slideId);
-        let thumbnail = index < 0 ? undefined : await this.#api.getThumbnail(
+        let { title, order, missing } = await this.#outline([slideId]);
+        let thumbnail = missing !== undefined ? undefined : await this.#api.getThumbnail(
           this.#presentationId, slideId, THUMBNAIL_SIZES[size]);
-        return { title, index, thumbnail };
+        return { title, index: order.indexOf(slideId), thumbnail };
       },
       ({ title, index }) => ({
         title: "Render a Google Slides slide",
         description:
           `Render an image of ${index < 0 ? "a slide" : `slide ${index + 1}`} in "${title}".`,
       }));
-    if (!thumbnail) {
-      throw new Error(
-        `No slide with ID "${slideId}" in "${title}". Call getPresentation() for slide IDs.`);
-    }
+    if (!thumbnail) throw noSlide(slideId, title);
     return { mimeType: "image/png", ...thumbnail };
   }
+}
+
+function noSlide(id: string, title: string): Error {
+  return new Error(`No slide with ID "${id}" in "${title}". Call getPresentation() for slide IDs.`);
 }

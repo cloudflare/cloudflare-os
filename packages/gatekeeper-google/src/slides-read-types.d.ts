@@ -138,7 +138,8 @@ export interface GooglePresentationReadSession {
 
   /**
    * Read the content of up to 20 slides, by the IDs `getPresentation()` returns, in the order
-   * requested. Throws if any ID does not name a slide.
+   * requested. Each slide is fetched on its own, so reading a few costs the same however large the
+   * presentation is. Throws if any ID does not name a slide.
    */
   getSlides(slideIds: string[]): Promise<Slide[]>;
 

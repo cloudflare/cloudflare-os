@@ -3,17 +3,26 @@ import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
-// Text styles dominate a presentation's JSON; 10 MiB matches the Docs bound for a document body.
+// 10 MiB matches the Docs bound for a document body.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+// A slide is read on its own; a text-heavy live slide is about 50 KiB with all its styles.
+const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-// Masters, notes masters and layout elements are deliberately not requested: they are not slide
-// content, and on a template-heavy deck they are most of the response.
-const PRESENTATION_FIELDS =
-  "presentationId,title,locale,pageSize," +
-  "layouts(objectId,layoutProperties(displayName))," +
-  "slides(objectId,pageElements," +
-  "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties,pageElements)))";
+const TEXT_FIELDS = "text(textElements(textRun(content),autoText(content)))";
+const LAYOUT_FIELDS = "layouts(objectId,layoutProperties(displayName))";
+// Summaries need titles and speaker notes, which a mask can only reach as every shape's text.
+// Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
+// against 780 KiB with them.
+const SUMMARY_FIELDS =
+  `presentationId,title,locale,pageSize,${LAYOUT_FIELDS},` +
+  `slides(objectId,pageElements(shape(placeholder(type),${TEXT_FIELDS})),` +
+  "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties(speakerNotesObjectId)," +
+  `pageElements(objectId,shape(${TEXT_FIELDS})))))`;
+const OUTLINE_FIELDS = `presentationId,title,${LAYOUT_FIELDS},slides(objectId)`;
+const SLIDE_FIELDS =
+  "objectId,pageElements," +
+  "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties,pageElements))";
 
 // A thumbnail response is a URL and two numbers.
 const MAX_THUMBNAIL_RESPONSE_BYTES = 16 * 1024;
@@ -115,66 +124,66 @@ function pngDimensions(content: Uint8Array): { width: number; height: number } {
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
+function pagePath(presentationId: string, pageId: string): string {
+  return `${encodeURIComponent(presentationId)}/pages/${encodeURIComponent(pageId)}`;
+}
+
 export class GoogleSlidesApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #request<T extends { presentationId?: string }>(
-    presentationId: string,
-    fields: string,
-    operation: string,
+  async #get<T>(
+    path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
-    let url = new URL(`${API_BASE}/${encodeURIComponent(presentationId)}`);
-    url.searchParams.set("fields", fields);
+    let url = new URL(`${API_BASE}/${path}`);
+    for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
     let response = await fetchWithAuthRetry(
       url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );
-    let result = await readGoogleJson<T>(response, {
-      provider: "Google Slides", operation, maxBytes: MAX_RESPONSE_BYTES,
-    });
+    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+  }
+
+  async #presentation(
+    presentationId: string, fields: string, operation: string,
+  ): Promise<RestPresentation> {
+    let result = await this.#get<RestPresentation>(
+      encodeURIComponent(presentationId), { fields }, operation);
     if (result.presentationId !== presentationId) {
       throw new Error("Google Slides returned a different presentation");
     }
     return result;
   }
 
-  /** Fetch a presentation's slides and their content, without masters or layout elements. */
+  /** Fetch what slide summaries need: the text of each slide's shapes and speaker notes. */
   getPresentation(presentationId: string): Promise<RestPresentation> {
-    return this.#request<RestPresentation>(presentationId, PRESENTATION_FIELDS, "get presentation");
+    return this.#presentation(presentationId, SUMMARY_FIELDS, "get presentation");
   }
 
   /** Fetch only a presentation's title, which also proves the caller can open it. */
   async getPresentationTitle(presentationId: string): Promise<string | undefined> {
-    let result = await this.#request<{ presentationId: string; title?: string }>(
-      presentationId, "presentationId,title", "get presentation title",
-    );
-    return result.title;
+    return (await this.#presentation(presentationId, "presentationId,title", "get title")).title;
   }
 
-  /** Fetch a presentation's title and its slide IDs, in presentation order. */
-  async getOutline(
-    presentationId: string,
-  ): Promise<{ title: string | undefined; slideIds: string[] }> {
-    let { title, slides = [] } = await this.#request<
-      Pick<RestPresentation, "presentationId" | "title" | "slides">
-    >(presentationId, "presentationId,title,slides(objectId)", "get presentation outline");
-    return { title, slideIds: slides.flatMap(slide => slide.objectId ?? []) };
+  /** Fetch a presentation's title, layout names and slide IDs, but no slide content. */
+  getOutline(presentationId: string): Promise<RestPresentation> {
+    return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
+  }
+
+  /** Fetch one slide's content, whatever the size of the rest of the presentation. */
+  async getSlide(presentationId: string, slideId: string): Promise<RestSlide> {
+    let slide = await this.#get<RestSlide>(
+      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
+    if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
+    return slide;
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */
   async getThumbnail(
     presentationId: string, pageId: string, size: ThumbnailSize,
   ): Promise<PageThumbnail> {
-    let url = new URL(
-      `${API_BASE}/${encodeURIComponent(presentationId)}/pages/${encodeURIComponent(pageId)}` +
-      "/thumbnail");
-    url.searchParams.set("thumbnailProperties.mimeType", "PNG");
-    url.searchParams.set("thumbnailProperties.thumbnailSize", size);
-    let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
-    );
-    let { contentUrl } = await readGoogleJson<{ contentUrl?: string }>(response, {
-      provider: "Google Slides", operation: "get thumbnail", maxBytes: MAX_THUMBNAIL_RESPONSE_BYTES,
-    });
+    let { contentUrl } = await this.#get<{ contentUrl?: string }>(
+      `${pagePath(presentationId, pageId)}/thumbnail`,
+      { "thumbnailProperties.mimeType": "PNG", "thumbnailProperties.thumbnailSize": size },
+      "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES);
     // No credentials: the URL itself is the authority. A redirect could leave Google's host.
     let image = await fetch(thumbnailContentUrl(contentUrl), {
       redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

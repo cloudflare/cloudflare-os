@@ -208,6 +208,11 @@ stores baseline and Preview secrets separately, so provision the same signing va
 Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
 causing tab listing, content reads, and edits to fail.
 
+A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
+the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
+on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
+one slide at a time, capped at 2 MiB each.
+
 ## Google Drive read-only bindings
 
 Drive exposes three permanent resource URL forms:
