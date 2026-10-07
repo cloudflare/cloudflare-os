@@ -551,7 +551,9 @@ Because v1 has no per-thread hiding, an excluded-but-named observation can only 
 named observer cannot reach it at all: either they have *already lost access* (none of the
 sharing graph, the workspace's publication and membership of its space gives them a role any
 longer), or the connection that produced it has left their role's verification scope. While the
-workspace is published nobody has lost access, so only the second applies.
+workspace's publication counts, which is while its Overseer holds a confirmed "visible" answer
+from its space (see `sharing.md`, "Confirming it"), nobody has lost access, so only the second
+applies.
 
 For each id in `description.excludeObservers`:
 
@@ -565,11 +567,11 @@ For each id in `description.excludeObservers`:
    failing closed; it lands with `observer-verification-fixes`.
 2. Check whether that `profileId` still holds a role: the higher of the one sharing gives
    (`SharingManager.getEffectiveRole`, the graph's role raised to the one the workspace is
-   published with) and the one their membership of the workspace's space gives. See
-   `sharing.md`, "Space roles", for how the second is learned here and why an observation is
-   blocked when it cannot be. While a restart that a withdrawn or lowered publication calls for
-   is pending, the role the publication gave before the change counts too, for every observer
-   (see `sharing.md`, "Publishing to the deployment").
+   published with, while that counts) and the one their membership of the workspace's space
+   gives. See `sharing.md`, "Space roles", for how the second is learned here and why an
+   observation is blocked when it cannot be. While a restart that a withdrawn, lowered or no
+   longer visible publication calls for is pending, the role the publication gave before the
+   change counts too, for every observer (see `sharing.md`, "Publishing to the deployment").
    - **Still authorized, and the producing gatekeeper is still in that role's scope → throw**,
      blocking the observation (degrade to per-observation lockdown). Use a clear message, e.g.:
      `"This observation was blocked because it contains data that a current collaborator is not permitted to see."`
@@ -638,8 +640,9 @@ downgrades — see the matching methods on `OverseerClientInterface` and `Sharin
   stale cached workspace listing just yields a denied open).
 
 - After a mutation, use the returned `AffectedCollaborator[]` to find users who **lost access**.
-  That report is raised to the role the workspace is published with, so while it is published
-  nobody in it has (see `sharing.md`, "Publishing to the deployment").
+  That report is raised to the role the workspace is published with while the publication
+  counts, that is while the Overseer holds a confirmed "visible" answer, and then nobody in it has
+  (see `sharing.md`, "Publishing to the deployment").
   For each who is now unreachable in the graph and holds no role as a member of the workspace's
   space either (see `sharing.md`, "Space roles"), if they have an observer record: delete the
   observer record, then best-effort `removeObserver(record.observerId)` on **all** gatekeeper
