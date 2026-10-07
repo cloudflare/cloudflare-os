@@ -40,10 +40,63 @@ describe("prepareSkillUploads", () => {
     expect(candidate.description).toBe("Verify the production deployment.");
   });
 
-  it("rejects unterminated YAML frontmatter", () => {
-    expect(() => prepareSkillUploads([
-      file("deployment-check.md", "---\nname: deployment-check\nDescription"),
-    ])).toThrow("deployment-check has unterminated YAML frontmatter.");
+  it.each([
+    ["ordinary text", "Follow these instructions."],
+    ["a leading thematic rule", "---\nFollow these instructions."],
+    ["an unclosed metadata-looking block", "---\nname: deployment-check\nDescription"],
+    ["prose between thematic rules", "---\nFollow these instructions.\n---\nThen verify."],
+    ["a YAML sequence", "---\n- first\n- second\n---\nInstructions"],
+    ["an unrelated YAML mapping", "---\ntitle: Old document\n---\nInstructions"],
+    ["malformed YAML", "---\nname: [broken\n---\nInstructions"],
+    ["an empty fenced block", "---\n\n---\nInstructions"],
+    ["leading whitespace", "\n---\nname: example\ndescription: Example\n---\nInstructions"],
+    ["CRLF and BOM", "\uFEFF---\r\nFollow these instructions.\r\n---\r\n\r\nVerify.\r\n"],
+  ])("imports %s as legacy Markdown without losing text", (_, original) => {
+    const candidates = prepareSkillUploads([
+      file("review.md", original),
+      file("other.md", "Another skill."),
+    ]);
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0].name).toBe("review");
+    expect(candidates[0].manifestBody).toBe(original);
+    expect(candidates[0].description).not.toBe("");
+    const converted = writeSkillUploadMetadata(original, "review", "Review instructions.");
+    expect(converted).toBe(`---\nname: review\ndescription: Review instructions.\n---\n\n${original}`);
+  });
+
+  it("derives legacy descriptions from the same preserved content used for conversion", () => {
+    const [candidate] = prepareSkillUploads([
+      file("review.md", "---\nFollow these instructions.\n---\nAfterword."),
+    ]);
+
+    expect(candidate.description).toContain("Follow these instructions.");
+  });
+
+  it.each([
+    ["name: example", "example", ""],
+    ["description: Existing description.", "", "Existing description."],
+    ["name: 123\ndescription: false", "", ""],
+    ["name: INVALID\ndescription: ''", "INVALID", ""],
+    [`name: example\ndescription: ${"a".repeat(1025)}`, "example", "a".repeat(1025)],
+  ])("leaves recognized metadata for review rather than inferring replacements: %s", (metadata, name, description) => {
+    const [candidate] = prepareSkillUploads([
+      file("review.md", `---\n${metadata}\n---\nInstructions with a different description.`),
+    ]);
+
+    expect(candidate.name).toBe(name);
+    expect(candidate.description).toBe(description);
+  });
+
+  it("recognizes BOM, CRLF, and indented fence text inside YAML block scalars", () => {
+    const original = "\uFEFF--- \r\nname: review\r\ndescription: |\r\n  Review carefully.\r\n  ---\r\n  Then verify.\r\nlicense: MIT\r\n--- \r\n\r\nInstructions\r\n";
+    const [candidate] = prepareSkillUploads([file("old-name.md", original)]);
+
+    expect(candidate.name).toBe("review");
+    expect(candidate.description).toBe("Review carefully.\n---\nThen verify.\n");
+    const converted = writeSkillUploadMetadata(original, "new-name", candidate.description);
+    expect(converted).toContain("license: MIT");
+    expect(converted.endsWith("\r\nInstructions\r\n")).toBe(true);
   });
 
   it("groups related files under SKILL.md and separates nested skill bundles", () => {
@@ -84,7 +137,7 @@ describe("writeSkillUploadMetadata", () => {
       description: "New description",
       license: "MIT",
     });
-    expect(match?.[2]).toBe("# Instructions");
+    expect(match?.[2]).toBe("\n# Instructions");
   });
 
   it("preserves malformed frontmatter as Markdown content", () => {

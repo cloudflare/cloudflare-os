@@ -83,3 +83,45 @@ atomically creating a complete bundle. Supporting files are written only after t
 If one of those writes fails, the user is told which skill was only partially uploaded, but the created
 manifest and any successful related files remain. A future bundle-oriented RPC is required for true
 all-or-nothing uploads.
+
+## Skill upload format contract
+
+The upload dialog accepts [Agent Skills](https://agentskills.io/specification) and
+legacy Markdown. Import acceptance is deliberately broader than validation of the
+stored `SKILL.md`.
+
+### Recognizing metadata
+
+An import opts into skill metadata only when it begins with a complete `---`
+fenced block that parses as a YAML mapping containing `name` or `description`.
+The delimiter must be unindented; a BOM, CRLF, and trailing fence whitespace are
+accepted. Indented delimiters within YAML block scalars do not close the block.
+
+Everything else is legacy Markdown, including ordinary text, horizontal rules,
+unclosed fences, invalid YAML, sequences, and mappings without skill metadata keys.
+These inputs are ambiguous, so preserve the entire source as instruction text
+rather than guessing which part to discard. This also applies to imports named
+`SKILL.md`; that filename groups supporting files but does not require a legacy
+import to already be a valid skill.
+
+### Review and conversion
+
+- Recognized metadata supplies the editable name and description. Missing or
+  non-string fields are left blank for correction; invalid strings are not replaced
+  with inferred defaults. Extra metadata is retained when writing the manifest.
+- Legacy Markdown gets a filename-derived name and a suggested description for
+  user review. Conversion adds new frontmatter and preserves the entire original
+  instruction text, including leading whitespace and line endings.
+- Recognized frontmatter is serialized after edits, but its Markdown body is
+  preserved verbatim. The metadata syntax itself need not round-trip byte-for-byte.
+- The existing review form checks the final name and description before upload;
+  the server's `parseSkillManifest` validates the resulting stored manifest.
+
+`readSkillUploadSource` in `skillUpload.ts` is the single recognition decision used
+by both inference and conversion. New import behavior should be expressed here
+and covered by the table-driven round-trip tests, rather than added as an independent
+delimiter heuristic in a caller.
+
+This is not a claim of full specification validation: the existing server validates
+required fields, permits names differing from the parent directory, and does not
+validate every optional specification field.

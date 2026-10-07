@@ -1,5 +1,5 @@
 import { Document, isMap, parseDocument } from "yaml";
-import { joinFrontmatter, splitFrontmatter } from "../../src/description-extractors";
+import { splitFrontmatter } from "../../src/description-extractors";
 import type { DecodedUploadFile } from "../uploadFiles";
 import { isValidSkillName, skillNameFromTitle } from "./skillName";
 
@@ -20,6 +20,23 @@ const baseName = (path: string) => path.split("/").at(-1) ?? path;
 const dirName = (path: string) => path.split("/").slice(0, -1).join("/");
 const isMarkdownPath = (path: string) => /\.(?:md|markdown)$/i.test(path);
 
+/**
+ * Frontmatter is an import convention, not Markdown syntax. Only a complete YAML mapping
+ * with a skill metadata key opts in; ambiguous or malformed blocks remain instruction text.
+ * Both metadata inference and conversion must use this decision to avoid losing content.
+ */
+const readSkillUploadSource = (body: string) => {
+  const { frontmatter, content } = splitFrontmatter(body);
+  if (frontmatter !== null) {
+    const document = parseDocument(frontmatter);
+    if (document.errors.length === 0 && isMap(document.contents)
+      && (document.has("name") || document.has("description"))) {
+      return { document, content };
+    }
+  }
+  return { document: null, content: body };
+};
+
 const normalizeFolderPaths = (files: readonly SkillUploadFile[]) => {
   const roots = files.map((file) => file.path.split("/"));
   const folderName = roots.length > 0 && roots.every((parts) => parts.length > 1)
@@ -33,8 +50,7 @@ const normalizeFolderPaths = (files: readonly SkillUploadFile[]) => {
   };
 };
 
-const descriptionFromMarkdown = (body: string, fallbackName: string): string => {
-  const { content } = splitFrontmatter(body);
+const descriptionFromMarkdown = (content: string, fallbackName: string): string => {
   for (const block of content.split(/\r?\n\s*\r?\n/)) {
     const trimmed = block
       .split(/\r?\n/)
@@ -56,26 +72,21 @@ const descriptionFromMarkdown = (body: string, fallbackName: string): string => 
 };
 
 const metadataDefaults = (body: string, fallbackName: string) => {
-  const { frontmatter } = splitFrontmatter(body);
-  if (frontmatter === null && /^\uFEFF?---[ \t]*\r?\n/.test(body)) {
-    throw new Error(`${fallbackName} has unterminated YAML frontmatter.`);
+  const { document, content } = readSkillUploadSource(body);
+  if (document !== null) {
+    const name = document.get("name");
+    const description = document.get("description");
+    // Missing or wrongly typed fields need correction in the review form, not invented defaults.
+    return {
+      name: typeof name === "string" ? name : "",
+      description: typeof description === "string" ? description : "",
+    };
   }
-  let name = "";
-  let description = "";
-  if (frontmatter !== null) {
-    const document = parseDocument(frontmatter);
-    if (document.errors.length === 0 && isMap(document.contents)) {
-      const parsedName = document.get("name");
-      const parsedDescription = document.get("description");
-      if (typeof parsedName === "string") name = parsedName;
-      if (typeof parsedDescription === "string") description = parsedDescription;
-    }
-  }
-  if (!isValidSkillName(name)) name = skillNameFromTitle(fallbackName) || "untitled-skill";
-  if (description.trim().length === 0 || description.trim().length > 1024) {
-    description = descriptionFromMarkdown(body, fallbackName);
-  }
-  return { name, description };
+  const derivedName = skillNameFromTitle(fallbackName);
+  return {
+    name: isValidSkillName(derivedName) ? derivedName : "untitled-skill",
+    description: descriptionFromMarkdown(content, fallbackName),
+  };
 };
 
 /** Infer standalone skills and complete skill bundles from browser-selected files. */
@@ -134,20 +145,15 @@ export const prepareSkillUploads = (
   return candidates;
 };
 
-/** Add or repair required skill metadata while preserving valid extra keys and Markdown content. */
+/** Convert an import to SKILL.md, preserving recognized extra metadata and instruction text. */
 export const writeSkillUploadMetadata = (
   body: string,
   name: string,
   description: string,
 ): string => {
-  const { frontmatter, content } = splitFrontmatter(body);
-  let markdownContent = content;
-  let document = frontmatter === null ? new Document({}) : parseDocument(frontmatter);
-  if (document.errors.length > 0 || !isMap(document.contents)) {
-    document = new Document({});
-    markdownContent = body;
-  }
+  const source = readSkillUploadSource(body);
+  const document = source.document ?? new Document({});
   document.set("name", name);
   document.set("description", description.trim());
-  return joinFrontmatter(document.toString().trimEnd(), markdownContent);
+  return `---\n${document.toString().trimEnd()}\n---\n\n${source.content}`;
 };
