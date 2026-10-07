@@ -247,12 +247,7 @@ describe("SkillsNavigatorTree", () => {
     expect(document.body.textContent).toContain("Couldn't load collection contents");
   });
 
-  it("shows collection actions in the narrow-layout drawer", () => {
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
+  it("shows collection actions in the action menu", () => {
     renderTree({ writable: true });
 
     act(() => row("collection")?.dispatchEvent(new MouseEvent("contextmenu", {
@@ -260,9 +255,9 @@ describe("SkillsNavigatorTree", () => {
       cancelable: true,
     })));
 
-    const drawer = document.querySelector<HTMLElement>('[role="dialog"]');
-    expect(drawer).not.toBeNull();
-    expect([...drawer!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu).not.toBeNull();
+    expect([...menu!.querySelectorAll<HTMLElement>('[role="menuitem"]')]
       .map((item) => item.textContent)).toEqual(["Add skill", "Edit", "Delete"]);
   });
 });

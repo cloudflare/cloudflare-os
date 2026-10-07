@@ -17,7 +17,7 @@ import {
 } from "@gadgets/ui/hierarchical-list";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContextCollectionMetadata } from "../../src/context-types";
-import { useContextApi, usePresentWhileOpen } from "../bridge";
+import { useContextApi } from "../bridge";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import { RenameInput } from "./RenameInput";
@@ -165,8 +165,6 @@ export const SkillsNavigatorTree = ({
   const [moving, setMoving] = useState(false);
   const [refreshingCollectionId, setRefreshingCollectionId] = useState<string | null>(null);
   const [retryingCollectionId, setRetryingCollectionId] = useState<string | null>(null);
-  const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
-  const actionDrawerPresentation = usePresentWhileOpen(actionDrawerOpen);
   const [now, setNow] = useState(Date.now);
   const treeRef = useRef<HTMLDivElement>(null);
   const skillsById = new Map<string, SkillNavigatorSkill>();
@@ -499,8 +497,6 @@ export const SkillsNavigatorTree = ({
       label="Skills"
       expandAll={expandAll}
       showTouchDragHandle={false}
-      onActionDrawerOpenChange={setActionDrawerOpen}
-      onActionDrawerOpenChangeComplete={actionDrawerPresentation.onOpenChangeComplete}
       dragAndDrop={{
         autoScroll: true,
         canMoveTo: (item, parent) => {
