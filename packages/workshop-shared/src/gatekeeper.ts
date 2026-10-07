@@ -257,6 +257,12 @@ export type SupportedResource = {
    * If omitted/false, the resource type is not separately grantable.
    */
   grantable?: boolean;
+
+  /**
+   * If true, an agent may create a new resource of this type through a connected account, with
+   * the createExternalResource tool (see GatekeeperUser.createResource()).
+   */
+  creatable?: boolean;
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -647,6 +653,22 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   }>;
 
   /**
+   * Get a gatekeeper class for a NEW resource of the creatable type `resourceUrlPattern`, titled
+   * `title`. Like getGatekeeperClassFor(), this has no side effects: it creates nothing and only
+   * returns a class. Nothing happens until methods are called on its facet.
+   *
+   * Until the resource exists, the gatekeeper simulates it locally and must not reach the
+   * provider, though it may still be asked to describe() itself and to addObserver(). The
+   * Overseer queues `action` as the creation, which applies before anything else queued on the
+   * gatekeeper, by calling Gatekeeper.applyCreation() once the user approves it.
+   */
+  createResource?(resourceUrlPattern: string, title: string): Promise<{
+    class: DurableObjectClass<Gatekeeper<any>>;
+    resource: SupportedResource;
+    action: ActionDescription;
+  }>;
+
+  /**
    * Get the UI used to choose a specific resource.
    * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
    */
@@ -952,6 +974,19 @@ export interface Gatekeeper<Session> extends DurableObject {
    * The Overseer will take care of the restart, possibly after rejecting other actions.
    */
   rejectAction(action: number): Promise<void | {restart?: boolean}>;
+
+  /**
+   * For a gatekeeper from GatekeeperUser.createResource(): the user approved its creation, so
+   * create the resource at the provider. Returns the class to use from then on, imbued with the
+   * real resource as getGatekeeperClassFor() would return it, and the resource's URL. The
+   * Overseer restarts this facet on that class before anything else reaches it; storage carries
+   * over, so actions queued against the simulated resource apply through the new class. Should be
+   * idempotent, for the same reason as applyAction().
+   *
+   * If the user rejects the creation instead, the Overseer removes this gatekeeper, rejecting
+   * its queued actions without calling rejectAction(): its storage is deleted with it.
+   */
+  applyCreation?(): Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}>;
 
   /**
    * Attempts to revert an action that was already applied.

@@ -589,6 +589,16 @@ export interface AgentHooks {
   consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[];
 
   /**
+   * Mint a gatekeeper for a new resource of a creatable type through one of the initiator's
+   * connected accounts, and queue the creation for the user's approval. Unlike requestConnection,
+   * nothing waits on the user: the gatekeeper simulates the resource until the creation applies.
+   * Throws an agent-readable message when the request can't be met.
+   */
+  createExternalResource(
+      chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"],
+      initiator: AiChatAuthorInfo): Promise<{gatekeeperId: WorkpieceId}>;
+
+  /**
    * Blueprint hooks for the agent.
    *
    * List the blueprints available to the turn's initiator (their own published blueprints, their
@@ -1257,6 +1267,10 @@ List the resource types a gatekeeper vendor offers, so you can construct a resou
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
 Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+`.trim();
+
+let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
+Create a new external resource (e.g. a new document) through one of the user's connected accounts, for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider only once the user approves the creation; until then it is simulated, and changes you make to it apply after the creation.
 `.trim();
 
 // =======================================================================================
@@ -2402,6 +2416,16 @@ async function runAgentPass(
                 case "listConnectableResources":
                 case "requestConnection":
                   toolOutput = {text: toolCall.output ?? ""};
+                  break;
+                case "createExternalResource":
+                  // Like createGadget: replay re-binds the recorded gatekeeper, never re-creates.
+                  if (toolCall.output === undefined) {
+                    throw new Error(
+                        "createExternalResource tool call in log is missing its result");
+                  }
+                  chatBindings.set(toolCall.input.bindingName,
+                      {type: "workpiece", id: toolCall.output.gatekeeperId});
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
                 default:
                   toolCall satisfies never;
@@ -3819,6 +3843,49 @@ async function runAgentPass(
             claimedNames.add(input.bindingName);
           }
           return toolResult(result.message, { output: result.message });
+        } catch (error) {
+          toolCallNotes.set(toolCallId, { error: toolErrorText(error) });
+          throw error;
+        }
+      }
+    }),
+
+    createExternalResource: defineTool({
+      name: "createExternalResource",
+      label: "Create external resource",
+      description: CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        vendorId: Type.String({
+          description: "Vendor id, as listed in the system prompt (e.g. 'google').",
+        }),
+        resourceUrlPattern: Type.String({
+          description: "urlPattern of a creatable resource type, from listConnectableResources.",
+        }),
+        title: Type.String({
+          description: "Title of the new resource, e.g. the document's title.",
+        }),
+        bindingName: Type.String({
+          description:
+              "Name under which the new resource appears in your env. Must be a JavaScript " +
+              "identifier not already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
+        }),
+        accountId: Type.Optional(Type.Number({
+          description:
+              "Which of the user's accounts for this vendor creates the resource. Needed only " +
+              "when several are connected; the error then lists them.",
+        })),
+      }),
+      execute: async (toolCallId, input) => {
+        try {
+          validateBindingName(input.bindingName);
+          if (isNameInScope(input.bindingName)) {
+            throw new Error(`There is already a binding named "${input.bindingName}" in your ` +
+                `env. Choose a different name.`);
+          }
+          let output = await hooks.createExternalResource(chatId, input, initiator);
+          chatBindings.set(input.bindingName, {type: "workpiece", id: output.gatekeeperId});
+          // Recorded so replay can re-bind without creating again (see the replay path above).
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, { error: toolErrorText(error) });
           throw error;

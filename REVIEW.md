@@ -26,10 +26,11 @@ through logs and errors, then everything else.
 
 - A resource becomes "ambient" (auto-injected) only through user or admin configuration. A
   gatekeeper must never assert its own ambience.
-- `getGatekeeperClassFor()` in `packages/workshop-backend/src/user.ts` (not the same-named vendor
-  method each gatekeeper implements) is the single chokepoint where disabled gatekeepers and
-  resources are enforced before a capability is minted. Flag any new path that mints a gatekeeper
-  capability without going through it.
+- `#assertResourceEnabled()` in `packages/workshop-backend/src/user.ts` is the single chokepoint
+  where disabled gatekeepers and resources are enforced before a capability is minted, called by
+  both of that file's mints: `getGatekeeperClassFor()` (not the same-named vendor method each
+  gatekeeper implements) and `createResourceGatekeeper()`. Flag any new path that mints a
+  gatekeeper capability without going through it.
 - Authentication and authorization config (`AUTH_GATEKEEPERS`, `DISABLE_PASSWORD_AUTH`) is
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.

@@ -335,6 +335,9 @@ export function buildCompactionState(
         } else if (call.toolName === "createWorktree" && call.output !== undefined) {
           chatBindings.set(call.input.bindingName,
               {type: "workpiece", id: call.output.worktreeId});
+        } else if (call.toolName === "createExternalResource" && call.output !== undefined) {
+          chatBindings.set(call.input.bindingName,
+              {type: "workpiece", id: call.output.gatekeeperId});
         }
       }
     } else if (message.type === "agentCallback") {

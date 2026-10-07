@@ -4190,6 +4190,31 @@ export type AiToolCall = {
     bindingName?: string;
   };
   output?: string;
+} | {
+  /**
+   * Create a new external resource of a creatable type (see `SupportedResource.creatable`)
+   * through one of the turn initiator's connected accounts. Its binding is usable at once: the
+   * gatekeeper simulates the resource until the user approves the creation action.
+   */
+  toolName: "createExternalResource";
+  input: {
+    vendorId: string;
+
+    /** `urlPattern` of the creatable resource type. */
+    resourceUrlPattern: string;
+
+    /** Title of the new resource, e.g. a document's title. */
+    title: string;
+
+    /** Name under which the resource appears in the chat's env (see validateBindingName()). */
+    bindingName: string;
+
+    /** Which of the initiator's accounts for the vendor creates it; needed only if several. */
+    accountId?: number;
+  };
+
+  /** The new gatekeeper workpiece; replay re-binds it rather than creating again. */
+  output?: {gatekeeperId: WorkpieceId};
 });
 
 // TODO: Extend AiToolCall for code-mode tool calls.
@@ -4860,7 +4885,7 @@ export type PreApprovableAction = {
 export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
-  resourceUrl: string;
+  resourceUrl?: string;    // absent until a resource created by createExternalResource exists
   typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
 } | {
   type: "aiModel";

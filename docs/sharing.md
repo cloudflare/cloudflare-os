@@ -142,7 +142,7 @@ A non-owner can only sever their own `user` edge to the target (and only if such
 Collaborators share the gadget's code, storage, and AI chat history, but certain resources are scoped to individual users:
 
 - **AI model bindings** resolve from the account of whoever created the binding. This is baked in at binding creation time for AI model gatekeepers (the full `AiModelConfig` including API key is stored in the binding props). For agent spawners, the creating user's DO ID is stored in `AgentSpawnerBindingProps.creatorUserId` so the model can be resolved at trigger time from the correct account.
-- **Gatekeeper bindings** connect through the third-party accounts of whoever created them (`OverseerClientInterface.newGatekeeper()` calls `clientUser.getGatekeeperClassFor()` rather than `owner.getGatekeeperClassFor()`).
+- **Gatekeeper bindings** connect through the third-party accounts of whoever created them (`OverseerClientInterface.newGatekeeper()` calls `clientUser.getGatekeeperClassFor()` rather than `owner.getGatekeeperClassFor()`, and the agent's `createExternalResource` mints through the turn initiator's account).
 
 This means no collaborator implicitly gains access to another user's connected third-party accounts.
 

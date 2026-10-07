@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1895,11 +1895,46 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let account = this.storage.connectedAccounts.get(accountId);
     if (!account) throw new Error("No such account.");
     let {class: cls, resource} = await account.account.getGatekeeperClassFor(url);
+    await this.#assertResourceEnabled(account, resource);
+    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
+  }
 
-    // Block whole gatekeepers + disabled resources at this single core-side chokepoint where a
-    // resourceUrl becomes a capability (reached only via the user/UI-facing Overseer.newGatekeeper
-    // and blueprint instantiation — never from gadget or agent code). An ambient gatekeeper an admin
-    // set to "disabled" is blocked here too.
+  /**
+   * Mint a gatekeeper class for a new resource of a creatable type through one of this user's
+   * connected accounts for `vendorId` (see GatekeeperUser.createResource()); `accountId` picks one
+   * when there are several. Creates nothing: the returned `action` is the creation to queue.
+   */
+  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string,
+                                 accountId?: number)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
+                  typeUrlPattern: string, action: ActionDescription}> {
+    let accounts = [...this.#connectedAccountRecords()].filter(a => a.vendorId === vendorId);
+    let account = accountId === undefined && accounts.length === 1
+        ? accounts[0] : accounts.find(a => a.id === accountId);
+    if (!account) {
+      throw new Error(accounts.length === 0
+          ? `No "${vendorId}" account is connected. Ask the user to connect one first.`
+          : `Pass accountId to choose a "${vendorId}" account: ` + accounts.map(a =>
+              `${a.id} (${a.description.uniqueName ?? a.description.displayName})`).join(", "));
+    }
+    // Optional on GatekeeperUser; viewed as required like the stub aliases at the top of this file.
+    let {class: cls, resource, action} = await (account.account as unknown as
+        Required<Pick<GatekeeperUser, "createResource">>).createResource(resourceUrlPattern, title);
+    if (!resource.creatable) {
+      throw new Error(`"${resource.title}" resources can't be created. ` +
+          "listConnectableResources marks the types that can.");
+    }
+    await this.#assertResourceEnabled(account, resource);
+    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern, action};
+  }
+
+  // Block whole gatekeepers + disabled resources at the core-side chokepoints where a gatekeeper
+  // class is minted (reached only via the user/UI-facing Overseer.newGatekeeper, blueprint
+  // instantiation, and the agent's createExternalResource -- never from gadget code). An ambient
+  // gatekeeper an admin set to "disabled" is blocked here too. Blocking here prevents minting a
+  // capability to a disabled resource even if the request bypasses the (separately filtered)
+  // picker/agent listings.
+  async #assertResourceEnabled(account: ConnectedAccountRecord, resource: SupportedResource) {
     let config = await readAdminConfig(this.env);
     let vendorId = account.vendorId.toLowerCase();
     if (config.disabledGatekeepers.includes(vendorId) ||
@@ -1907,15 +1942,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error(
           `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
     }
-
-    // Blocking here prevents minting a new capability to a disabled resource even if the request
-    // bypasses the (separately filtered) picker/agent listings.
     if (isResourceDisabled(config, vendorId, resource.urlPattern)) {
       throw new Error(
           `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
     }
-
-    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
   }
 
   /**

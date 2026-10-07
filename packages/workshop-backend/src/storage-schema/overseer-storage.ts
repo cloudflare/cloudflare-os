@@ -418,7 +418,11 @@ export type ActionRecord = {
   bindingName?: string;
 } & ({
   type: "action";
-  action: number;  // action key assigned by the gatekeeper, passed back on apply/reject/revert
+  /**
+   * Action key assigned by the gatekeeper, passed back on apply/reject/revert; or "create" for the
+   * creation queued by createExternalResource, which applies via Gatekeeper.applyCreation().
+   */
+  action: number | "create";
   description: ActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
