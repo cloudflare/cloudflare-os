@@ -49,17 +49,13 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/**
- * A single Google Slides presentation.
- *
- * Requests the read-write `presentations` scope although reads are all it offers yet: edits are
- * planned for this same resource, and growing its scopes later would retract every existing grant
- * (see {@link grantedResourceUrlPatterns}) until each account reconnected.
- */
+/** A single Google Slides presentation. */
 export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/presentation/d/:presentationId/*",
   title: "Google Slides Presentation",
-  description: "Read the slides, text, and speaker notes of a presentation you choose.",
+  description:
+    "Read a presentation you choose, and edit its text and speaker notes and copy, move, or " +
+    "delete its slides, with your approval.",
   grantable: true,
 };
 

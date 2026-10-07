@@ -3,9 +3,9 @@
  * and one slide's content from its page.
  *
  * Text is projected from the text runs' and AutoTexts' content, concatenated, minus the newline
- * Slides always keeps at the end of a shape or table cell. This is for reading, not for addressing
- * edits: an AutoText occupies one provider index whatever it renders (a live slide number "11"
- * spans [0, 1)), so offsets past one stop matching the provider's UTF-16 text indices.
+ * Slides always keeps at the end of a shape or table cell. An AutoText occupies one provider index
+ * whatever it renders (a live slide number "11" spans [0, 1)), so offsets past one stop matching
+ * the provider's UTF-16 text indices; `slides-text.ts` maps between the two to address edits.
  */
 
 import type { RestPageElement, RestPresentation, RestSlide, RestText } from "./slides-api";

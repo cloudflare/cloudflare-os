@@ -9,17 +9,20 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
-const TEXT_FIELDS = "text(textElements(textRun(content),autoText(content)))";
+// Replaying a queued change needs an AutoText's width, which only the indices give, and its type.
+const TEXT_FIELDS =
+  "text(textElements(startIndex,endIndex,textRun(content),autoText(type,content)))";
 const LAYOUT_FIELDS = "layouts(objectId,layoutProperties(displayName))";
 // Summaries need titles and speaker notes, which a mask can only reach as every shape's text.
 // Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
 // against 780 KiB with them.
 const SUMMARY_FIELDS =
   `presentationId,title,locale,pageSize,${LAYOUT_FIELDS},` +
-  `slides(objectId,pageElements(shape(placeholder(type),${TEXT_FIELDS})),` +
+  `slides(objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),` +
   "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties(speakerNotesObjectId)," +
   `pageElements(objectId,shape(${TEXT_FIELDS})))))`;
-const OUTLINE_FIELDS = `presentationId,title,${LAYOUT_FIELDS},slides(objectId)`;
+// Google returns `revisionId` only to an account that can edit the presentation.
+const OUTLINE_FIELDS = `presentationId,title,revisionId,${LAYOUT_FIELDS},slides(objectId)`;
 const SLIDE_FIELDS =
   "objectId,pageElements," +
   "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties,pageElements))";
@@ -92,10 +95,18 @@ export type RestPresentation = {
   presentationId: string;
   title?: string;
   locale?: string;
+  revisionId?: string;
   pageSize?: { width?: RestDimension; height?: RestDimension };
   layouts?: { objectId?: string; layoutProperties?: { displayName?: string } }[];
   slides?: RestSlide[];
 };
+
+/** A `batchUpdate` Google answered with a 4xx status, so it applied none of the requests. */
+export class SlidesWriteRefused extends Error {
+  constructor(readonly status: number) {
+    super(`Google Slides refused the update [http=${status}]`);
+  }
+}
 
 /** A thumbnail size, named by Google for the width it renders: 200, 800 or 1600 pixels. */
 export type ThumbnailSize = "SMALL" | "MEDIUM" | "LARGE";
@@ -199,5 +210,34 @@ export class GoogleSlidesApi {
     });
     // readBytesCapped allocates an array of exactly the body's size, never a shared buffer.
     return { ...pngDimensions(content), content: content.buffer as ArrayBuffer };
+  }
+
+  /**
+   * Apply `requests` together, and only while the presentation is still at `requiredRevisionId`.
+   * Throws `SlidesWriteRefused` for a 4xx answer, which applied nothing; any other failure leaves
+   * the outcome unknown, since the update may have been committed before the response was lost.
+   */
+  async batchUpdate(
+    presentationId: string, requests: unknown[], requiredRevisionId: string,
+  ): Promise<void> {
+    let response = await fetchWithAuthRetry(
+      `${API_BASE}/${encodeURIComponent(presentationId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requests, writeControl: { requiredRevisionId } }),
+      },
+      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
+    if (response.ok) {
+      await response.body?.cancel();
+      return;
+    }
+    // Always rejects, having logged Google's diagnostics.
+    let failure = await readGoogleJson(response, {
+      provider: "Google Slides", operation: "batch update", maxBytes: MAX_RESPONSE_BYTES,
+    }).catch((error: unknown) => error);
+    let refused = response.status >= 400 && response.status < 500;
+    throw refused ? new SlidesWriteRefused(response.status) : failure;
   }
 }

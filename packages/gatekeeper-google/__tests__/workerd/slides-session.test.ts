@@ -90,6 +90,7 @@ function newSession(wrap: (read: NativeRead) => NativeRead = read => read) {
   let session = new RpcStub(new GooglePresentationSessionImpl(
     new GoogleSlidesApi(async () => "access-token"), "deck-1", queueStub,
     wrap(unguardedNativeRead(description => queueStub.authorizeObservation(description))),
+    { snapshot: read => read([]), queue: () => Promise.reject(new Error("Unexpected change")) },
   ));
   return { queue, session };
 }

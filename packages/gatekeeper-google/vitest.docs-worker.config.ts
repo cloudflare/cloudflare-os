@@ -17,6 +17,7 @@ export default defineConfig({
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {
           GOOGLE_DOC_GATEKEEPER: { className: "GoogleDocGatekeeperImpl", useSQLite: true },
+          GOOGLE_SLIDES_GATEKEEPER: { className: "GoogleSlidesGatekeeperImpl", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
         },
@@ -27,6 +28,7 @@ export default defineConfig({
     include: [
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/native-sessions.test.ts",
+      "__tests__/workerd/slides-actions.test.ts",
       "__tests__/workerd/slides-session.test.ts",
     ],
     setupFiles: ["@gadgets/scripts/assert-workerd"],

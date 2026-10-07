@@ -1,14 +1,16 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ActionField, ApprovalQueue, GitCache, HookController, HookDescription,
-  ObservationDescription,
+  ActionDescription, ActionField, ActionKind, ApprovalQueue, GitCache, HookController,
+  HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
-import GoogleWorker, { GoogleDocGatekeeperImpl } from "../src/google";
+import type { PresentationInfo, Slide } from "../src/slides-read-types";
+import type { GooglePresentationSession } from "../src/slides-types";
+import GoogleWorker, { GoogleDocGatekeeperImpl, GoogleSlidesGatekeeperImpl } from "../src/google";
 
-export { GoogleDocGatekeeperImpl };
+export { GoogleDocGatekeeperImpl, GoogleSlidesGatekeeperImpl };
 export default GoogleWorker;
 
 export class UserAccount extends DurableObject<Env> {
@@ -25,8 +27,18 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
   testStoredValueJsonLength(key: string): number | undefined;
 };
 
+/** What one Slides session call returned or threw, and what it queued and observed. */
+type SlidesCall = {
+  value?: string | PresentationInfo | Slide[];
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+};
+
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionId?: number;
+  action?: ActionDescription;
   actionDescription?: string;
   actionFields: ActionField[] = [];
   readonly observations: string[] = [];
@@ -41,6 +53,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
     this.actionId = actionId;
+    this.action = description;
     this.actionDescription = description.description;
     this.actionFields = description.fields ?? [];
   }
@@ -164,6 +177,75 @@ export class TestHooks extends DurableObject<Env> {
 
   async rejectAction(facetName: string, actionId: number): Promise<void> {
     await this.#gatekeeper(facetName).rejectAction(actionId);
+  }
+
+  #slides(facetName: string) {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+    return this.ctx.facets.get<GoogleSlidesGatekeeperImpl>(facetName, () => ({
+      class: this.ctx.exports.GoogleSlidesGatekeeperImpl({
+        props: { userObjectId, presentationId: "deck-1" },
+      }),
+    }));
+  }
+
+  /**
+   * Calls one method of a fresh Slides session, reporting what it queued and observed. `entered`
+   * is called once the method has run up to its first wait, before it settles.
+   */
+  async callSlides(
+    facetName: string, method: keyof GooglePresentationSession, args: unknown[],
+    entered?: () => void,
+  ): Promise<SlidesCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#slides(facetName).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GooglePresentationSession & Disposable;
+    let outcome: { value?: SlidesCall["value"]; error?: string };
+    try {
+      let call = session[method] as (...args: unknown[]) => Promise<SlidesCall["value"]>;
+      // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+      let calling = Promise.resolve(call(...args));
+      calling.catch(() => {});
+      if (entered) {
+        // Calls on one stub are delivered in order, and this one waits on nothing.
+        await session.getSlides([]).catch(() => {});
+        await entered();
+      }
+      outcome = { value: await calling };
+    } catch (error) {
+      outcome = { error: error instanceof Error ? error.message : String(error) };
+    }
+    return { ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations };
+  }
+
+  /** Applies a Slides change. `entered` is called once the apply has run up to its first wait. */
+  async applySlides(
+    facetName: string, actionId: number, entered?: () => void,
+  ): Promise<string | null> {
+    let gatekeeper = this.#slides(facetName);
+    let applying = Promise.resolve(gatekeeper.applyAction(actionId, new RpcStub(new TestGitCache())));
+    // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+    applying.catch(() => {});
+    if (entered) {
+      // Calls on one stub are delivered in order, and this one waits on nothing.
+      await gatekeeper.getAutoApprovableActions();
+      await entered();
+    }
+    try {
+      await applying;
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async rejectSlides(facetName: string, actionId: number): Promise<{ restart?: boolean } | null> {
+    return await this.#slides(facetName).rejectAction(actionId) ?? null;
+  }
+
+  async slidesAutoApprovable(facetName: string): Promise<ActionKind[]> {
+    return this.#slides(facetName).getAutoApprovableActions();
   }
 }
 

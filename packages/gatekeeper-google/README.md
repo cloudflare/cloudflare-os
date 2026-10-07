@@ -56,7 +56,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 23. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
 24. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
 
-The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads go through the Sheets API, and direct presentation reads go through the Slides API.
+The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads go through the Sheets API, and direct presentation reads and edits go through the Slides API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -82,7 +82,7 @@ included). Across all resource types, the gatekeeper can request:
 - `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
 - `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
-- `presentations` to read the slides, text, and speaker notes of directly selected presentations, and to render slide thumbnails. Google Slides bindings are read-only today; the read-write scope is requested now so that adding edits to this same resource will not retract every existing grant and force a reconnect. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
+- `presentations` to read and edit directly selected presentations, and to render slide thumbnails. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
@@ -212,6 +212,32 @@ A Google Slides presentation's slide summaries come from one response capped at 
 the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
 on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
 one slide at a time, capped at 2 MiB each.
+
+## Google Slides edits
+
+A directly bound presentation accepts four changes, each queued for approval: `editText()`
+(find-and-replace or whole-text replacement in shapes, table cells, and speaker notes, up to 50
+edits applied together), `duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Only text edits
+can be set to apply without asking. Changes are journaled with the kit's `ActionJournal`, and apply
+in the order they were queued.
+
+Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
+projected; thumbnails show the presentation as saved. The replay is exact for text and for which
+slides exist in what order, and makes no claim about what Google renders: autofit, wrapping, and
+layout. A replacement takes the style of the text it replaces, and text left unchanged at either
+end of a match is not rewritten, so it keeps its own. A slide number or other AutoText can only
+be replaced whole.
+
+Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
+with `requiredRevisionId`, so a change applies only to the text it was planned against: one that
+no longer applies fails without writing, and a concurrent edit makes Google refuse the write so it
+is planned again. A write whose response is lost may have been committed, so it is only ever
+resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
+and if it cannot tell, the change is marked as having an unknown outcome and never retried.
+
+Google returns a presentation's revision only to an account that can edit it, so a view-only
+account can read a presentation but every change to it fails. A queued text edit is stored in one
+Durable Object value, so one call's edits are capped at 100 KiB.
 
 ## Google Drive read-only bindings
 

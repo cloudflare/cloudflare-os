@@ -34,6 +34,11 @@ export type PresentationInfo = {
   pageSize: SlideSize;
   /** Every slide, in presentation order. */
   slides: SlideSummary[];
+  /**
+   * Set when a change queued for approval no longer applies to the presentation: why. Neither it
+   * nor any change queued after it is reflected.
+   */
+  queuedChangeConflict?: string;
 };
 
 /** Alternative text a page element may carry. */
@@ -117,6 +122,8 @@ export type Slide = SlideSummary & {
    * Speaker notes, `""` when there are none. Paragraphs are separated by `\n`, as in shape text.
    */
   speakerNotes: string;
+  /** As for `PresentationInfo.queuedChangeConflict`. */
+  queuedChangeConflict?: string;
 };
 
 /** Thumbnail widths: `small` is 200 pixels, `medium` 800 and `large` 1600. */
