@@ -111,11 +111,26 @@ export type Slide = SlideSummary & {
   speakerNotes: string;
 };
 
+/** Thumbnail widths: `small` is 200 pixels, `medium` 800 and `large` 1600. */
+export type SlideThumbnailSize = "small" | "medium" | "large";
+
+/** A rendered image of one slide. */
+export type SlideThumbnail = {
+  /** Always `image/png`. */
+  mimeType: "image/png";
+  /** Width in pixels. */
+  width: number;
+  /** Height in pixels. */
+  height: number;
+  /** The PNG file's bytes. */
+  content: ArrayBuffer;
+};
+
 /**
  * Read-only access to one Google Slides presentation.
  *
- * Content is the slides' own text. Layout and master elements such as logos and footers, styles,
- * and positions are not included.
+ * `getSlides()` returns the slides' own text. Layout and master elements such as logos and
+ * footers, styles, and positions are not included; `getSlideThumbnail()` shows the slide whole.
  */
 export interface GooglePresentationReadSession {
   /** Return presentation metadata and a summary of every slide. */
@@ -126,4 +141,14 @@ export interface GooglePresentationReadSession {
    * requested. Throws if any ID does not name a slide.
    */
   getSlides(slideIds: string[]): Promise<Slide[]>;
+
+  /**
+   * Render one slide, by an ID `getPresentation()` returns, as a PNG image `medium` wide unless
+   * another size is given. The image shows everything on the slide, including layout and master
+   * elements, as currently saved in Google Slides.
+   *
+   * The image is for a gadget to display or store: code you run cannot look at it, and logging
+   * the bytes prints numbers, not a picture. Google allows an account about 60 renders a minute.
+   */
+  getSlideThumbnail(slideId: string, size?: SlideThumbnailSize): Promise<SlideThumbnail>;
 }

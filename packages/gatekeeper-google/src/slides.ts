@@ -6,15 +6,20 @@ import type {
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
-import { GoogleSlidesApi } from "./slides-api";
+import { GoogleSlidesApi, type ThumbnailSize } from "./slides-api";
 import { normalizePresentation, type NormalizedPresentation } from "./slides-model";
-import type { PresentationInfo, Slide } from "./slides-read-types";
+import type {
+  PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
+} from "./slides-read-types";
 import type { GooglePresentationSession } from "./slides-types";
 import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
 
 const MAX_SLIDES_PER_READ = 20;
+const THUMBNAIL_SIZES = {
+  small: "SMALL", medium: "MEDIUM", large: "LARGE",
+} as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
 
 type Env = Cloudflare.Env;
 
@@ -167,5 +172,31 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       }
       return slide;
     });
+  }
+
+  async getSlideThumbnail(
+    slideId: string, size: SlideThumbnailSize = "medium",
+  ): Promise<SlideThumbnail> {
+    // The render happens inside the read, so a scope check bracketing it covers the image too.
+    // An unknown ID is reported only after authorization, as in getSlides().
+    let { title, thumbnail } = await this.#read(
+      async () => {
+        let { title = "Untitled presentation", slideIds } =
+          await this.#api.getOutline(this.#presentationId);
+        let index = slideIds.indexOf(slideId);
+        let thumbnail = index < 0 ? undefined : await this.#api.getThumbnail(
+          this.#presentationId, slideId, THUMBNAIL_SIZES[size]);
+        return { title, index, thumbnail };
+      },
+      ({ title, index }) => ({
+        title: "Render a Google Slides slide",
+        description:
+          `Render an image of ${index < 0 ? "a slide" : `slide ${index + 1}`} in "${title}".`,
+      }));
+    if (!thumbnail) {
+      throw new Error(
+        `No slide with ID "${slideId}" in "${title}". Call getPresentation() for slide IDs.`);
+    }
+    return { mimeType: "image/png", ...thumbnail };
   }
 }
