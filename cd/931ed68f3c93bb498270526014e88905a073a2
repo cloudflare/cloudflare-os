@@ -1,0 +1,29 @@
+packages/gatekeeper-scheduler/app/format.ts
+  s_1da8b1c2e6d0c9::t_ad04ea40955da1 17-34,44,50,70-73,148,166-169,173
+packages/gatekeeper-scheduler/app/SchedulerPage.tsx
+  s_0c2ab7edd98432::t_ea89be014891c1 9,172-188,269,279-280,339-343,357-358,375,411,427
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cd931ed68f3c93bb498270526014e88905a073a2",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
