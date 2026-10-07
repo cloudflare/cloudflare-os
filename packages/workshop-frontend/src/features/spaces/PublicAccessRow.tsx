@@ -18,7 +18,6 @@ import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
 import { PUBLIC_ACCESS_LABELS } from './PublishedBadge'
 import { SPACE_ACTION_CLASS_NAME } from './SpaceEntryPoints'
 import { isNotAMemberError } from './spaceErrors'
-import { isOwnPersonalSpace } from './spaceKinds'
 import { hiddenByTitle, pathTo } from './tree/workspaceTree'
 
 /** The role a workspace is published with, or null while it is not published. */
@@ -62,78 +61,56 @@ const blockedByTitle = (listing: readonly SpaceWorkspaceInfo[], entry: SpaceWork
   return title === undefined ? undefined : title || UNTITLED
 }
 
-// The keys of the spaces that may list the workspace for the user. The owner's own record says
-// which one holds it (`GadgetMetadata.spaceKey`, their personal space when absent); anyone else's
-// records do not, so for them it is each team space they are a member of, since a personal space
-// lists only its owner's workspaces.
-const spacesThatMayList = async (
-  authenticatedApi: RpcStub<AuthenticatedApi>,
-  workspaceId: string,
-  isOwner: boolean,
-): Promise<string[]> => {
-  if (!isOwner) {
-    const spaces = await authenticatedApi.listSpaces()
-    return spaces.filter(space => space.kind === 'team').map(space => space.key)
-  }
-  const [records, spaces] = await Promise.all([authenticatedApi.listGadgets(), authenticatedApi.listSpaces()])
-  const record = records.find(candidate => candidate.id === workspaceId && !candidate.owner)
-  const spaceKey = record && (record.spaceKey ?? spaces.find(isOwnPersonalSpace)?.key)
-  return spaceKey === undefined ? [] : [spaceKey]
-}
-
-// What `blockedByTitle` says of the workspace in the space `spaceKey`, or null when that space
-// does not list it for the user. A space that refuses the user (one they have left) lists nothing.
-const blockerIn = async (
-  authenticatedApi: RpcStub<AuthenticatedApi>,
-  spaceKey: string,
-  workspaceId: string,
-): Promise<{ title: string | undefined } | null> => {
-  const space = authenticatedApi.openSpace(spaceKey)
-  try {
-    const listing = await space.listWorkspaces()
-    const entry = listing.find(candidate => candidate.id === workspaceId)
-    return entry ? { title: blockedByTitle(listing, entry) } : null
-  } catch (err) {
-    if (isNotAMemberError(err)) return null
-    throw err
-  } finally {
-    space[Symbol.dispose]()
-  }
-}
-
-// What `blockedByTitle` says of the workspace, read each time `active` becomes true: undefined
-// while nothing above it is unpublished, or that is not known yet. A visitor's listing has no entry
-// with an unpublished workspace above it, so only the owner and the space's members are told.
+// What `blockedByTitle` says of the workspace, read from the listing of the space that lists it
+// (`GadgetMetadata.listedIn`) each time `active` becomes true: undefined while nothing above it is
+// unpublished, while no space lists it, or while that is not known yet. A visitor's listing has no
+// entry with an unpublished workspace above it, and a space that refuses the user lists nothing, so
+// only the owner and the space's members are told.
 const usePublicationBlocker = (
   authenticatedApi: RpcStub<AuthenticatedApi>,
   workspaceId: string,
-  isOwner: boolean,
+  listedIn: string | undefined,
   active: boolean,
 ): string | undefined => {
   const [found, setFound] = useState<{
     api: RpcStub<AuthenticatedApi>
     workspaceId: string
+    listedIn: string
     title: string | undefined
   } | null>(null)
   // What was read for one publication says nothing of the next: the tree may have changed between.
   if (!active && found !== null) setFound(null)
 
   useEffect(() => {
-    if (!active) return
-    let cancelled = false
-    const read = async () => {
-      const keys = await spacesThatMayList(authenticatedApi, workspaceId, isOwner)
-      const answers = await Promise.all(keys.map(key => blockerIn(authenticatedApi, key, workspaceId)))
-      return answers.find(answer => answer !== null)?.title
+    if (!active || listedIn === undefined) return
+    const space = authenticatedApi.openSpace(listedIn)
+    // Closed once the read settles, or once it is stale; an answer that arrives after is dropped.
+    let open = true
+    const close = () => {
+      if (!open) return
+      open = false
+      space[Symbol.dispose]()
     }
-    read().then(
-      (title) => { if (!cancelled) setFound({ api: authenticatedApi, workspaceId, title }) },
-      (err: unknown) => { if (!cancelled) logRpcFailure('Failed to read a workspace’s place in its space:', err) },
+    space.listWorkspaces().then(
+      (listing) => {
+        if (!open) return
+        close()
+        const entry = listing.find(candidate => candidate.id === workspaceId)
+        setFound({ api: authenticatedApi, workspaceId, listedIn, title: entry && blockedByTitle(listing, entry) })
+      },
+      (err: unknown) => {
+        if (!open) return
+        close()
+        if (!isNotAMemberError(err)) logRpcFailure('Failed to read a workspace’s place in its space:', err)
+      },
     )
-    return () => { cancelled = true }
-  }, [authenticatedApi, workspaceId, isOwner, active])
+    return close
+  }, [authenticatedApi, workspaceId, listedIn, active])
 
-  return active && found?.api === authenticatedApi && found.workspaceId === workspaceId
+  return active
+    && found?.api === authenticatedApi
+    && found.workspaceId === workspaceId
+    && found.listedIn === listedIn
     ? found.title
     : undefined
 }
@@ -151,7 +128,7 @@ const usePublicationBlocker = (
  *
  * While the workspace is published and an unpublished workspace above it in its space's tree
  * keeps that from taking effect, the row says so under the role, to the owner and to the space's
- * members, reading the space's listing to learn it.
+ * members, reading the listing of the space the metadata says lists it (`listedIn`) to learn it.
  *
  * The second step takes the focus when it appears, in a group named by its warning, so that the
  * warning is heard, and gives it back to the trigger when it is gone: its buttons go with it.
@@ -160,7 +137,10 @@ export const PublicAccessRow = ({ overseer, authenticatedApi, metadata, containe
   overseer: RpcStub<Overseer>
   authenticatedApi: RpcStub<AuthenticatedApi>
   /** The workspace as the dialog has it. With no `owner`, the user is its owner. */
-  metadata: Pick<GadgetMetadata, 'id' | 'owner' | 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly'>
+  metadata: Pick<
+    GadgetMetadata,
+    'id' | 'owner' | 'publicAccess' | 'containsRestrictedData' | 'ownerInvitesOnly' | 'listedIn'
+  >
   /** Where the control's options are rendered, so they sit above the dialog the row is in. */
   container?: PortalContainer
   /** The workspace is now published with this role, or with null no longer published. */
@@ -192,7 +172,7 @@ export const PublicAccessRow = ({ overseer, authenticatedApi, metadata, containe
   const access = unavailable ? null : current.publicAccess ?? null
   const isOwner = !metadata.owner
   const offered = isOwner && !unavailable
-  const blockedBy = usePublicationBlocker(authenticatedApi, metadata.id, isOwner, flag.enabled && access !== null)
+  const blockedBy = usePublicationBlocker(authenticatedApi, metadata.id, metadata.listedIn, flag.enabled && access !== null)
 
   if (!flag.enabled || (!isOwner && access === null)) return null
 

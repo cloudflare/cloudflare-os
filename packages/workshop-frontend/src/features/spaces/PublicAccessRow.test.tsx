@@ -5,9 +5,9 @@ import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
+  AuthenticatedApi,
   CollaboratorRole,
   GadgetMetadata,
-  GadgetMetadataWithTimestamps,
   Overseer,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
@@ -15,6 +15,7 @@ import { PublicAccessRow } from './PublicAccessRow'
 import {
   ME,
   button,
+  deferred,
   fakeApi,
   fakeSpace,
   listingEntry,
@@ -35,7 +36,6 @@ afterEach(() => {
 const ADA = person('ada@example.com', 'Ada')
 const PERSONAL = personalSpace(ME, 'admin')
 const DESIGN = teamSpace('design', 'Design', 'build')
-const DAY = new Date('2026-09-01T00:00:00Z')
 
 const NOTE = 'Not visible to others until \'Onboarding\' is published'
 
@@ -54,13 +54,11 @@ const HIDDEN = listingWith({ published: 'use', hiddenBy: 'w-onboarding' })
 type Metadata = Omit<Parameters<typeof PublicAccessRow>[0]['metadata'], 'id'>
 
 /**
- * The row for Checklist as `metadata` describes it. Checklist is in `spaceKey` (the owner's
- * personal space when absent), which lists `listing` and of which the user is a `member` or not;
- * only the owner's own record of it says which space that is.
+ * The row for Checklist as `metadata` describes it. The space its `listedIn` names lists `listing`,
+ * and the user is a `member` of it or not; any other space lists nothing.
  */
-const render = async (metadata: Metadata, { listing = HIDDEN, spaceKey, spacesFlag = true, isMember = true }: {
+const render = async (metadata: Metadata, { listing = HIDDEN, spacesFlag = true, isMember = true }: {
   listing?: SpaceWorkspaceInfo[]
-  spaceKey?: string
   spacesFlag?: boolean
   isMember?: boolean
 } = {}) => {
@@ -69,29 +67,20 @@ const render = async (metadata: Metadata, { listing = HIDDEN, spaceKey, spacesFl
     setPublicAccess,
     getMetadata: async (): Promise<GadgetMetadata> => ({ id: 'w-checklist', title: 'Checklist' }),
   } as unknown as RpcStub<Overseer>
-  const holder = spaceKey ? DESIGN : PERSONAL
+  const holder = metadata.listedIn === DESIGN.key ? DESIGN : PERSONAL
   const space = fakeSpace(holder, isMember ? [member(ME, holder.role)] : [member(ADA, 'admin')], listing)
   const openSpace = vi.fn<(key: string) => unknown>(key => (key === holder.key
     ? space.stub
-    : fakeSpace(PERSONAL, [member(ME, 'admin')]).stub))
-  const records: GadgetMetadataWithTimestamps[] = [{
-    id: 'w-checklist',
-    title: 'Checklist',
-    created: DAY,
-    lastActive: DAY,
-    ...(metadata.owner ? { owner: metadata.owner } : { spaceKey }),
-  }]
-  const api = fakeApi({
-    listGadgets: async () => records,
-    listSpaces: async () => (isMember || !spaceKey ? [PERSONAL, DESIGN] : [PERSONAL]),
-    openSpace,
-  }, { spacesFlag })
+    : fakeSpace(teamSpace(key, key), [member(ME, 'admin')]).stub))
+  const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => [PERSONAL, DESIGN])
+  const listGadgets = vi.fn<AuthenticatedApi['listGadgets']>(async () => [])
+  const api = fakeApi({ listSpaces, listGadgets, openSpace }, { spacesFlag })
   await mount(
     <PublicAccessRow overseer={overseer} authenticatedApi={api} metadata={{ id: 'w-checklist', ...metadata }} />,
     api,
   )
   await settle()
-  return { setPublicAccess, openSpace, space }
+  return { setPublicAccess, openSpace, listSpaces, listGadgets, space }
 }
 
 const text = () => document.body.textContent ?? ''
@@ -111,24 +100,44 @@ const choose = async (label: string) => {
   await settle()
 }
 
+// The row for Checklist, published, as the metadata says first the design space and then the
+// user's personal space lists it, the user being a member of both.
+const rowMovedBetween = async (design: ReturnType<typeof fakeSpace>, personal: ReturnType<typeof fakeSpace>) => {
+  const api = fakeApi({ openSpace: vi.fn<(key: string) => unknown>(key => (key === DESIGN.key ? design : personal).stub) })
+  const overseer = { setPublicAccess: async () => {} } as unknown as RpcStub<Overseer>
+  const row = (listedIn: string) => (
+    <PublicAccessRow
+      overseer={overseer}
+      authenticatedApi={api}
+      metadata={{ id: 'w-checklist', owner: ADA, publicAccess: 'use', listedIn }}
+    />
+  )
+  const { rerender } = await mount(row(DESIGN.key), api)
+  await settle()
+  return async () => {
+    await rerender(row(PERSONAL.key))
+    await settle()
+  }
+}
+
 describe('PublicAccessRow', () => {
   it('tells the owner which workspace above keeps a published workspace from being visible', async () => {
-    const { openSpace, space } = await render({ publicAccess: 'use' })
+    const { openSpace, space } = await render({ publicAccess: 'use', listedIn: PERSONAL.key })
 
     expect(openSpace).toHaveBeenCalledWith(PERSONAL.key)
     expect(text()).toContain(NOTE)
     expect(space[Symbol.dispose]).toHaveBeenCalled()
   })
 
-  it('reads the team space the owner’s record groups the workspace in', async () => {
-    const { openSpace } = await render({ publicAccess: 'build' }, { spaceKey: 'design' })
+  it('reads the team space the metadata says lists the workspace', async () => {
+    const { openSpace } = await render({ publicAccess: 'build', listedIn: 'design' })
 
-    expect(openSpace).toHaveBeenCalledWith('design')
+    expect(openSpace.mock.calls).toEqual([['design']])
     expect(text()).toContain(NOTE)
   })
 
   it('says nothing of it while the workspace is not published, and says it once it is', async () => {
-    const { setPublicAccess, openSpace } = await render({}, { listing: listingWith({}) })
+    const { setPublicAccess, openSpace } = await render({ listedIn: PERSONAL.key }, { listing: listingWith({}) })
     expect(openSpace).not.toHaveBeenCalled()
     expect(text()).not.toContain('Not visible to others')
 
@@ -139,7 +148,7 @@ describe('PublicAccessRow', () => {
   })
 
   it('does not show what it read for an earlier publication while it reads again', async () => {
-    const { space } = await render({ publicAccess: 'use' })
+    const { space } = await render({ publicAccess: 'use', listedIn: PERSONAL.key })
     expect(text()).toContain(NOTE)
 
     await choose('No access')
@@ -153,7 +162,7 @@ describe('PublicAccessRow', () => {
   })
 
   it('says nothing of it when nothing above the workspace is unpublished', async () => {
-    await render({ publicAccess: 'use' }, {
+    await render({ publicAccess: 'use', listedIn: PERSONAL.key }, {
       listing: [listingEntry('w-checklist', 'Checklist', ME, { position: 0, published: 'use' })],
     })
 
@@ -161,10 +170,19 @@ describe('PublicAccessRow', () => {
     expect(text()).not.toContain('Not visible to others')
   })
 
+  it('opens no space, and says nothing of it, while no space lists the workspace', async () => {
+    const { openSpace, listSpaces, listGadgets } = await render({ publicAccess: 'use' })
+
+    expect(text()).toContain('Can open this workspace and use its gadgets without being invited.')
+    expect(openSpace).not.toHaveBeenCalled()
+    expect(listSpaces).not.toHaveBeenCalled()
+    expect(listGadgets).not.toHaveBeenCalled()
+    expect(text()).not.toContain('Not visible to others')
+  })
+
   it('takes a space that refuses the owner for one that does not list the workspace, not for a failure', async () => {
     const failures = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { openSpace } = await render({ publicAccess: 'use' }, {
-      spaceKey: 'design',
+    const { openSpace } = await render({ publicAccess: 'use', listedIn: 'design' }, {
       isMember: false,
       listing: [listingEntry('w-checklist', 'Checklist', ME, { position: 0 })],
     })
@@ -174,25 +192,91 @@ describe('PublicAccessRow', () => {
     expect(failures).not.toHaveBeenCalled()
   })
 
-  it('tells a member of the space who is not the owner, looking through the team spaces they are in', async () => {
-    const { openSpace } = await render({ publicAccess: 'build', owner: ADA }, { spaceKey: 'design' })
+  it('tells a member of the space who is not the owner, reading only the space that lists it', async () => {
+    const { openSpace, listSpaces } = await render({ publicAccess: 'build', owner: ADA, listedIn: 'design' })
 
     expect(text()).toContain('Can build')
-    expect(openSpace).toHaveBeenCalledWith('design')
-    expect(openSpace).not.toHaveBeenCalledWith(PERSONAL.key)
+    expect(openSpace.mock.calls).toEqual([['design']])
+    expect(listSpaces).not.toHaveBeenCalled()
     expect(text()).toContain(NOTE)
   })
 
   it('tells no one else who is not the owner', async () => {
-    const { openSpace } = await render({ publicAccess: 'build', owner: ADA }, { spaceKey: 'design', isMember: false })
+    const failures = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { openSpace } = await render(
+      { publicAccess: 'build', owner: ADA, listedIn: 'design' },
+      { isMember: false },
+    )
 
     expect(text()).toContain('Can build')
-    expect(openSpace).not.toHaveBeenCalledWith('design')
+    expect(openSpace.mock.calls).toEqual([['design']])
+    expect(text()).not.toContain('Not visible to others')
+    expect(failures).not.toHaveBeenCalled()
+  })
+
+  it('ignores what the space of a workspace the row no longer shows answers', async () => {
+    const pending = deferred<SpaceWorkspaceInfo[]>()
+    const design = fakeSpace(DESIGN, [member(ME, 'build')], HIDDEN)
+    design.listWorkspaces.mockImplementationOnce(() => pending.promise)
+    const personal = fakeSpace(PERSONAL, [member(ME, 'admin')], [
+      listingEntry('w-other', 'Other', ME, { position: 0, published: 'use' }),
+    ])
+    const openSpace = vi.fn<(key: string) => unknown>(key => (key === DESIGN.key ? design.stub : personal.stub))
+    const api = fakeApi({ openSpace })
+    const overseer = { setPublicAccess: async () => {} } as unknown as RpcStub<Overseer>
+    const row = (id: string, listedIn: string) => (
+      <PublicAccessRow
+        overseer={overseer}
+        authenticatedApi={api}
+        metadata={{ id, owner: ADA, publicAccess: 'use', listedIn }}
+      />
+    )
+    const { rerender } = await mount(row('w-checklist', DESIGN.key), api)
+    await settle()
+
+    await rerender(row('w-other', PERSONAL.key))
+    await settle()
+    expect(design[Symbol.dispose]).toHaveBeenCalled()
+
+    await act(async () => { pending.resolve(HIDDEN) })
+    await settle()
+
+    expect(openSpace.mock.calls).toEqual([[DESIGN.key], [PERSONAL.key]])
     expect(text()).not.toContain('Not visible to others')
   })
 
+  it('shows nothing of what the space the metadata named before answered while it reads the one it names now', async () => {
+    const design = fakeSpace(DESIGN, [member(ME, 'build')], HIDDEN)
+    const personal = fakeSpace(PERSONAL, [member(ME, 'admin')], HIDDEN)
+    personal.listWorkspaces.mockImplementationOnce(() => new Promise(() => {}))
+    const move = await rowMovedBetween(design, personal)
+    expect(text()).toContain(NOTE)
+
+    await move()
+
+    expect(personal.listWorkspaces).toHaveBeenCalled()
+    expect(text()).not.toContain('Not visible to others')
+  })
+
+  it('keeps what the space the metadata names answers over what the one it named before answers later', async () => {
+    const pending = deferred<SpaceWorkspaceInfo[]>()
+    const unblocked = [listingEntry('w-checklist', 'Checklist', ME, { position: 0, published: 'use' })]
+    const design = fakeSpace(DESIGN, [member(ME, 'build')], unblocked)
+    design.listWorkspaces.mockImplementationOnce(() => pending.promise)
+    const personal = fakeSpace(PERSONAL, [member(ME, 'admin')], HIDDEN)
+    const move = await rowMovedBetween(design, personal)
+
+    await move()
+    expect(text()).toContain(NOTE)
+
+    await act(async () => { pending.resolve(unblocked) })
+    await settle()
+
+    expect(text()).toContain(NOTE)
+  })
+
   it('shows nothing, and reads nothing, with the spaces flag off', async () => {
-    const { openSpace } = await render({ publicAccess: 'use' }, { spacesFlag: false })
+    const { openSpace } = await render({ publicAccess: 'use', listedIn: PERSONAL.key }, { spacesFlag: false })
 
     expect(text()).toBe('')
     expect(openSpace).not.toHaveBeenCalled()
