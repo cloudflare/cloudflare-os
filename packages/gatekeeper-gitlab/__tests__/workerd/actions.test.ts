@@ -203,16 +203,19 @@ describe("issue creation", () => {
 });
 
 describe("issue mutations", () => {
-  function withIssue(gitlab: FakeGitLab, state: { issue: ReturnType<typeof issue> }) {
+  const labelNames = (labels: ReadonlyArray<string | { name: string }>) => labels.map(l => typeof l === "string" ? l : l.name);
+
+  /** Issue #1 as GitLab serves and edits it; label titles match exactly, so `bug` and `Bug` are distinct. */
+  function withIssue(gitlab: FakeGitLab, state: { issue: IssueJson }) {
     gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1\\?`), () => json(state.issue));
     gitlab.on("PUT", new RegExp(`^/api/v4/projects/${P}/issues/1$`), request => {
       const body = JSON.parse(request.body!);
       if (body.title) state.issue = { ...state.issue, title: body.title };
       if (body.state_event) state.issue = { ...state.issue, state: body.state_event === "close" ? "closed" : "opened" };
-      if (body.add_labels) state.issue = { ...state.issue, labels: [...state.issue.labels, ...body.add_labels.split(",")] };
+      if (body.add_labels) state.issue = { ...state.issue, labels: [...new Set([...labelNames(state.issue.labels), ...body.add_labels.split(",")])] };
       if (body.remove_labels) {
         const removed = new Set(body.remove_labels.split(","));
-        state.issue = { ...state.issue, labels: state.issue.labels.filter((l: unknown) => !removed.has(typeof l === "string" ? l : (l as { name: string }).name)) };
+        state.issue = { ...state.issue, labels: labelNames(state.issue.labels).filter(l => !removed.has(l)) };
       }
       return json(state.issue);
     });
@@ -237,31 +240,34 @@ describe("issue mutations", () => {
     expect(state.issue.title).toBe("Old");
   });
 
-  it("labels: add and remove use add_labels/remove_labels and invert on revert", async () => {
+  it("labels: add and remove use add_labels/remove_labels, match titles exactly as GitLab does, and invert on revert", async () => {
     const { gitlab, props, name } = await setup("labels");
     const state = { issue: issue({ labels: ["bug"] }) };
     withIssue(gitlab, state);
     gitlab.install();
+    const simulatedLabels = async () => (await unwrap(await hooks().openIssue(name, props, "1"))).labels.map(l => l.name);
 
+    // `Bug` is a label of its own beside `bug`: the simulation shows what GitLab will hold.
     const add = await unwrap(await hooks().queueAction(name, props, "prepareAddLabels", ["issue", "1", ["urgent", "Bug"]], DESC));
-    const simulated = await unwrap(await hooks().openIssue(name, props, "1"));
-    // Case-insensitive dedupe: "Bug" is already there as "bug".
-    expect(simulated.labels.map(l => l.name)).toEqual(["bug", "urgent"]);
+    expect(await simulatedLabels()).toEqual(["bug", "urgent", "Bug"]);
     await unwrap(await hooks().applyAction(name, props, add.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ add_labels: "urgent,Bug" });
-    // Revert removes only what the action introduced: "Bug" was there before (as "bug") and stays.
+    expect(labelNames(state.issue.labels)).toEqual(["bug", "urgent", "Bug"]);
+    // Revert removes only what the action introduced: `bug` was there before and stays.
     await unwrap(await hooks().revertAction(name, props, add.approvalId));
-    expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ remove_labels: "urgent" });
+    expect(labelNames(state.issue.labels)).toEqual(["bug"]);
 
-    // Removing a label that is there and one that is not: revert re-adds only the one that was.
-    const remove = await unwrap(await hooks().queueAction(name, props, "prepareRemoveLabels", ["issue", "1", ["bug", "ghost"]], DESC));
+    // `BUG` was never there: removing it changes nothing, and revert does not create it.
+    const remove = await unwrap(await hooks().queueAction(name, props, "prepareRemoveLabels", ["issue", "1", ["bug", "BUG"]], DESC));
+    expect(await simulatedLabels()).toEqual([]);
     await unwrap(await hooks().applyAction(name, props, remove.approvalId));
-    expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ remove_labels: "bug,ghost" });
+    expect(labelNames(state.issue.labels)).toEqual([]);
     await unwrap(await hooks().revertAction(name, props, remove.approvalId));
     expect(JSON.parse(gitlab.requests.at(-1)!.body!)).toEqual({ add_labels: "bug" });
+    expect(labelNames(state.issue.labels)).toEqual(["bug"]);
 
     // Nothing to undo -- every added label was already present -- makes no request at all.
-    const noop = await unwrap(await hooks().queueAction(name, props, "prepareAddLabels", ["issue", "1", ["BUG"]], DESC));
+    const noop = await unwrap(await hooks().queueAction(name, props, "prepareAddLabels", ["issue", "1", ["bug"]], DESC));
     await unwrap(await hooks().applyAction(name, props, noop.approvalId));
     const before = gitlab.requests.length;
     await unwrap(await hooks().revertAction(name, props, noop.approvalId));
@@ -726,7 +732,6 @@ class ReviewGitLab {
       this.notes.push(note);
       return json(this.#noteJson(note), { status: 201 });
     }));
-    on("GET", "/notes\\?", () => json(this.notes.toReversed().map(note => this.#noteJson(note))));
     on("GET", "/discussions", () => json(this.discussions.map(discussion => ({
       id: discussion.id, individual_note: false,
       notes: [{ ...fx.diffDiscussionResponse.data.notes[0], id: discussion.noteId, body: discussion.note, position: discussion.position }],
@@ -989,7 +994,7 @@ describe("reviews", () => {
     expect(review.notes.map(note => note.body)).toEqual(["Please fix"]);
   });
 
-  it("repeats no step whose reply was lost: a lost draft is adopted, a lost publish counted, and a lost summary found", async () => {
+  it("repeats no step whose reply was lost, save the summary: a lost draft is adopted, a lost publish counted, a lost summary posted again", async () => {
     const { gitlab, props, name } = await setup("review-lost-replies");
     const review = new ReviewGitLab(gitlab);
     // The user's own draft, in the same words as one of the review's but anchored nowhere: not
@@ -1019,11 +1024,11 @@ describe("reviews", () => {
 
     const before = gitlab.requests.length;
     await apply();
-    // Nothing left to write: draft 1 is known published though its reply never came, and the
-    // summary is found among the newest notes.
-    expect(writes(gitlab, before)).toEqual([]);
+    // Draft 1 is known published though its reply never came. The summary is posted again: no
+    // search could tell its lost post from an earlier note in the same words.
+    expect(writes(gitlab, before)).toEqual(["POST 133/notes"]);
     expect(gitlab.count("PUT", /draft_notes\/1\/publish$/)).toBe(1);
-    expect(review.notes.map(note => note.body)).toEqual(["Summary"]);
+    expect(review.notes.map(note => note.body)).toEqual(["Summary", "Summary"]);
     expect(review.drafts.map(draft => draft.id)).toEqual([500]);
   });
 

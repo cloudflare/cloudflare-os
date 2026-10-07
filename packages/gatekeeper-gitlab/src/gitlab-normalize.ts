@@ -168,19 +168,6 @@ export function labelFromResponse(label: string | GitLabLabelResponse): GitLabLa
   };
 }
 
-export function dedupeLabels(labels: GitLabLabel[]): GitLabLabel[] {
-  const seen = new Set<string>();
-  const result: GitLabLabel[] = [];
-  for (const label of labels) {
-    const key = label.name.toLowerCase();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(label);
-    }
-  }
-  return result;
-}
-
 export function parseDate(value?: string | null): Date | undefined {
   return value ? new Date(value) : undefined;
 }
@@ -593,10 +580,16 @@ export function normalizeDiffFile(file: GitLabDiffResponse): GitLabDiffFile {
 // ---------------------------------------------------------------------------
 // Filters and comparators (applied to overlaid items, consistent with the remote sort)
 
+/**
+ * GitLab matches label titles exactly (`Issuables::LabelFilter`), save its special `None`
+ * (unlabelled) and `Any` (labelled) filters, which it reads without regard to case.
+ */
 function matchesAllLabels(item: { labels: GitLabLabel[] }, labels?: string[]): boolean {
-  if (!labels || labels.length === 0) return true;
-  const available = new Set(item.labels.map(label => label.name.toLowerCase()));
-  return labels.every(label => available.has(label.toLowerCase()));
+  if (!labels?.length) return true;
+  const special = labels.map(label => label.toLowerCase());
+  if (special.includes("none")) return item.labels.length === 0;
+  if (special.includes("any")) return item.labels.length > 0;
+  return labels.every(label => item.labels.some(({ name }) => name === label));
 }
 
 /** GitLab looks usernames up without regard to case (`User.by_username`), so its filters match that way. */
@@ -658,7 +651,7 @@ export function mergeRequestOrder(filter?: GitLabMergeRequestFilter): { orderBy:
  * direction, ties broken by id descending whatever the direction, as GitLab's own listings break
  * them (`Issuable#sort_by_attribute` appends `id DESC` for pagination). Ties are the norm under
  * `popularity`, where most rows have no votes, so the tie-break decides most positions there.
- * Ids compare numerically when both are numbers; a provisional `~N` falls back to text order.
+ * Ids compare numerically; a provisional `~N` is newer than every real id, as its issue will be.
  */
 export function issuableComparator<T extends { id: string; createdAt: Date; updatedAt: Date; upvotes?: number }>(
   sort: "created" | "updated" | "popularity" | undefined,
@@ -672,9 +665,14 @@ export function issuableComparator<T extends { id: string; createdAt: Date; upda
         ? (a.upvotes ?? 0) - (b.upvotes ?? 0)
         : a.createdAt.getTime() - b.createdAt.getTime();
     if (delta !== 0) return delta * factor;
-    const [na, nb] = [Number(a.id), Number(b.id)];
-    return Number.isFinite(na) && Number.isFinite(nb) ? nb - na : b.id.localeCompare(a.id);
+    const [ra, rb] = [idRank(a.id), idRank(b.id)];
+    return rb[0] - ra[0] || rb[1] - ra[1];
   };
+}
+
+/** An id's rank for GitLab's `id DESC` tie-break: a provisional `~N` outranks every real id. */
+function idRank(id: string): [number, number] {
+  return id.startsWith("~") ? [1, Number(id.slice(1))] : [0, Number(id)];
 }
 
 // ---------------------------------------------------------------------------

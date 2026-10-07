@@ -92,7 +92,6 @@ import {
   actorFromUsername,
   branchNameMatchesSearch,
   commentTargetFromPosition,
-  dedupeLabels,
   diffAnchor,
   diffLinePositions,
   discussionCommentFromNote,
@@ -181,9 +180,6 @@ const DIFF_REFS_RETRY_DELAY_MS = 1500;
 const MAX_PENDING_CHAIN_COMMITS = 250;
 /** Bound on following a chain of not-yet-applied replies back to a real thread. */
 const MAX_REPLY_TARGET_HOPS = 50;
-/** How many of a merge request's newest notes a retried review summary searches for its lost post. */
-const LOST_SUMMARY_SEARCH_DEPTH = 100;
-
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
 type StoredViewer = { id: number; actor: GitLabActor };
 
@@ -220,11 +216,6 @@ function actionTarget(action: GitLabAction): { kind: EntityKind; id: string } | 
     default:
       return { kind: action.targetKind, id: action.targetId };
   }
-}
-
-/** Label names are unique case-insensitively on GitLab, as the overlay treats them. */
-function hasLabel(labels: string[], name: string): boolean {
-  return labels.some(label => label.toLowerCase() === name.toLowerCase());
 }
 
 /** When the user approved, by GitLab's `approved_at`; null if they have not, or the instance does not say. */
@@ -768,18 +759,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             result.updatedAt = new Date(action.submittedAt);
           }
           break;
-        case "addLabels": {
-          const existing = new Set(result.labels.map(label => label.name.toLowerCase()));
-          for (const label of action.labels) {
-            if (!existing.has(label.toLowerCase())) result.labels.push({ name: label });
+        case "addLabels":
+          // GitLab matches titles exactly, so `Bug` is added beside an existing `bug`.
+          for (const name of new Set(action.labels)) {
+            if (!result.labels.some(label => label.name === name)) result.labels.push({ name });
           }
-          result.labels = dedupeLabels(result.labels);
           result.updatedAt = new Date(action.submittedAt);
           break;
-        }
         case "removeLabels":
-          result.labels = result.labels.filter(label =>
-            !action.labels.some(name => name.toLowerCase() === label.name.toLowerCase()));
+          result.labels = result.labels.filter(label => !action.labels.includes(label.name));
           result.updatedAt = new Date(action.submittedAt);
           break;
         case "changeState":
@@ -1106,7 +1094,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       if (compare.compare_timeout) {
         throw new Error(
           `GitLab timed out comparing ${from} with ${to}, so the diff it returned may be incomplete. ` +
-          "Try again; if the comparison keeps timing out, read the change in smaller pieces (by commit or by path).");
+          "Try again; if it keeps timing out, review the change in a worktree instead: mount its head commit and diff it " +
+          "against the merge request's getMergeBase().");
       }
       return {
         files: compare.diffs.map(normalizeDiffFile),
@@ -1118,7 +1107,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /** The merge base of two commits, cached immutably: a pure function of the pair. */
   async #getMergeBaseCached(a: GitOid, b: GitOid): Promise<GitOid> {
     return await this.#cached(this.#cacheKey("merge-base", a, b), IMMUTABLE_CACHE_TTL_MS, async () => {
-      const base = await this.#withApi(api => api.mergeBase(this.#projectPath(), a, b));
+      const base = await this.#withApi(api => api.mergeBase(this.#projectPath(), [a, b]));
       if (!base) throw new Error(`GitLab reports no common ancestor between ${a} and ${b}.`);
       return base.id;
     });
@@ -1195,7 +1184,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     if (parseChangesCount(mr.changes_count).changedFilesTruncated) {
       throw new Error(
         `Merge request !${realId} is over GitLab's diff limits, so GitLab lists only part of its diff. ` +
-        "Read the change in smaller pieces (by commit or by path) instead.");
+        "Review it in a worktree instead: mount its head commit and diff it against getMergeBase().");
     }
     const revision = await this.#mergeRequestRevision(mr);
     const projectPath = this.#projectPath();
@@ -1342,8 +1331,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The merge base of a merge request, always a commit GitLab itself knows -- even a simulated
-   * head's merge base comes from live `/merge_base` reads (see `#simulatedMergeBase`) -- so
-   * sessions may advertise it.
+   * head's merge base is a live `/merge_base` read (see `#simulatedMergeBase`) -- so sessions may
+   * advertise it.
    */
   async mergeRequestMergeBase(id: string, gitCache?: RpcStub<GitCache>): Promise<GitOid> {
     if (id.startsWith("~") && !this.#resolveProvisionalId(id)) {
@@ -1747,24 +1736,32 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   /**
    * Cascade for a rejected push: retire the queued actions stranded on a head that will now never
    * be reached, then those the missing-branch check dooms (`#rejectMergeRequestsForMissingBranches`).
-   * A head is stranded when the push that would leave it is retired and no other queued push to
-   * the branch would leave it too. A push bound to a stranded head (`expectedOldSha`) could only
-   * fail its compare-and-swap -- with an error blaming the branch for moving -- and strands its own
-   * new head in turn; a merge bound to one (`expectedHeadSha`) could only be refused. Only a
+   * A head is stranded when the push that would leave it is retired, no other queued push to the
+   * branch would leave it too, and the branch is not there already (pushed by other means, the
+   * head needs no push, and what is bound to it can still apply; a branch that cannot be read
+   * counts as elsewhere). A push bound to a stranded head (`expectedOldSha`) could only fail its
+   * compare-and-swap -- with an error blaming the branch for moving -- and strands its own new
+   * head in turn; a merge bound to one (`expectedHeadSha`) could only be refused. Only a
    * rejection strands a head: a branch moved by anyone else is the compare-and-swap's to report
    * at apply. Returns whether anything cascaded.
    */
   async #rejectActionsStrandedByPush(rejected: PushAction): Promise<boolean> {
+    const { branch } = rejected;
+    const liveHead = await this.#withApi(api => api.getBranch(this.#projectPath(), branch)).then(
+      found => found?.commit.id ?? null,
+      error => {
+        logger.warn("failed to read the branch a rejected push targeted", { event: "push.reject.branch.read.failed", error });
+        return null;
+      });
     let cascaded = false;
-    const stranded = [{ branch: rejected.branch, head: rejected.newSha }];
-    for (let next = stranded.pop(); next !== undefined; next = stranded.pop()) {
-      const { branch, head } = next;
+    const stranded = [rejected.newSha];
+    for (let head = stranded.pop(); head !== undefined; head = stranded.pop()) {
       const pending = this.#listPendingActions();
-      if (pending.some(action => action.type === "push" && action.branch === branch && action.newSha === head)) continue;
+      if (head === liveHead || pending.some(action => action.type === "push" && action.branch === branch && action.newSha === head)) continue;
       for (const action of pending) {
         if (action.type === "push" && action.branch === branch && action.expectedOldSha === head) {
           this.#markActionRejected(action);
-          stranded.push({ branch, head: action.newSha });
+          stranded.push(action.newSha);
           cascaded = true;
         } else if (action.type === "mergeMergeRequest" && action.sourceBranch === branch && action.expectedHeadSha === head) {
           this.#markActionRejected(action);
@@ -2127,7 +2124,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       case "mergeMergeRequest": {
         const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
-        await this.#mergeMergeRequest(realId, action.options, action.expectedHeadSha);
+        await this.#mergeMergeRequest(realId, action);
         break;
       }
       case "push": {
@@ -2184,9 +2181,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /** `PUT …/merge`, translating GitLab's documented failure codes into agent-actionable reasons. */
-  async #mergeMergeRequest(
-    realId: string, options: GitLabMergeRequestMergeOptions | undefined, expectedHeadSha: string,
-  ): Promise<void> {
+  async #mergeMergeRequest(realId: string, action: MergeMergeRequestAction): Promise<void> {
+    const { options, expectedHeadSha, sourceBranch } = action;
     const projectPath = this.#projectPath();
     try {
       await this.#withApi(api => api.mergeMergeRequest(projectPath, Number(realId), {
@@ -2216,6 +2212,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           throw new Error(`Merge request !${realId} cannot be merged: ${reason}.`, { cause: error });
         }
         case 409:
+          // The usual cause is ordering, as for a create: the merge is bound to the head a queued
+          // push to its source branch will leave, and was approved before that push. It stays
+          // pending; applying it again after the push works.
+          if (sourceBranch !== null && this.#pendingPushActions(sourceBranch).some(push => push.newSha === expectedHeadSha)) {
+            throw new Error(`Cannot merge !${realId} yet: it was approved at ${expectedHeadSha}, the head the queued push ` +
+              `to "${sourceBranch}" will leave. Approve that push first, then this merge.`, { cause: error });
+          }
           throw new Error(`Merge request !${realId}'s head has moved from ${expectedHeadSha} ` +
             "since the merge was queued; re-read it and merge again so the new commits are reviewed.", { cause: error });
         case 422:
@@ -2379,7 +2382,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
     }
 
-    if (summary !== undefined) await this.#postReviewSummary(record, iid, summary, viewer.id);
+    if (summary !== undefined) await this.#postReviewSummary(record, iid, summary);
   }
 
   /** Persist a review's progress before its next step (see `#publishReview`). */
@@ -2470,28 +2473,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * The review's summary, posted last as an ordinary note. A post whose answer was lost
-   * (`"posting"`) is looked for among the merge request's newest notes -- the account's own, with
-   * the same body -- before it is posted again.
+   * The review's summary, posted last as an ordinary note. A post whose answer was lost is posted
+   * again: a rare duplicate the user can see and delete, where searching for the lost one could
+   * take an earlier note with the same text for it and leave the summary silently unposted.
    */
-  async #postReviewSummary(record: StoredActionRecord, iid: number, summary: string, viewerId: number): Promise<void> {
+  async #postReviewSummary(record: StoredActionRecord, iid: number, summary: string): Promise<void> {
     const progress = record.progress ??= {};
-    if (typeof progress.summary === "number") return;
-    const projectPath = this.#projectPath();
-    if (progress.summary === "posting") {
-      const newest = await this.#withApi(api => api.listNotes(projectPath, "merge_requests", iid, {
-        orderBy: "created_at", sort: "desc", page: 1, perPage: LOST_SUMMARY_SEARCH_DEPTH,
-      }));
-      const posted = newest.items.find(note => !note.system && note.author?.id === viewerId && note.body === summary);
-      if (posted) {
-        progress.summary = posted.id;
-        this.#saveProgress(record);
-        return;
-      }
-    }
-    progress.summary = "posting";
-    this.#saveProgress(record);
-    progress.summary = (await this.#withApi(api => api.createNote(projectPath, "merge_requests", iid, summary))).id;
+    if (progress.summary !== undefined) return;
+    progress.summary = (await this.#withApi(api => api.createNote(this.#projectPath(), "merge_requests", iid, summary))).id;
     this.#saveProgress(record);
   }
 
@@ -2597,7 +2586,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const realId = this.#realIdOf(action.targetId);
         if (!realId) return gone;
         // Only the labels the action introduced: one that was already there stays.
-        const introduced = action.labels.filter(label => !hasLabel(action.previousLabels, label));
+        const introduced = action.labels.filter(label => !action.previousLabels.includes(label));
         if (introduced.length > 0) await this.#updateIssuable(action.targetKind, realId, { remove_labels: introduced });
         break;
       }
@@ -2605,7 +2594,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const realId = this.#realIdOf(action.targetId);
         if (!realId) return gone;
         // Only the labels the action removed: one that was never there is not added.
-        const removed = action.labels.filter(label => hasLabel(action.previousLabels, label));
+        const removed = action.labels.filter(label => action.previousLabels.includes(label));
         if (removed.length > 0) await this.#updateIssuable(action.targetKind, realId, { add_labels: removed });
         break;
       }
@@ -2819,9 +2808,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * (see `#collectPendingChain`), walking each side branch down to commits GitLab has. Returns the
    * commits it marked and the GitLab ones it stopped at. `walked` holds the commits already
    * walked, and the side walk adds to it; the served set cannot stand in, since it outlives the
-   * walk that filled it. Bounded like the main chain. A side branch that leaves the cache is left
-   * unmarked and unfollowed (the push itself would fail on the missing object, not silently
-   * advertise it).
+   * walk that filled it. Bounded like the main chain, and past the bound it throws, so callers
+   * degrade: a partial walk could leave a side parent unmarked that a listed merge names, and the
+   * session would advertise it. A side branch that leaves the cache is left unmarked and
+   * unfollowed (the push itself would fail on the missing object, not silently advertise it).
    */
   async #recordPendingSideParents(
     gitCache: RpcStub<GitCache>, roots: GitOid[], walked: Set<GitOid>, onGitLab: (oid: GitOid) => Promise<boolean>,
@@ -2849,25 +2839,18 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The merge base GitLab will compute for `target` and a queued head whose ancestry ends at
-   * `frontier` on GitLab. No pending commit is an ancestor of `target`, so the common ancestors
-   * are those `target` shares with the frontier, and the best is the frontier merge base no other
-   * one descends from -- for a queued merge of the target into the source, the target head itself.
-   * Every step is a live `/merge_base`, so the result is a commit GitLab knows. A tie (criss-cross
-   * history) throws, and callers degrade, rather than guess which one GitLab will pick.
+   * `frontier` on GitLab, asked of GitLab in one `/merge_base`. Given more than two commits, `git
+   * merge-base` answers for the first and a hypothetical merge of the rest, and no pending commit
+   * is an ancestor of `target`, so the candidates are exactly the queued head's: git applies its
+   * own rules -- a frontier commit unrelated to the target adds nothing, and equally good bases
+   * (criss-cross history) are chosen between as they will be for the pushed head. A frontier too
+   * long for one request URL fails the read, and callers degrade. Not cached by itself: the
+   * comparison it feeds is.
    */
   async #simulatedMergeBase(target: GitOid, frontier: GitOid[]): Promise<GitOid> {
-    const bases = new Set(await Promise.all(frontier.map(oid => this.#getMergeBaseCached(target, oid))));
-    // The bases no other one descends from, kept as they arrive. One `/merge_base` orders a pair
-    // either way -- it is whichever of the two is the ancestor -- so nested bases, a chain of
-    // merges of the target, cost one call each.
-    let best: GitOid[] = [];
-    for (const base of bases) {
-      const pairBases = await Promise.all(best.map(kept => this.#getMergeBaseCached(base, kept)));
-      if (pairBases.includes(base)) continue;
-      best = [...best.filter((kept, index) => pairBases[index] !== kept), base];
-    }
-    if (best.length > 1) throw new Error(`${target} has several equally good merge bases with the queued head: ${best.join(", ")}.`);
-    return best[0];
+    const base = await this.#withApi(api => api.mergeBase(this.#projectPath(), [target, ...frontier]));
+    if (!base) throw new Error(`GitLab reports no common ancestor between ${target} and the queued head.`);
+    return base.id;
   }
 
   /**

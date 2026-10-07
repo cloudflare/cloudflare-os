@@ -129,8 +129,8 @@ describe("UserAccount.getAccessToken", () => {
     const id = await seedAccount({ expiresInMs: 0 });
     await hooks().installCallback(id);
     await expect(unwrap(await hooks().userDescribe(id))).rejects.toThrow(/expired or been revoked. Please reconnect/);
-    // The death is stored with the grant, not just remembered: past the transient-failure
-    // cooldown -- or a restart of the object -- the dead token is still not sent again.
+    // The death is stored with the grant, not just remembered: much later -- or after a restart
+    // of the object -- the dead token is still not sent again.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 10 * 60 * 1000);
     await expect(unwrap(await hooks().userDescribe(id))).rejects.toThrow(/expired or been revoked. Please reconnect/);
@@ -148,9 +148,10 @@ describe("UserAccount.getAccessToken", () => {
     ["an Access login redirect", () => new Response(null, {
       status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login/gitlab-api.example.com" },
     })],
-  ])("treats %s from the token endpoint as transient: the grant survives", async (_label, answer) => {
+  ])("treats %s from the token endpoint as transient: the grant survives, and the next request asks again", async (_label, answer) => {
     const gitlab = new FakeGitLab();
-    gitlab.on("POST", /^\/oauth\/token/, answer);
+    let attempts = 0;
+    gitlab.on("POST", /^\/oauth\/token/, () => ++attempts === 1 ? answer() : json(tokenResponse(1)));
     gitlab.install();
 
     const id = await seedAccount({ expiresInMs: 0 });
@@ -158,6 +159,9 @@ describe("UserAccount.getAccessToken", () => {
     await expect(token(id)).rejects.toThrow(/Could not refresh GitLab credentials/);
     expect(await hooks().expiredNotices(id)).toBe(0);
     expect((await storedGrant(id))?.refreshToken).toBe("test-refresh");
+    // No cooldown replays the failure: a retry straight after is a fresh request.
+    expect(await token(id)).toBe("access-1");
+    expect(attempts).toBe(2);
   });
 
   it("still serves a stub-era grant that has no scopes record, reporting it as no scopes", async () => {

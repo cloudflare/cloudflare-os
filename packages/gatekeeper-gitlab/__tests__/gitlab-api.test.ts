@@ -98,7 +98,7 @@ describe("request composition", () => {
 
   it("spells array query params as key[]=", async () => {
     const calls = fakeFetch([json(fx.mergeBaseResponse.data)]);
-    await api().mergeBase("g/p", "abc", "def");
+    await api().mergeBase("g/p", ["abc", "def"]);
     expect(calls[0].url.search).toBe("?refs%5B%5D=abc&refs%5B%5D=def");
   });
 
@@ -339,21 +339,18 @@ describe("issues and merge requests", () => {
     expect(approvals.approved_by[0]).toMatchObject({ user: { id: 1 }, approved_at: "2016-06-09T01:45:21.720Z" });
   });
 
-  it("resolves the merge_request/issues note paths and the discussion reply path", async () => {
-    const calls = fakeFetch([json(fx.issueNotesResponse.data), json({}, { status: 201 }), json({}), json([])]);
-    await api().listNotes("g/p", "merge_requests", 7, { orderBy: "updated_at", sort: "desc", page: 1, perPage: 100 });
-    expect(calls[0].url.pathname).toBe("/api/v4/projects/g%2Fp/merge_requests/7/notes");
-    expect(calls[0].url.searchParams.get("order_by")).toBe("updated_at");
+  it("resolves the discussion reply, resolve, and listing paths", async () => {
+    const calls = fakeFetch([json({}, { status: 201 }), json({}), json([])]);
     await api().addDiscussionNote("g/p", 7, fx.diffDiscussionResponse.data.id, "reply");
-    expect(calls[1].url.pathname)
+    expect(calls[0].url.pathname)
       .toBe(`/api/v4/projects/g%2Fp/merge_requests/7/discussions/${fx.diffDiscussionResponse.data.id}/notes`);
     await api().setDiscussionResolved("g/p", 7, "abc", true);
-    expect(calls[2].init.method).toBe("PUT");
-    expect(JSON.parse(calls[2].body!)).toEqual({ resolved: true });
+    expect(calls[1].init.method).toBe("PUT");
+    expect(JSON.parse(calls[1].body!)).toEqual({ resolved: true });
     // The thread itself is read from the discussions endpoint, for issues and merge requests alike.
     await api().listDiscussions("g/p", "issues", 3, 2, 100);
-    expect(calls[3].url.pathname).toBe("/api/v4/projects/g%2Fp/issues/3/discussions");
-    expect(calls[3].url.searchParams.get("page")).toBe("2");
+    expect(calls[2].url.pathname).toBe("/api/v4/projects/g%2Fp/issues/3/discussions");
+    expect(calls[2].url.searchParams.get("page")).toBe("2");
   });
 
   it("creates drafts, lists them in one unpaginated GET, and publishes them with a reviewer state", async () => {
@@ -485,7 +482,7 @@ describe("repository", () => {
 
   it("treats an unrelated-refs merge_base failure as null", async () => {
     fakeFetch([json({ message: "400 Bad request - Could not find merge base" }, { status: 400 })]);
-    expect(await api().mergeBase("g/p", "a", "b")).toBeNull();
+    expect(await api().mergeBase("g/p", ["a", "b"])).toBeNull();
   });
 });
 

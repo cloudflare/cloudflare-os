@@ -218,6 +218,17 @@ describe("listing filters", () => {
     expect(mergeRequestMatchesFilter(mergeRequest, { author: "Marcel.Amirault", assignee: "Lennie" })).toBe(true);
     expect(mergeRequestMatchesFilter(mergeRequest, { assignee: "root" })).toBe(false);
   });
+
+  it("match label titles exactly, as GitLab's label filter does, save its None and Any", () => {
+    const labelled = (...names: string[]) =>
+      ({ ...normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data), labels: names.map(name => ({ name })) });
+    expect(issueMatchesFilter(labelled("bug", "urgent"), { labels: ["bug", "urgent"] })).toBe(true);
+    expect(issueMatchesFilter(labelled("bug"), { labels: ["Bug"] })).toBe(false);
+    expect(issueMatchesFilter(labelled(), { labels: ["None"] })).toBe(true);
+    expect(issueMatchesFilter(labelled("bug"), { labels: ["none"] })).toBe(false);
+    expect(issueMatchesFilter(labelled("bug"), { labels: ["ANY"] })).toBe(true);
+    expect(issueMatchesFilter(labelled(), { labels: ["Any"] })).toBe(false);
+  });
 });
 
 describe("issuableComparator", () => {
@@ -229,9 +240,10 @@ describe("issuableComparator", () => {
   const provisional = row("~1", 0, "2025-01-01T00:00:00Z");
 
   it("orders a popularity listing by upvotes, not creation, so a fresh zero-vote row sorts among the other zero-vote rows", () => {
-    // Descending by default: the voted issue leads however old it is; the provisional one does not.
+    // Descending by default: the voted issue leads however old it is; among the zero-vote ties
+    // the provisional one is newest, as the issue it becomes will be.
     expect([older, provisional, voted, newer].toSorted(issuableComparator("popularity", undefined)).map(r => r.id))
-      .toEqual(["3", "10", "9", "~1"]);
+      .toEqual(["3", "~1", "10", "9"]);
     expect([voted, older].toSorted(issuableComparator("popularity", "asc")).map(r => r.id)).toEqual(["9", "3"]);
   });
 
@@ -241,6 +253,10 @@ describe("issuableComparator", () => {
     expect([older, newer].toSorted(issuableComparator("popularity", "asc")).map(r => r.id)).toEqual(["10", "9"]);
     expect([newer, older].toSorted(issuableComparator("created", "asc")).map(r => r.id)).toEqual(["9", "10"]);
     expect([older, newer].toSorted(issuableComparator("created", undefined)).map(r => r.id)).toEqual(["10", "9"]);
+    // Provisional ids outrank real ones, and compare by number among themselves.
+    const tied = ["~10", "~2", "57", "~9", "3", "~1"].map(id => row(id, 0, "2024-01-01T00:00:00Z"));
+    expect(tied.toSorted(issuableComparator("popularity", "desc")).map(r => r.id))
+      .toEqual(["~10", "~9", "~2", "~1", "57", "3"]);
   });
 });
 

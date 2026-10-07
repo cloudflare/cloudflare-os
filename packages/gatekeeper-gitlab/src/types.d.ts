@@ -212,7 +212,8 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    * being consumed, later pages may reflect those newer changes.
    *
    * Throws when the diff is over GitLab's limits (see `changedFilesTruncated`), since GitLab
-   * then lists only some of its files; read the change by commit or by path instead.
+   * then lists only some of its files; review the change in a worktree instead, mounting the
+   * head commit and diffing it against `getMergeBase()`.
    */
   readDiff(options?: GitLabPageOptions): Promise<GitLabMergeRequestDiff>;
 

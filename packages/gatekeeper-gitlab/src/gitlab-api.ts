@@ -952,22 +952,6 @@ export class GitLabApi {
 
   // -- notes and discussions
 
-  /**
-   * One page of an issue's or merge request's root-level notes. Not the way to read a thread:
-   * replies (`DiscussionNote`s) are absent from this listing by GitLab's documented design; see
-   * `listDiscussions`.
-   */
-  async listNotes(projectPath: string, kind: "issues" | "merge_requests", iid: number, options: {
-    orderBy?: "created_at" | "updated_at";
-    sort?: "asc" | "desc";
-    page: number;
-    perPage: number;
-  }): Promise<GitLabPage<GitLabNoteResponse>> {
-    return await this.#getPage<GitLabNoteResponse>(
-      `/projects/${encodeProjectPath(projectPath)}/${kind}/${iid}/notes`,
-      { order_by: options.orderBy, sort: options.sort }, options.page, options.perPage);
-  }
-
   async createNote(projectPath: string, kind: "issues" | "merge_requests", iid: number, body: string): Promise<GitLabNoteResponse> {
     return (await this.#request<GitLabNoteResponse>("POST",
       `/projects/${encodeProjectPath(projectPath)}/${kind}/${iid}/notes`, { body: { body } })).data;
@@ -1115,11 +1099,15 @@ export class GitLabApi {
       `/projects/${encodeProjectPath(projectPath)}/repository/compare`, { from, to });
   }
 
-  /** The merge base of two refs, or null when they are unrelated (GitLab answers 400 or 404). */
-  async mergeBase(projectPath: string, a: string, b: string): Promise<GitLabCommitResponse | null> {
+  /**
+   * The merge base `git merge-base` gives for `refs` -- given more than two, the base of the first
+   * and a hypothetical merge of the rest -- or null when they share no ancestor (GitLab answers 400
+   * or 404).
+   */
+  async mergeBase(projectPath: string, refs: string[]): Promise<GitLabCommitResponse | null> {
     try {
       return await this.#get<GitLabCommitResponse>(
-        `/projects/${encodeProjectPath(projectPath)}/repository/merge_base`, { refs: [a, b] });
+        `/projects/${encodeProjectPath(projectPath)}/repository/merge_base`, { refs });
     } catch (error) {
       if (error instanceof GitLabApiError && (error.status === 404 || error.status === 400)) return null;
       throw error;

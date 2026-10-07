@@ -200,13 +200,16 @@ async function queuePush(name: string, props: GatekeeperProps, branch: string, c
 
 /**
  * Merge request !133 from `feature` (at SOURCE) into `main`, both forked from BASE, with `main` a
- * line of `merges` target commits and `/merge_base` answered from that history. Queued on
- * `feature`: one merge of each target commit in turn, so the head contains the target head.
+ * line of `merges` target commits and `/merge_base` answered from that history as git answers it.
+ * Queued on `feature`: one merge of each target commit in turn, so the head contains the target
+ * head -- then, with `unrelated`, a merge of ROOT, a parentless commit GitLab has.
  */
-async function queuedMergesOfTarget(merges: number) {
+async function queuedMergesOfTarget(merges: number, { unrelated = false } = {}) {
   const SOURCE = "5".repeat(40);
+  const ROOT = "6".repeat(40);
   const targets = Array.from({ length: merges }, (_, index) => `${index + 1}f`.repeat(20));
-  const mergeCommits = Array.from({ length: merges }, (_, index) => `${index + 1}e`.repeat(20));
+  const sides = unrelated ? [...targets, ROOT] : targets;
+  const mergeCommits = sides.map((_, index) => `${index + 1}e`.repeat(20));
   const [TARGET_TREE, MERGE_TREE] = ["8".repeat(40), "9".repeat(40)];
   const [baseBlob, targetBlob, mergeBlob] = ["ab".repeat(20), "cd".repeat(20), "ef".repeat(20)];
   const target = targets.at(-1)!;
@@ -214,13 +217,18 @@ async function queuedMergesOfTarget(merges: number) {
 
   const { gitlab, props, name } = await setup();
   gitlab.branches.set("main", target).set("feature", SOURCE);
-  const parents = new Map<string, string[]>([[BASE, []], [SOURCE, [BASE]], ...targets.map((id, index): [string, string[]] => [id, [targets[index - 1] ?? BASE]])]);
+  const parents = new Map<string, string[]>([[BASE, []], [SOURCE, [BASE]], [ROOT, []],
+    ...targets.map((id, index): [string, string[]] => [id, [targets[index - 1] ?? BASE]])]);
   for (const id of parents.keys()) gitlab.commits.add(id);
   const ancestors = (oid: string): string[] => [oid, ...parents.get(oid)!.flatMap(ancestors)];
   gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/merge_base`), request => {
-    const [a, b] = request.url.searchParams.getAll("refs[]").map(ancestors);
-    const common = a.filter(oid => b.includes(oid));
-    return json({ ...fx.mergeBaseResponse.data, id: common.find(oid => common.every(other => other === oid || !ancestors(other).includes(oid))) });
+    // `git merge-base A B...`: A against a hypothetical merge of the rest.
+    const [first, ...rest] = request.url.searchParams.getAll("refs[]");
+    const others = new Set(rest.flatMap(ancestors));
+    const common = ancestors(first).filter(oid => others.has(oid));
+    const best = common.find(oid => common.every(other => other === oid || !ancestors(other).includes(oid)));
+    return best === undefined ? json({ message: "404 Merge Base Not Found" }, { status: 404 })
+      : json({ ...fx.mergeBaseResponse.data, id: best });
   });
   const MR = { ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: SOURCE,
     source_project_id: 1, target_project_id: 1, diff_refs: { base_sha: BASE, start_sha: target, head_sha: SOURCE } };
@@ -234,7 +242,7 @@ async function queuedMergesOfTarget(merges: number) {
     .withBlob(baseBlob, "base\n").withBlob(targetBlob, "base\ntarget\n").withBlob(mergeBlob, "source\nbase\ntarget\n")
     .withAncestry(SOURCE, head);
   for (const [index, id] of mergeCommits.entries()) {
-    cache.withCommit(id, commitPayload(MERGE_TREE, [mergeCommits[index - 1] ?? SOURCE, targets[index]], `merge main ${index + 1}`));
+    cache.withCommit(id, commitPayload(MERGE_TREE, [mergeCommits[index - 1] ?? SOURCE, sides[index]], `merge ${index + 1}`));
   }
   await queuePush(name, props, "feature", head, false, cache);
   return { gitlab, props, name, cache, head, target };
@@ -354,6 +362,22 @@ describe("simulated reads over queued pushes", () => {
     expect(await unwrap(await hooks().isSimulatedCommitId(name, props, BASE))).toBe(false);
   });
 
+  it("lists no queued merge whose side parents it could not all withhold, past the side walk's cap", async () => {
+    // An octopus merge with more unpushed side parents than the walk marks. Listed, M would name
+    // a parent left unmarked, which the session advertises as GitLab's and the push pack then
+    // omits. The walk fails instead, and the listing falls back to GitLab's history.
+    const M = "e".repeat(40);
+    const sides = Array.from({ length: 251 }, (_, index) => `8${index.toString(16).padStart(39, "0")}`);
+    const { props, name } = await setup();
+    const cache = cacheWithChain()
+      .withCommit(M, commitPayload(TREE2, [HEAD1, ...sides], "octopus"))
+      .withAncestry(BASE, M);
+    for (const id of sides) cache.withCommit(id, commitPayload(TREE1, [BASE], "side"));
+    await queuePush(name, props, "main", M, false, cache);
+    const commits = await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache)));
+    expect(commits.map(c => c.id)).toEqual([BASE]);
+  });
+
   it("still withholds a local merge's side parent when a restarted gatekeeper serves the stored comparison", async () => {
     // The merge request's comparison over the queued merge is stored for a while; a restart in
     // that window empties the in-memory withhold set, and the stored copy must refill it whole --
@@ -413,7 +437,7 @@ describe("simulated reads over queued pushes", () => {
     expect(gitlab.count("GET", /repository\/compare/)).toBeGreaterThan(0);
   });
 
-  it("binds a merge queued behind a push to the head that push will leave, not the remote's", async () => {
+  it("binds a merge queued behind a push to the head that push will leave, and says so when applied first", async () => {
     // The worktree flow: push to the source branch, then merge -- both queued, approved in order.
     // The merge's compare-and-swap must name the pushed commit, or the push landing first makes
     // the merge fail as "head moved" on exactly the state it was meant to merge.
@@ -427,6 +451,12 @@ describe("simulated reads over queued pushes", () => {
     await queuePush(name, props, "feature", HEAD2, false, cache);
     const merge = await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest", ["133", {}], DESC));
     expect(merge).toMatchObject({ type: "mergeMergeRequest", expectedHeadSha: HEAD2 });
+    // Approved out of order, the merge meets GitLab's 409 for a head that has not arrived yet:
+    // the reason given is the push it waits on, not a branch that moved.
+    gitlab.on("PUT", new RegExp(`^/api/v4/projects/${P}/merge_requests/133/merge$`), () =>
+      json({ message: "SHA does not match HEAD of source branch" }, { status: 409 }));
+    await expect(unwrap(await hooks().applyAction(name, props, merge.approvalId)))
+      .rejects.toThrow(/approved at c{40}, the head the queued push to "feature" will leave. Approve that push first/);
   });
 
   it("reads an existing merge request's diff at its simulated head even when GitLab's own is over its limits", async () => {
@@ -460,14 +490,23 @@ describe("simulated reads over queued pushes", () => {
     expect(await unwrap(await hooks().mergeBase(name, props, "133", stubOf(cache)))).toBe(target);
   });
 
-  it("finds the merge base of a chain of merges of the target in requests linear in the merges", async () => {
-    // Five merges put SOURCE and five target commits on the frontier, and their merge bases with
-    // the target head nest: two requests per frontier commit at most, where ordering every pair
-    // of bases would take 36.
+  it("finds the merge base of a chain of merges of the target in one request", async () => {
+    // Five merges put SOURCE and five target commits on the frontier; GitLab is asked once, with
+    // the target head and all of them.
     const { gitlab, props, name, cache, head, target } = await queuedMergesOfTarget(5);
     const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
     expect(diff.revision).toEqual({ baseSha: target, headSha: head, mergeBaseSha: target });
-    expect(gitlab.count("GET", /\/repository\/merge_base/)).toBeLessThanOrEqual(2 * 6);
+    expect(gitlab.count("GET", /\/repository\/merge_base/)).toBe(1);
+  });
+
+  it("leaves a queued merge of an unrelated history out of the merge base, as git does", async () => {
+    // The merge of ROOT puts a commit on the frontier that shares no ancestor with the target.
+    // Git passes over it, so the target head is still the merge base -- not an error that drops
+    // the simulation back to GitLab's diff of the old head.
+    const { props, name, cache, head, target } = await queuedMergesOfTarget(1, { unrelated: true });
+    const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
+    expect(diff.revision).toEqual({ baseSha: target, headSha: head, mergeBaseSha: target });
+    expect(diff.files).toEqual([expect.objectContaining({ path: "README", additions: 1, deletions: 0 })]);
   });
 
   it("degrades to the remote read when the simulation cannot resolve a tree", async () => {
@@ -581,6 +620,20 @@ describe("rejecting a push", () => {
     // Still queued: main exists remotely regardless.
     const log = await hooks().queueLog(name);
     expect(log.submitted.map(s => s.actionId)).toContain(mr.approvalId);
+  });
+
+  it("spares what is stacked on a head the branch already has", async () => {
+    // HEAD1 reached main by other means while the push that would leave it was queued: rejecting
+    // that push strands nothing, and the push stacked on HEAD1 still applies.
+    const { gitlab, props, name } = await setup();
+    const cache = cacheWithChain();
+    const first = (await queuePush(name, props, "main", HEAD1, false, cache))!;
+    const second = (await queuePush(name, props, "main", HEAD2, false, cache))!;
+    gitlab.branches.set("main", HEAD1);
+    expect(await unwrap(await hooks().rejectAction(name, props, first.approvalId))).toBeUndefined();
+    gitlab.respondToPush("unpack ok", "ok refs/heads/main");
+    await unwrap(await hooks().applyAction(name, props, second.approvalId, stubOf(cache)));
+    expect(gitlab.receivePackBodies).toHaveLength(1);
   });
 
   it("retires the pushes and merges stacked on it, and a re-push lists the real history", async () => {

@@ -123,8 +123,9 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   kit's `credential-expiry` latch (`notifyCredentialsExpiredOnce`, which latches only after the
   Workshop acknowledges, so a callback that fails transiently is retried by the next refusal).
   Every other refresh failure — a network error, a 429 or 5xx whatever its body, an Access 3xx —
-  is transient, and `#mintFailure` repeats it for a minute to a burst of callers rather than
-  asking GitLab again. `discardMint` revokes a mint only when a disconnect overtook it: the
+  is transient: that request fails, and the next asks GitLab again. No cooldown replays the
+  failure, since the coordinator already redeems once for all the callers waiting on one refresh.
+  `discardMint` revokes a mint only when a disconnect overtook it: the
   disconnect revoked the pair it found, which the refresh had already rotated out, and nothing
   survives for the revocation to harm. A mint a reconnect overtook is dropped unrevoked, since
   GitLab does not document that revoking one refresh token leaves the rest of the authorization
@@ -573,8 +574,9 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   never refused (auth-only grants never get here — they're consumed via `getAuthenticatedEmail`
   and destroyed).
 - **Refresh** per the locked decision: the coordinator's `snapshot` and `adjudicateRejection`,
-  both given the same `refresh` (`refreshAccessToken` behind the `#mintFailure` cooldown) so a
-  refused live token is refreshed past; `notify` is `notifyCredentialsExpiredOnce`. `revoke()`
+  both given the same `refresh` (`refreshAccessToken`, with no cooldown: the coordinator already
+  redeems once for every waiting caller, so a transient failure is retried by the next request),
+  so a refused live token is refreshed past; `notify` is `notifyCredentialsExpiredOnce`. `revoke()`
   clears the coordinator before its first await, `deleteAll()`s, then revokes both tokens (the
   docs don't say revoking one revokes its partner), logging failures.
 - **`GatekeeperVendor.describe()`**: `displayName: "GitLab"`, `url: instanceUrl(env)`, the
@@ -685,10 +687,12 @@ in `github.ts` is the checklist. Divergences:
   note (locked decision). Every step records itself on the action record (`ReviewProgress`: the
   approval's provenance, each comment's draft, the bulk publish, the summary), and a step GitLab
   could carry out without its answer arriving is recorded as under way first (`"approving"`,
-  `"creating"`, `"posting"`): a retry asks GitLab what became of it — the approvals read, a held
-  draft with the same body and anchor, the account's own newest notes — before repeating it, so
-  a lost answer neither duplicates a comment nor strands a draft that a later `requestChanges`
-  would take for the user's. A discard takes back what the review left unpublished: its parked
+  `"creating"`): a retry asks GitLab what became of it — the approvals read, a held draft with the
+  same body and anchor — before repeating it, so a lost answer neither duplicates a comment nor
+  strands a draft that a later `requestChanges` would take for the user's. The summary alone is
+  posted again after a lost answer: no search can tell its lost post from an earlier note in the
+  same words, and taking one for the other would leave the summary silently unposted.
+  A discard takes back what the review left unpublished: its parked
   drafts, and its own approval — the one GitLab still dates (`approved_at`) as the review's,
   never one the account held before or has given again since. No `(target, body)`
   matching of provisional diff-comment ids to real notes: the session refuses replies to
@@ -703,7 +707,9 @@ in `github.ts` is the checklist. Divergences:
   `draft_status`, `need_rebase`, … — and, since CI is not exposed in v1,
   `ci_must_pass`/`ci_still_running` say "the pipeline has not passed yet; pipeline status is not
   available through this connection — check it in GitLab"), `409` "the head moved since you read
-  it" (`sha` mismatch), `422` "the branch cannot be merged", `401` "no permission to merge";
+  it" (`sha` mismatch) — or, when the bound `sha` is the head a queued push to the source branch
+  will leave, "approve that push first", the same ordering guard as the create's —, `422` "the
+  branch cannot be merged", `401` "no permission to merge";
   `push` → §7. Every branch ends `#markActionApproved` + `#clearCaches()`. An action already
   recorded as applied reports success — the overseer records completion only after the reply, so
   a lost one re-delivers the apply (GitHub does this for `push` alone) — and one a reject cascade
@@ -734,7 +740,8 @@ in `github.ts` is the checklist. Divergences:
   every nested step) retires that provisional's dependents in turn. And a rejected push retires
   what was stacked on it (`#rejectActionsStrandedByPush`, run to a fixpoint before the
   missing-branch check): the head it would have left is stranded unless another queued push to
-  the branch leaves it too; a push bound to a stranded head could only fail its
+  the branch leaves it too or the branch is already there (one live read; unread, it counts as
+  elsewhere); a push bound to a stranded head could only fail its
   compare-and-swap, blaming the branch for moving, and strands its own new head in turn; a merge
   bound to one could only be refused (`MergeMergeRequestAction.sourceBranch`, recorded at prepare
   for a source branch in this project, names the branch its head is on). Only a rejection
@@ -760,7 +767,8 @@ in `github.ts` is the checklist. Divergences:
   for the diff, and a diff over its limits stores only those collected before the limit, with
   nothing in them to say the rest exist. `changes_count` is the diff's `real_size`, `"N+"` exactly
   then, so `#getDiff` refuses on `changedFilesTruncated` rather than serve GitLab's diff, as it
-  refuses a timed-out compare. A diff simulated over queued pushes is computed whole and served.
+  refuses a timed-out compare; both refusals send the agent to a worktree diff of the head against
+  `getMergeBase()`. A diff simulated over queued pushes is computed whole and served.
 - **Listing/search**: `#listIssueSummaries` and `#searchIssueSummaries` collapse into one path —
   GitLab's list endpoint *is* the search endpoint (`search=`) — as do the MR pair. The GitHub
   client-side PR scan (`#searchPullSummaries`' buffered upstream walk) is deleted; so is
@@ -778,7 +786,9 @@ in `github.ts` is the checklist. Divergences:
   the sort order, which a cursor already part-served cannot take back.
   The cursor's `filter` (`issueMatchesFilter`, `mergeRequestMatchesFilter`) runs on GitLab's rows
   too, so it must agree with GitLab's filters or it discards rows GitLab returned: usernames match
-  without regard to case, as `User.by_username` looks them up, and labels likewise.
+  without regard to case, as `User.by_username` looks them up, but label titles exactly, as
+  `Issuables::LabelFilter` matches them (`bug` and `Bug` are distinct labels), save its special
+  `None` (unlabelled) and `Any` (labelled). The label overlay and its revert match exactly too.
 - **Discussion**: `#getDiscussion` reads `…/discussions` for both kinds (locked decision):
   `#fetchRemoteDiscussionComments` flattens the cached discussions, dropping `system` notes and,
   whole, every discussion `diffAnchor` places on the diff; the pull-request two-stream merge
@@ -870,8 +880,10 @@ substitutes transport endpoints and REST lookups:
   that head, where `merge-base(target, anchor)` is the older fork point and would put the
   target's own changes in the reviewed diff. `#collectPendingChain` returns the *frontier* --
   every commit GitLab has where the pending ancestry ends, side parents' included -- and
-  `#simulatedMergeBase` takes the frontier merge base no other one descends from (a tie throws,
-  so callers degrade).
+  `#simulatedMergeBase` asks one `/merge_base` with the target and the whole frontier: given more
+  than two commits, `git merge-base` answers for the first and a hypothetical merge of the rest,
+  whose candidates are exactly the queued head's, so an unrelated frontier commit adds nothing and
+  a criss-cross tie is broken as it will be for the pushed head.
 - **Fork MRs**: a source branch in another project (`source_project_id !== target_project_id`)
   is never overlaid (GitHub checks `head.repo.fullName !== this.#repoFullName()`; here
   `source.project.path !== projectPath`), and a push targets only the bound project.
@@ -1023,7 +1035,6 @@ scopes.
 
 - `ACCESS_TOKEN_EXPIRY_SAFETY_MS` — refresh when less than this remains (60 s; GitLab tokens live
   7200 s).
-- `MINT_FAILURE_COOLDOWN_MS` — back-off after a non-terminal refresh failure (60 s, as google).
 - `ENTITY_CACHE_TTL_MS` / `LIST_CACHE_TTL_MS` / `IMMUTABLE_CACHE_TTL_MS` / `VIEWER_CACHE_TTL_MS`,
   `DISCUSSION_SYNC_OVERLAP_MS`, `DISCUSSION_SYNC_BAIL_LIMIT`, `MAX_REPLY_TARGET_HOPS`,
   `MAX_PENDING_CHAIN_COMMITS` — GitHub's values.
@@ -1302,6 +1313,12 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 - **Tree-by-oid pull-through** for the simulated MR diff, if Gitaly permits non-tip tree
   `want`s: the DO's `#treeDiffSource.getTree` would issue a filtered upload-pack for the one
   tree instead of returning `null`.
+- **Simulated reads past the side walk's cap.** Local merges whose side branches hold more than
+  `MAX_PENDING_CHAIN_COMMITS` unpushed commits (an octopus merge of 251 included) make
+  `#recordPendingSideParents` throw, so listings and the comparison fall back to GitLab's state.
+  It fails rather than stops part-way because a listed merge names every side parent, and one
+  left unmarked would be advertised as GitLab's and left out of the push pack. Lifting it means
+  resolving every root whatever the bound and leaving only the merge base's frontier unknown.
 - **Numeric project id alongside the path** in props, refreshed on first read, to survive
   renames/transfers — needs an answer for the observer probe and URL builders first.
 - **Lazy label details** if `with_labels_details` list payloads prove heavy.
@@ -1418,8 +1435,9 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   And `#simulatedPullComparison` takes the pull's merge base from `compare(base, anchor)`, so a
   queued merge of the base branch into the head diffs against the old fork point and shows the
   base's own changes (this port computes it over the pending ancestry's frontier). That fix lifts
-  `#collectPendingChain`'s frontier and `#simulatedMergeBase` into `gatekeeper-kit`, the
-  provider's merge-base read passed in, so the two gatekeepers share one copy.
+  `#collectPendingChain`'s frontier into `gatekeeper-kit`, so the two gatekeepers share one walk.
+  GitHub's compare names one pair's merge base, and it has no multi-commit form, so its frontier
+  base is a reduction over pairwise bases, whose criss-cross ties need commit dates to break.
   Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
   which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential

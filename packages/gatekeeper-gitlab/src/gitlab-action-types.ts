@@ -182,7 +182,8 @@ export type MergeMergeRequestAction = BaseAction & {
   /**
    * The source branch, when it is in this project (null for a fork's): the branch whose queued
    * pushes `expectedHeadSha` may name. Rejecting the push that would leave that head retires
-   * this merge too, since it could only be refused (see `#rejectActionsStrandedByPush`).
+   * this merge too, since it could only be refused -- unless the branch already has that head
+   * (see `#rejectActionsStrandedByPush`).
    */
   sourceBranch: string | null;
 };
@@ -258,7 +259,8 @@ export function textReferences(text: string, kind: EntityKind, provisionalId: st
  * How far a review's apply has got, so that a retry resumes rather than repeats -- including a
  * step whose reply was lost, which GitLab carried out but the record never heard about. A step
  * GitLab could carry out unanswered records that it is under way first (`"approving"`,
- * `"creating"`, `"posting"`), and a retry finds out what became of it before repeating it.
+ * `"creating"`), and a retry finds out what became of it before repeating it. The summary note
+ * alone is not looked for: no search can tell its lost post from an earlier identical note.
  */
 export type ReviewProgress = {
   /**
@@ -272,8 +274,8 @@ export type ReviewProgress = {
   comments?: Array<null | "creating" | number | "published">;
   /** A `requestChanges` review's `bulk_publish` -- its drafts and its reviewer state -- answered. */
   requestedChanges?: true;
-  /** The summary note: `"posting"` while unanswered, then its id. */
-  summary?: "posting" | number;
+  /** The summary note's id, once posted. */
+  summary?: number;
 };
 
 export type StoredActionRecord = {

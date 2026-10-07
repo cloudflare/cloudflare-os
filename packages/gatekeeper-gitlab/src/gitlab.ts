@@ -84,8 +84,6 @@ const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorI
 
 const GITLAB_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(GITLAB_LOGO_SVG)}`;
 
-/** Back-off after a non-terminal refresh failure so a burst of callers doesn't hammer the token endpoint. */
-const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** Auth-only sign-in grants self-destruct shortly after the email is read. */
 const EPHEMERAL_GRANT_LIFETIME_MS = 2 * 60 * 1000;
 
@@ -301,19 +299,9 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     vendorId: VENDOR_ID,
   });
 
-  /**
-   * The last refresh that failed transiently, by the refresh token it tried, so a burst of
-   * callers fails the same way without re-asking GitLab. A dead grant is the coordinator's.
-   */
-  #mintFailure: { refreshToken: string; error: Error; at: number } | undefined;
-
   /** How the coordinator refreshes a grant and announces its death to the Workshop. */
   readonly #recovery = {
     refresh: async (grant: GitLabGrant): Promise<GitLabGrant> => {
-      const failure = this.#mintFailure;
-      if (failure?.refreshToken === grant.refreshToken && Date.now() - failure.at < MINT_FAILURE_COOLDOWN_MS) {
-        throw failure.error;
-      }
       logger.info("refreshing GitLab access token", { event: "gitlab.token.refresh" });
       try {
         const refreshed = await refreshAccessToken(gitlabInstance(this.env),
@@ -321,9 +309,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
         return { ...refreshed, scopes: grant.scopes };
       } catch (error) {
         if (isCredentialsExpired(error)) throw error;
-        const wrapped = new Error("Could not refresh GitLab credentials; please try again shortly.", { cause: error });
-        this.#mintFailure = { refreshToken: grant.refreshToken, error: wrapped, at: Date.now() };
-        throw wrapped;
+        throw new Error("Could not refresh GitLab credentials; please try again shortly.", { cause: error });
       }
     },
     notify: () => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
