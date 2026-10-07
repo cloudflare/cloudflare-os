@@ -34,7 +34,6 @@ type RowInteractionOptions = {
   collapsible: boolean;
   expanded: boolean;
   selected: boolean;
-  coarsePointer: boolean;
   rootItems: readonly HierarchicalListItem[];
   dragAndDrop?: HierarchicalListDragAndDropOptions;
   interaction?: HierarchicalListTouchInteractionOptions;
@@ -60,7 +59,6 @@ export const useHierarchicalListRowInteractions = ({
   collapsible,
   expanded,
   selected,
-  coarsePointer,
   rootItems,
   dragAndDrop,
   interaction,

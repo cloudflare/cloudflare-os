@@ -206,7 +206,6 @@ const PrimitiveBranch = ({
     collapsible,
     expanded,
     selected,
-    coarsePointer,
     rootItems,
     dragAndDrop,
     interaction,
