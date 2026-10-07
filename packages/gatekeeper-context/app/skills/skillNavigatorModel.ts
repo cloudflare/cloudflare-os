@@ -47,7 +47,7 @@ const sortNodes = (nodes: SkillNavigatorNode[]): SkillNavigatorNode[] => nodes
   .map((node) => node.type === "directory"
     ? { ...node, children: sortNodes(node.children) }
     : node)
-  .sort(compareNodes);
+  .toSorted(compareNodes);
 
 export const buildSkillNavigator = (
   collections: readonly EnabledCollectionInfo[],
@@ -96,7 +96,7 @@ export const buildSkillNavigator = (
 
     return { collection, children: sortNodes(children) };
   })
-  .sort((left, right) => left.collection.title.localeCompare(right.collection.title));
+  .toSorted((left, right) => left.collection.title.localeCompare(right.collection.title));
 
 const includesQuery = (value: string, query: string) => value.toLowerCase().includes(query);
 

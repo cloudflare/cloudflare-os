@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+/* oxlint-disable react/globals -- The probe component captures the hook's return value into outer
+   variables during render; that is the point of the test, not the production side effect. */
 
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
