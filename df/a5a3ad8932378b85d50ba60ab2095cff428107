@@ -1,0 +1,55 @@
+packages/workshop-frontend/src/features/spaces/preview/NewChildWorkspaceDialog.tsx
+  s_1da8b1c2e6d0c9::t_0264f2beb4dc7b 1-15,17-23,34-40,44-64,67-71,86-110,113-114,120-155,174,177-212,214-236
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 16,24-33,41-43,65-66,72-85,111-112,115-119,156-173,175-176,213
+packages/workshop-frontend/src/features/spaces/preview/useWorkspaceGadgets.ts
+  s_1da8b1c2e6d0c9::t_d9c8a020e72d7f 1-136
+packages/workshop-frontend/src/features/spaces/preview/useWorkspacePreview.ts
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 9,45,50,52-53,60,65-73,76,86-88,93,100
+  s_1da8b1c2e6d0c9::t_154ffa2bda2d5b 1-8,10-44,46-49,51,54-59,61-64,74-75,77-85,89-92,94-99,101
+packages/workshop-frontend/src/features/spaces/preview/WorkspacePreviewPane.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 1,94-95,109,116-120,125,168,170-172
+  s_1da8b1c2e6d0c9::t_ffddbb3f34a433 3-93,96-108,110-115,121-124,126-167,169,173-260
+  s_1da8b1c2e6d0c9::t_f58e648515551f 2
+packages/workshop-frontend/src/features/spaces/preview/WorkspacePreviewPane.test.tsx
+  s_1da8b1c2e6d0c9::t_82637a7ce62a88 1-3,5-58,60-103,106-108,110-114,117-136,138-170,172-181,183-222,232-237,244-357,359-374
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 4,59,104-105,109,115-116,137,171,182,223-231,238-243,358
+packages/workshop-frontend/src/features/spaces/preview/useWorkspacePreview.test.tsx
+  s_1da8b1c2e6d0c9::t_9e4e409e4880f6 1-190,207-225
+  s_1da8b1c2e6d0c9::t_ba34130117cf7c 191-206
+packages/workshop-frontend/src/features/spaces/preview/WorkspaceBreadcrumbs.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 51
+  s_1da8b1c2e6d0c9::t_b24737ddb3f05e 1-50,52-57
+packages/workshop-frontend/src/features/spaces/preview/MoveWorkspaceDialog.tsx
+  s_1da8b1c2e6d0c9::t_6986cf6f0159eb 1-64,66-71,77-122,124-174
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 65,72-76,123
+packages/workshop-frontend/src/features/spaces/preview/NewChildWorkspaceDialog.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 4,41,72,74,77-78,81,94,109-119,142-180,204,214,242-245,267,292
+  s_1da8b1c2e6d0c9::t_71f7b703cdadf0 1-3,5-40,42-71,73,75-76,79-80,82-93,95-108,120-141,181-203,205-213,215-241,246-266,268-291,293-303
+packages/workshop-frontend/src/features/spaces/preview/WorkspaceGadgetTabs.tsx
+  s_1da8b1c2e6d0c9::t_c1f847e625bf80 1-22,24-36
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 23
+packages/workshop-frontend/src/features/spaces/preview/MoveWorkspaceDialog.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 116,119,125-126,128-130,132
+  s_1da8b1c2e6d0c9::t_d52d7b4d7c7f88 3-115,136-172
+  s_1da8b1c2e6d0c9::t_3b673818040f87 117-118,120-124,127,131,133-134
+  s_1da8b1c2e6d0c9::t_4da85d8b2dbc5b 1-2,135,173
+packages/workshop-frontend/src/features/spaces/preview/useWorkspaceGadgets.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 56-57
+  s_1da8b1c2e6d0c9::t_4e4c64903640e2 1-55,58-228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dfa5a3ad8932378b85d50ba60ab2095cff428107",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
