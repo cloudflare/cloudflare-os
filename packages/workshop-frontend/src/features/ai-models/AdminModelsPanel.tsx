@@ -100,10 +100,10 @@ const DefaultReasoningSetting = ({ level, disabled, onChange }: {
         text:
           'The reasoning level of the agent’s turns on every model listed here that has no level ' +
           'of its own. Built-in sets none: each model is then asked the way the Workshop asks it ' +
-          'by default, which the model’s Settings name. That is Adaptive, where the model decides ' +
-          'how much to reason, a fixed level, or no level sent. A level that a model lacks is ' +
-          'fitted to the nearest one it has. One-shot calls (titles, summaries, gadget model ' +
-          'bindings) are not affected, and neither are the models users added.',
+          'by default, which the model’s Settings name. That is Provider default, where the model ' +
+          'reasons at whatever effort its provider defaults to, a fixed level, or no level sent. A ' +
+          'level that a model lacks is fitted to the nearest one it has. One-shot calls (titles, ' +
+          'summaries, gadget model bindings) are not affected, and neither are the models users added.',
       }}
     >
       <Select<ReasoningLevel | typeof BUILT_IN>

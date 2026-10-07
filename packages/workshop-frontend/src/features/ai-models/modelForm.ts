@@ -27,7 +27,7 @@ export const REASONING_LEVEL_LABELS: Record<ReasoningLevel, string> = {
 /** What a model is asked for while no reasoning level is set for it, as the Models tab words it. */
 export const builtInReasoningLabel = (builtIn: BuiltInReasoning): string => {
   if (builtIn === null) return 'no level sent'
-  return builtIn === 'adaptive' ? 'Adaptive' : REASONING_LEVEL_LABELS[builtIn]
+  return builtIn === 'adaptive' ? 'Provider default' : REASONING_LEVEL_LABELS[builtIn]
 }
 
 /** Parse a token-limit field: undefined when blank, null when not a positive whole number. */
