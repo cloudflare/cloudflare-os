@@ -28,10 +28,12 @@ import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
+import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
 import {
   GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE,
   parseResourceUrl,
 } from "../src/resources";
 
@@ -285,5 +287,14 @@ describe("Drive configurator URLs", () => {
     let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
     expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
       .toEqual(folderValues);
+  });
+});
+
+describe("Google Slides configurator URLs", () => {
+  it("mints a presentation URL the server parses and the prefill reads back", () => {
+    let values = { presentationId: "1AbC-dEf_9xYz" };
+    let url = configurableUrl(googleSlidesConfigurator, values);
+    expect(parseResourceUrl(url)).toEqual({ kind: "slides", presentationId: values.presentationId });
+    expect(valuesFromUrlPattern(url, GOOGLE_SLIDES_RESOURCE.urlPattern)).toEqual(values);
   });
 });

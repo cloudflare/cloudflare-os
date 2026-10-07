@@ -5,7 +5,7 @@ import deployed from "./cloudflare.config.ts";
 
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
-/** Workerd coverage for nested Drive sessions and the Google Doc Durable Object. */
+/** Workerd coverage for nested Drive sessions, Slides sessions and the Google Doc Durable Object. */
 export default defineConfig({
   plugins: [
     capnwebValidate(),
@@ -27,6 +27,7 @@ export default defineConfig({
     include: [
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/native-sessions.test.ts",
+      "__tests__/workerd/slides-session.test.ts",
     ],
     setupFiles: ["@gadgets/scripts/assert-workerd"],
   },

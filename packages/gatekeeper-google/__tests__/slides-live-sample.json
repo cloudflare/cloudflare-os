@@ -1,0 +1,948 @@
+{
+ "presentationId": "12A02axdBbzTs-u3TuTX0VQ8SOPWcH3rN8Yr3MPSFs7U",
+ "title": "Copy of Connect 2025: Babel Fix",
+ "locale": "en",
+ "pageSize": {
+  "width": {
+   "magnitude": 9144000,
+   "unit": "EMU"
+  },
+  "height": {
+   "magnitude": 5143500,
+   "unit": "EMU"
+  }
+ },
+ "layouts": [
+  {
+   "objectId": "g22eec438119_14_5",
+   "layoutProperties": {
+    "displayName": "G| Big Copy White"
+   }
+  },
+  {
+   "objectId": "g22ae4b1c657_0_2075",
+   "layoutProperties": {
+    "displayName": "H| Chart + Copy Left Column"
+   }
+  }
+ ],
+ "slides": [
+  {
+   "objectId": "g7c11224212bb9f2f_8",
+   "pageElements": [
+    {
+     "objectId": "g7c11224212bb9f2f_9",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 2,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 1,
+         "autoText": {
+          "type": "SLIDE_NUMBER",
+          "content": "3"
+         }
+        },
+        {
+         "startIndex": 1,
+         "endIndex": 2,
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "SLIDE_NUMBER"
+      }
+     }
+    },
+    {
+     "objectId": "g7c11224212bb9f2f_10",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 23,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 23,
+         "textRun": {
+          "content": "The £330M API Meltdown\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "TITLE"
+      }
+     }
+    },
+    {
+     "objectId": "g7c11224212bb9f2f_13",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 169,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 169,
+         "textRun": {
+          "content": "In 2018, TSB Bank pushed a system migration that broke API compatibility overnight — locking millions of customers out of their accounts and costing over £330 million.\"\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_13",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 55,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 55,
+         "textRun": {
+          "content": "A single API contract change that broke an entire bank\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_33",
+     "elementGroup": {
+      "children": [
+       {
+        "objectId": "g722ffecb27484c70_30",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       },
+       {
+        "objectId": "g722ffecb27484c70_31",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       },
+       {
+        "objectId": "g722ffecb27484c70_32",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "objectId": "gkprobe_table",
+     "table": {
+      "rows": 2,
+      "columns": 3,
+      "tableRows": [
+       {
+        "tableCells": [
+         {
+          "location": {},
+          "rowSpan": 1,
+          "columnSpan": 2,
+          "text": {
+           "textElements": [
+            {
+             "endIndex": 7,
+             "paragraphMarker": {}
+            },
+            {
+             "endIndex": 7,
+             "textRun": {
+              "content": "Header\n"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "location": {
+           "columnIndex": 2
+          },
+          "rowSpan": 1,
+          "columnSpan": 1
+         }
+        ]
+       },
+       {
+        "tableCells": [
+         {
+          "location": {
+           "rowIndex": 1
+          },
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "text": {
+           "textElements": [
+            {
+             "endIndex": 2,
+             "paragraphMarker": {}
+            },
+            {
+             "endIndex": 2,
+             "textRun": {
+              "content": "a\n"
+             }
+            }
+           ]
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 1
+          },
+          "rowSpan": 1,
+          "columnSpan": 1
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 2
+          },
+          "rowSpan": 1,
+          "columnSpan": 1,
+          "text": {
+           "textElements": [
+            {
+             "endIndex": 5,
+             "paragraphMarker": {}
+            },
+            {
+             "endIndex": 5,
+             "textRun": {
+              "content": "c 👍\n"
+             }
+            }
+           ]
+          }
+         }
+        ]
+       }
+      ],
+      "horizontalBorderRows": [
+       {
+        "tableBorderCells": [
+         {
+          "location": {},
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "columnIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "columnIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         }
+        ]
+       },
+       {
+        "tableBorderCells": [
+         {
+          "location": {
+           "rowIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         }
+        ]
+       },
+       {
+        "tableBorderCells": [
+         {
+          "location": {
+           "rowIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 2,
+           "columnIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 2,
+           "columnIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         }
+        ]
+       }
+      ],
+      "verticalBorderRows": [
+       {
+        "tableBorderCells": [
+         {
+          "location": {},
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "columnIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "columnIndex": 3
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         }
+        ]
+       },
+       {
+        "tableBorderCells": [
+         {
+          "location": {
+           "rowIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 1
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 2
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         },
+         {
+          "location": {
+           "rowIndex": 1,
+           "columnIndex": 3
+          },
+          "tableBorderProperties": {
+           "tableBorderFill": {
+            "solidFill": {
+             "color": {
+              "rgbColor": {
+               "red": 0.61960787,
+               "green": 0.61960787,
+               "blue": 0.61960787
+              }
+             },
+             "alpha": 1
+            }
+           },
+           "weight": {
+            "magnitude": 9525,
+            "unit": "EMU"
+           },
+           "dashStyle": "SOLID"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "slideProperties": {
+    "layoutObjectId": "g22eec438119_14_5",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "g7c11224212bb9f2f_11",
+       "shape": {
+        "placeholder": {
+         "type": "SLIDE_IMAGE"
+        }
+       }
+      },
+      {
+       "objectId": "g7c11224212bb9f2f_12",
+       "shape": {
+        "shapeType": "TEXT_BOX",
+        "text": {
+         "textElements": [
+          {
+           "endIndex": 18,
+           "paragraphMarker": {}
+          },
+          {
+           "endIndex": 18,
+           "textRun": {
+            "content": "Mention the £330M\n"
+           }
+          },
+          {
+           "startIndex": 18,
+           "endIndex": 28,
+           "paragraphMarker": {}
+          },
+          {
+           "startIndex": 18,
+           "endIndex": 28,
+           "textRun": {
+            "content": "then demo\n"
+           }
+          }
+         ]
+        },
+        "placeholder": {
+         "type": "BODY"
+        }
+       }
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "g7c11224212bb9f2f_12"
+     }
+    }
+   }
+  },
+  {
+   "objectId": "g722ffecb27484c70_34",
+   "pageElements": [
+    {
+     "objectId": "g722ffecb27484c70_35",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 30,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 30,
+         "textRun": {
+          "content": "This Isn't Just Their Problem\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "TITLE"
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_36",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 40,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 10,
+         "textRun": {
+          "content": "Developers"
+         }
+        },
+        {
+         "startIndex": 10,
+         "endIndex": 11,
+         "textRun": {
+          "content": "\u000b"
+         }
+        },
+        {
+         "startIndex": 11,
+         "endIndex": 14,
+         "textRun": {
+          "content": "254"
+         }
+        },
+        {
+         "startIndex": 14,
+         "endIndex": 40,
+         "textRun": {
+          "content": " Average APIs per company\n"
+         }
+        },
+        {
+         "startIndex": 40,
+         "endIndex": 129,
+         "paragraphMarker": {}
+        },
+        {
+         "startIndex": 40,
+         "endIndex": 77,
+         "textRun": {
+          "content": "Every schema tells a different story\u000b"
+         }
+        },
+        {
+         "startIndex": 77,
+         "endIndex": 129,
+         "textRun": {
+          "content": "What's `orderId` here might be `shipment_ref` there\n"
+         }
+        },
+        {
+         "startIndex": 129,
+         "endIndex": 201,
+         "paragraphMarker": {}
+        },
+        {
+         "startIndex": 129,
+         "endIndex": 163,
+         "textRun": {
+          "content": "Every integration needs an adapter"
+         }
+        },
+        {
+         "startIndex": 163,
+         "endIndex": 201,
+         "textRun": {
+          "content": "\u000bMapping, transformation, and retries\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "BODY"
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_37",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "placeholder": {
+       "type": "BODY"
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_38",
+     "shape": {
+      "shapeType": "TEXT_BOX"
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_40",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 3,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 2,
+         "textRun": {
+          "content": "⚙️"
+         }
+        },
+        {
+         "startIndex": 2,
+         "endIndex": 3,
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_41",
+     "shape": {
+      "shapeType": "TEXT_BOX",
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 3,
+         "paragraphMarker": {}
+        },
+        {
+         "endIndex": 2,
+         "textRun": {
+          "content": "🔌"
+         }
+        },
+        {
+         "startIndex": 2,
+         "endIndex": 3,
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "objectId": "g722ffecb27484c70_42",
+     "image": {}
+    },
+    {
+     "objectId": "g722ffecb27484c70_49",
+     "elementGroup": {
+      "children": [
+       {
+        "objectId": "g722ffecb27484c70_46",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       },
+       {
+        "objectId": "g722ffecb27484c70_47",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       },
+       {
+        "objectId": "g722ffecb27484c70_48",
+        "shape": {
+         "shapeType": "CUSTOM"
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "slideProperties": {
+    "layoutObjectId": "g22ae4b1c657_0_2075",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "g722ffecb27484c70_43",
+       "shape": {
+        "placeholder": {
+         "type": "SLIDE_IMAGE"
+        }
+       }
+      },
+      {
+       "objectId": "g722ffecb27484c70_44",
+       "shape": {
+        "shapeType": "TEXT_BOX",
+        "placeholder": {
+         "type": "BODY"
+        }
+       }
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "g722ffecb27484c70_44"
+     }
+    }
+   }
+  }
+ ]
+}

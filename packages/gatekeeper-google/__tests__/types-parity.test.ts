@@ -17,6 +17,10 @@ import driveDeclared from "../src/drive-types.d.ts?raw";
 import driveShipped from "../src/drive-types.txt?raw";
 import sheetsDeclared from "../src/sheets-types.d.ts?raw";
 import sheetsShipped from "../src/sheets-types.txt?raw";
+import slidesReadDeclared from "../src/slides-read-types.d.ts?raw";
+import slidesReadShipped from "../src/slides-read-types.txt?raw";
+import slidesDeclared from "../src/slides-types.d.ts?raw";
+import slidesShipped from "../src/slides-types.txt?raw";
 import gmailDeclared from "../src/types.d.ts?raw";
 import gmailShipped from "../src/types.txt?raw";
 
@@ -30,6 +34,8 @@ describe("agent-facing TypeScript type modules", () => {
     ["docs-read-types", docsReadShipped, docsReadDeclared],
     ["docs-types", docsShipped, docsDeclared],
     ["sheets-types", sheetsShipped, sheetsDeclared],
+    ["slides-read-types", slidesReadShipped, slidesReadDeclared],
+    ["slides-types", slidesShipped, slidesDeclared],
     ["calendar-types", calendarShipped, calendarDeclared],
     ["bigquery-types", bigqueryShipped, bigqueryDeclared],
     ["drive-types", driveShipped, driveDeclared],
@@ -40,8 +46,8 @@ describe("agent-facing TypeScript type modules", () => {
   });
 
   it.each([
-    "types", "docs-read-types", "docs-types", "sheets-types", "calendar-types",
-    "bigquery-types", "drive-types", "chat-types",
+    "types", "docs-read-types", "docs-types", "sheets-types", "slides-read-types", "slides-types",
+    "calendar-types", "bigquery-types", "drive-types", "chat-types",
   ])("ships %s.txt as a symlink to its authoritative declaration", name => {
     expect(readlinkSync(new URL(`../src/${name}.txt`, import.meta.url))).toBe(`${name}.d.ts`);
   });

@@ -79,6 +79,12 @@
       "new_sqlite_classes": [
         "GmailHookDriver"
       ]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": [
+        "GoogleSlidesGatekeeperImpl"
+      ]
     }
   ]
 }
