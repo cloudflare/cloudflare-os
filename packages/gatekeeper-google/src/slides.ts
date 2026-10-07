@@ -17,6 +17,9 @@ import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
 
 const MAX_SLIDES_PER_READ = 20;
+// Each slide's page is capped, but 20 of them could still outgrow Workers' 32 MiB RPC limit. This
+// counts UTF-16 units of the result's JSON, so even at three UTF-8 bytes a unit it stays under.
+const MAX_SLIDES_READ_LENGTH = 8 * 1024 * 1024;
 const THUMBNAIL_SIZES = {
   small: "SMALL", medium: "MEDIUM", large: "LARGE",
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
@@ -167,6 +170,9 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         let { title, order, layouts, missing } = await this.#outline(ids);
         let slides = missing !== undefined ? [] : await Promise.all(ids.map(async id =>
           slideOf(await this.#api.getSlide(this.#presentationId, id), order.indexOf(id), layouts)));
+        if (JSON.stringify(slides).length > MAX_SLIDES_READ_LENGTH) {
+          throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
+        }
         return { title, missing, slides };
       },
       ({ title }) => ({

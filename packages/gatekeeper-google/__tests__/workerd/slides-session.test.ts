@@ -49,13 +49,15 @@ function png(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-const DECK = presentation([
+const SMALL_DECK = presentation([
   slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })]),
   slide("s2", [shape("b2", text(["Body"]))], { notes: text(["Say hello"]) }),
 ]);
+let deck: typeof SMALL_DECK;
 
 beforeEach(() => {
   providerFetches = [];
+  deck = SMALL_DECK;
   imageRequests = [];
   thumbnailContentUrl = IMAGE_URL;
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -74,8 +76,8 @@ beforeEach(() => {
       return Response.json({ width: 800, height: 451, contentUrl: thumbnailContentUrl });
     }
     let pageId = url.pathname.match(/\/pages\/([^/]+)$/)?.[1];
-    if (pageId === undefined) return Response.json(DECK);
-    let page = DECK.slides!.find(s => s.objectId === pageId);
+    if (pageId === undefined) return Response.json(deck);
+    let page = deck.slides!.find(s => s.objectId === pageId);
     return page ? Response.json(page) : new Response(null, { status: 404 });
   }));
 });
@@ -130,6 +132,19 @@ describe("Google Slides presentation session", () => {
       expect(queue.observations).toEqual([]);
     },
   );
+
+  // Each 1.8 MB page is within the 2 MiB page cap; five together exceed what one call returns.
+  it("refuses slides too large to return together, which read in smaller batches", async () => {
+    let body = text(["x".repeat(1_800_000)]);
+    deck = presentation(Array.from({ length: 5 }, (_, i) => slide(`big${i}`, [shape("b", body)])));
+    let ids = deck.slides!.map(s => s.objectId!);
+    let { session } = newSession();
+    using _session = session;
+
+    await expect(Promise.resolve(session.getSlides(ids))).rejects.toThrow("Request fewer");
+    expect(await session.getSlides(ids.slice(0, 4))).toHaveLength(4);
+    expect(await session.getSlides(ids.slice(4))).toHaveLength(1);
+  });
 
   describe("getSlideThumbnail", () => {
     it("returns the rendered PNG, sized by its own header, without sending the token", async () => {
