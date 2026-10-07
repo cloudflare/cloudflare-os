@@ -1,0 +1,89 @@
+scripts/vitest-task.test.ts
+  s_0c2ab7edd98432::t_ecc057dc048f86 79-87,90-95,98-106,147,159,190,211-212
+  s_0c2ab7edd98432::t_6de8ac45cb568d 4,7-9,11,26-29,142,143-146,148-156,157-158,160,161-189,191-210
+  s_0c2ab7edd98432::t_7040796c7a86dc 88-89,96-97
+scripts/vp/concurrency.ts
+  s_0c2ab7edd98432::t_5c7a11f5a03d8f 132,377,379,426-427,432-434,440-445,448-459
+  s_0c2ab7edd98432::t_783bc20c71e9b3 501-503
+  s_0c2ab7edd98432::t_aa30b9f2af33d0 446-447
+  s_0c2ab7edd98432::t_499b5060ab5032 63
+  s_0c2ab7edd98432::t_fdb4d9b7db93f6 128
+  s_0c2ab7edd98432::t_bbfc77b9ffd2f1 37
+  s_0c2ab7edd98432::t_deea2a2585df73 498-499
+  s_0c2ab7edd98432::t_dd45096d439589 75
+  s_0c2ab7edd98432::t_f15ba46d431035 124-126,129-131
+  s_0c2ab7edd98432::t_c2be9662ca62c0 376
+  s_0c2ab7edd98432::t_c711d9624e3ff5 383-394,428-429,431
+  s_1da8b1c2e6d0c9::t_2f399548f77aef 76,133,378,460
+  s_89134e3af8ae87::t_f39b05cd726e88 31-36,74,127,380-382,430,435-439,464-468,493
+scripts/vitest-task-vite-config.ts
+  s_0c2ab7edd98432::t_b03c05c22ee855 249,251
+  s_0c2ab7edd98432::t_f8f511f481ffb0 207-214
+  s_0c2ab7edd98432::t_945361fbccf764 181-184,189,196-199,201
+  s_0c2ab7edd98432::t_6f9bac96fc7b4e 38
+  s_0c2ab7edd98432::t_3cb21e2f54379c 246-248,256
+  s_0c2ab7edd98432::t_6de270578fdd69 178,188,190-191,195,200,202-203
+  s_89134e3af8ae87::t_778059e926b292 122,179-180,185-187,192-194,204-206
+scripts/vp/run.ts
+  s_0c2ab7edd98432::t_90033b67052c5d 4-5
+  s_162e786dcd1609::t_7f284c98816a10 12-15
+scripts/vp/concurrency.test.ts
+  s_0c2ab7edd98432::t_05d210654edc49 3,7-11,536-538,540-589,591-699
+  s_0c2ab7edd98432::t_8bd1133c3946b8 539,590
+packages/mcp-shared/__tests__/schema-to-ts.test.ts
+  s_0c2ab7edd98432::t_3013cd26a02f5a 35-36
+  s_0c2ab7edd98432::t_1525da72b55cdb 56-57
+  s_0c2ab7edd98432::t_6e6608cf2bdf16 65
+packages/gatekeeper-scheduler/__tests__/schedule-driver.test.ts
+  s_0c2ab7edd98432::t_3f02028a497210 999-1000
+packages/gatekeeper-scheduler/app/format.ts
+  s_0c2ab7edd98432::t_fb77bdb1a6212f 14
+  s_0c2ab7edd98432::t_b66bf4139904ac 15
+  s_0c2ab7edd98432::t_dfa7116bea50d3 28-30,32
+AGENTS.md
+  s_0c2ab7edd98432::t_7f5475007e3ba2 94
+scripts/with-timeout.ts
+  s_0c2ab7edd98432::t_117a86a0d933c4 20-27,32-36,143,149,183,247,259,275
+scripts/with-timeout.test.ts
+  s_0c2ab7edd98432::t_350bf248625b43 10-11,14,50,52,70,83,110,120,137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4769fc33cc290e0a44966d8870bb05268d3890f3",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_162e786dcd1609": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a5fdf307d079e7d94",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_89134e3af8ae87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ae3427cf996a1d453",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

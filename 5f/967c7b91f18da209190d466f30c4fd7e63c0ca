@@ -1,0 +1,50 @@
+packages/workshop-frontend/src/features/spaces/VisitedSpace.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 2,7-9,20-23,25-26,38,42-44,57-70,72-78,80-95,97-113
+packages/workshop-frontend/src/features/spaces/SpacePage.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 6,37,503-632
+packages/workshop-frontend/src/features/spaces/spacesTestUtils.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 28,32-40,55-66,103-106,118-120,141-142
+  s_1da8b1c2e6d0c9::t_387e4d0b16a0e7 143
+packages/workshop-frontend/src/features/spaces/tree/PersonalTree.tsx
+  s_1da8b1c2e6d0c9::t_7927213944fb24 2-4,6-9,13-14,20-25,27-32,42,49-55,58-60
+  s_1da8b1c2e6d0c9::t_01bc320f51f7e3 1,5,10-12,15-19,26,33-41,43,56-57
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 44-48
+packages/workshop-frontend/src/features/spaces/tree/PersonalTree.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 57-62,64-65,71-72,75-76,78-80,84-86,105,109,113-149
+  s_1da8b1c2e6d0c9::t_f5f0f3e08f0747 1-56,63,66-70,73-74,77,81-83,87-104,106-108,110-112,150-162
+packages/workshop-frontend/src/routes/workspaces.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 11-13,19-20,31-32,80,95-96,105-121
+packages/workshop-frontend/src/features/spaces/PublicAccessRow.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 1,7-13,20-22,53-140,152-155,159,161,163,195,296-300
+packages/workshop-frontend/src/features/spaces/tree/SpaceTreeLayout.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 1,6,8,25,27-39,41-42,48-52,61-92,107,120-121,137,144-164,168-182,187,197-227,232,260,269,273-278,280-281,283,285,312,317,320-326,330,333,337,354-355,366,381,384,389-390,392,400,421
+  s_1da8b1c2e6d0c9::t_2eb66dc4ad567d 2-5,7,9-24,26,40,43-47,53-60,93-106,108-119,122-136,138-143,165-167,183-186,188-196,228-231,233-259,261-268,270-272,279,282,284,286-311,313-316,318-319,327-329,331-332,334-336,338-353,356-365,367-380,382-383,385-388,391,393-399,401-420,422-464
+packages/workshop-frontend/src/features/spaces/SpacePage.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 4,12,17-19,28-29,70-73,98,142-148,155,177,200-201,205-257
+packages/workshop-frontend/src/features/spaces/tree/SpaceTreeLayout.test.tsx
+  s_1da8b1c2e6d0c9::t_0a12017edfc36e 1-43,49,51-55,64-179,182-189,191-192,196-246,263-293,330-331,355-366,380-396
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 44-48,50,56-63,180-181,190,193-195,247-262,294-329,332-354,367-379
+packages/workshop-frontend/src/features/spaces/PublicAccessRow.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 57-59,61,65,72-83,86,99-113,135,138-142,144-152,161-172,174,177-178,181-190
+  s_1da8b1c2e6d0c9::t_3ffdbe5cf739d8 7-13,15-28,36-38,42-56,60,62-63,84-85,87-92,94,115-116,118,120,123-124,126,131-132,156-158,173,175-176,179-180,194-195,198
+  s_1da8b1c2e6d0c9::t_27243d75f16f1e 1-6,14,29-34,40-41,64,66-71,93,95-98,114,117,119,121-122,125,127-130,133-134,136-137,143,153-155,159-160,191-193,196-197,199-200
+  s_1da8b1c2e6d0c9::t_c30c4589b53304 35,39
+packages/workshop-frontend/src/ShareModal.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 1093
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f967c7b91f18da209190d466f30c4fd7e63c0ca",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
