@@ -37,7 +37,6 @@ const actions = () => ({
   onNewChild: vi.fn<(entry: SpaceWorkspaceInfo) => void>(),
   onMove: vi.fn<(entry: SpaceWorkspaceInfo) => void>(),
   onChangeAddress: vi.fn<(entry: SpaceWorkspaceInfo) => void>(),
-  onShare: vi.fn<(entry: SpaceWorkspaceInfo) => void>(),
 })
 
 const asMember = (
@@ -67,7 +66,6 @@ const renderTree = async (props: Partial<Props> = {}) => {
 }
 
 const rowElements = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]')]
-// A row's text runs on into what it says about its publication, so its entry is found by id.
 const titleOf = (row: HTMLElement) => {
   const id = row.closest<HTMLElement>('[data-hierarchical-list-item]')?.dataset.itemId
   return LISTING.find(listed => listed.id === id)?.title
@@ -99,6 +97,28 @@ const openMenu = async (title: string) => {
   return [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
 }
 
+// The "More actions" button beside a row, a sibling of the row's own button.
+const actionsButton = (title: string) =>
+  row(title).parentElement?.querySelector<HTMLButtonElement>(':scope > [data-hierarchical-list-row-actions]') ?? null
+
+const openActions = async (title: string) => {
+  await act(async () => {
+    actionsButton(title)!.focus()
+    actionsButton(title)!.click()
+  })
+  return [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+}
+
+const labels = (items: HTMLElement[]) => items.map(item => item.textContent)
+
+const closeMenu = () => act(async () => {
+  (document.activeElement ?? document.body).dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+})
+
+// What a row's published indicator says, in full, to assistive technology and in its tooltip.
+const publication = (title: string) => row(title).querySelector('[role="img"]')?.getAttribute('aria-label')
+
 const menuItem = async (title: string, label: string) => {
   const found = (await openMenu(title)).find(item => item.textContent === label)
   if (!found) throw new Error(`No “${label}” in the menu of “${title}”`)
@@ -113,28 +133,29 @@ describe('SpaceTree', () => {
 
     expect(document.body.querySelector('ul')?.getAttribute('aria-label')).toBe('Workspaces in Design')
     expect(outline()).toEqual(['Atlas', '  Roadmap', '  Notes', '    Drafts', 'Budget'])
-    expect(row('Atlas').textContent).toContain('Published · Can use')
-    expect(row('Atlas').textContent).not.toContain('Not visible')
-    expect(row('Roadmap').textContent).toContain('Published · Can build')
-    expect(row('Notes').textContent).not.toContain('Published')
-    expect(row('Drafts').textContent).toContain("Not visible to others until 'Notes' is published")
-    expect(row('Drafts').textContent).toContain('Published · Can use')
-  })
-
-  it('fits the note into the row as a short badge, its tooltip and accessible text saying it in full', async () => {
-    await renderTree()
-
-    const badge = row('Drafts').querySelector<HTMLElement>('[title]')
-    expect(badge?.title).toBe("Not visible to others until 'Notes' is published")
-    expect(badge?.querySelector('[aria-hidden="true"]')?.textContent).toBe('Not visible yet')
-    expect(badge?.querySelector('.sr-only')?.textContent)
-      .toBe("Published · Can use. Not visible to others until 'Notes' is published")
-    expect(row('Atlas').querySelector('[title]')).toBeNull()
+    expect(publication('Atlas')).toBe('Published to everyone signed in · can use')
+    expect(publication('Roadmap')).toBe('Published to everyone signed in · can build')
+    expect(publication('Notes')).toBeUndefined()
+    expect(publication('Drafts')).toBe("Published, but not visible until 'Notes' is published")
+    // The indicator takes no room in the row's text, which is the workspace's name.
+    expect(row('Atlas').textContent).toBe('Atlas')
   })
 
   it('names an untitled workspace as the rest of the app does', async () => {
     await renderTree({ listing: [entry('blank', '')] })
     expect(rowElements().map(candidate => candidate.textContent)).toEqual(['Untitled Workspace'])
+  })
+
+  it('names an untitled workspace that holds back a publication the same way', async () => {
+    await renderTree({
+      listing: [
+        entry('blank', '', { position: 0 }),
+        entry('child', 'Child', { parentId: 'blank', position: 0, published: 'build', hiddenBy: 'blank' }),
+      ],
+    })
+    const child = document.body.querySelector('[data-item-id="child"] [data-hierarchical-list-row]')
+    expect(child?.querySelector('[role="img"]')?.getAttribute('aria-label'))
+      .toBe("Published, but not visible until 'Untitled Workspace' is published")
   })
 
   it('renders nothing for an empty listing', async () => {
@@ -236,7 +257,7 @@ describe('SpaceTree', () => {
       await pressAlt(row('Roadmap'), 'ArrowRight')
 
       expect(outline()).toEqual(['Atlas', '  Notes', '    Drafts', '    Roadmap', 'Budget'])
-      expect(row('Roadmap').textContent).toContain("Not visible to others until 'Notes' is published")
+      expect(publication('Roadmap')).toBe("Published, but not visible until 'Notes' is published")
     })
 
     it('opens a closed branch an entry is moved into, keeping the entry in view and focused', async () => {
@@ -324,28 +345,62 @@ describe('SpaceTree', () => {
       const tree = await renderTree({ member: asMember('build') })
       const member = tree.member!
 
-      expect((await openMenu('Atlas')).map(item => item.textContent))
-        .toEqual(['Open', 'New child workspace', 'Move…', 'Change address', 'Share'])
+      expect(labels(await openMenu('Atlas'))).toEqual(['Open', 'New child workspace', 'Move…', 'Change address'])
       await choose(await menuItem('Atlas', 'Move…'))
       expect(member.actions.onMove).toHaveBeenCalledExactlyOnceWith(LISTING[0])
 
-      expect((await openMenu('Roadmap')).map(item => item.textContent))
-        .toEqual(['Open', 'New child workspace'])
+      expect(labels(await openMenu('Roadmap'))).toEqual(['Open', 'New child workspace'])
       await choose(await menuItem('Roadmap', 'New child workspace'))
       expect(member.actions.onNewChild).toHaveBeenCalledExactlyOnceWith(LISTING[1])
 
       await choose(await menuItem('Notes', 'Change address'))
       expect(member.actions.onChangeAddress).toHaveBeenCalledExactlyOnceWith(LISTING[2])
-      await choose(await menuItem('Notes', 'Share'))
-      expect(member.actions.onShare).toHaveBeenCalledExactlyOnceWith(LISTING[2])
       await choose(await menuItem('Budget', 'Open'))
       expect(tree.onOpen).toHaveBeenCalledExactlyOnceWith(LISTING[4])
     })
 
-    it('offers an admin moves and addresses of every entry, but not the sharing of another’s', async () => {
+    it('offers an admin moves and addresses of every entry', async () => {
       await renderTree({ member: asMember('admin') })
-      expect((await openMenu('Roadmap')).map(item => item.textContent))
-        .toEqual(['Open', 'New child workspace', 'Move…', 'Change address'])
+      expect(labels(await openMenu('Roadmap'))).toEqual(['Open', 'New child workspace', 'Move…', 'Change address'])
+    })
+
+    it('adds Share and Re-sync from source where the caller offers them for the entry', async () => {
+      const onShare = vi.fn<() => void>()
+      const onResync = vi.fn<() => void>()
+      const entryActions = vi.fn<NonNullable<Props['entryActions']>>(listed => ({
+        ...(listed.id === 'atlas' && { onShare, onResync }),
+        ...(listed.id === 'roadmap' && { onShare }),
+      }))
+      await renderTree({ member: asMember('build'), entryActions })
+
+      expect(labels(await openMenu('Atlas')))
+        .toEqual(['Open', 'New child workspace', 'Move…', 'Change address', 'Share', 'Re-sync from source'])
+      expect(entryActions).toHaveBeenCalledWith(LISTING[0])
+      await choose(await menuItem('Atlas', 'Re-sync from source'))
+      expect(onResync).toHaveBeenCalledOnce()
+      await choose(await menuItem('Roadmap', 'Share'))
+      expect(onShare).toHaveBeenCalledOnce()
+      expect(labels(await openMenu('Budget'))).toEqual(['Open', 'New child workspace'])
+    })
+
+    it('opens the same menu from each row’s "More actions" button, which sits beside the row', async () => {
+      await renderTree({ member: asMember('build'), entryActions: () => ({ onShare: vi.fn<() => void>() }) })
+
+      for (const { title } of LISTING) {
+        const trigger = actionsButton(title)
+        expect(trigger?.getAttribute('aria-label')).toBe(`More actions for ${title}`)
+        expect(row(title).contains(trigger)).toBe(false)
+      }
+      const fromRow = labels(await openMenu('Notes'))
+      await closeMenu()
+      expect(labels(await openActions('Notes'))).toEqual(fromRow)
+      expect(fromRow).toEqual(['Open', 'New child workspace', 'Move…', 'Change address', 'Share'])
+    })
+
+    it('names the button of an untitled workspace as its row is named', async () => {
+      await renderTree({ listing: [entry('blank', '')] })
+      expect(document.body.querySelector('[data-hierarchical-list-row-actions]')?.getAttribute('aria-label'))
+        .toBe('More actions for Untitled Workspace')
     })
   })
 
@@ -358,9 +413,21 @@ describe('SpaceTree', () => {
       await pressAlt(row('Roadmap'), 'ArrowLeft')
       expect(outline()).toEqual(['Atlas', '  Roadmap'])
 
-      expect((await openMenu('Roadmap')).map(item => item.textContent)).toEqual(['Open'])
+      expect(labels(await openMenu('Roadmap'))).toEqual(['Open'])
       await choose(await menuItem('Roadmap', 'Open'))
       expect(tree.onOpen).toHaveBeenCalledExactlyOnceWith(LISTING[1])
+    })
+
+    it('has a "More actions" button on every row all the same, offering Open and what the caller adds', async () => {
+      const tree = await renderTree({
+        listing: LISTING.slice(0, 2),
+        entryActions: listed => (listed.id === 'roadmap' ? { onShare: vi.fn<() => void>() } : {}),
+      })
+
+      expect(labels(await openActions('Atlas'))).toEqual(['Open'])
+      await choose([...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')][0]!)
+      expect(tree.onOpen).toHaveBeenCalledExactlyOnceWith(LISTING[0])
+      expect(labels(await openActions('Roadmap'))).toEqual(['Open', 'Share'])
     })
   })
 })

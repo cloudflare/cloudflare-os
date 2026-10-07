@@ -1,27 +1,23 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, createRef, useEffect, useState, type ComponentProps } from 'react'
+import { act, useEffect, useState, type ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoute, type AnyRoute } from '@tanstack/react-router'
 import type { RpcStub } from 'capnweb'
 import {
   createOpenGadgetError,
   OPEN_GADGET_ERROR_CODES,
-  type CollaboratorRole,
   type GadgetClient,
   type GadgetMetadata,
   type ObserverConfigCallback,
-  type SpaceSyncJobInfo,
   type SpaceWorkspaceInfo,
   type WorkpieceId,
   type WorkpieceSummary,
   type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type GadgetUIComponent from '../../../GadgetUI'
-import type ShareModalComponent from '../../../ShareModal'
 import {
-  ME,
   button,
   click,
   fakeApi,
@@ -31,19 +27,13 @@ import {
   settle,
   unmountAll,
 } from '../spacesTestUtils'
-import {
-  WorkspacePreviewPane,
-  type WorkspacePreviewActions,
-  type WorkspacePreviewPlace,
-  type WorkspaceResync,
-} from './WorkspacePreviewPane'
+import { WorkspacePreviewPane, type WorkspacePreviewPlace } from './WorkspacePreviewPane'
 
 // What the pane hands the pieces it hosts, so the wiring can be asserted.
 const seen = vi.hoisted(() => ({
   gadgetUi: null as ComponentProps<typeof GadgetUIComponent> | null,
   // How many times the gadget host mounted: a tab switch must remount it, not repoint it.
   gadgetUiMounts: 0,
-  shareModal: null as ComponentProps<typeof ShareModalComponent> | null,
 }))
 
 // The gadget host opens an iframe and an RPC session; record what it was asked to show instead.
@@ -52,13 +42,6 @@ vi.mock('../../../GadgetUI', () => ({
     seen.gadgetUi = props
     useEffect(() => { seen.gadgetUiMounts += 1 }, [])
     return <div data-gadget-ui />
-  },
-}))
-// The Share dialog has its own tests; the pane only opens it.
-vi.mock('../../../ShareModal', () => ({
-  default: (props: ComponentProps<typeof ShareModalComponent>) => {
-    seen.shareModal = props
-    return <div data-share-modal />
   },
 }))
 
@@ -194,36 +177,15 @@ const tabs = () => [...document.body.querySelectorAll<HTMLElement>('[role="tab"]
 const link = (text: string) =>
   [...document.body.querySelectorAll('a')].find(anchor => anchor.textContent?.trim() === text)
 
-const CHECKLIST_PROPS: PaneProps = { workspace: CHECKLIST, place: PLACE, actions: {} }
+const CHECKLIST_PROPS: PaneProps = { workspace: CHECKLIST, place: PLACE }
 
-const resyncJob = (status: SpaceSyncJobInfo['status'], done = 0): SpaceSyncJobInfo => ({
-  jobId: 'j-resync',
-  accountId: 7,
-  vendorId: 'docs',
-  spaceKey: 'design',
-  blueprintId: 'document',
-  publication: 'use',
-  status,
-  progress: { done, total: 1, warnings: [] },
-  created: new Date('2026-10-01T00:00:00Z'),
-  ...(status !== 'running' && { finished: new Date('2026-10-01T00:01:00Z') }),
-})
-
-// A re-sync offered by a caller for whom a sync into the space is running when `syncRunning`.
-const resyncFor = (syncRunning = false) => ({
-  sourceName: 'Docs Hub',
-  syncRunning,
-  onStarted: vi.fn<(job: SpaceSyncJobInfo) => void>(),
-}) satisfies WorkspaceResync
-
-const openDialog = () => document.body.querySelector('[role="dialog"]')
-const syncProgress = () => document.body.querySelector('section[aria-label^="Sync from"]')
+// What the header's published indicator says, in full, to assistive technology and in its tooltip.
+const publication = () => pane().querySelector('header [role="img"]')?.getAttribute('aria-label')
 
 describe('WorkspacePreviewPane', () => {
   beforeEach(() => {
     seen.gadgetUi = null
     seen.gadgetUiMounts = 0
-    seen.shareModal = null
   })
 
   afterEach(() => {
@@ -251,25 +213,26 @@ describe('WorkspacePreviewPane', () => {
     expect(document.body.textContent).not.toContain('chat')
   })
 
-  it('gives the caller its region, which can take the focus', async () => {
-    const region = createRef<HTMLElement>()
-    await render({ ...CHECKLIST_PROPS, ref: region })
-
-    expect(region.current).toBe(pane())
-    act(() => region.current?.focus())
-    expect(document.activeElement).toBe(pane())
-  })
-
   it('says which workspace above keeps a published one from being visible', async () => {
     await render(CHECKLIST_PROPS)
 
     expect(pane().textContent).toContain('Not visible to others until “Onboarding” is published')
+    expect(publication()).toBe("Published, but not visible until 'Onboarding' is published")
   })
 
   it('says a workspace above keeps it from being visible when the listing does not hold that one', async () => {
     await render({ ...CHECKLIST_PROPS, place: { ...PLACE, listing: [HANDBOOK, CHECKLIST] } })
 
     expect(pane().textContent).toContain('Not visible to others until a workspace above it is published')
+    expect(publication()).toBe('Published, but not visible until a workspace above it is published')
+  })
+
+  it('marks a published workspace with its indicator, and an unpublished one with none', async () => {
+    await render({ workspace: HANDBOOK, place: PLACE })
+    expect(publication()).toBe('Published to everyone signed in · can use')
+
+    await showProps({ workspace: ONBOARDING, place: PLACE })
+    expect(publication()).toBeUndefined()
   })
 
   it('offers the other gadgets as tabs, remounting the host and disposing the stub it leaves', async () => {
@@ -291,7 +254,7 @@ describe('WorkspacePreviewPane', () => {
     await click(tabs()[1])
     await settle()
 
-    await showProps({ workspace: HANDBOOK, place: PLACE, actions: {} })
+    await showProps({ workspace: HANDBOOK, place: PLACE })
     expect(opens.map(open => open.id)).toEqual(['w-checklist', 'w-handbook'])
     expect(opens[0].dispose).toHaveBeenCalledTimes(1)
     expect(opens[0].gadgetStubs.get(3)!.dispose).toHaveBeenCalledTimes(1)
@@ -308,51 +271,25 @@ describe('WorkspacePreviewPane', () => {
     expect(opens[0].gadgetStubs.get(5)!.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the actions the caller allows, and calls them', async () => {
-    const actions: Required<WorkspacePreviewActions> = {
-      onNewChild: vi.fn<() => void>(),
-      onMove: vi.fn<() => void>(),
-      onAddressChange: vi.fn<() => void>(),
-    }
-    await render({ ...CHECKLIST_PROPS, actions })
+  it('offers in its header only to open the workspace, what else may be done being in the tree', async () => {
+    await render(CHECKLIST_PROPS)
 
-    await click(button('New child workspace'))
-    await click(button('Move…'))
-    await click(button('Change address'))
-    expect(actions.onNewChild).toHaveBeenCalledTimes(1)
-    expect(actions.onMove).toHaveBeenCalledTimes(1)
-    expect(actions.onAddressChange).toHaveBeenCalledTimes(1)
-  })
-
-  it('offers no action the caller withholds, and no Share to a viewer who may only use the workspace', async () => {
-    await render({ workspace: HANDBOOK, place: PLACE, actions: {} })
-
-    for (const label of ['New child workspace', 'Move…', 'Change address', 'Share']) {
+    expect(link('Open')?.getAttribute('href')).toBe('/spaces/design/checklist')
+    for (const label of ['New child workspace', 'Move…', 'Change address', 'Share', 'Re-sync from source']) {
       expect(hasButton(label)).toBe(false)
     }
-    expect(link('Open')?.getAttribute('href')).toBe('/spaces/design/handbook')
-  })
-
-  it('opens the Share dialog on the previewed workspace, passing the publication change on', async () => {
-    const onPublicAccessChange = vi.fn<(role: CollaboratorRole | null) => void>()
-    await render({ ...CHECKLIST_PROPS, onPublicAccessChange })
-
-    await click(button('Share'))
-    expect(seen.shareModal?.metadata.id).toBe('w-checklist')
-    expect(seen.shareModal?.currentUser).toEqual(ME)
-    seen.shareModal!.onPublicAccessChange!('use')
-    expect(onPublicAccessChange).toHaveBeenCalledWith('use')
+    expect([...pane().querySelectorAll('header button')]).toEqual([])
   })
 
   it('says so when the workspace has no gadgets', async () => {
-    await render({ workspace: entry('w-empty', 'Empty'), place: undefined, actions: {} })
+    await render({ workspace: entry('w-empty', 'Empty'), place: undefined })
 
     expect(pane().textContent).toContain('This workspace has no gadgets yet.')
     expect(seen.gadgetUi).toBeNull()
   })
 
   it('shows a workspace no space lists without a trail, opening at its id', async () => {
-    await render({ workspace: entry('w-empty', 'Empty'), place: undefined, actions: {} })
+    await render({ workspace: entry('w-empty', 'Empty'), place: undefined })
 
     expect(pane().querySelector('nav[aria-label="Breadcrumb"]')).toBeNull()
     expect(link('Open')?.getAttribute('href')).toBe('/workspace/w-empty')
@@ -371,7 +308,7 @@ describe('WorkspacePreviewPane', () => {
   it('tells a visitor a workspace is not visible yet without naming the one that hides it', async () => {
     const refusal = createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotVisible)
     await render(
-      { workspace: CHECKLIST, place: { ...PLACE, listing: [CHECKLIST] }, actions: {} },
+      { workspace: CHECKLIST, place: { ...PLACE, listing: [CHECKLIST] } },
       { 'w-checklist': { ...WORKSPACES['w-checklist'], refusal } },
     )
 
@@ -400,70 +337,6 @@ describe('WorkspacePreviewPane', () => {
     expect(opens[0].dispose).toHaveBeenCalledTimes(1)
     expect(seen.gadgetUi?.gadget).toBe(opens[1].gadgetStubs.get(5))
   })
-  describe('re-syncing a workspace from its source', () => {
-
-    it('is not offered without a re-sync from the caller', async () => {
-      await render(CHECKLIST_PROPS)
-
-      expect(hasButton('Re-sync from source')).toBe(false)
-    })
-
-    it('asks for confirmation, saying what is replaced, before re-syncing', async () => {
-      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
-      const resync = resyncFor()
-      await render({ ...CHECKLIST_PROPS, resync }, WORKSPACES, { resyncWorkspace })
-
-      await click(button('Re-sync from source'))
-      expect(openDialog()?.textContent).toContain('Re-sync “Checklist” from Docs Hub?')
-      expect(openDialog()?.textContent).toContain('all of its comments will be replaced from Docs Hub')
-      expect(resyncWorkspace).not.toHaveBeenCalled()
-
-      await click(button('Replace from source'))
-      await settle()
-      expect(resyncWorkspace).toHaveBeenCalledWith('w-checklist')
-      expect(resync.onStarted).toHaveBeenCalledWith(resyncJob('running'))
-      expect(openDialog()).toBeNull()
-    })
-
-    it('makes no call when the confirmation is cancelled', async () => {
-      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
-      await render({ ...CHECKLIST_PROPS, resync: resyncFor() }, WORKSPACES, { resyncWorkspace })
-
-      await click(button('Re-sync from source'))
-      await click(button('Cancel'))
-      await settle()
-
-      expect(openDialog()).toBeNull()
-      expect(resyncWorkspace).not.toHaveBeenCalled()
-    })
-
-    it('leaves the re-sync’s progress to the caller, which shows it with the space’s other syncs', async () => {
-      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
-      const resync = resyncFor()
-      await render({ ...CHECKLIST_PROPS, resync }, WORKSPACES, { resyncWorkspace })
-      await click(button('Re-sync from source'))
-      await click(button('Replace from source'))
-      await settle()
-
-      expect(resync.onStarted).toHaveBeenCalledWith(resyncJob('running'))
-      expect(syncProgress()).toBeNull()
-    })
-
-    it('cannot be confirmed while a sync into the space is running', async () => {
-      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>()
-      await render(
-        { ...CHECKLIST_PROPS, resync: resyncFor(true) },
-        WORKSPACES,
-        { resyncWorkspace },
-      )
-
-      await click(button('Re-sync from source'))
-
-      expect(button('Replace from source').disabled).toBe(true)
-      expect(openDialog()?.textContent).toContain('A sync into this space is already running.')
-    })
-  })
-
   describe('once a sync into the space has ended', () => {
     it('opens the preview again, to show what the source replaced', async () => {
       const { opens } = await render({ ...CHECKLIST_PROPS, syncEndedKey: '' })
@@ -480,7 +353,7 @@ describe('WorkspacePreviewPane', () => {
 
     it('opens it again also for a preview shown afresh while the sync ran', async () => {
       const { opens } = await render({ ...CHECKLIST_PROPS, syncEndedKey: '' })
-      await showProps({ workspace: HANDBOOK, place: PLACE, actions: {}, syncEndedKey: '' })
+      await showProps({ workspace: HANDBOOK, place: PLACE, syncEndedKey: '' })
       await showProps({ ...CHECKLIST_PROPS, syncEndedKey: '' })
       expect(opens).toHaveLength(3)
 
