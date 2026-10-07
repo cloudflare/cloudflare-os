@@ -656,6 +656,8 @@ function getToolCallSummary(
       return { verb: "Listed connectable resources", target: tc.input.vendorId };
     case "requestConnection":
       return { verb: "Requested connection", target: tc.input.vendorId };
+    case "createExternalResource":
+      return { verb: "Created", target: tc.input.title };
   }
   // Compile-time exhaustiveness check.
   const _exhaustive: never = tc;
@@ -755,6 +757,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Listed connectable resources`;
     case "requestConnection":
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
+    case "createExternalResource":
+      return `Created ${pluralize(count, "external resource")}`;
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -857,6 +861,7 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return "Requesting a connection";
+    case "createExternalResource": return "Creating external resource";
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -883,6 +888,7 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return `Requesting ${pluralize(count, "connection")}`;
+    case "createExternalResource": return `Creating ${pluralize(count, "external resource")}`;
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
