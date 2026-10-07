@@ -2,10 +2,9 @@ import { useState, type ReactNode } from 'react'
 import type { GadgetMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { WorkshopButton } from '../../components/WorkshopControls'
-import type { WorkspaceSection } from './groupWorkspaces'
+import { rowListing, type SpaceRowListing, type WorkspaceSection } from './groupWorkspaces'
 import { ListedWorkspaceRow } from './ListedWorkspaceRow'
 import { SPACE_ACTION_CLASS_NAME } from './SpaceEntryPoints'
-import type { WorkspaceRowListing } from './workspaceAddress'
 
 // What a section with no rows says, once there is nothing left to wait for.
 const emptyLine = (section: WorkspaceSection) => {
@@ -26,7 +25,7 @@ export const SpaceSectionRows = ({ section, label, renderRow, onListingReload, o
   /** What the section is called, which names its 'Try again'. */
   label: string
   /** The list's own row for a workspace in the user's list, keyed. */
-  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: WorkspaceRowListing) => ReactNode
+  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing) => ReactNode
   /** Reads what the space lists again, resolving once the read has settled either way. */
   onListingReload: (spaceKey: string) => Promise<void>
   /**
@@ -38,21 +37,10 @@ export const SpaceSectionRows = ({ section, label, renderRow, onListingReload, o
 }) => {
   const { currentUser } = useAuthenticatedApi()
   const [reloading, setReloading] = useState(false)
-  const space = section.kind === 'space' ? section.space : undefined
   const empty = section.rows.length === 0 ? emptyLine(section) : null
 
-  const listingOf = (entry: SpaceWorkspaceInfo | undefined): WorkspaceRowListing | undefined => {
-    if (!space || !entry) return undefined
-    // The space changes an address only for one of its members: a workspace's owner who is not
-    // one, as its owner who left the space is, is refused like anyone else.
-    const mayChange = space.role === 'admin'
-      || (space.role !== undefined && entry.owner.id === currentUser?.id)
-    return {
-      address: entry.slug === undefined ? undefined : { spaceKey: space.key, slug: entry.slug },
-      published: entry.published,
-      onAddressChange: onAddressChange && mayChange ? () => onAddressChange(entry) : undefined,
-    }
-  }
+  const listingOf = (entry: SpaceWorkspaceInfo | undefined) =>
+    rowListing({ section, entry, userId: currentUser?.id, onAddressChange })
 
   const reloadListing = async (spaceKey: string) => {
     setReloading(true)

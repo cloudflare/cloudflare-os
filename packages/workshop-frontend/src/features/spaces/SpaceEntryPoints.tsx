@@ -26,9 +26,9 @@ export const SyncFromSourceButton = ({ label, sourceName, onOpen }: {
 )
 
 /**
- * The entry points beside a space's name: to a team space's members, to a new workspace in the
- * space, and, with `sync`, to syncing a source into it. A personal space has no members besides
- * its owner, so it offers no members, and only its owner adds workspaces to it.
+ * The entry points beside a space's name: to a team space's members, with `onMembersOpen`, to a
+ * new workspace in the space, and, with `sync`, to syncing a source into it. A personal space has
+ * no members besides its owner, so it offers no members, and only its owner adds workspaces to it.
  */
 export const SpaceEntryPoints = ({ label, space, onMembersOpen, sync }: {
   /** What the space is called where these are shown, which names the entry points. */
@@ -38,7 +38,8 @@ export const SpaceEntryPoints = ({ label, space, onMembersOpen, sync }: {
    * workspace goes there all the same.
    */
   space: SpaceInfo | undefined
-  onMembersOpen: (spaceKey: string) => void
+  /** Offers a team space's members, where the caller shows them. */
+  onMembersOpen?: (spaceKey: string) => void
   /**
    * Given only to a user who may add workspaces to the space and has a connected account that
    * can sync a source into it.
@@ -47,7 +48,7 @@ export const SpaceEntryPoints = ({ label, space, onMembersOpen, sync }: {
 }) => (
   <>
     {sync && <SyncFromSourceButton label={label} sourceName={sync.sourceName} onOpen={sync.onOpen} />}
-    {space?.kind === 'team' && (
+    {space?.kind === 'team' && onMembersOpen && (
       <WorkshopButton
         className={SPACE_ACTION_CLASS_NAME}
         aria-label={`Members of ${label}`}

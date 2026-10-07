@@ -178,6 +178,10 @@ const rowTitles = () => [...document.body.querySelectorAll('h3')].map(title => t
 const rowOf = (title: string) => [...document.body.querySelectorAll('h3')]
   .find(rowTitle => rowTitle.textContent === title)!.closest('a')!
 
+// What a row's published indicator says, as its accessible name, or nothing when it has none.
+const publishedLabel = (row: HTMLElement) =>
+  row.querySelector('[role="img"][aria-label^="Published"]')?.getAttribute('aria-label') ?? undefined
+
 const link = (name: string) => {
   const found = [...document.body.querySelectorAll('a')].find(anchor =>
     anchor.getAttribute('aria-label') === name)
@@ -426,9 +430,9 @@ describe('a space’s page', () => {
       api: { listGadgets: async () => [{ ...mine('w-notes', 'Notes', 'design'), publicAccess: 'build' as const }] },
     })
 
-    expect(rowOf('Notes').textContent).toContain('Published · Can build')
-    expect(rowOf('Brief').textContent).toContain('Published · Can use')
-    expect(rowOf('Draft').textContent).not.toContain('Published')
+    expect(publishedLabel(rowOf('Notes'))).toBe('Published to everyone signed in · can build')
+    expect(publishedLabel(rowOf('Brief'))).toBe('Published to everyone signed in · can use')
+    expect(publishedLabel(rowOf('Draft'))).toBeUndefined()
   })
 
   describe('for a visitor, who is not a member of the space', () => {
@@ -451,9 +455,9 @@ describe('a space’s page', () => {
       expect(rowTitles()).toEqual(['Brief', 'Handbook'])
       expect(rowOf('Brief').getAttribute('href')).toBe('/spaces/design/brief')
       expect(rowOf('Brief').textContent).toContain('Owned by Ada')
-      expect(rowOf('Brief').textContent).toContain('Published · Can use')
+      expect(publishedLabel(rowOf('Brief'))).toBe('Published to everyone signed in · can use')
       expect(rowOf('Handbook').getAttribute('href')).toBe('/workspace/w-handbook')
-      expect(rowOf('Handbook').textContent).toContain('Published · Can build')
+      expect(publishedLabel(rowOf('Handbook'))).toBe('Published to everyone signed in · can build')
     })
 
     it('offers nothing that is a member’s', async () => {
@@ -533,11 +537,13 @@ describe('a space’s page', () => {
 const tab = (name: string) => [...document.body.querySelectorAll<HTMLElement>('[role="tab"]')]
   .find(candidate => candidate.textContent === name)
 const treeLabel = () => document.body.querySelector('[data-hierarchical-list]')?.getAttribute('aria-label')
-const treeRows = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-item]')]
+// The items of the space's tree, which is the first list: the Unlisted group's list follows it.
+const treeRows = () => [...document.body.querySelector('[data-hierarchical-list]')
+  ?.querySelectorAll<HTMLElement>('[data-hierarchical-list-item]') ?? []]
   .map(item => item.dataset.itemId)
 const unlistedTitles = () => [...document.body.querySelectorAll('aside section')]
   .find(section => section.querySelector('h2')?.textContent === 'Unlisted')
-  ?.querySelectorAll('button')
+  ?.querySelectorAll('[data-hierarchical-list-row]')
 const draggableRows = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]')]
   .filter(row => row.draggable)
 
