@@ -141,7 +141,54 @@ recovered from two facts in the portal's documented contract:
    alias replaces the tool name but never the server-id prefix. Membership is therefore a pure
    string test needing no network call, so a server scope cannot fail open on a transient error.
 2. `portal_list_servers` is available in every portal session and returns each upstream server's id,
-   name, and enabled state.
+   name, and enabled state, in one of the two shapes below.
+
+### What `portal_list_servers` must return
+
+The connector parses the tool result with `parsePortalServers()` in
+`packages/mcp-shared/src/portal.ts`. Two shapes are accepted, tried in this order; a third-party
+portal or a small adapter in front of another gateway only needs to produce one of them.
+
+**Structured.** `structuredContent` is a bare JSON **array** of server records (not an object
+wrapping one):
+
+```json
+[
+  { "id": "linear", "name": "Linear", "enabled": true },
+  { "id": "github", "name": "GitHub", "enabled": false }
+]
+```
+
+`id` is required and must equal the prefix that server's tools carry (`linear_*`). `name` falls back
+to `id`; `enabled` is treated as `true` unless it is literally `false`. An entry that is not an
+object or has no `id` is skipped and the listing is marked incomplete, in which case the connector
+falls through to the text form. An empty array is a complete, empty listing. Note that the MCP
+specification describes `structuredContent` as a JSON object; the array form is this connector's
+contract, and `{ "servers": [...] }` is **not** recognised.
+
+**Text.** Otherwise the `text` content blocks are joined and scanned for bullet lines of the form
+`- {display name} ({server id}): {status}`, which is what a Cloudflare portal returns:
+
+```
+Available MCP Servers:
+
+- Cloudflare documentation (test): ✓ enabled
+- Linear (linear): ✓ enabled
+- GitHub (github): ✗ disabled
+```
+
+A line counts when it starts with `-`, `*` or `•` and contains a parenthesised id followed by a
+colon; the server id is the parenthesised token immediately before the colon (only whitespace may
+separate them), so a display name may itself contain parentheses. The server is **disabled** when
+the status text after the colon contains `disabled`, `✗` or `✘` (case-insensitive); any other
+wording, including `active`, means enabled.
+Surrounding prose is ignored. A line that does not match is skipped silently and the listing is
+marked incomplete, so a truncated tool index cannot mistake the partial result for the whole set;
+a complete index still recovers a skipped id from its tool-name prefix.
+
+Either way the listing supplies display metadata only. Membership is always decided by the
+`{server_id}_` prefix on tool names: a server the listing omits still owns its prefixed tools, and
+one it invents owns nothing.
 
 Detection is a capability probe — does the endpoint offer `portal_list_servers`? — not a hostname
 match, so it works for a custom portal hostname and for any other aggregator adopting the
