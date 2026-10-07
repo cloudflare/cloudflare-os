@@ -28,6 +28,13 @@
 //   - The floor is Vite+'s own default, so no machine gets slower than today. CI (`ubuntu-latest`,
 //     4 vCPU / 16 GiB) lands on exactly 4, so CI behaviour is unchanged.
 //
+// The same limit sizes the vitest runs inside those tasks (`withVitestWorkerBudget`):
+// `VITEST_MAX_WORKERS = min(cpus - 1, max(2, floor(cpus / tasks)))`, `tasks` being how many run at
+// once. Left alone, every `vitest run` starts `cpus - 1` workers, so four suites on a 4-vCPU runner
+// put ~12 forks plus workerd on 4 cores and starved the jsdom tests into timeouts. The floor of 2
+// keeps the last suite of a run, which keeps the workers it started with, from running serially.
+// An explicit `VITEST_MAX_WORKERS`, or a worker count among the forwarded arguments, wins.
+//
 // An explicit value always wins -- including a deliberately low one for an OOM-prone machine -- and
 // is never validated or rewritten here: vite-task's own parser reports a bad value. Precedence is
 // `--concurrency-limit` > `process.env.VP_RUN_CONCURRENCY_LIMIT` > the repo-root `.env` > this
@@ -53,6 +60,7 @@ import { availableParallelism, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
+import { VITEST_MAX_WORKERS, pinsVitestWorkerCount } from "../vitest-task-vite-config.ts";
 
 /** vite-task's `DEFAULT_CONCURRENCY_LIMIT`: what `vp run` uses when nothing overrides it. */
 export const VP_DEFAULT_CONCURRENCY_LIMIT = 4;
@@ -62,6 +70,9 @@ export const BYTES_PER_TASK = 2 * 1024 ** 3;
 
 /** The environment variable vite-task reads its concurrency limit from. */
 export const VP_RUN_CONCURRENCY_LIMIT = "VP_RUN_CONCURRENCY_LIMIT";
+
+/** Defined in the test task config, which must not import this module. */
+export { VITEST_MAX_WORKERS };
 
 /**
  * The repo-root `.env`. Derived from this module's own location rather than `cwd`, because the
@@ -108,6 +119,16 @@ export interface Machine {
 export function defaultConcurrencyLimit(cpus: number, totalMemBytes: number): number {
   const byMemory = Math.floor(totalMemBytes / BYTES_PER_TASK);
   return Math.max(VP_DEFAULT_CONCURRENCY_LIMIT, Math.min(cpus, byMemory));
+}
+
+/** The fewest workers the budget gives a vitest run, where the CPUs allow it; see the header. */
+export const VITEST_MIN_WORKERS = 2;
+
+/** `min(cpus - 1, max(2, floor(cpus / concurrentTasks)))` -- see the header. */
+export function vitestWorkerBudget(cpus: number, concurrentTasks: number): number {
+  const vitestDefault = Math.max(1, cpus - 1);
+  return Math.min(
+      vitestDefault, Math.max(VITEST_MIN_WORKERS, Math.floor(cpus / concurrentTasks)));
 }
 
 /** Filesystem facts the cgroup probe reads; parameters so tests can point at a fixture tree. */
@@ -352,9 +373,25 @@ export function concurrencyEnv(
  * exactly the silent mismatch this module exists to prevent. So it errs towards silence.
  */
 export function overridesConcurrency(args: readonly string[]): boolean {
-  return args.some(arg =>
-      arg === "--concurrency-limit" || arg.startsWith("--concurrency-limit=") ||
-      arg === "--parallel");
+  return flagConcurrencyLimit(args) !== null;
+}
+
+/**
+ * The per-run limit a flag in `args` sets, over the variable: `--concurrency-limit N`'s `N` (the
+ * last given), `Infinity` for a bare `--parallel`, or `null` for neither. A malformed `N` comes
+ * back as `NaN` for the caller to reject. Scans all of `args`, as `overridesConcurrency` explains.
+ */
+export function flagConcurrencyLimit(args: readonly string[]): number | null {
+  let limit: number | null = null;
+  let parallel = false;
+  for (const [index, arg] of args.entries()) {
+    if (arg === "--parallel") parallel = true;
+    else if (arg === "--concurrency-limit") limit = Number(args[index + 1]);
+    else if (arg.startsWith("--concurrency-limit=")) {
+      limit = Number(arg.slice("--concurrency-limit=".length));
+    }
+  }
+  return limit ?? (parallel ? Number.POSITIVE_INFINITY : null);
 }
 
 /**
@@ -386,13 +423,49 @@ export function splitConcurrencyLimit(
   return { ...env, [VP_RUN_CONCURRENCY_LIMIT]: String(perRun) };
 }
 
+/** See {@link withVitestWorkerBudget}. Both default to the real values; tests pass their own. */
+export interface VitestWorkerBudgetOptions {
+  /** Schedulable CPUs, as `os.availableParallelism()` reports them. */
+  cpus?: number;
+  /** Forwarded `vp run` arguments; see `VpRunEnvOptions.vpArgs`. Defaults to none. */
+  vpArgs?: readonly string[];
+}
+
+/**
+ * `env`, after `splitConcurrencyLimit`, plus `VITEST_MAX_WORKERS` sized for the tasks that will run
+ * at once: the per-run limit (a flag in `vpArgs` over the variable) times `concurrentRuns`. Left
+ * unset when the variable already is, when `vpArgs` set a worker count, or when there is no valid
+ * limit. Separate from the split so a caller composing its own `vpRunEnv` opts in with its
+ * `vpArgs`.
+ */
+export function withVitestWorkerBudget(
+  env: NodeJS.ProcessEnv, concurrentRuns: number,
+  { cpus = availableParallelism(), vpArgs = [] }: VitestWorkerBudgetOptions = {},
+): NodeJS.ProcessEnv {
+  const tasksPerRun = flagConcurrencyLimit(vpArgs) ?? Number(env[VP_RUN_CONCURRENCY_LIMIT]);
+  // vp appends whatever follows the task name to each task's command, so `pnpm test --maxWorkers=4`
+  // reaches every `vitest run` as a flag the variable would override.
+  if (env[VITEST_MAX_WORKERS] !== undefined || pinsVitestWorkerCount(vpArgs.join(" ")) ||
+      !isTaskLimit(tasksPerRun)) {
+    return { ...env };
+  }
+  const tasks = tasksPerRun * Math.max(1, concurrentRuns);
+  return { ...env, [VITEST_MAX_WORKERS]: String(vitestWorkerBudget(cpus, tasks)) };
+}
+
+// A limit vp would run at: a positive integer, or the unbounded `--parallel`.
+function isTaskLimit(value: number): boolean {
+  return value === Number.POSITIVE_INFINITY || (Number.isInteger(value) && value >= 1);
+}
+
 /** See {@link vpRunEnv}. */
 export interface VpRunEnvOptions {
   /**
-   * The arguments being forwarded to `vp run`, inspected only to decide whether to print: a flag
-   * that beats the environment makes the note a lie. Defaults to none, because only run.ts forwards
-   * user argv -- run-dev-server, run-local and the release build each construct a fixed `vp run`
-   * invocation, and their *own* argv must not be mistaken for vp flags.
+   * The arguments being forwarded to `vp run`, inspected only for flags: one that beats the
+   * environment makes the note a lie and sizes the vitest worker budget, and a vitest worker count
+   * turns that budget off. Defaults to none, because only run.ts forwards user argv --
+   * run-dev-server, run-local and the release build each construct a fixed `vp run` invocation, and
+   * their *own* argv must not be mistaken for vp flags.
    */
   vpArgs?: readonly string[];
   /**
@@ -422,7 +495,10 @@ export interface VpRunEnvOptions {
 export function vpRunEnv(
   { vpArgs = [], concurrentRuns = 1, env = process.env }: VpRunEnvOptions = {},
 ): NodeJS.ProcessEnv {
-  const result = concurrencyEnv(env, measureMachine(), envFileConcurrencyLimit());
+  const machine = measureMachine();
+  const result = concurrencyEnv(env, machine, envFileConcurrencyLimit());
   if (result.note && !overridesConcurrency(vpArgs)) console.error(result.note);
-  return splitConcurrencyLimit(result.env, concurrentRuns);
+  return withVitestWorkerBudget(
+      splitConcurrencyLimit(result.env, concurrentRuns), concurrentRuns,
+      { cpus: machine.cpus, vpArgs });
 }
