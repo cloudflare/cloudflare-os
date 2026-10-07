@@ -5,37 +5,8 @@ import { WorkshopButton } from '../../../components/WorkshopControls'
 import { logRpcFailure, rpcFailureDescription } from '../../../rpcErrors'
 import { useDialogSelectPortalContainer } from '../../../useDialogSelectPortalContainer'
 import { SpaceDialogFrame } from '../SpaceDialogFrame'
-import {
-  buildWorkspaceTree,
-  childrenOf,
-  isSelfOrDescendant,
-  moveToIndex,
-  pathTo,
-  type WorkspaceTreeNode,
-} from '../tree/workspaceTree'
-
-// The parent option standing for the top of the space's tree. No workspace id can equal it: ids
-// are url-safe base64, which has no space.
-const TOP = 'top of the tree'
-
-const titleOf = (entry: SpaceWorkspaceInfo) => entry.title || 'Untitled Workspace'
-
-type ParentOption = { value: string; label: string; depth: number }
-
-// Every entry that could become the parent, in tree order with its depth, minus the moving entry
-// and everything under it: the space refuses a move that would make a cycle.
-const parentOptions = (listing: readonly SpaceWorkspaceInfo[], moving: SpaceWorkspaceInfo): ParentOption[] => {
-  const options: ParentOption[] = [{ value: TOP, label: 'Top of the space', depth: 0 }]
-  const walk = (nodes: WorkspaceTreeNode[], depth: number) => {
-    for (const { entry, children } of nodes) {
-      if (isSelfOrDescendant(listing, moving.id, entry.id)) continue
-      options.push({ value: entry.id, label: titleOf(entry), depth })
-      walk(children, depth + 1)
-    }
-  }
-  walk(buildWorkspaceTree(listing), 0)
-  return options
-}
+import { parentOptions, titleOf, TOP_OF_TREE } from '../tree/parentOptions'
+import { childrenOf, isSelfOrDescendant, moveToIndex, pathTo } from '../tree/workspaceTree'
 
 /**
  * Moves a workspace within its space's tree by choosing the entry it goes under and its place
@@ -62,19 +33,21 @@ export const MoveWorkspaceDialog = ({ workspace, listing, onClose, onMove }: {
   // it in the listing, or at the top when the listing does not hold that one.
   const currentParent = pathTo(listing, workspace.id).at(-2)?.id ?? null
   const currentIndex = childrenOf(listing, currentParent).findIndex(entry => entry.id === workspace.id)
-  const [chosenParent, setChosenParent] = useState(currentParent ?? TOP)
+  const [chosenParent, setChosenParent] = useState(currentParent ?? TOP_OF_TREE)
   // The index among the new siblings, counted without the moving entry; past the end is last.
   const [position, setPosition] = useState(Math.max(0, currentIndex))
   const [moving, setMoving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
 
-  const options = parentOptions(listing, workspace)
+  // The space refuses a move that would make a cycle.
+  const options = parentOptions(listing, entry => isSelfOrDescendant(listing, workspace.id, entry.id))
   // A parent the listing, read again while the dialog is open, no longer offers gives way to where
   // the workspace is now, or the top when that is gone too: the Select resets a value its options
   // lost to the one it started with, so this agrees with it whichever of the two acts first.
   const offered = (value: string) => options.some(option => option.value === value)
-  const parentValue = offered(chosenParent) ? chosenParent : offered(currentParent ?? TOP) ? currentParent ?? TOP : TOP
-  const parentId = parentValue === TOP ? null : parentValue
+  const currentValue = currentParent ?? TOP_OF_TREE
+  const parentValue = offered(chosenParent) ? chosenParent : offered(currentValue) ? currentValue : TOP_OF_TREE
+  const parentId = parentValue === TOP_OF_TREE ? null : parentValue
   const siblings = childrenOf(listing, parentId).filter(entry => entry.id !== workspace.id)
   const index = Math.min(position, siblings.length)
   const unchanged = parentId === currentParent && index === currentIndex
@@ -129,7 +102,7 @@ export const MoveWorkspaceDialog = ({ workspace, listing, onClose, onMove }: {
           {options.map(option => (
             <Select.Option key={option.value} value={option.value}>
               {/* Indented by depth, so the options read as the tree they come from. */}
-              <span className="truncate" style={{ paddingInlineStart: `${option.depth * 12}px` }}>
+              <span className="truncate" style={{ paddingInlineStart: `${option.ancestors.length * 12}px` }}>
                 {option.label}
               </span>
             </Select.Option>
