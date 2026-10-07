@@ -302,7 +302,12 @@ const PrimitiveBranch = ({
   );
 };
 
-/** A headless hierarchical list that owns expansion, selection, and drag-and-drop behavior. */
+/**
+ * A headless hierarchical list that owns expansion, selection, and drag-and-drop behavior. Its root
+ * carries `data-drag-active` while an item is dragged. A pointer press outside every row clears the
+ * selection, except on an element marked `data-hierarchical-list-row-actions`, which counts as part
+ * of its row.
+ */
 export const HierarchicalListPrimitive = ({
   items,
   label,
@@ -453,7 +458,7 @@ export const HierarchicalListPrimitive = ({
       const target = event.target;
       if (target instanceof Element
         && listRef.current?.contains(target)
-        && target.closest("[data-hierarchical-list-row]")) return;
+        && target.closest("[data-hierarchical-list-row], [data-hierarchical-list-row-actions]")) return;
       onSelectionClear();
     };
     document.addEventListener("pointerdown", clearOutsideRow, true);
@@ -469,7 +474,12 @@ export const HierarchicalListPrimitive = ({
   };
 
   return (
-    <div {...slots?.root} ref={listRef} data-hierarchical-list-root="">
+    <div
+      {...slots?.root}
+      ref={listRef}
+      data-hierarchical-list-root=""
+      data-drag-active={dragController.draggedItem ? "" : undefined}
+    >
       <ul {...slots?.list} role="list" aria-label={label} data-hierarchical-list="">
         {items.map((item, index) => (
           <PrimitiveBranch

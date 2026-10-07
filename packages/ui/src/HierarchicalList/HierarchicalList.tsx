@@ -3,7 +3,7 @@ import { ContextMenu } from "@cloudflare/kumo/primitives/context-menu";
 import { Drawer } from "@cloudflare/kumo/primitives/drawer";
 import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, DotsSixVerticalIcon, DotsThreeIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import React, { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
@@ -34,6 +34,15 @@ const itemIcon = (item: HierarchicalListItem) => item.icon ?? (
     : null
 );
 
+const withActionsButton = (row: ReactNode, actionsButton: ReactNode) => actionsButton
+  ? (
+    <div className="group/hierarchical-list-row relative">
+      {row}
+      {actionsButton}
+    </div>
+  )
+  : row;
+
 /** Touch behavior and responsive action presentation settings for the styled list. */
 export type HierarchicalListInteractionOptions = HierarchicalListTouchInteractionOptions
   & HierarchicalListActionPresentationOptions;
@@ -52,30 +61,45 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   onItemClick?: (item: HierarchicalListItem) => void;
   onSelectionClear?: () => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
+  /**
+   * Gives every row with `renderContextMenu` content a visible "More actions" button at its end,
+   * opening the same menu. It follows its row in the Tab order and, on devices that hover, shows
+   * while its row is hovered, focused, or selected.
+   */
+  showRowActions?: boolean;
 };
+
+/** What opened a row's actions: the row itself (context menu or long press) or its button. */
+type ActionsSource = "row" | "button";
 
 type StyledRowProps = {
   rowProps: HierarchicalListPrimitiveRowProps;
   state: HierarchicalListPrimitiveRowState;
-  actionsOpen: boolean;
+  actionsOpenFrom: ActionsSource | null;
   useActionDrawer: boolean;
-  onActionsOpenChange: (open: boolean) => void;
+  showRowActions: boolean;
+  /** Opens the row's actions from `source`, or closes them given null. */
+  onActionsChange: (source: ActionsSource | null) => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
 };
 
-type OpenActions = { itemId: string; drawer: boolean };
+type OpenActions = { itemId: string; drawer: boolean; source: ActionsSource };
 
 const StyledRow = ({
   rowProps,
   state,
-  actionsOpen,
+  actionsOpenFrom,
   useActionDrawer,
-  onActionsOpenChange,
+  showRowActions,
+  onActionsChange,
   renderContextMenu,
 }: StyledRowProps) => {
   const drawerPopupRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLButtonElement>(null);
+  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const restoreDrawerFocusRef = useRef(true);
+  // Where the drawer returns the focus when it closes, the source being cleared by then.
+  const drawerOpenerRef = useRef<ActionsSource>("row");
   const drawerTitleId = useId();
   const {
     item,
@@ -86,22 +110,32 @@ const StyledRow = ({
     pressed,
     coarsePointer,
   } = state;
+  const actionsOpen = actionsOpenFrom !== null;
   const highlighted = selected || actionsOpen || pressed;
   const contextMenu = renderContextMenu?.(item);
+  const actionsButtonShown = showRowActions && Boolean(contextMenu);
+  // The menu a press outside closes reports it before the menu that press opens reports opening,
+  // so the newer source always wins.
+  const onMenuOpenChange = (source: ActionsSource) => (open: boolean) => onActionsChange(open ? source : null);
   useEffect(() => {
-    if (!actionsOpen || !useActionDrawer) return;
+    if (!actionsOpenFrom || !useActionDrawer) return;
     restoreDrawerFocusRef.current = true;
+    drawerOpenerRef.current = actionsOpenFrom;
     const trackFocusDestination = (event: FocusEvent) => {
       const target = event.target;
       if (
         target instanceof Node
         && !drawerPopupRef.current?.contains(target)
         && !rowRef.current?.contains(target)
+        && !actionsButtonRef.current?.contains(target)
       ) restoreDrawerFocusRef.current = false;
     };
     document.addEventListener("focusin", trackFocusDestination, true);
     return () => document.removeEventListener("focusin", trackFocusDestination, true);
-  }, [actionsOpen, useActionDrawer]);
+  }, [actionsOpenFrom, useActionDrawer]);
+  const coarsePointerEndInset = state.draggable && actionsButtonShown
+    ? "[@media(any-pointer:coarse)]:pr-22"
+    : (state.draggable || actionsButtonShown) && "[@media(any-pointer:coarse)]:pr-11";
   const row = (
     <Button
       ref={rowRef}
@@ -119,14 +153,15 @@ const StyledRow = ({
         rowProps.onContextMenu?.(event);
         if (event.defaultPrevented || !useActionDrawer || !contextMenu) return;
         event.preventDefault();
-        onActionsOpenChange(true);
+        onActionsChange("row");
       }}
       className={cn(
         rowProps.className,
         "group relative focus-visible:z-20",
-        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left active:!bg-kumo-recessed",
+        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 text-left active:!bg-kumo-recessed",
+        actionsButtonShown ? "pr-10" : "pr-3",
         state.draggable && "cursor-grab active:cursor-grabbing",
-        state.draggable && "[@media(any-pointer:coarse)]:pr-11",
+        coarsePointerEndInset,
         highlighted && "bg-kumo-recessed",
         coarsePointer && (
           highlighted
@@ -189,33 +224,78 @@ const StyledRow = ({
   );
 
   if (!contextMenu) return row;
+
+  // A sibling of the row, which is a button and so cannot contain one. It sits over the row's end
+  // inset, beside its touch drag handle, and lets drag events through to the row during a drag.
+  const actionsButton = actionsButtonShown && (
+    <Button
+      ref={actionsButtonRef}
+      type="button"
+      variant="ghost"
+      shape="square"
+      size="sm"
+      icon={<DotsThreeIcon aria-hidden="true" size={16} weight="bold" />}
+      aria-label={`More actions for ${item.name}`}
+      data-hierarchical-list-row-actions=""
+      {...useActionDrawer && {
+        "aria-haspopup": "dialog" as const,
+        "aria-expanded": actionsOpen,
+        onClick: () => onActionsChange("button"),
+      }}
+      className={cn(
+        "absolute right-1.5 top-1/2 z-20 -translate-y-1/2 text-kumo-subtle",
+        "[@media(any-pointer:coarse)]:size-11",
+        state.draggable
+          ? "[@media(any-pointer:coarse)]:right-11"
+          : "[@media(any-pointer:coarse)]:right-0",
+        "in-data-[drag-active]:pointer-events-none",
+        "transition-opacity duration-150 ease-out motion-reduce:transition-none",
+        !highlighted && cn(
+          "[@media(hover:hover)]:opacity-0",
+          "group-hover/hierarchical-list-row:opacity-100",
+          "group-focus-within/hierarchical-list-row:opacity-100",
+        ),
+      )}
+    />
+  );
   if (!useActionDrawer) {
-    return (
-      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
+    return withActionsButton(
+      <ContextMenu.Root open={actionsOpenFrom === "row"} onOpenChange={onMenuOpenChange("row")}>
         <ContextMenu.Trigger render={row} />
         <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
-      </ContextMenu.Root>
+      </ContextMenu.Root>,
+      actionsButton && (
+        <DropdownMenu
+          open={actionsOpenFrom === "button"}
+          onOpenChange={onMenuOpenChange("button")}
+        >
+          <DropdownMenu.Trigger render={actionsButton} />
+          <DropdownMenu.Content align="end">{contextMenu}</DropdownMenu.Content>
+        </DropdownMenu>
+      ),
     );
   }
 
   return (
     <>
-      {row}
+      {withActionsButton(row, actionsButton)}
       <Drawer.Root
         open={actionsOpen}
-        onOpenChange={onActionsOpenChange}
+        onOpenChange={(open) => onActionsChange(open ? actionsOpenFrom ?? "row" : null)}
         onOpenChangeComplete={(open) => {
           if (
             !open
             && restoreDrawerFocusRef.current
             && (document.activeElement === document.body
               || drawerPopupRef.current?.contains(document.activeElement))
-          ) rowRef.current?.focus();
+          ) {
+            (drawerOpenerRef.current === "button" ? actionsButtonRef : rowRef).current?.focus();
+          }
         }}
       >
         <Drawer.Portal>
           <Drawer.Backdrop
-            onClick={() => onActionsOpenChange(false)}
+            onClick={() => onActionsChange(null)}
             className={cn(
               "fixed inset-0 z-40 bg-kumo-recessed",
               "[opacity:calc(0.8*(1-var(--drawer-swipe-progress)))]",
@@ -241,7 +321,11 @@ const StyledRow = ({
               <Drawer.Title id={drawerTitleId} className="px-2 pb-2 text-xs text-kumo-subtle">
                 {item.name}
               </Drawer.Title>
-              <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
+              <Menu.Root
+                open={actionsOpen}
+                modal={false}
+                onOpenChange={(open) => onActionsChange(open ? actionsOpenFrom ?? "row" : null)}
+              >
                 <Menu.Portal container={drawerPopupRef}>
                   <Menu.Positioner
                     className="!static !block !min-h-0 !w-full !flex-1 !transform-none overflow-y-auto overscroll-contain"
@@ -267,6 +351,7 @@ const StyledRow = ({
 /** A nested Kumo resource list with optional context-menu and drag-and-drop behaviors. */
 export const HierarchicalList = ({
   renderContextMenu,
+  showRowActions = false,
   ...props
 }: HierarchicalListProps) => {
   const [openActions, setOpenActions] = useState<OpenActions | null>(null);
@@ -284,7 +369,7 @@ export const HierarchicalList = ({
           ? (item) => Boolean(renderContextMenu(item))
           : undefined}
         onItemLongPress={renderContextMenu && useActionDrawer
-          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
+          ? (item) => setOpenActions({ itemId: item.id, drawer: true, source: "row" })
           : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{
@@ -322,11 +407,14 @@ export const HierarchicalList = ({
           <StyledRow
             rowProps={rowProps}
             state={state}
-            actionsOpen={openActions?.itemId === state.item.id
-              && openActions.drawer === useActionDrawer}
+            actionsOpenFrom={openActions?.itemId === state.item.id
+              && openActions.drawer === useActionDrawer
+              ? openActions.source
+              : null}
             useActionDrawer={useActionDrawer}
-            onActionsOpenChange={(open) => setOpenActions(open
-              ? { itemId: state.item.id, drawer: useActionDrawer }
+            showRowActions={showRowActions}
+            onActionsChange={(source) => setOpenActions(source
+              ? { itemId: state.item.id, drawer: useActionDrawer, source }
               : null)}
             renderContextMenu={renderContextMenu}
           />

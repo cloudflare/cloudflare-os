@@ -25,6 +25,33 @@ const items: HierarchicalListItem[] = [
   },
 ];
 
+const press = (target: HTMLElement) => {
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    act(() => target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true })));
+  }
+};
+
+const pressEscape = (target: Element) => act(() => target.dispatchEvent(new KeyboardEvent(
+  "keydown",
+  { key: "Escape", bubbles: true, cancelable: true },
+)));
+
+const actionItems: HierarchicalListItem[] = [
+  {
+    id: "folder",
+    name: "Folder",
+    draggable: true,
+    droppable: true,
+    children: [{ id: "child", name: "Child", draggable: true }],
+  },
+  { id: "plain", name: "Plain" },
+  { id: "last", name: "Last", draggable: true },
+];
+
+const actionMenu = (item: HierarchicalListItem) => (item.id === "plain"
+  ? null
+  : <DropdownMenu.Item>{`Rename ${item.name}`}</DropdownMenu.Item>);
+
 describe("HierarchicalList", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
@@ -48,6 +75,10 @@ describe("HierarchicalList", () => {
     .find((button) => button.textContent?.includes(name));
 
   const rowFor = (name: string) => buttonFor(name);
+
+  const actionsFor = (name: string) => container!.querySelector<HTMLButtonElement>(
+    `button[aria-label="More actions for ${name}"]`,
+  );
 
   const dataTransfer = () => ({
     effectAllowed: "none",
@@ -489,6 +520,199 @@ describe("HierarchicalList", () => {
     expect(indicator.style.left).toBe("57px");
     expect(indicator.style.top).toBe("129.25px");
     expect(indicator.style.width).toBe("180px");
+  });
+
+  describe("row actions button", () => {
+    it("is offered only when opted in, on rows that have menu content", () => {
+      render(<HierarchicalList items={actionItems} label="Files" renderContextMenu={actionMenu} />);
+      expect(actionsFor("Folder")).toBeNull();
+      act(() => root!.unmount());
+
+      root = createRoot(container!);
+      act(() => root!.render(
+        <HierarchicalList items={actionItems} label="Files" renderContextMenu={actionMenu} showRowActions />,
+      ));
+
+      expect(actionsFor("Folder")).not.toBeNull();
+      expect(actionsFor("Last")).not.toBeNull();
+      expect(actionsFor("Plain")).toBeNull();
+      expect(rowFor("Folder")!.contains(actionsFor("Folder"))).toBe(false);
+    });
+
+    it("opens the row's menu without selecting or toggling the row, and Escape refocuses it", () => {
+      const onItemClick = vi.fn<(item: HierarchicalListItem) => void>();
+      const onSelectionClear = vi.fn<() => void>();
+      render(
+        <HierarchicalList
+          items={actionItems}
+          label="Files"
+          selectedId="last"
+          onItemClick={onItemClick}
+          onSelectionClear={onSelectionClear}
+          renderContextMenu={actionMenu}
+          showRowActions
+        />,
+      );
+      const trigger = actionsFor("Folder")!;
+      expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+
+      act(() => trigger.focus());
+      press(trigger);
+
+      expect(document.querySelector('[role="menu"]')?.textContent).toBe("Rename Folder");
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+      expect(onItemClick).not.toHaveBeenCalled();
+      expect(onSelectionClear).not.toHaveBeenCalled();
+      expect(rowFor("Folder")!.getAttribute("aria-expanded")).toBe("false");
+      expect(rowFor("Child")).toBeUndefined();
+
+      pressEscape(document.querySelector('[role="menuitem"]')!);
+
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    it("opens the same items as the row's context menu", () => {
+      render(
+        <HierarchicalList items={actionItems} label="Files" renderContextMenu={actionMenu} showRowActions />,
+      );
+      act(() => rowFor("Last")!.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+      })));
+      const contextItems = [...document.querySelectorAll('[role="menuitem"]')]
+        .map((menuItem) => menuItem.textContent);
+      pressEscape(document.querySelector('[role="menuitem"]')!);
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+
+      press(actionsFor("Last")!);
+
+      expect([...document.querySelectorAll('[role="menuitem"]')]
+        .map((menuItem) => menuItem.textContent)).toEqual(contextItems);
+      expect(contextItems).toEqual(["Rename Last"]);
+    });
+
+    it("replaces the row's open context menu with its own", () => {
+      render(
+        <HierarchicalList items={actionItems} label="Files" renderContextMenu={actionMenu} showRowActions />,
+      );
+      act(() => rowFor("Last")!.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+      })));
+      expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+
+      press(actionsFor("Last")!);
+
+      expect(actionsFor("Last")!.getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelectorAll('[role="menu"]')).toHaveLength(1);
+      expect(document.querySelector('[role="menu"]')?.textContent).toBe("Rename Last");
+    });
+
+    it("follows its row in the tab order and stays out of arrow-key row navigation", () => {
+      render(
+        <HierarchicalList
+          items={actionItems}
+          label="Files"
+          initialExpandedIds={["folder"]}
+          renderContextMenu={actionMenu}
+          showRowActions
+        />,
+      );
+      const focusable = [...container!.querySelectorAll<HTMLElement>("button, [tabindex]")]
+        .filter((element) => element.tabIndex >= 0);
+      const folderRow = rowFor("Folder")!;
+      expect(focusable[focusable.indexOf(folderRow) + 1]).toBe(actionsFor("Folder"));
+
+      act(() => folderRow.focus());
+      act(() => folderRow.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      })));
+
+      expect(document.activeElement).toBe(rowFor("Child"));
+    });
+
+    it("leaves dragging and keyboard moves to the rows", () => {
+      const onMove = vi.fn<(
+        item: HierarchicalListItem,
+        destination: HierarchicalListDropDestination,
+      ) => void>();
+      render(
+        <HierarchicalList
+          items={actionItems}
+          label="Files"
+          dragAndDrop={{ onMove }}
+          renderContextMenu={actionMenu}
+          showRowActions
+        />,
+      );
+      const listRoot = container!.querySelector<HTMLElement>("[data-hierarchical-list-root]")!;
+      const source = rowFor("Last")!;
+      const target = rowFor("Plain")!;
+      setRect(source, { top: 80 });
+      setRect(target, { top: 40 });
+      const transfer = dataTransfer();
+
+      // The button sits over its row's end, so it must let a drag through to the row while the
+      // list's root marks a drag as active.
+      const actions = actionsFor("Last")!;
+      expect(listRoot.contains(actions)).toBe(true);
+      expect(actions.classList.contains("in-data-[drag-active]:pointer-events-none")).toBe(true);
+
+      expect(listRoot.hasAttribute("data-drag-active")).toBe(false);
+      dispatchDrag(source, "dragstart", transfer);
+      expect(listRoot.hasAttribute("data-drag-active")).toBe(true);
+      dispatchDrag(target, "dragover", transfer, 42);
+      dispatchDrag(target, "drop", transfer, 42);
+
+      expect(onMove).toHaveBeenLastCalledWith(actionItems[2], { parent: null, index: 1 });
+      expect(listRoot.hasAttribute("data-drag-active")).toBe(false);
+
+      act(() => source.focus());
+      act(() => source.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      })));
+
+      expect(onMove).toHaveBeenCalledTimes(2);
+      expect(onMove).toHaveBeenLastCalledWith(actionItems[2], { parent: null, index: 1 });
+    });
+
+    it("opens the action drawer on narrow layouts and returns the focus to the button", () => {
+      vi.stubGlobal("matchMedia", vi.fn(() => ({
+        matches: true,
+        addEventListener: vi.fn<() => void>(),
+        removeEventListener: vi.fn<() => void>(),
+      })));
+      const onItemClick = vi.fn<(item: HierarchicalListItem) => void>();
+      render(
+        <HierarchicalList
+          items={actionItems}
+          label="Files"
+          onItemClick={onItemClick}
+          renderContextMenu={actionMenu}
+          showRowActions
+        />,
+      );
+      const trigger = actionsFor("Last")!;
+      expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+      press(trigger);
+
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(document.querySelector('[role="menu"]')?.textContent).toBe("Rename Last");
+      expect(trigger.getAttribute("aria-expanded")).toBe("true");
+      expect(onItemClick).not.toHaveBeenCalled();
+
+      pressEscape(document.querySelector('[role="menuitem"]')!);
+
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
   });
 
   it("does not suppress clicks when an item has no context actions", () => {
