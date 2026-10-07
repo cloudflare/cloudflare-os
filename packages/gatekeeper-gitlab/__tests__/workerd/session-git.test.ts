@@ -170,14 +170,18 @@ describe("GitLabProjectSessionImpl advertising", () => {
 
   it("records no observation for its internal branch-head read and declares pushedCommits", async () => {
     const queue = new TestApprovalQueue();
-    const submitted: unknown[] = [];
+    const submitted: Array<{ action: unknown; presentation: object }> = [];
     const session = projectSession(queue, {
       preparePush: async () => ({ type: "push", approvalId: 1, submittedAt: 0, projectPath: "group/project", branch: "main", expectedOldSha: oid(1), newSha: oid(2), force: false }),
-      submitActionForApproval: async (_q: unknown, action: unknown, description: unknown) => { submitted.push({ action, description }); },
+      submitActionForApproval: async (_q: unknown, action: unknown, presentation: object) => { submitted.push({ action, presentation }); },
     });
     await session.push("main", oid(2));
     expect(queue.observations).toEqual([]);
-    expect(submitted[0]).toMatchObject({ description: { pushedCommits: [oid(2)], implementsRevert: true } });
+    // The session supplies only the title and flags; the gatekeeper renders the description.
+    expect(submitted[0]).toMatchObject({
+      presentation: { title: `Push ${oid(2).slice(0, 12)} to main`, pushedCommits: [oid(2)], implementsRevert: true },
+    });
+    expect(submitted[0].presentation).not.toHaveProperty("description");
     await expect(session.push("main", "abc123")).rejects.toThrow(/full 40-character commit id/);
     await expect(session.push("bad..name", oid(2))).rejects.toThrow();
   });
@@ -202,19 +206,17 @@ describe("GitLabMergeRequestImpl advertising", () => {
     expect(queue.cache.advertised.filter(id => id === oid(4))).toHaveLength(1);
   });
 
-  it("records no observation for the read that binds a merge's head, and names that head to the approver", async () => {
+  it("records no observation for the read that binds a merge's head", async () => {
     const queue = new TestApprovalQueue();
-    const submitted: Array<{ description: { description: string } }> = [];
+    const submitted: unknown[] = [];
     const session = mrSession(queue, "7", {
       prepareMergeMergeRequest: async (id: string, options: unknown) =>
         ({ type: "mergeMergeRequest", approvalId: 1, submittedAt: 0, projectPath: "group/project", mergeRequestId: id, options, expectedHeadSha: oid(9) }),
-      submitActionForApproval: async (_q: unknown, _action: unknown, description: { description: string }) => { submitted.push({ description }); },
+      submitActionForApproval: async (_q: unknown, _action: unknown, presentation: unknown) => { submitted.push(presentation); },
     });
     await session.merge({ squash: true });
     expect(queue.observations).toEqual([]);
-    expect(submitted[0].description.description).toBe(
-      `Merge merge request !7 at its current head ${oid(9)}, squashing its commits. ` +
-      "The merge is refused if the head has moved by the time it applies.");
+    expect(submitted).toEqual([{ title: "Merge merge request !7", implementsRevert: false }]);
   });
 });
 

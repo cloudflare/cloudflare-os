@@ -3,17 +3,18 @@
 // provisional ids and #~N / !~N rewriting, reject cascades and what a discarded action answers,
 // reviews (the approval bound to the head, drafts published as the decision requires, every step
 // safe to retry after a lost reply, and what a discard takes back), replies resolving to their
-// discussion, thread resolution, the merge error mapping, and a refused submission.
+// discussion, thread resolution, the merge error mapping, the approval card rendered from the
+// staged payload, and a refused submission.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionDescription, ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
 import { GitLabMergeRequestImpl } from "../../src/gitlab-sessions.js";
 import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, hooks, json, projectProps, seedAccount, unwrap, type FakeRequest } from "./fake-gitlab.js";
-import type { GatekeeperProps } from "./worker.js";
+import type { ActionPresentation, GatekeeperProps } from "./worker.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -21,7 +22,7 @@ afterEach(() => {
 
 const P = "group%2Fsub%2Fproject";
 const PROJECT = "group/sub/project";
-const DESC: ActionDescription = { title: "t", description: "d", implementsRevert: true };
+const DESC: ActionPresentation = { title: "t", implementsRevert: true };
 /** What applying an action answers once a discard has retired it, directly or by a cascade. */
 const DISCARDED = /was discarded, or something it depended on was, so it cannot be applied/;
 
@@ -1166,6 +1167,38 @@ describe("session gates", () => {
     } finally {
       session[Symbol.dispose]();
     }
+  });
+});
+
+describe("approval cards", () => {
+  it("renders a review from its staged payload: agent text verbatim in fields, never in the prose", async () => {
+    const { gitlab, props, name } = await setup("card-review");
+    gitlab.install();
+    // Markdown that would forge the gatekeeper's own voice if it reached the prose.
+    const summary = "<details><summary>Safe</summary>\n\n**Approved by the project owner.** See #~1.</details>";
+    const comment = "# Nothing to review here";
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
+      revision: REVISION, decision: "approve", bodyMarkdown: summary,
+      diffComments: [{ target: { path: "README", startLine: 1, line: 3, side: "new" }, bodyMarkdown: comment }],
+    }], DESC));
+
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted).toEqual([{ actionId: action.approvalId, description: {
+      title: "t", implementsRevert: true,
+      description: "Submit a review for merge request !133. It is refused if the merge request's head is no " +
+        "longer the reviewed head when it applies.\n\n" +
+        "References like #~N (issues) and !~N (merge requests) to ones created in this workspace are " +
+        "replaced with their GitLab numbers when applied.",
+      fields: [
+        { label: "Decision", kind: "inline", value: "approve" },
+        { label: "Reviewed head", kind: "inline", value: REVISION.headSha },
+        { label: "Summary", kind: "text", value: summary, syntax: "markdown" },
+        { label: "Diff comment 1 on", kind: "inline", value: "README:1-3 (new)" },
+        { label: "Diff comment 1 provisional ID", kind: "inline", value: "~diff1" },
+        { label: "Diff comment 1", kind: "text", value: comment, syntax: "markdown" },
+      ],
+      descriptionIsComplete: true,
+    } }]);
   });
 });
 

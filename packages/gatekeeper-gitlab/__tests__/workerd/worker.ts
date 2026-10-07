@@ -54,6 +54,9 @@ export class TestVerifier extends GitLabVerifier {}
 
 export type GatekeeperProps = GitLabGatekeeperImplProps;
 
+/** What a session passes to `submitActionForApproval`; the gatekeeper renders the description. */
+export type ActionPresentation = Parameters<GitLabGatekeeperImpl["submitActionForApproval"]>[2];
+
 type UserProps = { userObjectId: string };
 
 type TestExports = {
@@ -106,7 +109,7 @@ type GatekeeperFacet = {
   prepareResolveDiffThread(id: string, threadId: string, resolved: boolean): Promise<GitLabAction>;
   prepareMergeMergeRequest(id: string, options?: GitLabMergeRequestMergeOptions): Promise<GitLabAction>;
   preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>): Promise<GitLabAction | null>;
-  submitActionForApproval(queue: unknown, action: GitLabAction, description: ActionDescription): Promise<void>;
+  submitActionForApproval(queue: unknown, action: GitLabAction, presentation: ActionPresentation): Promise<void>;
   applyAction(actionId: number, cache: unknown): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
   revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
@@ -328,26 +331,26 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
    * Prepare and submit one action through the facet, returning the stored action record. `kind`
    * selects the prepare method; `args` are its arguments.
    */
-  async queueAction(facetName: string, props: GatekeeperProps, method: string, args: unknown[], description: ActionDescription):
+  async queueAction(facetName: string, props: GatekeeperProps, method: string, args: unknown[], presentation: ActionPresentation):
       Promise<Outcome<GitLabAction>> {
     return await outcome(async () => {
-      const action = await this.#prepareAndSubmit(facetName, props, method, args, description);
+      const action = await this.#prepareAndSubmit(facetName, props, method, args, presentation);
       if (action === null) throw new Error(`${method} queued nothing; a push that may be a no-op goes through queuePush`);
       return action;
     });
   }
 
   /** `queueAction` for `preparePush`, which answers null -- queuing nothing -- when the branch is already at the commit. */
-  async queuePush(facetName: string, props: GatekeeperProps, args: unknown[], description: ActionDescription):
+  async queuePush(facetName: string, props: GatekeeperProps, args: unknown[], presentation: ActionPresentation):
       Promise<Outcome<GitLabAction | null>> {
-    return await outcome(() => this.#prepareAndSubmit(facetName, props, "preparePush", args, description));
+    return await outcome(() => this.#prepareAndSubmit(facetName, props, "preparePush", args, presentation));
   }
 
-  async #prepareAndSubmit(facetName: string, props: GatekeeperProps, method: string, args: unknown[], description: ActionDescription):
+  async #prepareAndSubmit(facetName: string, props: GatekeeperProps, method: string, args: unknown[], presentation: ActionPresentation):
       Promise<GitLabAction | null> {
     const gatekeeper = this.#gatekeeper(facetName, props) as unknown as Record<string, (...a: unknown[]) => Promise<GitLabAction | null>>;
     const action = await gatekeeper[method](...args);
-    if (action !== null) await this.#gatekeeper(facetName, props).submitActionForApproval(this.#queue(facetName), action, description);
+    if (action !== null) await this.#gatekeeper(facetName, props).submitActionForApproval(this.#queue(facetName), action, presentation);
     return action;
   }
 

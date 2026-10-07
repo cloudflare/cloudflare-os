@@ -196,11 +196,11 @@ export type GitLabAction =
   | PushAction;
 
 /**
- * The Markdown an action will post, in which `#~N` / `!~N` provisional references are honoured
- * (rewritten to the real number at apply; see `#rewriteKnownReferences`). This is the one list
- * of those fields: the apply-time rewrite and the reject-time cascade both read it, so a text
- * that would be rewritten is also a dependency -- reject the referenced resource and the action
- * that names it can never apply.
+ * The Markdown fields in which apply rewrites `#~N` / `!~N` provisional references to real numbers
+ * (see `#rewriteKnownReferences`). Apply rewrites each as it builds its request rather than reading
+ * this list, so the list must name every field apply rewrites: the reject cascade reads it -- a text
+ * that would be rewritten is a dependency, so rejecting the referenced resource retires the action
+ * that names it -- and so does the approval card's rewrite note.
  */
 export function referenceBearingTexts(action: GitLabAction): string[] {
   switch (action.type) {

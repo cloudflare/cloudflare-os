@@ -11,7 +11,6 @@
 import { DurableObject, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
-  type ActionDescription,
   type ApprovalQueue,
   type Cursor,
   type Gatekeeper,
@@ -78,6 +77,7 @@ import {
   type StoredActionRecord,
   type StoredProvisionalResource,
 } from "./gitlab-action-types";
+import { describeGitLabAction } from "./gitlab-descriptions";
 import {
   VENDOR_ID,
   instanceUrl as instanceUrlOf,
@@ -1837,11 +1837,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   // -- submit -----------------------------------------------------------------------------
 
   async submitActionForApproval(
-    approvalQueue: RpcStub<ApprovalQueue>, action: GitLabAction, description: ActionDescription,
+    approvalQueue: RpcStub<ApprovalQueue>,
+    action: GitLabAction,
+    presentation: { title: string; implementsRevert: boolean; pushedCommits?: string[] },
   ): Promise<void> {
     this.#stageAction(action);
     try {
-      await approvalQueue.submitAction(action.approvalId, description);
+      // The text comes from the staged payload, not the caller, so it always shows what applies.
+      await approvalQueue.submitAction(action.approvalId, { ...presentation, ...describeGitLabAction(action) });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;
@@ -2157,6 +2160,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         }
         break;
       }
+      default:
+        action satisfies never;
+        throw new Error(`GitLab action ${actionId} has a type this gatekeeper cannot apply.`);
     }
 
     this.#markActionApproved(action);
@@ -2653,6 +2659,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       case "postReview":
       case "mergeMergeRequest":
         return { message: "This GitLab action cannot be automatically reverted.", canRetry: false };
+      default:
+        action satisfies never;
+        throw new Error(`GitLab action ${actionId} has a type this gatekeeper cannot revert.`);
     }
     this.#clearCaches();
   }

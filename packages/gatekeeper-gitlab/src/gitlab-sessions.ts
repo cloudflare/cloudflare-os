@@ -8,7 +8,7 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
-import { ZERO_OID, validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
+import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
 import { SessionGitCache } from "./gitlab-cursors";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
@@ -91,7 +91,6 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     const action = await this.#gatekeeper.prepareCreateIssue(options);
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Create issue ${options.title}`,
-      description: `Create a new issue in ${action.projectPath} titled "${options.title}".`,
       implementsRevert: false,
     });
     return new GitLabIssueImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
@@ -101,7 +100,6 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     const action = await this.#gatekeeper.prepareCreateMergeRequest(options);
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Create merge request ${options.title}`,
-      description: `Create a new merge request in ${action.projectPath} from ${options.sourceBranch} into ${options.targetBranch}.`,
       implementsRevert: false,
     });
     return new GitLabMergeRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
@@ -215,14 +213,8 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     }
     const action = await this.#gatekeeper.preparePush(branch, commitId, options?.force ?? false, await this.#gitCache.stub());
     if (action === null) return;  // the branch is already at commitId: nothing to do
-    const creating = action.expectedOldSha === ZERO_OID;
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Push ${commitId.slice(0, 12)} to ${branch}`,
-      description: creating
-        ? `Push commit ${commitId} to ${action.projectPath}, creating branch "${branch}".`
-        : `Push commit ${commitId} to branch "${branch}" of ${action.projectPath}, ` +
-          `moving the branch from its current head ${action.expectedOldSha}.` +
-          (action.force ? " This is a force push: it rewrites the branch's history." : ""),
       pushedCommits: [commitId],
       implementsRevert: true,
     });
@@ -275,7 +267,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareSetTitle(this.kind, this.logicalId, title);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Rename ${this.#reference()}`,
-      description: `Change the title from "${action.previousTitle}" to "${title}".`,
       implementsRevert: true,
     });
   }
@@ -284,7 +275,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareSetBody(this.kind, this.logicalId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Edit description of ${this.#reference()}`,
-      description: `Replace the Markdown description of ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -293,7 +283,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareAddLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Add labels to ${this.#reference()}`,
-      description: `Add labels ${labels.join(", ")} to ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -302,7 +291,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareRemoveLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Remove labels from ${this.#reference()}`,
-      description: `Remove labels ${labels.join(", ")} from ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -311,7 +299,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "closed");
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Close ${this.#reference()}`,
-      description: `Close ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -320,7 +307,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "opened");
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Reopen ${this.#reference()}`,
-      description: `Reopen ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -337,7 +323,6 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
     const action = await this.gatekeeper.preparePostComment(this.kind, this.logicalId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Comment on ${this.#reference()}`,
-      description: `Post a new Markdown comment on ${this.#reference()}.`,
       implementsRevert: true,
     });
   }
@@ -407,8 +392,6 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     const action = await this.gatekeeper.preparePostReview(this.logicalId, review);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Submit review for !${this.logicalId}`,
-      description: `Submit a ${review.decision} review for merge request !${this.logicalId}` +
-        `${review.diffComments?.length ? ` with ${review.diffComments.length} diff comment(s)` : ""}.`,
       implementsRevert: false,
     });
   }
@@ -421,7 +404,6 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     const action = await this.gatekeeper.prepareReplyToDiffComment(this.logicalId, commentId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Reply to diff thread on !${this.logicalId}`,
-      description: `Reply to a diff discussion thread on merge request !${this.logicalId}.`,
       implementsRevert: true,
     });
   }
@@ -441,7 +423,6 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     const action = await this.gatekeeper.prepareResolveDiffThread(this.logicalId, threadId, resolved);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `${resolved ? "Resolve" : "Reopen"} a diff thread on !${this.logicalId}`,
-      description: `${resolved ? "Mark as resolved" : "Reopen"} a diff discussion thread on merge request !${this.logicalId}.`,
       implementsRevert: true,
     });
   }
@@ -471,10 +452,6 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     const action = await this.gatekeeper.prepareMergeMergeRequest(this.logicalId, options);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Merge merge request !${this.logicalId}`,
-      description: `Merge merge request !${this.logicalId} at its current head ${action.expectedHeadSha}` +
-        `${options?.squash ? ", squashing its commits" : ""}` +
-        `${options?.removeSourceBranch ? " and deleting the source branch" : ""}.` +
-        " The merge is refused if the head has moved by the time it applies.",
       implementsRevert: false,
     });
   }

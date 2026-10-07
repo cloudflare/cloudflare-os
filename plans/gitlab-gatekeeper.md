@@ -1309,12 +1309,6 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   code, HTML and quote blocks. GitHub has no analogue. The remedy — neutralising such lines, or
   refusing them at prepare — sits beside `#rewriteKnownReferences`, the one transform every
   posted text already passes through.
-- **Approval descriptions that show what will be posted, in both gatekeepers.**
-  `ActionDescription.description` "must include all details that might be relevant to consider
-  before approving", yet `postComment`, `setBody`, and `postReview` describe the action without
-  the Markdown it will post — the approver approves a comment without seeing it. GitHub's
-  descriptions are identical, and the approval UI should not differ between connectors, so this
-  is one change to both: include the body (or a bounded excerpt of it) in the description.
 - **Gaps both gatekeepers keep, from the fourth review round.** Follow-ups for the two together:
   the pending chain follows first parents, while both providers' commit listings follow every
   parent, so a queued merge's side branch is missing from `listCommits()` until its push lands;

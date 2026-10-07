@@ -7,11 +7,11 @@
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionDescription, GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { FLUSH_PKT, ZERO_OID, emptyPackBytes, encodePktLine, pktText } from "@gadgets/gatekeeper-kit/git-transport";
 import * as fx from "../fixtures/gitlab-docs.js";
 import { FakeGitLab, json, hooks, projectProps, seedAccount, unwrap } from "./fake-gitlab.js";
-import type { GatekeeperProps } from "./worker.js";
+import type { ActionPresentation, GatekeeperProps } from "./worker.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -32,7 +32,7 @@ const BASE_TREE = "0".repeat(40);
  * decode anywhere on the way to receive-pack fails the comparison.
  */
 const PACK_BYTES = Uint8Array.of(0x00, 0x80, 0xff, 0xfe, 0xc3, 0x28, 0x0a);
-const DESC: ActionDescription = { title: "push", description: "d", implementsRevert: true };
+const DESC: ActionPresentation = { title: "push", implementsRevert: true };
 
 function commitPayload(tree: string, parents: string[], message: string): Uint8Array {
   return new TextEncoder().encode([
