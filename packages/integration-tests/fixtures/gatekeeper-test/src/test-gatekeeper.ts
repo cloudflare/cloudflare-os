@@ -25,10 +25,10 @@ import {
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import type {
-  AccountDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff, Gatekeeper,
-  GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController, HookInitiator,
-  HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame, SupportedResource,
-  VendorDescription,
+  AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
+  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
+  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
+  SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
@@ -42,6 +42,7 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
+  creatable: true,
 }];
 
 const TYPES_CODE = `
@@ -385,7 +386,8 @@ function control(exports: Cloudflare.Exports): DurableObjectStub<TestControl> {
 // Vendor
 
 type AccountProps = { label: string };
-type BindingProps = AccountProps & { resourceUrl: string; ambient?: true };
+// `simulated`: minted by createResource() and not yet created, so nothing may apply through it.
+type BindingProps = AccountProps & { resourceUrl: string; ambient?: true; simulated?: true };
 
 @validateRpc()
 export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
@@ -472,6 +474,26 @@ export class TestAccount
         props: { label: this.ctx.props.label, resourceUrl: url },
       }),
       resource: SUPPORTED_RESOURCES[0],
+    };
+  }
+
+  async createResource(_resourceUrlPattern: string, title: string): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resource: SupportedResource;
+    action: ActionDescription;
+  }> {
+    const resourceUrl = `https://${VENDOR_HOST}/things/${encodeURIComponent(title)}`;
+    return {
+      class: this.ctx.exports.TestGatekeeper({
+        props: { label: this.ctx.props.label, resourceUrl, simulated: true },
+      }),
+      resource: SUPPORTED_RESOURCES[0],
+      action: {
+        title: `Create the test thing "${title}"`,
+        description: `Create a test thing titled **${title}**.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
     };
   }
 
@@ -722,6 +744,7 @@ export class TestGatekeeper
   }
 
   async applyAction(action: number): Promise<void> {
+    if (this.ctx.props.simulated) throw new Error("This test thing has not been created yet.");
     const state = control(this.ctx.exports);
     const { label } = this.ctx.props;
     const held = await state.takeNextApplyHold(label);
@@ -734,6 +757,14 @@ export class TestGatekeeper
 
   async rejectAction(action: number): Promise<void> {
     await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
+  }
+
+  async applyCreation(): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resourceUrl: string;
+  }> {
+    const { label, resourceUrl } = this.ctx.props;
+    return { class: this.ctx.exports.TestGatekeeper({ props: { label, resourceUrl } }), resourceUrl };
   }
 
   async revertAction(_action: number): Promise<void> {

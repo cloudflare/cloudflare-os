@@ -90,6 +90,22 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
     await expect(workspace.newGatekeeper(
         account.id, "https://gadgets-test.example/things/after")).rejects.toThrow(
         'The "Test Thing" resource is disabled on this deployment by an administrator.');
+    const model = models.script([
+      { toolCall: { id: "create-thing", name: "createExternalResource", arguments: {
+        vendorId: TEST_VENDOR_ID, resourceUrlPattern: "https://gadgets-test.example/things/*",
+        title: "Blocked", bindingName: "BLOCKED",
+      } } },
+      { text: "The creation was refused." },
+    ]);
+    await using creator = await openAgentSession(harness.url, {
+      modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
+      usernamePrefix: "creator",
+    });
+    await creator.runTurn("Create a test thing.");
+    expect(model.requests[1]).toMatchObject({ messages: expect.arrayContaining([
+      expect.objectContaining({ role: "tool", tool_call_id: "create-thing", content:
+          expect.stringContaining('The "Test Thing" resource is disabled on this deployment') }),
+    ]) });
   } finally {
     try {
       await admin.setGatekeeperMode(TEST_VENDOR_ID, "optional");
