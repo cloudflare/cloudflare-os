@@ -7,21 +7,29 @@ import type { WorkspaceAddress } from './workspaceAddress'
  * /workspace/<id> otherwise. Both lead to the same editor, which opens the workspace under the
  * same authorization either way.
  */
-export const WorkspaceLink = ({ id, address, className, onClick, children }: {
+export const WorkspaceLink = ({ id, address, describedBy, className, onClick, children }: {
   id: string
   /** The workspace's address in a space that lists it, when its entry there has a slug. */
   address: WorkspaceAddress | undefined
+  /** The id of an element outside the link that describes it, such as the space it is in. */
+  describedBy?: string
   className: string
   onClick?: MouseEventHandler<HTMLAnchorElement>
   children: ReactNode
 }) => (address
   ? (
-      <Link to="/spaces/$spaceKey/$slug" params={address} className={className} onClick={onClick}>
+      <Link
+        to="/spaces/$spaceKey/$slug"
+        params={address}
+        aria-describedby={describedBy}
+        className={className}
+        onClick={onClick}
+      >
         {children}
       </Link>
     )
   : (
-      <Link to="/workspace/$id" params={{ id }} className={className} onClick={onClick}>
+      <Link to="/workspace/$id" params={{ id }} aria-describedby={describedBy} className={className} onClick={onClick}>
         {children}
       </Link>
     ))

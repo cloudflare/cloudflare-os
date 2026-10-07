@@ -7,9 +7,9 @@ import { useAuthenticatedApi } from '../AuthContext'
 import { GadgetMetadataWithTimestamps, BlueprintPublicInfo, CollaboratorRole, Overseer, AiChatAuthorInfo, SpaceInfo } from '@gadgets/workshop-shared/api'
 import ShareModal from '../ShareModal'
 import { hasMoveTarget, MoveToSpaceDialog } from '../features/spaces/MoveToSpaceDialog'
-import { PublishedBadge } from '../features/spaces/PublishedBadge'
+import { PublishedIndicator } from '../features/spaces/PublishedIndicator'
 import { isOwnPersonalSpace } from '../features/spaces/spaceKinds'
-import type { WorkspaceRowListing } from '../features/spaces/workspaceAddress'
+import type { SpaceRowListing } from '../features/spaces/groupWorkspaces'
 import { WorkspaceLink } from '../features/spaces/WorkspaceLink'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
@@ -50,6 +50,7 @@ function AppRow({
   onRename,
   onMove,
   listing,
+  describedBy,
   published,
   menuButtonRef,
 }: {
@@ -65,7 +66,9 @@ function AppRow({
    */
   onMove?: (gadget: GadgetMetadataWithTimestamps) => void
   /** What the entry a space lists the workspace under gives the row, where the caller has one. */
-  listing?: WorkspaceRowListing
+  listing?: SpaceRowListing
+  /** The id of an element outside the row that describes it, such as the space it is in. */
+  describedBy?: string
   /**
    * The role the workspace is published with, said on the row while the list is laid out under
    * spaces.
@@ -98,6 +101,7 @@ function AppRow({
     <WorkspaceLink
       id={gadget.id}
       address={listing?.address}
+      describedBy={describedBy}
       className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
       onClick={(e) => {
         // Prevent navigation when renaming or clicking the menu
@@ -132,7 +136,7 @@ function AppRow({
               {gadget.title || 'Untitled Workspace'}
             </h3>
           )}
-          {published && <PublishedBadge role={published} />}
+          {published && <PublishedIndicator access={published} heldBack={listing?.heldBack} />}
         </div>
         {gadget.owner && (
           <p className="text-xs text-kumo-subtle truncate mt-0.5">
@@ -214,8 +218,9 @@ export type GadgetListRows = {
   /**
    * The list's row for one of `gadgets`, keyed by its id, with all its actions. `listing` is what
    * the entry a space lists the workspace under gives the row, for a caller that has that entry.
+   * `describedBy` is the id of an element outside the row that describes it.
    */
-  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: WorkspaceRowListing) => ReactNode
+  renderRow: (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => ReactNode
 }
 
 export default function GadgetList({ showHeader = true, sections }: {
@@ -423,11 +428,12 @@ export default function GadgetList({ showHeader = true, sections }: {
     }
   }
 
-  const renderRow = (gadget: GadgetMetadataWithTimestamps, listing?: WorkspaceRowListing) => (
+  const renderRow = (gadget: GadgetMetadataWithTimestamps, listing?: SpaceRowListing, describedBy?: string) => (
     <AppRow
       key={gadget.id}
       gadget={gadget}
       listing={listing}
+      describedBy={describedBy}
       // The user's own workspace says so by their record of it, which the Share dialog keeps up
       // to date below; another person's by the entry a space lists it under, since the user's
       // record of a workspace shared with them does not say whether it is published.

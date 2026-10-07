@@ -15,12 +15,12 @@ import type { SpaceListing } from './useSpaceListings'
  * space's name and those workspaces, each linking to its address, and nothing that is a
  * member's: no members, no new workspace, no change of address.
  *
- * Only published entries are shown, whatever the listing holds: one read while the user was
- * still a member has the space's other workspaces too.
+ * Both the list and the tree show only the entries visible to everyone signed in, those
+ * published with no unpublished entry above them, whatever the listing holds: one read while the
+ * user was still a member has the space's other workspaces too.
  *
  * The visitor may switch to the space's tree beside a preview of the workspace selected, as a
- * member may (`SpaceTreeLayout`). It holds only the entries visible to everyone signed in, those
- * with no unpublished entry above them, and is read-only.
+ * member may (`SpaceTreeLayout`), which is read-only.
  */
 export const VisitedSpace = ({ space, label, listing, onListingReload }: {
   space: Pick<SpaceInfo, 'key' | 'kind'>
@@ -36,12 +36,10 @@ export const VisitedSpace = ({ space, label, listing, onListingReload }: {
 }) => {
   const [reloading, setReloading] = useState(false)
   const [viewMode, setViewMode] = useSpaceViewMode()
-  const published = listing.status === 'ready'
-    ? listing.workspaces.filter(workspace => workspace.published !== undefined)
+  const visible = listing.status === 'ready'
+    ? listing.workspaces.filter(workspace => workspace.published !== undefined && workspace.hiddenBy === undefined)
     : []
-  const visibleListing: SpaceListing = listing.status === 'ready'
-    ? { ...listing, workspaces: published.filter(workspace => workspace.hiddenBy === undefined) }
-    : listing
+  const visibleListing: SpaceListing = listing.status === 'ready' ? { ...listing, workspaces: visible } : listing
 
   const reloadListing = async () => {
     setReloading(true)
@@ -80,12 +78,14 @@ export const VisitedSpace = ({ space, label, listing, onListingReload }: {
         </div>
       ) : (
         <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1">
-          {published.map(workspace => (
+          {visible.map(workspace => (
             <ListedWorkspaceRow
               key={workspace.id}
               workspace={workspace}
               listing={{
                 address: workspace.slug === undefined ? undefined : { spaceKey: space.key, slug: workspace.slug },
+                // What a visitor is shown is never held back.
+                heldBack: undefined,
                 onAddressChange: undefined,
               }}
             />

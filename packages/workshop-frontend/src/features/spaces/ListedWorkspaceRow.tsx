@@ -2,25 +2,32 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import { DotsThreeVertical, LinkSimple, SquaresFour } from '@phosphor-icons/react'
 import type { SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { MENU_CONTENT, MENU_ITEM } from '../../components/menuStyles'
-import { PublishedBadge } from './PublishedBadge'
-import type { WorkspaceRowListing } from './workspaceAddress'
+import { PublishedIndicator } from './PublishedIndicator'
+import type { SpaceRowListing } from './groupWorkspaces'
 import { WorkspaceLink } from './WorkspaceLink'
 
 /**
  * A workspace as a space lists it, which is all that is known of it here: another member's, which
  * the user may open as a member of the space, or one its owner has published, which anyone signed
- * in may open. A published one says so, with the role it is published with.
+ * in may open. A published one says so, with the role it is published with, and whether an
+ * unpublished workspace above it in the space's tree holds the publication back.
  */
-export const ListedWorkspaceRow = ({ workspace, listing }: {
+export const ListedWorkspaceRow = ({ workspace, listing, describedBy }: {
   workspace: SpaceWorkspaceInfo
-  /** Where the row links to, and the way to change that address for a user who may. */
-  listing: Pick<WorkspaceRowListing, 'address' | 'onAddressChange'> | undefined
+  /**
+   * Where the row links to, whether the workspace's publication is held back, and the way to
+   * change that address for a user who may.
+   */
+  listing: Pick<SpaceRowListing, 'address' | 'heldBack' | 'onAddressChange'> | undefined
+  /** The id of an element outside the row that describes it, such as the space it is in. */
+  describedBy?: string
 }) => {
   const title = workspace.title || 'Untitled Workspace'
   return (
     <WorkspaceLink
       id={workspace.id}
       address={listing?.address}
+      describedBy={describedBy}
       className="group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
     >
       <div
@@ -32,7 +39,7 @@ export const ListedWorkspaceRow = ({ workspace, listing }: {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <h3 className="truncate text-sm font-medium text-kumo-default">{title}</h3>
-          {workspace.published && <PublishedBadge role={workspace.published} />}
+          {workspace.published && <PublishedIndicator access={workspace.published} heldBack={listing?.heldBack} />}
         </div>
         <p className="mt-0.5 truncate text-xs text-kumo-subtle">Owned by {workspace.owner.name}</p>
       </div>
