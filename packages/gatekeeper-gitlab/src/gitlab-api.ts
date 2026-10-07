@@ -8,7 +8,8 @@
 // behaviour (caching, actions, simulation).
 
 import { CredentialsExpiredError } from "@gadgets/gatekeeper-kit/credentials";
-import { readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import { hexEncode } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { readBytesCapped, readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 
 /** A grant returned by the token endpoint. GitLab's documented response carries no `scope`. */
 export type GitLabOAuthGrant = {
@@ -1141,8 +1142,12 @@ export class GitLabApi {
       await response.body?.cancel().catch(() => {});
       return null;
     }
-    if (response.body === null) return new Uint8Array();
-    return await collectBytesCapped(response.body, maxBytes);
+    try {
+      return await readBytesCapped(response, maxBytes);
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) return "oversized";
+      throw error;
+    }
   }
 
   // -- git smart-HTTP
@@ -1240,34 +1245,6 @@ export function supportsReviewerState(version: string): boolean {
   return major > 19 || (major === 19 && Number(match[2]) >= 2);
 }
 
-/**
- * Collect a byte stream, or answer `"oversized"` and cancel it as soon as more than `maxBytes`
- * have arrived -- so the bound holds on what the Worker holds, not on what the server sent.
- */
-async function collectBytesCapped(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Uint8Array | "oversized"> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) return "oversized";
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
-
 /** Fields a `PUT` on an issue or merge request may change. */
 export type GitLabIssuablePatch = {
   title?: string;
@@ -1311,6 +1288,5 @@ export type GitLabPositionRequest = {
  */
 export async function lineCode(path: string, oldLine: number, newLine: number): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(path));
-  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
-  return `${hex}_${oldLine}_${newLine}`;
+  return `${hexEncode(new Uint8Array(digest))}_${oldLine}_${newLine}`;
 }

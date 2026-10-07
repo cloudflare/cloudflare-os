@@ -1,5 +1,6 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabIssueResponse, GitLabMergeRequestResponse, GitLabProjectResponse } from "./gitlab-api";
 import type { GitLabApiRunner } from "./gitlab-env";
 import { parseResourceUrl } from "./gitlab-normalize";
@@ -45,7 +46,7 @@ function exactProjectPath(instanceUrl: string, input: string): string | null {
   if (/^https?:\/\//i.test(trimmed)) {
     return parseResourceUrl(instanceUrl, trimmed)?.projectPath ?? null;
   }
-  const path = trimmed.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+  const path = stripTrailingSlashes(trimmed.replace(/^\/+/, "")).replace(/\.git$/i, "");
   return PROJECT_PATH_PATTERN.test(path) ? path : null;
 }
 

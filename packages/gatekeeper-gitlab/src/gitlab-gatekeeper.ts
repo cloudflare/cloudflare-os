@@ -31,6 +31,7 @@ import {
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
 import { commitDetailsFromGitObject, isCommitOid, parseGitCommitPayload } from "@gadgets/gatekeeper-kit/git-objects";
+import { asVerifier } from "@gadgets/gatekeeper-kit/observers";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
@@ -126,6 +127,7 @@ import {
   type GitLabDiscussionCommentEntry,
 } from "./gitlab-normalize";
 import { StreamingCursor, mapPage } from "./gitlab-cursors";
+import type { GitLabVerifierApi } from "./gitlab";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
 import type {
   GitLabActor,
@@ -139,6 +141,7 @@ import type {
   GitLabDiffCommentTarget,
   GitLabDiffFile,
   GitLabDiffThread,
+  GitLabDiffThreadComment,
   GitLabDiscussionEntry,
   GitLabIssue,
   GitLabIssueDetails,
@@ -164,8 +167,8 @@ import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorId: VENDOR_ID });
 
-export const ENTITY_CACHE_TTL_MS = 30 * 1000;
-export const LIST_CACHE_TTL_MS = 15 * 1000;
+const ENTITY_CACHE_TTL_MS = 30 * 1000;
+const LIST_CACHE_TTL_MS = 15 * 1000;
 /** For values that are pure functions of immutable inputs (a merge base keyed by both shas). */
 const IMMUTABLE_CACHE_TTL_MS = Infinity;
 const VIEWER_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -182,7 +185,7 @@ const MAX_REPLY_TARGET_HOPS = 50;
 const LOST_SUMMARY_SEARCH_DEPTH = 100;
 
 /** The connected account: its user id, which tells its approvals and notes from others', and its actor. */
-type StoredViewer = { id: number; actor: GitLabActor; fetchedAt: number };
+type StoredViewer = { id: number; actor: GitLabActor };
 
 /**
  * A `target...source` merge request comparison computed as if the source branch's queued pushes
@@ -205,6 +208,18 @@ function bytesToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+/** The issue or merge request an action is queued against; none for creates and pushes. */
+function actionTarget(action: GitLabAction): { kind: EntityKind; id: string } | undefined {
+  switch (action.type) {
+    case "createIssue": case "createMergeRequest": case "push":
+      return undefined;
+    case "postReview": case "replyToDiffComment": case "resolveDiffThread": case "mergeMergeRequest":
+      return { kind: "mergeRequest", id: action.mergeRequestId };
+    default:
+      return { kind: action.targetKind, id: action.targetId };
+  }
 }
 
 /** Label names are unique case-insensitively on GitLab, as the overlay treats them. */
@@ -387,58 +402,29 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return id.startsWith("~") ? this.#resolveProvisionalId(id) ?? id : id;
   }
 
-  #entityIdMatches(targetId: string, logicalId: string): boolean {
-    if (targetId === logicalId) return true;
-    const targetResolved = targetId.startsWith("~") ? this.#resolveProvisionalId(targetId) : targetId;
-    const logicalResolved = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
-    return !!targetResolved && !!logicalResolved && targetResolved === logicalResolved;
-  }
-
   #pendingActionsForEntity(kind: EntityKind, logicalId: string): GitLabAction[] {
+    const current = this.#currentId(logicalId);
     return this.#listPendingActions().filter(action => {
-      switch (action.type) {
-        case "createIssue":
-        case "createMergeRequest":
-        case "push":
-          return false;
-        case "postReview":
-        case "replyToDiffComment":
-        case "resolveDiffThread":
-        case "mergeMergeRequest":
-          return kind === "mergeRequest" && this.#entityIdMatches(action.mergeRequestId, logicalId);
-        default:
-          return action.targetKind === kind && this.#entityIdMatches(action.targetId, logicalId);
-      }
+      const target = actionTarget(action);
+      return target?.kind === kind && this.#currentId(target.id) === current;
     });
   }
 
   #findCreateAction(id: string, kind: "issue"): CreateIssueAction | undefined;
   #findCreateAction(id: string, kind: "mergeRequest"): CreateMergeRequestAction | undefined;
   #findCreateAction(id: string, kind: EntityKind): CreateIssueAction | CreateMergeRequestAction | undefined {
-    return this.#listPendingActions().find(action =>
-      (kind === "issue" ? action.type === "createIssue" : action.type === "createMergeRequest") &&
-      (action as CreateIssueAction | CreateMergeRequestAction).provisionalId === id,
-    ) as CreateIssueAction | CreateMergeRequestAction | undefined;
+    const type = kind === "issue" ? "createIssue" : "createMergeRequest";
+    return this.#listPendingActions().find((action): action is CreateIssueAction | CreateMergeRequestAction =>
+      action.type === type && action.provisionalId === id);
   }
 
   /** Real ids of existing entities with queued mutations, so listings inject their overlaid rows. */
   #pendingExistingEntityIds(kind: EntityKind): Set<string> {
     const ids = new Set<string>();
     for (const action of this.#listPendingActions()) {
-      let targetId: string | undefined;
-      switch (action.type) {
-        case "setTitle": case "setBody": case "addLabels": case "removeLabels":
-        case "changeState": case "postComment":
-          if (action.targetKind === kind) targetId = action.targetId;
-          break;
-        case "postReview": case "replyToDiffComment": case "resolveDiffThread": case "mergeMergeRequest":
-          if (kind === "mergeRequest") targetId = action.mergeRequestId;
-          break;
-        default:
-          break;
-      }
-      if (!targetId) continue;
-      const realId = targetId.startsWith("~") ? this.#resolveProvisionalId(targetId) : targetId;
+      const target = actionTarget(action);
+      if (target?.kind !== kind) continue;
+      const realId = this.#realIdOf(target.id);
       if (realId) ids.add(realId);
     }
     return ids;
@@ -500,7 +486,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       const user = await this.#readApi(api => api.getCurrentUser());
       const actor = actorFromUser(this.#instanceUrl(), user);
       if (!actor) throw new Error("Failed to identify the connected GitLab account.");
-      return { id: user.id, actor, fetchedAt: Date.now() };
+      return { id: user.id, actor };
     });
   }
 
@@ -542,10 +528,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   // -- issues and merge requests ----------------------------------------------------------
 
   async #getRemoteIssueDetails(realId: string): Promise<GitLabIssueDetails> {
-    const details = await this.#cached(this.#cacheKey("issue", realId), ENTITY_CACHE_TTL_MS, async () =>
+    return await this.#cached(this.#cacheKey("issue", realId), ENTITY_CACHE_TTL_MS, async () =>
       normalizeIssueDetails(this.#instanceUrl(), this.#projectPath(),
         await this.#withApi(api => api.getIssue(this.#projectPath(), Number(realId)))));
-    return details;
   }
 
   /**
@@ -581,12 +566,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async #getRemoteMergeRequestDetails(realId: string): Promise<GitLabMergeRequestDetails> {
-    const details = await this.#cached(this.#cacheKey("mr", realId), ENTITY_CACHE_TTL_MS, async () => {
-      const mr = await this.#getRawMergeRequest(realId);
-      const [approvers, sourceProject] = await Promise.all([this.#getApprovers(realId), this.#sourceProjectRef(mr)]);
+    return await this.#cached(this.#cacheKey("mr", realId), ENTITY_CACHE_TTL_MS, async () => {
+      const raw = this.#getRawMergeRequest(realId);
+      const [mr, approvers, sourceProject] = await Promise.all([
+        raw, this.#getApprovers(realId), raw.then(fetched => this.#sourceProjectRef(fetched))]);
       return normalizeMergeRequestDetails(this.#instanceUrl(), this.#projectPath(), mr, approvers, sourceProject);
     });
-    return details;
   }
 
   async #getIssueDetails(logicalId: string): Promise<GitLabIssueDetails> {
@@ -754,8 +739,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   #overlayIssueLike<T extends GitLabIssueSummary | GitLabIssueDetails | GitLabMergeRequestSummary | GitLabMergeRequestDetails>(
     base: T, kind: EntityKind, logicalId: string, includeCreate = false,
   ): T {
-    const result = structuredClone(base);
     const actions = this.#pendingActionsForEntity(kind, logicalId);
+    if (actions.length === 0) return base;
+    const result = structuredClone(base);
     for (const action of actions) {
       switch (action.type) {
         case "setTitle":
@@ -804,10 +790,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           break;
       }
     }
-    if (includeCreate) {
-      const lastAction = actions.at(-1);
-      result.updatedAt = lastAction ? new Date(lastAction.submittedAt) : result.updatedAt;
-    }
+    if (includeCreate) result.updatedAt = new Date(actions.at(-1)!.submittedAt);
     return result;
   }
 
@@ -848,14 +831,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const compare = issuableComparator<GitLabIssueSummary>(filter?.sort, filter?.direction);
     const matches = (item: GitLabIssueDetails) =>
       search === undefined ? issueMatchesFilter(item, filter) : issueMatchesSearch(item, { ...filter, text: search });
-    const touched = await this.#buildTouchedIssueSummaries(matches, compare);
-    const provisionals = (await Promise.all(this.#listPendingActions()
-      .filter((action): action is CreateIssueAction => action.type === "createIssue")
-      .map(action => this.#buildProvisionalIssueDetails(action)
-        .then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true)))))
-      .filter(matches)
-      .toSorted(compare);
-    const injectedItems = [...touched.items, ...provisionals].toSorted(compare);
+    const [touched, provisionals] = await Promise.all([
+      this.#buildTouchedIssueSummaries(matches, compare),
+      Promise.all(this.#listPendingActions()
+        .filter((action): action is CreateIssueAction => action.type === "createIssue")
+        .map(action => this.#buildProvisionalIssueDetails(action)
+          .then(issue => this.#overlayIssueLike(issue, "issue", action.provisionalId, true)))),
+    ]);
+    const injectedItems = [...touched.items, ...provisionals.filter(matches)].toSorted(compare);
 
     const { orderBy, sort } = issueOrder(filter);
     const projectPath = this.#projectPath();
@@ -896,14 +879,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const compare = issuableComparator<GitLabMergeRequestSummary>(filter?.sort, filter?.direction);
     const matches = (item: GitLabMergeRequestDetails) =>
       search === undefined ? mergeRequestMatchesFilter(item, filter) : mergeRequestMatchesSearch(item, { ...filter, text: search });
-    const touched = await this.#buildTouchedMergeRequestSummaries(matches, compare);
-    const provisionals = (await Promise.all(this.#listPendingActions()
-      .filter((action): action is CreateMergeRequestAction => action.type === "createMergeRequest")
-      .map(action => this.#buildProvisionalMergeRequestDetails(action, gitCache)
-        .then(mr => this.#overlayIssueLike(mr, "mergeRequest", action.provisionalId, true)))))
-      .filter(matches)
-      .toSorted(compare);
-    const injectedItems = [...touched.items, ...provisionals].toSorted(compare);
+    const [touched, provisionals] = await Promise.all([
+      this.#buildTouchedMergeRequestSummaries(matches, compare),
+      Promise.all(this.#listPendingActions()
+        .filter((action): action is CreateMergeRequestAction => action.type === "createMergeRequest")
+        .map(action => this.#buildProvisionalMergeRequestDetails(action, gitCache)
+          .then(mr => this.#overlayIssueLike(mr, "mergeRequest", action.provisionalId, true)))),
+    ]);
+    const injectedItems = [...touched.items, ...provisionals.filter(matches)].toSorted(compare);
 
     const { orderBy, sort } = mergeRequestOrder(filter);
     const projectPath = this.#projectPath();
@@ -925,11 +908,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             perPage,
             page,
           }));
-          const sourceProjects = await Promise.all(raw.items.map(item => this.#sourceProjectRef(item)));
-          return {
-            items: raw.items.map((item, i) => normalizeMergeRequestSummary(this.#instanceUrl(), projectPath, item, sourceProjects[i])),
-            nextPage: raw.nextPage,
-          };
+          // One lookup per fork, not per merge request: concurrent lookups would all miss the cache.
+          const forkIds = new Set(raw.items
+            .filter(item => item.source_project_id !== item.target_project_id)
+            .map(item => item.source_project_id));
+          const forkRefs = new Map(await Promise.all(
+            [...forkIds].map(async id => [id, await this.#projectRefById(id)] as const)));
+          return mapPage(raw, item =>
+            normalizeMergeRequestSummary(this.#instanceUrl(), projectPath, item, forkRefs.get(item.source_project_id)));
         }),
       overlay: item => this.#overlayMergeRequestSummaryHead(this.#overlayIssueLike(item, "mergeRequest", item.id)),
       // As for issues: touched rows are dropped, since they are served as injected items.
@@ -970,31 +956,20 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<Cursor<GitLabDiscussionEntry>> {
-    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
+    const realId = this.#realIdOf(logicalId);
     const compare = (a: GitLabDiscussionEntry, b: GitLabDiscussionEntry) => a.createdAt.getTime() - b.createdAt.getTime();
 
     const viewer = await this.#getViewerActor();
+    const noteableUrl = this.#noteableUrl(kind, logicalId);
     const provisionals: GitLabDiscussionEntry[] = [];
     for (const action of this.#pendingActionsForEntity(kind, logicalId)) {
       if (action.type === "postComment") {
-        provisionals.push({
-          kind: "comment",
-          id: action.provisionalCommentId,
-          author: viewer,
-          bodyMarkdown: this.#postedText(action.bodyMarkdown, false),
-          createdAt: new Date(action.submittedAt),
-          url: `${this.#noteableUrl(kind, logicalId)}#note_${action.provisionalCommentId}`,
-        });
+        provisionals.push({ kind: "comment", ...this.#provisionalComment(
+          viewer, noteableUrl, action.provisionalCommentId, action.bodyMarkdown, action.submittedAt) });
       } else if (action.type === "postReview" && action.review.bodyMarkdown) {
         // A review's summary is published as an ordinary note on the thread.
-        provisionals.push({
-          kind: "comment",
-          id: action.provisionalReviewId,
-          author: viewer,
-          bodyMarkdown: this.#postedText(action.review.bodyMarkdown, false),
-          createdAt: new Date(action.submittedAt),
-          url: `${this.#noteableUrl(kind, logicalId)}#note_${action.provisionalReviewId}`,
-        });
+        provisionals.push({ kind: "comment", ...this.#provisionalComment(
+          viewer, noteableUrl, action.provisionalReviewId, action.review.bodyMarkdown, action.submittedAt) });
       }
     }
     provisionals.sort(compare);
@@ -1007,6 +982,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return new ArrayCursor([...comments, ...provisionals].toSorted(compare), pageSize);
   }
 
+  /** A queued comment as it will read once posted. */
+  #provisionalComment(
+    viewer: GitLabActor, noteableUrl: string, id: string, bodyMarkdown: string, submittedAt: number,
+  ): GitLabDiffThreadComment {
+    return {
+      id,
+      author: viewer,
+      bodyMarkdown: this.#postedText(bodyMarkdown, false),
+      createdAt: new Date(submittedAt),
+      url: `${noteableUrl}#note_${id}`,
+    };
+  }
+
   // -- diff threads -----------------------------------------------------------------------
 
   /** Every discussion on an issue or merge request, cached briefly; the one read behind both `readDiscussion()` and `readDiffThreads()`. */
@@ -1017,10 +1005,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /** Diff-anchored discussions as threads, in creation order. */
-  async #fetchRemoteDiffThreads(realId: string, headSha: string | undefined): Promise<GitLabDiffThread[]> {
+  async #fetchRemoteDiffThreads(realId: string): Promise<GitLabDiffThread[]> {
+    const [mr, discussions] = await Promise.all([
+      this.#getRawMergeRequest(realId), this.#fetchRemoteDiscussions("mergeRequest", realId)]);
+    const headSha = mr.diff_refs?.head_sha ?? mr.sha;
     const threads: GitLabDiffThread[] = [];
     const noteableUrl = this.#noteableUrl("mergeRequest", realId);
-    for (const discussion of await this.#fetchRemoteDiscussions("mergeRequest", realId)) {
+    for (const discussion of discussions) {
       const anchor = diffAnchor(discussion);
       if (anchor === null) continue;
       const comments = discussion.notes.filter(note => !note.system);
@@ -1050,15 +1041,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * comments, replies, and resolutions laid over them -- in creation order.
    */
   async #overlaidDiffThreads(logicalId: string): Promise<GitLabDiffThread[]> {
-    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId) : logicalId;
-    let base: GitLabDiffThread[] = [];
-    if (realId) {
-      const raw = await this.#getRawMergeRequest(realId);
-      base = await this.#fetchRemoteDiffThreads(realId, raw.diff_refs?.head_sha ?? raw.sha);
-    }
+    const realId = this.#realIdOf(logicalId);
+    const [base, viewer] = await Promise.all([
+      realId ? this.#fetchRemoteDiffThreads(realId) : [],
+      this.#getViewerActor(),
+    ]);
 
     const threads = new Map<string, GitLabDiffThread>(base.map(thread => [thread.id, structuredClone(thread)]));
-    const viewer = await this.#getViewerActor();
     const noteableUrl = this.#noteableUrl("mergeRequest", logicalId);
     for (const action of this.#pendingActionsForEntity("mergeRequest", logicalId)) {
       if (action.type === "postReview") {
@@ -1068,26 +1057,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             target: comment.target,
             isOutdated: false,
             isResolved: false,
-            comments: [{
-              id: comment.provisionalCommentId,
-              author: viewer,
-              bodyMarkdown: this.#postedText(comment.bodyMarkdown, false),
-              createdAt: new Date(action.submittedAt),
-              url: `${noteableUrl}#note_${comment.provisionalCommentId}`,
-            }],
+            comments: [this.#provisionalComment(
+              viewer, noteableUrl, comment.provisionalCommentId, comment.bodyMarkdown, action.submittedAt)],
           });
         }
       } else if (action.type === "replyToDiffComment") {
         const thread = [...threads.values()].find(candidate =>
           candidate.id === action.commentId || candidate.comments.some(comment => comment.id === action.commentId));
         if (thread) {
-          thread.comments.push({
-            id: action.provisionalCommentId,
-            author: viewer,
-            bodyMarkdown: this.#postedText(action.bodyMarkdown, false),
-            createdAt: new Date(action.submittedAt),
-            url: `${noteableUrl}#note_${action.provisionalCommentId}`,
-          });
+          thread.comments.push(this.#provisionalComment(
+            viewer, noteableUrl, action.provisionalCommentId, action.bodyMarkdown, action.submittedAt));
         }
       } else if (action.type === "resolveDiffThread") {
         const thread = threads.get(action.threadId);
@@ -1096,10 +1075,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
 
     return [...threads.values()].toSorted((a, b) => a.comments[0].createdAt.getTime() - b.comments[0].createdAt.getTime());
-  }
-
-  async #getDiffThreads(logicalId: string, pageSize: number): Promise<Cursor<GitLabDiffThread>> {
-    return new ArrayCursor(await this.#overlaidDiffThreads(logicalId), pageSize);
   }
 
   // -- diff and merge base ----------------------------------------------------------------
@@ -1189,7 +1164,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       };
     }
 
-    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId)! : logicalId;
+    const realId = this.#realIdOf(logicalId)!;
     const mr = await this.#getRawMergeRequest(realId);
     // An existing merge request whose source branch has queued pushes reads its diff at the
     // simulated head, like every other read of that branch.
@@ -1230,13 +1205,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** A branch's current head (null if it does not exist), cached briefly for simulation reads. */
   async #getBranchHeadCached(branch: string): Promise<GitOid | null> {
-    const key = this.#cacheKey("branch-head", stableKey(branch));
-    const cached = this.#loadCached<{ head: GitOid | null }>(key, ENTITY_CACHE_TTL_MS);
-    if (cached !== undefined) return cached.head;
-    const generation = this.#cacheGeneration();
-    const head = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
-    this.#storeCached(key, { head }, generation);
-    return head;
+    return await this.#cached(this.#cacheKey("branch-head", stableKey(branch)), ENTITY_CACHE_TTL_MS, async () =>
+      (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null);
   }
 
   /** A commit by sha, branch, or tag; null on 404. Cached briefly, since `ref` may be a name. */
@@ -1322,7 +1292,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * re-runs `addObserver` on every open, so lost access is caught promptly.
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    const verifier = user as unknown as Fetcher<import("./gitlab").GitLabVerifierApi>;
+    const verifier = asVerifier<Fetcher<GitLabVerifierApi>>(user);
     const projectPath = this.#projectPath();
     if (!(await verifier.hasProjectAccess(projectPath))) {
       throw new Error(
@@ -1376,7 +1346,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       return await this.#getMergeBaseCached(target, source);
     }
-    const realId = id.startsWith("~") ? this.#resolveProvisionalId(id)! : id;
+    const realId = this.#realIdOf(id)!;
     const mr = await this.#getRawMergeRequest(realId);
     // A source branch with queued pushes reads at its simulated head, like every other read of
     // that branch; its comparison already knows the merge base it diffs from.
@@ -1394,7 +1364,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async mergeRequestThreads(id: string, pageSize: number): Promise<Cursor<GitLabDiffThread>> {
-    return await this.#getDiffThreads(id, pageSize);
+    return new ArrayCursor(await this.#overlaidDiffThreads(id), pageSize);
   }
 
   async listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<Cursor<GitLabIssueSummary>> {
@@ -1440,20 +1410,20 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
     // Simulation: a branch a queued push *creates* is injected -- but only while the remote still
     // lacks the name, checked live here, so reads never hide a branch that genuinely exists.
+    const created = [...new Set(this.#pendingPushActions()
+      .filter(action => action.expectedOldSha === ZERO_OID)
+      .map(action => action.branch))]
+      .filter(branch => !filter?.search || branchNameMatchesSearch(branch, filter.search));
+    const existing = await Promise.all(created.map(branch => this.#withApi(api => api.getBranch(projectPath, branch))));
     const injectedNames = new Set<string>();
     const injectedItems: GitLabBranchSummary[] = [];
-    const creationsChecked = new Set<string>();
-    for (const action of this.#pendingPushActions()) {
-      if (action.expectedOldSha !== ZERO_OID || creationsChecked.has(action.branch)) continue;
-      creationsChecked.add(action.branch);
-      if (filter?.search && !branchNameMatchesSearch(action.branch, filter.search)) continue;
-      const real = await this.#withApi(api => api.getBranch(projectPath, action.branch));
-      if (real !== null) continue;
-      const head = this.#simulateBranchHead(action.branch, null);
+    for (const [i, branch] of created.entries()) {
+      if (existing[i] !== null) continue;
+      const head = this.#simulateBranchHead(branch, null);
       if (head === null) continue;
-      injectedNames.add(action.branch);
+      injectedNames.add(branch);
       this.#servedSimulatedCommitIds.add(head);
-      injectedItems.push({ name: action.branch, headCommit: head, protected: false, default: false });
+      injectedItems.push({ name: branch, headCommit: head, protected: false, default: false });
     }
 
     return new StreamingCursor<GitLabBranchSummary>({
@@ -1615,7 +1585,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       const compare = await this.#compareCached(action.options.targetBranch, action.options.sourceBranch);
       return new ArrayCursor(compare.commits, pageSize);
     }
-    const realId = logicalId.startsWith("~") ? this.#resolveProvisionalId(logicalId)! : logicalId;
+    const realId = this.#realIdOf(logicalId)!;
     // An existing merge request whose source branch has queued pushes lists the simulated
     // comparison instead of the remote pages (a force push may even have replaced the listed
     // history, so splicing pages with the pending chain would misreport it).
@@ -1733,12 +1703,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       case "createIssue":
       case "createMergeRequest":
         return action.provisionalId === provisionalId;
-      case "setTitle": case "setBody": case "addLabels": case "removeLabels": case "changeState": case "postComment":
-        return action.targetKind === kind && action.targetId === provisionalId;
-      case "postReview": case "replyToDiffComment": case "resolveDiffThread": case "mergeMergeRequest":
-        return kind === "mergeRequest" && action.mergeRequestId === provisionalId;
-      case "push":
-        return false;  // pushes target a branch, never an issue or merge request
+      default: {
+        const target = actionTarget(action);
+        return target?.kind === kind && target.id === provisionalId;
+      }
     }
   }
 
@@ -1799,12 +1767,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * with everything queued against the doomed merge request. Returns whether anything cascaded.
    */
   async #rejectMergeRequestsForMissingBranches(): Promise<boolean> {
+    const creates = this.#listPendingActions()
+      .filter((action): action is CreateMergeRequestAction => action.type === "createMergeRequest");
+    const branches = [...new Set(creates.flatMap(action => [action.options.sourceBranch, action.options.targetBranch]))];
+    const heads = new Map(await Promise.all(branches.map(async branch =>
+      [branch, (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null] as const)));
     let cascaded = false;
-    for (const pending of this.#listPendingActions()) {
-      if (pending.type !== "createMergeRequest") continue;
+    for (const pending of creates) {
       for (const branch of [pending.options.sourceBranch, pending.options.targetBranch]) {
-        const real = (await this.#withApi(api => api.getBranch(this.#projectPath(), branch)))?.commit.id ?? null;
-        if (this.#simulateBranchHead(branch, real) === null) {
+        if (this.#simulateBranchHead(branch, heads.get(branch)!) === null) {
           this.#markActionRejected(pending);
           this.#retireProvisional("mergeRequest", pending.provisionalId);
           cascaded = true;
@@ -1883,14 +1854,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /** Assignees are usernames in the API and ids on GitLab; resolving them here means a typo fails now, not at apply. */
   async #resolveAssigneeIds(usernames: string[] | undefined): Promise<number[]> {
-    const ids: number[] = [];
-    for (const username of usernames ?? []) {
-      const users = await this.#withApi(api => api.findUsersByUsername(username));
-      const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+    const names = usernames ?? [];
+    const matches = await Promise.all(names.map(username => this.#withApi(api => api.findUsersByUsername(username))));
+    return names.map((username, i) => {
+      const user = matches[i].find(u => u.username.toLowerCase() === username.toLowerCase());
       if (!user) throw new Error(`No GitLab user named "${username}" exists on this instance.`);
-      ids.push(user.id);
-    }
-    return ids;
+      return user.id;
+    });
   }
 
   async prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<CreateIssueAction> {
@@ -2915,8 +2885,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
 
     const generation = this.#cacheGeneration();
-    const chain = await this.#collectPendingChain(gitCache, simulatedHead);
-    const targetHead = await this.#getBranchHeadCached(targetRef);
+    const [chain, targetHead] = await Promise.all([
+      this.#collectPendingChain(gitCache, simulatedHead), this.#getBranchHeadCached(targetRef)]);
     if (targetHead === null) throw new Error(`Target branch "${targetRef}" does not exist on GitLab.`);
     const [compare, mergeBase] = await Promise.all([
       this.#compareCached(targetRef, chain.anchor),
@@ -2960,6 +2930,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     chain: { commits: { summary: GitLabCommitSummary; tree: GitOid }[]; anchor: GitOid },
     filter: GitLabCommitFilter | undefined,
   ): Promise<GitLabCommitSummary[]> {
+    // Each commit's parent tree is the next one's own tree, so trees are read once across the walk.
+    const source = this.#treeDiffSource(gitCache);
+    const trees = new Map<GitOid, ReturnType<TreeDiffSource["getTree"]>>();
+    const memoized: TreeDiffSource = {
+      ...source,
+      getTree: oid => {
+        let tree = trees.get(oid);
+        if (tree === undefined) trees.set(oid, tree = source.getTree(oid));
+        return tree;
+      },
+    };
     const results: GitLabCommitSummary[] = [];
     for (let index = 0; index < chain.commits.length; index++) {
       const { summary, tree } = chain.commits[index];
@@ -2973,7 +2954,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const parentTree = index + 1 < chain.commits.length
           ? chain.commits[index + 1].tree
           : await this.#treeOidOfCommit(gitCache, chain.anchor);
-        const changed = await changedPathsBetweenTrees(this.#treeDiffSource(gitCache), parentTree, tree);
+        const changed = await changedPathsBetweenTrees(memoized, parentTree, tree);
         const path = stripTrailingSlashes(filter.path);
         if (!changed.some(candidate => candidate === path || candidate.startsWith(`${path}/`))) continue;
       }

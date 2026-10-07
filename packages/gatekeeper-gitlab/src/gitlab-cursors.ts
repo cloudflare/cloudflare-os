@@ -1,14 +1,11 @@
-// The streaming RPC cursor and the session-side git-cache holder, shared by the GitLab gatekeeper's
-// sessions. The same shapes as gatekeeper-github's: a cursor that overlays simulation onto remote
-// pages and merges provisional rows at their sort positions, and the holder that owns a session's
-// `GitCache` stub and wraps listings so each page advertises its commit ids (through the kit's
-// `PageHookCursor` and `advertisePages`). In-memory listings use the kit's `ArrayCursor`.
+// The streaming RPC cursor shared by the GitLab gatekeeper's sessions, the same shape as
+// gatekeeper-github's: it overlays simulation onto remote pages and merges provisional rows at
+// their sort positions. In-memory listings use the kit's `ArrayCursor`, and each session's
+// commit advertising the kit's `SessionGitCache`.
 
-import { RpcStub, RpcTarget } from "cloudflare:workers";
+import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { ApprovalQueue, Cursor, GitCache, GitOid } from "@gadgets/workshop-shared/gatekeeper";
-import { PageHookCursor } from "@gadgets/gatekeeper-kit/cursors";
-import { advertiseCommits, advertisePages, type CommitAdvertisingOptions } from "@gadgets/gatekeeper-kit/git-objects";
+import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabPage } from "./gitlab-api";
 
 /** A page with each row mapped, keeping where the listing continues. */
@@ -142,61 +139,5 @@ export class StreamingCursor<T> extends RpcTarget implements Cursor<T> {
       this.#buffer.push({ item, injected: true });
       this.#injectedIndex++;
     }
-  }
-}
-
-/**
- * Lazily obtains and owns a session's `GitCache` stub (fetched at most once per session, via
- * `ObservationAuthorizer.getGitCache()`), through which the session advertises the commit ids its
- * reads return -- advertisement is workspace-internal pull-routing metadata, not a read, so no
- * observation accompanies it. A plain helper, deliberately not an `RpcTarget`: the cache stub
- * must never be reachable by the session's callers.
- */
-export class SessionGitCache {
-  readonly #approvalQueue: RpcStub<ApprovalQueue>;
-  readonly #options: CommitAdvertisingOptions;
-  #cache?: Promise<RpcStub<GitCache>>;
-
-  /**
-   * `approvalQueue` is only borrowed; the owning session must outlive this helper. `withhold`
-   * names the ids never to advertise -- simulated heads of queued pushes, which reads show as if
-   * pushed but GitLab does not have yet -- and is asked as each page is advertised, so a push
-   * queued while a cursor is drained is honoured.
-   */
-  constructor(approvalQueue: RpcStub<ApprovalQueue>, withhold: (commitId: GitOid) => boolean) {
-    this.#approvalQueue = approvalQueue;
-    this.#options = { withhold };
-  }
-
-  /**
-   * The session-owned cache stub itself, for callers that need more than advertising (the
-   * simulation reads of queued pushes). Borrowed, not transferred: this helper still owns and
-   * disposes it.
-   */
-  stub(): Promise<RpcStub<GitCache>> {
-    this.#cache ??= this.#approvalQueue.getGitCache();
-    return this.#cache;
-  }
-
-  /** Advertise the given commit ids; values that aren't full commit ids are skipped. */
-  async advertise(ids: Iterable<GitOid>): Promise<void> {
-    await advertiseCommits(await this.stub(), ids, this.#options);
-  }
-
-  /**
-   * Wrap a cursor so that each page it returns advertises its commit ids first. The wrapper holds
-   * its own dup of the cache stub, so it keeps working if the session is disposed before the
-   * cursor is drained.
-   */
-  async wrap<T>(cursor: Cursor<T>, commitIds: (item: T) => readonly GitOid[]): Promise<Cursor<T>> {
-    const cache = (await this.stub()).dup();
-    return new PageHookCursor(cursor, {
-      beforePage: advertisePages(cache, commitIds, this.#options),
-      dispose: () => cache[Symbol.dispose](),
-    });
-  }
-
-  dispose(): void {
-    void this.#cache?.then(cache => cache[Symbol.dispose]()).catch(() => {});
   }
 }

@@ -79,7 +79,7 @@ import {
 | `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |
 | `./cache` | Authority-partitioned Durable Object TTL caching. | Provider reads repeat and reconnects must fence stale fills. |
 | `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
-| `./cursors` | Array, page-number, offset, and continuation-token cursors, and `PageHookCursor`, which runs a hook on each page of a cursor the gatekeeper already built. | A session returns more rows than one RPC reply should carry. |
+| `./cursors` | Array, page-number, offset, and continuation-token cursors; `PageHookCursor`, which runs a hook on each page of a cursor the gatekeeper already built; and `SessionGitCache`, a git session's `GitCache` stub holder that advertises returned commit ids. | A session returns more rows than one RPC reply should carry. |
 | `./actions` | Action declaration, approval, application, retention, and journaling. | An operation has an externally visible side effect. |
 | `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
 | `./action-description` | Approval-text builder: prose plus exact typed fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |

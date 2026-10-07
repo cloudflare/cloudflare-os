@@ -101,7 +101,7 @@ describe("OAuth on a Worker Preview", () => {
     replayed.searchParams.delete("error");
     replayed.searchParams.set("code", "late-code");
     const late = await worker.fetch(new Request(replayed.toString()), previewEnv, ctxFor());
-    expect(await late.text()).toMatch(/Authorization Link Expired/);
+    expect(await late.text()).toMatch(/This link has expired/);
   });
 
   it("answers a callback whose state names no account with a 400, not an exception", async () => {
@@ -116,7 +116,7 @@ describe("OAuth on a Worker Preview", () => {
     const production = { ...env, BASE_URL: "https://gadgets.example.com/gatekeeper/gitlab" } as Env;
     const response = await worker.fetch(
       new Request(`https://gadgets.example.com/gatekeeper/gitlab/${"0".repeat(64)}/${"b".repeat(64)}`), production, ctxFor());
-    expect(await response.text()).toMatch(/Authorization Link Expired/);
+    expect(await response.text()).toMatch(/This link has expired/);
   });
 
   it("runs direct when the preview variables are unset, as in production: its own callback, the plain state", async () => {

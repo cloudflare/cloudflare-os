@@ -3,7 +3,7 @@
 // listing cursors apply, and the unified-patch reader. No runtime imports, so everything here
 // runs under the package's Node vitest project.
 
-import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GitLabActor,
   GitLabBranchRef,
@@ -106,7 +106,7 @@ export function parseResourceUrl(instanceUrl: string, url: string):
     return null;
   }
   if (parsed.origin !== new URL(instanceUrl).origin) return null;
-  const path = parsed.pathname.replace(/^\/+|\/+$/g, "");
+  const path = stripTrailingSlashes(parsed.pathname.replace(/^\/+/, ""));
   const [projectPath, rest] = splitOnDash(path);
   const segments = projectPath.split("/").filter(Boolean);
   if (segments.length < 2 || segments.some(s => s === "-")) return null;

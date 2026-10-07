@@ -24,7 +24,9 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import {
+  connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
+} from "@gadgets/gatekeeper-kit/connect-pages";
 import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
 import { CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
@@ -108,36 +110,9 @@ type ConnectAttempt = {
   reconnect: boolean;
 };
 
-const INVALID_LINK_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authorization Link Expired</title>
-  </head>
-  <body style="font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5;">
-    <div style="max-width: 520px; padding: 2rem; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: center;">
-      <h1 style="color: #d97706; font-size: 1.5rem; margin: 0 0 1rem 0;">Authorization Link Expired</h1>
-      <p style="color: #555; line-height: 1.6; margin: 0 0 1.5rem 0;">This authorization link is invalid or has expired. Please return to Cloudflare OS and try again.</p>
-      <button onclick="window.close()" style="padding: 0.5rem 1.5rem; background: #d97706; color: white; border: none; border-radius: 4px; font-size: 1rem; cursor: pointer;">Close</button>
-    </div>
-  </body>
-</html>`;
-
-const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration Required</title>
-  </head>
-  <body style="font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5;">
-    <div style="max-width: 520px; padding: 2rem; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: center;">
-      <h1 style="color: #d97706; font-size: 1.5rem; margin: 0 0 1rem 0;">GitLab Gatekeeper Not Configured</h1>
-      <p style="color: #555; line-height: 1.6; margin: 0;">Please configure a GitLab OAuth application ID and secret for this gatekeeper.</p>
-    </div>
-  </body>
-</html>`;
+const NOT_CONFIGURED_HTML = errorPageHtml(
+  "GitLab gatekeeper not configured",
+  "Please configure a GitLab OAuth application ID and secret for this gatekeeper.");
 
 /**
  * The OAuth callback policy for this Worker: direct in production, a relay through the stable
@@ -222,10 +197,8 @@ export default {
       if (url.searchParams.get("error")) {
         // The refusal ends the attempt: its nonce is consumed so a replayed callback cannot resume it.
         if (!await stub.consumeOAuthNonce(oauthNonce)) return htmlResponse(INVALID_LINK_HTML);
-        return new Response("GitLab authorization failed. Please restart the connection flow from Cloudflare OS.", {
-          status: 400,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
+        return htmlResponse(errorPageHtml(
+          "GitLab authorization failed", "Please restart the connection flow from Cloudflare OS."), 400);
       }
       const code = url.searchParams.get("code");
       if (!code) return new Response("Error: no 'code' provided", { status: 400 });
@@ -641,12 +614,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       resourceKind: parsed.kind,
       ...(parsed.kind === "project" ? {} : { iid: parsed.iid }),
     };
-    const resource = parsed.kind === "issue" ? resources.issue
-      : parsed.kind === "mergeRequest" ? resources.mergeRequest
-      : resources.project;
     return {
       class: this.ctx.exports.GitLabGatekeeperImpl({ props }),
-      resource,
+      resource: resources[parsed.kind],
     };
   }
 

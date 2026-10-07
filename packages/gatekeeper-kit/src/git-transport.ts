@@ -28,10 +28,11 @@
 // accept more (upstream git does), but every spelling used here is valid on any server that
 // supports partial clone at all, so the mapping is conservative rather than provider-specific.
 //
-// This module deliberately has no runtime imports (in particular no `cloudflare:workers`), so its
-// logic runs under the kit's Node vitest project.
+// This module deliberately has no runtime imports beyond other Node-safe kit leaves (in particular
+// no `cloudflare:workers`), so its logic runs under the kit's Node vitest project.
 
 import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { readBytesCapped, ResponseTooLargeError } from "./response-body";
 
 /**
  * Maximum raw HTTP body size accepted from one upload-pack fetch, enforced while streaming (the
@@ -592,34 +593,11 @@ export async function pushGitRefUpdate(
   if (response.body === null) {
     throw new Error("git push failed: response had no body");
   }
-  let report = await collectStream(response.body, MAX_RECEIVE_PACK_RESPONSE_BYTES);
-  parseReceivePackResponse(report, `refs/heads/${update.branch}`);
-}
-
-// Collects a byte stream into one buffer, enforcing a size cap as chunks arrive.
-async function collectStream(stream: ReadableStream<Uint8Array>, maxBytes: number)
-    : Promise<Uint8Array> {
-  let chunks: Uint8Array[] = [];
-  let total = 0;
-  let reader = stream.getReader();
-  try {
-    while (true) {
-      let result = await reader.read();
-      if (result.done) break;
-      total += result.value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(`git push response exceeded the ${maxBytes}-byte limit`);
-      }
-      chunks.push(result.value);
+  let report = await readBytesCapped(response, MAX_RECEIVE_PACK_RESPONSE_BYTES).catch((error: unknown) => {
+    if (error instanceof ResponseTooLargeError) {
+      throw new Error(`git push response exceeded the ${MAX_RECEIVE_PACK_RESPONSE_BYTES}-byte limit`);
     }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  let out = new Uint8Array(total);
-  let offset = 0;
-  for (let chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
+    throw error;
+  });
+  parseReceivePackResponse(report, `refs/heads/${update.branch}`);
 }

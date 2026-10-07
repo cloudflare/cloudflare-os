@@ -841,7 +841,9 @@ compare-and-swap protects a branch that moved between approval and apply; a reje
 through rather than matching on. Advertise every commit id a read hands out — `advertiseCommits`
 for a single read, and for a listing a `PageHookCursor` whose hook is `advertisePages` — except
 those served from the cache while queued for push, which both take as `withhold`: advertising one
-of those would record a pull-routing hint for an object the remote does not have.
+of those would record a pull-routing hint for an object the remote does not have. A session's
+`SessionGitCache` (`./cursors`) does both over its own lazily fetched cache stub, with `withhold`
+given once at construction.
 
 ## Other module boundaries
 

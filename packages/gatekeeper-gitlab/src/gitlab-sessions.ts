@@ -7,10 +7,10 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
+import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import { commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
 import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
-import { SessionGitCache } from "./gitlab-cursors";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
 import { commitIdsOfMergeRequestSummary } from "./gitlab-normalize";
 import type {
@@ -70,7 +70,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     super();
     this.#gatekeeper = gatekeeper;
     this.#approvalQueue = approvalQueue;
-    this.#gitCache = new SessionGitCache(approvalQueue, id => gatekeeper.isSimulatedCommitId(id));
+    this.#gitCache = new SessionGitCache(approvalQueue, { withhold: id => gatekeeper.isSimulatedCommitId(id) });
   }
 
   [Symbol.dispose](): void {
@@ -350,7 +350,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
 
   constructor(gatekeeper: GitLabGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>, logicalId: string) {
     super(gatekeeper, approvalQueue, logicalId, "mergeRequest");
-    this.#gitCache = new SessionGitCache(approvalQueue, id => gatekeeper.isSimulatedCommitId(id));
+    this.#gitCache = new SessionGitCache(approvalQueue, { withhold: id => gatekeeper.isSimulatedCommitId(id) });
   }
 
   override [Symbol.dispose](): void {
