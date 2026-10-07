@@ -599,12 +599,23 @@ function matchesAllLabels(item: { labels: GitLabLabel[] }, labels?: string[]): b
   return labels.every(label => available.has(label.toLowerCase()));
 }
 
+/** GitLab looks usernames up without regard to case (`User.by_username`), so its filters match that way. */
+function isUser(actor: GitLabActor | null, username: string): boolean {
+  return actor?.username.toLowerCase() === username.toLowerCase();
+}
+
+function matchesPeople(
+  item: Pick<GitLabIssueSummary, "author" | "assignees">,
+  { author, assignee }: Pick<GitLabIssueFilter, "author" | "assignee">,
+): boolean {
+  return (!author || isUser(item.author, author)) && (!assignee || item.assignees.some(actor => isUser(actor, assignee)));
+}
+
 export function issueMatchesFilter(item: GitLabIssueSummary, filter?: GitLabIssueFilter): boolean {
   if (!filter) return true;
   if (filter.state && filter.state !== "all" && item.state !== filter.state) return false;
   if (!matchesAllLabels(item, filter.labels)) return false;
-  if (filter.author && item.author?.username !== filter.author) return false;
-  if (filter.assignee && !item.assignees.some(a => a.username === filter.assignee)) return false;
+  if (!matchesPeople(item, filter)) return false;
   return true;
 }
 
@@ -620,8 +631,7 @@ export function mergeRequestMatchesFilter(item: GitLabMergeRequestSummary, filte
   if (filter.sourceBranch && item.source.branch !== filter.sourceBranch) return false;
   if (filter.targetBranch && item.target.branch !== filter.targetBranch) return false;
   if (!matchesAllLabels(item, filter.labels)) return false;
-  if (filter.author && item.author?.username !== filter.author) return false;
-  if (filter.assignee && !item.assignees.some(a => a.username === filter.assignee)) return false;
+  if (!matchesPeople(item, filter)) return false;
   if (filter.draft !== undefined && item.draft !== filter.draft) return false;
   return true;
 }

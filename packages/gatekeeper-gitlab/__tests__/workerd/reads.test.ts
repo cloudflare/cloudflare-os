@@ -1,7 +1,7 @@
 // The gatekeeper Durable Object's reads against a fake GitLab, driven through the TestHooks
 // facet the way the overseer instantiates it: normalization of the documented response shapes,
-// the `diff_refs` inversion, the merge request commit order, discussion filtering, diff threads,
-// paging, caching, and the Access service-token passthrough.
+// the `diff_refs` inversion, a diff over GitLab's limits refused, the merge request commit order,
+// discussion filtering, diff threads, paging, caching, and the Access service-token passthrough.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as fx from "../fixtures/gitlab-docs.js";
@@ -268,6 +268,17 @@ describe("merge requests", () => {
     const moved = await unwrap(await hooks().diffAll("mr-diff-moved", props, "133"));
     expect(moved.revision).toEqual({ baseSha: "d".repeat(40), headSha: MR.diff_refs.head_sha, mergeBaseSha: "c".repeat(40) });
     expect(moved.files.map(f => f.path)).toEqual(["VERSION"]);
+  });
+
+  it("refuses a diff over GitLab's limits rather than serve the part GitLab lists as the whole", async () => {
+    // GitLab stores only the files collected before a limit and lists only those; "1000+" is
+    // the one sign that the rest exist.
+    const fake = fakeMergeRequest();
+    fake.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json({ ...MR, changes_count: "1000+" }));
+    fake.install();
+    const id = await seedAccount();
+    await expect(unwrap(await hooks().diffAll("mr-diff-overflow", projectProps(id, PROJECT), "133")))
+      .rejects.toThrow(/over GitLab's diff limits/);
   });
 
   it("returns merge request commits oldest first, reversing GitLab's order", async () => {

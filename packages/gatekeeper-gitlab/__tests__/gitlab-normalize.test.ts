@@ -1,6 +1,7 @@
 // Pure normalization: resource-URL parsing (the `/-/` separator, nested namespaces), the
 // `diff_refs` inversion, `changes_count` parsing, draft prefixes, diff-file status and counts,
-// diff-position targets, label shapes, and the shas a merge request summary may not know.
+// diff-position targets, label shapes, the shas a merge request summary may not know, and the
+// listing filters as GitLab applies them.
 
 import { describe, expect, it } from "vitest";
 import * as fx from "./fixtures/gitlab-docs";
@@ -11,7 +12,9 @@ import {
   diffAnchor,
   hasDraftPrefix,
   issuableComparator,
+  issueMatchesFilter,
   labelFromResponse,
+  mergeRequestMatchesFilter,
   normalizeDiffFile,
   normalizeIssueSummary,
   normalizeMergeRequestSummary,
@@ -201,6 +204,19 @@ describe("labels, tags, merge request summary", () => {
 
   it("carries an issue's upvotes, the key a popularity listing is ordered by", () => {
     expect(normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data).upvotes).toBe(4);
+  });
+});
+
+describe("listing filters", () => {
+  it("match author and assignee usernames without regard to case, as GitLab's own filters do", () => {
+    // GitLab answers `author_username=Root` with root's rows; dropping them here would empty the listing.
+    const issue = normalizeIssueSummary(INSTANCE, "group/project", fx.issueResponse.data);
+    expect(issueMatchesFilter(issue, { author: "Root", assignee: "LENNIE" })).toBe(true);
+    expect(issueMatchesFilter(issue, { author: "lennie" })).toBe(false);
+    const mergeRequest = normalizeMergeRequestSummary(INSTANCE, "group/project",
+      { ...fx.mergeRequestResponse.data, assignees: fx.issueResponse.data.assignees });
+    expect(mergeRequestMatchesFilter(mergeRequest, { author: "Marcel.Amirault", assignee: "Lennie" })).toBe(true);
+    expect(mergeRequestMatchesFilter(mergeRequest, { assignee: "root" })).toBe(false);
   });
 });
 

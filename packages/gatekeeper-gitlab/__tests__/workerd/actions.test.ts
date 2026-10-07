@@ -1,10 +1,10 @@
 // The action lifecycle on the real gatekeeper Durable Object: queue → simulated read → apply →
 // revert, with GitLab faked at fetch. Covers the issue/MR mutations and their GitLab endpoints,
-// provisional ids and #~N / !~N rewriting, reject cascades and what a discarded action answers,
-// reviews (the approval bound to the head, drafts published as the decision requires, every step
-// safe to retry after a lost reply, and what a discard takes back), replies resolving to their
-// discussion, thread resolution, the merge error mapping, the approval card rendered from the
-// staged payload, and a refused submission.
+// provisional ids and #~N / !~N rewriting, quick-action lines posted as text, reject cascades and
+// what a discarded action answers, reviews (the approval bound to the head, drafts published as
+// the decision requires, every step safe to retry after a lost reply, and what a discard takes
+// back), replies resolving to their discussion, thread resolution, the merge error mapping, the
+// approval card rendered from the staged payload, and a refused submission.
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
@@ -368,6 +368,25 @@ describe("issue mutations", () => {
     expect(gitlab.count("POST", /notes$/)).toBe(1);
     await unwrap(await hooks().revertAction(name, props, action.approvalId));
     expect(gitlab.count("DELETE", /notes\/555$/)).toBe(1);
+  });
+
+  it("posts a quick-action line as text, and reads it back before apply as GitLab will store it", async () => {
+    // Unescaped, GitLab would run /clone on the issue -- copying it and its thread out of the
+    // bound project -- though the approver agreed only to a comment.
+    const { gitlab, props, name } = await setup("comment-quick-action");
+    withIssue(gitlab, { issue: issue({ user_notes_count: 0 }) });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues/1/discussions`), () => json([]));
+    gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues/1/notes$`), request =>
+      json({ ...fx.issueNotesResponse.data[1], id: 555, body: JSON.parse(request.body!).body }, { status: 201 }));
+    gitlab.install();
+    const posted = "Done.\n\\/clone other/project --with_notes";
+
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePostComment",
+      ["issue", "1", "Done.\n/clone other/project --with_notes"], DESC));
+    const [simulated] = await unwrap(await hooks().discussionAll(name, props, "issue", "1", 50));
+    expect(simulated.bodyMarkdown).toBe(posted);
+    await unwrap(await hooks().applyAction(name, props, action.approvalId));
+    expect(JSON.parse(gitlab.requests.find(r => r.method === "POST")!.body!)).toEqual({ body: posted });
   });
 });
 

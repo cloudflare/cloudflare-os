@@ -155,6 +155,10 @@ export interface GitLabProject {
 /**
  * Operations shared by issues and merge requests: GitLab calls both "issuables", and they carry
  * the same title, description, labels, state, and discussion thread.
+ *
+ * Markdown posted through this API never runs GitLab quick actions: a line like `/approve` or
+ * `/label ~bug` is posted with a backslash before the slash, which shows inside code blocks. Use
+ * the methods here instead.
  */
 export interface GitLabIssuable {
   /** Replaces the title. */
@@ -206,6 +210,9 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    * `files` cursor streams pages lazily using the merge request state observed
    * when `readDiff()` is called. If the merge request changes while the cursor is
    * being consumed, later pages may reflect those newer changes.
+   *
+   * Throws when the diff is over GitLab's limits (see `changedFilesTruncated`), since GitLab
+   * then lists only some of its files; read the change by commit or by path instead.
    */
   readDiff(options?: GitLabPageOptions): Promise<GitLabMergeRequestDiff>;
 
@@ -399,7 +406,10 @@ export type GitLabMergeRequestDetails = GitLabMergeRequestSummary & {
   approvedBy?: GitLabActor[];
   /** Number of changed files, when GitLab has computed it. */
   changedFiles?: number;
-  /** True when `changedFiles` is GitLab's display cap rather than the exact count. */
+  /**
+   * True when the diff is over GitLab's limits: `changedFiles` is then a lower bound, and
+   * `readDiff()` throws rather than serve part of the diff as the whole.
+   */
   changedFilesTruncated?: boolean;
 }
 

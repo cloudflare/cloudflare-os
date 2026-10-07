@@ -43,6 +43,29 @@ export function replaceProvisionalReferences(
     replace({ kind: sigil === "#" ? "issue" : "mergeRequest", provisionalId, text: match }));
 }
 
+/**
+ * A line GitLab may run as a quick action: `/` in the first column, a name, then whitespace or the
+ * line's end. GitLab's extractor (`lib/gitlab/quick_actions/extractor.rb`) matches only its known
+ * names, all word characters, and skips code, HTML and quote blocks -- but which, by version:
+ * current releases find paragraphs with a Markdown pipeline, 16.x scans one regex that knows only
+ * column-one ``` fences, so a `~~~` fence hides a command from one and not the other. Matching
+ * any name everywhere escapes some lines GitLab would leave alone, never one it would run. It
+ * deletes every carriage return first, so one may sit anywhere in the name: `\r*` takes those
+ * after the slash, `\s` those after a prefix of the name (enough, since the escape goes before
+ * the slash).
+ */
+const QUICK_ACTION_LINE = /^\/(?=\r*\w+(?:\s|$))/gm;
+
+/**
+ * Escape every line of `text` that GitLab would run as a quick action -- `/approve`, `/move`,
+ * `/clone` -- on the issue or merge request it is posted to, with the user's full authority and
+ * whatever the approved action said. The added backslash renders as nothing in Markdown text; in
+ * code and raw HTML, where it is literal, it shows.
+ */
+export function escapeQuickActions(text: string): string {
+  return text.replace(QUICK_ACTION_LINE, "\\/");
+}
+
 export type StoredActionState = "staged" | "pending" | "approved" | "rejected";
 
 /** Where a `postComment`/`replyToDiffComment` landed, so a revert can delete it. */
@@ -196,11 +219,11 @@ export type GitLabAction =
   | PushAction;
 
 /**
- * The Markdown fields in which apply rewrites `#~N` / `!~N` provisional references to real numbers
- * (see `#rewriteKnownReferences`). Apply rewrites each as it builds its request rather than reading
- * this list, so the list must name every field apply rewrites: the reject cascade reads it -- a text
- * that would be rewritten is a dependency, so rejecting the referenced resource retires the action
- * that names it -- and so does the approval card's rewrite note.
+ * The Markdown fields apply posts, rewriting `#~N` / `!~N` provisional references to real numbers
+ * and escaping quick actions (see `#postedText`). Apply rewrites each as it builds its request
+ * rather than reading this list, so the list must name every field apply posts: the reject cascade
+ * reads it -- a text that would be rewritten is a dependency, so rejecting the referenced resource
+ * retires the action that names it -- and so do the approval card's notes.
  */
 export function referenceBearingTexts(action: GitLabAction): string[] {
   switch (action.type) {

@@ -112,6 +112,13 @@ describe("OAuth on a Worker Preview", () => {
     expect(response.status).toBe(400);
   });
 
+  it("answers a connect link that names no account with the invalid-link page, not an exception", async () => {
+    const production = { ...env, BASE_URL: "https://gadgets.example.com/gatekeeper/gitlab" } as Env;
+    const response = await worker.fetch(
+      new Request(`https://gadgets.example.com/gatekeeper/gitlab/${"0".repeat(64)}/${"b".repeat(64)}`), production, ctxFor());
+    expect(await response.text()).toMatch(/Authorization Link Expired/);
+  });
+
   it("runs direct when the preview variables are unset, as in production: its own callback, the plain state", async () => {
     const { doId, nonce } = await seedInitiation();
     const production = { ...env, BASE_URL: "https://gadgets.example.com/gatekeeper/gitlab" } as Env;

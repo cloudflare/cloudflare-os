@@ -278,6 +278,18 @@ describe("simulated reads over queued pushes", () => {
     expect(commits.map(c => c.id)).toEqual([HEAD2, HEAD1, BASE]);
   });
 
+  it("filters the pending chain by author as GitLab does: any part of `Name <email>`, case and all", async () => {
+    const { props, name } = await setup();
+    const cache = cacheWithChain();
+    await queuePush(name, props, "main", HEAD2, false, cache);
+    // The fake answers GitLab's part of the history, BASE, whatever the filter.
+    const listed = async (author: string) =>
+      (await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache), { author }))).map(commit => commit.id);
+    expect(await listed("ada@")).toEqual([HEAD2, HEAD1, BASE]);
+    expect(await listed("Lovelace <ada@example.com>")).toEqual([HEAD2, HEAD1, BASE]);
+    expect(await listed("ADA")).toEqual([BASE]);
+  });
+
   it("marks a local merge's side parent as simulated, so it is withheld from advertising", async () => {
     // M merges local SIDE into HEAD1; the listing follows first parents (M, HEAD1, BASE) and
     // never shows SIDE -- but M's summary names SIDE as a parent, and the session advertises what
@@ -345,6 +357,26 @@ describe("simulated reads over queued pushes", () => {
     await queuePush(name, props, "feature", HEAD2, false, cache);
     const merge = await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest", ["133", {}], DESC));
     expect(merge).toMatchObject({ type: "mergeMergeRequest", expectedHeadSha: HEAD2 });
+  });
+
+  it("reads an existing merge request's diff at its simulated head even when GitLab's own is over its limits", async () => {
+    // GitLab's limits cut the diff of the remote head; the simulated diff is computed whole.
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const MR = { ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: BASE,
+      changes_count: "1000+", source_project_id: 1, target_project_id: 1, diff_refs: { base_sha: BASE, start_sha: BASE, head_sha: BASE } };
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json(MR));
+    const blobOld = "e".repeat(40);
+    const blobNew = "f".repeat(40);
+    const cache = cacheWithChain()
+      .withCommit(BASE, commitPayload(BASE_TREE, [], "base"))
+      .withTree(BASE_TREE, treePayload(blobOld)).withTree(TREE1, treePayload(blobNew)).withTree(TREE2, treePayload(blobNew))
+      .withBlob(blobOld, "hello\n").withBlob(blobNew, "hello world\n");
+    await queuePush(name, props, "feature", HEAD2, false, cache);
+
+    const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
+    expect(diff.revision.headSha).toBe(HEAD2);
+    expect(diff.files.map(file => file.path)).toEqual(["README"]);
   });
 
   it("degrades to the remote read when the simulation cannot resolve a tree", async () => {

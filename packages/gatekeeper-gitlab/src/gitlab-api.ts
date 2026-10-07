@@ -761,8 +761,10 @@ export class GitLabApi {
    * `null` for the group-inherited access that most members hold. The list form with the
    * documented `user_ids` filter is used rather than `members/all/:user_id` because its
    * non-member answer is a documented, verified shape (`[]`), where the single-member form's
-   * 404 is neither. The list folds a user's memberships into one row at their highest level;
-   * the highest is taken anyway, should a version return several.
+   * 404 is neither. GitLab answers one row per user (`MembersFinder#distinct_on`): the direct
+   * project membership if there is one, else an inherited or shared one, with its `expires_at` and
+   * `membership_state` but the user's effective `access_level` (from `project_authorizations`).
+   * The highest is taken anyway, should a version return several.
    */
   async getProjectMember(projectPath: string, userId: number): Promise<GitLabMemberResponse | null> {
     const rows = await this.#get<GitLabMemberResponse[]>(

@@ -1,6 +1,6 @@
-// The approval cards for the two actions whose card binds what the approver agrees to: a merge
-// names the head it will merge, and a push names the ref move it will make but can never show
-// the commits themselves, so it must never claim to be complete.
+// The approval cards whose text binds what the approver agrees to: a merge names the head it will
+// merge, a push names the ref move it will make but can never show the commits themselves, so it
+// must never claim to be complete, and a comment says that its quick-action lines will not run.
 
 import { describe, expect, it } from "vitest";
 import { ZERO_OID } from "@gadgets/gatekeeper-kit/git-transport";
@@ -59,5 +59,23 @@ describe("merge card", () => {
       ...BASE, type: "mergeMergeRequest", mergeRequestId: "7", expectedHeadSha: NEW, sourceBranch: null,
     });
     expect(card.fields).toEqual([{ label: "Expected head", kind: "inline", value: NEW }]);
+  });
+});
+
+describe("comment card", () => {
+  const COMMENT = { ...BASE, type: "postComment", targetKind: "mergeRequest", targetId: "7", provisionalCommentId: "~comment1" } as const;
+
+  it("shows the comment as written and warns that escaped lines carry a backslash code blocks show", () => {
+    // GitLab would never run a line inside a fence, but it is escaped anyway, so it posts changed.
+    const body = "Try this:\n```\n/help\n```";
+    const card = describeGitLabAction({ ...COMMENT, bodyMarkdown: body });
+    expect(card.fields).toEqual([expect.objectContaining({ label: "Comment", value: body })]);
+    expect(card.description).toMatch(/backslash/);
+    expect(card.description).toMatch(/code block/);
+  });
+
+  it("says nothing of quick actions when no line would run one", () => {
+    const card = describeGitLabAction({ ...COMMENT, bodyMarkdown: "see /approve" });
+    expect(card.description).not.toMatch(/quick action/);
   });
 });

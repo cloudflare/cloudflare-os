@@ -10,7 +10,7 @@
 import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
 import type {
-  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GitCache, GitPullHints,
+  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser, GitCache, GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
@@ -22,6 +22,7 @@ import type {
   GitLabCreateMergeRequestOptions,
   GitLabMergeRequestMergeOptions,
   GitLabMergeRequestReviewDraft,
+  GitLabCommitFilter,
   GitLabCommitSummary,
   GitLabDiffFile,
   GitLabDiffThread,
@@ -90,7 +91,7 @@ type GatekeeperFacet = {
   listBranches(filter: undefined, pageSize: number): Promise<Pages<GitLabBranchSummary>>;
   getCommit(ref: string | undefined, cache?: RpcStub<GitCache>): Promise<{ details: GitLabCommitDetails; fromCache: boolean }>;
   resolveRef(ref: string | undefined, cache?: RpcStub<GitCache>): Promise<{ id: string; fromCache: boolean }>;
-  listCommits(filter: undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
+  listCommits(filter: GitLabCommitFilter | undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   mergeRequestCommits(id: string, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   isSimulatedCommitId(commitId: string): boolean;
   gitPull(oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
@@ -143,6 +144,15 @@ export class TestCallback extends WorkerEntrypoint<Cloudflare.Env, { userObjectI
 
   async reconnectComplete(stageId: string): Promise<ConnectHandoff> {
     return { targetOrigin: "http://localhost:8787", ticket: stageId };
+  }
+
+  /**
+   * Describes the account first, as the Workshop's `stagePendingConnect` does -- which refreshes
+   * the grant if GitLab refuses its token -- then fails, as a Workshop that cannot stage would.
+   */
+  async complete(account: Fetcher<GatekeeperUser>): Promise<ConnectHandoff> {
+    await account.describe();
+    throw new Error("Workshop unreachable");
   }
 }
 
@@ -277,9 +287,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#gatekeeper(facetName, props).resolveRef(ref, cache));
   }
 
-  async listCommitsAll(facetName: string, props: GatekeeperProps, pageSize: number, cache?: RpcStub<GitCache>):
+  async listCommitsAll(facetName: string, props: GatekeeperProps, pageSize: number, cache?: RpcStub<GitCache>, filter?: GitLabCommitFilter):
       Promise<Outcome<GitLabCommitSummary[]>> {
-    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listCommits(undefined, pageSize, cache)));
+    return await outcome(async () => await drain(await this.#gatekeeper(facetName, props).listCommits(filter, pageSize, cache)));
   }
 
   async mergeRequestCommitsAll(facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>):

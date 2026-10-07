@@ -159,7 +159,11 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
 - **An expired membership admits nobody.** GitLab documents that from a member row's `expires_at`
   onward the user can no longer access the project, but the row is swept by a daily worker, so
   `members/all` can still list it with the date passed. The probe reads the date (a day, taken as
-  its UTC midnight) and denies on or after it; a date that does not parse denies too.
+  its UTC midnight) and denies on or after it; a date that does not parse denies too. The row
+  `members/all` answers is the direct membership whenever there is one (one row per user,
+  `MembersFinder#distinct_on`), so an expired or `awaiting` direct row denies a user whose
+  inherited membership is current until the sweep removes it. That fails closed, and with one row
+  there is nothing to choose between.
 - **Instance URLs are `https` origins.** Every request to `GITLAB_API_URL` carries a user's token
   and the OAuth exchanges carry the client secret and a refresh token; `GITLAB_URL` hosts the
   authorization page users are sent to. Both are validated at use — `https`, or `http` on
@@ -275,6 +279,19 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   (`PROVISIONAL_REFERENCE`): `#~1` is in neither `#~10` nor `#~1a`, for the rewrite and the
   reject cascade (§6) alike. `getIssue("~1")` and `getMergeRequest("~1")` are disjoint lookups,
   as they are on GitHub.
+- **Quick actions never run.** GitLab runs a line of a note, description or published draft that
+  starts with `/name` as a quick action on the issue or merge request, with the user's full
+  authority (its scope check limits only `ai_workflows` tokens): `/approve` publishes the user's
+  parked drafts and approves with no head bound, `/move` and `/clone` take an issue and its thread
+  out of the bound project, and none of it is what the approver agreed to. `#postedText`, the one
+  transform every posted text passes through, escapes each such line with a leading backslash
+  (`escapeQuickActions`), which renders as nothing in text and shows in code, where GitLab would
+  not have run the line. Skipping code instead would have to follow the instance's version:
+  current releases find paragraphs with a Markdown pipeline, 16.x scans one regex that knows only
+  column-one ``` fences, so a `~~~` fence hides a command from one and not the other. Reads
+  simulate with the same text, and the approval card says the backslash is added. `/merge` was
+  never the risk: it needs the `merge_request_diff_head_sha` parameter, which nothing sends.
+  GitHub has no analogue.
 - **Assignees are usernames, resolved at prepare time.** GitLab's create/update APIs take
   `assignee_ids`; the agent-facing API takes usernames (what agents see in results and URLs).
   `prepareCreateIssue` and `prepareCreateMergeRequest` resolve each via `GET /users?username=` —
@@ -539,9 +556,13 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `/oauth` callback → `acceptAuthCode(code, oauthNonce)` verifies the nonce in constant time,
   deletes it and the verifier, exchanges the code (with `code_verifier`), and either stages the
   grant (`reconnect` flows → `stageCredentials` → `callback.reconnectComplete(stageId)`) or writes
-  it live and calls `callback.complete(GatekeeperUserImpl({props}))`; the browser lands on
-  `connectHandoffPageHtml`. Auth-only grants set the 2-minute alarm. All from
-  `gatekeeper-kit/connect-pages` and `credential-stage`; nothing hand-rolled.
+  it live and calls `callback.complete(GatekeeperUserImpl({props}))`, clearing *and revoking* the
+  grant if that throws -- the pair stored then, which the Workshop describing the account may have
+  rotated -- since tokens the Workshop never took are held by nobody; the browser lands
+  on `connectHandoffPageHtml`. Auth-only grants set the 2-minute alarm. All from
+  `gatekeeper-kit/connect-pages` and `credential-stage`; nothing hand-rolled. A connect link or
+  callback state whose id is not one of this Worker's accounts gets the invalid-link page or a
+  400 (`accountFor`), not an exception.
 - **Grant storage**: the coordinator's `credentials` record (`{ accessToken, refreshToken,
   expiresAt, scopes }`) and its `credentials:*` fence keys, `user` (`{ id, generation }`),
   `expiredNotified` (kit latch), `stagedCredentials` (kit key, `{ grant, startedUnder }`).
@@ -704,7 +725,7 @@ in `github.ts` is the checklist. Divergences:
 - **Reject cascades**: as GitHub's (`#rejectActionsForResource`, `#rejectReplyDependencyChain`,
   `#rejectMergeRequestsForMissingBranches`), with three additions. An action *depends* on a
   provisional resource if it targets it **or its text names it** (`#~N` / `!~N`, whole tokens).
-  The text fields are the ones `#rewriteKnownReferences` rewrites at apply, listed once in
+  The text fields are the ones `#postedText` rewrites at apply, listed once in
   `referenceBearingTexts` (`gitlab-action-types.ts`) so the rewrite and the cascade cannot drift
   — a reference that apply would fail to rewrite (`requireAll`) is exactly a dependency the
   cascade must retire, or the action stays pending and fails every apply. The cascade recurses:
@@ -735,6 +756,11 @@ in `github.ts` is the checklist. Divergences:
   shown them would approve a change they had not seen. Not cached, since the next attempt may
   complete; the provisional-details path already degrades `changedFiles` to unknown under its
   own `try/warn`.
+- **Merge request diff**: `GET …/merge_requests/:iid/diffs` pages through the files GitLab stored
+  for the diff, and a diff over its limits stores only those collected before the limit, with
+  nothing in them to say the rest exist. `changes_count` is the diff's `real_size`, `"N+"` exactly
+  then, so `#getDiff` refuses on `changedFilesTruncated` rather than serve GitLab's diff, as it
+  refuses a timed-out compare. A diff simulated over queued pushes is computed whole and served.
 - **Listing/search**: `#listIssueSummaries` and `#searchIssueSummaries` collapse into one path —
   GitLab's list endpoint *is* the search endpoint (`search=`) — as do the MR pair. The GitHub
   client-side PR scan (`#searchPullSummaries`' buffered upstream walk) is deleted; so is
@@ -746,6 +772,9 @@ in `github.ts` is the checklist. Divergences:
   list both its injected `~N` and, on a later page, the real row. The injected rows already
   served are re-keyed at every check, since `~N` served before its create landed is the real
   row served after.
+  The cursor's `filter` (`issueMatchesFilter`, `mergeRequestMatchesFilter`) runs on GitLab's rows
+  too, so it must agree with GitLab's filters or it discards rows GitLab returned: usernames match
+  without regard to case, as `User.by_username` looks them up, and labels likewise.
 - **Discussion**: `#getDiscussion` reads `…/discussions` for both kinds (locked decision):
   `#fetchRemoteDiscussionComments` flattens the cached discussions, dropping `system` notes and,
   whole, every discussion `diffAnchor` places on the diff; the pull-request two-stream merge
@@ -816,7 +845,10 @@ substitutes transport endpoints and REST lookups:
   mention only the two anchors), and `issuableComparator` orders a `popularity` listing by the
   summary's `upvotes` (carried for that reason) with ties broken by id descending whatever the
   direction, as `Issuable#sort_by_attribute` appends `id DESC` — most rows tie under
-  `popularity`, so the tie-break places most of them. A full commit id GitLab does not know is
+  `popularity`, so the tie-break places most of them. A queued commit passes `listCommits`'
+  `author` filter as GitLab's does, which is `git log --author` through Gitaly: a case-sensitive
+  substring of `Name <email>` (Gitaly adds `--regexp-ignore-case` only to message searches), exact
+  for any text without regex characters. A full commit id GitLab does not know is
   read from the cache only when the simulation stands behind it (`#readQueuedPushCommit`: a
   commit it has served, or one a queued push's chain reaches). The overseer already answers
   this gatekeeper only for its project's objects and its own queued pushes; the check keeps the
@@ -1283,15 +1315,6 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   "While creation is pending, the returned issue will have a provisional ID". What the agent
   needs is that an id may read `~N` and that `#~N`/`!~N` resolve, not why. `types.d.ts` keeps
   GitHub's wording so the two read alike; trimming it is one change to both.
-- **GitLab quick actions in the text this gatekeeper posts.** Every note, description and
-  published draft goes through `QuickActions::InterpretService` (the notes, discussions and merge
-  request endpoints; drafts when published), and the `api` scope permits them, so a line-start
-  `/merge`, `/approve`, `/move`, `/clone` or `/confidential` in an agent's Markdown acts outside
-  the approved action — `/merge` without the bound `sha`. The extractor
-  (`lib/gitlab/quick_actions/extractor.rb`) takes a `/command` at the start of a line outside
-  code, HTML and quote blocks. GitHub has no analogue. The remedy — neutralising such lines, or
-  refusing them at prepare — sits beside `#rewriteKnownReferences`, the one transform every
-  posted text already passes through.
 - **Gaps both gatekeepers keep, from the fourth review round.** Follow-ups for the two together:
   the pending chain follows first parents, while both providers' commit listings follow every
   parent, so a queued merge's side branch is missing from `listCommits()` until its push lands;
@@ -1359,6 +1382,14 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   applies `setLabels` with the set computed at prepare from the overlay, so a label an unapproved
   `addLabels` queued reaches GitHub and one a human added since is dropped (this port sends
   GitLab's `remove_labels` delta).
+  And its `readDiff()` serves `pulls/{n}/files` as the whole diff, though GitHub lists at most
+  3000 files there (this port refuses a diff over GitLab's limits).
+  From the same round: its author/assignee filters compare logins exactly, which discards the
+  provider's rows for a differently-cased login if GitHub's own match ignores case (unchecked);
+  its queued-commit `author` filter is an exact name-or-email match, where GitHub's `author` is a
+  login or an email, so it needs its own look rather than this port's substring; a first connect
+  whose `complete()` throws clears the grant without revoking it; and both its connect and
+  `/oauth` routes call `idFromString` unguarded, so a malformed link or state is a 500.
   Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
   which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential

@@ -32,6 +32,32 @@ async function storedGrant(userObjectId: string): Promise<StoredGrant | undefine
     state.storage.kv.get<StoredGrant>("credentials"));
 }
 
+/**
+ * GitLab's token endpoint, added to `gitlab`: authorization code `code-N` is answered with grant
+ * N, after `beforeAnswering` has run; refresh token `refresh-N` with grant N + 10, and the seeded
+ * `test-refresh` as already redeemed. Returns the revoked tokens.
+ */
+function fakeOAuth(beforeAnswering: (code: string) => Promise<void> = async () => {}, gitlab = new FakeGitLab()): string[] {
+  const revoked: string[] = [];
+  gitlab.on("POST", /^\/oauth\/token/, async request => {
+    const form = new URLSearchParams(request.body);
+    const code = form.get("code");
+    if (code !== null) {
+      await beforeAnswering(code);
+      return json(tokenResponse(Number(code.slice("code-".length))));
+    }
+    const refreshToken = form.get("refresh_token")!;
+    if (refreshToken === "test-refresh") return json({ error: "invalid_grant" }, { status: 400 });
+    return json(tokenResponse(Number(refreshToken.slice("refresh-".length)) + 10));
+  });
+  gitlab.on("POST", /^\/oauth\/revoke/, request => {
+    revoked.push(new URLSearchParams(request.body).get("token")!);
+    return json({});
+  });
+  gitlab.install();
+  return revoked;
+}
+
 describe("UserAccount.getAccessToken", () => {
   it("returns the stored token without a network call while it is fresh", async () => {
     const gitlab = new FakeGitLab();
@@ -304,33 +330,6 @@ describe("withAccountApi", () => {
 });
 
 describe("UserAccount.commitReconnect", () => {
-  /**
-   * GitLab's token endpoint: authorization code `code-N` is answered with grant N, after
-   * `beforeAnswering` has run; refresh token `refresh-N` with grant N + 10, and the seeded
-   * `test-refresh` as already redeemed. Returns the revoked tokens.
-   */
-  function fakeOAuth(beforeAnswering: (code: string) => Promise<void> = async () => {}): string[] {
-    const gitlab = new FakeGitLab();
-    const revoked: string[] = [];
-    gitlab.on("POST", /^\/oauth\/token/, async request => {
-      const form = new URLSearchParams(request.body);
-      const code = form.get("code");
-      if (code !== null) {
-        await beforeAnswering(code);
-        return json(tokenResponse(Number(code.slice("code-".length))));
-      }
-      const refreshToken = form.get("refresh_token")!;
-      if (refreshToken === "test-refresh") return json({ error: "invalid_grant" }, { status: 400 });
-      return json(tokenResponse(Number(refreshToken.slice("refresh-".length)) + 10));
-    });
-    gitlab.on("POST", /^\/oauth\/revoke/, request => {
-      revoked.push(new URLSearchParams(request.body).get("token")!);
-      return json({});
-    });
-    gitlab.install();
-    return revoked;
-  }
-
   it("discards a reconnect that another overtook, revoking its tokens rather than committing them over the newer grant", async () => {
     // Reconnect 1's code exchange is still running when reconnect 2 starts, finishes and is
     // committed. Reconnect 1's ticket is still good once its exchange returns, but the connection
@@ -404,6 +403,26 @@ describe("UserAccount.acceptAuthCode", () => {
       expect(revoked.toSorted()).toEqual(["access-7", "refresh-7"]);
       // Nothing is left behind: no grant, no stage, no key at all.
       expect([...state.storage.kv.list()]).toEqual([]);
+    });
+  });
+
+  it("revokes the grant a failed first connect leaves, even one rotated while the Workshop described it", async () => {
+    // The Workshop describes the new account before staging it; GitLab refusing the fresh token
+    // there makes the account refresh past it, so the pair to revoke is the rotated one.
+    const accountId = env.USER_ACCOUNT.newUniqueId();
+    await hooks().installCallback(accountId.toString(), 0, "initiation");
+    await runInDurableObject(env.USER_ACCOUNT.get(accountId), async (instance, state) => {
+      // This pool cannot mint the decorated account entrypoint (see `TestUser`); its undecorated
+      // twin stands in.
+      Object.defineProperty(state.exports, "GatekeeperUserImpl", { value: Reflect.get(state.exports, "TestUser") });
+      const flow = await instance.beginOAuthFlow("initiation", getRedirectUri(env));
+      const gitlab = new FakeGitLab();
+      gitlab.on("GET", /^\/api\/v4\/user$/, request => request.headers.get("authorization") === "Bearer access-7"
+        ? json({ message: "401 Unauthorized" }, { status: 401 })
+        : json({ id: 1, username: "ada", name: "Ada", web_url: "https://gitlab.example.com/ada" }));
+      const revoked = fakeOAuth(undefined, gitlab);
+      await expect(instance.acceptAuthCode("code-7", flow!.oauthNonce)).rejects.toThrow(/Workshop unreachable/);
+      expect(revoked.toSorted()).toEqual(["access-17", "refresh-17"]);
     });
   });
 });

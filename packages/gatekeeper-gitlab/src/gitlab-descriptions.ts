@@ -7,6 +7,7 @@ import {
 import { ZERO_OID } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   type EntityKind,
+  escapeQuickActions,
   type GitLabAction,
   referenceBearingTexts,
   replaceProvisionalReferences,
@@ -19,15 +20,22 @@ function reference(kind: EntityKind, id: string): string {
   return `${kind === "issue" ? "#" : "!"}${id}`;
 }
 
-// Apply replaces `#~N` / `!~N` in every text `referenceBearingTexts` names with the GitLab number
-// of the issue or merge request created in this workspace as `~N`. Both name the same thing, so
-// the text shown stays the text sent, but the approver is told the number will change.
-function noteReferenceRewrite(builder: ActionDescriptionBuilder, action: GitLabAction): ActionDescriptionBuilder {
-  return referenceBearingTexts(action).some(text => replaceProvisionalReferences(text, () => "") !== text)
-    ? builder.prose(
+// Apply posts every text `referenceBearingTexts` names with `#~N` / `!~N` replaced by the GitLab
+// number of the issue or merge request created in this workspace as `~N`, and with quick-action
+// lines escaped. The card shows the text as the agent wrote it and tells the approver of each.
+function noteTextRewrites(builder: ActionDescriptionBuilder, action: GitLabAction): ActionDescriptionBuilder {
+  const texts = referenceBearingTexts(action);
+  if (texts.some(text => replaceProvisionalReferences(text, () => "") !== text)) {
+    builder.prose(
       "References like #~N (issues) and !~N (merge requests) to ones created in this workspace are " +
-      "replaced with their GitLab numbers when applied.")
-    : builder;
+      "replaced with their GitLab numbers when applied.");
+  }
+  if (texts.some(text => escapeQuickActions(text) !== text)) {
+    builder.prose(
+      "Lines like /approve are posted with a backslash before the slash, so GitLab does not run them " +
+      "as quick actions; the backslash shows inside code blocks.");
+  }
+  return builder;
 }
 
 // Every coordinate apply sends: a multi-line range carries its own start side.
@@ -55,7 +63,7 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
   switch (action.type) {
     case "createIssue": {
       const { options } = action;
-      return noteReferenceRewrite(buildDescription(`Create a new issue in ${project}.`)
+      return noteTextRewrites(buildDescription(`Create a new issue in ${project}.`)
         .inline("Provisional ID", action.provisionalId)
         .inline("Title", options.title)
         .verbatim("Description", options.bodyMarkdown ?? "", "markdown")
@@ -78,7 +86,7 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
         builder.inline("Delete source branch when merged", yesNo(options.removeSourceBranch));
       }
       if (options.squash !== undefined) builder.inline("Squash commits when merged", yesNo(options.squash));
-      return noteReferenceRewrite(builder, action).finish();
+      return noteTextRewrites(builder, action).finish();
     }
     case "setTitle":
       return buildDescription(`Change the title of ${reference(action.targetKind, action.targetId)}.`)
@@ -86,7 +94,7 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
         .inline("New title", action.title)
         .finish();
     case "setBody":
-      return noteReferenceRewrite(
+      return noteTextRewrites(
         buildDescription(`Replace the Markdown description of ${reference(action.targetKind, action.targetId)}.`)
           .verbatim("New description", action.bodyMarkdown, "markdown"), action)
         .finish();
@@ -103,7 +111,7 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
         `${action.state === "closed" ? "Close" : "Reopen"} ${reference(action.targetKind, action.targetId)}.`)
         .finish();
     case "postComment":
-      return noteReferenceRewrite(
+      return noteTextRewrites(
         buildDescription(`Post a new Markdown comment on ${reference(action.targetKind, action.targetId)}.`)
           .verbatim("Comment", action.bodyMarkdown, "markdown"), action)
         .finish();
@@ -121,10 +129,10 @@ export function describeGitLabAction(action: GitLabAction): RenderedDescription 
           .inline(`Diff comment ${index + 1} provisional ID`, comment.provisionalCommentId)
           .verbatim(`Diff comment ${index + 1}`, comment.bodyMarkdown, "markdown");
       }
-      return noteReferenceRewrite(builder, action).finish();
+      return noteTextRewrites(builder, action).finish();
     }
     case "replyToDiffComment":
-      return noteReferenceRewrite(
+      return noteTextRewrites(
         buildDescription(`Reply to a diff discussion thread on merge request !${action.mergeRequestId}.`)
           .inline("In reply to comment", action.commentId)
           .inline("Provisional ID", action.provisionalCommentId)

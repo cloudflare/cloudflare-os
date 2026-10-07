@@ -154,6 +154,15 @@ function previewOAuthFor(env: Env): PreviewOAuth | Response {
   }
 }
 
+/** The account a connect link or callback state names; null when the id is not one of ours. */
+function accountFor(ctx: ExecutionContext, doId: string): DurableObjectStub<UserAccount> | null {
+  try {
+    return ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
+  } catch {
+    return null;
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
@@ -174,9 +183,8 @@ export default {
       const initiationNonce = path[1];
       const previewOAuth = previewOAuthFor(env);
       if (previewOAuth instanceof Response) return previewOAuth;
-      const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      const begun = await stub.beginOAuthFlow(initiationNonce, previewOAuth.redirectUri);
-      if (begun === null) {
+      const begun = await accountFor(ctx, doId)?.beginOAuthFlow(initiationNonce, previewOAuth.redirectUri);
+      if (!begun) {
         return htmlResponse(INVALID_LINK_HTML);
       }
 
@@ -208,12 +216,8 @@ export default {
         return new Response("Error: malformed state", { status: 400 });
       }
 
-      let stub: DurableObjectStub<UserAccount>;
-      try {
-        stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(doId));
-      } catch {
-        return new Response("Error: malformed state", { status: 400 });
-      }
+      const stub = accountFor(ctx, doId);
+      if (stub === null) return new Response("Error: malformed state", { status: 400 });
 
       if (url.searchParams.get("error")) {
         // The refusal ends the attempt: its nonce is consumed so a replayed callback cannot resume it.
@@ -450,7 +454,11 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
         const props = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (error) {
+        // A connection the Workshop never took leaves its tokens with nobody: revoke them, as a
+        // disconnect would -- the pair stored now, since describing the account may have rotated it.
+        const abandoned = this.#creds.stored() ?? grant;
         this.#creds.clear();
+        await this.#revokeTokens(abandoned.refreshToken, abandoned.accessToken);
         throw error;
       }
       // Auth-only sign-in grants are transient: the caller read the email via complete(), so

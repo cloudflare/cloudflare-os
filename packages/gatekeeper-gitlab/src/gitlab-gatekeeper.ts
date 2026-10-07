@@ -54,6 +54,7 @@ import {
 } from "./gitlab-api";
 import {
   apiKind,
+  escapeQuickActions,
   referenceBearingTexts,
   replaceProvisionalReferences,
   textReferences,
@@ -115,6 +116,7 @@ import {
   normalizeMergeRequestSummary,
   normalizeProjectMetadata,
   normalizeTagSummary,
+  parseChangesCount,
   projectRef,
   revisionFromDiffRefs,
   stableKey,
@@ -443,11 +445,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Rewrite provisional references -- `#~N` for issues, `!~N` for merge requests -- to their real
-   * numbers where known. With `requireAll`, an unresolved reference is an error (apply time).
+   * The Markdown GitLab is sent for an agent's `text`: provisional references -- `#~N` for issues,
+   * `!~N` for merge requests -- rewritten to their real numbers where known, and quick-action lines
+   * escaped. With `requireAll`, an unresolved reference is an error (apply time). Reads simulate
+   * with the same text, so a pending text reads as GitLab will store it.
    */
-  #rewriteKnownReferences(text: string, requireAll: boolean): string {
-    return replaceProvisionalReferences(text, reference => {
+  #postedText(text: string, requireAll: boolean): string {
+    return escapeQuickActions(replaceProvisionalReferences(text, reference => {
       const record = this.#getProvisionalResource(reference.provisionalId);
       const realId = record?.kind === reference.kind ? record.realId : undefined;
       if (!realId && requireAll) {
@@ -456,7 +460,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           `that has not been created on GitLab yet. Retry after its create action is approved.`);
       }
       return realId ? `${reference.text[0]}${realId}` : reference.text;
-    });
+    }));
   }
 
   /** Pending pushes, oldest first, optionally for one branch. */
@@ -681,7 +685,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       updatedAt: new Date(action.submittedAt),
       commentCount: 0,
       upvotes: 0,
-      bodyMarkdown: action.options.bodyMarkdown ?? "",
+      bodyMarkdown: this.#postedText(action.options.bodyMarkdown ?? "", false),
     };
   }
 
@@ -733,7 +737,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       createdAt: new Date(action.submittedAt),
       updatedAt: new Date(action.submittedAt),
       commentCount: 0,
-      bodyMarkdown: action.options.bodyMarkdown ?? "",
+      bodyMarkdown: this.#postedText(action.options.bodyMarkdown ?? "", false),
       // As GitLab will compute it: from the title, not the flag.
       draft: hasDraftPrefix(mergeRequestCreateTitle(action.options)),
       source: { branch: action.options.sourceBranch, sha: sourceSha, project },
@@ -762,7 +766,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           break;
         case "setBody":
           if ("bodyMarkdown" in result) {
-            result.bodyMarkdown = this.#rewriteKnownReferences(action.bodyMarkdown, false);
+            result.bodyMarkdown = this.#postedText(action.bodyMarkdown, false);
             result.updatedAt = new Date(action.submittedAt);
           }
           break;
@@ -977,7 +981,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           kind: "comment",
           id: action.provisionalCommentId,
           author: viewer,
-          bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
+          bodyMarkdown: this.#postedText(action.bodyMarkdown, false),
           createdAt: new Date(action.submittedAt),
           url: `${this.#noteableUrl(kind, logicalId)}#note_${action.provisionalCommentId}`,
         });
@@ -987,7 +991,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           kind: "comment",
           id: action.provisionalReviewId,
           author: viewer,
-          bodyMarkdown: this.#rewriteKnownReferences(action.review.bodyMarkdown, false),
+          bodyMarkdown: this.#postedText(action.review.bodyMarkdown, false),
           createdAt: new Date(action.submittedAt),
           url: `${this.#noteableUrl(kind, logicalId)}#note_${action.provisionalReviewId}`,
         });
@@ -1067,7 +1071,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             comments: [{
               id: comment.provisionalCommentId,
               author: viewer,
-              bodyMarkdown: this.#rewriteKnownReferences(comment.bodyMarkdown, false),
+              bodyMarkdown: this.#postedText(comment.bodyMarkdown, false),
               createdAt: new Date(action.submittedAt),
               url: `${noteableUrl}#note_${comment.provisionalCommentId}`,
             }],
@@ -1080,7 +1084,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           thread.comments.push({
             id: action.provisionalCommentId,
             author: viewer,
-            bodyMarkdown: this.#rewriteKnownReferences(action.bodyMarkdown, false),
+            bodyMarkdown: this.#postedText(action.bodyMarkdown, false),
             createdAt: new Date(action.submittedAt),
             url: `${noteableUrl}#note_${action.provisionalCommentId}`,
           });
@@ -1195,6 +1199,14 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       if (simulated !== null) {
         return { revision: simulated.revision, files: new ArrayCursor(simulated.files, pageSize) };
       }
+    }
+    // GitLab stores, and so lists, only the files collected before its diff limits, and nothing
+    // in the listed files says the rest exist: reviewing them would approve the files left out.
+    // The simulated diff above is computed whole, so only GitLab's own is refused.
+    if (parseChangesCount(mr.changes_count).changedFilesTruncated) {
+      throw new Error(
+        `Merge request !${realId} is over GitLab's diff limits, so GitLab lists only part of its diff. ` +
+        "Read the change in smaller pieces (by commit or by path) instead.");
     }
     const revision = await this.#mergeRequestRevision(mr);
     const projectPath = this.#projectPath();
@@ -2041,7 +2053,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       case "createIssue": {
         const response = await this.#withApi(api => api.createIssue(projectPath, {
           title: action.options.title,
-          description: action.options.bodyMarkdown ? this.#rewriteKnownReferences(action.options.bodyMarkdown, true) : undefined,
+          description: action.options.bodyMarkdown ? this.#postedText(action.options.bodyMarkdown, true) : undefined,
           labels: action.options.labels,
           assignee_ids: action.assigneeIds.length > 0 ? action.assigneeIds : undefined,
         }));
@@ -2055,7 +2067,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             source_branch: action.options.sourceBranch,
             target_branch: action.options.targetBranch,
             title: mergeRequestCreateTitle(action.options),
-            description: action.options.bodyMarkdown ? this.#rewriteKnownReferences(action.options.bodyMarkdown, true) : undefined,
+            description: action.options.bodyMarkdown ? this.#postedText(action.options.bodyMarkdown, true) : undefined,
             labels: action.options.labels,
             assignee_ids: action.assigneeIds.length > 0 ? action.assigneeIds : undefined,
             remove_source_branch: action.options.removeSourceBranch,
@@ -2084,7 +2096,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       case "setBody": {
         const realId = this.#requireRealId(action.targetId);
-        await this.#updateIssuable(action.targetKind, realId, { description: this.#rewriteKnownReferences(action.bodyMarkdown, true) });
+        await this.#updateIssuable(action.targetKind, realId, { description: this.#postedText(action.bodyMarkdown, true) });
         break;
       }
       case "addLabels": {
@@ -2105,7 +2117,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       case "postComment": {
         const realId = this.#requireRealId(action.targetId);
         const note = await this.#withApi(api => api.createNote(
-          projectPath, apiKind(action.targetKind), Number(realId), this.#rewriteKnownReferences(action.bodyMarkdown, true)));
+          projectPath, apiKind(action.targetKind), Number(realId), this.#postedText(action.bodyMarkdown, true)));
         this.#markActionApproved(action, { type: "note", kind: action.targetKind, noteId: note.id });
         this.#clearCaches();
         return;
@@ -2118,7 +2130,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const realId = this.#requireRealId(action.mergeRequestId, "Merge request");
         const discussionId = await this.#resolveReplyTarget(realId, action.commentId);
         const note = await this.#withApi(api => api.addDiscussionNote(
-          projectPath, Number(realId), discussionId, this.#rewriteKnownReferences(action.bodyMarkdown, true)));
+          projectPath, Number(realId), discussionId, this.#postedText(action.bodyMarkdown, true)));
         this.ctx.storage.kv.put(`diffAlias:${action.provisionalCommentId}`, String(note.id));
         this.#markActionApproved(action, { type: "note", kind: "mergeRequest", noteId: note.id });
         this.#clearCaches();
@@ -2351,8 +2363,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     // Every reference must resolve before anything is posted. A review left partway -- approved,
     // drafts parked -- waiting on an issue that is then discarded would be retired by that
     // cascade, which cleans nothing up.
-    const bodies = comments.map(comment => this.#rewriteKnownReferences(comment.bodyMarkdown, true));
-    const summary = review.bodyMarkdown ? this.#rewriteKnownReferences(review.bodyMarkdown, true) : undefined;
+    const bodies = comments.map(comment => this.#postedText(comment.bodyMarkdown, true));
+    const summary = review.bodyMarkdown ? this.#postedText(review.bodyMarkdown, true) : undefined;
 
     const live = await this.#withApi(api => api.getMergeRequest(projectPath, iid));
     if (live.sha !== review.revision.headSha) throw new Error(reviewedHeadMoved(realId, review.revision.headSha, live.sha));
@@ -2516,7 +2528,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const entries = progress.comments ?? [];
     if (entries.some(entry => entry === "creating" || typeof entry === "number")) {
       // Unresolvable now means it was never sent, and then it matches no draft.
-      const bodies = (action.review.diffComments ?? []).map(comment => this.#rewriteKnownReferences(comment.bodyMarkdown, false));
+      const bodies = (action.review.diffComments ?? []).map(comment => this.#postedText(comment.bodyMarkdown, false));
       await this.#reconcileReviewDrafts(record, action, iid, bodies);
       for (const [index, entry] of entries.entries()) {
         if (typeof entry !== "number") continue;
@@ -2951,7 +2963,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const results: GitLabCommitSummary[] = [];
     for (let index = 0; index < chain.commits.length; index++) {
       const { summary, tree } = chain.commits[index];
-      if (filter?.author !== undefined && summary.author.email !== filter.author && summary.author.name !== filter.author) continue;
+      // GitLab's `author` is git log's `--author`: a case-sensitive match anywhere in `Name <email>`.
+      const { name, email } = summary.author;
+      if (filter?.author !== undefined && !`${name} <${email}>`.includes(filter.author)) continue;
       const date = summary.committer.date ?? summary.author.date;
       if (filter?.since !== undefined && (date === undefined || date < filter.since)) continue;
       if (filter?.until !== undefined && (date === undefined || date > filter.until)) continue;
