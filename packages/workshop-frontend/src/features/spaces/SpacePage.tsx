@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useEffectEvent, useId, useState, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { GadgetMetadataWithTimestamps, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
@@ -14,7 +14,12 @@ import { SpaceMembersDialog } from './SpaceMembersDialog'
 import { SpaceNotFound } from './SpaceNotFound'
 import { SPACE_ROLE_LABELS } from './spaceRoles'
 import { SpaceSectionRows } from './SpaceSectionRows'
+import { SpaceSyncStatus } from './sync/SpaceSyncStatus'
+import { StartSpaceSyncDialog } from './sync/StartSpaceSyncDialog'
+import { useSpaceSync } from './sync/useSpaceSync'
+import { syncSourceName } from './sync/useSpaceSyncAccounts'
 import { SpaceTreeLayout } from './tree/SpaceTreeLayout'
+import { useSelectedWorkspaceId } from './tree/useSelectedWorkspace'
 import { SpaceViewToggle } from './tree/SpaceViewToggle'
 import { useSpaceViewMode } from './tree/useSpaceViewMode'
 import { useSpace } from './useSpace'
@@ -71,6 +76,11 @@ const UnlistedWorkspaces = ({ children }: { children: ReactNode }) => {
  * (`SpaceTreeLayout`), a choice remembered for the user. The user's own workspaces the space does
  * not list are shown apart under the tree there too.
  *
+ * A member with a connected account that can sync a source into the space is offered that
+ * beside the space's name (`StartSpaceSyncDialog`), under the entry selected in the tree unless
+ * they choose another. Their syncs into the space show their progress under the header, and the
+ * space's workspaces are read again whenever one of them ends.
+ *
  * A user who is not a member of the space is a visitor, to whom the space is open while it
  * lists a workspace published to everyone signed in: they get its name and those workspaces
  * (see `VisitedSpace`), and none of the above.
@@ -94,8 +104,10 @@ export const SpacePage = ({ spaceKey, spaces }: {
   // outlasts that.
   const [membersOpen, setMembersOpen] = useState(false)
   const [addressOf, setAddressOf] = useState<SpaceWorkspaceInfo | null>(null)
+  const [syncOpen, setSyncOpen] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [viewMode, setViewMode] = useSpaceViewMode()
+  const selectedId = useSelectedWorkspaceId()
 
   // The space as last read, while a read of it is under way: a session that replaces another (a
   // reconnect) has read nothing yet, and the header and the list stay up through that, with what
@@ -108,6 +120,15 @@ export const SpacePage = ({ spaceKey, spaces }: {
   // and a listing read since as a visitor's says it no longer does.
   const memberListing = asMemberListing(listing)
   useDocumentTitle(label)
+
+  // Any member may add workspaces to a team space, and only its owner to a personal space.
+  const canAddWorkspaces = info !== null
+    && (info.kind === 'team' ? info.role !== undefined : isOwnPersonalSpace(info))
+  const sync = useSpaceSync(spaceKey, canAddWorkspaces)
+  const reloadForSync = useEffectEvent(() => void reload(spaceKey))
+  useEffect(() => {
+    if (sync.endedKey !== '') reloadForSync()
+  }, [sync.endedKey])
 
   if (state.status === 'refused') return <SpaceNotFound />
   // The space stopped listing anything published after it answered a visitor with its info: it
@@ -199,9 +220,17 @@ export const SpacePage = ({ spaceKey, spaces }: {
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">
               <SpaceViewToggle mode={viewMode} onModeChange={setViewMode} />
-              <SpaceEntryPoints label={label} space={info} onMembersOpen={() => setMembersOpen(true)} />
+              <SpaceEntryPoints
+                label={label}
+                space={info}
+                onMembersOpen={() => setMembersOpen(true)}
+                sync={sync.accounts.length > 0
+                  ? { sourceName: syncSourceName(sync.accounts), onOpen: () => setSyncOpen(true) }
+                  : undefined}
+              />
             </div>
           </header>
+          <SpaceSyncStatus sync={sync} className="px-3 pb-3" />
           {viewMode === 'tree' ? (
             <div className="flex-1 px-3 pb-6 md:min-h-0">
               <SpaceTreeLayout
@@ -210,6 +239,7 @@ export const SpacePage = ({ spaceKey, spaces }: {
                 listing={memberListing}
                 onListingReload={() => reload(spaceKey)}
                 unlisted={{ includes: isUnlistedHere, description: UNLISTED_DESCRIPTION }}
+                sync={sync}
               />
             </div>
           ) : (
@@ -259,6 +289,20 @@ export const SpacePage = ({ spaceKey, spaces }: {
       )}
       {membersOpen && (
         <SpaceMembersDialog spaceKey={spaceKey} onClose={closeMembers} onLeft={handleLeft} />
+      )}
+      {syncOpen && label && (
+        <StartSpaceSyncDialog
+          space={{ key: spaceKey, name: label }}
+          listing={memberListing.status === 'ready' ? memberListing.workspaces : []}
+          accounts={sync.accounts}
+          defaultParentId={viewMode === 'tree' ? selectedId : undefined}
+          syncRunning={sync.jobs.running !== undefined}
+          onClose={() => setSyncOpen(false)}
+          onStarted={(job) => {
+            setSyncOpen(false)
+            sync.follow(job)
+          }}
+        />
       )}
       {addressOf && (
         <WorkspaceAddressDialog

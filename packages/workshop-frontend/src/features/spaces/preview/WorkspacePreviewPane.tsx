@@ -1,11 +1,12 @@
 import { useState, type Ref } from 'react'
 import type { RpcStub } from 'capnweb'
 import { Loader } from '@cloudflare/kumo'
-import { ArrowSquareOut, ArrowsDownUp, LinkSimple, Plus, ShareNetwork } from '@phosphor-icons/react'
+import { ArrowSquareOut, ArrowsClockwise, ArrowsDownUp, LinkSimple, Plus, ShareNetwork } from '@phosphor-icons/react'
 import type {
   CollaboratorRole,
   GadgetMetadata,
   Overseer,
+  SpaceSyncJobInfo,
   SpaceWorkspaceInfo,
   WorkpieceId,
 } from '@gadgets/workshop-shared/api'
@@ -15,6 +16,7 @@ import GadgetUI from '../../../GadgetUI'
 import ShareModal from '../../../ShareModal'
 import { PublishedBadge } from '../PublishedBadge'
 import { SPACE_ACTION_CLASS_NAME } from '../SpaceEntryPoints'
+import { ResyncWorkspaceDialog } from '../sync/ResyncWorkspaceDialog'
 import { hiddenByTitle } from '../tree/workspaceTree'
 import type { WorkspaceAddress } from '../workspaceAddress'
 import { WorkspaceLink } from '../WorkspaceLink'
@@ -34,6 +36,22 @@ export type WorkspacePreviewActions = {
   onMove?: () => void
   /** Changes this workspace's address in the space. */
   onAddressChange?: () => void
+}
+
+/**
+ * A re-sync of the previewed workspace from the source a sync created it from, offered to its
+ * owner while the account that synced it can sync into the workspace's space.
+ */
+export type WorkspaceResync = {
+  /** What the workspace's source is called: the display name of that account's vendor. */
+  sourceName: string
+  /** A sync of the user's into the workspace's space is running, so the server would refuse. */
+  syncRunning: boolean
+  /**
+   * A re-sync was started, and `job` is as the server recorded it. Showing its progress is the
+   * caller's, with the space's other syncs.
+   */
+  onStarted: (job: SpaceSyncJobInfo) => void
 }
 
 /** Where a previewed workspace sits: the space whose listing holds it, and that listing. */
@@ -86,6 +104,12 @@ type PaneProps = {
   /** Undefined for a workspace no space lists. */
   place: WorkspacePreviewPlace | undefined
   actions: WorkspacePreviewActions
+  resync?: WorkspaceResync
+  /**
+   * Changes each time a sync into the workspace's space is seen to end, which may have replaced
+   * the workspace's content: the preview is then opened again.
+   */
+  syncEndedKey?: string
   /**
    * The owner published the workspace with this role from the Share dialog, or with null
    * withdrew the publication: the listing's entry for it changes with it.
@@ -101,15 +125,26 @@ type PaneProps = {
  * them, with no chat and no editor. A workspace whose open needs the viewer to choose connected
  * accounts, or that they may not open, says so in place of its gadgets. Everything the preview
  * holds belongs to one workspace, and starts afresh for another.
+ *
+ * With `resync`, the header offers 'Re-sync from source', which asks for confirmation first
+ * (`ResyncWorkspaceDialog`). Whenever a sync ends (`syncEndedKey`), a re-sync or one that found
+ * the workspace again, the preview is opened again, to show what the source replaced.
  */
 export const WorkspacePreviewPane = (props: PaneProps) => (
   <WorkspacePreview key={props.workspace.id} {...props} />
 )
 
-const WorkspacePreview = ({ workspace, place, actions, onPublicAccessChange, ref }: PaneProps) => {
+const WorkspacePreview = ({ workspace, place, actions, resync, syncEndedKey, onPublicAccessChange, ref }: PaneProps) => {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
   const preview = useWorkspacePreview(workspace.id)
   const [shareOpen, setShareOpen] = useState(false)
+  const [resyncOpen, setResyncOpen] = useState(false)
+  // The syncs seen to have ended when the preview was last opened.
+  const [openedAfter, setOpenedAfter] = useState(syncEndedKey)
+  if (openedAfter !== syncEndedKey) {
+    setOpenedAfter(syncEndedKey)
+    preview.retry()
+  }
 
   const entry = place?.listing.find(candidate => candidate.id === workspace.id)
   const address = place && entry?.slug !== undefined ? { spaceKey: place.space.key, slug: entry.slug } : undefined
@@ -163,6 +198,12 @@ const WorkspacePreview = ({ workspace, place, actions, onPublicAccessChange, ref
                 Share
               </WorkshopButton>
             )}
+            {resync && (
+              <WorkshopButton className={SPACE_ACTION_CLASS_NAME} onClick={() => setResyncOpen(true)}>
+                <ArrowsClockwise size={13} aria-hidden="true" />
+                Re-sync from source
+              </WorkshopButton>
+            )}
           </div>
         </div>
         {hiddenBy && (
@@ -195,6 +236,18 @@ const WorkspacePreview = ({ workspace, place, actions, onPublicAccessChange, ref
           currentUser={currentUser}
           authenticatedApi={authenticatedApi}
           onPublicAccessChange={onPublicAccessChange}
+        />
+      )}
+      {resyncOpen && resync && (
+        <ResyncWorkspaceDialog
+          workspace={{ id: workspace.id, title }}
+          sourceName={resync.sourceName}
+          syncRunning={resync.syncRunning}
+          onClose={() => setResyncOpen(false)}
+          onStarted={(job) => {
+            setResyncOpen(false)
+            resync.onStarted(job)
+          }}
         />
       )}
     </section>

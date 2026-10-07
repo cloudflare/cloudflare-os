@@ -12,6 +12,7 @@ import {
   type GadgetClient,
   type GadgetMetadata,
   type ObserverConfigCallback,
+  type SpaceSyncJobInfo,
   type SpaceWorkspaceInfo,
   type WorkpieceId,
   type WorkpieceSummary,
@@ -34,6 +35,7 @@ import {
   WorkspacePreviewPane,
   type WorkspacePreviewActions,
   type WorkspacePreviewPlace,
+  type WorkspaceResync,
 } from './WorkspacePreviewPane'
 
 // What the pane hands the pieces it hosts, so the wiring can be asserted.
@@ -164,14 +166,18 @@ type PaneProps = ComponentProps<typeof WorkspacePreviewPane>
 // The pane on a page whose props the test changes, as a tree's selection would.
 const show = vi.hoisted(() => ({ set: null as ((props: PaneProps) => void) | null }))
 
-const render = async (props: PaneProps, workspaces: Record<string, FakeWorkspace> = WORKSPACES) => {
+const render = async (
+  props: PaneProps,
+  workspaces: Record<string, FakeWorkspace> = WORKSPACES,
+  methods: Parameters<typeof fakeApi>[0] = {},
+) => {
   const fake = fakeWorkspaces(workspaces)
   const Host = () => {
     const [current, setCurrent] = useState(props)
     useEffect(() => { show.set = setCurrent }, [])
     return <WorkspacePreviewPane {...current} />
   }
-  const mounted = await mountRouted(fakeApi({ openGadget: fake.openGadget }), {
+  const mounted = await mountRouted(fakeApi({ openGadget: fake.openGadget, ...methods }), {
     at: '/workspaces',
     pages: (root: AnyRoute) => [createRoute({ getParentRoute: () => root, path: '/workspaces', component: Host })],
   })
@@ -189,6 +195,29 @@ const link = (text: string) =>
   [...document.body.querySelectorAll('a')].find(anchor => anchor.textContent?.trim() === text)
 
 const CHECKLIST_PROPS: PaneProps = { workspace: CHECKLIST, place: PLACE, actions: {} }
+
+const resyncJob = (status: SpaceSyncJobInfo['status'], done = 0): SpaceSyncJobInfo => ({
+  jobId: 'j-resync',
+  accountId: 7,
+  vendorId: 'docs',
+  spaceKey: 'design',
+  blueprintId: 'document',
+  publication: 'use',
+  status,
+  progress: { done, total: 1, warnings: [] },
+  created: new Date('2026-10-01T00:00:00Z'),
+  ...(status !== 'running' && { finished: new Date('2026-10-01T00:01:00Z') }),
+})
+
+// A re-sync offered by a caller for whom a sync into the space is running when `syncRunning`.
+const resyncFor = (syncRunning = false) => ({
+  sourceName: 'Docs Hub',
+  syncRunning,
+  onStarted: vi.fn<(job: SpaceSyncJobInfo) => void>(),
+}) satisfies WorkspaceResync
+
+const openDialog = () => document.body.querySelector('[role="dialog"]')
+const syncProgress = () => document.body.querySelector('section[aria-label^="Sync from"]')
 
 describe('WorkspacePreviewPane', () => {
   beforeEach(() => {
@@ -370,5 +399,93 @@ describe('WorkspacePreviewPane', () => {
     expect(opens).toHaveLength(2)
     expect(opens[0].dispose).toHaveBeenCalledTimes(1)
     expect(seen.gadgetUi?.gadget).toBe(opens[1].gadgetStubs.get(5))
+  })
+  describe('re-syncing a workspace from its source', () => {
+
+    it('is not offered without a re-sync from the caller', async () => {
+      await render(CHECKLIST_PROPS)
+
+      expect(hasButton('Re-sync from source')).toBe(false)
+    })
+
+    it('asks for confirmation, saying what is replaced, before re-syncing', async () => {
+      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
+      const resync = resyncFor()
+      await render({ ...CHECKLIST_PROPS, resync }, WORKSPACES, { resyncWorkspace })
+
+      await click(button('Re-sync from source'))
+      expect(openDialog()?.textContent).toContain('Re-sync “Checklist” from Docs Hub?')
+      expect(openDialog()?.textContent).toContain('all of its comments will be replaced from Docs Hub')
+      expect(resyncWorkspace).not.toHaveBeenCalled()
+
+      await click(button('Replace from source'))
+      await settle()
+      expect(resyncWorkspace).toHaveBeenCalledWith('w-checklist')
+      expect(resync.onStarted).toHaveBeenCalledWith(resyncJob('running'))
+      expect(openDialog()).toBeNull()
+    })
+
+    it('makes no call when the confirmation is cancelled', async () => {
+      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
+      await render({ ...CHECKLIST_PROPS, resync: resyncFor() }, WORKSPACES, { resyncWorkspace })
+
+      await click(button('Re-sync from source'))
+      await click(button('Cancel'))
+      await settle()
+
+      expect(openDialog()).toBeNull()
+      expect(resyncWorkspace).not.toHaveBeenCalled()
+    })
+
+    it('leaves the re-sync’s progress to the caller, which shows it with the space’s other syncs', async () => {
+      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>(async () => resyncJob('running'))
+      const resync = resyncFor()
+      await render({ ...CHECKLIST_PROPS, resync }, WORKSPACES, { resyncWorkspace })
+      await click(button('Re-sync from source'))
+      await click(button('Replace from source'))
+      await settle()
+
+      expect(resync.onStarted).toHaveBeenCalledWith(resyncJob('running'))
+      expect(syncProgress()).toBeNull()
+    })
+
+    it('cannot be confirmed while a sync into the space is running', async () => {
+      const resyncWorkspace = vi.fn<(id: string) => Promise<SpaceSyncJobInfo>>()
+      await render(
+        { ...CHECKLIST_PROPS, resync: resyncFor(true) },
+        WORKSPACES,
+        { resyncWorkspace },
+      )
+
+      await click(button('Re-sync from source'))
+
+      expect(button('Replace from source').disabled).toBe(true)
+      expect(openDialog()?.textContent).toContain('A sync into this space is already running.')
+    })
+  })
+
+  describe('once a sync into the space has ended', () => {
+    it('opens the preview again, to show what the source replaced', async () => {
+      const { opens } = await render({ ...CHECKLIST_PROPS, syncEndedKey: '' })
+      expect(opens).toHaveLength(1)
+
+      await showProps({ ...CHECKLIST_PROPS, syncEndedKey: 'j1' })
+      expect(opens).toHaveLength(2)
+      expect(opens[0].dispose).toHaveBeenCalledTimes(1)
+      expect(seen.gadgetUi?.gadget).toBe(opens[1].gadgetStubs.get(5))
+
+      await showProps({ ...CHECKLIST_PROPS, syncEndedKey: 'j1' })
+      expect(opens).toHaveLength(2)
+    })
+
+    it('opens it again also for a preview shown afresh while the sync ran', async () => {
+      const { opens } = await render({ ...CHECKLIST_PROPS, syncEndedKey: '' })
+      await showProps({ workspace: HANDBOOK, place: PLACE, actions: {}, syncEndedKey: '' })
+      await showProps({ ...CHECKLIST_PROPS, syncEndedKey: '' })
+      expect(opens).toHaveLength(3)
+
+      await showProps({ ...CHECKLIST_PROPS, syncEndedKey: 'j1' })
+      expect(opens).toHaveLength(4)
+    })
   })
 })

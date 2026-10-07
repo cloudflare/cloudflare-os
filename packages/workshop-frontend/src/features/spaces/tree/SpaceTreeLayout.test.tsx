@@ -7,10 +7,13 @@ import { createRoute, type AnyRoute } from '@tanstack/react-router'
 import type { RpcStub } from 'capnweb'
 import type {
   BlueprintPublicInfo,
+  ConnectedAccountsSubscriber,
   GadgetMetadata,
+  GadgetMetadataWithTimestamps,
   OutputFormatOffer,
   PublicApi,
   SpaceMemberRole,
+  SpaceSyncJobInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { RpcContext } from '../../../RpcContext'
@@ -27,10 +30,12 @@ import {
   member,
   mountRouted,
   person,
+  personalSpace,
   settle,
   teamSpace,
   unmountAll,
 } from '../spacesTestUtils'
+import { useSpaceSync } from '../sync/useSpaceSync'
 import { useSpaceListings } from '../useSpaceListings'
 import { SpaceTreeLayout } from './SpaceTreeLayout'
 
@@ -392,5 +397,163 @@ describe('SpaceTreeLayout', () => {
     expect(previewed()).toBe('w-handbook')
     expect(seen.pane?.actions).toEqual({})
     expect(space.moveWorkspace).not.toHaveBeenCalled()
+  })
+})
+
+const DAY = new Date('2026-09-01T00:00:00Z')
+const BUILDER: SpaceMemberRole = 'build'
+
+const record = (id: string, title: string, fields: Partial<GadgetMetadataWithTimestamps> = {}) =>
+  ({ id, title, created: DAY, lastActive: DAY, spaceKey: 'design', ...fields }) satisfies GadgetMetadataWithTimestamps
+
+const syncJob = (jobId: string, status: SpaceSyncJobInfo['status']): SpaceSyncJobInfo => ({
+  jobId,
+  accountId: 7,
+  vendorId: 'docs',
+  spaceKey: 'design',
+  blueprintId: 'document',
+  publication: 'use',
+  status,
+  progress: { done: 0, warnings: [] },
+  created: DAY,
+})
+
+// The user's connected accounts: 7 can sync into a space, 8 cannot.
+const subscribeConnectedAccounts = (subscriber: ConnectedAccountsSubscriber) => {
+  subscriber.add(7, { displayName: 'Work docs', avatar: { url: 'https://docs.example.com/a' },
+    providesSpaceSync: { blueprintId: 'document', importMethods: ['importSnapshot'] } },
+  { displayName: 'Docs Hub', url: 'https://docs.example.com/' }, [], true, 'docs')
+  subscriber.add(8, { displayName: 'Tracker', avatar: { url: 'https://tracker.example.com/a' } },
+    { displayName: 'Tracker', url: 'https://tracker.example.com/' }, [], true, 'tracker')
+  subscriber.ready()
+  return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), { [Symbol.dispose]() {} })
+}
+
+type SyncedSpace = { key: string; kind: 'team' | 'personal'; label: string }
+const DESIGN: SyncedSpace = { key: 'design', kind: 'team', label: 'Design' }
+const MINE: SyncedSpace = { key: personalSpace(ME, 'admin').key, kind: 'personal', label: 'Personal' }
+
+// The space's tree for a builder, with the syncs into it the page follows.
+const SyncingPage = ({ space }: { space: SyncedSpace }) => {
+  const { listings, reload } = useSpaceListings([space.key])
+  return (
+    <SpaceTreeLayout
+      space={space}
+      role={BUILDER}
+      listing={listings[space.key] ?? { status: 'loading' }}
+      onListingReload={() => reload(space.key)}
+      sync={useSpaceSync(space.key, true)}
+    />
+  )
+}
+
+// The space `synced` (Design unless given), for a builder whose records are `records`, with
+// `jobs` as their syncs into it.
+const renderSyncing = async (
+  records: GadgetMetadataWithTimestamps[],
+  jobs: () => SpaceSyncJobInfo[] = () => [],
+  synced: SyncedSpace = DESIGN,
+) => {
+  const info = synced.kind === 'team' ? teamSpace(synced.key, synced.label) : personalSpace(ME, 'admin')
+  const space = fakeSpace(info, [member(ME, synced.kind === 'team' ? BUILDER : 'admin')], LISTING)
+  const listGadgets = vi.fn<() => Promise<GadgetMetadataWithTimestamps[]>>(async () => records)
+  const listSpaceSyncJobs = vi.fn<(spaceKey?: string) => Promise<SpaceSyncJobInfo[]>>(async () => jobs())
+  await mountRouted(fakeApi({
+    openSpace: () => space.stub,
+    listGadgets,
+    listSpaceSyncJobs,
+    subscribeConnectedAccounts,
+  }), {
+    at: `/spaces/${synced.key}`,
+    pages: (root: AnyRoute) => [createRoute({
+      getParentRoute: () => root,
+      path: '/spaces/$spaceKey',
+      component: () => <SyncingPage space={synced} />,
+    })],
+  })
+  await settle()
+  return { listGadgets, listSpaceSyncJobs }
+}
+
+describe('SpaceTreeLayout, for a space the user can sync into', () => {
+  it('offers the owner of a workspace a sync created a re-sync, named by the account’s vendor', async () => {
+    await renderSyncing([record('w-handbook', 'Handbook', { syncedFrom: { accountId: 7 } })])
+
+    await select('w-handbook')
+    expect(seen.pane?.resync?.sourceName).toBe('Docs Hub')
+  })
+
+  it('offers no re-sync of a workspace no sync created, or synced by an account that can no longer sync', async () => {
+    await renderSyncing([
+      record('w-handbook', 'Handbook'),
+      record('w-checklist', 'Checklist', { syncedFrom: { accountId: 8 } }),
+    ])
+
+    await select('w-handbook')
+    expect(seen.pane?.resync).toBeUndefined()
+    await select('w-checklist')
+    expect(seen.pane?.resync).toBeUndefined()
+  })
+
+  it('offers no re-sync to anyone but the owner, nor of a workspace in another space', async () => {
+    await renderSyncing([
+      record('w-onboarding', 'Onboarding', { owner: ADA, syncedFrom: { accountId: 7 } }),
+      record('w-checklist', 'Checklist', { spaceKey: 'platform', syncedFrom: { accountId: 7 } }),
+    ])
+
+    await select('w-onboarding')
+    expect(seen.pane?.resync).toBeUndefined()
+    await select('w-checklist')
+    expect(seen.pane?.resync).toBeUndefined()
+  })
+
+  it('offers a re-sync in the personal space, whose records name no space', async () => {
+    await renderSyncing([
+      record('w-handbook', 'Handbook', { spaceKey: undefined, syncedFrom: { accountId: 7 } }),
+      record('w-checklist', 'Checklist', { syncedFrom: { accountId: 7 } }),
+    ], undefined, MINE)
+
+    await select('w-handbook')
+    expect(seen.pane?.resync?.sourceName).toBe('Docs Hub')
+    // A workspace of a team space's is re-synced there.
+    await select('w-checklist')
+    expect(seen.pane?.resync).toBeUndefined()
+  })
+
+  it('offers no re-sync in a team space of a workspace whose record puts it in the personal space', async () => {
+    await renderSyncing([record('w-handbook', 'Handbook', { spaceKey: undefined, syncedFrom: { accountId: 7 } })])
+
+    await select('w-handbook')
+    expect(seen.pane?.resync).toBeUndefined()
+  })
+
+  it('tells the preview a sync it follows has ended, and whether one is running', async () => {
+    let jobs = [syncJob('j1', 'running')]
+    await renderSyncing([record('w-handbook', 'Handbook', { syncedFrom: { accountId: 7 } })], () => jobs)
+    await select('w-handbook')
+    expect(seen.pane?.syncEndedKey).toBe('')
+    expect(seen.pane?.resync?.syncRunning).toBe(true)
+
+    jobs = [{ ...syncJob('j1', 'done'), finished: DAY }]
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    await settle()
+
+    expect(seen.pane?.syncEndedKey).toBe('j1')
+    expect(seen.pane?.resync?.syncRunning).toBe(false)
+  })
+
+  it('reads the user’s records again once a sync it follows has ended', async () => {
+    let jobs = [syncJob('j1', 'running')]
+    const { listGadgets } = await renderSyncing([], () => jobs)
+    expect(listGadgets).toHaveBeenCalledTimes(1)
+
+    // The running sync is read again when the page is shown again, and has ended by then.
+    jobs = [{ ...syncJob('j1', 'done'), finished: DAY }]
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    await settle()
+
+    expect(listGadgets).toHaveBeenCalledTimes(2)
   })
 })

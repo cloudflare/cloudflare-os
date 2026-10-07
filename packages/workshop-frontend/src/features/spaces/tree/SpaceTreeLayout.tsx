@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState } from 'react'
-import { useLocation, useMatch, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import type {
@@ -17,11 +17,17 @@ import { logRpcFailure } from '../../../rpcErrors'
 import ShareModal from '../../../ShareModal'
 import { MoveWorkspaceDialog } from '../preview/MoveWorkspaceDialog'
 import { NewChildWorkspaceDialog } from '../preview/NewChildWorkspaceDialog'
-import { WorkspacePreviewPane, type WorkspacePreviewActions } from '../preview/WorkspacePreviewPane'
+import {
+  WorkspacePreviewPane,
+  type WorkspacePreviewActions,
+  type WorkspaceResync,
+} from '../preview/WorkspacePreviewPane'
 import { SPACE_ACTION_CLASS_NAME } from '../SpaceEntryPoints'
+import type { SpaceSync } from '../sync/useSpaceSync'
 import type { SpaceListing } from '../useSpaceListings'
 import { WorkspaceAddressDialog } from '../WorkspaceAddressDialog'
 import { SpaceTree, type SpaceTreeMember } from './SpaceTree'
+import { useSelectedWorkspace } from './useSelectedWorkspace'
 import { applyMove, childrenOf, type WorkspaceMove } from './workspaceTree'
 
 /**
@@ -39,10 +45,6 @@ export type UnlistedWorkspaces = {
 }
 
 type UnlistedWorkspace = { id: string; title: string }
-
-// The search parameter holding the previewed workspace's id, so that a preview can be linked to
-// and Back returns to the one before.
-const SELECTED_PARAM = 'selected'
 
 const UNTITLED = 'Untitled Workspace'
 
@@ -92,22 +94,6 @@ const useOwnRecords = (wanted: boolean): {
   return { records: read?.api === authenticatedApi ? read.records : undefined, reread }
 }
 
-// The previewed workspace's id, from the URL, and the way to preview another: a navigation of its
-// own, so Back returns to the previous one. Every other search parameter is kept.
-const useSelectedWorkspace = (): [string | undefined, (id: string) => void] => {
-  const navigate = useNavigate()
-  const { fullPath, params } = useMatch({ strict: false })
-  const selected = useLocation({
-    select: location => (location.search as Record<string, unknown>)[SELECTED_PARAM],
-  })
-  const select = (id: string) => void navigate({
-    to: fullPath,
-    params,
-    search: (previous: Record<string, unknown>) => ({ ...previous, [SELECTED_PARAM]: id }),
-  })
-  return [typeof selected === 'string' && selected !== '' ? selected : undefined, select]
-}
-
 /**
  * A space's workspaces as its tree beside a live preview of the one selected, with what the user
  * may do to them: the tree's menu and the preview's header lead to the same dialogs, which are
@@ -119,8 +105,11 @@ const useSelectedWorkspace = (): [string | undefined, (id: string) => void] => {
  * read-only and offers nothing a member does. Every move and creation is followed by a read of
  * the listing again (`onListingReload`). With `unlisted`, the user's own workspaces it picks out
  * are read and shown under the tree in a group of their own, and open their preview too.
+ *
+ * With `sync`, the preview of a workspace of the user's own that a sync into this space created
+ * offers a re-sync from its source, while the account that synced it can sync here.
  */
-export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unlisted }: {
+export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unlisted, sync }: {
   space: Pick<SpaceInfo, 'key' | 'kind'> & {
     /** What the space is called where it is shown (`spaceLabel`). */
     label: string
@@ -135,13 +124,16 @@ export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unliste
    */
   onListingReload: () => Promise<void>
   unlisted?: UnlistedWorkspaces
+  /** The page's syncs into this space (`useSpaceSync`). */
+  sync?: SpaceSync
 }) => {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
   const navigate = useNavigate()
   const [selectedId, select] = useSelectedWorkspace()
   const [dialog, setDialog] = useState<OpenDialog | null>(null)
   const [reloading, setReloading] = useState(false)
-  const { records, reread } = useOwnRecords(unlisted !== undefined)
+  // The user's own records also say which of their workspaces a sync created.
+  const { records, reread } = useOwnRecords(unlisted !== undefined || (sync?.accounts.length ?? 0) > 0)
   // What a move made from the Move dialog says it did, and the entry the tree then focuses.
   const [dialogMove, setDialogMove] = useState<{ announcement: string; focus: { id: string } } | null>(null)
   // A workspace created here that the listing does not show yet, and how often it was read since.
@@ -180,6 +172,13 @@ export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unliste
     const timer = setTimeout(() => void rereadForCreated(), LISTING_RETRY_MS)
     return () => clearTimeout(timer)
   }, [awaitingCreated, created?.reads])
+
+  // A sync that ended may have created workspaces, whose records say they can be re-synced.
+  const rereadRecords = useEffectEvent(() => void reread())
+  const endedKey = sync?.endedKey ?? ''
+  useEffect(() => {
+    if (endedKey !== '') rereadRecords()
+  }, [endedKey])
 
   const canMove = (entry: SpaceWorkspaceInfo) =>
     role === 'admin' || (role !== undefined && entry.owner.id === currentUser?.id)
@@ -271,6 +270,21 @@ export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unliste
 
   const previewed = selectedEntry ?? selectedUnlisted ?? (selectedId ? { id: selectedId, title: '' } : undefined)
 
+  // A re-sync goes into the space the workspace is in, so it is offered only for one of this
+  // space's, whose job is among this space's jobs. A record names only a team space.
+  const resyncOf = (id: string): WorkspaceResync | undefined => {
+    const record = records?.find(candidate => candidate.id === id && !candidate.owner)
+    const recordSpaceKey = record?.spaceKey ?? (space.kind === 'personal' ? space.key : undefined)
+    if (!sync || !record?.syncedFrom || recordSpaceKey !== space.key) return undefined
+    const { accountId } = record.syncedFrom
+    const account = sync.accounts.find(candidate => candidate.id === accountId)
+    return account && {
+      sourceName: account.vendorName,
+      syncRunning: sync.jobs.running !== undefined,
+      onStarted: sync.follow,
+    }
+  }
+
   useLayoutEffect(() => {
     if (previewed === undefined || focusPreviewOf.current !== previewed.id) return
     focusPreviewOf.current = null
@@ -334,6 +348,8 @@ export const SpaceTreeLayout = ({ space, role, listing, onListingReload, unliste
             workspace={previewed}
             place={selectedEntry ? { space: { key: space.key, name: space.label }, listing: entries } : undefined}
             actions={previewActions(selectedEntry)}
+            resync={resyncOf(previewed.id)}
+            syncEndedKey={endedKey}
             onPublicAccessChange={() => void reloadAll()}
           />
         ) : (

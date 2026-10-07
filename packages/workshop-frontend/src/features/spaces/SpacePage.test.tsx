@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ReactNode } from 'react'
+import { act, type ComponentProps, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRoute, RouterProvider, type AnyRoute } from '@tanstack/react-router'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
+  ConnectedAccountsSubscriber,
   GadgetMetadataWithTimestamps,
   Overseer,
+  SpaceSyncJobInfo,
   SpaceWorkspaceInfo,
 } from '@gadgets/workshop-shared/api'
 import { Route as SpaceRoute } from '../../routes/spaces.$spaceKey'
@@ -34,12 +36,37 @@ import {
   type,
   unmountAll,
 } from './spacesTestUtils'
+import type { StartSpaceSyncDialog as StartSpaceSyncDialogComponent } from './sync/StartSpaceSyncDialog'
 import { VisitedSpace } from './VisitedSpace'
 
 // The members dialog's avatars load when scrolled into view, which jsdom has no observer for.
 vi.mock('../../components/PersonAvatar', () => ({
   PersonAvatar: () => <span data-testid="avatar" />,
 }))
+
+const seen = vi.hoisted(() => ({
+  syncDialog: null as ComponentProps<typeof StartSpaceSyncDialogComponent> | null,
+}))
+
+// The sync dialog has its own tests; here it shows what it was opened with.
+vi.mock('./sync/StartSpaceSyncDialog', () => ({
+  StartSpaceSyncDialog: (props: ComponentProps<typeof StartSpaceSyncDialogComponent>) => {
+    seen.syncDialog = props
+    return <div data-sync-dialog={props.space.key} />
+  },
+}))
+
+// The user's connected accounts, given to the subscription as the backend replays them: one that
+// can sync a source into a space when `syncs`, and otherwise one that cannot.
+const accountsSubscription = ({ syncs = false } = {}) => (subscriber: ConnectedAccountsSubscriber) => {
+  subscriber.add(7, {
+    displayName: 'Work docs',
+    avatar: { url: 'https://docs.example.com/a' },
+    ...(syncs && { providesSpaceSync: { blueprintId: 'document', importMethods: ['importSnapshot'] } }),
+  }, { displayName: 'Docs Hub', url: 'https://docs.example.com/' }, [], true, 'docs')
+  subscriber.ready()
+  return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), { [Symbol.dispose]() {} })
+}
 
 const ADA = person('ada@example.com', 'Ada')
 const PERSONAL = personalSpace(ME, 'admin')
@@ -100,6 +127,8 @@ const renderAt = async (at: string, { spacesFlag = true, strangerTo, listed = LI
   })
   const listSpaces = vi.fn<AuthenticatedApi['listSpaces']>(async () => spaces)
   const session = (methods: FakeApiMethods = {}) => fakeApi({
+    subscribeConnectedAccounts: accountsSubscription(),
+    listSpaceSyncJobs: async () => [],
     listGadgets: async () => GADGETS,
     listFeaturedBlueprints: async () => [],
     listSpaces,
@@ -628,5 +657,134 @@ describe('a visited space’s tree', () => {
     await settle()
 
     expect(treeRows()).toEqual(['w-brief'])
+  })
+})
+
+const syncJob = (jobId: string, status: SpaceSyncJobInfo['status']): SpaceSyncJobInfo => ({
+  jobId,
+  accountId: 7,
+  vendorId: 'docs',
+  spaceKey: 'design',
+  blueprintId: 'document',
+  publication: 'build',
+  status,
+  progress: { done: 2, warnings: [] },
+  created: DAY,
+  ...(status !== 'running' && { finished: DAY }),
+})
+
+// A workspace previewed in the tree stays loading.
+const pendingWorkspace = () => ({ subscribeToMetadata: () => new Promise(() => {}), [Symbol.dispose]() {} })
+
+// `jobs` are the user's syncs into the space at each read.
+const renderSyncing = async (at: string, { syncs = true, jobs = () => [] as SpaceSyncJobInfo[], api, ...options }: {
+  syncs?: boolean
+  jobs?: () => SpaceSyncJobInfo[]
+  listed?: Record<string, SpaceWorkspaceInfo[]>
+  spacesFlag?: boolean
+  api?: FakeApiMethods
+} = {}) => {
+  const listSpaceSyncJobs = vi.fn<(spaceKey?: string) => Promise<SpaceSyncJobInfo[]>>(async () => jobs())
+  const subscribeConnectedAccounts = vi.fn<ReturnType<typeof accountsSubscription>>(accountsSubscription({ syncs }))
+  const rendered = await renderAt(at, {
+    ...options,
+    api: { listSpaceSyncJobs, subscribeConnectedAccounts, openGadget: pendingWorkspace, ...api },
+  })
+  return { ...rendered, listSpaceSyncJobs, subscribeConnectedAccounts }
+}
+
+const syncProgress = () => document.body.querySelector('section[aria-label^="Sync from Docs Hub"]')
+
+describe('syncing into a space', () => {
+  afterEach(() => {
+    unmountAll()
+    localStorage.clear()
+    seen.syncDialog = null
+    vi.restoreAllMocks()
+  })
+
+  it('offers a member with an account that can sync a sync into the space, beside its name', async () => {
+    await renderSyncing('/spaces/design')
+
+    expect(button('Sync from Docs Hub into Design').textContent).toBe('Sync from Docs Hub')
+  })
+
+  it('offers the owner of a personal space a sync into it', async () => {
+    await renderSyncing(`/spaces/${PERSONAL.key}`)
+
+    expect(hasButton('Sync from Docs Hub into Personal')).toBe(true)
+  })
+
+  it('offers no sync, and reads no jobs, without an account that can sync', async () => {
+    const { listSpaceSyncJobs } = await renderSyncing('/spaces/design', { syncs: false, jobs: () => [syncJob('j1', 'running')] })
+
+    expect(heading()).toBe('Design')
+    expect(hasButton('Sync from Docs Hub into Design')).toBe(false)
+    expect(syncProgress()).toBeNull()
+    expect(listSpaceSyncJobs).not.toHaveBeenCalled()
+  })
+
+  it('offers no sync to a member of someone else’s personal space, which only its owner adds to', async () => {
+    const adas = personalSpace(ADA, 'build')
+    const space = fakeSpace(adas, [member(ME, 'build')], [listedBy(ADA, 'w-trip', 'Trip', 'trip')])
+    const { listSpaceSyncJobs } = await renderSyncing(`/spaces/${adas.key}`, { api: { openSpace: () => space } })
+
+    expect(heading()).toBe('Ada’s personal space')
+    expect(hasButton('Sync from Docs Hub into Ada’s personal space')).toBe(false)
+    expect(listSpaceSyncJobs).not.toHaveBeenCalled()
+  })
+
+  it('opens the dialog for the space, at the top from the list and under the entry selected in the tree', async () => {
+    await renderSyncing('/spaces/design?selected=w-brief')
+
+    await click(button('Sync from Docs Hub into Design'))
+    expect(seen.syncDialog?.space).toEqual({ key: 'design', name: 'Design' })
+    expect(seen.syncDialog?.listing.map(entry => entry.id)).toEqual(['w-notes', 'w-brief'])
+    expect(seen.syncDialog?.defaultParentId).toBeUndefined()
+    await act(async () => seen.syncDialog!.onClose())
+
+    await click(tab('Tree')!)
+    await settle()
+    await click(button('Sync from Docs Hub into Design'))
+    expect(seen.syncDialog?.defaultParentId).toBe('w-brief')
+  })
+
+  it('reads the jobs again once a sync has started, and shows its progress under the header', async () => {
+    let jobs: SpaceSyncJobInfo[] = []
+    const { listSpaceSyncJobs } = await renderSyncing('/spaces/design', { jobs: () => jobs })
+    expect(listSpaceSyncJobs.mock.calls).toEqual([['design']])
+    await click(button('Sync from Docs Hub into Design'))
+
+    jobs = [syncJob('j1', 'running')]
+    await act(async () => { seen.syncDialog!.onStarted(syncJob('j1', 'running')) })
+    await settle()
+
+    expect(document.body.querySelector('[data-sync-dialog]')).toBeNull()
+    expect(listSpaceSyncJobs).toHaveBeenCalledTimes(2)
+    expect(syncProgress()?.textContent).toContain('Running')
+    expect(syncProgress()?.textContent).toContain('2 items synced so far')
+  })
+
+  it('reads the space’s workspaces again once a sync it follows has ended', async () => {
+    let jobs = [syncJob('j1', 'running')]
+    const { space } = await renderSyncing('/spaces/design', { jobs: () => jobs })
+    const reads = space('design').listWorkspaces.mock.calls.length
+
+    // The running sync is read again when the page is shown again, and has ended by then.
+    jobs = [syncJob('j1', 'done')]
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+    await settle()
+
+    expect(space('design').listWorkspaces.mock.calls.length).toBe(reads + 1)
+    expect(syncProgress()?.textContent).toContain('Done')
+  })
+
+  it('makes no sync call while the flag is off', async () => {
+    const { listSpaceSyncJobs, subscribeConnectedAccounts } = await renderSyncing('/workspaces', { spacesFlag: false })
+
+    expect(hasButton('Sync from Docs Hub into Personal')).toBe(false)
+    expect(listSpaceSyncJobs).not.toHaveBeenCalled()
+    expect(subscribeConnectedAccounts).not.toHaveBeenCalled()
   })
 })
