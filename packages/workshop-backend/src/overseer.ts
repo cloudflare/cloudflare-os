@@ -2004,6 +2004,10 @@ class OverseerImpl implements AgentHooks {
     this.#chatContentCache.delete(chatId);
   }
 
+  // Live row count that triggers materialization (see submitCodeChange). A field so tests can
+  // reach the trigger without a thousand submissions.
+  chatChangeMaterializeThreshold = CHAT_CHANGE_MATERIALIZE_THRESHOLD;
+
   // Cache summarizing the live (unretired) window -- its summed serialized-size estimate and its
   // row count -- keyed by the (generation, revision) it reflects. submitCodeChange consults both
   // per keystroke (the byte trigger before appending, the row-count trigger after), and
@@ -3003,7 +3007,7 @@ class OverseerImpl implements AgentHooks {
       // stales nobody. (The append just advanced the window summary to `result`, so this is an
       // O(1) cache read, not a window scan.)
       if (this.#liveWindowSummary(chatId, result).count >=
-          CHAT_CHANGE_MATERIALIZE_THRESHOLD) {
+          this.chatChangeMaterializeThreshold) {
         this.materializeChatChanges(chatId);
       }
 

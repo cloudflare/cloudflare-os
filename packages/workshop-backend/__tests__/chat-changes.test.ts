@@ -1492,9 +1492,11 @@ describe("chat content reconstruction", () => {
     let c1 = await commitFiles(impl, { "a.txt": "0\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
+    // Lowered from the production 1000 so the real trigger is reached in a few submissions.
+    impl.chatChangeMaterializeThreshold = 3;
 
     let text = "0\n";
-    for (let i = 1; i <= 1001; i++) {
+    for (let i = 1; i <= 4; i++) {
       let next = `${i}\n${text}`;
       await submit(impl, 1, {
         generation: 0, revision: i - 1, clientId: "cli", seq: i,
@@ -1504,13 +1506,13 @@ describe("chat content reconstruction", () => {
       text = next;
     }
 
-    // The 1000-row window was materialized into a single "changes" message; the stream keeps
+    // The 3-row window was materialized into a single "changes" message; the stream keeps
     // counting.
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
     expect(changes).toHaveLength(1);
-    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1000 });
+    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 3 });
     expect(liveRows(impl, 1)).toHaveLength(1);
-    expect(impl.storage.chatMeta.get(1)!.codeBase!.revision).toBe(1001);
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.revision).toBe(4);
     expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(text);
   }));
 
