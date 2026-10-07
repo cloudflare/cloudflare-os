@@ -365,7 +365,9 @@ describe("simulated reads over queued pushes", () => {
   it("lists no queued merge whose side parents it could not all withhold, past the side walk's cap", async () => {
     // An octopus merge with more unpushed side parents than the walk marks. Listed, M would name
     // a parent left unmarked, which the session advertises as GitLab's and the push pack then
-    // omits. The walk fails instead, and the listing falls back to GitLab's history.
+    // omits. The walk fails instead, and the listing falls back to GitLab's history. Reaching the
+    // cap takes 251 sequential GitLab probes and cache reads: about 1 s alone, over 5 s on a
+    // loaded CI runner, hence the timeout.
     const M = "e".repeat(40);
     const sides = Array.from({ length: 251 }, (_, index) => `8${index.toString(16).padStart(39, "0")}`);
     const { props, name } = await setup();
@@ -376,7 +378,7 @@ describe("simulated reads over queued pushes", () => {
     await queuePush(name, props, "main", M, false, cache);
     const commits = await unwrap(await hooks().listCommitsAll(name, props, 20, stubOf(cache)));
     expect(commits.map(c => c.id)).toEqual([BASE]);
-  });
+  }, 30_000);
 
   it("still withholds a local merge's side parent when a restarted gatekeeper serves the stored comparison", async () => {
     // The merge request's comparison over the queued merge is stored for a while; a restart in
