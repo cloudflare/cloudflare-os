@@ -16,8 +16,10 @@ import { useDocumentTitle } from '../useDocumentTitle'
 
 /**
  * Full workspace listing. The sidebar surfaces Favorites + a handful of Recent workspaces; this is
- * the "see them all" destination linked from the rail. With the `spaces` flag on, the user may
- * switch it to their personal space's tree beside a preview (`PersonalTree`).
+ * the "see them all" destination linked from the rail. With the `spaces` flag on, it lists the
+ * user's personal space and what is shared with them, with each of their team spaces as a card
+ * that leads to the space's own page (`SpaceSections`); the user may switch it to their personal
+ * space's tree beside a preview (`PersonalTree`).
  */
 export const Route = createFileRoute('/workspaces')({
   component: WorkspacesPage,
@@ -30,8 +32,8 @@ function WorkspacesPage() {
   const spaces = useSpaces()
   const [viewMode, setViewMode] = useSpaceViewMode()
   const tree = spaces.enabled && viewMode === 'tree'
-  // Held here and not with the sections: the list unmounts them while it loads again, and an
-  // open dialog outlasts that.
+  // Held here and not with the cards it is opened from: the list unmounts them while it loads
+  // again, and an open dialog outlasts that.
   const [membersOf, setMembersOf] = useState<string | null>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
 
@@ -46,8 +48,8 @@ function WorkspacesPage() {
     void spaces.refresh()
   }
 
-  // The space's section goes with the membership, and with it the button the closing dialog
-  // hands focus back to. So the leave is said in a toast, and the page's heading takes the focus
+  // The space's card goes with the membership, and with it the button the closing dialog hands
+  // focus back to. So the leave is said in a toast, and the page's heading takes the focus
   // that button's removal leaves nowhere. Focus the user has put elsewhere while the list was
   // read again, in a dialog opened since for one, stays where it is.
   const handleLeft = async (spaceKey: string) => {

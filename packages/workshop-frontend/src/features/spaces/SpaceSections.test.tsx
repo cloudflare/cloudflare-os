@@ -144,7 +144,45 @@ const rowActions = async (title: string) => {
   return [...document.body.querySelectorAll('[role="menuitem"]')].map(item => item.textContent?.trim())
 }
 
-// The sidebar's link to a space's page: the one that is not the name of the space's section.
+// The text of the elements this attribute of `element` points at.
+const referencedText = (element: Element, attribute: string) =>
+  (element.getAttribute(attribute) ?? '').split(' ')
+    .map(id => document.getElementById(id)?.textContent ?? '').join(' ')
+
+const cardItems = () => {
+  const found = [...document.body.querySelectorAll('section')].find(section =>
+    document.getElementById(section.getAttribute('aria-labelledby') ?? '')?.textContent === 'Team spaces')
+  return [...(found?.querySelectorAll('li') ?? [])]
+}
+
+// The team spaces' cards on show, each as the name of its link and what the link says under it.
+const cards = () => cardItems().map((card) => {
+  const anchor = card.querySelector('a')!
+  return [referencedText(anchor, 'aria-labelledby'), referencedText(anchor, 'aria-describedby')]
+})
+
+const cardLink = (name: string) => {
+  const found = cardItems().map(card => card.querySelector('a')!)
+    .find(anchor => referencedText(anchor, 'aria-labelledby') === name)
+  if (!found) throw new Error(`No card named “${name}”`)
+  return found
+}
+
+// The search results on show, each as the space its link is described as being in and its title.
+const results = () =>
+  [...(document.body.querySelector('ul[aria-label="Search results"]')?.children ?? [])].map(item => [
+    referencedText(item.querySelector('a')!, 'aria-describedby'),
+    item.querySelector('h3')?.textContent,
+  ])
+
+// What the row with this title says of its publication, where it says anything.
+const publication = (title: string) =>
+  rowOf(title).querySelector('[role="img"]')?.getAttribute('aria-label') ?? null
+
+// The titles of every workspace row on show.
+const rowTitles = () => [...document.body.querySelectorAll('h3')].map(title => title.textContent)
+
+// The sidebar's link to a space's page: the one that is not on the page, in a section of it.
 const sidebarLinkTo = (spaceKey: string) =>
   [...document.body.querySelectorAll<HTMLAnchorElement>(`a[href="/spaces/${spaceKey}"]`)]
     .find(anchor => !anchor.closest('section')) ?? null
@@ -208,8 +246,7 @@ describe('the workspaces page', () => {
       const { listSpaces, openSpace } = await renderPage({ spacesFlag: false })
 
       expect(document.body.querySelectorAll('section')).toHaveLength(0)
-      expect([...document.body.querySelectorAll('h3')].map(title => title.textContent))
-        .toEqual(['Solo notes', 'Roadmap', 'Brief'])
+      expect(rowTitles()).toEqual(['Solo notes', 'Roadmap', 'Brief'])
       expect(hasButton('New space')).toBe(false)
       expect(link('Create workspace').getAttribute('href')).toBe('/')
       expect(listSpaces).not.toHaveBeenCalled()
@@ -222,7 +259,7 @@ describe('the workspaces page', () => {
         gadgets: [{ ...mine('w-solo', 'Solo notes'), publicAccess: 'build' }],
       })
 
-      expect(rowOf('Solo notes').textContent).not.toContain('Published')
+      expect(publication('Solo notes')).toBeNull()
     })
 
     it('offers no move on a row', async () => {
@@ -232,22 +269,70 @@ describe('the workspaces page', () => {
       expect(actions).toContain('Share')
       expect(actions).not.toContain('Move to space')
     })
+
+    it('searches the flat list, with no space named on a row', async () => {
+      await renderPage({ spacesFlag: false })
+
+      await type(searchField()!, 'o')
+      expect(rowTitles()).toEqual(['Solo notes', 'Roadmap'])
+      expect(document.body.querySelector('ul[aria-label="Search results"]')).toBeNull()
+    })
   })
 
   describe('with the spaces flag on', () => {
-    it('lays the workspaces out under the user’s spaces, each one once', async () => {
+    it('shows the personal space’s workspaces, then each team space as a card and none of its workspaces', async () => {
       const { openSpace } = await renderPage()
 
       expect(sections()).toEqual([
         ['Personal', ['Solo notes']],
-        ['Atlas', ['Brief']],
-        ['Design', []],
-        ['Platform', ['Roadmap', 'Ada’s plan']],
+        ['Team spaces', []],
       ])
-      expect(sectionNamed('Design').textContent).toContain('No workspaces in this space yet.')
-      expect(sectionNamed('Platform').textContent).toContain('Your role: Admin')
+      // Atlas lists the workspace Ada shared with the user, which its card counts.
+      expect(cards()).toEqual([
+        ['Atlas', 'Your role: Use · 1 workspace'],
+        ['Design', 'Your role: Use · No workspaces yet'],
+        ['Platform', 'Your role: Admin · 2 workspaces'],
+      ])
+      expect(rowTitles()).toEqual(['Solo notes'])
       // The user's own personal space is not opened: its section is their own records.
       expect(openSpace.mock.calls.map(([key]) => key)).toEqual(['atlas', 'design', 'platform'])
+    })
+
+    it('links each card to its space’s page', async () => {
+      const { router } = await renderPage()
+
+      expect(cardLink('Platform').getAttribute('href')).toBe('/spaces/platform')
+      expect(cardLink('Atlas').getAttribute('href')).toBe('/spaces/atlas')
+
+      await click(cardLink('Design'))
+      await settle()
+      expect(router.state.location.pathname).toBe('/spaces/design')
+    })
+
+    it('counts no workspace on a card before the space’s listing has been read', async () => {
+      const listed = deferred<SpaceWorkspaceInfo[]>()
+      const openSpace = (key: string) => {
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const space = fakeSpace(info, [member(ME, info.role)], LISTED[key])
+        if (key === 'platform') space.listWorkspaces.mockImplementation(() => listed.promise)
+        return space
+      }
+      await renderPage({ api: { openSpace } })
+
+      // The user's own workspace in it is all that is known of it until then.
+      expect(cards().at(-1)).toEqual(['Platform', 'Your role: Admin'])
+
+      await act(async () => listed.resolve(LISTED.platform))
+      await settle()
+      expect(cards().at(-1)).toEqual(['Platform', 'Your role: Admin · 2 workspaces'])
+    })
+
+    it('links the personal space’s heading to its page, and offers a new workspace there and in no team space', async () => {
+      await renderPage()
+
+      expect(link('Personal').getAttribute('href')).toBe('/spaces/~me')
+      expect(link('New workspace in Personal').getAttribute('href')).toBe('/')
+      expect(document.body.querySelectorAll('a[aria-label^="New workspace in"]')).toHaveLength(1)
     })
 
     it('says which workspaces are published, and with what role', async () => {
@@ -270,9 +355,39 @@ describe('the workspaces page', () => {
       })
 
       // The user's own by their record of it, another member's by the space's entry for it.
-      expect(rowOf('Solo notes').textContent).toContain('Published · Can build')
-      expect(rowOf('Ada’s plan').textContent).toContain('Published · Can use')
-      expect(rowOf('Roadmap').textContent).not.toContain('Published')
+      expect(publication('Solo notes')).toBe('Published to everyone signed in · can build')
+      await type(searchField()!, 'a')
+      expect(publication('Ada’s plan')).toBe('Published to everyone signed in · can use')
+      expect(publication('Roadmap')).toBeNull()
+    })
+
+    it('says on every found row whose publication an unpublished workspace above it holds back which one does', async () => {
+      await renderPage({
+        gadgets: [
+          { ...mine('w-roadmap', 'Roadmap', 'platform'), publicAccess: 'build' },
+          { id: 'w-brief', title: 'Brief', created: DAY, lastActive: DAY, owner: ADA },
+        ],
+        api: {
+          openSpace: (key: string) => {
+            const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            return fakeSpace(info, [member(ME, info.role)], key === 'platform'
+              ? [
+                  listedBy(ADA, 'w-handbook', 'Handbook'),
+                  { ...listedBy(ME, 'w-roadmap', 'Roadmap'), parentId: 'w-handbook', published: 'build', hiddenBy: 'w-handbook' },
+                  { ...listedBy(ADA, 'w-brief', 'Brief'), parentId: 'w-handbook', published: 'use', hiddenBy: 'w-handbook' },
+                  { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), parentId: 'w-handbook', published: 'use', hiddenBy: 'w-handbook' },
+                ]
+              : [])
+          },
+        },
+      })
+
+      // The user's own row, a row shared with them and another member's row alike.
+      await type(searchField()!, 'r')
+      const heldBack = "Published, but not visible until 'Handbook' is published"
+      expect([publication('Roadmap'), publication('Brief')]).toEqual([heldBack, heldBack])
+      await type(searchField()!, 'plan')
+      expect(publication('Ada’s plan')).toBe(heldBack)
     })
 
     it('marks a row published once its Share dialog has published the workspace', async () => {
@@ -285,7 +400,7 @@ describe('the workspaces page', () => {
         [Symbol.dispose]: vi.fn<() => void>(),
       }
       await renderPage({ api: { openGadget: () => overseer } })
-      expect(rowOf('Solo notes').textContent).not.toContain('Published')
+      expect(publication('Solo notes')).toBeNull()
 
       await rowActions('Solo notes')
       await chooseMenuItem('Share')
@@ -295,70 +410,24 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(overseer.setPublicAccess).toHaveBeenCalledExactlyOnceWith('use')
-      expect(rowOf('Solo notes').textContent).toContain('Published · Can use')
+      expect(publication('Solo notes')).toBe('Published to everyone signed in · can use')
     })
 
-    it('links a row to its address in the space once the space’s listing gives it one', async () => {
-      await renderPage({
-        api: {
-          openSpace: (key: string) => {
-            const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
-            return fakeSpace(info, [member(ME, info.role)], key === 'platform'
-              ? [
-                  { ...listedBy(ME, 'w-roadmap', 'Roadmap'), slug: 'roadmap' },
-                  { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), slug: 'adas-plan' },
-                  listedBy(ADA, 'w-draft', 'Untitled Workspace'),
-                ]
-              : LISTED[key])
-          },
-        },
-      })
+    it('opens a space’s members from its card’s settings, without leaving the page', async () => {
+      const { router } = await renderPage()
 
-      expect(rowOf('Roadmap').getAttribute('href')).toBe('/spaces/platform/roadmap')
-      expect(rowOf('Ada’s plan').getAttribute('href')).toBe('/spaces/platform/adas-plan')
-      // An entry with no slug, and a row no listing was read for, keep the workspace's own URL.
-      expect(rowOf('Untitled Workspace').getAttribute('href')).toBe('/workspace/w-draft')
-      expect(rowOf('Solo notes').getAttribute('href')).toBe('/workspace/w-solo')
-      // The address is changed from the space's own page.
-      expect(await rowActions('Roadmap')).not.toContain('Change address')
-    })
-
-    it('links the name of a space’s section to the space’s page', async () => {
-      await renderPage()
-
-      expect(link('Platform').getAttribute('href')).toBe('/spaces/platform')
-      expect(link('Atlas').getAttribute('href')).toBe('/spaces/atlas')
-      expect(link('Personal').getAttribute('href')).toBe('/spaces/~me')
-    })
-
-    it('shows another member’s workspace as a plain row that links to it', async () => {
-      await renderPage()
-
-      const plain = rowOf('Ada’s plan')
-      expect(plain.getAttribute('href')).toBe('/workspace/w-plan')
-      expect(plain.textContent).toContain('Owned by Ada')
-      expect(plain.textContent).toContain(`Created ${DAY.toLocaleDateString()}`)
-      expect(plain.querySelector('button')).toBeNull()
-
-      // The user's own and shared workspaces keep the list's row, with its actions.
-      expect(rowOf('Roadmap').querySelector('button')).not.toBeNull()
-      expect(rowOf('Brief').textContent).toContain('Shared by Ada')
-    })
-
-    it('opens a space’s members from its section', async () => {
-      await renderPage()
-
-      await click(button('Members of Platform'))
+      await click(button('Space settings for Platform'))
       await settle()
 
       expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Members of Platform')
+      expect(router.state.location.pathname).toBe('/workspaces')
     })
 
-    it('hands focus back to the section’s button, and reads the list of spaces again, when the members close', async () => {
+    it('hands focus back to the card’s settings, and reads the list of spaces again, when the members close', async () => {
       const { listSpaces } = await renderPage()
-      const members = button('Members of Platform')
-      members.focus()
-      await click(members)
+      const settings = button('Space settings for Platform')
+      settings.focus()
+      await click(settings)
       await settle()
       expect(listSpaces).toHaveBeenCalledOnce()
 
@@ -366,12 +435,12 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(document.body.querySelector('[role="dialog"]')).toBeNull()
-      expect(document.activeElement).toBe(members)
+      expect(document.activeElement).toBe(settings)
       // The user's role in the space may have changed in the dialog.
       expect(listSpaces).toHaveBeenCalledTimes(2)
     })
 
-    it('closes the members of a space the user leaves, and drops its section and its sidebar link', async () => {
+    it('closes the members of a space the user leaves, and drops its card and its sidebar link', async () => {
       let spaces = [PERSONAL, ATLAS, DESIGN, PLATFORM]
       const openSpace = (key: string) => {
         const info = [PERSONAL, ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
@@ -384,9 +453,9 @@ describe('the workspaces page', () => {
       await renderPage({ api: { listSpaces: async () => spaces, openSpace }, chrome: SIDEBAR })
       expect(sidebarLinkTo('design')).not.toBeNull()
 
-      const members = button('Members of Design')
-      members.focus()
-      await click(members)
+      const settings = button('Space settings for Design')
+      settings.focus()
+      await click(settings)
       await settle()
       await click(button('Leave space'))
       await click(button('Leave'))
@@ -395,10 +464,10 @@ describe('the workspaces page', () => {
       // The one dialog left is the toast that says what happened.
       expect([...document.body.querySelectorAll('[role="dialog"]')].map(dialog => dialog.textContent))
         .toEqual(['You left Design'])
-      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Atlas', 'Platform'])
+      expect(cards().map(([name]) => name)).toEqual(['Atlas', 'Platform'])
       expect(sidebarLinkTo('design')).toBeNull()
-      // The button the dialog was opened from went with the section, so the page's heading has
-      // the focus.
+      // The button the dialog was opened from went with the card, so the page's heading has the
+      // focus.
       expect(document.activeElement).toBe(document.body.querySelector('h1'))
     })
 
@@ -421,7 +490,7 @@ describe('the workspaces page', () => {
       }
       await renderPage({ api: { listSpaces, openSpace } })
 
-      await click(button('Members of Design'))
+      await click(button('Space settings for Design'))
       await settle()
       await click(button('Leave space'))
       await click(button('Leave'))
@@ -431,20 +500,21 @@ describe('the workspaces page', () => {
       await act(async () => readAgain.resolve())
       await settle()
 
-      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Atlas', 'Platform'])
+      expect(cards().map(([name]) => name)).toEqual(['Atlas', 'Platform'])
       expect(document.activeElement).toBe(search)
     })
 
-    it('offers members for every team space, and none for the user’s own personal space', async () => {
+    it('offers settings on every team space’s card, and no members for the user’s own personal space', async () => {
       await renderPage()
 
-      expect(['Atlas', 'Design', 'Platform'].map(name => hasButton(`Members of ${name}`)))
+      expect(['Atlas', 'Design', 'Platform'].map(name => hasButton(`Space settings for ${name}`)))
         .toEqual([true, true, true])
       // A personal space has no members besides its owner.
+      expect(hasButton('Space settings for Personal')).toBe(false)
       expect(hasButton('Members of Personal')).toBe(false)
     })
 
-    it('offers neither members nor a new workspace in another person’s personal space the user’s list still has', async () => {
+    it('leaves out of the team spaces another person’s personal space the user’s list still has', async () => {
       // The user's list has them as a member of Ada's personal space, which no longer has members
       // besides its owner, so it reads them as a visitor.
       const adas = personalSpace(ADA, 'use')
@@ -457,18 +527,8 @@ describe('the workspaces page', () => {
       }
       await renderPage({ api: { listSpaces: async () => [PERSONAL, adas, DESIGN, PLATFORM], openSpace } })
 
-      const section = sectionNamed('Ada’s personal space')
-      expect(hasButton('Members of Ada’s personal space')).toBe(false)
-      expect(section.querySelector('a[aria-label^="New workspace"]')).toBeNull()
-    })
-
-    it('links a new workspace to the home page with the space it is for', async () => {
-      await renderPage()
-
-      expect(link('New workspace in Platform').getAttribute('href')).toBe('/?space=platform')
-      expect(link('New workspace in Personal').getAttribute('href')).toBe('/')
-      // A member in any role adds workspaces to a team space.
-      expect(link('New workspace in Atlas').getAttribute('href')).toBe('/?space=atlas')
+      expect(cards().map(([name]) => name)).toEqual(['Design', 'Platform'])
+      expect(document.body.textContent).not.toContain('Ada’s personal space')
     })
 
     it('creates a space from the page header, then lands on the space’s page', async () => {
@@ -500,7 +560,7 @@ describe('the workspaces page', () => {
       expect(document.activeElement).toBe(newSpace)
     })
 
-    it('keeps the rest of the page when one space’s listing fails, and reads it again on request', async () => {
+    it('keeps the rest of the page when one space’s listing fails, and reads it again for a search', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       let failing = true
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
@@ -511,20 +571,24 @@ describe('the workspaces page', () => {
       })
       await renderPage({ api: { openSpace } })
 
-      expect(sections()).toEqual([
-        ['Personal', ['Solo notes']],
-        ['Atlas', ['Brief']],
-        ['Design', []],
-        ['Platform', ['Roadmap']],
+      expect(cards()).toEqual([
+        ['Atlas', 'Your role: Use · 1 workspace'],
+        ['Design', 'Your role: Use · No workspaces yet'],
+        ['Platform', 'Your role: Admin · Couldn’t load its workspaces'],
       ])
-      expect(alerts()).toEqual(['Couldn’t load this space’s workspaces.Try again'])
+      expect(alerts()).toEqual([])
+
+      await type(searchField()!, 'plan')
+      expect(alerts()).toEqual(['Couldn’t search Platform.Try again'])
+      expect(results()).toEqual([])
+      expect(document.body.textContent).toContain('No workspaces found, but the results may be incomplete.')
 
       failing = false
-      await click(button('Try again to load Platform'))
+      await click(button('Try again to search every space'))
       await settle()
 
       expect(alerts()).toEqual([])
-      expect(sections().at(-1)).toEqual(['Platform', ['Roadmap', 'Ada’s plan']])
+      expect(results()).toEqual([['Platform', 'Ada’s plan']])
     })
 
     it('shows a listing being read again as busy until the read settles', async () => {
@@ -542,15 +606,37 @@ describe('the workspaces page', () => {
         return space
       })
       await renderPage({ api: { openSpace } })
+      await type(searchField()!, 'plan')
 
-      await click(button('Try again to load Platform'))
+      await click(button('Try again to search every space'))
       await settle()
-      expect(button('Try again to load Platform').disabled).toBe(true)
+      expect(button('Try again to search every space').disabled).toBe(true)
 
       await act(async () => again.resolve(LISTED.platform))
       await settle()
       expect(alerts()).toEqual([])
-      expect(sections().at(-1)).toEqual(['Platform', ['Roadmap', 'Ada’s plan']])
+      expect(results()).toEqual([['Platform', 'Ada’s plan']])
+    })
+
+    it('says a search is still waiting for a space’s listing', async () => {
+      const listed = deferred<SpaceWorkspaceInfo[]>()
+      const openSpace = (key: string) => {
+        const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
+        const space = fakeSpace(info, [member(ME, info.role)], LISTED[key])
+        if (key === 'platform') space.listWorkspaces.mockImplementation(() => listed.promise)
+        return space
+      }
+      await renderPage({ api: { openSpace } })
+
+      await type(searchField()!, 'plan')
+      const waiting = 'Loading the workspaces of your spaces…'
+      expect(document.body.textContent).toContain(waiting)
+      expect(document.body.textContent).not.toContain('No workspaces found')
+
+      await act(async () => listed.resolve(LISTED.platform))
+      await settle()
+      expect(document.body.textContent).not.toContain(waiting)
+      expect(results()).toEqual([['Platform', 'Ada’s plan']])
     })
 
     it('says so when the list of spaces cannot be loaded, and loads it again on request', async () => {
@@ -572,8 +658,8 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(alerts()).toEqual([])
-      expect(sections().map(([name]) => name))
-        .toEqual(['Personal', 'Atlas', 'Design', 'Platform'])
+      expect(sections().map(([name]) => name)).toEqual(['Personal', 'Team spaces'])
+      expect(cards().map(([name]) => name)).toEqual(['Atlas', 'Design', 'Platform'])
     })
 
     it('shows the list of spaces being read again as busy until the read settles', async () => {
@@ -592,18 +678,17 @@ describe('the workspaces page', () => {
       expect(alerts()).toEqual([])
     })
 
-    it('says so when a space no longer counts the user as a member', async () => {
+    it('says on its card when a space no longer counts the user as a member', async () => {
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
         const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
         return fakeSpace(info, key === 'design' ? [] : [member(ME, info.role)], LISTED[key])
       })
       await renderPage({ api: { openSpace } })
 
-      expect(alerts()).toEqual(['You are no longer a member of this space.'])
-      expect(sectionNamed('Design').textContent).toContain('You are no longer a member of this space.')
+      expect(cards()[1]).toEqual(['Design', 'You are no longer a member of this space.'])
     })
 
-    it('says so when a space in the user’s list now shows them only the workspaces published in it', async () => {
+    it('says so on its card when a space in the user’s list now shows them only the workspaces published in it', async () => {
       // The user's list still has them as Platform's admin; the space reads them as a visitor.
       const openSpace = vi.fn<(key: string) => unknown>((key) => {
         const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
@@ -613,8 +698,10 @@ describe('the workspaces page', () => {
       })
       await renderPage({ api: { openSpace } })
 
-      expect(alerts()).toEqual(['You are no longer a member of this space.'])
-      expect(sections().find(([name]) => name === 'Platform')).toEqual(['Platform', ['Roadmap']])
+      expect(cards().at(-1)).toEqual(['Platform', 'You are no longer a member of this space.'])
+      // A search finds only the user's own workspace there, by their record of it.
+      await type(searchField()!, 'a')
+      expect(results()).toEqual([['Platform', 'Roadmap']])
     })
 
     it('lists what is shared with the user and no space shows under its own heading', async () => {
@@ -623,6 +710,7 @@ describe('the workspaces page', () => {
       })
 
       expect(sections().at(-1)).toEqual(['Shared with me', ['Memo']])
+      expect(rowOf('Memo').textContent).toContain('Shared by Ada')
     })
 
     it('shows the user’s own workspace in a space that is not in their list under a heading of its own', async () => {
@@ -634,33 +722,92 @@ describe('the workspaces page', () => {
         .toContain('Your workspaces in spaces that are not in your list.')
     })
 
-    it('searches every section, and shows only the sections with a match', async () => {
-      await renderPage()
+    it('searches the workspaces of every space as one list, each naming its space, in place of the cards', async () => {
+      await renderPage({
+        gadgets: [...GADGETS, { id: 'w-memo', title: 'Memo plan', created: DAY, lastActive: DAY, owner: ADA }],
+      })
 
-      const search = document.body.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!
-      await type(search, 'PLAN')
-      expect(sections()).toEqual([['Platform', ['Ada’s plan']]])
-
-      await type(search, 'nothing')
+      await type(searchField()!, 'PLAN')
+      expect(results()).toEqual([
+        ['Platform', 'Ada’s plan'],
+        ['Shared with me', 'Memo plan'],
+      ])
       expect(sections()).toEqual([])
+      expect(cards()).toEqual([])
+
+      await type(searchField()!, 'o')
+      expect(results()).toEqual([
+        ['Personal', 'Solo notes'],
+        ['Platform', 'Roadmap'],
+        ['Shared with me', 'Memo plan'],
+      ])
+
+      await type(searchField()!, 'nothing')
+      expect(results()).toEqual([])
       expect(document.body.textContent).toContain('No workspaces found')
+      expect(document.body.textContent).not.toContain('may be incomplete')
+
+      // An emptied search shows the cards again.
+      await type(searchField()!, '')
+      expect(cards().map(([name]) => name)).toEqual(['Atlas', 'Design', 'Platform'])
+    })
+
+    it('links a search result to its address in its space once the space’s listing gives it one', async () => {
+      await renderPage({
+        api: {
+          openSpace: (key: string) => {
+            const info = [ATLAS, DESIGN, PLATFORM].find(space => space.key === key)!
+            return fakeSpace(info, [member(ME, info.role)], key === 'platform'
+              ? [
+                  { ...listedBy(ME, 'w-roadmap', 'Roadmap'), slug: 'roadmap' },
+                  { ...listedBy(ADA, 'w-plan', 'Ada’s plan'), slug: 'adas-plan' },
+                  listedBy(ADA, 'w-draft', 'Untitled Workspace'),
+                ]
+              : LISTED[key])
+          },
+        },
+      })
+      expect(rowOf('Solo notes').getAttribute('href')).toBe('/workspace/w-solo')
+
+      await type(searchField()!, 'a')
+      expect(rowOf('Roadmap').getAttribute('href')).toBe('/spaces/platform/roadmap')
+      expect(rowOf('Ada’s plan').getAttribute('href')).toBe('/spaces/platform/adas-plan')
+      // An entry with no slug keeps the workspace's own URL.
+      expect(rowOf('Untitled Workspace').getAttribute('href')).toBe('/workspace/w-draft')
+      // The address is changed from the space's own page.
+      expect(await rowActions('Roadmap')).not.toContain('Change address')
+    })
+
+    it('shows another member’s workspace found by a search as a plain row that links to it', async () => {
+      await renderPage()
+      await type(searchField()!, 'a')
+
+      const plain = rowOf('Ada’s plan')
+      expect(plain.getAttribute('href')).toBe('/workspace/w-plan')
+      expect(plain.textContent).toContain('Owned by Ada')
+      expect(plain.textContent).toContain(`Created ${DAY.toLocaleDateString()}`)
+      expect(plain.querySelector('button')).toBeNull()
+
+      // The user's own workspaces keep the list's row, with its actions.
+      expect(rowOf('Roadmap').querySelector('button')).not.toBeNull()
     })
 
     it('searches what a space lists when the user has no workspace of their own', async () => {
       await renderPage({ gadgets: [] })
 
       await type(searchField()!, 'plan')
-      expect(sections()).toEqual([['Platform', ['Ada’s plan']]])
+      expect(results()).toEqual([['Platform', 'Ada’s plan']])
     })
 
     it('offers no search to a user with no workspace and no space but their personal one', async () => {
       await renderPage({ gadgets: [], api: { listSpaces: async () => [PERSONAL] } })
 
       expect(sections()).toEqual([['Personal', []]])
+      expect(sectionNamed('Personal').textContent).toContain('No workspaces in your personal space yet.')
       expect(searchField()).toBeNull()
     })
 
-    it('moves one of the user’s workspaces to the space chosen for it', async () => {
+    it('moves one of the user’s workspaces to the space chosen for it, which counts it on its card', async () => {
       const overseer = {
         moveToSpace: vi.fn<Overseer['moveToSpace']>(async () => {}),
         [Symbol.dispose]: vi.fn<() => void>(),
@@ -674,15 +821,10 @@ describe('the workspaces page', () => {
       await settle()
 
       expect(overseer.moveToSpace).toHaveBeenCalledWith('design')
-      expect(sections().slice(0, 3)).toEqual([
-        ['Personal', []],
-        ['Atlas', ['Brief']],
-        ['Design', ['Solo notes']],
-      ])
-      // The row is under another section now, and its menu there has the focus the dialog held.
-      const menu = rowOf('Solo notes').querySelector('button')
-      expect(sectionNamed('Design').contains(menu)).toBe(true)
-      expect(document.activeElement).toBe(menu)
+      expect(sections()[0]).toEqual(['Personal', []])
+      expect(cards()[1]).toEqual(['Design', 'Your role: Use · 1 workspace'])
+      // The row has left the page, and the search field has the focus the dialog held.
+      expect(document.activeElement).toBe(searchField())
     })
 
     it('reads a workspace’s space again after a move that failed, and shows the workspace where it is recorded', async () => {
@@ -708,25 +850,24 @@ describe('the workspaces page', () => {
 
       expect(alerts()).toEqual(['Couldn’t move the workspace. Try again.'])
       expect(listGadgets).toHaveBeenCalledTimes(2)
-      expect(sections().slice(0, 3)).toEqual([
-        ['Personal', []],
-        ['Atlas', ['Brief']],
-        ['Design', ['Solo notes']],
-      ])
+      expect(sections()[0]).toEqual(['Personal', []])
+      expect(cards()[1]).toEqual(['Design', 'Your role: Use · 1 workspace'])
       const targets = [...document.body.querySelectorAll('[role="dialog"] label')]
         .map(label => label.textContent)
       expect(targets).toEqual(['Personal', 'Atlas', 'Design (current)', 'Platform'])
 
-      // The row is under another section now, and its menu there takes the focus the dialog held.
+      // The row has left the page, so the search field takes the focus the dialog held.
       await click(button('Cancel'))
       await settle()
-      expect(document.activeElement).toBe(rowOf('Solo notes').querySelector('button'))
+      expect(document.activeElement).toBe(searchField())
     })
 
     it('offers the move on the user’s own workspaces only', async () => {
-      await renderPage()
+      await renderPage({
+        gadgets: [...GADGETS, { id: 'w-memo', title: 'Memo', created: DAY, lastActive: DAY, owner: ADA }],
+      })
 
-      const actions = await rowActions('Brief')
+      const actions = await rowActions('Memo')
       expect(actions).toContain('Share')
       expect(actions).not.toContain('Move to space')
     })
@@ -742,6 +883,7 @@ describe('the workspaces page', () => {
         api: { listSpaces: async () => [PERSONAL] },
       })
 
+      expect(cards()).toEqual([])
       const actions = await rowActions(title)
       expect(actions).toContain('Share')
       expect(actions.includes('Move to space')).toBe(offered)
@@ -758,12 +900,12 @@ describe('the workspaces page', () => {
 
       await answer()
       expect(labeledInput('Name').value).toBe('Field notes')
-      expect(sections().map(([name]) => name)).toContain('Platform')
+      expect(cards().map(([name]) => name)).toContain('Platform')
     })
 
     it('keeps a space’s members open through a replaced session', async () => {
       const page = await renderPage()
-      await click(button('Members of Platform'))
+      await click(button('Space settings for Platform'))
       await settle()
 
       const { answer } = await replaceSession(page)
@@ -775,7 +917,7 @@ describe('the workspaces page', () => {
 
     it('asks a session that replaces another about no space before its own flags arrive, then reads each listing once', async () => {
       const page = await renderPage()
-      await click(button('Members of Platform'))
+      await click(button('Space settings for Platform'))
       await settle()
 
       const { answer, listSpaces, openSpace } = await replaceSession(page)
@@ -784,14 +926,14 @@ describe('the workspaces page', () => {
 
       await answer()
       expect(listSpaces).toHaveBeenCalledOnce()
-      // Each section's listing, and the open members dialog's space.
+      // Each card's listing, and the open members dialog's space.
       expect(openSpace.mock.calls.map(([key]) => key).toSorted())
         .toEqual(['atlas', 'design', 'platform', 'platform'])
     })
 
     it('asks a session that replaces another, and has the flag off, about no space at all', async () => {
       const page = await renderPage()
-      await click(button('Members of Platform'))
+      await click(button('Space settings for Platform'))
       await settle()
 
       const { answer, listSpaces, openSpace } = await replaceSession(page)
