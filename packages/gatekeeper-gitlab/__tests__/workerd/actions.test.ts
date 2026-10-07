@@ -1176,6 +1176,41 @@ describe("reviews", () => {
     expect(review.drafts.map(draft => draft.id)).toEqual([500]);
     expect(review.discussions).toEqual([]);
   });
+
+  it("adopts no draft in the review's words that sits elsewhere: on an earlier head, or a line comment for a file comment", async () => {
+    const { gitlab, props, name } = await setup("review-adopt-exact");
+    const review = new ReviewGitLab(gitlab);
+    // The user's own parked drafts, in the review's words and its file: one on the line the
+    // review comments on but written against an earlier head, one on a line of the file the
+    // review comments on as a whole.
+    const versionLine = {
+      position_type: "text", old_path: "VERSION", new_path: "VERSION", new_line: 1,
+      base_sha: MR.diff_refs.base_sha, start_sha: MR.diff_refs.start_sha, head_sha: MR.sha,
+    };
+    review.drafts.push(
+      { id: 500, note: "Two", position: { ...versionLine, head_sha: "0".repeat(40) } },
+      { id: 501, note: "Three", position: versionLine },
+    );
+    gitlab.install();
+    const action = await unwrap(await hooks().queueAction(name, props, "preparePostReview", ["133", {
+      revision: REVISION, decision: "comment",
+      diffComments: [
+        { target: { path: "VERSION", line: 1, side: "new" }, bodyMarkdown: "Two" },
+        { target: { path: "VERSION", subjectType: "file" }, bodyMarkdown: "Three" },
+      ],
+    }], DESC));
+    const apply = async () => unwrap(await hooks().applyAction(name, props, action.approvalId));
+    // Each creation fails having made nothing, so the next attempt, and then the discard, look
+    // for its draft among the user's.
+    review.refuse("draft");
+    await expect(apply()).rejects.toThrow(/500/);
+    review.refuse("draft", 1);
+    await expect(apply()).rejects.toThrow(/500/);
+    expect(review.drafts.map(draft => draft.id)).toEqual([500, 501, 1]);  // "Two" made afresh
+    await unwrap(await hooks().rejectAction(name, props, action.approvalId));
+    expect(review.drafts.map(draft => draft.id)).toEqual([500, 501]);
+    expect(review.discussions).toEqual([]);
+  });
 });
 
 /** An approval queue a session is built with but that the tests below never reach. */

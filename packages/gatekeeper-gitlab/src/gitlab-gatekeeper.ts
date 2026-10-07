@@ -224,14 +224,15 @@ function approvedAtOf(approvals: GitLabApprovalsResponse, userId: number): strin
 }
 
 /**
- * Whether a draft sits where a review's diff comment is anchored: the same file (by either path,
- * as `#positionFor` sends both) and, for a line comment, the same line on the comment's side.
+ * Whether a draft sits where a review's diff comment is anchored, on the reviewed head: the same
+ * file (by either path, as `#positionFor` sends both) and the same kind of comment -- for a line
+ * comment, on the same line of its side.
  */
-function draftAnchoredAt(draft: GitLabDraftNoteResponse, target: GitLabDiffCommentTarget): boolean {
+function draftAnchoredAt(draft: GitLabDraftNoteResponse, target: GitLabDiffCommentTarget, headSha: string): boolean {
   const position = draft.position;
-  if (!position || (position.new_path !== target.path && position.old_path !== target.path)) return false;
-  if (target.subjectType === "file") return true;
-  return target.side === "new" ? position.new_line === target.line : position.old_line === target.line;
+  if (position?.head_sha !== headSha || (position.new_path !== target.path && position.old_path !== target.path)) return false;
+  if (target.subjectType === "file") return position.position_type === "file";
+  return position.position_type === "text" && (target.side === "new" ? position.new_line : position.old_line) === target.line;
 }
 
 /**
@@ -2431,7 +2432,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * review created that is no longer listed was published by an attempt whose answer was lost,
    * or deleted by the user, who is taken at their word: either way it is not created again. A
    * draft whose creation went unanswered (`"creating"`) is adopted if GitLab holds an unclaimed
-   * draft with its body and anchor, and is otherwise created again.
+   * draft with its body at its anchor on the reviewed head, and is otherwise created again.
    */
   async #reconcileReviewDrafts(
     record: StoredActionRecord, action: PostReviewAction, iid: number, bodies: string[],
@@ -2446,7 +2447,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     for (const [index, entry] of entries.entries()) {
       if (entry !== "creating") continue;
       const adopted = [...unclaimed.values()].find(draft =>
-        draft.note === bodies[index] && draftAnchoredAt(draft, comments[index].target));
+        draft.note === bodies[index] && draftAnchoredAt(draft, comments[index].target, action.review.revision.headSha));
       if (adopted) unclaimed.delete(adopted.id);
       entries[index] = adopted?.id ?? null;
     }
