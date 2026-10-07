@@ -550,11 +550,11 @@ export interface AuthenticatedApi extends RpcTarget {
    * at the top of its tree, which is exactly when a visitor may open it (see `openSpace`). The
    * caller's own spaces are included like any other.
    *
-   * `query` keeps the spaces whose name, key or owner's display name contains it, ignoring case
-   * and surrounding whitespace; omitted, empty or blank, every listed space is returned. Rejects
-   * a `query` longer than 1000 characters or containing a line break. Results are ordered by
-   * name, ignoring case, then key, in pages of at most 50. Pass a returned `cursor` back, with
-   * the same `query`, for the next page; it is opaque, absent on the last page, and refused if
+   * `query` keeps the spaces whose name or key contains it, ignoring case and surrounding
+   * whitespace; omitted, empty or blank, every listed space is returned. Rejects a `query`
+   * longer than 1000 characters or containing a line break. Results are ordered by name,
+   * ignoring case, then key, in pages of at most 50. Pass a returned `cursor` back, with the
+   * same `query`, for the next page; it is opaque, absent on the last page, and refused if
    * malformed.
    *
    * For presentation only: opening a listed space is still decided by the space. Each space
@@ -2547,9 +2547,29 @@ export type WorkspaceMetadata = {
    * Set only on the owner's own record of the workspace, which is what
    * `AuthenticatedApi.listGadgets` returns for a workspace the caller owns. A record of a
    * workspace shared with the user (`owner` present) and the metadata an `Overseer` reports never
-   * carry it, so there its absence says nothing about where the workspace belongs.
+   * carry it, so there its absence says nothing about where the workspace belongs. Which space
+   * actually lists the workspace, for anyone who can open it, is `listedIn`.
    */
   spaceKey?: string;
+
+  /**
+   * The key of the space whose listing holds this workspace: a team space key, or its owner's
+   * personal space key. Unlike `spaceKey`, which records where the owner asked the workspace to
+   * go, this is the space that has acknowledged listing it, and it names a personal space too.
+   *
+   * Carried by the metadata an `Overseer` reports to every session it serves, owner or not, so a
+   * collaborator or visitor learns which space holds the workspace even when not a member of it.
+   * Absent while no space lists the workspace: before its space has acknowledged it, and while
+   * it holds restricted data or is owner-invites-only (`containsRestrictedData`,
+   * `ownerInvitesOnly`). Also absent when the workspace could not find out, so its absence does
+   * not prove the workspace is unlisted. Never on a record from `AuthenticatedApi.listGadgets`.
+   *
+   * For presentation only, such as opening the right space's listing: it may lag the listing
+   * (a change the server makes on its own, such as a team space refusing the workspace, may only
+   * show once the workspace next starts), and nothing is authorized on it. Access is decided by
+   * the space and the workspace at the time of each call.
+   */
+  listedIn?: string;
 
   /**
    * Present when a space sync created this workspace (see `AuthenticatedApi.startSpaceSync`):
