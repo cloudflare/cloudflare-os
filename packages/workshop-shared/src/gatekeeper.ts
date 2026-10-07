@@ -285,9 +285,18 @@ export type AccountDescription = {
    * space, one workspace per source item (see GatekeeperUser.startSpaceSync). The workspaces are
    * the syncing user's own, created from the blueprint `blueprintId`, which must be one the
    * deployment ships: the Workshop refuses to start a sync for any other. `importMethods` names
-   * the methods of that blueprint's gadget a sync may call to fill a synced workspace in; no other
-   * method of it is reachable through a sync. Where the workspaces go and how they are published
-   * are decided by the Workshop, never by the account.
+   * the methods of that blueprint's gadget a sync may call to fill a synced workspace in (see
+   * SpaceSyncTarget.writeWorkspace). The bundled blueprint must list a method too, under
+   * `importMethods` in its manifest: only a method both lists name is reachable through a sync,
+   * so an account can narrow what its blueprint offers but never widen it. The manifest checked
+   * is that of the blueprint a job was started with, which its workspaces were created from:
+   * `blueprintId` as the account declared it when the job started, fixed for the job from then
+   * on. Import methods are expected to replace what they write rather than add to it (see
+   * `SpaceSyncTarget.writeWorkspace`). Where the workspaces
+   * go and how they are published are decided by the Workshop, never by the account.
+   *
+   * A synced workspace is created with no bindings, so a blueprint whose gadget needs one is
+   * unusable for a sync.
    */
   providesSpaceSync?: { blueprintId: string; importMethods: string[] };
 }
@@ -956,8 +965,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
   /**
    * Start the space-sync job `request.jobId`: sync the resource `request.resourceUrl` into the
-   * space the user chose, through `target`, which acts for this job alone. Called when the user
-   * starts a sync (`AuthenticatedApi.startSpaceSync`), after the Workshop has recorded the job.
+   * space the user chose, as `request.scope` says, through `target`, which acts for this job
+   * alone. Called when the user starts a sync (`AuthenticatedApi.startSpaceSync`) or re-syncs a
+   * synced workspace (`AuthenticatedApi.resyncWorkspace`), after the Workshop has recorded the
+   * job.
    *
    * Resolve once the job is accepted, and do its work in the background (e.g. in a Workflow),
    * reporting through `target` until it reports "done" or "failed". A throw means the job never
@@ -1881,6 +1892,20 @@ export type SpaceSyncRequest = {
    * workspaces are not part of the request: they are the Workshop's, held in its job record.
    */
   resourceUrl: string;
+
+  /**
+   * What the job syncs. "tree", the meaning when absent: the item `resourceUrl` names and the
+   * items beneath it, one workspace each (see `SpaceSyncTarget.ensureWorkspace`). "item": only
+   * that one item, into the workspace it was synced into before, replacing that workspace's
+   * content and comments, which is how `AuthenticatedApi.resyncWorkspace` asks for it. For an
+   * "item" job `resourceUrl` is exactly the `sourceUrl` the account passed to `ensureWorkspace`
+   * when it created the workspace, and `ensureWorkspace` with it returns that workspace while it
+   * still counts as the item's (it exists, is the user's own and belongs to the job's space).
+   * Once it does not, because its owner deleted or moved it while the job ran, say, a write
+   * naming it is refused as `workspaceGone`, and `ensureWorkspace` creates a new one as it would
+   * for any item.
+   */
+  scope?: "tree" | "item";
 };
 
 /** The most warnings one progress report keeps (see `SpaceSyncProgress.warnings`). */
@@ -1918,14 +1943,90 @@ export type SpaceSyncProgress = {
 };
 
 /**
+ * The longest a source URL passed to `SpaceSyncTarget.ensureWorkspace` may be, in UTF-16 code
+ * units; a longer one is refused as `SPACE_SYNC_ERROR_CODES.notAllowed`.
+ */
+export const MAX_SPACE_SYNC_SOURCE_URL_LENGTH = 2000;
+
+/**
+ * The longest a title passed to `SpaceSyncTarget.ensureWorkspace` or `setWorkspaceTitle` is
+ * kept, in UTF-16 code units, as `String.prototype.slice` counts them: a longer one is cut.
+ */
+export const MAX_SPACE_SYNC_TITLE_LENGTH = 200;
+
+/**
+ * The most bytes `SpaceSyncWrite.args` may take, as the UTF-8 encoding of its JSON
+ * serialization; a larger write is refused as `SPACE_SYNC_ERROR_CODES.notAllowed`.
+ */
+export const MAX_SPACE_SYNC_WRITE_BYTES = 8 * 1024 * 1024;
+
+/** One source item as the account asks for its workspace with `SpaceSyncTarget.ensureWorkspace`. */
+export type SpaceSyncItem = {
+  /**
+   * The item's address in the source, which identifies it: one workspace per item is kept by it.
+   * It should be a resource URL the account's resource configurator could have produced, because
+   * re-syncing the workspace (`AuthenticatedApi.resyncWorkspace`) passes it through the
+   * deployment's admin settings and back to the account as `SpaceSyncRequest.resourceUrl`.
+   * Non-empty and at most `MAX_SPACE_SYNC_SOURCE_URL_LENGTH` long.
+   */
+  sourceUrl: string;
+
+  /**
+   * The workspace's title when it is created, cut to `MAX_SPACE_SYNC_TITLE_LENGTH`. An existing
+   * workspace keeps its title; change it with `SpaceSyncTarget.setWorkspaceTitle`.
+   */
+  title: string;
+
+  /**
+   * The workspace to create this one under, normally one an earlier `ensureWorkspace` of the job
+   * returned. Used only if the job's space lists it; otherwise the workspace goes where the job
+   * puts its workspaces (`SpaceSyncJobInfo.parentId`), or at the top of the space's tree. Read
+   * only when the workspace is created: an existing workspace is not moved.
+   */
+  parentId?: string;
+};
+
+/** A call `SpaceSyncTarget.writeWorkspace` makes on a synced workspace's gadget. */
+export type SpaceSyncWrite = {
+  /**
+   * The gadget method to call, which both the account's `providesSpaceSync.importMethods` and the
+   * manifest of the bundled blueprint the job was started with, which the workspace was created
+   * from, must list (see `AccountDescription.providesSpaceSync`). `then` and the names
+   * `Object.prototype` has (`constructor`, `toString`, ...) are refused whatever the lists say.
+   */
+  method: string;
+
+  /**
+   * The method's one argument, as JSON data. It travels JSON round-tripped: the method receives
+   * `JSON.parse(JSON.stringify(args))`, so a value JSON does not carry (a Date, bytes, a stub, an
+   * `undefined` property) does not arrive as sent. Refused as `SPACE_SYNC_ERROR_CODES.notAllowed`
+   * when `JSON.stringify(args)` throws (a BigInt, a cycle) or returns `undefined` (for `undefined`
+   * itself, a function or a symbol), or when the UTF-8 encoding of what it returns is longer than
+   * `MAX_SPACE_SYNC_WRITE_BYTES`.
+   */
+  args: unknown;
+};
+
+/**
  * The capability `GatekeeperUser.startSpaceSync` hands the account for one job: it acts for that
  * job of that user through that account, and for nothing else. Unlike a hook's callback, it may be
  * stored and used for the job's lifetime, because every call is checked anew against the
  * Workshop's job record: once the job is cancelled or has ended, or the account has been
  * disconnected, every call is refused with a code from `SPACE_SYNC_ERROR_CODES`, read with
- * `getSpaceSyncErrorCode`, as is a malformed report (`notAllowed`). Each of those codes is final
- * for the job, so the account should end the job's work on one rather than retry; any other
- * failure may be transient.
+ * `getSpaceSyncErrorCode`, as is a malformed call (`notAllowed`). Each of those codes but
+ * `workspaceGone` is final for the job, so the account should end the job's work on one rather
+ * than retry; `workspaceGone` refuses only the call, for the one workspace it names. Any other
+ * failure may be transient, and every method is safe to call again after one, `writeWorkspace`
+ * because the contract assumes that import methods replace what they write (a workspace's
+ * content, its comments) rather than add to it, so that a write repeated after a lost reply
+ * leaves what one write would.
+ *
+ * The workspaces a sync creates are the syncing user's own snapshots of the source. No capability
+ * to a workspace or its gadget ever reaches the account: it fills workspaces in only through
+ * `writeWorkspace`, which returns nothing, so it never reads what the workspace's users wrote.
+ * Every method but `reportProgress` also checks that the user may still add workspaces to the
+ * job's space, and that the account still declares `providesSpaceSync` with the blueprint it
+ * declared when the job started, and is refused as `notAllowed` once either fails.
  */
 export interface SpaceSyncTarget extends WorkerEntrypoint {
   /**
@@ -1933,21 +2034,82 @@ export interface SpaceSyncTarget extends WorkerEntrypoint {
    * the job, after which every call, this one included, is refused as `finished`.
    */
   reportProgress(progress: SpaceSyncProgress): Promise<void>;
+
+  /**
+   * Return the user's workspace for the source item `item.sourceUrl` in the job's space, creating
+   * it if there is none. Idempotent: per space, account, blueprint and source URL there is one
+   * workspace, so a call repeated after a lost reply, or made concurrently with another for the
+   * same item, returns the same workspace, and an interrupted creation is completed, or replaced
+   * and its workspace deleted, by the next call. A workspace counts only while it still exists, is
+   * the user's own and belongs to the job's space; once it does not, the next call creates another.
+   *
+   * A new workspace is created from the job's blueprint, with no bindings, titled
+   * `item.title`, placed as `item.parentId` describes and published to everyone signed in at the
+   * job's role (`SpaceSyncJobInfo.publication`). Its place and publication are the Workshop's to
+   * decide, not the account's. The call resolves once the space has first listed the workspace,
+   * so by then it is listed with its title and its publication, and given an address in the
+   * space when its title is not a placeholder (see `SpaceWorkspaceInfo.slug`). An existing
+   * workspace is returned as it is, once the space lists it as it now is; one that holds
+   * restricted data or is owner-invites-only, which no space lists, is returned unlisted.
+   *
+   * An item is identified by {space, account, blueprint, source URL}. So once an account comes to
+   * declare another blueprint, its next job finds none of the workspaces earlier jobs made, and
+   * creates a second listed workspace for each item beside the one made from the old blueprint.
+   *
+   * Refused as `notAllowed` when `item.sourceUrl` is empty or longer than
+   * `MAX_SPACE_SYNC_SOURCE_URL_LENGTH`, besides the refusals every call shares, and as
+   * `workspaceGone` if the space refuses to list the workspace after all, which leaves it in the
+   * user's personal space, still published.
+   */
+  ensureWorkspace(item: SpaceSyncItem): Promise<{ workspaceId: string }>;
+
+  /**
+   * Call `write.method` with `write.args` on the default gadget of workspace `workspaceId`,
+   * typically to replace its content with the source item's. The method's result is discarded and
+   * never returned, and a throw from it rejects this call with an error that carries no code and
+   * does not quote what it threw, since that could disclose the workspace's content.
+   *
+   * Refused as `workspaceGone` unless this account created the workspace with `ensureWorkspace`
+   * (of this job or an earlier one), from the job's blueprint, and it still belongs to the job's
+   * space; and as `notAllowed`, besides the refusals every call shares, unless `write.method` is
+   * listed both in the account's `providesSpaceSync.importMethods` and in the manifest of the
+   * bundled blueprint the job was started with, and `write.args` is accepted (see
+   * `SpaceSyncWrite`).
+   */
+  writeWorkspace(workspaceId: string, write: SpaceSyncWrite): Promise<void>;
+
+  /**
+   * Retitle workspace `workspaceId` as the owner would, which also retitles its entry in the
+   * space's listing. `title` is cut to `MAX_SPACE_SYNC_TITLE_LENGTH`.
+   *
+   * Refused as `workspaceGone`, besides the refusals every call shares, unless this account
+   * created the workspace with `ensureWorkspace`, from the job's blueprint, and it still belongs
+   * to the job's space.
+   */
+  setWorkspaceTitle(workspaceId: string, title: string): Promise<void>;
 }
 
 /**
- * Stable error codes with which a `SpaceSyncTarget` refuses a call because its job may do nothing
- * more. Each is final for the job: an account that reads one with `getSpaceSyncErrorCode` should
- * end the job's work rather than retry.
+ * Stable error codes with which a `SpaceSyncTarget` refuses a call. Each but `workspaceGone` means
+ * the job may do nothing more and is final for it: an account that reads one with
+ * `getSpaceSyncErrorCode` should end the job's work rather than retry.
  */
 export const SPACE_SYNC_ERROR_CODES = {
   /** The user cancelled the job, or disconnected the account it runs through. */
   cancelled: "SPACE_SYNC_CANCELLED",
   /** The account the job runs through is no longer connected. */
   accountGone: "SPACE_SYNC_ACCOUNT_GONE",
-  /** The job may not do what the call asks: the target does not act for it, the report is
-   * malformed (see `SpaceSyncProgress`), or its user may no longer do that in the job's space. */
+  /** The job may not do what the call asks: the target does not act for it, the call is
+   * malformed (see `SpaceSyncProgress`, `SpaceSyncItem`, `SpaceSyncWrite`), it names a method the
+   * job may not call, its user may no longer do that in the job's space, or the account no longer
+   * declares the sync the job was started with. */
   notAllowed: "SPACE_SYNC_NOT_ALLOWED",
+  /** The workspace the call names is not one the job may touch: it is gone, it was not made by
+   * this account's `ensureWorkspace` from the job's blueprint, or it no longer belongs to the
+   * job's space, because its owner moved it or a space admin evicted it, say. Not final for the
+   * job: only that call is refused, and the account may go on with other items, or ask
+   * `ensureWorkspace` for the item's workspace again, which then makes a new one. */
+  workspaceGone: "SPACE_SYNC_WORKSPACE_GONE",
   /** The job has ended as "done" or "failed", or is no longer kept (see
    * `AuthenticatedApi.listSpaceSyncJobs`; running jobs are never dropped). */
   finished: "SPACE_SYNC_FINISHED",
@@ -1962,6 +2124,7 @@ const spaceSyncErrors = codedErrorFamily<SpaceSyncErrorCode>({
   [SPACE_SYNC_ERROR_CODES.accountGone]:
       "The account this space sync runs through is no longer connected.",
   [SPACE_SYNC_ERROR_CODES.notAllowed]: "This space sync may not do that.",
+  [SPACE_SYNC_ERROR_CODES.workspaceGone]: "This space sync may no longer touch that workspace.",
   [SPACE_SYNC_ERROR_CODES.finished]: "This space sync has already finished.",
 });
 

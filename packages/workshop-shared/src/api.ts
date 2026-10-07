@@ -606,6 +606,25 @@ export interface AuthenticatedApi extends RpcTarget {
   cancelSpaceSync(jobId: string): Promise<void>;
 
   /**
+   * Re-sync the caller's workspace `workspaceId` from the source item it was synced from (see
+   * `GadgetMetadata.syncedFrom`): starts a space-sync job, through the account that synced it,
+   * into the space the workspace belongs to now, that syncs only that one item into that
+   * workspace (`SpaceSyncRequest.scope` "item" in `@gadgets/workshop-shared/gatekeeper`). The
+   * account replaces the workspace's content and all its comments with the source's, so whatever
+   * anyone wrote in it since is lost; a client must say so, and have the user confirm, before
+   * calling this. The workspace keeps its place in the space's tree and its publication.
+   *
+   * Refused unless the caller owns the workspace, it was created by a space sync, the account
+   * that synced it is still connected and declares `providesSpaceSync` with the blueprint the
+   * workspace was created from, no earlier sync is still creating a workspace for its source item,
+   * and everything `startSpaceSync` requires holds for that item and the workspace's current
+   * space: a blueprint the deployment ships, the deployment's admin settings allowing the
+   * account's gatekeeper and the source, the caller's right to add workspaces to the space, and no
+   * running job of the caller's into it. Returns the job as recorded, as `startSpaceSync` does.
+   */
+  resyncWorkspace(workspaceId: string): Promise<SpaceSyncJobInfo>;
+
+  /**
    * Change the user's password, if using password-based authentication.
    *
    * See `PublicApi.login()` for an explanation of the hashing algorithm.
@@ -2531,6 +2550,18 @@ export type WorkspaceMetadata = {
    * carry it, so there its absence says nothing about where the workspace belongs.
    */
   spaceKey?: string;
+
+  /**
+   * Present when a space sync created this workspace (see `AuthenticatedApi.startSpaceSync`):
+   * `accountId` is the owner's connected account that synced it, and the one
+   * `AuthenticatedApi.resyncWorkspace` re-syncs it through, which a client may offer while that
+   * account is connected. Kept after the account is disconnected. The source item itself is not
+   * disclosed here.
+   *
+   * Set only on the owner's own record of the workspace, exactly like `spaceKey`: a record of a
+   * workspace shared with the user and the metadata an `Overseer` reports never carry it.
+   */
+  syncedFrom?: { accountId: number };
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
@@ -6706,6 +6737,14 @@ export interface SpaceSyncJobInfo {
 
   /** The entry of the space's tree the synced workspaces go under; absent for its top. */
   parentId?: string;
+
+  /**
+   * The bundled blueprint the job creates its workspaces from and writes them through: the one
+   * the account declared when the job started (`AccountDescription.providesSpaceSync`). A later
+   * change to the declaration does not change it; the account's calls for the job are refused
+   * from then on.
+   */
+  blueprintId: string;
 
   /**
    * The role every workspace the job creates is published with to everyone signed in (see
