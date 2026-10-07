@@ -1,17 +1,24 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { Badge, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
-import { ArrowSquareOut, ArrowsOutCardinal, LinkSimple, Plus, ShareNetwork, SquaresFour } from '@phosphor-icons/react'
+import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
+import {
+  ArrowSquareOut,
+  ArrowsClockwise,
+  ArrowsOutCardinal,
+  LinkSimple,
+  Plus,
+  ShareNetwork,
+  SquaresFour,
+} from '@phosphor-icons/react'
 import {
   HierarchicalList,
   type HierarchicalListDropDestination,
   type HierarchicalListItem,
 } from '@gadgets/ui/hierarchical-list'
-import type { CollaboratorRole, SpaceMemberRole, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
+import type { SpaceMemberRole, SpaceWorkspaceInfo } from '@gadgets/workshop-shared/api'
 import { logRpcFailure, rpcFailureDescription } from '../../../rpcErrors'
-import { PUBLIC_ACCESS_LABELS, PublishedBadge } from '../PublishedBadge'
+import { PublishedIndicator, publicationHeldBack } from '../PublishedIndicator'
 import {
   applyMove,
-  hiddenByTitle,
   moveForDrop,
   workspaceTreeItems,
   type WorkspaceMove,
@@ -24,7 +31,17 @@ export type SpaceTreeMemberActions = {
   /** Choose a new place for the entry, the way to move it without dragging. */
   onMove: (entry: SpaceWorkspaceInfo) => void
   onChangeAddress: (entry: SpaceWorkspaceInfo) => void
-  onShare: (entry: SpaceWorkspaceInfo) => void
+}
+
+/**
+ * What the user can start from an entry's menu that their membership of the space does not decide,
+ * each present only where the caller offers it for that entry.
+ */
+export type SpaceTreeEntryActions = {
+  /** Open the entry's Share dialog. */
+  onShare?: () => void
+  /** Re-sync the entry from the source a sync created it from. */
+  onResync?: () => void
 }
 
 /** The user as a member of the space, which is what lets them rearrange its tree. */
@@ -54,6 +71,8 @@ type SpaceTreeProps = {
   onOpen: (entry: SpaceWorkspaceInfo) => void
   /** Null for a visitor, whose tree is read-only. */
   member: SpaceTreeMember | null
+  /** The actions the caller offers on `entry` besides the member's; none when absent. */
+  entryActions?: (entry: SpaceWorkspaceInfo) => SpaceTreeEntryActions
   /**
    * Puts the focus on this entry's row, once for each new object: the way a caller that moved an
    * entry itself keeps the focus on it, its row being a new one when its parent changed.
@@ -72,10 +91,6 @@ type OptimisticMove = {
 
 const UNTITLED = 'Untitled Workspace'
 
-const notVisibleNote = (blocker: string | undefined) => blocker === undefined
-  ? 'Not visible to others until a workspace above it is published'
-  : `Not visible to others until '${blocker}' is published`
-
 const branchIds = (items: readonly HierarchicalListItem[]): string[] =>
   items.flatMap(item => (item.children ? [item.id, ...branchIds(item.children)] : []))
 
@@ -83,28 +98,26 @@ const rowOf = (root: HTMLElement | null, id: string) =>
   [...root?.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]') ?? []]
     .find(row => row.closest('[data-hierarchical-list-item]')?.getAttribute('data-item-id') === id)
 
-// A published entry whose publication an unpublished entry above it holds back. A row has room
-// for a short badge only, so the note is the badge's tooltip and, with the publication, what
-// assistive technology reads. Selecting the row previews the entry, whose header shows the note
-// as text, which is how keyboard and touch reach it.
-const HeldBackBadge = ({ role, note }: { role: CollaboratorRole; note: string }) => (
-  <span title={note} className="shrink-0">
-    <Badge variant="outline">
-      <span aria-hidden="true">Not visible yet</span>
-      <span className="sr-only">{`Published · ${PUBLIC_ACCESS_LABELS[role]}. ${note}`}</span>
-    </Badge>
-  </span>
-)
-
 /**
  * A space's listing as its tree. A member may drag an entry, or move it with Alt and the arrow
  * keys, where the space allows them to: an admin any entry, anyone else the entries of their own.
  * A row says when its workspace is published and, while an unpublished entry above it keeps that
- * from taking effect, which one. Every row's menu opens its workspace; a member's also offers
- * what they may do with it. Branches start open. Pressing an entry selects it; pressing the
- * selected one opens or closes its branch, so previewing an entry leaves the tree as it was.
+ * from taking effect, which one. Every row has a menu, opened from its "More actions" button as
+ * well as by a right-click or a long press: it opens the workspace, and offers what membership
+ * lets the user do with it and what `entryActions` adds. Branches start open. Pressing an entry
+ * selects it; pressing the selected one opens or closes its branch, so previewing an entry leaves
+ * the tree as it was.
  */
-export const SpaceTree = ({ listing, label, selectedId, onSelect, onOpen, member, focusRequest }: SpaceTreeProps) => {
+export const SpaceTree = ({
+  listing,
+  label,
+  selectedId,
+  onSelect,
+  onOpen,
+  member,
+  entryActions,
+  focusRequest,
+}: SpaceTreeProps) => {
   const toasts = useKumoToastManager()
   const [moves, setMoves] = useState<readonly OptimisticMove[]>([])
   const [movesListing, setMovesListing] = useState(listing)
@@ -148,9 +161,12 @@ export const SpaceTree = ({ listing, label, selectedId, onSelect, onOpen, member
     canMove,
     decorate: entry => ({
       icon: <SquaresFour aria-hidden="true" size={18} className="shrink-0 text-kumo-subtle" />,
-      metadata: entry.published && (entry.hiddenBy === undefined
-        ? <PublishedBadge role={entry.published} />
-        : <HeldBackBadge role={entry.published} note={notVisibleNote(hiddenByTitle(shown, entry))} />),
+      metadata: entry.published && (
+        <PublishedIndicator
+          access={entry.published}
+          heldBack={publicationHeldBack(shown, entry)}
+        />
+      ),
     }),
   })
   const branches = branchIds(items)
@@ -192,10 +208,7 @@ export const SpaceTree = ({ listing, label, selectedId, onSelect, onOpen, member
   const renderMenu = (item: HierarchicalListItem) => {
     const entry = entries.get(item.id)
     if (!entry) return null
-    // Membership gives no power to share, and the listing does not say whether the user is also a
-    // collaborator who may, so only the owner is offered it here. Anyone else finds Share in the
-    // entry's preview, which reads their role from the workspace itself.
-    const ownEntry = member !== null && entry.owner.id === member.profileId
+    const { onShare, onResync } = entryActions?.(entry) ?? {}
     return (
       <>
         <DropdownMenu.Item icon={ArrowSquareOut} onClick={() => onOpen(entry)}>Open</DropdownMenu.Item>
@@ -214,10 +227,9 @@ export const SpaceTree = ({ listing, label, selectedId, onSelect, onOpen, member
             </DropdownMenu.Item>
           </>
         )}
-        {member && ownEntry && (
-          <DropdownMenu.Item icon={ShareNetwork} onClick={() => member.actions.onShare(entry)}>
-            Share
-          </DropdownMenu.Item>
+        {onShare && <DropdownMenu.Item icon={ShareNetwork} onClick={onShare}>Share</DropdownMenu.Item>}
+        {onResync && (
+          <DropdownMenu.Item icon={ArrowsClockwise} onClick={onResync}>Re-sync from source</DropdownMenu.Item>
         )}
       </>
     )
@@ -246,6 +258,7 @@ export const SpaceTree = ({ listing, label, selectedId, onSelect, onOpen, member
           onSelect(item.id)
         }}
         renderContextMenu={renderMenu}
+        showRowActions
       />
     </div>
   )

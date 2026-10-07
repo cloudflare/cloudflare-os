@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRoute, type AnyRoute } from '@tanstack/react-router'
 import type {
   ConnectedAccountsSubscriber,
+  GadgetMetadata,
   GadgetMetadataWithTimestamps,
   SpaceSyncJobInfo,
 } from '@gadgets/workshop-shared/api'
+import type ShareModalComponent from '../../../ShareModal'
 import type { WorkspacePreviewPane as WorkspacePreviewPaneComponent } from '../preview/WorkspacePreviewPane'
 import type { StartSpaceSyncDialog as StartSpaceSyncDialogComponent } from '../sync/StartSpaceSyncDialog'
 import {
@@ -33,6 +35,7 @@ import { PersonalTree } from './PersonalTree'
 const seen = vi.hoisted(() => ({
   pane: null as ComponentProps<typeof WorkspacePreviewPaneComponent> | null,
   syncDialog: null as ComponentProps<typeof StartSpaceSyncDialogComponent> | null,
+  shareModal: null as ComponentProps<typeof ShareModalComponent> | null,
 }))
 
 // The preview has its own tests; here it shows which workspace it was given.
@@ -40,6 +43,14 @@ vi.mock('../preview/WorkspacePreviewPane', () => ({
   WorkspacePreviewPane: (props: ComponentProps<typeof WorkspacePreviewPaneComponent>) => {
     seen.pane = props
     return <section data-preview={props.workspace.id} />
+  },
+}))
+
+// The Share dialog has its own tests; here it is only opened.
+vi.mock('../../../ShareModal', () => ({
+  default: (props: ComponentProps<typeof ShareModalComponent>) => {
+    seen.shareModal = props
+    return <div data-share-modal />
   },
 }))
 
@@ -56,6 +67,7 @@ afterEach(() => {
   sessionStorage.clear()
   seen.pane = null
   seen.syncDialog = null
+  seen.shareModal = null
   vi.restoreAllMocks()
 })
 
@@ -137,6 +149,10 @@ const render = async ({
     openSpace: (key: string) => (key === 'design' ? fakeSpace(DESIGN, designMembers, designListing) : personal).stub,
     listGadgets,
     listSpaceSyncJobs,
+    openGadget: (id: string) => ({
+      getMetadata: async (): Promise<GadgetMetadata> => ({ id, title: '' }),
+      [Symbol.dispose]: () => {},
+    }),
     subscribeConnectedAccounts: accountsSubscription({ syncs }),
   }), {
     at,
@@ -146,10 +162,26 @@ const render = async ({
   return { listGadgets, listSpaceSyncJobs, personal }
 }
 
-const rowIds = () => [...document.body.querySelectorAll<HTMLElement>('[data-hierarchical-list-item]')]
-  .map(item => item.dataset.itemId)
+const rowIds = () => [...document.body.querySelectorAll<HTMLElement>(
+  '[aria-label="Workspaces in Personal"] [data-hierarchical-list-item]',
+)].map(item => item.dataset.itemId)
 const unlistedGroup = () => [...document.body.querySelectorAll('section')]
   .find(section => section.querySelector('h2')?.textContent === 'Unlisted')
+const unlistedRows = () => [...unlistedGroup()!.querySelectorAll<HTMLElement>('[data-hierarchical-list-row]')]
+const unlistedTitles = () => unlistedRows().map(row => row.textContent)
+
+// Publishes or withdraws the unlisted workspace `index` from its Share dialog, opened from its
+// row's "More actions" button, which the tree and what is shown apart are read again for.
+const changePublicationOf = async (index: number) => {
+  const trigger = unlistedRows()[index]!.parentElement!.querySelector<HTMLElement>('[data-hierarchical-list-row-actions]')!
+  await act(async () => { trigger.click() })
+  const share = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+    .find(item => item.textContent === 'Share')!
+  await act(async () => { share.click() })
+  await settle()
+  await act(async () => { seen.shareModal!.onPublicAccessChange?.(null) })
+  await settle()
+}
 
 describe('PersonalTree', () => {
   it('shows the personal space’s tree', async () => {
@@ -162,26 +194,31 @@ describe('PersonalTree', () => {
   it('shows apart, as unlisted, the user’s own workspaces that no listing they can see shows, in any space', async () => {
     await render()
 
-    const group = unlistedGroup()
-    expect([...group!.querySelectorAll('button')].map(item => item.textContent))
-      .toEqual(['Payroll notes', 'Interview notes', 'Old roadmap'])
-    expect(group!.textContent).not.toContain('not used yet')
+    expect(unlistedTitles()).toEqual(['Payroll notes', 'Interview notes', 'Old roadmap'])
+    expect(unlistedGroup()!.textContent).not.toContain('not used yet')
   })
 
   it('shows apart, as unlisted, the user’s own workspaces in a space that refuses them though their list of spaces has it', async () => {
     await render({ designMembers: [member(ADA, 'admin')] })
 
-    expect([...unlistedGroup()!.querySelectorAll('button')].map(item => item.textContent))
-      .toEqual(['Payroll notes', 'Brief', 'Interview notes', 'Old roadmap'])
+    expect(unlistedTitles()).toEqual(['Payroll notes', 'Brief', 'Interview notes', 'Old roadmap'])
+  })
+
+  it('offers what may be done with a workspace shown apart from its row’s menu, as the tree’s rows do', async () => {
+    await render()
+
+    const trigger = unlistedRows()[0]!.parentElement!.querySelector<HTMLElement>('[data-hierarchical-list-row-actions]')!
+    expect(trigger.getAttribute('aria-label')).toBe('More actions for Payroll notes')
+    await act(async () => { trigger.click() })
+    expect([...document.body.querySelectorAll('[role="menuitem"]')].map(item => item.textContent))
+      .toEqual(['Open', 'Share'])
   })
 
   it('reads the user’s records again with the listing', async () => {
     const { listGadgets } = await render()
     expect(listGadgets).toHaveBeenCalledTimes(1)
 
-    await act(async () => { [...unlistedGroup()!.querySelectorAll('button')][0]!.click() })
-    await act(async () => { seen.pane!.onPublicAccessChange?.(null) })
-    await settle()
+    await changePublicationOf(0)
 
     expect(listGadgets).toHaveBeenCalledTimes(2)
   })
@@ -189,23 +226,19 @@ describe('PersonalTree', () => {
   it('reads every one of the user’s spaces again with the listing', async () => {
     const designListing = [DESIGN_LISTING[1]!]
     await render({ designListing })
-    expect([...unlistedGroup()!.querySelectorAll('button')].map(item => item.textContent))
-      .toEqual(['Payroll notes', 'Brief', 'Interview notes', 'Old roadmap'])
+    expect(unlistedTitles()).toEqual(['Payroll notes', 'Brief', 'Interview notes', 'Old roadmap'])
 
-    // Brief comes to be listed by Design after a change made from its preview.
+    // Brief comes to be listed by Design after a change made from its Share dialog.
     designListing.unshift(DESIGN_LISTING[0]!)
-    await act(async () => { [...unlistedGroup()!.querySelectorAll('button')][1]!.click() })
-    await act(async () => { seen.pane!.onPublicAccessChange?.(null) })
-    await settle()
+    await changePublicationOf(1)
 
-    expect([...unlistedGroup()!.querySelectorAll('button')].map(item => item.textContent))
-      .toEqual(['Payroll notes', 'Interview notes', 'Old roadmap'])
+    expect(unlistedTitles()).toEqual(['Payroll notes', 'Interview notes', 'Old roadmap'])
   })
 
   it('previews an unlisted workspace, with no place in the space', async () => {
     await render()
 
-    const item = [...unlistedGroup()!.querySelectorAll('button')][0]!
+    const item = unlistedRows()[0]!
     await act(async () => { item.click() })
 
     expect(document.body.querySelector<HTMLElement>('[data-preview]')?.dataset.preview).toBe('w-secret')
