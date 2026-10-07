@@ -829,29 +829,42 @@ describe("ScheduleDriver", () => {
         },
         activationTime,
       );
-      await makeActiveScheduleDue(driver, "workspace-a", scheduleId);
     }
-    await updateSchedule(driver, "workspace-a", "broken", (stored) => ({
-      ...stored,
-      state: {
-        ...stored.state,
-        spec: { kind: "interval", everyMs: 0, anchorMs: activationTime },
-      },
-    }));
+    // Only after every enable: one that ran with a row already due would plan a real alarm for
+    // now, which could deliver "broken" with its valid spec before the spec below is broken.
+    const plannedAlarm = await runInDurableObject(driver, (_instance, state) => {
+      state.storage.transactionSync(() => {
+        for (const [key, stored] of state.storage.kv.list<StoredSchedule>({
+          prefix: "schedule:",
+        })) {
+          if (stored.state.status !== "active") throw new Error("Expected active schedule");
+          const spec =
+            stored.state.scheduleId === "broken"
+              ? { kind: "interval" as const, everyMs: 0, anchorMs: activationTime }
+              : stored.state.spec;
+          state.storage.kv.put<StoredSchedule>(key, {
+            ...stored,
+            state: { ...stored.state, spec, nextFire: 1 },
+          });
+        }
+      });
+      return state.storage.getAlarm();
+    });
+    expect(plannedAlarm).toBe(activationTime + 60_000);
 
     await expect(runDurableObjectAlarm(driver)).resolves.toBe(true);
-    await vi.waitFor(async () => {
-      const healthy = await driver.getSchedule("workspace-a", "healthy");
-      expect(healthy?.state.status === "active" ? healthy.state.nextFire : 0).toBeGreaterThan(
-        activationTime,
-      );
+    const healthy = await driver.getSchedule("workspace-a", "healthy");
+    expect(healthy?.state.status === "active" ? healthy.state.nextFire : 0).toBeGreaterThan(
+      activationTime,
+    );
+    // The throw is admission's next-fire computation, so "broken" never reaches its callback.
+    expect((await driver.getSchedule("workspace-a", "broken"))?.state).toMatchObject({
+      status: "pending",
+      stage: "admission",
     });
-    expect((await driver.getSchedule("workspace-a", "broken"))?.state.status).toBe("pending");
-    expect(
-      (await testEnv.TEST_HOOKS.read()).callbackScheduleIds.filter(
-        (scheduleId) => scheduleId === "healthy",
-      ),
-    ).toHaveLength(1);
+    const delivery = await testEnv.TEST_HOOKS.read();
+    expect(delivery.events.filter((event) => event === "start")).toHaveLength(2);
+    expect(delivery.callbackScheduleIds).toEqual(["healthy"]);
     expect(reportIssue).toHaveBeenCalledWith(
       "scheduler.delivery",
       expect.anything(),
@@ -981,11 +994,14 @@ describe("ScheduleDriver", () => {
 
   it("does not replace an existing earlier alarm when enable validation fails", async () => {
     const driver = testEnv.SCHEDULE_DRIVER.getByName("failed-enable-alarm");
-    const now = Date.now();
-    const earlierAlarm = now + 1_000;
 
     const result = await runInDurableObject(driver, async (instance, state) => {
+      // Read the clock in the object: workerd moves a past alarm to now. A minute out, the alarm
+      // can't fire during the test and stays inside enable's five-minute recovery deadline.
+      const now = Date.now();
+      const earlierAlarm = now + 60_000;
       await state.storage.setAlarm(earlierAlarm);
+      const armed = await state.storage.getAlarm();
       let message = "did not reject";
       try {
         await instance.enable(
@@ -1003,11 +1019,12 @@ describe("ScheduleDriver", () => {
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
       }
-      return { message, alarm: await state.storage.getAlarm() };
+      return { earlierAlarm, armed, message, alarm: await state.storage.getAlarm() };
     });
 
+    expect(result.armed).toBe(result.earlierAlarm);
     expect(result.message).toContain("positive safe integer");
-    expect(result.alarm).toBe(earlierAlarm);
+    expect(result.alarm).toBe(result.earlierAlarm);
   });
 
   it("keeps a committed enable when precise alarm replanning fails", async () => {
