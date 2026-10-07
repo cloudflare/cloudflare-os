@@ -111,6 +111,30 @@ describe("issue creation", () => {
     expect(["~1", "77"]).toContain(rows[0].id);
   });
 
+  it("serves a created issue once when its provisional row was served before its create applied", async () => {
+    // Oldest first: the provisional ~1 sorts by its queue time, before #6, which someone else
+    // opened after it was queued; GitLab lists the real #77 by its creation at apply, after #6
+    // and on a later page. The listing served ~1 from its first page, then the create applied,
+    // then page 2 arrived with #77 -- the same issue, already served under its provisional id.
+    const { gitlab, props, name } = await setup("listing-served-across-apply");
+    let created = false;
+    gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/issues$`), () => {
+      created = true;
+      return json(issue({ iid: 77, title: "New", created_at: "2101-01-01T00:00:00.000Z" }), { status: 201 });
+    });
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), request => request.url.searchParams.get("page") === "1"
+      ? json([issue({ iid: 5, created_at: "2000-01-01T00:00:00.000Z" }), issue({ iid: 6, created_at: "2100-01-01T00:00:00.000Z" })],
+        { headers: { "x-next-page": "2" } })
+      : json(created ? [issue({ iid: 77, title: "New", created_at: "2101-01-01T00:00:00.000Z" })] : [],
+        { headers: { "x-next-page": "" } }));
+    gitlab.install();
+    const create = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New" }], DESC));
+    const rows = await unwrap(await hooks().listIssuesAcrossApply(name, props, create.approvalId, 2, {
+      filter: { sort: "created", direction: "asc" }, pagesBeforeApply: 1,
+    }));
+    expect(rows.map(row => row.id)).toEqual(["5", "~1", "6"]);
+  });
+
   it("rejecting a create cascades to everything queued against the provisional issue, whose cards then discard cleanly", async () => {
     const { gitlab, props, name } = await setup("reject-create");
     gitlab.install();

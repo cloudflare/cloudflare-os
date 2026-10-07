@@ -28,6 +28,7 @@ import type {
   GitLabDiffThread,
   GitLabDiscussionEntry,
   GitLabIssueDetails,
+  GitLabIssueFilter,
   GitLabIssueSummary,
   GitLabMergeRequestDetails,
   GitLabMergeRequestRevision,
@@ -82,7 +83,7 @@ type GatekeeperFacet = {
     Promise<{ revision: GitLabMergeRequestRevision; files: Pages<GitLabDiffFile> }>;
   mergeRequestMergeBase(id: string, cache?: RpcStub<GitCache>): Promise<string>;
   mergeRequestThreads(id: string, pageSize: number): Promise<Pages<GitLabDiffThread>>;
-  listIssues(filter: undefined, pageSize: number): Promise<Pages<GitLabIssueSummary>>;
+  listIssues(filter: GitLabIssueFilter | undefined, pageSize: number): Promise<Pages<GitLabIssueSummary>>;
   listMergeRequests(filter: undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabMergeRequestSummary>>;
   listBranches(filter: undefined, pageSize: number): Promise<Pages<GitLabBranchSummary>>;
   getCommit(ref: string | undefined, cache?: RpcStub<GitCache>): Promise<{ details: GitLabCommitDetails; fromCache: boolean }>;
@@ -239,17 +240,20 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Open an issue listing, apply `actionId`, then drain the listing: what a cursor serves when an
-   * action lands between its opening and its first page. One call, so the cursor never has to
-   * outlive the event it was received in.
+   * Open an issue listing, serve `pagesBeforeApply` of its pages, apply `actionId`, then drain the
+   * rest: what a cursor serves when an action lands while it is being read. One call, so the
+   * cursor never has to outlive the event it was received in.
    */
-  async listIssuesAcrossApply(facetName: string, props: GatekeeperProps, actionId: number, pageSize: number):
+  async listIssuesAcrossApply(facetName: string, props: GatekeeperProps, actionId: number, pageSize: number,
+                              options: { filter?: GitLabIssueFilter; pagesBeforeApply?: number } = {}):
       Promise<Outcome<GitLabIssueSummary[]>> {
     return await outcome(async () => {
       const gatekeeper = this.#gatekeeper(facetName, props);
-      const cursor = await gatekeeper.listIssues(undefined, pageSize);
+      const cursor = await gatekeeper.listIssues(options.filter, pageSize);
+      const served: GitLabIssueSummary[] = [];
+      for (let i = 0; i < (options.pagesBeforeApply ?? 0); i++) served.push(...await cursor.next() ?? []);
       await gatekeeper.applyAction(actionId, new NullGitCache());
-      return await drain(cursor);
+      return [...served, ...await drain(cursor)];
     });
   }
 

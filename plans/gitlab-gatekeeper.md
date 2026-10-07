@@ -741,7 +741,9 @@ in `github.ts` is the checklist. Divergences:
   `filter`, not inside `fetchPage`, so a page is counted as GitLab sent it (the GitHub defect
   under Punted), and each item is served once (`StreamingCursor`'s `identity`, a provisional's
   real id once it has one): a queued create applied while a cursor is drained would otherwise
-  list both its injected `~N` and, on a later page, the real row.
+  list both its injected `~N` and, on a later page, the real row. The injected rows already
+  served are re-keyed at every check, since `~N` served before its create landed is the real
+  row served after.
 - **Discussion**: `#getDiscussion` reads `…/discussions` for both kinds (locked decision):
   `#fetchRemoteDiscussionComments` flattens the cached discussions, dropping `system` notes and,
   whole, every discussion `diffAnchor` places on the diff; the pull-request two-stream merge
@@ -1355,7 +1357,9 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   for the cache's lifetime (capture the generation before the loader; skip the store if it moved);
   and `#collectPendingChain` marks only the first-parent chain as simulated, so a local merge's
   side parent is advertised as remote-known and left out of the pack of a later push carrying
-  it, which GitHub rejects unless the merge's own push has landed first.
+  it, which GitHub rejects unless the merge's own push has landed first. Its `StreamingCursor` also
+  moves rows into the page before awaiting the next fetch, so a fetch that throws loses them and the
+  retry skips past them (this port buffers before it serves and serializes `next()`).
   From the second review round: `resultsPerPage` reaches the cursors unchecked (a `0` makes
   `ArrayCursor` answer `[]` forever and `StreamingCursor` `null` at once — this port checks it
   once at the session boundary, `pageSize()` in `gitlab-sessions.ts`); the `listCommits` path

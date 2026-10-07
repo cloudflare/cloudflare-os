@@ -1,4 +1,10 @@
-/** In-memory and provider-backed implementations of the gatekeeper cursor RPC. */
+/**
+ * In-memory and provider-backed implementations of the gatekeeper cursor RPC.
+ *
+ * No class here carries `@validateRpc()`: on a server target it validates incoming arguments, and
+ * `next()` takes none. A gatekeeper's capnweb-validate build also transforms only its own sources,
+ * so a decorator here would reach the Worker untransformed and throw.
+ */
 
 import { RpcTarget } from "cloudflare:workers";
 import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";

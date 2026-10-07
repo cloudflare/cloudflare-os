@@ -1740,6 +1740,15 @@ no such bound, since an empty page ends its walk. Neither detects a provider tha
 argument and keeps answering with rows, which yields duplicates instead of ending; that needs an item
 identity the cursor does not have, and no page ceiling substitutes for one.
 
+`PageHookCursor<T>` wraps a cursor the gatekeeper already built and runs `beforePage(items)` on each
+page before `next()` returns it — for listings that authorize their observation once, up front, so
+the hook acts on a page rather than authorizing it (GitHub and GitLab advertise each page's commit
+ids through it, with `advertisePages` from §4.22). It serializes `next()` on a `SerialTaskQueue`, and
+a hook that throws holds its page so the retry re-offers exactly it. It replaced github's
+`CommitAdvertisingCursor`, which did neither: an unserialized walk could interleave two callers, and
+a failed advertisement lost the page. `dispose?()` releases what the hook owns; the wrapped cursor
+is not disposed, so a provider cursor with its own `dispose` lease must not be wrapped until it is.
+
 ### 4.12 `./serial-queue` — internal
 
 ```ts
@@ -2208,6 +2217,74 @@ leaf through the handshake and the coordinator, including a `discardMint` revoke
 reconnect overtook. Cloudflare is the first consumer, with an `isGrantDeath` widened to any OAuth
 error in a 4xx but 429, other than `invalid_client`, until live evidence shows what its token
 endpoint answers for a revoked grant. A 4xx without one, such as a WAF challenge, is never death.
+
+### 4.20 `./git-transport`
+
+```ts
+export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array;
+export function pullGitObjectsIntoCache(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints, cache: GitPackSink): Promise<void>;
+export function validateBranchName(branch: string): string;
+export function pushGitRefUpdate(
+  fetchReceivePack: (requestBody: ReadableStream<Uint8Array>) => Promise<Response>,
+  update: GitRefUpdate, pack: ReadableStream<Uint8Array> | null): Promise<void>;
+export class GitRefUpdateRejectedError extends Error { readonly reason: string }
+export function emptyPackBytes(): Promise<Uint8Array>;
+export const ZERO_OID: string;
+```
+
+Git smart-HTTP protocol v2 framing, moved verbatim from gatekeeper-github: pkt-line encoding and
+parsing, the `command=fetch` request, the sideband demultiplexer, and receive-pack's single-ref
+compare-and-swap with its report-status parsing. The gatekeeper's callback supplies the URL, the
+credentials, the timeouts and the protocol headers (`Git-Protocol: version=2` among them); the kit
+owns the bodies. A pre-receive refusal surfaces as `GitRefUpdateRejectedError.reason`, the server's
+own line, which the gatekeeper passes through. `filterSpecForHints` encodes GitHub's verified
+partial-clone limits; other servers may accept more. Consumed by github and gitlab.
+
+### 4.21 `./git-diff`
+
+```ts
+export type GitDiffFile = { path: string; previousPath?: string;
+  status: "added" | "modified" | "removed" | "renamed" | "copied";
+  additions: number; deletions: number; diffOmitted?: boolean; hunks: GitDiffHunk[] };
+export type TreeDiffFile = GitDiffFile & { status: "added" | "modified" | "removed" };
+export type TreeDiffSource = { getTree(oid: GitOid): Promise<GitTreeEntry[] | null>;
+  getBlob(oid: GitOid): Promise<Uint8Array | "unavailable"> };
+export function diffGitTrees(source: TreeDiffSource, oldTree: GitOid | null,
+  newTree: GitOid | null): Promise<TreeDiffFile[]>;
+export function changedPathsBetweenTrees(source: TreeDiffSource, oldTree: GitOid | null,
+  newTree: GitOid | null): Promise<string[]>;
+export function diffTextLines(oldText: string, newText: string):
+  { hunks: GitDiffHunk[]; additions: number; deletions: number };
+export function parseGitTreePayload(payload: Uint8Array, oid: GitOid): GitTreeEntry[];
+```
+
+A tree-to-tree diff over an injected `TreeDiffSource`, so a gatekeeper can simulate the diff of
+commits its provider has not received yet from the workspace's git cache. Output types are
+vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally identical copies
+(that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
+file. The reader of unified patches (`parsePatch`) is still per gatekeeper; see §11.
+
+### 4.22 `./git-objects`
+
+```ts
+export function isCommitOid(value: string): boolean;
+export function parseGitCommitPayload(payload: Uint8Array, oid: GitOid): ParsedGitCommit;
+export function commitDetailsFromGitObject(oid: GitOid, payload: Uint8Array,
+  commitUrl: (oid: GitOid) => string): GitCommitDetails;
+export function advertiseCommits(advertiser: CommitAdvertiser, ids: Iterable<GitOid>,
+  options?: CommitAdvertisingOptions): Promise<void>;
+export function advertisePages<T>(advertiser: CommitAdvertiser,
+  commitIds: (item: T) => readonly GitOid[],
+  options?: CommitAdvertisingOptions): (items: readonly T[]) => Promise<void>;
+```
+
+Raw commit-object parsing and commit advertising. `commitUrl` is a callback because providers put
+the page in different places (`/commit/` on GitHub, `/-/commit/` on GitLab). `advertisePages` is
+the `PageHookCursor` hook for git listings: an id counts as advertised only once its advertisement
+lands, so a failed page is advertised in full when re-offered. `withhold` names ids the remote
+cannot supply yet — simulated heads of queued pushes — and is consulted per batch, so a push queued
+mid-walk is honoured.
 
 ## 5. Layer 2: the assembly
 
@@ -3266,13 +3343,19 @@ recorded here because the pass found it. Each entry names why it waits and what 
 - **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
   with different policies. *Trigger:* a third producer.
 - **Simulated-item cursor overlay.** cf-wiki and GitHub's provisional items order differently.
-  *Trigger:* two kit-cursor ports writing the same wrapper.
+  GitHub and GitLab now carry near-identical `StreamingCursor`s (overlay, injected rows merged by
+  comparator, re-validation at serve time); GitLab's buffers before serving and serializes `next()`,
+  GitHub's still loses the rows of a page whose fetch throws. *Trigger:* the git extraction below.
 - **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
   granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
   that records requested and granted scopes the way Google does.
-- **Git push simulation.** GitHub walks first parents only; GitLab also collects side parents and
-  cascades a rejection through stacked pushes. *Trigger:* a third git gatekeeper. `parsePatch` dedupes
-  into `./git-diff` with the GitLab gatekeeper, keeping GitLab's trailing-newline handling.
+- **Git push simulation.** The pending-chain walk, simulated branch heads, the served-id set,
+  `SessionGitCache`, push apply and rollback, and `parsePatch` are duplicated across github and
+  gitlab, and where the copies differ GitHub's side is the bug, not a provider difference: GitLab's
+  plan records its first-parent walk and missing cascade through stacked pushes as GitHub bugs, and
+  GitHub also drops the rejection reason and lacks the trailing-newline guard. *Trigger:* the next
+  change to either copy — land it as the extraction, into `./git-diff` and a git-simulation leaf,
+  with GitLab's behaviour.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
 Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a

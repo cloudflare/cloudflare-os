@@ -22,6 +22,7 @@ import {
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -122,7 +123,7 @@ import {
   textSnippet,
   type GitLabDiscussionCommentEntry,
 } from "./gitlab-normalize";
-import { ArrayCursor, StreamingCursor, mapPage } from "./gitlab-cursors";
+import { StreamingCursor, mapPage } from "./gitlab-cursors";
 import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
 import type {
   GitLabActor,
@@ -1199,10 +1200,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           await this.#cached(this.#cacheKey("mr-diffs", realId, ...revisionKey, `p${page}`), ENTITY_CACHE_TTL_MS, async () =>
             mapPage(await this.#withApi(api => api.listMergeRequestDiffs(projectPath, Number(realId), page, perPage)),
               normalizeDiffFile)),
-        overlay: item => item,
-        filter: () => true,
-        comparator: () => 0,
-        injectedItems: [],
         pageSize,
       }),
     };
@@ -1470,10 +1467,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       fetchPage: async (page, perPage) =>
         await this.#cached(this.#cacheKey("list-tags", `p${page}`), LIST_CACHE_TTL_MS, async () =>
           mapPage(await this.#withApi(api => api.listTags(projectPath, page, perPage)), normalizeTagSummary)),
-      overlay: item => item,
-      filter: () => true,
-      comparator: () => 0,
-      injectedItems: [],
       pageSize,
     });
   }
@@ -1581,8 +1574,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             page,
             perPage,
           })), c => normalizeCommitSummary(this.#instanceUrl(), projectPath, c))),
-      overlay: item => item,
-      filter: () => true,
       // Injected pending commits are newer than everything the remote lists (newest-first).
       comparator: () => -1,
       injectedItems: injected,

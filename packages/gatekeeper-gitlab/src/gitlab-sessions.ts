@@ -70,7 +70,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     super();
     this.#gatekeeper = gatekeeper;
     this.#approvalQueue = approvalQueue;
-    this.#gitCache = new SessionGitCache(approvalQueue);
+    this.#gitCache = new SessionGitCache(approvalQueue, id => gatekeeper.isSimulatedCommitId(id));
   }
 
   [Symbol.dispose](): void {
@@ -144,12 +144,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     });
     const cursor = await this.#gatekeeper.listMergeRequests(
       options, pageSize(options), await this.#gitCache.stub());
-    // Simulated ids -- heads of queued pushes, which listings show as if already pushed -- are
-    // withheld from advertising: they are not on GitLab yet, and the hint would outlive a
-    // rejection. Checked live per page, since a push may be queued while the cursor is drained.
-    const gatekeeper = this.#gatekeeper;
-    return await this.#gitCache.wrap(cursor, mr =>
-      commitIdsOfMergeRequestSummary(mr).filter(id => !gatekeeper.isSimulatedCommitId(id)));
+    return await this.#gitCache.wrap(cursor, commitIdsOfMergeRequestSummary);
   }
 
   async searchMergeRequests(query: GitLabMergeRequestSearch): Promise<Cursor<GitLabMergeRequestSummary>> {
@@ -159,9 +154,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     });
     const cursor = await this.#gatekeeper.searchMergeRequests(
       query, pageSize(query), await this.#gitCache.stub());
-    const gatekeeper = this.#gatekeeper;
-    return await this.#gitCache.wrap(cursor, mr =>
-      commitIdsOfMergeRequestSummary(mr).filter(id => !gatekeeper.isSimulatedCommitId(id)));
+    return await this.#gitCache.wrap(cursor, commitIdsOfMergeRequestSummary);
   }
 
   async listBranches(options?: GitLabBranchFilter): Promise<Cursor<GitLabBranchSummary>> {
@@ -170,9 +163,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       description: `List branches in the GitLab project.`,
     });
     const cursor = await this.#gatekeeper.listBranches(options, pageSize(options));
-    const gatekeeper = this.#gatekeeper;
-    return await this.#gitCache.wrap(cursor, branch =>
-      gatekeeper.isSimulatedCommitId(branch.headCommit) ? [] : [branch.headCommit]);
+    return await this.#gitCache.wrap(cursor, branch => [branch.headCommit]);
   }
 
   async listTags(options?: GitLabPageOptions): Promise<Cursor<GitLabTagSummary>> {
@@ -244,9 +235,7 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     });
     const cursor = await this.#gatekeeper.listCommits(
       options, pageSize(options), await this.#gitCache.stub());
-    const gatekeeper = this.#gatekeeper;
-    return await this.#gitCache.wrap(cursor, item =>
-      commitIdsOfSummary(item).filter(id => !gatekeeper.isSimulatedCommitId(id)));
+    return await this.#gitCache.wrap(cursor, commitIdsOfSummary);
   }
 }
 
@@ -376,7 +365,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
 
   constructor(gatekeeper: GitLabGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>, logicalId: string) {
     super(gatekeeper, approvalQueue, logicalId, "mergeRequest");
-    this.#gitCache = new SessionGitCache(approvalQueue);
+    this.#gitCache = new SessionGitCache(approvalQueue, id => gatekeeper.isSimulatedCommitId(id));
   }
 
   override [Symbol.dispose](): void {
@@ -390,10 +379,8 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
       title: `Read merge request !${details.id}: ${details.title}`,
       description: `Read the full details of merge request !${details.id} in ${details.project.path}.`,
     });
-    // A provisional merge request may carry no branch shas, or a simulated head -- a queued
-    // push's commit, withheld because it is not on GitLab yet.
-    await this.#gitCache.advertise(
-      commitIdsOfMergeRequestSummary(details).filter(id => !this.gatekeeper.isSimulatedCommitId(id)));
+    // A provisional merge request may carry no branch shas, or a simulated head (withheld).
+    await this.#gitCache.advertise(commitIdsOfMergeRequestSummary(details));
     return details;
   }
 
@@ -404,9 +391,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     });
     const diff = await this.gatekeeper.mergeRequestDiff(
       this.logicalId, pageSize(options, 20), await this.#gitCache.stub());
-    await this.#gitCache.advertise(
-      [diff.revision.baseSha, diff.revision.headSha, diff.revision.mergeBaseSha ?? ""]
-        .filter(id => !this.gatekeeper.isSimulatedCommitId(id)));
+    await this.#gitCache.advertise([diff.revision.baseSha, diff.revision.headSha, diff.revision.mergeBaseSha ?? ""]);
     return diff;
   }
 
@@ -468,9 +453,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
     });
     const cursor = await this.gatekeeper.mergeRequestCommits(
       this.logicalId, pageSize(options), await this.#gitCache.stub());
-    const gatekeeper = this.gatekeeper;
-    return await this.#gitCache.wrap(cursor, item =>
-      commitIdsOfSummary(item).filter(id => !gatekeeper.isSimulatedCommitId(id)));
+    return await this.#gitCache.wrap(cursor, commitIdsOfSummary);
   }
 
   async getMergeBase(): Promise<string> {
@@ -479,7 +462,7 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
       description: `Read the merge base commit of merge request !${this.logicalId}.`,
     });
     const mergeBase = await this.gatekeeper.mergeRequestMergeBase(this.logicalId, await this.#gitCache.stub());
-    // A merge base is always a commit GitLab itself knows, so it advertises unconditionally.
+    // A merge base is always a commit GitLab itself knows.
     await this.#gitCache.advertise([mergeBase]);
     return mergeBase;
   }
