@@ -772,6 +772,10 @@ in `github.ts` is the checklist. Divergences:
   list both its injected `~N` and, on a later page, the real row. The injected rows already
   served are re-keyed at every check, since `~N` served before its create landed is the real
   row served after.
+  Injected rows re-validate as they are served (`#injectedRowStanding`): a provisional row whose
+  create was discarded after the cursor was built is dropped, since opening it would fail. A
+  touched row is served as built, its overlay as of that moment: refreshing it could move it in
+  the sort order, which a cursor already part-served cannot take back.
   The cursor's `filter` (`issueMatchesFilter`, `mergeRequestMatchesFilter`) runs on GitLab's rows
   too, so it must agree with GitLab's filters or it discards rows GitLab returned: usernames match
   without regard to case, as `User.by_username` looks them up, and labels likewise.
@@ -832,13 +836,16 @@ substitutes transport endpoints and REST lookups:
   rollback to `expectedOldSha`, or delete when the push created the branch.
 - **Simulation**: `#simulateBranchHead`, `#collectPendingChain` (`isCommitOnRemote` via `GET
   …/commits/:sha`, 404 → false), `#simulatedMergeRequestComparison` (`/repository/compare` for the
-  anchored part + `diffGitTrees` for the pending chain, merge base from `/merge_base`),
+  anchored part + `diffGitTrees` for the pending chain, merge base from `#simulatedMergeBase`),
   `#treeDiffSource` (`getTree`: cache only, else `null`; `getBlob`: cache, else
   `/repository/blobs/:sha` under `MAX_DIFF_BLOB_BYTES`), `#overlaySimulatedMergeRequestHead`,
   `#overlayMergeRequestSummaryHead`, injected created branches in `listBranches` with
   `revalidateInjected`, `#filterPendingCommitsForListing`. `#servedSimulatedCommitIds` and the
-  `MAX_PENDING_CHAIN_COMMITS` cap carry over. Two rules keep injected rows where GitLab would
-  have listed them: a created branch is injected under a `search` only if it satisfies
+  `MAX_PENDING_CHAIN_COMMITS` cap carry over, and the stored simulated comparison keeps every
+  commit the walk withheld, a local merge's side branches included (`pendingCommitIds`), since a
+  restarted instance serving it refills the in-memory set from it alone. Two rules keep injected
+  rows where GitLab would have listed them: a created branch is injected under a `search` only if
+  it satisfies
   `branchNameMatchesSearch`, which applies GitLab's own `GitRefsFinder#by_search` (case-insensitive;
   a plain term anywhere in the name; with `^`, `$` or `*` present, a literal pattern where the
   first `^` anchors the start, the first `$` the end and each `*` is a wildcard — the docs
@@ -858,7 +865,13 @@ substitutes transport endpoints and REST lookups:
   `listCommits()` until its push lands (advertising is unaffected: `#recordPendingSideParents`
   withholds the side parents too); and a queued push to a merge request's *target* branch is
   not overlaid onto its comparison, which changes the reviewed diff only when that push moves
-  the merge base.
+  the merge base. The merge base is not the anchor's, though: a queued merge of the target into
+  the source (parents `[source, target]`) contains the target head, so GitLab will diff against
+  that head, where `merge-base(target, anchor)` is the older fork point and would put the
+  target's own changes in the reviewed diff. `#collectPendingChain` returns the *frontier* --
+  every commit GitLab has where the pending ancestry ends, side parents' included -- and
+  `#simulatedMergeBase` takes the frontier merge base no other one descends from (a tie throws,
+  so callers degrade).
 - **Fork MRs**: a source branch in another project (`source_project_id !== target_project_id`)
   is never overlaid (GitHub checks `head.repo.fullName !== this.#repoFullName()`; here
   `source.project.path !== projectPath`), and a push targets only the bound project.
@@ -1250,6 +1263,14 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 
 ## Punted / future work (deliberately kept open)
 
+- **Diff pages pinned to the revision `readDiff()` returned.** `…/merge_requests/:iid/diffs`
+  serves the latest diff version, so a page fetched after the head or target moves belongs to
+  the newer comparison, and is cached under the older revision's key. `readDiff()`'s JSDoc says
+  so ("later pages may reflect those newer changes"), as GitHub's does. A review prepared from
+  such pages is bound to the old head and refused at apply if the head moved; what remains is a
+  target that moves alone mid-drain. The pin is `GET …/versions` then `…/versions/:id` (a
+  version never changes), but that endpoint returns the whole diff unpaginated, which changes the
+  read's memory profile and how a diff over the limits is refused: its own change.
 - **Group-scoped bindings** ("all projects under `group/`"): strategy-C observers over
   per-project sets (the kit's `ObserverTracker` is the tool), `listProjects`/`searchProjects` on
   a `GitLabGroup` session, a fourth `urlPattern`. The internal stub's one feature not carried.
@@ -1359,7 +1380,11 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   side parent is advertised as remote-known and left out of the pack of a later push carrying
   it, which GitHub rejects unless the merge's own push has landed first. Its `StreamingCursor` also
   moves rows into the page before awaiting the next fetch, so a fetch that throws loses them and the
-  retry skips past them (this port buffers before it serves and serializes `next()`).
+  retry skips past them (this port buffers before it serves and serializes `next()`). Once its
+  walk marks side parents, its stored comparison must keep them too: it re-records only the
+  first-parent ids (this port's `pendingCommitIds`). Its issue and pull request listings serve a
+  provisional row whose create was discarded after the cursor was built (this port's
+  `#injectedRowStanding`).
   From the second review round: `resultsPerPage` reaches the cursors unchecked (a `0` makes
   `ArrayCursor` answer `[]` forever and `StreamingCursor` `null` at once — this port checks it
   once at the session boundary, `pageSize()` in `gitlab-sessions.ts`); the `listCommits` path
@@ -1390,6 +1415,11 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   login or an email, so it needs its own look rather than this port's substring; a first connect
   whose `complete()` throws clears the grant without revoking it; and both its connect and
   `/oauth` routes call `idFromString` unguarded, so a malformed link or state is a 500.
+  And `#simulatedPullComparison` takes the pull's merge base from `compare(base, anchor)`, so a
+  queued merge of the base branch into the head diffs against the old fork point and shows the
+  base's own changes (this port computes it over the pending ancestry's frontier). That fix lifts
+  `#collectPendingChain`'s frontier and `#simulatedMergeBase` into `gatekeeper-kit`, the
+  provider's merge-base read passed in, so the two gatekeepers share one copy.
   Not a bug but a gap: GitHub's OAuth has no Worker Preview relay (`gatekeeper-kit/preview-oauth`,
   which google and now gitlab use), so a GitHub connection cannot be completed on an MR preview.
 - **`confidential` on `GitLabIssueSummary`.** Reporter-and-above observers may see confidential

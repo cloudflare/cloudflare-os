@@ -198,6 +198,48 @@ async function queuePush(name: string, props: GatekeeperProps, branch: string, c
   return await unwrap(await hooks().queuePush(name, props, [branch, commit, force, stubOf(cache)], DESC));
 }
 
+/**
+ * Merge request !133 from `feature` (at SOURCE) into `main`, both forked from BASE, with `main` a
+ * line of `merges` target commits and `/merge_base` answered from that history. Queued on
+ * `feature`: one merge of each target commit in turn, so the head contains the target head.
+ */
+async function queuedMergesOfTarget(merges: number) {
+  const SOURCE = "5".repeat(40);
+  const targets = Array.from({ length: merges }, (_, index) => `${index + 1}f`.repeat(20));
+  const mergeCommits = Array.from({ length: merges }, (_, index) => `${index + 1}e`.repeat(20));
+  const [TARGET_TREE, MERGE_TREE] = ["8".repeat(40), "9".repeat(40)];
+  const [baseBlob, targetBlob, mergeBlob] = ["ab".repeat(20), "cd".repeat(20), "ef".repeat(20)];
+  const target = targets.at(-1)!;
+  const head = mergeCommits.at(-1)!;
+
+  const { gitlab, props, name } = await setup();
+  gitlab.branches.set("main", target).set("feature", SOURCE);
+  const parents = new Map<string, string[]>([[BASE, []], [SOURCE, [BASE]], ...targets.map((id, index): [string, string[]] => [id, [targets[index - 1] ?? BASE]])]);
+  for (const id of parents.keys()) gitlab.commits.add(id);
+  const ancestors = (oid: string): string[] => [oid, ...parents.get(oid)!.flatMap(ancestors)];
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/repository/merge_base`), request => {
+    const [a, b] = request.url.searchParams.getAll("refs[]").map(ancestors);
+    const common = a.filter(oid => b.includes(oid));
+    return json({ ...fx.mergeBaseResponse.data, id: common.find(oid => common.every(other => other === oid || !ancestors(other).includes(oid))) });
+  });
+  const MR = { ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: SOURCE,
+    source_project_id: 1, target_project_id: 1, diff_refs: { base_sha: BASE, start_sha: target, head_sha: SOURCE } };
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json(MR));
+
+  // BASE's tree too, so a simulation that took BASE for the merge base would diff, not degrade.
+  const cache = new TestGitCache()
+    .withCommit(BASE, commitPayload(BASE_TREE, [], "base"))
+    .withCommit(target, commitPayload(TARGET_TREE, [targets.at(-2) ?? BASE], "target"))
+    .withTree(BASE_TREE, treePayload(baseBlob)).withTree(TARGET_TREE, treePayload(targetBlob)).withTree(MERGE_TREE, treePayload(mergeBlob))
+    .withBlob(baseBlob, "base\n").withBlob(targetBlob, "base\ntarget\n").withBlob(mergeBlob, "source\nbase\ntarget\n")
+    .withAncestry(SOURCE, head);
+  for (const [index, id] of mergeCommits.entries()) {
+    cache.withCommit(id, commitPayload(MERGE_TREE, [mergeCommits[index - 1] ?? SOURCE, targets[index]], `merge main ${index + 1}`));
+  }
+  await queuePush(name, props, "feature", head, false, cache);
+  return { gitlab, props, name, cache, head, target };
+}
+
 describe("queueing a push", () => {
   it("binds the expected old head from the live branch and requires a fast-forward", async () => {
     const { props, name } = await setup();
@@ -312,6 +354,34 @@ describe("simulated reads over queued pushes", () => {
     expect(await unwrap(await hooks().isSimulatedCommitId(name, props, BASE))).toBe(false);
   });
 
+  it("still withholds a local merge's side parent when a restarted gatekeeper serves the stored comparison", async () => {
+    // The merge request's comparison over the queued merge is stored for a while; a restart in
+    // that window empties the in-memory withhold set, and the stored copy must refill it whole --
+    // SIDE included, or the next read advertises it and the push pack leaves it out.
+    const SIDE = "d".repeat(40);
+    const M = "e".repeat(40);
+    const blob = "f".repeat(40);
+    const { gitlab, props, name } = await setup();
+    gitlab.branches.set("feature", BASE);
+    const MR = { ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: BASE,
+      source_project_id: 1, target_project_id: 1, diff_refs: { base_sha: BASE, start_sha: BASE, head_sha: BASE } };
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json(MR));
+    const cache = cacheWithChain()
+      .withCommit(BASE, commitPayload(BASE_TREE, [], "base"))
+      .withCommit(SIDE, commitPayload(TREE1, [BASE], "side"))
+      .withCommit(M, commitPayload(TREE2, [HEAD1, SIDE], "merge"))
+      .withTree(BASE_TREE, treePayload(blob)).withTree(TREE2, treePayload(blob)).withBlob(blob, "hello\n")
+      .withAncestry(BASE, M);
+    await queuePush(name, props, "feature", M, false, cache);
+    await unwrap(await hooks().mergeRequestCommitsAll(name, props, "133", stubOf(cache)));
+
+    await hooks().restart(name);
+    await unwrap(await hooks().mergeRequestCommitsAll(name, props, "133", stubOf(cache)));
+    for (const id of [M, HEAD1, SIDE]) {
+      expect(await unwrap(await hooks().isSimulatedCommitId(name, props, id)), id).toBe(true);
+    }
+  });
+
   it("reads a queued merge request's diff, commits, and merge base as if the pushes had landed", async () => {
     const { gitlab, props, name } = await setup();
     const blobOld = "e".repeat(40);
@@ -377,6 +447,27 @@ describe("simulated reads over queued pushes", () => {
     const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
     expect(diff.revision.headSha).toBe(HEAD2);
     expect(diff.files.map(file => file.path)).toEqual(["README"]);
+  });
+
+  it("takes a queued merge of the target into the source as GitLab will: the target head becomes the merge base", async () => {
+    // The merge's first-parent anchor is SOURCE, whose merge base with the target is BASE -- but
+    // the merge contains the target head, so once it lands GitLab diffs against that head, and
+    // the target's own change is not the merge request's.
+    const { props, name, cache, head, target } = await queuedMergesOfTarget(1);
+    const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
+    expect(diff.revision).toEqual({ baseSha: target, headSha: head, mergeBaseSha: target });
+    expect(diff.files).toEqual([expect.objectContaining({ path: "README", additions: 1, deletions: 0 })]);
+    expect(await unwrap(await hooks().mergeBase(name, props, "133", stubOf(cache)))).toBe(target);
+  });
+
+  it("finds the merge base of a chain of merges of the target in requests linear in the merges", async () => {
+    // Five merges put SOURCE and five target commits on the frontier, and their merge bases with
+    // the target head nest: two requests per frontier commit at most, where ordering every pair
+    // of bases would take 36.
+    const { gitlab, props, name, cache, head, target } = await queuedMergesOfTarget(5);
+    const diff = await unwrap(await hooks().diffAll(name, props, "133", stubOf(cache)));
+    expect(diff.revision).toEqual({ baseSha: target, headSha: head, mergeBaseSha: target });
+    expect(gitlab.count("GET", /\/repository\/merge_base/)).toBeLessThanOrEqual(2 * 6);
   });
 
   it("degrades to the remote read when the simulation cannot resolve a tree", async () => {

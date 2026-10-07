@@ -412,10 +412,22 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   #findCreateAction(id: string, kind: "issue"): CreateIssueAction | undefined;
   #findCreateAction(id: string, kind: "mergeRequest"): CreateMergeRequestAction | undefined;
+  #findCreateAction(id: string, kind: EntityKind): CreateIssueAction | CreateMergeRequestAction | undefined;
   #findCreateAction(id: string, kind: EntityKind): CreateIssueAction | CreateMergeRequestAction | undefined {
     const type = kind === "issue" ? "createIssue" : "createMergeRequest";
     return this.#listPendingActions().find((action): action is CreateIssueAction | CreateMergeRequestAction =>
       action.type === type && action.provisionalId === id);
+  }
+
+  /**
+   * A listing's injected row as it is served, or null once it is gone: a provisional row whose
+   * create was discarded after the cursor was built. One whose create landed is the real row
+   * (`identity` drops a repeat). A touched row is served as built: refreshing its overlay could
+   * move it in the sort order, which the cursor cannot take back.
+   */
+  #injectedRowStanding<T extends { id: string }>(kind: EntityKind): (item: T) => T | null {
+    return item => !item.id.startsWith("~") || this.#resolveProvisionalId(item.id) !== undefined ||
+      this.#findCreateAction(item.id, kind) !== undefined ? item : null;
   }
 
   /** Real ids of existing entities with queued mutations, so listings inject their overlaid rows. */
@@ -867,6 +879,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       filter: item => !touched.ids.has(item.id) && issueMatchesFilter(item, filter),
       comparator: compare,
       injectedItems,
+      revalidateInjected: this.#injectedRowStanding("issue"),
       identity: item => this.#currentId(item.id),
       pageSize,
     });
@@ -922,6 +935,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       filter: item => !touched.ids.has(item.id) && mergeRequestMatchesFilter(item, filter),
       comparator: compare,
       injectedItems,
+      revalidateInjected: this.#injectedRowStanding("mergeRequest"),
       identity: item => this.#currentId(item.id),
       pageSize,
     });
@@ -1328,7 +1342,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * The merge base of a merge request, always a commit GitLab itself knows -- even a simulated
-   * head's merge base comes from a live `/merge_base` against the pending chain's anchor -- so
+   * head's merge base comes from live `/merge_base` reads (see `#simulatedMergeBase`) -- so
    * sessions may advertise it.
    */
   async mergeRequestMergeBase(id: string, gitCache?: RpcStub<GitCache>): Promise<GitOid> {
@@ -2754,6 +2768,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   async #collectPendingChain(gitCache: RpcStub<GitCache>, head: GitOid): Promise<{
     commits: { summary: GitLabCommitSummary; tree: GitOid }[];
     anchor: GitOid;
+    /** The commits GitLab has where the pending commits' whole ancestry ends: the anchor first. */
+    frontier: GitOid[];
+    /** Every commit the walk found GitLab lacks, side branches' included: none may be advertised. */
+    pending: GitOid[];
   }> {
     // A push's expectedOldSha is usually known to GitLab without a probe: it was read from the
     // remote at queue time. Stacked pushes bind each expectedOldSha to the previous queued push's
@@ -2771,8 +2789,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     let current = head;
     while (commits.length <= MAX_PENDING_CHAIN_COMMITS) {
       if (await onGitLab(current)) {
-        await this.#recordPendingSideParents(gitCache, sideParents, onGitLab);
-        return { commits, anchor: current };
+        const chainIds = commits.map(commit => commit.summary.id);
+        const side = await this.#recordPendingSideParents(gitCache, sideParents, new Set([...chainIds, current]), onGitLab);
+        return { commits, anchor: current, frontier: [current, ...side.frontier], pending: [...chainIds, ...side.pending] };
       }
       const object = await gitCache.get(current);
       if (object === null || object.type !== "commit") {
@@ -2797,24 +2816,58 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   /**
    * Mark every not-yet-pushed commit reachable through a local merge's side parents as served
-   * (see `#collectPendingChain`), walking each side branch down to a commit GitLab has. Bounded
-   * like the main chain; a side branch that leaves the cache is left unmarked (the push itself
-   * would fail on the missing object, not silently advertise it).
+   * (see `#collectPendingChain`), walking each side branch down to commits GitLab has. Returns the
+   * commits it marked and the GitLab ones it stopped at. `walked` holds the commits already
+   * walked, and the side walk adds to it; the served set cannot stand in, since it outlives the
+   * walk that filled it. Bounded like the main chain. A side branch that leaves the cache is left
+   * unmarked and unfollowed (the push itself would fail on the missing object, not silently
+   * advertise it).
    */
   async #recordPendingSideParents(
-    gitCache: RpcStub<GitCache>, roots: GitOid[], onGitLab: (oid: GitOid) => Promise<boolean>,
-  ): Promise<void> {
+    gitCache: RpcStub<GitCache>, roots: GitOid[], walked: Set<GitOid>, onGitLab: (oid: GitOid) => Promise<boolean>,
+  ): Promise<{ pending: GitOid[]; frontier: GitOid[] }> {
+    const pending: GitOid[] = [];
+    const frontier: GitOid[] = [];
     const stack = [...roots];
-    let visited = 0;
-    while (stack.length > 0 && visited <= MAX_PENDING_CHAIN_COMMITS) {
+    while (stack.length > 0) {
       const oid = stack.pop()!;
-      if (this.#servedSimulatedCommitIds.has(oid) || await onGitLab(oid)) continue;
+      if (walked.has(oid)) continue;
+      walked.add(oid);
+      if (await onGitLab(oid)) {
+        frontier.push(oid);
+        continue;
+      }
       const object = await gitCache.get(oid);
       if (object === null || object.type !== "commit") continue;
-      visited += 1;
+      if (pending.length === MAX_PENDING_CHAIN_COMMITS) throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
+      pending.push(oid);
       this.#servedSimulatedCommitIds.add(oid);
       stack.push(...parseGitCommitPayload(object.content, oid).parents);
     }
+    return { pending, frontier };
+  }
+
+  /**
+   * The merge base GitLab will compute for `target` and a queued head whose ancestry ends at
+   * `frontier` on GitLab. No pending commit is an ancestor of `target`, so the common ancestors
+   * are those `target` shares with the frontier, and the best is the frontier merge base no other
+   * one descends from -- for a queued merge of the target into the source, the target head itself.
+   * Every step is a live `/merge_base`, so the result is a commit GitLab knows. A tie (criss-cross
+   * history) throws, and callers degrade, rather than guess which one GitLab will pick.
+   */
+  async #simulatedMergeBase(target: GitOid, frontier: GitOid[]): Promise<GitOid> {
+    const bases = new Set(await Promise.all(frontier.map(oid => this.#getMergeBaseCached(target, oid))));
+    // The bases no other one descends from, kept as they arrive. One `/merge_base` orders a pair
+    // either way -- it is whichever of the two is the ancestor -- so nested bases, a chain of
+    // merges of the target, cost one call each.
+    let best: GitOid[] = [];
+    for (const base of bases) {
+      const pairBases = await Promise.all(best.map(kept => this.#getMergeBaseCached(base, kept)));
+      if (pairBases.includes(base)) continue;
+      best = [...best.filter((kept, index) => pairBases[index] !== kept), base];
+    }
+    if (best.length > 1) throw new Error(`${target} has several equally good merge bases with the queued head: ${best.join(", ")}.`);
+    return best[0];
   }
 
   /**
@@ -2890,21 +2943,19 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     if (targetHead === null) throw new Error(`Target branch "${targetRef}" does not exist on GitLab.`);
     const [compare, mergeBase] = await Promise.all([
       this.#compareCached(targetRef, chain.anchor),
-      this.#getMergeBaseCached(targetHead, chain.anchor),
+      this.#simulatedMergeBase(targetHead, chain.frontier),
     ]);
 
     const newTree = chain.commits.length > 0 ? chain.commits[0].tree : await this.#treeOidOfCommit(gitCache, simulatedHead);
     const files = await diffGitTrees(this.#treeDiffSource(gitCache), await this.#treeOidOfCommit(gitCache, mergeBase), newTree);
 
     const result: SimulatedMergeRequestComparison = {
-      // The pending chain descends from the anchor without touching the target branch, so the
-      // diff's merge base is the (target, anchor) one.
       revision: { baseSha: targetHead, headSha: simulatedHead, mergeBaseSha: mergeBase },
       files,
       totalCommits: compare.commits.length + chain.commits.length,
       // Oldest-first, like the merge request commit listing.
       commitSummaries: [...compare.commits, ...chain.commits.map(commit => commit.summary).toReversed()],
-      pendingCommitIds: chain.commits.map(commit => commit.summary.id),
+      pendingCommitIds: chain.pending,
     };
     this.#storeCached(cacheKey, result, generation);
     return result;

@@ -107,7 +107,7 @@ describe("issue creation", () => {
     const create = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New" }], DESC));
     // The listing took the provisional ~1 when it was opened, and reads GitLab's page when
     // drained -- by which time the issue is #77 there. It is one issue, served once.
-    const rows = await unwrap(await hooks().listIssuesAcrossApply(name, props, create.approvalId, 20));
+    const rows = await unwrap(await hooks().listIssuesAcrossDecision(name, props, create.approvalId, 20));
     expect(rows).toHaveLength(1);
     expect(["~1", "77"]).toContain(rows[0].id);
   });
@@ -130,10 +130,21 @@ describe("issue creation", () => {
         { headers: { "x-next-page": "" } }));
     gitlab.install();
     const create = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New" }], DESC));
-    const rows = await unwrap(await hooks().listIssuesAcrossApply(name, props, create.approvalId, 2, {
-      filter: { sort: "created", direction: "asc" }, pagesBeforeApply: 1,
+    const rows = await unwrap(await hooks().listIssuesAcrossDecision(name, props, create.approvalId, 2, {
+      filter: { sort: "created", direction: "asc" }, pagesBefore: 1,
     }));
     expect(rows.map(row => row.id)).toEqual(["5", "~1", "6"]);
+  });
+
+  it("drops a provisional issue from a listing opened before its create was rejected", async () => {
+    // The listing took ~1 when it was opened; by the time it is drained the create is discarded
+    // and opening ~1 fails, so the listing must not offer it.
+    const { gitlab, props, name } = await setup("listing-across-reject");
+    gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/issues\\?`), () => json([issue({ iid: 5 })]));
+    gitlab.install();
+    const create = await unwrap(await hooks().queueAction(name, props, "prepareCreateIssue", [{ title: "New" }], DESC));
+    const rows = await unwrap(await hooks().listIssuesAcrossDecision(name, props, create.approvalId, 20, { reject: true }));
+    expect(rows.map(row => row.id)).toEqual(["5"]);
   });
 
   it("rejecting a create cascades to everything queued against the provisional issue, whose cards then discard cleanly", async () => {

@@ -252,21 +252,27 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Open an issue listing, serve `pagesBeforeApply` of its pages, apply `actionId`, then drain the
-   * rest: what a cursor serves when an action lands while it is being read. One call, so the
-   * cursor never has to outlive the event it was received in.
+   * Open an issue listing, serve `pagesBefore` of its pages, apply or reject `actionId`, then drain
+   * the rest: what a cursor serves when an action is decided while it is being read. One call, so
+   * the cursor never has to outlive the event it was received in.
    */
-  async listIssuesAcrossApply(facetName: string, props: GatekeeperProps, actionId: number, pageSize: number,
-                              options: { filter?: GitLabIssueFilter; pagesBeforeApply?: number } = {}):
+  async listIssuesAcrossDecision(facetName: string, props: GatekeeperProps, actionId: number, pageSize: number,
+                                 options: { filter?: GitLabIssueFilter; pagesBefore?: number; reject?: true } = {}):
       Promise<Outcome<GitLabIssueSummary[]>> {
     return await outcome(async () => {
       const gatekeeper = this.#gatekeeper(facetName, props);
       const cursor = await gatekeeper.listIssues(options.filter, pageSize);
       const served: GitLabIssueSummary[] = [];
-      for (let i = 0; i < (options.pagesBeforeApply ?? 0); i++) served.push(...await cursor.next() ?? []);
-      await gatekeeper.applyAction(actionId, new NullGitCache());
+      for (let i = 0; i < (options.pagesBefore ?? 0); i++) served.push(...await cursor.next() ?? []);
+      if (options.reject) await gatekeeper.rejectAction(actionId);
+      else await gatekeeper.applyAction(actionId, new NullGitCache());
       return [...served, ...await drain(cursor)];
     });
+  }
+
+  /** Restart the gatekeeper, as an eviction would: its storage stays, its memory does not. */
+  restart(facetName: string): void {
+    this.ctx.facets.abort(facetName, new Error("test restart"));
   }
 
   async listMergeRequestsAll(facetName: string, props: GatekeeperProps, pageSize: number): Promise<Outcome<GitLabMergeRequestSummary[]>> {
