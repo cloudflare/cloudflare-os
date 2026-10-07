@@ -86,8 +86,8 @@ describe("SpaceDirectoryDurableObject", () => {
     expect(await listed()).toEqual(["eng"]);
   });
 
-  it("keeps of a personal space's owner the id and display name alone, and of a team space none",
-      async () => {
+  it("keeps of a personal space's owner the id alone, named as the space is, and of a team space "
+      + "none", async () => {
     let stub = directory();
     let ada = { ...profile("ada@example.com", "Ada"), commitEmail: "a@example.org" };
     await stub.syncSpace({ key: "~ada", name: "Ada", kind: "personal", owner: ada }, true, 1);
@@ -101,10 +101,10 @@ describe("SpaceDirectoryDurableObject", () => {
     expect(spaces[1]).not.toHaveProperty("owner");
   });
 
-  it("searches the key, the name and the owner's display name, ignoring case, and nothing else",
-      async () => {
+  it("searches the key and the name, ignoring case, and nothing else", async () => {
     let stub = directory();
     await stub.syncSpace(team("eng", "Engineering"), true, 1);
+    // An owner's display name other than the space's name, which no space holds, is not searched.
     await stub.syncSpace(
         { key: "~ada", name: "Ada", kind: "personal", owner: profile("ada@x.example", "Lovelace") },
         true, 1);
@@ -114,7 +114,8 @@ describe("SpaceDirectoryDurableObject", () => {
 
     expect(await search("ENGIN")).toEqual(["eng"]);
     expect(await search("~ad")).toEqual(["~ada"]);
-    expect(await search("lovelace")).toEqual(["~ada"]);
+    expect(await search("ada")).toEqual(["~ada"]);
+    expect(await search("lovelace")).toEqual([]);
     expect(await search("uptime")).toEqual(["ops"]);
     expect(await search("%")).toEqual(["ops"]);
     expect(await search("_")).toEqual([]);
@@ -188,6 +189,50 @@ describe("SpaceDirectoryDurableObject", () => {
     expect(keysOf(first).slice(-2)).toEqual([nth(48), "lower"]);
     expect(await stub.listSpaces(undefined, first.cursor)).toEqual(
         { spaces: [team("upper", "Alpha")] });
+  });
+
+  it("searches a table that held its owners' display names by key and name alone, once woken",
+      async () => {
+    let stub = directory();
+    // A table holding a personal space's owner's display name, in its search text too.
+    await runInDurableObject(stub, (_instance, state) => {
+      let { sql } = state.storage;
+      sql.exec("DROP TABLE spaces");
+      sql.exec(`CREATE TABLE spaces (
+        key TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, kind TEXT NOT NULL,
+        owner_id TEXT, owner_name TEXT, search_text TEXT NOT NULL, rev INTEGER NOT NULL,
+        listed INTEGER NOT NULL
+      ) STRICT`);
+      sql.exec("CREATE INDEX spaces_by_name ON spaces (name, key)");
+      sql.exec(`INSERT INTO spaces VALUES
+        ('~ada', 'Ada', 'personal', 'ada@x.example', 'Lovelace', '~ada
+ada
+lovelace', 1, 1),
+        ('eng', 'Engineering', 'team', NULL, NULL, 'eng
+engineering
+', 1, 1)`);
+    });
+    await evictDurableObject(stub);
+
+    let search = async (query: string) => keysOf(await stub.listSpaces(query));
+    expect(await search("lovelace")).toEqual([]);
+    expect(await search("ada")).toEqual(["~ada"]);
+    expect(await search("engineering")).toEqual(["eng"]);
+    expect((await stub.listSpaces()).spaces).toEqual([
+      { key: "~ada", name: "Ada", kind: "personal", owner: profile("ada@x.example", "Ada") },
+      { key: "eng", name: "Engineering", kind: "team" },
+    ]);
+
+    // Done once: woken again, a table with no owner's display names is left as it is.
+    let rowsOf = () => runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql.exec("SELECT * FROM spaces ORDER BY key").toArray());
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("UPDATE spaces SET search_text = 'stale' WHERE key = 'eng'");
+    });
+    let before = await rowsOf();
+    expect(Object.keys(before[0]!)).not.toContain("owner_name");
+    await evictDurableObject(stub);
+    expect(await rowsOf()).toEqual(before);
   });
 
   it("bounds the query and refuses a line break in it", async () => {

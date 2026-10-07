@@ -5,8 +5,10 @@ const PAGE_SIZE = 50;
 // Every authenticated user can reach this one DO, so a search bounds what it is asked to scan.
 const MAX_QUERY_LENGTH = 1000;
 
-type SpaceRow = Pick<PublishedSpaceInfo, "key" | "name" | "kind">
-    & { owner_id: string | null; owner_name: string | null };
+type SpaceRow = Pick<PublishedSpaceInfo, "key" | "name" | "kind"> & { owner_id: string | null };
+
+// What a space is searched by: its key and name, joined by a line break, which no key holds.
+const searchText = (key: string, name: string) => `${key}\n${name}`.toLowerCase();
 
 /**
  * Deployment-wide directory of the spaces open to visitors, those with a published workspace at
@@ -23,43 +25,58 @@ export class SpaceDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       name TEXT NOT NULL COLLATE NOCASE,
       kind TEXT NOT NULL,
       owner_id TEXT,
-      owner_name TEXT,
       search_text TEXT NOT NULL,
       rev INTEGER NOT NULL,
       listed INTEGER NOT NULL
     ) STRICT`);
     ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS spaces_by_name ON spaces (name, key)");
+    // A table may have an `owner_name` column, a personal space's owner's display name, which no
+    // read needs (it is the space's name) and which its rows' search text includes. Each row's
+    // search text is computed again and the column dropped, in one transaction: the column's
+    // absence is what keeps this from running more than once.
+    let columns = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(spaces)").toArray();
+    if (columns.some(column => column.name === "owner_name")) {
+      ctx.storage.transactionSync(() => {
+        let rows = ctx.storage.sql.exec<{ key: string; name: string }>(
+            "SELECT key, name FROM spaces").toArray();
+        for (let { key, name } of rows) {
+          ctx.storage.sql.exec(
+              "UPDATE spaces SET search_text = ? WHERE key = ?", searchText(key, name), key);
+        }
+        ctx.storage.sql.exec("ALTER TABLE spaces DROP COLUMN owner_name");
+      });
+    }
   }
 
   /**
    * Record whether `space` is listed, as of the space's revision `rev`: a row already at that
    * revision or a higher one is left alone, so that pushes arriving out of order converge on the
    * newest, and a space that stops being listed is never listed again by an older push. Of a
-   * personal space's owner only the id and display name are kept.
+   * personal space's owner only the id is kept: its display name is the space's name, which the
+   * space was given at its claim (see `SpaceInfo.name`).
    */
   syncSpace(space: PublishedSpaceInfo, listed: boolean, rev: number): void {
     let { key, name, kind, owner } = space;
     this.ctx.storage.sql.exec(
-      `INSERT INTO spaces (key, name, kind, owner_id, owner_name, search_text, rev, listed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO spaces (key, name, kind, owner_id, search_text, rev, listed)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (key) DO UPDATE SET name = excluded.name, kind = excluded.kind,
-         owner_id = excluded.owner_id, owner_name = excluded.owner_name,
-         search_text = excluded.search_text, rev = excluded.rev, listed = excluded.listed
+         owner_id = excluded.owner_id, search_text = excluded.search_text, rev = excluded.rev,
+         listed = excluded.listed
        WHERE excluded.rev > spaces.rev`,
-      key, name, kind, owner?.id ?? null, owner?.name ?? null,
-      `${key}\n${name}\n${owner?.name ?? ""}`.toLowerCase(), rev, listed ? 1 : 0);
+      key, name, kind, owner?.id ?? null, searchText(key, name), rev, listed ? 1 : 0);
   }
 
   /**
-   * One page of the listed spaces, ordered by name, ignoring case, then key: those whose key,
-   * name or owner's display name contains `query`, ignoring case, or every one for a blank query.
+   * One page of the listed spaces, ordered by name, ignoring case, then key: those whose key or
+   * name contains `query`, ignoring case, or every one for a blank query.
    * `cursor` is what the previous page returned, to continue after it; the last page returns
    * none. Rejects a query over `MAX_QUERY_LENGTH` characters or containing a line break, and a
    * malformed cursor.
    */
   listSpaces(query = "", cursor?: string): { spaces: PublishedSpaceInfo[]; cursor?: string } {
-    // The searched fields are joined by newlines in search_text, so a needle containing one could
-    // match across two of them.
+    // The key and name are joined by a newline in search_text, so a needle containing one could
+    // match across the two.
     if (query.length > MAX_QUERY_LENGTH || /[\r\n]/.test(query)) {
       throw new Error(
           `Search query must be at most ${MAX_QUERY_LENGTH} characters with no line breaks.`);
@@ -74,15 +91,15 @@ export class SpaceDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       after = [cursor.slice(at + 1), cursor.slice(0, at)];
     }
     let rows = this.ctx.storage.sql.exec<SpaceRow>(
-      `SELECT key, name, kind, owner_id, owner_name FROM spaces
+      `SELECT key, name, kind, owner_id FROM spaces
        WHERE listed = 1 AND instr(search_text, ?) > 0
          AND (? IS NULL OR (name, key) > (?, ?))
        ORDER BY name, key
        LIMIT ${PAGE_SIZE + 1}`,
       query.trim().toLowerCase(), after[0], ...after,
     ).toArray();
-    let spaces = rows.slice(0, PAGE_SIZE).map(({ owner_id: id, owner_name: name, ...space }) =>
-        id === null ? space : { ...space, owner: { type: "user" as const, id, name: name! } });
+    let spaces = rows.slice(0, PAGE_SIZE).map(({ owner_id: id, ...space }) =>
+        id === null ? space : { ...space, owner: { type: "user" as const, id, name: space.name } });
     if (rows.length <= PAGE_SIZE) return { spaces };
     let { key, name } = spaces.at(-1)!;
     return { spaces, cursor: `${key}\n${name}` };
