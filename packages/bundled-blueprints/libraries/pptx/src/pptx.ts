@@ -1374,6 +1374,9 @@ function* renderCard(state: RenderState, block: PreparedBlock, name: string): Ge
   const bodyHeight = props.body ? estimateTextHeight(props.body, width, 15, 1.5, 400) : 0;
   const contentHeight = (props.eyebrow ? eyebrowHeight + 12 : 0) + titleHeight + 12 + bodyHeight;
   const outer = pixelBox(block, outerWidth, 40 + contentHeight);
+  const padding = Math.min(20, outer.height / 2);
+  // Shrink the whole text stack's boxes and gaps before asking consumers to fit each text.
+  const heightScale = Math.min(1, Math.max(0, outer.height - 2 * padding) / contentHeight);
   yield shapeXml(state, `${name} surface`, boxFromPixels(outer.x, outer.y, outer.width, outer.height), {
     preset: "roundRect",
     radius: 2,
@@ -1381,23 +1384,23 @@ function* renderCard(state: RenderState, block: PreparedBlock, name: string): Ge
     line: lineXml(parseColor("#E5E5E5"), 1),
   });
   const x = outer.x + 20;
-  let y = outer.y + 20;
+  let y = outer.y + padding;
   if (props.eyebrow) {
-    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, eyebrowHeight), {
+    yield* textShapeXml(state, `${name} eyebrow`, boxFromPixels(x, y, width, eyebrowHeight * heightScale), {
       fontSize: 10, weight: 600, letterSpacing: "0.05em", lineHeight: 1.2,
       color: parseColor("#FF6633"), align: "left",
     }, {text: props.eyebrow}, {autofit: "shrink"});
-    y += eyebrowHeight + 12;
+    y += (eyebrowHeight + 12) * heightScale;
   }
   if (props.title) {
-    yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight), {
+    yield* textShapeXml(state, `${name} title`, boxFromPixels(x, y, width, titleHeight * heightScale), {
       fontSize: 18, weight: 600, letterSpacing: "-0.02em", lineHeight: 1.3,
       color: parseColor("#000000"), align: "left",
     }, {text: props.title}, {autofit: "shrink"});
   }
-  y += titleHeight + 12;
+  y += (titleHeight + 12) * heightScale;
   yield* textShapeXml(state, `${name} body`,
-    boxFromPixels(x, y, width, Math.max(1, outer.y + outer.height - 20 - y)), {
+    boxFromPixels(x, y, width, Math.max(0, outer.y + outer.height - padding - y)), {
       fontSize: 15, weight: 400, lineHeight: 1.5,
       color: parseColor("#747474"), align: "left",
     }, {text: props.body}, {autofit: "shrink"});
@@ -1508,6 +1511,7 @@ function imageCrop(imageAspect: number, boxWidth: number, boxHeight: number): Cr
 // The largest box of the given aspect ratio centred inside `target` (CSS object-fit: contain).
 function containBox(target: Box, imageAspect: number): Box {
   const targetAspect = target.width / Math.max(1e-9, target.height);
+  if (imageAspect === targetAspect) return target;
   if (imageAspect > targetAspect) {
     const height = target.width / imageAspect;
     return {x: target.x, y: target.y + (target.height - height) / 2, width: target.width, height};

@@ -273,6 +273,12 @@ function xmlAttributes(source: string): Record<string, string> {
   return Object.fromEntries([...source.matchAll(/([\w:]+)="([^"]*)"/g)].map(match => [match[1], match[2]]));
 }
 
+function shapeVerticalBounds(shape: string) {
+  const offset = xmlAttributes(/<a:off ([^>]*)\/>/.exec(shape)![1]);
+  const extent = xmlAttributes(/<a:ext ([^>]*)\/>/.exec(shape)![1]);
+  return {y: Number(offset.y), height: Number(extent.cy)};
+}
+
 function relationshipSource(name: string): string {
   if (name === "_rels/.rels") return "";
   const marker = "/_rels/";
@@ -673,6 +679,27 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(relationships).not.toContain("TargetMode");
   });
 
+  it("rounds contained images only when their aspect ratio fills the block", async () => {
+    const square = dataUrl("png", pngFixture(2, 2));
+    const landscape = dataUrl("png", pngFixture(4, 2));
+    const portrait = dataUrl("png", pngFixture(2, 4));
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("image", {src: square, fit: "contain", radius: 20}, {w: 100, h: 100}),
+      block("image", {src: landscape, radius: 20}, {w: 200, h: 100}),
+      block("image", {src: landscape, fit: "contain", radius: 20}, {w: 100, h: 100}),
+      block("image", {src: portrait, fit: "contain", radius: 20}, {w: 100, h: 100}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    for (const index of [1, 2]) {
+      const picture = shapeByName(xml, `Block ${index} image`);
+      expect(picture).toContain('<a:prstGeom prst="roundRect">');
+      expect(picture).toContain('<a:gd name="adj" fmla="val 20000"/>');
+    }
+    for (const index of [3, 4]) {
+      expect(shapeByName(xml, `Block ${index} image`)).toContain('<a:prstGeom prst="rect">');
+    }
+  });
+
   it("uses placeholders for unavailable raster images and unknown blocks, but omits SVG", async () => {
     const zip = await readZip(deckToPptx(oneSlide([
       block("image", {}),
@@ -873,6 +900,37 @@ describe("Workspace Slides PPTX rendering", () => {
     expect(shapeByName(xml, "Block 3 shape")).toContain('<a:srgbClr val="FF0000"><a:alpha val="50000"/>');
     expect(shapeByName(xml, "Block 4 shape")).toContain("<a:noFill/>");
     expect(shapeByName(xml, "Block 5 text")).toContain('<a:srgbClr val="000000">'); // the text default
+  });
+
+  it.each([
+    {label: "long title", eyebrow: "", title: "A long card heading that wraps over many lines. ".repeat(6), body: "Body", height: 100},
+    {label: "long eyebrow and multiline body", eyebrow: "A long eyebrow ".repeat(12), title: "Card title", body: "Body copy\n".repeat(10), height: 60},
+    {label: "empty title and long body", eyebrow: "Eyebrow", title: "", body: "Long body copy ".repeat(40), height: 100},
+    {label: "less height than padding", eyebrow: "Eyebrow", title: "Title", body: "Body", height: 24},
+  ])("keeps fixed-height card text inside its surface: $label", async ({eyebrow, title, body, height}) => {
+    const zip = await readZip(deckToPptx(oneSlide([
+      block("card", {eyebrow, title, body}, {x: 100, y: 100, w: 280, h: height}),
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    const surface = shapeVerticalBounds(shapeByName(xml, "Block 1 card surface"));
+    expect(surface).toEqual({y: 100 * 10160, height: height * 10160});
+    const padding = Math.min(20, height / 2) * 10160;
+    let bottom = surface.y + padding;
+    for (const [part, text] of [["eyebrow", eyebrow], ["title", title], ["body", body]]) {
+      if (!text) continue;
+      const shape = shapeByName(xml, `Block 1 card ${part}`);
+      const box = shapeVerticalBounds(shape);
+      expect(box.y).toBeGreaterThanOrEqual(surface.y + padding);
+      expect(box.y).toBeGreaterThanOrEqual(bottom - 1);
+      expect(box.height).toBeGreaterThan(0);
+      // Independent coordinate rounding may add one EMU at a shared edge.
+      expect(box.y + box.height).toBeLessThanOrEqual(surface.y + surface.height - padding + 1);
+      expect(shape).toContain("<a:normAutofit/>");
+      const exportedText = [...shape.matchAll(/<a:br\/>|<a:t[^>]*>([^<]*)<\/a:t>/g)]
+        .map(match => match[1] ?? "\n").join("");
+      expect(exportedText).toBe(part === "eyebrow" ? text.trim().toUpperCase() : part === "title" ? text.trim() : text);
+      bottom = box.y + box.height;
+    }
   });
 
   it("collapses whitespace in inline-only props and shrinks card text to its surface", async () => {

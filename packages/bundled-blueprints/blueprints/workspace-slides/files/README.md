@@ -391,8 +391,10 @@ The starter chart, Edit/agent icons, and bottom brand bars use native blocks and
 The orange cover treatment exports as native objects; SVG blocks and dot-grid backgrounds are omitted.
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x 6,858,000 EMU. The
-renderer asks consumers to grow auto-height blocks and shrink card text where PresentationML cannot
-match browser clipping. PNG and JPEG data URLs are embedded after signature, dimension, and resource
-limit checks. Remote raster images become visible placeholders. SVG image data URLs and `svg`
-blocks are omitted entirely.
+renderer asks consumers to grow auto-height blocks. Cards budget text boxes and gaps within their
+authored padded height, then ask consumers to shrink the text to fit rather than match browser
+clipping. PNG and JPEG data URLs are embedded after signature, dimension, and resource limit checks.
+Image corner radii apply when the picture fills its block, including matching-aspect `contain`
+images; letterboxed pictures remain rectangular. Remote raster images become visible placeholders.
+SVG image data URLs and `svg` blocks are omitted entirely.
 
