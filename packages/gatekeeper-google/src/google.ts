@@ -44,7 +44,7 @@ import {
 } from "./bigquery-types";
 import {
   calendarEventOverlaps, calendarEventSortKey, eventPatchToGoogle, GoogleCalendarApi,
-  validateCalendarTimeWindow,
+  hasCalendarPrivateAccessRole, validateCalendarTimeWindow,
 } from "./calendar-api";
 import type {
   CalendarAvailabilityMode, CalendarEvent, CalendarEventDraft, CalendarEventPatch,
@@ -1036,11 +1036,14 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
     }
   }
 
+  /**
+   * Observers need the roles that see private event details, not merely write access; see
+   * `hasCalendarPrivateAccessRole` and the observer notes on GoogleCalendarGatekeeperImpl.
+   */
   async hasCalendarWriterAccess(calendarId: string): Promise<boolean> {
     let api = new GoogleCalendarApi(opts => this.#getToken(opts));
     try {
-      let calendar = await api.getCalendar(calendarId);
-      return calendar.accessRole === "writer" || calendar.accessRole === "owner";
+      return hasCalendarPrivateAccessRole(await api.getCalendar(calendarId));
     } catch (error) {
       if (isNoAccessStatus(httpStatusFromError(error))) return false;
       throw error;

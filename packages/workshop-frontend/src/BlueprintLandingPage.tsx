@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
-import { SupportedResource, VendorDescription, ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
+import { SupportedResource, VendorDescription, ResourceConfiguratorFrame, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
@@ -57,7 +57,9 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   // Vendor catalog + connected accounts, shared by all gatekeeper bindings during configure.
   const [vendors, setVendors] = useState<{id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]>([])
   const [accounts, setAccounts] = useState<AccountOption[]>([])
+  const accountsRef = useRef<Map<number, AccountOption>>(new Map())
   const [connectingVendor, setConnectingVendor] = useState<string | null>(null)
+  const [grantingAccountId, setGrantingAccountId] = useState<number | null>(null)
   const [reconnectingAccountId, setReconnectingAccountId] = useState<number | null>(null)
 
   // Per-binding readiness flags reported by configurator iframes. A gatekeeper binding can be
@@ -88,6 +90,15 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   const vendorById = useMemo(
     () => new Map(vendors.map(v => [v.id.toLowerCase(), v])),
     [vendors],
+  )
+  // A saved gatekeeper assignment stops being usable when its account disconnects, expires, or
+  // loses the required grant. Deriving this per render (rather than pruning state in an effect)
+  // means Create can never submit a stale account id, even for one render.
+  const usableDraftAssignments = useMemo(
+    () => blueprint
+      ? removeUnavailableGatekeeperAssignments(draftAssignments, blueprint, accounts)
+      : draftAssignments,
+    [accounts, blueprint, draftAssignments],
   )
   // Fetch blueprint metadata.
   useEffect(() => {
@@ -153,11 +164,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   // gatekeeper bindings; each binding filters down to the vendor + resource it requires.
   useEffect(() => {
     if (!(isAuthenticated && authenticatedApi)) {
+      accountsRef.current.clear()
       setAccounts([])
       return
     }
     let cancelled = false
     const accountMap = new Map<number, AccountOption>()
+    accountsRef.current = accountMap
 
     const subscriber = new AccountsSubscriberAdapter({
       add({ id: accountId, description, vendor, supportedResources, credentialsValid, vendorId }) {
@@ -190,17 +203,54 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [isAuthenticated, authenticatedApi])
 
-  const handleConnectAccount = useCallback(async (vendorId: string) => {
+  const handleConnectAccount = useCallback(async (vendorId: string, resourceUrlPatterns?: string[]) => {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (err) {
       console.error('Failed to initiate connection:', err)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
     } finally {
       setConnectingVendor(null)
+    }
+  }, [authenticatedApi, toasts])
+
+  const handleGrantAccountResources = useCallback(async (
+    accountId: number,
+    resourceUrlPatterns: string[],
+  ) => {
+    if (!authenticatedApi || resourceUrlPatterns.length === 0) return
+    setGrantingAccountId(accountId)
+    try {
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      if (flow) {
+        openConnectWindow(flow)
+        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
+      } else {
+        const account = accountsRef.current.get(accountId)
+        if (account) {
+          accountsRef.current.set(accountId, {
+            ...account,
+            description: {
+              ...account.description,
+              grantedResourceUrlPatterns: [
+                ...new Set([
+                  ...(account.description.grantedResourceUrlPatterns ?? []),
+                  ...resourceUrlPatterns,
+                ]),
+              ],
+            },
+          })
+          setAccounts(Array.from(accountsRef.current.values()))
+        }
+      }
+    } catch (err) {
+      console.error('Failed to request additional access:', err)
+      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+    } finally {
+      setGrantingAccountId(null)
     }
   }, [authenticatedApi, toasts])
 
@@ -357,14 +407,6 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [id, authenticatedApi])
 
-  const findMatchingAccounts = useCallback((binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>) => {
-    return accounts.filter(account =>
-      account.vendorId.toLowerCase() === binding.gatekeeperName.toLowerCase() &&
-      account.credentialsValid &&
-      account.supportedResources.some(resource => resource.urlPattern === binding.typeUrlPattern)
-    )
-  }, [accounts])
-
   const findSuggestedModelId = useCallback((suggested: {provider: string, modelName: string}) => {
     const provider = suggested.provider.trim().toLowerCase()
     const modelName = suggested.modelName.trim().toLowerCase()
@@ -383,13 +425,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     return providerScopedMatches.length === 1 ? providerScopedMatches[0].id : null
   }, [models])
 
-  const getFirstUnresolvedBindingName = useCallback((assignments = draftAssignments) => {
+  const getFirstUnresolvedBindingName = useCallback((assignments = usableDraftAssignments) => {
     if (!blueprint) return null
     for (let name of Object.keys(blueprint.metadata.bindings)) {
       if (!assignments[name]) return name
     }
     return null
-  }, [blueprint, draftAssignments])
+  }, [blueprint, usableDraftAssignments])
 
   const openBindingConfigurator = useCallback((name: string) => {
     if (!blueprint) return
@@ -398,13 +440,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setGatekeeperReady(prev => ({ ...prev, [name]: false }))
     collectorsRef.current.delete(name)
-    const existing = draftAssignments[name]
+    const existing = usableDraftAssignments[name]
     let initial: any = existing ? { ...existing } : { type: binding.type }
     if (binding.type === 'gatekeeper') {
       initial = {
         type: 'gatekeeper',
         accountId: existing?.type === 'gatekeeper' ? existing.accountId : undefined,
-        resourceUrl: existing?.type === 'gatekeeper' ? existing.resourceUrl : binding.resourceUrl || '',
+        resourceUrl: existing?.type === 'gatekeeper' ? existing.resourceUrl : undefined,
       }
     } else if (binding.type === 'aiModel') {
       initial = {
@@ -419,13 +461,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
     setBindingForm(prev => ({ ...prev, [name]: initial }))
     setActiveBindingName(name)
-  }, [blueprint, draftAssignments])
+  }, [blueprint, usableDraftAssignments])
 
   useEffect(() => {
     if (!blueprint || !isAuthenticated) return
 
-    // Re-run when account/model data changes: findMatchingAccounts depends on accounts,
-    // and findSuggestedModelId depends on models.
+    // Re-run when model data changes: findSuggestedModelId depends on models.
     setDraftAssignments(prev => {
       let next = { ...prev }
       let changed = false
@@ -433,18 +474,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       for (let [name, binding] of Object.entries(blueprint.metadata.bindings)) {
         if (next[name]) continue
 
-        if (binding.type === 'gatekeeper') {
-          if (!binding.resourceUrl) continue
-          const matches = findMatchingAccounts(binding)
-          if (matches.length === 1) {
-            next[name] = {
-              type: 'gatekeeper',
-              accountId: matches[0].id,
-              resourceUrl: normalizeResourceUrl(binding.resourceUrl),
-            }
-            changed = true
-          }
-        } else if (binding.type === 'aiModel') {
+        if (binding.type === 'aiModel') {
           if (!binding.suggestedModel) continue
           const modelId = findSuggestedModelId(binding.suggestedModel)
           if (modelId) {
@@ -467,7 +497,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
       return changed ? next : prev
     })
-  }, [blueprint, isAuthenticated, findMatchingAccounts, findSuggestedModelId])
+  }, [blueprint, isAuthenticated, findSuggestedModelId])
 
   const handleStartConfigure = () => {
     if (!isAuthenticated) {
@@ -564,7 +594,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
     setCreating(true)
     setError(null)
-    const overseer = authenticatedApi.newGadgetFromBlueprint(id, draftAssignments)
+    const overseer = authenticatedApi.newGadgetFromBlueprint(id, usableDraftAssignments)
     try {
       let metadata = await overseer.getMetadata()
       window.location.href = `/workspace/${metadata.id}`
@@ -754,7 +784,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   let meta = blueprint.metadata
   let bindingEntries = Object.entries(meta.bindings)
   let activeBinding = activeBindingName ? meta.bindings[activeBindingName] : undefined
-  let readyCount = bindingEntries.filter(([name]) => draftAssignments[name]).length
+  let readyCount = bindingEntries.filter(([name]) => usableDraftAssignments[name]).length
   let unresolvedBindingName = getFirstUnresolvedBindingName()
   let remainingCount = bindingEntries.length - readyCount
   let primaryActionLabel: string
@@ -962,7 +992,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
               <div className="mb-3 px-1 text-[13px] leading-[18px] font-normal tracking-[-0.25px] text-kumo-subtle">
                 {readyCount === bindingEntries.length
                   ? 'Everything is ready. You can change any connection before creating the Gadget.'
-                  : `${readyCount} of ${bindingEntries.length} ready. Suggestions are used automatically when they match one of your connected accounts.`}
+                  : `${readyCount} of ${bindingEntries.length} ready. Each connection shows the blueprint's recommended resource when you configure it.`}
               </div>
               <div className="overflow-hidden rounded-2xl border border-kumo-line bg-kumo-base">
                 {bindingEntries.map(([name, binding]) => (
@@ -970,7 +1000,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     key={name}
                     name={name}
                     binding={binding}
-                    assignment={draftAssignments[name]}
+                    assignment={usableDraftAssignments[name]}
                     vendor={binding.type === 'gatekeeper' ? vendorById.get(binding.gatekeeperName.toLowerCase()) : undefined}
                     models={models}
                     onConfigure={() => isAuthenticated ? openBindingConfigurator(name) : setShowLogin(true)}
@@ -1039,9 +1069,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   vendors={vendors}
                   accounts={accounts}
                   connectingVendor={connectingVendor}
+                  grantingAccountId={grantingAccountId}
                   reconnectingAccountId={reconnectingAccountId}
                   onChange={(updates) => updateBinding(activeBindingName, updates)}
                   onConnectAccount={handleConnectAccount}
+                  onGrantAccountResources={handleGrantAccountResources}
                   onReconnectAccount={handleReconnectAccount}
                   onReadyChange={(ready) => handleGatekeeperReadyChange(activeBindingName, ready)}
                   onCollectorChange={(collect) => handleCollectorChange(activeBindingName, collect)}
@@ -1336,9 +1368,11 @@ function BindingField({
   vendors,
   accounts,
   connectingVendor,
+  grantingAccountId,
   reconnectingAccountId,
   onChange,
   onConnectAccount,
+  onGrantAccountResources,
   onReconnectAccount,
   onReadyChange,
   onCollectorChange,
@@ -1352,9 +1386,11 @@ function BindingField({
   vendors: {id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]
   accounts: AccountOption[]
   connectingVendor: string | null
+  grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string) => void
+  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1372,9 +1408,11 @@ function BindingField({
         vendors={vendors}
         accounts={accounts}
         connectingVendor={connectingVendor}
+        grantingAccountId={grantingAccountId}
         reconnectingAccountId={reconnectingAccountId}
         onChange={onChange}
         onConnectAccount={onConnectAccount}
+        onGrantAccountResources={onGrantAccountResources}
         onReconnectAccount={onReconnectAccount}
         onReadyChange={onReadyChange}
         onCollectorChange={onCollectorChange}
@@ -1462,6 +1500,41 @@ function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
   uiDisposable?.[Symbol.dispose]?.()
 }
 
+// An account can configure a gatekeeper binding when its credentials are live, it belongs to the
+// binding's vendor, it offers the binding's resource type, and — for grantable types — that type
+// is actually granted. A Google account connected for Gmail alone advertises Calendar support but
+// cannot configure a Calendar binding until the grant is expanded.
+function accountCanConfigureBinding(
+  binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>,
+  account: AccountOption,
+): boolean {
+  if (!account.credentialsValid ||
+      account.vendorId.toLowerCase() !== binding.gatekeeperName.toLowerCase()) return false
+  const resource = account.supportedResources.find(
+    candidate => candidate.urlPattern === binding.typeUrlPattern,
+  )
+  if (!resource) return false
+  const granted = account.description.grantedResourceUrlPatterns
+  return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
+}
+
+function removeUnavailableGatekeeperAssignments(
+  assignments: Record<string, BlueprintBindingAssignment>,
+  blueprint: BlueprintPublicInfo,
+  accounts: AccountOption[],
+): Record<string, BlueprintBindingAssignment> {
+  let next = assignments
+  for (const [name, assignment] of Object.entries(assignments)) {
+    const binding = blueprint.metadata.bindings[name]
+    if (assignment.type !== 'gatekeeper' || binding?.type !== 'gatekeeper') continue
+    const account = accounts.find(candidate => candidate.id === assignment.accountId)
+    if (account && accountCanConfigureBinding(binding, account)) continue
+    if (next === assignments) next = { ...assignments }
+    delete next[name]
+  }
+  return next
+}
+
 function formatSuggestedResource(resourceUrl: string): string {
   try {
     const path = new URL(resourceUrl).pathname.replace(/^\/+|\/+$/g, '')
@@ -1482,9 +1555,11 @@ function BlueprintGatekeeperBindingField({
   vendors,
   accounts,
   connectingVendor,
+  grantingAccountId,
   reconnectingAccountId,
   onChange,
   onConnectAccount,
+  onGrantAccountResources,
   onReconnectAccount,
   onReadyChange,
   onCollectorChange,
@@ -1496,9 +1571,11 @@ function BlueprintGatekeeperBindingField({
   vendors: {id: string, description: VendorDescription, supportedResources: SupportedResource[]}[]
   accounts: AccountOption[]
   connectingVendor: string | null
+  grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string) => void
+  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1519,6 +1596,22 @@ function BlueprintGatekeeperBindingField({
 
   const selectedAccountId = (value as any).accountId ?? null
   const selectedAccount = matchingAccounts.find(a => a.id === selectedAccountId && a.credentialsValid) ?? null
+  const initialResourceUrl = typeof (value as any).resourceUrl === 'string' &&
+      matchesResourceUrlPattern(binding.typeUrlPattern, (value as any).resourceUrl)
+    ? (value as any).resourceUrl as string
+    : undefined
+  const requiredResourceUrlPatterns = resource?.grantable ? [resource.urlPattern] : []
+  const missingResourceUrlPatternsFor = (accountId: number) => {
+    const granted = matchingAccounts.find(account => account.id === accountId)
+      ?.description.grantedResourceUrlPatterns
+    return granted === undefined
+      ? []
+      : requiredResourceUrlPatterns.filter(pattern => !granted.includes(pattern))
+  }
+  const missingResourceUrlPatterns = selectedAccount
+    ? missingResourceUrlPatternsFor(selectedAccount.id)
+    : []
+  const hasMissingResourceGrants = missingResourceUrlPatterns.length > 0
 
   // The parent component re-renders frequently and passes us fresh inline callbacks each time.
   // Stash them in refs so effects below can call the latest versions without re-running every
@@ -1538,9 +1631,9 @@ function BlueprintGatekeeperBindingField({
     }
     const first = matchingAccounts.find(a => a.credentialsValid)
     if (first) {
-      onChangeRef.current({ accountId: first.id } as any)
+      onChangeRef.current({ accountId: first.id, resourceUrl: undefined } as any)
     } else if (selectedAccountId !== null) {
-      onChangeRef.current({ accountId: undefined } as any)
+      onChangeRef.current({ accountId: undefined, resourceUrl: undefined } as any)
     }
   }, [matchingAccounts, selectedAccountId])
 
@@ -1582,7 +1675,7 @@ function BlueprintGatekeeperBindingField({
   }, [])
 
   useEffect(() => {
-    if (!resource || !selectedAccount) {
+    if (!resource || !selectedAccount || hasMissingResourceGrants) {
       replaceFrameState(null)
       setFrameError(null)
       setFrameLoading(false)
@@ -1615,7 +1708,8 @@ function BlueprintGatekeeperBindingField({
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern, replaceFrameState])
+  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern,
+    hasMissingResourceGrants, replaceFrameState])
 
   // Bail out if the gatekeeper isn't installed locally or the required resource type isn't
   // offered by the vendor. The binding can't be satisfied in either case.
@@ -1646,8 +1740,17 @@ function BlueprintGatekeeperBindingField({
         resourceTitle={resource.title}
         connecting={connectingVendor === binding.gatekeeperName}
         reconnectingAccountId={reconnectingAccountId}
-        onSelect={(id) => onChange({ accountId: id } as any)}
-        onConnect={() => onConnectAccount(binding.gatekeeperName)}
+        requiredResourceUrlPatterns={requiredResourceUrlPatterns}
+        grantingAccountId={grantingAccountId}
+        onSelect={(id) => onChange({
+          accountId: id,
+          resourceUrl: id === selectedAccountId ? initialResourceUrl : undefined,
+        } as any)}
+        onConnect={() => onConnectAccount(
+          binding.gatekeeperName,
+          requiredResourceUrlPatterns.length > 0 ? requiredResourceUrlPatterns : undefined,
+        )}
+        onGrantAccess={(id) => onGrantAccountResources(id, missingResourceUrlPatternsFor(id))}
         onReconnect={onReconnectAccount}
       />
 
@@ -1659,16 +1762,20 @@ function BlueprintGatekeeperBindingField({
             </p>
           )}
 
-          <ResourceConfiguratorHost
-            frame={frameState?.frame ?? null}
-            frameKey={frameState?.key ?? null}
-            loading={frameLoading}
-            error={frameError}
-            disabled={false}
-            topOffset={10}
-            onCollectResourceUrlChange={stableOnCollectorChange}
-            onSelectionReadyChange={stableOnReadyChange}
-          />
+          {!hasMissingResourceGrants && (
+            <ResourceConfiguratorHost
+              frame={frameState?.frame ?? null}
+              frameKey={frameState?.key ?? null}
+              loading={frameLoading}
+              error={frameError}
+              disabled={false}
+              topOffset={10}
+              onCollectResourceUrlChange={stableOnCollectorChange}
+              onSelectionReadyChange={stableOnReadyChange}
+              initialResourceUrl={initialResourceUrl}
+              resourceUrlPattern={binding.typeUrlPattern}
+            />
+          )}
         </div>
       )}
     </div>
