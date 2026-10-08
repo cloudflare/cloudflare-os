@@ -23,6 +23,9 @@ export type TextSlot = {
   location: TextLocation; body: RestText | undefined; write(body: RestText): void;
 };
 
+/** The text of a shape, a table cell, or, with no element, a slide's speaker notes. */
+export type TextAddress = Pick<TextEditRecord, "slideId" | "elementId" | "cell">;
+
 /** An element, the list holding it, and the group that list belongs to, if any. */
 export type Located = {
   element: RestPageElement; siblings: RestPageElement[]; group?: RestPageElement;
@@ -51,7 +54,7 @@ export function elementIdsOf(elements: RestPageElement[] | undefined): string[] 
 }
 
 /** Names an edit's target, for prefixing a conflict. */
-export function editTarget(edit: Omit<TextEditRecord, "slide">): string {
+export function editTarget(edit: TextAddress): string {
   if (edit.elementId === undefined) return `the speaker notes of slide "${edit.slideId}"`;
   if (edit.cell) {
     return `row ${edit.cell.row}, column ${edit.cell.column} of table "${edit.elementId}"`;
@@ -59,9 +62,9 @@ export function editTarget(edit: Omit<TextEditRecord, "slide">): string {
   return `element "${edit.elementId}"`;
 }
 
-/** The text `edit` addresses on `slide`. Throws `ChangeConflict` when it is not there. */
-export function textSlot(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): TextSlot {
-  let { elementId, cell } = edit;
+/** The text `address` names on `slide`. Throws `ChangeConflict` when it is not there. */
+export function textSlot(slide: RestSlide, address: TextAddress): TextSlot {
+  let { elementId, cell } = address;
   if (elementId === undefined) {
     let notes = slide.slideProperties?.notesPage;
     let id = notes?.notesProperties?.speakerNotesObjectId;

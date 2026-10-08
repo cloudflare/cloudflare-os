@@ -30,7 +30,7 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
 
 /** What one Slides session call returned or threw, and what it queued and observed. */
 type SlidesCall = {
-  value?: string | PresentationInfo | Slide[];
+  value?: string | PresentationInfo | Slide[] | Record<string, string>;
   error?: string;
   actionId?: number;
   action?: ActionDescription;

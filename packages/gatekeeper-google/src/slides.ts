@@ -15,14 +15,16 @@ import {
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
+import { designDeck, type DesignStep } from "./slides-design";
+import { checkTextEdit, prepareChanges } from "./slides-design-input";
 import {
-  conflictReason, editDeck, mintObjectId, movedOrder, replayChanges, slidesToFetch,
+  batchSlides, conflictReason, editDeck, mintObjectId, movedOrder, replayChanges, slidesToFetch,
   type Deck, type QueuedChange, type SlideLabel, type SlidesAction, type SlidesActions,
   type TextEditRecord,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
-import { ChangeConflict, STRIPPED_CHARACTERS } from "./slides-text";
-import type { GooglePresentationSession, SlideTextEdit } from "./slides-types";
+import { ChangeConflict } from "./slides-text";
+import type { GooglePresentationSession, SlideChange, SlideTextEdit } from "./slides-types";
 import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
@@ -239,19 +241,7 @@ function checkEdits(edits: SlideTextEdit[]): void {
   if (edits.length === 0 || edits.length > MAX_EDITS) {
     throw new Error(`Make between 1 and ${MAX_EDITS} edits at a time.`);
   }
-  edits.forEach(({ elementId, cell, find, replace }, i) => {
-    let edit = `Edit ${i + 1}`;
-    if (cell && elementId === undefined) throw new Error(`${edit} gives a cell but no table elementId.`);
-    if (cell && ![cell.row, cell.column].every(n => Number.isInteger(n) && n >= 0)) {
-      throw new Error(`${edit}: a cell's row and column are zero-based integers.`);
-    }
-    if (find === "") throw new Error(`${edit}: find is empty. Omit it to replace all of the text.`);
-    if (STRIPPED_CHARACTERS.test(replace)) {
-      throw new Error(
-        `${edit}: replace contains a control or private-use character, which Google Slides ` +
-        "removes. Use \\n to start a paragraph, \\u000b to break a line.");
-    }
-  });
+  edits.forEach((edit, i) => checkTextEdit(edit, `Edit ${i + 1}`));
 }
 
 /** One slide's place and title, for the approver. */
@@ -346,8 +336,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         let order = slideIds(rest);
         // A summary holds no tables or grouped shapes, so slides queued edits address are read in
         // full, and every edit is checked as it would be when approved.
-        let edited = changes.flatMap(({ action }) =>
-          action.kind === "editText" ? action.payload.edits.map(edit => edit.slideId) : []);
+        let edited = changes.flatMap(({ action }) => batchSlides(action));
         let slides = new Map([
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#pages(slidesToFetch(edited, changes), order),
@@ -448,6 +437,43 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         };
       });
       return { payload: { edits: records }, result: undefined };
+    });
+  }
+
+  async updateSlides(changes: SlideChange[]): Promise<Record<string, string>> {
+    let { changes: prepared, refs } = prepareChanges(changes);
+    let ids = [...new Set(changes.map(change => change.slideId))];
+    return this.#changes.queue("updateSlides", async () => {
+      let { deck, layouts } = await this.#prepare(ids, "queue changes to them");
+      let existing = new Set(ids.flatMap(id => elementIdsOf(deck.slides.get(id)?.pageElements)));
+      let shadowing = Object.keys(refs).find(ref => existing.has(ref));
+      if (shadowing !== undefined) {
+        throw new Error(`The ref "${shadowing}" is also an element's ID. Name the new element otherwise.`);
+      }
+      let steps: (DesignStep | null)[];
+      try {
+        steps = designDeck(deck, prepared).steps;
+      } catch (error) {
+        asError(error);
+      }
+      let queued = prepared.map((change, i) => {
+        let { previous, text } = steps[i]!;
+        if (change.op === "editText" && text === previous) {
+          throw new Error(`Change ${i + 1} (editText) leaves the text as it is.`);
+        }
+        // Text addressed by offsets, or replaced whole, guards on what it was, so an edit made
+        // since is not overwritten or misaddressed.
+        let guarded = "range" in change && change.range !== undefined ||
+          change.op === "editText" && change.find === undefined;
+        return guarded ? { ...change, before: previous } : change;
+      });
+      return {
+        payload: {
+          changes: queued,
+          slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id, layouts)])),
+        },
+        result: refs,
+      };
     });
   }
 

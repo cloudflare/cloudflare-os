@@ -191,9 +191,25 @@ class SlidesProvider {
       }
       slides.splice(at + 1, 0, copy);
     } else if (request.deleteObject) {
-      let at = slides.findIndex(s => s.objectId === request.deleteObject.objectId);
-      if (at < 0) throw new Invalid();
-      slides.splice(at, 1);
+      let { objectId } = request.deleteObject;
+      let at = slides.findIndex(s => s.objectId === objectId);
+      if (at >= 0) {
+        slides.splice(at, 1);
+      } else {
+        let page = slides.find(s => s.pageElements?.some(e => e.objectId === objectId));
+        if (!page) throw new Invalid();
+        page.pageElements = page.pageElements!.filter(e => e.objectId !== objectId);
+      }
+    } else if (request.createShape) {
+      let { objectId, shapeType, elementProperties: { pageObjectId, size, transform } } = request.createShape;
+      let page = slides.find(s => s.objectId === pageObjectId);
+      if (!page || JSON.stringify(deck).includes(`"objectId":"${objectId}"`)) throw new Invalid();
+      page.pageElements!.push({ objectId, size, transform, shape: { shapeType } });
+    } else if (request.updateShapeProperties) {
+      // Properties are not modelled here; the shape must still exist.
+      let { objectId, fields } = request.updateShapeProperties;
+      let found = slides.some(s => s.pageElements?.some(e => e.objectId === objectId && e.shape));
+      if (!found || !fields) throw new Invalid();
     } else if (request.updateSlidesPosition) {
       let { slideObjectIds, insertionIndex } = request.updateSlidesPosition;
       let order = slides.map(s => s.objectId!);
@@ -633,5 +649,65 @@ describe("Google Slides changes", () => {
     expect(refused.error).toContain("can view \"Quarterly review\" but not edit it");
     expect(refused.actionId).toBeUndefined();
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s1", "s2", "s3"]);
+  });
+});
+
+describe("Google Slides design changes", () => {
+  const BADGE = {
+    op: "createShape", slideId: "s2", ref: "badge", shapeType: "ROUND_RECTANGLE",
+    bounds: { x: 10, y: 20, width: 100, height: 40 }, text: "New", fill: "ACCENT1",
+  };
+
+  it("queues a batch as one approval, shows it in reads, and writes it as one revision-pinned batch", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+
+    let { actionId, action, value } = await slides.queued("updateSlides", [
+      BADGE,
+      { op: "formatText", slideId: "s2", elementId: "badge", format: { bold: true } },
+      { op: "deleteElement", slideId: "s2", elementId: "b2" },
+    ]);
+    let { badge } = value as Record<string, string>;
+
+    expect(action).toMatchObject({
+      title: "Change slide 2 (\"Revenue\")",
+      autoApprovable: false,
+      descriptionIsComplete: true,
+      fields: [{ label: "Change 1: Text", kind: "text", value: "New" }],
+    });
+    expect(action!.description).toContain(
+      "2. On slide 2 (\"Revenue\"), format all of the text of the shape change 1 adds: bold");
+    let [s2] = await slides.slides("s2");
+    expect(s2.elements.map(e => e.id)).toEqual(["t2", "tb2", badge]);
+    expect(s2.elements[2]).toMatchObject({ text: "New", formats: [{ start: 0, end: 3, bold: true }], fill: "ACCENT1" });
+    expect(provider.batches).toEqual([]);
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(provider.batches).toHaveLength(1);
+    expect(provider.batches[0].requiredRevisionId).toBe("r1");
+    expect(provider.slide("s2").pageElements!.map(e => e.objectId)).toEqual(["t2", "tb2", badge]);
+    expect(provider.text("s2", badge)).toBe("New\n");
+  });
+
+  it("finds a batch whose response was lost landed by the element it created", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId, value } = await slides.queued("updateSlides", [BADGE]);
+    provider.nextFailure = "lost";
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    // The resend at the first revision was refused, and a read found the shape.
+    expect(provider.batches).toHaveLength(2);
+    expect(provider.text("s2", (value as Record<string, string>).badge)).toBe("New\n");
+  });
+
+  it("refuses a ref that is also an element's ID, queuing nothing", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let outcome = await slides.call("updateSlides", [{ ...BADGE, ref: "b2" }]);
+    expect(outcome.error).toContain('The ref "b2" is also an element\'s ID');
+    expect(outcome.actionId).toBeUndefined();
   });
 });

@@ -16,6 +16,7 @@
 import type {
   RestBullet, RestParagraphStyle, RestText, RestTextElement, RestTextStyle,
 } from "./slides-api";
+import { restyled, type StyleChange } from "./slides-format";
 
 /** A text run, or an AutoText occupying `width` provider indices whatever `text` it shows. */
 export type TextSegment = { text: string; width: number; autoText?: string; style?: RestTextStyle };
@@ -98,8 +99,8 @@ export function projectedText(segments: readonly TextSegment[]): string {
   return segments.map(segment => segment.text).join("");
 }
 
-// Splits at a projected offset, which must not fall inside an AutoText.
-function cut(
+/** Splits at a projected offset, which must not fall inside an AutoText. */
+export function cut(
   segments: readonly TextSegment[], offset: number,
 ): [TextSegment[], TextSegment[]] {
   let projected = 0;
@@ -173,6 +174,41 @@ export function spliceText(rich: RichText, start: number, end: number, text: str
   };
 }
 
+/**
+ * Restyle the projected range `[start, end)` as an `updateTextStyle` of `change` does. Google sets
+ * no link on a newline, and a link set over part of an existing link retargets all of it.
+ */
+export function styledText(
+  rich: RichText, start: number, end: number, change: StyleChange<RestTextStyle>,
+): RichText {
+  let [before, rest] = cut(rich.segments, start);
+  let [inside, after] = cut(rest, end - start);
+  let pieces = inside.flatMap(segment => segment.autoText ? [segment] :
+    segment.text.split(/(\n)/).filter(Boolean).map(text => ({ ...segment, text, width: text.length })));
+  let styled = pieces.map(segment => withStyle(
+    segment, restyled(segment.style, change, segment.text === "\n" ? "link" : undefined)));
+  let link = change.style.link;
+  if (link) {
+    let retarget = (segments: TextSegment[], old: RestTextStyle["link"]) => {
+      if (!old) return;
+      let key = JSON.stringify(old);
+      for (let at = 0; at < segments.length && JSON.stringify(segments[at].style?.link) === key; at++) {
+        segments[at] = withStyle(segments[at], { ...segments[at].style, link });
+      }
+    };
+    let left = before.toReversed();
+    retarget(left, pieces[0]?.style?.link);
+    before = left.toReversed();
+    retarget(after, pieces.at(-1)?.style?.link);
+  }
+  return { ...rich, segments: [...before, ...styled, ...after] };
+}
+
+function withStyle(segment: TextSegment, style: RestTextStyle | undefined): TextSegment {
+  let { style: _, ...rest } = segment;
+  return style ? { ...rest, style } : rest;
+}
+
 // Whether an edit may start or end at a projected offset: not inside a character, nor an AutoText.
 function isEditBoundary(segments: readonly TextSegment[], text: string, offset: number): boolean {
   if (!isGraphemeBoundary(text, offset)) return false;
@@ -235,7 +271,8 @@ export function restTextOf(rich: RichText): RestText {
   return { textElements, ...(rich.lists ? { lists: rich.lists } : {}) };
 }
 
-function isGraphemeBoundary(text: string, offset: number): boolean {
+/** Whether `offset` falls between characters of `text`, not inside one. */
+export function isGraphemeBoundary(text: string, offset: number): boolean {
   return offset === 0 || offset === text.length || graphemes.segment(text).containing(offset)?.index === offset;
 }
 

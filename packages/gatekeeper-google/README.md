@@ -211,26 +211,38 @@ causing tab listing, content reads, and edits to fail.
 A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
 the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
 on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
-one slide at a time, capped at 2 MiB each. While text edits await approval, reads also fetch the
-slides those edits address, so each can be checked as approving it would: slide content reads the
-other slides of any batch touching a slide it shows, since a batch applies all or none, and the
-summaries read every slide with a queued edit, since they hold no tables or grouped shapes. Large
-batches awaiting approval therefore cost reads more requests against Google's per-user quota.
+one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
+slides they address, so each can be checked as approving it would: slide content reads the other
+slides of any batch touching a slide it shows, since a batch applies all or none, and the
+summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
+Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
 
 ## Google Slides edits
 
-A directly bound presentation accepts four changes, each queued for approval: `editText()`
+A directly bound presentation accepts five changes, each queued for approval: `editText()`
 (find-and-replace or whole-text replacement in shapes, table cells, and speaker notes, up to 50
-edits applied together), `duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Only text edits
-can be set to apply without asking. Changes are journaled with the kit's `ActionJournal`, and apply
-in the order they were queued.
+edits applied together), `updateSlides()`, `duplicateSlide()`, `deleteSlide()`, and
+`moveSlides()`. Only text edits can be set to apply without asking. Changes are journaled with the
+kit's `ActionJournal`, and apply in the order they were queued.
+
+`updateSlides()` takes up to 50 design changes applied together: text edits, text and paragraph
+formatting (including bullets), shapes and their fill, outline and vertical alignment, moving,
+resizing, rotating, stacking and deleting elements, alt text, images by public `https:` URL, and
+tables with their rows, columns and cell fills. Elements a batch creates get IDs the gatekeeper
+mints, so later changes in the batch, and later batches, can address them before they exist. An
+image URL is never fetched by the gatekeeper: Google downloads it when the change is applied, so
+nothing is read from it before approval. A batch is never auto-approvable.
 
 Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
-projected; thumbnails show the presentation as saved. The replay is exact for text and for which
-slides exist in what order, and makes no claim about what Google renders: autofit, wrapping, and
-layout. A replacement takes the style of the text it replaces, and text left unchanged at either
-end of a match is not rewritten, so it keeps its own. A slide number or other AutoText can only
-be replaced whole.
+projected; thumbnails show the presentation as saved. Each change is replayed as Google documents
+its request, and one the replay cannot follow exactly is refused instead: a bullet list started
+right after another list item, which Google may join to that list; table rows or columns inserted
+or deleted beside a merged cell; and deleting a grouped element that would leave its group with
+one. The replay makes no claim about what Google renders: autofit, wrapping, the box Google fits
+an image to, the size it gives a new table, and the formatting new table rows and columns take
+appear once applied. A replacement takes the style of the text it replaces, and text left
+unchanged at either end of a match is not rewritten, so it keeps its own. A slide number or other
+AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
 with `requiredRevisionId`, so a change applies only to the text it was planned against: one that

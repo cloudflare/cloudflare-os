@@ -3,8 +3,9 @@
  *
  * Replay works on Slides' own JSON, before `slides-model.ts` projects it, so a simulated read
  * projects exactly as a fresh one would. It is exact for text and for which slides exist in what
- * order. Nothing Google renders is simulated: autofit, wrapping and thumbnails show the
- * presentation as saved.
+ * order; `slides-design.ts` replays design changes, refusing what it cannot replay exactly.
+ * Nothing Google renders is simulated: autofit, wrapping and thumbnails show the presentation as
+ * saved.
  *
  * Apply re-runs the same functions over a fresh read to find the provider indices it writes, so
  * the preview and the write cannot disagree about where an edit lands.
@@ -15,6 +16,7 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { RestPageElement, RestSlide } from "./slides-api";
+import { designDeck, type DesignChange } from "./slides-design";
 import { editSlide, editTarget, type EditPlacement } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 
@@ -38,6 +40,8 @@ export type TextEditRecord = {
 /** The payload of each kind of queued change. */
 export type SlidesActions = {
   editText: { edits: TextEditRecord[] };
+  /** `slides` labels each slide a change is on. */
+  updateSlides: { changes: DesignChange[]; slides: Record<string, SlideLabel> };
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
   duplicateSlide: {
     slideId: string; newSlideId: string; objectIds: Record<string, string>; slide: SlideLabel;
@@ -165,6 +169,8 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
   switch (action.kind) {
     case "editText":
       return editDeck(deck, action.payload.edits).deck;
+    case "updateSlides":
+      return designDeck(deck, action.payload.changes).deck;
     case "duplicateSlide": {
       let { slideId, newSlideId, objectIds } = action.payload;
       requireSlide(order, slideId);
@@ -210,22 +216,29 @@ export function replayChanges(
 
 /**
  * The slides a read must fetch to show `ids` with queued changes: the slides themselves, the slide
- * each queued duplicate of one copies (back to its original), and every slide of a text edit batch
- * touching one, since a batch applies all or none. A conflict on a slide reached only through an
- * earlier change, or on one no change links to `ids`, is not found, so the read shows the changes
- * after it, as approving them in order would apply them.
+ * each queued duplicate of one copies (back to its original), and every slide of a batch touching
+ * one, since a batch applies all or none. A conflict on a slide reached only through an earlier
+ * change, or on one no change links to `ids`, is not found, so the read shows the changes after
+ * it, as approving them in order would apply them.
  */
 export function slidesToFetch(ids: readonly string[], changes: readonly QueuedChange[]): Set<string> {
   let needed = new Set(ids);
   for (let { action } of changes.toReversed()) {
     if (action.kind === "duplicateSlide" && needed.has(action.payload.newSlideId)) {
       needed.add(action.payload.slideId);
-    } else if (action.kind === "editText") {
-      let targets = action.payload.edits.map(edit => edit.slideId);
+    } else {
+      let targets = batchSlides(action);
       if (targets.some(id => needed.has(id))) for (let id of targets) needed.add(id);
     }
   }
   return needed;
+}
+
+/** The slides a text edit or design batch changes, which it checks together; none for others. */
+export function batchSlides(action: SlidesAction): string[] {
+  if (action.kind === "editText") return action.payload.edits.map(edit => edit.slideId);
+  if (action.kind === "updateSlides") return action.payload.changes.map(change => change.slideId);
+  return [];
 }
 
 /** The reason a read shows only some queued changes: the first that no longer applies. */

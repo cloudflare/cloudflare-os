@@ -17,13 +17,16 @@ import {
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
+import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
 import { slideIds } from "./slides-model";
+import type { SlideBounds } from "./slides-read-types";
 import {
   editDeck, movedOrder, requireNewSlide, type Deck, type SlideLabel, type SlidesActions,
   type TextEditRecord,
 } from "./slides-simulation";
-import { elementIdsOf, textOfTarget } from "./slides-target";
+import { elementIdsOf, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
+import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
@@ -131,17 +134,222 @@ function slideName({ number, title }: SlideLabel): string {
   return title ? `slide ${number} ("${plainInline(title, 60)}")` : `slide ${number}`;
 }
 
+/** Names an element: by its ID, as a `noun`, unless the batch describing it creates it. */
+type ElementName = (id: string, noun?: string) => string;
+
+const byId: ElementName = (id, noun = "element") => `${noun} ${codeSpan(id)}`;
+
 function targetName(edit: TextEditRecord): string {
   if (edit.elementId === undefined) return `the speaker notes of ${slideName(edit.slide)}`;
-  let element = codeSpan(edit.elementId);
-  let where = edit.cell
-    ? `row ${edit.cell.row + 1}, column ${edit.cell.column + 1} of table ${element}`
-    : `shape ${element}`;
-  return `${where} on ${slideName(edit.slide)}`;
+  return `${addressName(edit, byId)} on ${slideName(edit.slide)}`;
+}
+
+function addressName(address: TextAddress, element: ElementName): string {
+  if (address.elementId === undefined) return "the speaker notes";
+  if (!address.cell) return element(address.elementId, "shape");
+  let { row, column } = address.cell;
+  return `row ${row + 1}, column ${column + 1} of ${element(address.elementId, "table")}`;
 }
 
 function capitalized(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function boundsName({ x, y, width, height }: SlideBounds): string {
+  return `${width} × ${height} pt at (${x}, ${y})`;
+}
+
+function formatNames(format: TextFormatChange): string[] {
+  let names: string[] = [];
+  for (let key of ["bold", "italic", "underline", "strikethrough", "smallCaps"] as const) {
+    let value = format[key];
+    let name = key === "smallCaps" ? "small caps" : key;
+    if (value !== undefined) names.push(value === null ? `default ${name}` : value ? name : `not ${name}`);
+  }
+  let valued = (value: unknown, name: string, shown: (value: never) => string) => {
+    if (value !== undefined) names.push(value === null ? `default ${name}` : shown(value as never));
+  };
+  valued(format.fontFamily, "font", (family: string) => `font "${plainInline(family, 60)}"`);
+  valued(format.fontSize, "size", (size: number) => `${size} pt`);
+  valued(format.color, "colour", (color: string) => `colour ${color}`);
+  valued(format.highlight, "highlight", (color: string) => `highlight ${color}`);
+  valued(format.link, "link", () => "linked to the URL below");
+  valued(format.baseline, "baseline", (baseline: string) =>
+    baseline === "none" ? "no superscript or subscript" : baseline);
+  return names;
+}
+
+function fillName(fill: string): string {
+  return fill === "none" ? "no fill" : `fill ${fill}`;
+}
+
+function outlineName(outline: ShapeOutline | "none"): string {
+  if (outline === "none") return "no outline";
+  return `an outline${outline.color ? ` ${outline.color}` : ""}` +
+    `${outline.weight ? ` ${outline.weight} pt wide` : ""}`;
+}
+
+function paragraphNames(change: DesignChange & { op: "formatParagraphs" }): string[] {
+  let names: string[] = [];
+  let set = (value: unknown, unset: string, shown: () => string) => {
+    if (value !== undefined) names.push(value === null ? unset : shown());
+  };
+  set(change.alignment, "default alignment", () => `aligned ${change.alignment}`);
+  set(change.lineSpacing, "default line spacing", () => `line spacing ${change.lineSpacing}%`);
+  set(change.spaceAbove, "default space above", () => `${change.spaceAbove} pt above`);
+  set(change.spaceBelow, "default space below", () => `${change.spaceBelow} pt below`);
+  if (change.bullets !== undefined) {
+    let bullets = { bullet: "bulleted", checkbox: "a checklist", numbered: "numbered", none: "no bullets" };
+    names.push(bullets[change.bullets]);
+  }
+  return names;
+}
+
+function lineCount(noun: string, at: number, count: number): string {
+  return count === 1 ? `${noun} ${at + 1}` : `${noun}s ${at + 1} to ${at + count}`;
+}
+
+/** One line naming what a change does; `field` adds what the approver must see verbatim. */
+function describeChange(
+  change: DesignChange, element: ElementName, field: (label: string, text: string) => void,
+): string {
+  switch (change.op) {
+    case "editText":
+      if (change.find === undefined) {
+        field("Current text", change.before ?? "");
+        field("New text", change.replace);
+      } else {
+        field("Find", change.find);
+        field("Replace with", change.replace);
+      }
+      return `edit the text of ${addressName(change, element)}`;
+    case "formatText":
+    case "formatParagraphs": {
+      let part = "all of the text";
+      if (change.find !== undefined || change.range) {
+        part = "the text below";
+        field("Text", change.range
+          ? (change.before ?? "").slice(change.range.start, change.range.end) : change.find!);
+      }
+      let target = `${part} of ${addressName(change, element)}`;
+      if (change.op === "formatParagraphs") {
+        return `format the paragraphs of ${target}: ${paragraphNames(change).join(", ")}`;
+      }
+      if (change.format.link !== undefined) field("Link", change.format.link);
+      return `format ${target}: ${formatNames(change.format).join(", ")}`;
+    }
+    case "createShape": {
+      let extras = [
+        ...(change.text ? ["the text below"] : []),
+        ...(change.format ? [formatNames(change.format).join(", ")] : []),
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.outline !== undefined ? [outlineName(change.outline)] : []),
+      ];
+      if (change.text) field("Text", change.text);
+      if (change.format?.link !== undefined) field("Link", change.format.link);
+      return `add a ${change.shapeType} shape, ${boundsName(change.bounds)}` +
+        (extras.length > 0 ? `, with ${extras.join("; ")}` : "");
+    }
+    case "updateShape": {
+      let names = [
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.outline !== undefined ? [outlineName(change.outline)] : []),
+        ...(change.contentAlignment !== undefined ? [`text at the ${change.contentAlignment}`] : []),
+      ];
+      return `give ${element(change.elementId, "shape")} ${names.join(", ")}`;
+    }
+    case "setBounds": {
+      let names = Object.entries(change.bounds ?? {}).filter(([, value]) => value !== undefined)
+        .map(([key, value]) => `${key} ${value}`);
+      if (change.rotation !== undefined) names.push(`rotation ${change.rotation}°`);
+      return `move or resize ${element(change.elementId)} to ${names.join(", ")}`;
+    }
+    case "deleteElement":
+      return `delete ${element(change.elementId)}`;
+    case "setAltText":
+      if (change.title !== undefined) field("Alt-text title", change.title);
+      if (change.description !== undefined) field("Alt-text description", change.description);
+      return `set the alt text of ${element(change.elementId)}`;
+    case "arrange":
+      return change.to === "front"
+        ? `bring ${element(change.elementId)} in front of the other elements`
+        : `send ${element(change.elementId)} behind the other elements`;
+    case "insertImage":
+      field("Image URL", change.url);
+      return "add an image downloaded from the URL below, " +
+        (change.bounds ? `fitted in ${boundsName(change.bounds)}` : "at its own size");
+    case "replaceImage":
+      field("Image URL", change.url);
+      return `replace the picture of ${element(change.elementId, "image")} with one downloaded ` +
+        "from the URL below";
+    case "createTable":
+      if (change.cells?.some(line => line.some(Boolean))) field("Cells", JSON.stringify(change.cells));
+      return `add a table of ${change.rows} rows and ${change.columns} columns` +
+        (change.bounds ? `, ${boundsName(change.bounds)}` : "");
+    case "insertTableRows":
+    case "insertTableColumns": {
+      let noun = change.op === "insertTableRows" ? "row" : "column";
+      let count = change.count ?? 1;
+      return `insert ${count} ${noun}${count === 1 ? "" : "s"} before ${noun} ${change.at + 1} of ` +
+        element(change.elementId, "table");
+    }
+    case "deleteTableRows":
+    case "deleteTableColumns": {
+      let noun = change.op === "deleteTableRows" ? "row" : "column";
+      return `delete ${lineCount(noun, change.at, change.count ?? 1)} of ${element(change.elementId, "table")}`;
+    }
+    case "formatTableCells": {
+      let { range } = change;
+      let cells = range
+        ? `the cells from row ${range.row + 1}, column ${range.column + 1}, ` +
+          `${range.rowSpan ?? 1} by ${range.columnSpan ?? 1}`
+        : "every cell";
+      let names = [
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.contentAlignment !== undefined ? [`text at the ${change.contentAlignment}`] : []),
+      ];
+      return `give ${cells} of ${element(change.elementId, "table")} ${names.join(", ")}`;
+    }
+  }
+}
+
+const CREATED_NOUNS: Partial<Record<DesignChange["op"], string>> = {
+  createShape: "shape", insertImage: "image", createTable: "table",
+};
+
+// One line per change, and the fields to show verbatim after them.
+function describeDesign(
+  changes: DesignChange[], slides: Record<string, SlideLabel>,
+): { lines: string[]; fields: [label: string, text: string][] } {
+  let created = new Map<string, string>();
+  let fields: [string, string][] = [];
+  let element: ElementName = (id, noun) => created.get(id) ?? byId(id, noun);
+  let lines = changes.map((change, i) => {
+    let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
+    let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
+    if ("id" in change) created.set(change.id, `the ${CREATED_NOUNS[change.op]} change ${i + 1} adds`);
+    return `On ${slideName(slides[change.slideId])}, ${line}`;
+  });
+  return { lines, fields };
+}
+
+/** Whether a read taken after a lost response shows a design batch landed. */
+function designLanded(
+  changes: readonly DesignChange[], steps: readonly (DesignStep | null)[], planned: Deck, after: Deck,
+): boolean {
+  let checks = changes.flatMap((change, i) => {
+    let step = steps[i]!;
+    let slide = after.slides.get(change.slideId) ?? {};
+    let ids = new Set(elementIdsOf(slide.pageElements));
+    return [
+      ...(step.created ? [ids.has(step.created)] : []),
+      ...(step.deleted ? [!ids.has(step.deleted)] : []),
+      ...(change.op === "editText"
+        ? [textOfTarget(slide, change) === textOfTarget(planned.slides.get(change.slideId)!, change)]
+        : []),
+    ];
+  });
+  return checks.length > 0 && checks.every(Boolean);
 }
 
 /** The Slides change set, bound once per presentation's journal. */
@@ -181,6 +389,34 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         landed: after => quietly(() => edits.every(edit =>
           textOfTarget(after.slides.get(edit.slideId) ?? {}, edit) ===
             textOfTarget(deck.slides.get(edit.slideId)!, edit))),
+      };
+    }),
+  },
+
+  updateSlides: {
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ changes, slides }) => {
+      let ids = [...new Set(changes.map(change => change.slideId))];
+      let { lines, fields } = describeDesign(changes, slides);
+      let builder = buildDescription(lines.length === 1
+        ? `${lines[0]}.`
+        : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
+          lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
+      for (let [label, text] of fields) builder.verbatim(label, text);
+      return {
+        title: sanitizeTitle(ids.length === 1
+          ? `Change ${slideName(slides[ids[0]])}`
+          : `Change ${ids.length} slides`),
+        ...builder.finish(),
+        implementsRevert: false,
+      };
+    },
+    apply: ({ changes }, host) => write(host, [...new Set(changes.map(change => change.slideId))], fresh => {
+      let { deck, steps } = designDeck(fresh, changes);
+      return {
+        requests: steps.flatMap(step => step!.requests),
+        landed: after => quietly(() => designLanded(changes, steps, deck, after)),
       };
     }),
   },

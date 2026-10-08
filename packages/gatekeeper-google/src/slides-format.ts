@@ -1,17 +1,19 @@
 /**
- * Formatting between Google's JSON and what agents read: colours, text and paragraph styles, and
- * shape and cell fills. Only what Google reports as set is read; an unset field is inherited.
+ * Formatting between Google's JSON and what agents read and write: colours, text and paragraph
+ * styles, and shape and cell fills. Only what Google reports as set is read; an unset field is
+ * inherited.
  */
 
 import type {
-  RestColor, RestParagraphStyle, RestPropertyState, RestShapeProperties, RestSolidFill, RestText,
-  RestTextStyle,
+  RestColor, RestDimension, RestParagraphStyle, RestPropertyState, RestShapeProperties,
+  RestSolidFill, RestText, RestTextStyle,
 } from "./slides-api";
 import { emu, points } from "./slides-geometry";
 import type {
   FormattedParagraph, FormattedRange, ParagraphFormat, ShapeElement, SlideColor, TableCell,
   TextFormat,
 } from "./slides-read-types";
+import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
 type Fill = { propertyState?: RestPropertyState; solidFill?: RestSolidFill };
 
@@ -147,4 +149,174 @@ export function cellPropertiesOf(
   let fill = fillOf(properties?.tableCellBackgroundFill);
   let contentAlignment = CONTENT_ALIGNMENTS[properties?.contentAlignment ?? ""];
   return { ...(fill ? { fill } : {}), ...(contentAlignment ? { contentAlignment } : {}) };
+}
+
+/** The theme colours a `SlideColor` may name. */
+export const THEME_COLORS = new Set([
+  "DARK1", "LIGHT1", "DARK2", "LIGHT2", "ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5",
+  "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK", "TEXT1", "BACKGROUND1", "TEXT2", "BACKGROUND2",
+]);
+
+/** Whether `color` is a `#rrggbb` colour or a theme colour's name. */
+export function isSlideColor(color: string): boolean {
+  return /^#[0-9a-f]{6}$/i.test(color) || THEME_COLORS.has(color);
+}
+
+/** A colour as Google takes it, from a `#rrggbb` colour or a theme colour's name. */
+export function restColorOf(color: SlideColor): RestColor {
+  if (THEME_COLORS.has(color)) return { opaqueColor: { themeColor: color } };
+  let [red, green, blue] = [1, 3, 5].map(at => parseInt(color.slice(at, at + 2), 16) / 255);
+  // Google omits a zero component, as it omits every zero-valued field.
+  return {
+    opaqueColor: {
+      rgbColor: { ...(red ? { red } : {}), ...(green ? { green } : {}), ...(blue ? { blue } : {}) },
+    },
+  };
+}
+
+/** A length in points, as Google takes it. */
+export function pointsDimension(magnitude: number): RestDimension {
+  return { magnitude, unit: "PT" };
+}
+
+/**
+ * A style and the fields it sets, as an update request takes them: a field named but absent from
+ * the style is unset.
+ */
+export type StyleChange<S> = { style: S; fields: (keyof S & string)[] };
+
+const REST_BASELINES = { superscript: "SUPERSCRIPT", subscript: "SUBSCRIPT", none: "NONE" };
+
+/**
+ * The text style change `format` makes. A font is set at regular weight, and a link turns the
+ * text the theme's link colour and underlined unless `format` says otherwise, as Google does, but
+ * explicitly, so the request does not depend on it.
+ */
+export function textStyleChange(format: TextFormatChange): StyleChange<RestTextStyle> {
+  let style: RestTextStyle = {};
+  let fields = new Set<keyof RestTextStyle & string>();
+  let set = <K extends keyof RestTextStyle & string>(key: K, value: RestTextStyle[K] | null) => {
+    fields.add(key);
+    if (value !== null) style[key] = value;
+  };
+  for (let key of BOOLEAN_STYLES) if (format[key] !== undefined) set(key, format[key]);
+  if (format.fontFamily !== undefined) {
+    let family = format.fontFamily;
+    set("fontFamily", family);
+    set("weightedFontFamily", family === null ? null : { fontFamily: family, weight: 400 });
+  }
+  if (format.fontSize !== undefined) {
+    set("fontSize", format.fontSize === null ? null : pointsDimension(format.fontSize));
+  }
+  if (format.color !== undefined) {
+    set("foregroundColor", format.color === null ? null : restColorOf(format.color));
+  } else if (format.link !== undefined) {
+    set("foregroundColor", restColorOf("HYPERLINK"));
+  }
+  if (format.highlight !== undefined) {
+    set("backgroundColor", format.highlight === null ? null : restColorOf(format.highlight));
+  }
+  if (format.link !== undefined) {
+    set("link", { url: format.link });
+    if (format.underline === undefined) set("underline", true);
+  }
+  if (format.baseline !== undefined) {
+    set("baselineOffset", format.baseline === null ? null : REST_BASELINES[format.baseline]);
+  }
+  return { style, fields: [...fields] };
+}
+
+/** The paragraph style change a `formatParagraphs` change makes. */
+export function paragraphStyleChange(change: {
+  alignment?: ParagraphFormat["alignment"] | null; lineSpacing?: number | null;
+  spaceAbove?: number | null; spaceBelow?: number | null;
+}): StyleChange<RestParagraphStyle> {
+  let style: RestParagraphStyle = {};
+  let fields: (keyof RestParagraphStyle & string)[] = [];
+  let set = <K extends keyof RestParagraphStyle & string>(
+    key: K, value: RestParagraphStyle[K] | null,
+  ) => {
+    fields.push(key);
+    if (value !== null) style[key] = value;
+  };
+  if (change.alignment !== undefined) {
+    set("alignment", change.alignment === null ? null : change.alignment.toUpperCase());
+  }
+  if (change.lineSpacing !== undefined) set("lineSpacing", change.lineSpacing);
+  for (let key of ["spaceAbove", "spaceBelow"] as const) {
+    let value = change[key];
+    if (value !== undefined) set(key, value === null ? null : pointsDimension(value));
+  }
+  return { style, fields };
+}
+
+/** Applies a style change to `style`, as Google applies an update request's fields. */
+export function restyled<S extends object>(
+  style: S | undefined, change: StyleChange<S>, skip?: keyof S,
+): S | undefined {
+  let next: S = { ...style } as S;
+  for (let field of change.fields) {
+    if (field === skip) continue;
+    if (field in change.style) next[field] = change.style[field];
+    else delete next[field];
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/** A shape's or cell's fill, as Google takes it: opaque `color`, or none. */
+export function restFillOf(fill: SlideColor | "none"): Fill {
+  return fill === "none"
+    ? { propertyState: "NOT_RENDERED" }
+    : { propertyState: "RENDERED", solidFill: { color: restColorOf(fill), alpha: 1 } };
+}
+
+/** The `ShapeProperties` and field mask a shape change sets. */
+export function shapePropertiesChange(change: {
+  fill?: SlideColor | "none"; outline?: ShapeOutline | "none";
+  contentAlignment?: "top" | "middle" | "bottom";
+}): { properties: RestShapeProperties; fields: string[] } {
+  let properties: RestShapeProperties = {};
+  let fields: string[] = [];
+  if (change.fill !== undefined) {
+    properties.shapeBackgroundFill = restFillOf(change.fill);
+    fields.push("shapeBackgroundFill");
+  }
+  let { outline } = change;
+  if (outline === "none") {
+    properties.outline = { propertyState: "NOT_RENDERED" };
+    fields.push("outline.propertyState");
+  } else if (outline !== undefined) {
+    properties.outline = { propertyState: "RENDERED" };
+    fields.push("outline.propertyState");
+    if (outline.color !== undefined) {
+      properties.outline.outlineFill = { solidFill: { color: restColorOf(outline.color), alpha: 1 } };
+      fields.push("outline.outlineFill.solidFill");
+    }
+    if (outline.weight !== undefined) {
+      properties.outline.weight = pointsDimension(outline.weight);
+      fields.push("outline.weight");
+    }
+  }
+  if (change.contentAlignment !== undefined) {
+    properties.contentAlignment = change.contentAlignment.toUpperCase();
+    fields.push("contentAlignment");
+  }
+  return { properties, fields };
+}
+
+/** Applies a shape change to `properties`, as Google applies its fields. */
+export function reshaped(
+  properties: RestShapeProperties | undefined, change: RestShapeProperties,
+): RestShapeProperties {
+  let next = structuredClone(properties ?? {});
+  if (change.shapeBackgroundFill) next.shapeBackgroundFill = change.shapeBackgroundFill;
+  if (change.outline) {
+    let { outlineFill, weight, propertyState } = change.outline;
+    next.outline = {
+      ...next.outline, propertyState,
+      ...(outlineFill ? { outlineFill } : {}), ...(weight ? { weight } : {}),
+    };
+  }
+  if (change.contentAlignment) next.contentAlignment = change.contentAlignment;
+  return next;
 }
