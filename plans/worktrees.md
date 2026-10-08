@@ -140,7 +140,8 @@ agent-facing `Worktree` binding API).
   (`GitCache.buildPack()`, §1); the gatekeeper contributes only send-pack framing
   and the ref-update command.
 - **Push authorization is declared on the action and enforced at `submitAction` —
-  there are no read-time rules and no gatekeeper-induced pulls.**
+  there are no read-time rules, and the only pull a gatekeeper can induce is of
+  commits it named itself (§1).**
   `ActionDescription.pushedCommits` names the commits an action will push; before
   queuing, the overseer verifies that their ancestry reaches commits *proven* on
   that gatekeeper's remote and marks the push closure "pending push" (§1). The
@@ -450,7 +451,11 @@ agent-facing `Worktree` binding API).
      trivially passes (the worktree's base was pulled from there); pushing to a
      *related* remote requires first pulling a shared ancestor commit from it,
      which both proves the repos are related and makes the accidental
-     push-to-the-wrong-remote mistake fail closed at queue time. Verification
+     push-to-the-wrong-remote mistake fail closed at queue time. A chain that
+     stops only at commits the destination advertised but never proved —
+     typically a base pulled through another connection to the same repository
+     — has those commit objects pulled from the destination, whose bytes then
+     prove them; nothing it didn't name is asked of it. Verification
      never needs ancestors *beyond* the proven commits, so shallow pulls stay
      shallow. The practical v1 bound this implies, stated plainly: the commit
      chain from head to proven ancestor must already be cached, which in
