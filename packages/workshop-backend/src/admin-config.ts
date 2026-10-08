@@ -9,7 +9,7 @@
 // changed by a compromised admin session. Everything here is enabled by default; the admin UI opts
 // things *out*.
 
-import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "./storage-schema/admin-settings-storage.js";
@@ -280,6 +280,14 @@ function parseAddedModels(value: unknown): GatewayModel[] {
   return [...models.values()];
 }
 
+/**
+ * Whether `value` may be the minimum age or the notice snooze of the update notice: a whole number
+ * of hours from 0 to MAX_UPDATE_HOURS.
+ */
+export function isUpdateHours(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_UPDATE_HOURS;
+}
+
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
@@ -349,6 +357,15 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     modelsDevSuggestions: typeof p.modelsDevSuggestions === "boolean"
       ? p.modelsDevSuggestions
       : DEFAULT_ADMIN_CONFIG.modelsDevSuggestions,
+    updateChecksEnabled: typeof p.updateChecksEnabled === "boolean"
+      ? p.updateChecksEnabled
+      : DEFAULT_ADMIN_CONFIG.updateChecksEnabled,
+    updateMinimumAgeHours: isUpdateHours(p.updateMinimumAgeHours)
+      ? p.updateMinimumAgeHours
+      : DEFAULT_ADMIN_CONFIG.updateMinimumAgeHours,
+    updateNoticeSnoozeHours: isUpdateHours(p.updateNoticeSnoozeHours)
+      ? p.updateNoticeSnoozeHours
+      : DEFAULT_ADMIN_CONFIG.updateNoticeSnoozeHours,
   };
 }
 

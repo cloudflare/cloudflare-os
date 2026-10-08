@@ -1,4 +1,4 @@
-import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { AdminApi, AdminFormat, AdminFormatPatch, AdminModel, AdminResourceVendor, AdminSettingsView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget } from 'capnweb';
@@ -6,7 +6,7 @@ import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
-import { MAX_AGENT_HINT, defaultOutputFormatId, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
+import { MAX_AGENT_HINT, defaultOutputFormatId, isUpdateHours, listPromotedFormats, normalizeAdminConfig, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
 import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
@@ -18,6 +18,7 @@ import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
+import { type DeployServiceInstall, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
 
@@ -43,6 +44,14 @@ function compactionBudgetRange(model: AdminModel): { builtIn: number, max: numbe
 // for it.
 function addedModel(model: GatewayModel): AdminModel {
   return { ...model, mode: "enabled", defaultMode: "enabled", added: true };
+}
+
+// `hours`, if an admin may set the update notice's `setting` to it.
+function updateHours(setting: string, hours: number): number {
+  if (!isUpdateHours(hours)) {
+    throw new Error(`The ${setting} must be a whole number of hours from 0 to ${MAX_UPDATE_HOURS}.`);
+  }
+  return hours;
 }
 
 // One of the tests an admin runs through the gateway: the event and the message of its log line,
@@ -275,6 +284,81 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (this.storage.featuredBlueprints.get(blueprintId)) {
       this.storage.featuredBlueprints.delete(blueprintId);
       await this.#writeFeaturedSnapshot();
+    }
+  }
+
+  // --- Deployment updates ---
+
+  /**
+   * Whether a newer release is available, or null, with no request made, unless the deploy flow
+   * installed this deployment. Answered from the last update check for the running release, made
+   * again when updateCheckDue() says so while automatic checks are on.
+   */
+  async getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    let install = deployServiceInstall(this.env);
+    if (!install) return null;
+    if (this.#config().updateChecksEnabled &&
+        updateCheckDue(this.storage.updateCheck.get(), install.releaseId, Date.now())) {
+      await this.#checkForUpdate(install);
+    }
+    return this.#updateStatus(install);
+  }
+
+  /**
+   * Check for a newer release now, whatever the settings and the last check, and return the
+   * status it produces, or null, with no request made, unless the deploy flow installed this
+   * deployment. Throws when the check fails, without saying why: the failure is logged.
+   */
+  async checkForUpdates(): Promise<DeploymentUpdateStatus | null> {
+    let install = deployServiceInstall(this.env);
+    if (!install) return null;
+    if (!await this.#checkForUpdate(install)) throw new Error("The update check failed.");
+    return this.#updateStatus(install);
+  }
+
+  /** Set whether the deployment checks for a newer release by itself. */
+  async setUpdateChecksEnabled(enabled: boolean): Promise<void> {
+    await this.updateAdminConfig({ updateChecksEnabled: enabled });
+  }
+
+  /** Set how many hours a newer release must have been available before admins are notified. */
+  async setUpdateMinimumAgeHours(hours: number): Promise<void> {
+    await this.updateAdminConfig({ updateMinimumAgeHours: updateHours("minimum age", hours) });
+  }
+
+  /** Set how many hours a dismissed update notice stays hidden in the browser that dismissed it. */
+  async setUpdateNoticeSnoozeHours(hours: number): Promise<void> {
+    await this.updateAdminConfig({ updateNoticeSnoozeHours: updateHours("notice snooze", hours) });
+  }
+
+  #updateStatus(install: DeployServiceInstall): DeploymentUpdateStatus {
+    return deploymentUpdateStatus(install, this.#config(), this.storage.updateCheck.get(),
+        this.env.CF_VERSION_METADATA?.tag, Date.now());
+  }
+
+  // Concurrent callers share one check. Resolves whether it succeeded.
+  #checkForUpdate(install: DeployServiceInstall): Promise<boolean> {
+    return this.#updateCheckInFlight ??= this.#runUpdateCheck(install)
+        .finally(() => { this.#updateCheckInFlight = undefined; });
+  }
+
+  #updateCheckInFlight?: Promise<boolean>;
+
+  // Never throws. A failure keeps the last success only if it was for the running release.
+  async #runUpdateCheck({ releaseId, updateCheckUrl }: DeployServiceInstall): Promise<boolean> {
+    let attemptedAt = Date.now();
+    try {
+      let result = await fetchLatestRelease(updateCheckUrl, releaseId);
+      this.storage.updateCheck.put({ from: releaseId, attemptedAt, checkedAt: attemptedAt, result });
+      return true;
+    } catch (error) {
+      logger.warn("failed to check for a newer release", {
+        event: "deployment.update-check.failed", error,
+      });
+      let previous = this.storage.updateCheck.get();
+      this.storage.updateCheck.put(previous?.from === releaseId
+          ? { ...previous, attemptedAt } : { from: releaseId, attemptedAt });
+      return false;
     }
   }
 
@@ -879,8 +963,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // validation+forwarding facade over the AdminSettings DO — fully user-independent — so a disabled
 // gatekeeper/resource can't be re-enabled via a crafted request, and the client never receives a
 // stub to the DO's internal methods. Covers branding, agent instructions, signups, gatekeeper
-// connector/resource availability, and AI Gateway models; authentication config stays env-var
-// driven.
+// connector/resource availability, AI Gateway models, and whether an update is available;
+// authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   /**
@@ -1023,5 +1107,25 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]> {
     return this.admin.testNewGatewayModel(model, this.adminUserId);
+  }
+
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null> {
+    return this.admin.getUpdateStatus();
+  }
+
+  checkForUpdates(): Promise<DeploymentUpdateStatus | null> {
+    return this.admin.checkForUpdates();
+  }
+
+  setUpdateChecksEnabled(enabled: boolean): Promise<void> {
+    return this.admin.setUpdateChecksEnabled(enabled);
+  }
+
+  setUpdateMinimumAgeHours(hours: number): Promise<void> {
+    return this.admin.setUpdateMinimumAgeHours(hours);
+  }
+
+  setUpdateNoticeSnoozeHours(hours: number): Promise<void> {
+    return this.admin.setUpdateNoticeSnoozeHours(hours);
   }
 }

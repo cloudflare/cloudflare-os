@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { GatewayModel } from "@gadgets/workshop-shared/api";
-import { defaultOutputFormatId, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
+import { DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_HOURS, type GatewayModel } from "@gadgets/workshop-shared/api";
+import { defaultOutputFormatId, isUpdateHours, normalizeAdminConfig, parseAdminConfig, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -384,5 +384,51 @@ describe("admin config gateway models", () => {
     expect(parseAdminConfig('{"modelsDevSuggestions":true}').modelsDevSuggestions).toBe(true);
     expect(parseAdminConfig(serializeAdminConfig(
         { ...DEFAULT_ADMIN_CONFIG, modelsDevSuggestions: true })).modelsDevSuggestions).toBe(true);
+  });
+});
+
+describe("admin config update notice", () => {
+  const HOURS = ["updateMinimumAgeHours", "updateNoticeSnoozeHours"] as const;
+
+  it("checks for updates by itself, at the default hours, unless stored otherwise", () => {
+    expect(DEFAULT_ADMIN_CONFIG).toMatchObject({
+      updateChecksEnabled: true,
+      updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+      updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+    });
+    // A config, in the Durable Object or in KV, stored before the settings existed.
+    for (let config of [normalizeAdminConfig({ signupsEnabled: false }), parseAdminConfig("{}"),
+        parseAdminConfig(null)]) {
+      expect(config).toMatchObject({
+        updateChecksEnabled: true, updateMinimumAgeHours: 24, updateNoticeSnoozeHours: 24,
+      });
+    }
+  });
+
+  it("reads anything but a stored boolean as automatic checks on", () => {
+    for (let stored of [null, "false", 0, true]) {
+      expect(normalizeAdminConfig({ updateChecksEnabled: stored as boolean }).updateChecksEnabled,
+          String(stored)).toBe(true);
+    }
+    expect(normalizeAdminConfig({ updateChecksEnabled: false }).updateChecksEnabled).toBe(false);
+    expect(parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, updateChecksEnabled: false })).updateChecksEnabled).toBe(false);
+  });
+
+  it.each(HOURS)("reads a %s that is not a whole number of hours in range as the default",
+      field => {
+    for (let stored of [1.5, -1, MAX_UPDATE_HOURS + 1, NaN, Infinity, "12", null]) {
+      expect(normalizeAdminConfig({ [field]: stored as number })[field], String(stored)).toBe(24);
+      expect(isUpdateHours(stored), String(stored)).toBe(false);
+    }
+  });
+
+  it.each(HOURS)("keeps a stored %s from 0 to the maximum", field => {
+    for (let stored of [0, 1, 48, MAX_UPDATE_HOURS]) {
+      expect(normalizeAdminConfig({ [field]: stored })[field]).toBe(stored);
+      let kv = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, [field]: stored });
+      expect(parseAdminConfig(kv)[field]).toBe(stored);
+      expect(isUpdateHours(stored)).toBe(true);
+    }
   });
 });
