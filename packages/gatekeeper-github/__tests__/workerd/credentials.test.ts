@@ -9,7 +9,9 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { isCredentialsExpired } from "@gadgets/gatekeeper-kit/credentials";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectCallbackEvents } from "./worker";
+import {
+  connectCallbackEvents, type MergePullRequestActionData, type PostReviewActionData,
+} from "./worker";
 
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
 
@@ -40,8 +42,8 @@ class FakeGitHub {
   readonly tokenRequests: Record<string, string>[] = [];
   /** Bearer tokens presented to REST API reads, in order. */
   readonly apiTokens: string[] = [];
-  /** Paths of REST API POSTs, in order. */
-  readonly posts: string[] = [];
+  /** REST API writes as `METHOD path`, in order. */
+  readonly writes: string[] = [];
   /** Access tokens revoked through `DELETE /applications/{client_id}/token`, in order. */
   readonly revoked: string[] = [];
   onRevoke: (token: string) => void | Promise<void> = () => {};
@@ -49,8 +51,8 @@ class FakeGitHub {
     () => json({ error: "unexpected_token_request" }, 500);
   respondApi: (token: string, path: string) => Response | Promise<Response> =
     () => json({ login: "octocat", name: "Octo Cat", avatar_url: "https://avatars.example/1" });
-  respondPost: (path: string) => Response | Promise<Response> =
-    () => json({ message: "unexpected POST" }, 500);
+  respondWrite: (write: string) => Response | Promise<Response> =
+    () => json({ message: "unexpected write" }, 500);
 
   constructor() {
     vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) =>
@@ -77,9 +79,10 @@ class FakeGitHub {
       this.apiTokens.push(token);
       return await this.respondApi(token, url.pathname);
     }
-    if (url.hostname === "api.github.com" && request.method === "POST") {
-      this.posts.push(url.pathname);
-      return await this.respondPost(url.pathname);
+    if (url.hostname === "api.github.com" && (request.method === "POST" || request.method === "PUT")) {
+      const write = `${request.method} ${url.pathname}`;
+      this.writes.push(write);
+      return await this.respondWrite(write);
     }
     if (url.pathname === "/applications/test-client/token" && request.method === "DELETE") {
       const token = (await request.json<{ access_token: string }>()).access_token;
@@ -132,34 +135,46 @@ class TestApprovalQueue extends RpcTarget {
   async submitAction(): Promise<void> {}
 }
 
-/** The git cache an apply is handed; a review's apply never calls it. */
+/** The git cache an apply is handed; neither a review's nor a merge's apply calls it. */
 class UnusedGitCache extends RpcTarget {}
 
+/** A one-comment review of pull request #7. */
+const REVIEW: PostReviewActionData = {
+  type: "postReview", approvalId: 1, submittedAt: 0, owner: "octo", repo: "repo",
+  pullId: "7", provisionalReviewId: "~r1",
+  review: {
+    revision: { baseSha: "a".repeat(40), headSha: "b".repeat(40) },
+    decision: "comment",
+    diffComments: [{
+      provisionalCommentId: "~c1", bodyMarkdown: "nit", target: { path: "a.ts", line: 3, side: "new" },
+    }],
+  },
+};
+
+/** A merge of pull request #7, bound to head `b…`. */
+const MERGE: MergePullRequestActionData = {
+  type: "mergePullRequest", approvalId: 1, submittedAt: 0, owner: "octo", repo: "repo",
+  pullId: "7", expectedHeadSha: "b".repeat(40), headBranch: "topic",
+};
+
 /**
- * Queues a one-comment review of pull request #7 as the account.
+ * Queues `action` as the account.
  * @returns Its apply, as plain data.
  */
-async function queueReview(userObjectId: string) {
-  const facet = `review-${++connections}`;
+async function queueAction(userObjectId: string, action: PostReviewActionData | MergePullRequestActionData) {
+  const facet = `apply-${++connections}`;
   const props = { userObjectId, resourceKind: "repo", owner: "octo", repo: "repo" } as const;
   const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("credentials"));
+  const description = { title: action.type, description: "test", implementsRevert: false };
   // The caller keeps ownership of a stub it passes as a param (see capnweb's README).
   using queue = new RpcStub(new TestApprovalQueue());
-  const submitted = await hooks.submitReview(facet, props, queue, {
-    type: "postReview", approvalId: 1, submittedAt: 0, owner: "octo", repo: "repo",
-    pullId: "7", provisionalReviewId: "~r1",
-    review: {
-      revision: { baseSha: "a".repeat(40), headSha: "b".repeat(40) },
-      decision: "comment",
-      diffComments: [{
-        provisionalCommentId: "~c1", bodyMarkdown: "nit", target: { path: "a.ts", line: 3, side: "new" },
-      }],
-    },
-  }, { title: "review", description: "test review", implementsRevert: false });
+  const submitted = action.type === "postReview"
+    ? await hooks.submitReview(facet, props, queue, action, description)
+    : await hooks.submitMerge(facet, props, queue, action, description);
   expect(submitted).not.toHaveProperty("error");
   return async () => {
     using cache = new RpcStub(new UnusedGitCache());
-    return await hooks.applyAction(facet, props, 1, cache as never);
+    return await hooks.applyAction(facet, props, action.approvalId, cache as never);
   };
 }
 
@@ -301,31 +316,54 @@ describe("UserAccount with an expiring grant", () => {
     expect(events()).toEqual(["complete"]);
   });
 
-  it("finishes applying a review whose follow-up read lost its token to a refresh", async () => {
+  it("applies a review with no follow-up reads, and re-applying it posts nothing", async () => {
+    const github = new FakeGitHub();
+    const { id } = await connect(github, tokens(1));
+    github.respondWrite = () => json({ id: 99 });
+    const reads: string[] = [];
+    github.respondApi = (_token, path) => {
+      reads.push(path);
+      return json({ id: 1 });
+    };
+    const apply = await queueAction(id.toString(), REVIEW);
+
+    expect(await apply()).not.toHaveProperty("error");
+    // Recorded as applied, so a re-delivered apply succeeds without posting a second review.
+    expect(await apply()).not.toHaveProperty("error");
+    expect(github.writes).toEqual(["POST /repos/octo/repo/pulls/7/reviews"]);
+    // At most the bound repository's one-time identity read; nothing about the review.
+    expect(reads.filter(path => path !== "/repos/octo/repo")).toEqual([]);
+  });
+
+  it("finishes applying a merge whose lost-reply check lost its token to a refresh", async () => {
     const github = new FakeGitHub();
     const { account, id, events } = await connect(github, tokens(1));
     github.respondToken = () => json(tokens(2));
-    github.respondPost = () => json({ id: 99 });
+    // Already merged: the apply re-reads the pull request to tell its own lost reply apart.
+    github.respondWrite = () => json({ message: "Pull Request is not mergeable" }, 405);
     const release = Promise.withResolvers<void>();
-    github.respondApi = async token => {
-      if (token === "gho_2") return json([]);
+    const pullReads: string[] = [];
+    github.respondApi = async (token, path) => {
+      if (path !== "/repos/octo/repo/pulls/7") return json({ id: 1 });
+      pullReads.push(token);
+      if (token === "gho_2") {
+        return json({ merged_at: "2026-01-02T00:00:00Z", head: { sha: MERGE.expectedHeadSha } });
+      }
       await release.promise;
       return json({ message: "Bad credentials" }, 401);
     };
-    const apply = await queueReview(id.toString());
+    const apply = await queueAction(id.toString(), MERGE);
 
     const applied = apply();
-    await vi.waitUntil(() => github.apiTokens.length > 0);
+    await vi.waitUntil(() => pullReads.length > 0);
     // Another request saw the token rejected and refreshed past it while this read was in flight.
     expect(await account.reportTokenRejected("gho_1")).toBe("superseded");
     release.resolve();
 
     expect(await applied).not.toHaveProperty("error");
-    expect(github.posts).toEqual(["/repos/octo/repo/pulls/7/reviews"]);
-    expect(github.apiTokens).toEqual(["gho_1", "gho_2"]);
+    expect(github.writes).toEqual(["PUT /repos/octo/repo/pulls/7/merge"]);
+    expect(pullReads).toEqual(["gho_1", "gho_2"]);
     expect(events()).toEqual(["complete"]);
-    // Recorded as applied, so applying again cannot post a second review.
-    expect(await apply()).toEqual({ error: expect.stringContaining("no longer pending") });
   });
 
   it("heals a rejection of the current token by refreshing past it", async () => {

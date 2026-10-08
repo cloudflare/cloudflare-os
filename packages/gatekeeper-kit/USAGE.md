@@ -17,9 +17,9 @@ sequencing that span more than one symbol.
 
 These sequences compose Layer-1 leaves; the kit ships no connect assembly. The conformance account
 in [`__tests__/workerd/conformance/gatekeeper.ts`](__tests__/workerd/conformance/gatekeeper.ts) is
-the executable reference. Production gatekeepers stage and commit reconnects, but none fences a
-connect on its connection generation yet, so the fenced variants below are the recommended shape
-rather than established practice. `disposeMintIfSafe`, `revokeLiveGrantBestEffort`, and `toGrant`
+the executable reference. Production gatekeepers stage and commit reconnects; GitLab also fences
+each connect on its connection generation, as the variants below do, and GitHub does not yet.
+`disposeMintIfSafe`, `revokeLiveGrantBestEffort`, and `toGrant`
 are gatekeeper-owned placeholders, not kit exports; `client` is an `OAuthClient` (see
 [OAuth token endpoint](#oauth-token-endpoint)).
 

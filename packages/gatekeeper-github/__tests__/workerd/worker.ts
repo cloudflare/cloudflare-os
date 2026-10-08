@@ -13,15 +13,18 @@ import type { RpcStub } from "cloudflare:workers";
 import type {
   AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { GitHubGatekeeperImpl, GitHubVerifierApi } from "../../src/github.js";
+import { GitHubGatekeeperImpl, type GitHubVerifierApi } from "../../src/github.js";
 import type {
+  Cursor,
   GitHubBranchSummary,
   GitHubCommitDetails,
   GitHubCommitFilter,
   GitHubCommitSummary,
   GitHubCreatePullRequestOptions,
+  GitHubIssueDetails,
   GitHubPullRequestDetails,
   GitHubPullRequestDiffFile,
+  GitHubPullRequestMergeOptions,
   GitHubPullRequestRevision,
   GitHubRepoMetadata,
 } from "../../src/types.js";
@@ -99,12 +102,37 @@ export type CreatePullRequestActionData = {
 export type PostReviewActionData = Extract<
   Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "postReview" }>;
 
+/** github.ts's (unexported) `MergePullRequestAction` record, read off the real submit signature. */
+export type MergePullRequestActionData = Extract<
+  Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "mergePullRequest" }>;
+
+/** github.ts's (unexported) `SetTitleAction`/`ChangeStateAction` records. */
+export type IssueEditActionData = Extract<
+  Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "setTitle" | "changeState" }>;
+
+/** The listing methods `TestHooks.listingPages` drives. */
+export type ListingMethod = "listIssues" | "searchIssues" | "listPullRequests" | "searchPullRequests";
+
 type TestExports = {
   GitHubGatekeeperImpl(options: { props: GatekeeperProps }):
     DurableObjectClass<GitHubGatekeeperImpl>;
+  SeededGitHubGatekeeper(options: { props: GatekeeperProps }):
+    DurableObjectClass<SeededGitHubGatekeeper>;
   GatekeeperUserImpl(options: { props: { userObjectId: string } }): Fetcher<GatekeeperUser>;
   GitHubVerifier(options: { props: { userObjectId: string } }): Fetcher<GitHubVerifierApi>;
 };
+
+/**
+ * The production gatekeeper plus a way to write its storage directly, for records an earlier
+ * release stored that today's validated entry points can no longer produce.
+ */
+export class SeededGitHubGatekeeper extends GitHubGatekeeperImpl {
+  seed(entries: Record<string, unknown>): void {
+    for (const [key, value] of Object.entries(entries)) this.ctx.storage.kv.put(key, value);
+  }
+}
+
+type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 
 // The facet methods TestHooks forwards to, spelled structurally: workers-types' `Fetcher<T>`
 // return-type inference collapses several of these returns to `never` (its `Serializable`
@@ -114,8 +142,12 @@ type GatekeeperFacet = {
     : Promise<PushActionData | null>;
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
     : Promise<CreatePullRequestActionData>;
+  prepareMergePullRequest(pullId: string, options?: GitHubPullRequestMergeOptions)
+    : Promise<MergePullRequestActionData>;
   submitActionForApproval(
-    queue: unknown, action: PushActionData | CreatePullRequestActionData | PostReviewActionData,
+    queue: unknown,
+    action: PushActionData | CreatePullRequestActionData | PostReviewActionData | MergePullRequestActionData
+      | IssueEditActionData,
     description: ActionDescription): Promise<void>;
   applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
@@ -138,7 +170,11 @@ type GatekeeperFacet = {
     : Promise<{ next(): Promise<GitHubCommitSummary[] | null> }>;
   listCommits(filter: GitHubCommitFilter | undefined, pageSize: number, cache?: RpcStub<GitCache>)
     : Promise<{ next(): Promise<GitHubCommitSummary[] | null> }>;
-};
+  openIssue(id: string): Promise<GitHubIssueDetails>;
+  prepareSetTitle(kind: "issue" | "pull", id: string, title: string): Promise<IssueEditActionData>;
+  prepareChangeState(kind: "issue" | "pull", id: string, state: "open" | "closed")
+    : Promise<IssueEditActionData>;
+} & Record<ListingMethod, (query: never, pageSize: number) => Promise<Cursor<unknown>>>;
 
 async function drain<T>(cursor: { next(): Promise<T[] | null> }): Promise<T[]> {
   const items: T[] = [];
@@ -189,6 +225,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => verifier.hasRepoAccess(owner, repo));
   }
 
+  /** The `urlPattern` of the resource `GatekeeperUser.getGatekeeperClassFor(url)` resolves. */
+  async resourcePatternFor(url: string): Promise<Outcome<string>> {
+    const user = (this.ctx.exports as unknown as TestExports)
+      .GatekeeperUserImpl({ props: { userObjectId: "unused" } });
+    return await outcome(async () => (await user.getGatekeeperClassFor(url)).resource.urlPattern);
+  }
+
   async preparePush(
     facetName: string, props: GatekeeperProps,
     branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>,
@@ -223,6 +266,21 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async submitReview(
     facetName: string, props: GatekeeperProps,
     queue: unknown, action: PostReviewActionData, description: ActionDescription,
+  ): Promise<Outcome<void>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  async prepareMergePullRequest(
+    facetName: string, props: GatekeeperProps, pullId: string, options?: GitHubPullRequestMergeOptions,
+  ): Promise<Outcome<MergePullRequestActionData>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).prepareMergePullRequest(pullId, options));
+  }
+
+  async submitMerge(
+    facetName: string, props: GatekeeperProps,
+    queue: unknown, action: MergePullRequestActionData, description: ActionDescription,
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
@@ -354,5 +412,70 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     facetName: string, props: GatekeeperProps, id: string, cache?: RpcStub<GitCache>,
   ): Promise<Outcome<string>> {
     return await outcome(() => this.#gatekeeper(facetName, props).pullMergeBase(id, cache));
+  }
+
+  async openIssue(
+    facetName: string, props: GatekeeperProps, id: string,
+  ): Promise<Outcome<GitHubIssueDetails>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).openIssue(id));
+  }
+
+  /** Prepares and queues a `setTitle` (given `title`) or `changeState` (given `state`). */
+  async queueEdit(
+    facetName: string, props: GatekeeperProps, queue: unknown,
+    kind: "issue" | "pull", id: string, edit: { title: string } | { state: "open" | "closed" },
+  ): Promise<Outcome<number>> {
+    return await outcome(async () => {
+      const gatekeeper = this.#gatekeeper(facetName, props);
+      const action = "title" in edit
+        ? await gatekeeper.prepareSetTitle(kind, id, edit.title)
+        : await gatekeeper.prepareChangeState(kind, id, edit.state);
+      await gatekeeper.submitActionForApproval(
+        queue, action, { title: action.type, description: action.type, implementsRevert: true });
+      return action.approvalId;
+    });
+  }
+
+  /**
+   * One listing cursor's `next()` results, for up to `calls` calls or through its `null`. A call
+   * that throws is recorded as its message and retried on the same cursor; a second throw in a
+   * row ends the drain with it.
+   */
+  async listingPages(
+    facetName: string, props: GatekeeperProps,
+    method: ListingMethod, query: unknown, pageSize: number, calls = Infinity,
+  ): Promise<Outcome<(unknown[] | null | string)[]>> {
+    return await outcome(async () => {
+      const cursor = await this.#gatekeeper(facetName, props)[method](query as never, pageSize);
+      const pages: (unknown[] | null | string)[] = [];
+      while (pages.length < calls && pages.at(-1) !== null) {
+        try {
+          pages.push(await cursor.next());
+        } catch (error) {
+          if (typeof pages.at(-1) === "string") throw error;
+          pages.push(String(error));
+        }
+      }
+      return pages;
+    });
+  }
+
+  /** Restarts the gatekeeper facet: in-memory state is lost, storage (and its caches) kept. */
+  async restartGatekeeper(facetName: string): Promise<void> {
+    this.ctx.facets.abort(facetName, new Error("test: restart"));
+  }
+
+  /**
+   * Writes `entries` into a gatekeeper's storage. Must be the facet's first use: the facet is
+   * instantiated as `SeededGitHubGatekeeper`, and later calls reuse it.
+   */
+  async seedGatekeeper(
+    facetName: string, props: GatekeeperProps, entries: Record<string, unknown>,
+  ): Promise<void> {
+    // Spelled structurally, like GatekeeperFacet: `Fetcher<T>` inference loses `seed`.
+    const facet = this.ctx.facets.get<SeededGitHubGatekeeper>(facetName, () => ({
+      class: (this.ctx.exports as unknown as TestExports).SeededGitHubGatekeeper({ props }),
+    })) as unknown as SeedFacet;
+    await facet.seed(entries);
   }
 }

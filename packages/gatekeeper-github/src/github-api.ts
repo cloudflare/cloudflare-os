@@ -30,6 +30,7 @@ export type GitHubLabelResponse = {
 };
 
 export type GitHubRepoResponse = {
+  id: number;
   name: string;
   full_name: string;
   html_url: string;
@@ -134,7 +135,7 @@ export type GitHubPullRequestReviewCommentResponse = {
 export type GitHubPullFileResponse = {
   sha?: string;
   filename: string;
-  status: "added" | "modified" | "removed" | "renamed" | "copied";
+  status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
   previous_filename?: string;
   additions: number;
   deletions: number;
@@ -242,7 +243,6 @@ export class GitHubApiError extends Error {
 type RequestOptions = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
-  baseUrl?: string;
   auth?: "bearer" | "basic" | "none";
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
@@ -251,6 +251,13 @@ type RequestOptions = {
     password: string;
   };
 };
+
+/**
+ * A repository with its GitHub id, which survives renames and owner transfers. GitHub redirects
+ * a renamed repo's `/repos/<owner>/<name>/...` to `/repositories/<id>/...`, while a transferred
+ * issue redirects into another repository, so the id tells the two apart.
+ */
+export type PinnedRepo = { owner: string; repo: string; id: number };
 
 export type RequestResult<T> = {
   data: T;
@@ -291,13 +298,42 @@ async function parseBody(response: Response): Promise<unknown> {
   return await response.text();
 }
 
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400 && status !== 304;
+}
+
+const REPO_ROOT_PATH = /^\/repos\/[^/]+\/[^/]+$/;
+const REPO_ID_PATH = /^\/repositories\/\d+$/;
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from `location`. Without
+ * `pin`, only a repository's root is followed, to `/repositories/<id>`: GitHub redirects a renamed
+ * or transferred repository there, and at the root the id can only be that same repository's.
+ * With it, a redirect is followed only to the same path under the pinned id, since beneath the
+ * root a transferred issue redirects into another repository.
+ */
+function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined): URL | undefined {
+  const moved = location === null ? null : URL.parse(location);
+  if (moved?.origin !== API_BASE_URL) return undefined;
+  if (!pin) {
+    return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
+      ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
+  }
+  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
+  const suffix = url.pathname.slice(prefix.length);
+  if (!url.pathname.startsWith(prefix) || !(suffix === "" || suffix.startsWith("/"))) return undefined;
+  const target = new URL(`/repositories/${pin.id}${suffix}${url.search}`, API_BASE_URL);
+  return moved.pathname === target.pathname ? target : undefined;
+}
+
 async function request<T>(
   method: string,
   path: string,
   options: RequestOptions = {},
   getToken?: () => Promise<string>,
+  pin?: PinnedRepo,
 ): Promise<RequestResult<T>> {
-  const url = new URL(path, options.baseUrl ?? API_BASE_URL);
+  const url = new URL(path, API_BASE_URL);
 
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
@@ -339,12 +375,19 @@ async function request<T>(
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(url.toString(), {
-    method,
-    headers,
-    body,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const init: RequestInit = { method, headers, body, redirect: "manual" };
+  let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (isRedirect(response.status)) {
+    const target = redirectTarget(url, response.headers.get("location"), pin);
+    if (target) {
+      response = await fetch(target, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    }
+    if (!target || isRedirect(response.status)) {
+      // The destination is withheld: it may name a repository the binding's observers cannot read.
+      throw new GitHubApiError(response.status,
+        `GitHub moved ${url.pathname} out of the bound repository; it was not followed.`);
+    }
+  }
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
     const parsed = await parseBody(response);
@@ -443,11 +486,18 @@ export async function revokeOAuthToken(
   );
 }
 
+/**
+ * GitHub's REST API as one account. Redirects are followed only within `repo`, by its id (see
+ * PinnedRepo); without it, only a repository root's redirect to its id is (see redirectTarget),
+ * and every other redirect fails with a GitHubApiError.
+ */
 export class GitHubApi {
   #getToken: () => Promise<string>;
+  #repo?: PinnedRepo;
 
-  constructor(getToken: () => Promise<string>) {
+  constructor(getToken: () => Promise<string>, options: { repo?: PinnedRepo } = {}) {
     this.#getToken = getToken;
+    this.#repo = options.repo;
   }
 
   async #request<T>(
@@ -455,7 +505,7 @@ export class GitHubApi {
     path: string,
     options: RequestOptions = {},
   ): Promise<RequestResult<T>> {
-    return await request<T>(method, path, options, this.#getToken);
+    return await request<T>(method, path, options, this.#getToken, this.#repo);
   }
 
   async #conditionalGet<T>(
@@ -943,47 +993,6 @@ export class GitHubApi {
     )).data;
   }
 
-  async listReviewCommentsForReview(
-    owner: string,
-    repo: string,
-    pullNumber: number,
-    reviewId: number,
-    page: number,
-    perPage: number,
-  ): Promise<GitHubPullRequestReviewCommentResponse[]> {
-    const result = await this.listReviewCommentsForReviewConditional(
-      owner,
-      repo,
-      pullNumber,
-      reviewId,
-      page,
-      perPage,
-    );
-    if (result.status === 304) {
-      throw new Error("GitHub unexpectedly returned 304 for an unconditional review comment list request.");
-    }
-    return result.data;
-  }
-
-  async listReviewCommentsForReviewConditional(
-    owner: string,
-    repo: string,
-    pullNumber: number,
-    reviewId: number,
-    page: number,
-    perPage: number,
-    options: ConditionalRequestOptions = {},
-  ): Promise<ConditionalRequestResult<GitHubPullRequestReviewCommentResponse[]>> {
-    return await this.#conditionalGet<GitHubPullRequestReviewCommentResponse[]>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews/${reviewId}/comments`,
-      {
-        per_page: perPage,
-        page,
-      },
-      options,
-    );
-  }
-
   async getPullRequestReviewComment(
     owner: string,
     repo: string,
@@ -1202,18 +1211,21 @@ export class GitHubApi {
   /**
    * Look up a single branch's current head commit sha, or null if the branch does not exist.
    * Always an unconditional, uncached read: callers use this to bind a push's expected old head,
-   * which must reflect the remote's live state.
+   * which must reflect the remote's live state. Read as the exact git ref, because
+   * `/branches/<name>` redirects a renamed branch's old name to the new one (as `master` does in
+   * many repositories), and git has no such alias.
    */
   async getBranchHead(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
-      const result = await this.#request<GitHubBranchResponse>(
+      const result = await this.#request<{ object: { sha: string } }>(
         "GET",
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${
           branch.split("/").map(encodeURIComponent).join("/")}`,
       );
-      return result.data.commit.sha;
+      return result.data.object.sha;
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) {
+      // 409 is GitHub's answer for an empty repository, which has no branches at all.
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 409)) {
         return null;
       }
       throw error;
@@ -1381,6 +1393,9 @@ export class GitHubApi {
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
       },
       body: requestBody,
+      // GitHub serves a renamed repo over smart-HTTP without redirecting, so any redirect is
+      // refused (as a non-OK status) rather than followed somewhere unbound.
+      redirect: "manual",
       // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the response body,
       // which may be a pack of tens of megabytes.
       signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
@@ -1416,6 +1431,7 @@ export class GitHubApi {
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
       },
       body: requestBody,
+      redirect: "manual",
       // Same generous budget as fetch: the signal also covers streaming the pack up.
       signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
     });

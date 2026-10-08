@@ -133,13 +133,13 @@ class FakeGitHub {
       });
     }
 
-    if (path.startsWith(`${API_BASE}/branches/`)) {
-      const name = decodeURIComponent(path.slice(`${API_BASE}/branches/`.length));
+    if (path.startsWith(`${API_BASE}/git/ref/heads/`)) {
+      const name = decodeURIComponent(path.slice(`${API_BASE}/git/ref/heads/`.length));
       const head = this.branches.get(name);
       if (head === undefined) {
-        return Response.json({ message: "Branch not found" }, { status: 404 });
+        return Response.json({ message: "Not Found" }, { status: 404 });
       }
-      return Response.json({ name, commit: { sha: head } });
+      return Response.json({ ref: `refs/heads/${name}`, object: { sha: head, type: "commit" } });
     }
 
     if (path === `${API_BASE}/branches`) {
@@ -245,6 +245,7 @@ async function repoGatekeeper() {
       unwrap(hooks.submitPush(scenario, props, stubOf(queue), action, description)),
     applyAction: (actionId: number, cache: TestGitCache) =>
       unwrap(hooks.applyAction(scenario, props, actionId, stubOf(cache))),
+    rejectAction: (actionId: number) => unwrap(hooks.rejectAction(scenario, props, actionId)),
     revertAction: (actionId: number) => unwrap(hooks.revertAction(scenario, props, actionId)),
     listBranchesFirstPage: (pageSize: number) =>
       unwrap(hooks.listBranchesFirstPage(scenario, props, pageSize)),
@@ -605,6 +606,35 @@ describe("apply", () => {
     github.respondToPush("unpack ok", "ng refs/heads/feature reference already exists");
     await expect(gk.applyAction(action.approvalId, cache))
       .rejects.toThrow(/was created after this push was queued/);
+  });
+
+  it("passes GitHub's reason through when it refuses an update whose CAS held", async () => {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const cache = new TestGitCache().withAncestry(BASE, HEAD1);
+    const action = (await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD1))!;
+
+    github.respondToPush("unpack ok", "ng refs/heads/main protected branch hook declined");
+    await expect(gk.applyAction(action.approvalId, cache))
+      .rejects.toThrow("GitHub refused the push: protected branch hook declined");
+  });
+
+  it("names a discarded push as the reason a push stacked on it cannot apply", async () => {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const cache = new TestGitCache().withAncestry(BASE, HEAD1).withAncestry(HEAD1, HEAD2);
+    const first = (await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD1))!;
+    const stacked = (await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD2))!;
+    expect(stacked.expectedOldSha).toBe(HEAD1);
+
+    await gk.rejectAction(first.approvalId);
+    github.respondToPush("unpack ok", "ng refs/heads/main fetch first");
+    await expect(gk.applyAction(stacked.approvalId, cache))
+      .rejects.toThrow(`it builds on ${HEAD1}, the head of a discarded push to "main"`);
   });
 
   it("treats the branch already being at newSha as success (desired state)", async () => {

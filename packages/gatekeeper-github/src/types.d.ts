@@ -240,7 +240,8 @@ export interface GitHubPullRequest extends GitHubIssue {
    */
   getMergeBase(): Promise<string>;
 
-  /** Merges the pull request. */
+  /** Merges the pull request at its current head (counting your queued pushes); the merge is
+   *  refused if new commits land on the pull request before it is applied. */
   merge(options?: GitHubPullRequestMergeOptions): Promise<void>;
 }
 
@@ -320,7 +321,9 @@ export type GitHubPullRequestBranchRef = {
 }
 
 /** A compact pull request summary returned from list and search operations. */
-export type GitHubPullRequestSummary = GitHubIssueSummary & {
+export type GitHubPullRequestSummary = Omit<GitHubIssueSummary, "commentCount"> & {
+  /** Usually absent from list and search results: GitHub's pull request listing omits it. */
+  commentCount?: number;
   draft: boolean;
   merged: boolean;
   head: GitHubPullRequestBranchRef;
@@ -405,8 +408,9 @@ export type GitHubCommitDetails = GitHubCommitSummary & {
  * A pagination cursor.
  *
  * This is an RPC object. Call `next()` repeatedly on the same cursor to fetch
- * subsequent batches of results. `next()` returns `null` once exhausted. Dispose the
- * cursor when finished.
+ * subsequent batches of results. `next()` returns `null` once exhausted. A batch may be
+ * empty when one call scanned many upstream rows without a match (e.g. a selective search);
+ * that is not the end, so keep calling until `null`. Dispose the cursor when finished.
  */
 export interface Cursor<T> {
   next(): Promise<T[] | null>;
@@ -654,7 +658,7 @@ export type GitHubPullRequestMergeOptions = {
   method?: GitHubPullRequestMergeMethod;
   commitTitle?: string;
   commitMessage?: string;
-  /** Expected HEAD SHA of the pull request. If provided, the merge will fail if the
-   *  current HEAD doesn't match, preventing races with concurrent pushes. */
+  /** The head SHA you reviewed. Queuing the merge fails if the pull request's current head
+   *  (counting your queued pushes) differs. */
   expectedHeadSha?: string;
 }

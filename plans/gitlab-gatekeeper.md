@@ -252,18 +252,19 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `squash?: boolean` and `removeSourceBranch?: boolean` (plus `commitMessage?`,
   `squashCommitMessage?`, `expectedHeadSha?` → `sha`). Merge *method* is a project setting in
   GitLab, not a per-merge choice; exposing one would be a lie the API can't keep.
-- **`merge()` binds the head it was asked to merge.** One deliberate divergence from GitHub,
-  whose merge sends `sha` only when the agent supplies `expectedHeadSha`: an approver approves
-  "merge !N" at one moment and the merge applies at another, against whatever head exists then,
-  so commits pushed in between (a collaborator's, or the agent's own through another approved
-  push) would merge unreviewed. `push()` already binds `expectedOldSha` at queue time for exactly
-  this class of race. So `prepareMergeMergeRequest` reads the merge request's current source head
-  (a read that only prepares the action, so it records no observation — upstream #593), binds
-  it as `sha` unless the agent supplied its own, and names it in the approval description; GitLab
-  answers 409 if the head has moved, the agent re-reads, and the human approves merging the new
-  state — the correct outcome. For a provisional merge request the bound head is the simulated
-  one (the queued push's commit), which is the head it will have once created. GitHub's merge
-  should do the same; see Punted.
+- **`merge()` binds the head it was asked to merge.** An approver approves "merge !N" at one
+  moment and the merge applies at another, against whatever head exists then, so commits pushed
+  in between (a collaborator's, or the agent's own through another approved push) would merge
+  unreviewed. `push()` already binds `expectedOldSha` at queue time for exactly this class of
+  race. So `prepareMergeMergeRequest` reads the merge request's current source head (a read that
+  only prepares the action, so it records no observation — upstream #593), binds it as `sha`
+  unless the agent supplied its own, and names it in the approval description; GitLab answers
+  409 if the head has moved, the agent re-reads, and the human approves merging the new state —
+  the correct outcome. For a provisional merge request the bound head is the simulated one (the
+  queued push's commit), which is the head it will have once created. GitHub's merge binds the
+  same way, with one divergence: an agent-supplied `expectedHeadSha` that is not the head it
+  would bind is refused at queue time there, while this port binds it as given and leaves the
+  refusal to GitLab's 409 at apply.
 - **`close()` takes no reason.** GitLab issues have no `state_reason`; the parameter would be
   ignored. Dropped rather than accepted-and-discarded.
 - **Discussion is user-authored notes; approvals are MR metadata.** `readDiscussion()` returns
@@ -317,7 +318,12 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   was considered and rejected: a moved project should be re-bound once, not read through a stale
   path forever.) The OAuth form posts and the git smart-HTTP requests use the same setting: a
   302 there is Access or a login page, not GitLab, and the error should say so rather than quote
-  the login page or fail in the pkt-line parser.
+  the login page or fail in the pkt-line parser. GitHub diverges here: it too fetches with
+  `redirect: "manual"`, but follows a renamed repository's redirect to `/repositories/<id>/…`,
+  because it stores the repository id (read once from the repository root, whose redirect can
+  only name that same repository) and follows a redirect only to the same path under that id. A
+  transferred issue, which redirects into another repository, is still refused, and props stay
+  path-based, so the observer probe and URL builders are unchanged.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`
@@ -696,8 +702,8 @@ in `github.ts` is the checklist. Divergences:
   drafts, and its own approval — the one GitLab still dates (`approved_at`) as the review's,
   never one the account held before or has given again since. No `(target, body)`
   matching of provisional diff-comment ids to real notes: the session refuses replies to
-  provisional ids, so the aliases would have no reader (GitHub's come free with the review
-  POST's response; here they would cost a round-trip); `replyToDiffComment` → resolve note id →
+  provisional ids, so the aliases would have no reader (GitHub stopped writing them too: its
+  review POST returns no comment ids, so they cost a round-trip); `replyToDiffComment` → resolve note id →
   discussion id (`discussions` lookup) → `POST …/discussions/:id/notes`; `resolveDiffThread` → `PUT …/discussions/:id {resolved: true}`;
   `mergeMergeRequest` → `PUT …/merge` with `sha` bound at prepare (see Locked), mapping the
   documented codes — `405` "cannot merge" (also GitLab's answer once the merge request is
@@ -774,12 +780,12 @@ in `github.ts` is the checklist. Divergences:
   client-side PR scan (`#searchPullSummaries`' buffered upstream walk) is deleted; so is
   `github-search.ts`'s scope-assertion, since a project-scoped endpoint can't leak another
   project's rows. Rows already served as overlaid injected items are dropped by the cursor's
-  `filter`, not inside `fetchPage`, so a page is counted as GitLab sent it (the GitHub defect
-  under Punted), and each item is served once (`StreamingCursor`'s `identity`, a provisional's
-  real id once it has one): a queued create applied while a cursor is drained would otherwise
-  list both its injected `~N` and, on a later page, the real row. The injected rows already
-  served are re-keyed at every check, since `~N` served before its create landed is the real
-  row served after.
+  `filter`, not inside `fetchPage`, so a page is counted as GitLab sent it (as GitHub's walk now
+  counts its pages too), and each item is served once (`StreamingCursor`'s `identity`, a
+  provisional's real id once it has one): a queued create applied while a cursor is drained
+  would otherwise list both its injected `~N` and, on a later page, the real row. The injected
+  rows already served are re-keyed at every check, since `~N` served before its create landed
+  is the real row served after.
   Injected rows re-validate as they are served (`#injectedRowStanding`): a provisional row whose
   create was discarded after the cursor was built is dropped, since opening it would fail. A
   touched row is served as built, its overlay as of that moment: refreshing it could move it in
@@ -1125,10 +1131,11 @@ scope, not feasibility).
   `getGatekeeperClassFor` never trusts the pattern.
 - **Project renames and transfers.** `projectPath` in props goes stale when a project moves,
   and the API answers the old path with a documented `301` whose `Location` is the numeric-id
-  URL (see the redirects locked decision for why that must never be followed). The binding then
-  fails with "project moved — re-bind", the same exposure GitHub has with `owner/repo`. Not
-  solved here; noted so nobody reaches for the numeric id in a hurry — that would break the
-  observer probe's path-based ACL check and every URL builder.
+  URL (see the redirects locked decision for why that is not followed here). The binding then
+  fails with "project moved — re-bind". GitHub no longer does: it keeps `owner/repo` in props
+  and stores the numeric id only to recognise the rename's redirect (same decision). Moving the
+  id into props instead would break the observer probe's path-based ACL check and every URL
+  builder.
 - **`line_code` for multi-line diff comments is computed, not fetched.** GitLab's documented
   form is `<SHA1 of the file path>_<old_line>_<new_line>`; each `line_range` endpoint also needs
   `type: "new" | "old"`. The DO derives it with `crypto.subtle.digest("SHA-1", path)` from the
@@ -1319,8 +1326,9 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   It fails rather than stops part-way because a listed merge names every side parent, and one
   left unmarked would be advertised as GitLab's and left out of the push pack. Lifting it means
   resolving every root whatever the bound and leaving only the merge base's frontier unknown.
-- **Numeric project id alongside the path** in props, refreshed on first read, to survive
-  renames/transfers — needs an answer for the observer probe and URL builders first.
+- **Following a moved project by its numeric id**, as GitHub follows a renamed repository: keep
+  the path in props for the observer probe and URL builders, store the id on first read, and
+  follow a redirect only to the same path under it.
 - **Lazy label details** if `with_labels_details` list payloads prove heavy.
 - **`autoMerge`** (`merge_when_pipeline_succeeds` / `auto_merge`) on `merge()`; `rebase()` on
   the MR session (`PUT …/rebase`, async — needs polling).
@@ -1331,22 +1339,22 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 - **A shared `GitHubApi`/`GitLabApi` HTTP-client base in the kit** — the `request()`/
   `conditionalGet()`/error-class trio is now duplicated twice; a third copy is when it earns a
   module.
-- **The kit's `OAuthClient` for both git gatekeepers' token requests.** Review asked for the
-  kit's production-tested client in place of `gitlab-api.ts`'s hand-written exchange, refresh
-  and revoke (GitHub hand-writes its exchange too). Deferred, because today it would cost two
-  things this port does: it refuses any endpoint that is not `https`, where this port accepts
-  loopback `http` for a GitLab run on the developer's machine; and its 3xx refusal drops the
-  `Location`, so it cannot say that Access, not GitLab, answered. Each is a small kit change, and
-  the client is independent of the coordinator (gatekeeper-cloudflare and mcp-shared use
-  `OAuthClient` without it), so moving both gatekeepers to it is a change of its own.
+- **The kit's `OAuthClient` for GitLab's token requests.** Review asked for the kit's
+  production-tested client in place of `gitlab-api.ts`'s hand-written exchange, refresh and
+  revoke (GitHub already uses it). Deferred, because today it would cost two things this port
+  does: it refuses any endpoint that is not `https`, where this port accepts loopback `http` for
+  a GitLab run on the developer's machine; and its 3xx refusal drops the `Location`, so it cannot
+  say that Access, not GitLab, answered. Each is a small kit change, and the client is
+  independent of the coordinator (gatekeeper-cloudflare and mcp-shared use `OAuthClient` without
+  it), so moving GitLab to it is a change of its own.
 - **Replies to provisional diff comments, in both gatekeepers.** Each session's
   `replyToDiffComment()` refuses a `~` id up front, so the machinery behind it — the
   `diffAlias:` keys written at apply, the hop-bounded chain walk in the reply resolver, and the
-  reject cascade over reply chains — is unreachable in GitHub and GitLab alike. GitLab does not
-  write the aliases for review comments (GitHub's come free with the review POST's response;
-  here they would cost a discussions round-trip and a signature match), but otherwise mirrors
-  the dead paths for parity. Either lift the gate in both, making a reply to a not-yet-published
-  review comment queue behind its parent, or delete the paths in both.
+  reject cascade over reply chains — is unreachable in GitHub and GitLab alike. Neither writes
+  the aliases for review comments (the review POST's response carries no comment ids, so they
+  would cost a discussions round-trip and a signature match), but both keep the rest of the dead
+  paths. Either lift the gate in both, making a reply to a not-yet-published review comment
+  queue behind its parent, or delete the paths in both.
 - **Agent-facing text about pending creation, in both gatekeepers.** Review noted that
   gatekeepers generally do not tell the agent a mutation may be provisional — a gatekeeper does
   not present itself as running inside a simulation — where this port, like GitHub's, says
@@ -1371,67 +1379,41 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
 - **Cascaded rejections in the Workshop.** `rejectAction`'s contract leaves a `restart` to the
   overseer, "possibly after rejecting other actions", but the overseer's `rejectAction` ignores
   the answer: the gadget is not restarted, and the records a cascade retired keep pending
-  cards. Discarding one reaches the gatekeeper again, which this port answers with success (and
-  an approval with the reason it cannot run); GitHub answers both with "no longer pending", so
-  the card can never be resolved. The remedy is a kernel change of its own — honour `restart`
-  and resolve the cascade's cards — and GitHub's half is answering as this port does.
-- **Bounded output from the kit's wholesale diff.** `git-diff.ts`'s `wholesaleDiff` runs when a
-  file's change exceeds jsdiff's caps and emits *every* changed line as removed-plus-added: a
-  fully rewritten 1 MiB file of 30k lines becomes 60k line objects to the agent, which is what
-  `diffOmitted` exists for. One condition — past the per-file line cap, omit rather than emit —
-  in shared kit code both gatekeepers run, so it lands as its own change rather than inside the
-  behaviour-neutral move.
-- **The same fixes in gatekeeper-github.** Reviewing this port surfaced gaps the mirror inherited
-  and, in some cases, GitHub has worse: `applyAction` is retry-idempotent only for `push` (an
-  already-applied action of any type should report success, not "no longer pending");
-  `getGitBlob` buffers the whole base64 body before its size check (GitHub serves raw blobs under
-  the `application/vnd.github.raw` media type, which can be read with a byte cap); the issue
-  listing filters pull requests and touched issues *inside* `fetchPage`, so a full page reads
-  short and `StreamingCursor` stops before the next — every page with a pull request on it
-  truncates the listing; `/pull/:number` does not match `/pull/7/files`, so a URL to a PR tab
-  is refused as matching no resource; `merge()` binds no head (see the locked decision above); and
-  `#storeCached` stamps the cache generation at *store* time, so a read whose fetch was in flight
-  while an `applyAction` ran to completion is stored as if it reflected the mutation and hides it
-  for the cache's lifetime (capture the generation before the loader; skip the store if it moved);
-  and `#collectPendingChain` marks only the first-parent chain as simulated, so a local merge's
-  side parent is advertised as remote-known and left out of the pack of a later push carrying
-  it, which GitHub rejects unless the merge's own push has landed first. Its `StreamingCursor` also
-  moves rows into the page before awaiting the next fetch, so a fetch that throws loses them and the
-  retry skips past them (this port buffers before it serves and serializes `next()`). Once its
-  walk marks side parents, its stored comparison must keep them too: it re-records only the
-  first-parent ids (this port's `pendingCommitIds`). Its issue and pull request listings serve a
+  cards. Discarding one reaches the gatekeeper again, which both gatekeepers answer with success
+  (and an approval with the reason it cannot run). The remedy is a kernel change of its own:
+  honour `restart` and resolve the cascade's cards.
+- **The same fixes in gatekeeper-github.** Reviewing this port surfaced gaps the mirror inherited.
+  Fixed since: retry-idempotent apply for every action type, listings that end on the raw page
+  length, a bound merge head with the 405 re-read, the fetch-time cache generation, side parents
+  withheld and kept in `pendingCommitIds`, `resultsPerPage` checked at the session boundary,
+  `stripTrailingSlashes` for the path filter, case-insensitive login filters, stranded
+  expectations no longer passing as GitHub's, and a fetch that throws mid-page no longer losing
+  the rows already taken from the buffer. Still open: `getGitBlob` buffers the whole base64
+  body before its size check (GitHub serves raw blobs under the `application/vnd.github.raw`
+  media type, which can be read with a byte cap); `/pull/:number` does not match
+  `/pull/7/files`, so a URL to a PR tab is refused as matching no resource (normalize the pasted
+  URL rather than change the stored pattern); its issue and pull request listings serve a
   provisional row whose create was discarded after the cursor was built (this port's
-  `#injectedRowStanding`).
-  From the second review round: `resultsPerPage` reaches the cursors unchecked (a `0` makes
-  `ArrayCursor` answer `[]` forever and `StreamingCursor` `null` at once — this port checks it
-  once at the session boundary, `pageSize()` in `gitlab-sessions.ts`); the `listCommits` path
-  filter strips trailing slashes with `/\/+$/`, which CodeQL flags as polynomial (use
-  `stripTrailingSlashes`); and the listing comparators break ties by `id.localeCompare`, textual
-  order that puts `9` after `10`, where the provider orders by id — immaterial for timestamp
-  sorts, decisive for `popularity`/`comments`, where most rows tie. From the third round: the
-  reject cascade follows the action's *target* only, so an action whose body cites a rejected
-  `#~N` stays pending and fails every apply (this port's `referenceBearingTexts`). From the fourth
-  round: rejecting a push leaves the pushes stacked on it pending, though their compare-and-swap
-  can no longer succeed, and while they wait their expected old heads — commits GitHub never
-  received — pass as GitHub's (`knownShas` in `#collectPendingChain`) and their push marks keep the
-  rejected commits readable as pushed (this port's `#rejectActionsStrandedByPush`); a merge whose
-  reply was lost is sent again by the retried apply, with no re-read to recognise the pull request
-  as merged (this port re-reads on a 405 and accepts a merge at its bound head); `acceptAuthCode`
-  frees the nonce before its code exchange and stages the result without asking whether the grant
-  it replaces is still live, so a reconnect that starts and commits during that exchange is
-  overwritten when the slower one commits (this port stages the connection generation the
-  attempt began under and commits through `connect(grant, { ifGeneration })`); and `removeLabels`
-  applies `setLabels` with the set computed at prepare from the overlay, so a label an unapproved
-  `addLabels` queued reaches GitHub and one a human added since is dropped (this port sends
-  GitLab's `remove_labels` delta).
-  And its `readDiff()` serves `pulls/{n}/files` as the whole diff, though GitHub lists at most
-  3000 files there (this port refuses a diff over GitLab's limits).
-  From the same round: its author/assignee filters compare logins exactly, which discards the
-  provider's rows for a differently-cased login if GitHub's own match ignores case (unchecked);
-  its queued-commit `author` filter is an exact name-or-email match, where GitHub's `author` is a
-  login or an email, so it needs its own look rather than this port's substring; a first connect
-  whose `complete()` throws clears the grant without revoking it; and both its connect and
-  `/oauth` routes call `idFromString` unguarded, so a malformed link or state is a 500.
+  `#injectedRowStanding`); a provisional row is buffered only ahead of a remote row the overlay
+  keeps, so a selective walk (a pull request text search) can answer `[]` several times before a
+  provisional match that sorts first (placing it needs a sort key for the dropped rows too); the
+  listing comparators break ties by `id.localeCompare`, which puts `9` after `10`; the reject
+  cascade follows the action's *target* only, so an action whose body cites a rejected `#~N`
+  stays pending and fails every apply (this port's `referenceBearingTexts`); rejecting a push
+  leaves the pushes and merges bound behind it pending, failing each apply (a merge with a "head
+  has moved" it never had), and their push marks keep the rejected commits readable as pushed
+  (this port's `#rejectActionsStrandedByPush`, which needs the Workshop cascade above to resolve
+  the cards); `acceptAuthCode` frees the nonce before its code exchange and commits without a
+  connection-generation fence, so an older reconnect that completes last can restore a different
+  GitHub account than the newer one (this port stages the generation the attempt began under and
+  commits through `connect(grant, { ifGeneration })`); `removeLabels` applies `setLabels` with
+  the set computed at prepare from the overlay, so a label an unapproved `addLabels` queued
+  reaches GitHub and one a human added since is dropped (this port sends GitLab's
+  `remove_labels` delta); `readDiff()` serves `pulls/{n}/files` as the whole diff, though GitHub
+  lists at most 3000 files there; the queued-commit `author` filter is an exact name-or-email
+  match, where GitHub's `author` is a login or an email; a first connect whose `complete()`
+  throws clears the grant without revoking it; and both its connect and `/oauth` routes call
+  `idFromString` unguarded, so a malformed link or state is a 500.
   And `#simulatedPullComparison` takes the pull's merge base from `compare(base, anchor)`, so a
   queued merge of the base branch into the head diffs against the old fork point and shows the
   base's own changes (this port computes it over the pending ancestry's frontier). That fix lifts

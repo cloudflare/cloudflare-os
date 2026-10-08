@@ -7,8 +7,9 @@ This gatekeeper uses Durable Object KV storage only. It does not use SQLite tabl
 - Most resource and query caches use short-lived KV entries with stored ETags, while `since`-capable discussion streams use persistent prefix-plus-watermark sync caches.
 - Simulation uses a read-time overlay for pending actions rather than mutating cached remote state in place.
 - New issues and pull requests get provisional IDs like `~1`, `~2`, etc. Pending follow-up actions target those provisional IDs until the create action is applied.
-- Applied review-comment aliases are recorded so later replies can resolve provisional comment IDs to GitHub comment IDs.
-- Replies to provisional diff comments are intentionally not supported until the parent review is approved and GitHub assigns real comment IDs.
+- Replies to provisional diff comments are not supported: a reply needs a real GitHub comment ID.
+  Applying a reply still records `diffAlias:` for its provisional ID, which nothing reads until
+  that is lifted (see the plan's "Replies to provisional diff comments").
 
 ## UserAccount Durable Object
 
@@ -34,9 +35,20 @@ No per-user SQL tables are used.
 - `counter:diff` -> next numeric suffix for provisional diff comments created by pending reviews.
 - `counter:reply` -> next numeric suffix for provisional diff replies.
 
-### Pending action log
+### Repository identity
 
-- `pendingAction:<localId>` -> serialized `GitHubAction` union.
+- `repoId` -> the bound repository's GitHub id, read once from `/repos/<owner>/<repo>`, whose
+  redirect to `/repositories/<id>` (a renamed or transferred repo) is the only one followed
+  before the id is known. With it, redirects are followed only to the same path under
+  `/repositories/<repoId>`; every other redirect fails the request. Absent until first use.
+
+### Action log
+
+- `action:<approvalId>` -> `{ action, state: "staged" | "pending" }`, the queued `GitHubAction`.
+- `retiredAction:<approvalId>` -> the same record once `state` is `"approved"` (with `appliedAt`
+  and any `revertInfo`) or `"rejected"` (with `rejectedAt`). Retired records are kept, so a
+  repeated apply or discard is answered from them, and a refused push can name a discarded
+  predecessor.
 
 Stored action variants:
 
@@ -50,9 +62,11 @@ Stored action variants:
 - `postComment`
 - `postReview`
 - `replyToDiffComment`
-- `mergePullRequest`
+- `mergePullRequest` (bound to `expectedHeadSha` at queue time; a record from before that
+  binding applies at the agent's `options.expectedHeadSha`, and is refused without one)
+- `push`
 
-These records are the source of truth for simulation.
+Pending records are the source of truth for simulation.
 
 ### Provisional resource mapping
 
@@ -64,7 +78,8 @@ Before approval, `realId` is absent. After the create action is applied, `realId
 
 - `diffAlias:<provisionalCommentId>` -> real GitHub review comment ID string.
 
-This is written after a review or diff reply is applied so later replies can target the real GitHub thread/comment.
+Written when a diff reply is applied. Unread while replies to provisional comments are refused
+(see Design choices).
 
 ### Incremental discussion sync state
 
@@ -116,7 +131,7 @@ Lifecycle:
 
 Short-lived caches still use `cache:*` keys and store:
 
-- `{ fetchedAt: number, value: T, etag?: string }`
+- `{ fetchedAt: number, value: T, etag?: string, generation: number }`
 
 Implemented TTL cache families:
 
@@ -125,12 +140,15 @@ Implemented TTL cache families:
   and etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:issue:<realId>` -> `GitHubIssueDetails`
 - `cache:pull:<realId>` -> `GitHubPullRequestDetails`
-- `cache:list-issues:<encodedQuery>` -> `GitHubIssueSummary[]`
+- `cache:list-issues-v2:<encodedQuery>:p<page>` -> `(GitHubIssueSummary | null)[]`, one entry per
+  upstream row (`null` for pull requests), so a page keeps the length that ends the walk (v2: v1
+  stored filtered, short pages)
 - `cache:search-issues-scoped-v1:<encodedQuery>` -> validated source URLs and `GitHubIssueSummary` values
-- `cache:list-pulls:<encodedQuery>` -> `GitHubPullRequestSummary[]`
-- `cache:search-pulls:<encodedQuery>` -> `GitHubPullRequestSummary[]`
+- `cache:list-pulls-v2:<encodedQuery>:p<page>` -> `GitHubPullRequestSummary[]`, unfiltered (v2: v1
+  dropped rows with pending actions)
+- `cache:search-pulls-v2:<state>:p<page>` -> `GitHubPullRequestSummary & { bodyMarkdown }` rows of
+  the `/pulls` listing (newest-updated first) that PR text search filters after the overlay
 - `cache:discussion-reviews:<realId>:p<page>` -> `GitHubDiscussionEntry[]` review-summary pages for pull discussions
-- `cache:discussion-review-comments:<realId>:<reviewId>` -> review comments attached to one pull-request review
 - `cache:resolve-ref:<encodedRef>` -> full commit id the ref resolved to
 - `cache:diff-v2:<realId>:<baseSha>:<headSha>` -> `{ revision, files }` (v2: the revision gained
   `mergeBaseSha`)
@@ -141,8 +159,8 @@ Implemented TTL cache families:
 ### Cache TTLs
 
 - Viewer cache: 5 minutes
-- Entity caches (`repo-v2`, `issue`, `pull`, `discussion-reviews`, `discussion-review-comments`,
-  `resolve-ref`, `diff-v2`): 30 seconds
+- Entity caches (`repo-v2`, `issue`, `pull`, `discussion-reviews`, `resolve-ref`, `diff-v2`):
+  30 seconds
 - List/search caches: 15 seconds
 - `merge-base` entries never expire (a merge base is a pure function of its two key commits);
   only the generation bump below evicts them
@@ -153,7 +171,10 @@ rewriting the cached value.
 
 Cache invalidation strategy:
 
-- Any queued, applied, rejected, or reverted action clears all `cache:*` entries in the gatekeeper DO.
+- Any queued, applied, rejected, or reverted action invalidates every `cache:*` entry in the
+  gatekeeper DO by bumping `cacheGeneration`; entries are overwritten by later reads, never
+  deleted. A read stores its result only if the generation it captured before fetching is still
+  current, so a read that straddled an apply never caches pre-apply data.
 - The persistent `discussionComments:*` and `pullReviewComments:*` sync state is retained;
   subsequent reads revalidate it with `since` before use.
 - Simulation is then rebuilt from the pending action log on subsequent reads.
@@ -161,9 +182,10 @@ Cache invalidation strategy:
 ## Simulation model
 
 - Reads fetch cached or remote GitHub state.
-- Pending actions from `pendingAction:*` are overlaid on that state at read time.
+- Pending actions from `action:*` are overlaid on that state at read time.
 - Provisional creates synthesize issue/PR objects locally until GitHub assigns a real ID.
-- Rejecting a provisional create deletes dependent pending actions and returns `restart: true`.
+- Rejecting a provisional create retires its dependent pending actions as rejected and returns
+  `restart: true`.
 - Review-thread simulation supports pending review comments and pending replies to real GitHub diff comments.
 
 ## Absent schema

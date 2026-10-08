@@ -29,6 +29,9 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITHUB_GATEKEEPER: { className: "GitHubGatekeeperImpl", useSQLite: true },
+          // The gatekeeper with a storage-seeding hook (see worker.ts), registered so `ctx.exports`
+          // carries it.
+          SEEDED_GITHUB_GATEKEEPER: { className: "SeededGitHubGatekeeper", useSQLite: true },
           // The gatekeeper DO reads `ctx.props`, and a `DurableObjectClass` carrying props is
           // only reachable through `ctx.facets` -- so the tests drive it from a hook Durable
           // Object, exactly as the overseer does in production, rather than a plain namespace
