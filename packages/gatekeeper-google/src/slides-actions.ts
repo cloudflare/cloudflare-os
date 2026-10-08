@@ -345,24 +345,33 @@ function textIfThere(slide: RestSlide, address: TextAddress): string | undefined
   }
 }
 
+const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slideId) ?? {};
+
+const idsOn = (deck: Deck, slideId: string) => new Set(elementIdsOf(slideOf(deck, slideId).pageElements));
+
 /**
- * Whether a read taken after a lost response shows a design batch landed: each element the batch
- * created or deleted is present or absent as planned, and each text it edited reads as planned.
+ * Whether a read taken after a lost response shows a design batch landed. Only what the batch
+ * would have changed counts: an element it created that survives it, an element it deleted that
+ * was there before it, and text it left reading differently. A batch with none of those, such as
+ * one that only formats or moves elements, cannot be shown to have landed.
  */
 function designLanded(
-  changes: readonly DesignChange[], steps: readonly (DesignStep | null)[], planned: Deck, after: Deck,
+  changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
+  before: Deck, planned: Deck, after: Deck,
 ): boolean {
   let checks = changes.flatMap((change, i) => {
-    let step = steps[i]!;
-    let slide = after.slides.get(change.slideId) ?? {};
-    let plannedSlide = planned.slides.get(change.slideId) ?? {};
-    let ids = new Set(elementIdsOf(slide.pageElements));
-    let plannedIds = new Set(elementIdsOf(plannedSlide.pageElements));
-    let presence = [step.created, step.deleted]
-      .flatMap(id => id === undefined ? [] : [ids.has(id) === plannedIds.has(id)]);
-    // An edit to an element a later change deletes leaves no text to compare.
-    let text = change.op === "editText" ? textIfThere(plannedSlide, change) : undefined;
-    return text === undefined ? presence : [...presence, textIfThere(slide, change) === text];
+    let { created, deleted } = steps[i]!;
+    let ids = idsOn(after, change.slideId);
+    let evidence: boolean[] = [];
+    if (created && idsOn(planned, change.slideId).has(created)) evidence.push(ids.has(created));
+    if (deleted && idsOn(before, change.slideId).has(deleted)) evidence.push(!ids.has(deleted));
+    if (change.op === "editText") {
+      let text = textIfThere(slideOf(planned, change.slideId), change);
+      if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), change)) {
+        evidence.push(textIfThere(slideOf(after, change.slideId), change) === text);
+      }
+    }
+    return evidence;
   });
   return checks.length > 0 && checks.every(Boolean);
 }
@@ -431,7 +440,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
       let { deck, steps } = designDeck(fresh, changes);
       return {
         requests: steps.flatMap(step => step!.requests),
-        landed: after => quietly(() => designLanded(changes, steps, deck, after)),
+        landed: after => quietly(() => designLanded(changes, steps, fresh, deck, after)),
       };
     }),
   },

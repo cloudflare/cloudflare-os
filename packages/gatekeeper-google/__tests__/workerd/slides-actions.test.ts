@@ -720,6 +720,34 @@ describe("Google Slides design changes", () => {
     expect(provider.text("s2", "t2")).toBe("Sales\n");
   });
 
+  // Neither the created-then-deleted element nor the formatting differs between a batch that
+  // landed and one that did not, so neither may count as having landed.
+  it("records an unknown outcome for a dropped batch that leaves no trace", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      BADGE,
+      { op: "deleteElement", slideId: "s2", elementId: "badge" },
+      { op: "formatText", slideId: "s2", elementId: "t2", format: { bold: true } },
+    ]);
+    provider.nextFailure = "dropped";
+    // The collaborator edits after the dropped send, so the resend is refused as stale.
+    let send = 0;
+    let fetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo, init?: RequestInit) => {
+      let response = await fetch(input, init);
+      if (String(input).endsWith(":batchUpdate") && ++send === 1) {
+        provider.edit(d => {
+          d.slides![1].pageElements![1].shape!.text = text(["Revenue: $10M"], ["Margin: 21%"]);
+        });
+      }
+      return response;
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+    expect(provider.batches).toHaveLength(2);
+  });
+
   it("refuses a ref that is also an element's ID, queuing nothing", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();

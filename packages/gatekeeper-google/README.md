@@ -249,7 +249,10 @@ with `requiredRevisionId`, so a change applies only to the text it was planned a
 no longer applies fails without writing, and a concurrent edit makes Google refuse the write so it
 is planned again. A write whose response is lost may have been committed, so it is only ever
 resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
-and if it cannot tell, the change is marked as having an unknown outcome and never retried.
+counting only what the write would have changed: an element it created that it does not also
+delete, an element it deleted that was there before, and text it edited. If the read cannot tell,
+as for a batch that only formats or moves elements, the change is marked as having an unknown
+outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
