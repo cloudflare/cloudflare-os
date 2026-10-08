@@ -53,7 +53,10 @@ const SHAPE_TYPES = new Set([
   "STARBURST", "TEARDROP", "ELLIPSE_RIBBON", "ELLIPSE_RIBBON_2", "CLOUD_CALLOUT",
 ]);
 
-const CREATES = new Set<SlideChange["op"]>(["createShape", "insertImage", "createTable"]);
+/** The changes that create an element, and what each creates. */
+export const CREATES: Partial<Record<SlideChange["op"], string>> = {
+  createShape: "shape", insertImage: "image", createTable: "table",
+};
 
 class Refused extends Error {}
 
@@ -347,7 +350,7 @@ export function prepareChanges(
     let { ref, ...rest } = normalizedUrls(change) as SlideChange & { ref?: string };
     let id = "elementId" in rest && rest.elementId !== undefined ? refs.get(rest.elementId) : undefined;
     let resolved = id ? { ...rest, elementId: id } : rest;
-    if (!CREATES.has(change.op)) return resolved as DesignChange;
+    if (!CREATES[change.op]) return resolved as DesignChange;
     let minted = mintObjectId();
     if (ref !== undefined) {
       if (ref.length === 0 || ref.length > MAX_REF_LENGTH) {

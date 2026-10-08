@@ -18,6 +18,7 @@ import {
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
+import { CREATES } from "./slides-design-input";
 import { slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
@@ -314,10 +315,6 @@ function describeChange(
   }
 }
 
-const CREATED_NOUNS: Partial<Record<DesignChange["op"], string>> = {
-  createShape: "shape", insertImage: "image", createTable: "table",
-};
-
 // One line per change, and the fields to show verbatim after them.
 function describeDesign(
   changes: DesignChange[], slides: Record<string, SlideLabel>,
@@ -328,7 +325,7 @@ function describeDesign(
   let lines = changes.map((change, i) => {
     let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
     let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
-    let noun = CREATED_NOUNS[change.op];
+    let noun = CREATES[change.op];
     if (noun && "id" in change) created.set(change.id, `the ${noun} change ${i + 1} adds`);
     return `On ${slideName(slides[change.slideId])}, ${line}`;
   });

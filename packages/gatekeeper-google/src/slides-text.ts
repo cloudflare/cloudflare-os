@@ -99,6 +99,18 @@ export function projectedText(segments: readonly TextSegment[]): string {
   return segments.map(segment => segment.text).join("");
 }
 
+/** The paragraph of projected `text` holding `offset`. */
+export function paragraphAt(text: string, offset: number): number {
+  return text.slice(0, offset).split("\n").length - 1;
+}
+
+/** Paragraph `i` of projected `text`, as a range without its newline. */
+export function paragraphRange(text: string, i: number): [start: number, end: number] {
+  let lines = text.split("\n");
+  let start = lines.slice(0, i).reduce((sum, line) => sum + line.length + 1, 0);
+  return [start, start + lines[i].length];
+}
+
 // Splits at a projected offset, which must not fall inside an AutoText.
 function cut(
   segments: readonly TextSegment[], offset: number,
@@ -147,8 +159,8 @@ export function spliceText(rich: RichText, start: number, end: number, text: str
   let [, after] = cut(segments, end);
   let style = styleAt(rich, start);
   let projected = projectedText(segments);
-  let paragraph = projected.slice(0, start).split("\n").length - 1;
-  let merged = projected.slice(0, end).split("\n").length - 1;
+  let paragraph = paragraphAt(projected, start);
+  let merged = paragraphAt(projected, end);
   let inserted = text.split("\n").length - 1;
   // Google may give a merged paragraph either one's style; that is pinned when applied, but a list
   // item's bullet cannot be.
@@ -345,12 +357,10 @@ export function replaceRequests(
       },
     });
   }
-  let projected = projectedText(before.segments);
-  if (projected.slice(start, end).includes("\n")) {
-    let paragraph = (projected.slice(0, start) + text).split("\n").length - 1;
-    let lines = projectedText(after.segments).split("\n");
-    let from = lines.slice(0, paragraph).reduce((sum, line) => sum + line.length + 1, 0);
-    let { startIndex, endIndex } = providerRange(after.segments, from, from + lines[paragraph].length);
+  if (projectedText(before.segments).slice(start, end).includes("\n")) {
+    let edited = projectedText(after.segments);
+    let paragraph = paragraphAt(edited, start + text.length);
+    let { startIndex, endIndex } = providerRange(after.segments, ...paragraphRange(edited, paragraph));
     requests.push({
       updateParagraphStyle: {
         ...location, style: after.paragraphs[paragraph].style ?? {}, fields: PARAGRAPH_STYLE_FIELDS,

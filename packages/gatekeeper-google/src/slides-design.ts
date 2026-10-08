@@ -22,8 +22,8 @@ import type { SlideBounds } from "./slides-read-types";
 import type { Deck } from "./slides-simulation";
 import { editSlide, locate, textSlot, type Located, type TextSlot } from "./slides-target";
 import {
-  ChangeConflict, changeRange, fixedRange, isGraphemeBoundary, projectedText, providerRange,
-  restTextOf, richTextOf, spliceText, styledText, type RichText,
+  ChangeConflict, changeRange, fixedRange, isGraphemeBoundary, paragraphAt, paragraphRange,
+  projectedText, providerRange, restTextOf, richTextOf, spliceText, styledText, type RichText,
 } from "./slides-text";
 import type { SlideChange, SlideTextTarget } from "./slides-types";
 
@@ -197,21 +197,13 @@ function formatText(
   };
 }
 
-// The paragraph holding a projected offset.
-function paragraphAt(text: string, offset: number): number {
-  return text.slice(0, offset).split("\n").length - 1;
-}
-
 function formatParagraphs(
   slide: RestSlide, change: Extract<DesignChange, { op: "formatParagraphs" }>,
 ): DesignStep {
   let { slot, rich, text, start, end } = addressed(slide, change);
   let first = paragraphAt(text, start);
   let last = end > start ? paragraphAt(text, end - 1) : first;
-  let lines = text.split("\n");
-  let from = lines.slice(0, first).reduce((sum, line) => sum + line.length + 1, 0);
-  let to = lines.slice(0, last).reduce((sum, line) => sum + line.length + 1, 0) + lines[last].length;
-  let range = providerRange(rich.segments, from, to);
+  let range = providerRange(rich.segments, paragraphRange(text, first)[0], paragraphRange(text, last)[1]);
   // Through the last paragraph's newline, so an empty paragraph has a range too.
   let textRange = fixedRange(range.startIndex, range.endIndex + 1);
   let touched = (i: number) => i >= first && i <= last;
@@ -262,11 +254,12 @@ function formatParagraphs(
  * nested by the tabs it starts with, which are removed.
  */
 function bulleted(rich: RichText, first: number, last: number, listId: string): RichText {
+  // Last to first, so removing a paragraph's tabs leaves the offsets of those before it in `text`.
+  let text = projectedText(rich.segments);
   let next = rich;
   for (let i = last; i >= first; i--) {
-    let lines = projectedText(next.segments).split("\n");
-    let from = lines.slice(0, i).reduce((sum, line) => sum + line.length + 1, 0);
-    let tabs = lines[i].match(/^\t*/)![0].length;
+    let [from, to] = paragraphRange(text, i);
+    let tabs = text.slice(from, to).match(/^\t*/)![0].length;
     if (tabs > MAX_NESTING_LEVEL) {
       throw new ChangeConflict(
         `a paragraph starts with ${tabs} tabs; lists nest at most ${MAX_NESTING_LEVEL + 1} deep`);
