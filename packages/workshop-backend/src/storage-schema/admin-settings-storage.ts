@@ -200,6 +200,10 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // The last check for a newer release, or null before the first. Only a deployment the
       // deploy flow installed makes one.
       updateCheck: <UpdateCheck | null>null,
+
+      // The version tag the router last reported (see ROUTER_VERSION_HEADER), "" for none, or null
+      // before any report. A label for admins only: any request could have carried it.
+      routerVersionTag: <string | null>null,
     },
   });
 }

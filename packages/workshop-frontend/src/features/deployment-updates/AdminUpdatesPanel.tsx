@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { Banner, Button, LinkButton, Switch, useKumoToastManager } from '@cloudflare/kumo'
-import { ArrowSquareOut, Warning } from '@phosphor-icons/react'
+import { ArrowSquareOut, ArrowsClockwise, Warning } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { AdminApi, DeploymentUpdateStatus } from '@gadgets/workshop-shared/api'
 import { rpcFailureDescription } from '../../rpcErrors'
@@ -30,6 +30,13 @@ const webUrl = (raw: string): string | null => {
     return null
   }
 }
+
+const WORKER_LIST = new Intl.ListFormat('en', { type: 'conjunction' })
+
+// The Workers the status names, in words: "backend", "router", or a gatekeeper's install slug.
+const workerList = (workers: string[]): string =>
+  WORKER_LIST.format(workers.map((worker) =>
+    worker === 'backend' || worker === 'router' ? `the ${worker}` : `the “${worker}” gatekeeper`))
 
 const updateAvailability = (status: DeploymentUpdateStatus): string => {
   if (status.updateAvailable) return 'Yes'
@@ -118,7 +125,10 @@ export const AdminUpdatesPanel = ({ admin, status, onChanged }: AdminUpdatesPane
           variant="error"
           icon={<Warning />}
           title="This deployment was changed outside the deploy flow"
-          description="Its running code is not what the deploy flow installed, so the deploy flow will refuse to upgrade it until that change is undone."
+          description={
+            `Not running what the deploy flow installed: ${workerList(status.modifiedWorkers)}. The ` +
+            'deploy flow will refuse to upgrade this deployment until that change is undone.'
+          }
         />
       )}
 
@@ -143,6 +153,21 @@ export const AdminUpdatesPanel = ({ admin, status, onChanged }: AdminUpdatesPane
           <dt className="text-kumo-subtle">Update available</dt>
           <dd className="text-kumo-default">{updateAvailability(status)}</dd>
         </dl>
+
+        {status.unfinishedWorkers.length > 0 && (
+          <Banner
+            variant="alert"
+            icon={<ArrowsClockwise />}
+            className="mt-4"
+            title="An update did not finish"
+            description={
+              `Still running another release of this deployment: ${workerList(status.unfinishedWorkers)}. ` +
+              (status.modifiedWorkers.length > 0
+                ? 'The deploy flow can finish the update once the Workers changed outside it are restored.'
+                : 'The deploy flow can finish the update.')
+            }
+          />
+        )}
 
         <div className="flex flex-wrap items-center justify-end gap-2 mt-4">
           <Button variant="secondary" size="sm" loading={checking} disabled={checking} onClick={checkNow}>

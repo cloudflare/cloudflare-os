@@ -102,6 +102,11 @@ describe('AdminUpdatesPanel', () => {
   const updateLink = () =>
     [...container.querySelectorAll('a')].find(link => link.textContent?.trim() === 'Update')
 
+  // The outermost element whose text begins with the notice's title: the notice itself.
+  const unfinishedNotice = () =>
+    [...container.querySelectorAll('div')]
+      .find(element => element.textContent?.startsWith('An update did not finish'))
+
   const button = (name: string) => {
     const element = [...container.querySelectorAll('button')]
       .find((b) => (b.getAttribute('aria-label') ?? b.textContent?.trim()) === name)
@@ -221,20 +226,57 @@ describe('AdminUpdatesPanel', () => {
       expect(container.querySelector('a')).toBeNull()
     })
 
-    it('warns, as an alert, that a modified deployment cannot be upgraded', async () => {
-      await render(testUpdateStatus({ modified: true, notify: false }))
+    it('warns, as an alert, that a modified deployment cannot be upgraded, naming its modified Workers', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend', 'google2', 'router'],
+        notify: false,
+      }))
 
       const alert = container.querySelector('[role="alert"]')
       expect(alert?.textContent).toContain('This deployment was changed outside the deploy flow')
+      expect(alert?.textContent)
+        .toContain('Not running what the deploy flow installed: the backend, the “google2” gatekeeper, and the router.')
       expect(alert?.textContent).toContain('refuse to upgrade')
       // Still offered: the deploy flow explains the refusal itself.
       expect(updateLink()).toBeDefined()
     })
 
-    it('shows no warning for an unmodified deployment', async () => {
-      await render(testUpdateStatus({ modified: false }))
+    it('says, apart from any warning, that an update did not finish, naming the Workers behind', async () => {
+      await render(testUpdateStatus({ unfinishedWorkers: ['github', 'router'] }))
+
+      const notice = unfinishedNotice()
+      expect(notice?.textContent)
+        .toContain('Still running another release of this deployment: the “github” gatekeeper and the router.')
+      expect(notice?.textContent).toContain('The deploy flow can finish the update.')
+      expect(notice?.getAttribute('role')).not.toBe('alert')
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(updateLink()).toBeDefined()
+    })
+
+    it('shows both the warning and the unfinished update when both apply, without contradicting the refusal', async () => {
+      await render(testUpdateStatus({
+        modified: true,
+        modifiedWorkers: ['backend'],
+        unfinishedWorkers: ['router'],
+        notify: false,
+      }))
+
+      expect(container.querySelector('[role="alert"]')?.textContent)
+        .toContain('Not running what the deploy flow installed: the backend.')
+      const notice = unfinishedNotice()?.textContent
+      expect(notice).toContain('Still running another release of this deployment: the router.')
+      expect(notice)
+        .toContain('The deploy flow can finish the update once the Workers changed outside it are restored.')
+      expect(notice).not.toContain('The deploy flow can finish the update.')
+    })
+
+    it('shows neither a warning nor an unfinished update for a deployment that runs what was installed', async () => {
+      await render(testUpdateStatus({ modified: false, modifiedWorkers: [], unfinishedWorkers: [] }))
 
       expect(container.querySelector('[role="alert"]')).toBeNull()
+      expect(unfinishedNotice()).toBeUndefined()
+      expect(container.textContent).not.toContain('Still running another release')
     })
   })
 

@@ -1,18 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { AdminSettings } from "../src/admin-settings.js";
+import worker from "../src/server.js";
 import { MAX_UPDATE_HOURS } from "@gadgets/workshop-shared/api";
+import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, type DeployServiceInstall,
-  type UpdateSettings,
+  NO_ANSWER, ROUTER_VERSION_HEADER, deployServiceInstall, deploymentUpdateStatus,
+  fetchLatestRelease, routerVersionTag, workerVersionState, type DeployServiceInstall,
+  type UpdateSettings, type VersionAnswer,
 } from "../src/deployment-updates.js";
-import type { UpdateCheck } from "../src/storage-schema/admin-settings-storage.js";
+import {
+  makeAdminSettingsStorage, type UpdateCheck,
+} from "../src/storage-schema/admin-settings-storage.js";
 import type { UserDirectoryDurableObject } from "../src/user-directory.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER_DIRECTORY: DurableObjectNamespace<UserDirectoryDurableObject>;
+    TEST_ADMIN_SETTINGS: DurableObjectNamespace<AdminSettings>;
   }
 }
 
@@ -20,17 +26,22 @@ const HOUR = 60 * 60 * 1000;
 const CHECK_URL = "https://deploy.example/api/releases/latest";
 const INSTALL: DeployServiceInstall = {
   releaseId: "r10-aaaaaaa",
-  versionTag: "tag-r10",
+  versionTag: "tag-r10:0123abcd",
+  versionTagSuffix: ":0123abcd",
   updateUrl: "https://deploy.example/#flow=upgrade&account=acct&installation=0123abcd&name=os",
   updateCheckUrl: CHECK_URL,
 };
-const VERSION = { id: "version-id", tag: "tag-r10", timestamp: "2026-10-01T00:00:00.000Z" };
+const VERSION = { id: "version-id", tag: "tag-r10:0123abcd", timestamp: "2026-10-01T00:00:00.000Z" };
 const DEPLOYED = { CLOUDFLARE_OS_DEPLOYMENT: INSTALL, CF_VERSION_METADATA: VERSION };
 const T0 = Date.UTC(2026, 9, 5, 12);
 const SETTINGS: UpdateSettings =
     { updateChecksEnabled: true, updateMinimumAgeHours: 24, updateNoticeSnoozeHours: 24 };
 // How a status reports SETTINGS.
 const REPORTED = { checksEnabled: true, minimumAgeHours: 24, noticeSnoozeHours: 24 };
+// How a status reports a deployment whose every Worker that answered runs the recorded version.
+const UNMODIFIED = { modified: false, modifiedWorkers: [], unfinishedWorkers: [] };
+// The backend, running the recorded version, as the only Worker that answered.
+const CURRENT = new Map<string, VersionAnswer>([["backend", INSTALL.versionTag]]);
 
 function envWith(value: unknown): Cloudflare.Env {
   return { CLOUDFLARE_OS_DEPLOYMENT: value } as unknown as Cloudflare.Env;
@@ -61,6 +72,7 @@ function stubClock() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -73,6 +85,11 @@ describe("deployServiceInstall", () => {
   it("accepts an empty version tag", () => {
     expect(deployServiceInstall(envWith({ ...INSTALL, versionTag: "" })))
         .toStrictEqual({ ...INSTALL, versionTag: "" });
+  });
+
+  it("reads a variable without versionTagSuffix", () => {
+    const { versionTagSuffix: _, ...withoutSuffix } = INSTALL;
+    expect(deployServiceInstall(envWith(withoutSuffix))).toStrictEqual(withoutSuffix);
   });
 
   it("accepts http URLs", () => {
@@ -90,6 +107,9 @@ describe("deployServiceInstall", () => {
     ["a numeric releaseId", { ...INSTALL, releaseId: 10 }],
     ["no versionTag", { ...INSTALL, versionTag: undefined }],
     ["a null versionTag", { ...INSTALL, versionTag: null }],
+    ["an empty versionTagSuffix", { ...INSTALL, versionTagSuffix: "" }],
+    ["a null versionTagSuffix", { ...INSTALL, versionTagSuffix: null }],
+    ["a numeric versionTagSuffix", { ...INSTALL, versionTagSuffix: 123 }],
     ["no updateUrl", { ...INSTALL, updateUrl: undefined }],
     ["no updateCheckUrl", { ...INSTALL, updateCheckUrl: undefined }],
     ["a non-string updateUrl", { ...INSTALL, updateUrl: { href: INSTALL.updateUrl } }],
@@ -100,6 +120,61 @@ describe("deployServiceInstall", () => {
     ["an unparseable updateCheckUrl", { ...INSTALL, updateCheckUrl: "not a url" }],
   ])("is null for %s", (_label, value) => {
     expect(deployServiceInstall(envWith(value))).toBeNull();
+  });
+});
+
+describe("workerVersionTag", () => {
+  it.each([
+    ["a tag", { CF_VERSION_METADATA: VERSION }, VERSION.tag],
+    ["an empty tag", { CF_VERSION_METADATA: { ...VERSION, tag: "" } }, undefined],
+    ["a non-string tag", { CF_VERSION_METADATA: { ...VERSION, tag: 10 } }, undefined],
+    ["no tag", { CF_VERSION_METADATA: { id: "version-id" } }, undefined],
+    ["a null binding", { CF_VERSION_METADATA: null }, undefined],
+    ["no binding", {}, undefined],
+    ["a binding that throws", {
+      get CF_VERSION_METADATA(): unknown { throw new Error("unavailable"); },
+    }, undefined],
+    ["a tag that throws", {
+      CF_VERSION_METADATA: { get tag(): unknown { throw new Error("unavailable"); } },
+    }, undefined],
+  ])("reads %s", (_label, workerEnv, tag) => {
+    expect(workerVersionTag(workerEnv)).toBe(tag);
+  });
+});
+
+describe("workerVersionState", () => {
+  const { versionTagSuffix: _, ...withoutSuffix } = INSTALL;
+
+  it.each([
+    ["the recorded tag", INSTALL.versionTag, INSTALL, "current"],
+    ["another release of this installation", "tag-r09:0123abcd", INSTALL, "unfinished"],
+    ["a later release of this installation", "tag-r12:0123abcd", INSTALL, "unfinished"],
+    ["another installation's tag", "tag-r10:ffffffff", INSTALL, "modified"],
+    ["a tag the deploy flow did not write", "edited", INSTALL, "modified"],
+    ["an empty tag", "", INSTALL, "modified"],
+    ["no tag", undefined, INSTALL, "modified"],
+    ["no answer", NO_ANSWER, INSTALL, "unknown"],
+    ["no tag, where an empty one is recorded", "", { ...INSTALL, versionTag: "" }, "modified"],
+    ["the recorded tag, with no suffix recorded", INSTALL.versionTag, withoutSuffix, "current"],
+    ["another release, with no suffix recorded", "tag-r09:0123abcd", withoutSuffix, "modified"],
+    ["no answer, with no suffix recorded", NO_ANSWER, withoutSuffix, "unknown"],
+  ] as const)("is %s for %s", (_label, answer, install, state) => {
+    expect(workerVersionState(answer, install)).toBe(state);
+  });
+});
+
+describe("routerVersionTag", () => {
+  it("is undefined when the request did not come through the router", () => {
+    expect(routerVersionTag(new Request("https://workshop.example/api").headers)).toBeUndefined();
+  });
+
+  it.each([
+    ["a tag", "tag-r10:0123abcd"],
+    ["an empty tag", ""],
+  ])("reads %s", (_label, tag) => {
+    const req = new Request("https://workshop.example/api",
+        { headers: { [ROUTER_VERSION_HEADER.toLowerCase()]: tag } });
+    expect(routerVersionTag(req.headers)).toBe(tag);
   });
 });
 
@@ -215,54 +290,59 @@ describe("deploymentUpdateStatus", () => {
   const available = (sinceMs: number) => checked(
       { latestReleaseId: "r12", upgradeAvailable: true, availableSince: T0 - sinceMs });
 
-  it.each([
-    ["the recorded tag", "tag-r10", "tag-r10", false],
-    ["another tag", "tag-r09", "tag-r10", true],
-    ["an empty tag, where an empty one is recorded", "", "", false],
-    ["no binding, where an empty tag is recorded", undefined, "", false],
-    ["an empty tag, where one is recorded", "", "tag-r10", true],
-    ["no binding, where a tag is recorded", undefined, "tag-r10", true],
-  ])("with %s, modified is %s", (_label, runningTag, versionTag, modified) => {
-    const status = deploymentUpdateStatus(
-        { ...INSTALL, versionTag }, SETTINGS, available(48 * HOUR), runningTag, T0);
-    expect(status.modified).toBe(modified);
-    expect(status.notify).toBe(!modified);
+  it("lists the modified and unfinished Workers, sorted, and only modified ones stop the notice",
+      () => {
+    const status = (versions: [string, VersionAnswer][]) => deploymentUpdateStatus(
+        INSTALL, SETTINGS, available(48 * HOUR), new Map(versions), T0);
+    const current = INSTALL.versionTag;
+    expect(status([["backend", current], ["router", NO_ANSWER], ["slack", NO_ANSWER]]))
+        .toMatchObject({ ...UNMODIFIED, notify: true });
+    expect(status([["router", current], ["github", "tag-r09:0123abcd"], ["backend", current],
+        ["google2", "tag-r09:0123abcd"]])).toMatchObject({
+      ...UNMODIFIED, unfinishedWorkers: ["github", "google2"], notify: true,
+    });
+    expect(status([["slack", undefined], ["router", "other"], ["backend", ""],
+        ["github", "tag-r09:0123abcd"], ["google", current]])).toMatchObject({
+      modified: true, modifiedWorkers: ["backend", "router", "slack"],
+      unfinishedWorkers: ["github"], notify: false,
+    });
   });
 
   it("reports no update before any check", () => {
-    expect(deploymentUpdateStatus(INSTALL, SETTINGS, null, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, null, CURRENT, T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("ignores a check made for another release", () => {
     const stale = { ...available(48 * HOUR), from: "r09-0000000" };
-    expect(deploymentUpdateStatus(INSTALL, SETTINGS, stale, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, stale, CURRENT, T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("ignores a failed attempt with no success for this release", () => {
     expect(deploymentUpdateStatus(INSTALL, SETTINGS, { from: INSTALL.releaseId, attemptedAt: T0 },
-        "tag-r10", T0)).toStrictEqual({
+        CURRENT, T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
   });
 
   it("reports an up-to-date check without notifying", () => {
     const check = checked({ latestReleaseId: INSTALL.releaseId, upgradeAvailable: false });
-    expect(deploymentUpdateStatus(INSTALL, SETTINGS, check, "tag-r10", T0)).toStrictEqual({
+    expect(deploymentUpdateStatus(INSTALL, SETTINGS, check, CURRENT, T0)).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: INSTALL.releaseId,
-      updateAvailable: false, notify: false, ...REPORTED, modified: false,
+      updateAvailable: false, notify: false, ...REPORTED, ...UNMODIFIED,
       updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0 - HOUR),
     });
   });
 
   it("reports an update but does not notify while modified", () => {
-    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(48 * HOUR), "edited", T0);
+    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(48 * HOUR),
+        new Map([["backend", "edited"]]), T0);
     expect(status).toMatchObject({ updateAvailable: true, modified: true, notify: false });
   });
 
@@ -272,10 +352,10 @@ describe("deploymentUpdateStatus", () => {
     ["exactly 24h", 24 * HOUR, true],
     ["25h", 25 * HOUR, true],
   ])("notifies of an update available for %s: %s", (_label, sinceMs, notify) => {
-    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(sinceMs), "tag-r10", T0);
+    const status = deploymentUpdateStatus(INSTALL, SETTINGS, available(sinceMs), CURRENT, T0);
     expect(status).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12", updateAvailable: true,
-      availableSince: new Date(T0 - sinceMs), notify, ...REPORTED, modified: false,
+      availableSince: new Date(T0 - sinceMs), notify, ...REPORTED, ...UNMODIFIED,
       updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0 - HOUR),
     });
   });
@@ -283,20 +363,20 @@ describe("deploymentUpdateStatus", () => {
   it("reports the settings it is given", () => {
     const settings =
         { updateChecksEnabled: false, updateMinimumAgeHours: 0, updateNoticeSnoozeHours: 720 };
-    expect(deploymentUpdateStatus(INSTALL, settings, null, "tag-r10", T0)).toMatchObject({
+    expect(deploymentUpdateStatus(INSTALL, settings, null, CURRENT, T0)).toMatchObject({
       checksEnabled: false, minimumAgeHours: 0, noticeSnoozeHours: 720,
     });
   });
 
   it("does not notify while automatic checks are off", () => {
     const off = { ...SETTINGS, updateChecksEnabled: false };
-    expect(deploymentUpdateStatus(INSTALL, off, available(48 * HOUR), "tag-r10", T0))
+    expect(deploymentUpdateStatus(INSTALL, off, available(48 * HOUR), CURRENT, T0))
         .toMatchObject({ updateAvailable: true, notify: false, checksEnabled: false });
   });
 
   it("notifies at once with a minimum age of 0", () => {
     const atOnce = { ...SETTINGS, updateMinimumAgeHours: 0 };
-    expect(deploymentUpdateStatus(INSTALL, atOnce, available(0), "tag-r10", T0).notify).toBe(true);
+    expect(deploymentUpdateStatus(INSTALL, atOnce, available(0), CURRENT, T0).notify).toBe(true);
   });
 
   it.each([
@@ -305,7 +385,7 @@ describe("deploymentUpdateStatus", () => {
   ])("with a minimum age of 3 hours, notifies of an update available for %s: %s",
       (_label, sinceMs, notify) => {
     const threeHours = { ...SETTINGS, updateMinimumAgeHours: 3 };
-    expect(deploymentUpdateStatus(INSTALL, threeHours, available(sinceMs), "tag-r10", T0).notify)
+    expect(deploymentUpdateStatus(INSTALL, threeHours, available(sinceMs), CURRENT, T0).notify)
         .toBe(notify);
   });
 });
@@ -352,7 +432,7 @@ describe("AdminSettings.getUpdateStatus", () => {
     expect(first).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12-ccccccc", updateAvailable: true,
       availableSince: new Date(NEWER.availableSince), notify: true, ...REPORTED,
-      modified: false, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
+      ...UNMODIFIED, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
     });
 
     now = T0 + 6 * HOUR - 1;
@@ -371,7 +451,9 @@ describe("AdminSettings.getUpdateStatus", () => {
     const inDo = adminSettingsStorage();
     const status = await inDo({ CLOUDFLARE_OS_DEPLOYMENT: INSTALL },
         admin => admin.getUpdateStatus());
-    expect(status).toMatchObject({ updateAvailable: true, modified: true, notify: false });
+    expect(status).toMatchObject({
+      updateAvailable: true, modified: true, modifiedWorkers: ["backend"], notify: false,
+    });
   });
 
   it("checks again for a new release, and never serves the old release's check", async () => {
@@ -388,15 +470,15 @@ describe("AdminSettings.getUpdateStatus", () => {
     failing = true;
     now = T0 + HOUR;
     const upgraded = {
-      CLOUDFLARE_OS_DEPLOYMENT: { ...INSTALL, releaseId: "r11-bbbbbbb", versionTag: "tag-r11" },
-      CF_VERSION_METADATA: { ...VERSION, tag: "tag-r11" },
+      CLOUDFLARE_OS_DEPLOYMENT: { ...INSTALL, releaseId: "r11-bbbbbbb", versionTag: "tag-r11:0123abcd" },
+      CF_VERSION_METADATA: { ...VERSION, tag: "tag-r11:0123abcd" },
     };
     const status = await inDo(upgraded, admin => admin.getUpdateStatus());
     expect(requests).toHaveLength(2);
     expect(new URL(requests[1]!.url).searchParams.get("from")).toBe("r11-bbbbbbb");
     expect(status).toStrictEqual({
       currentReleaseId: "r11-bbbbbbb", updateAvailable: false, notify: false,
-      ...REPORTED, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
 
     // The failed attempt is recorded for r11, so it waits to retry like any other.
@@ -547,7 +629,7 @@ describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
     await inDo({}, admin => admin.setUpdateChecksEnabled(false));
     expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, updateAvailable: false, notify: false,
-      ...REPORTED, checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, checksEnabled: false, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
     expect(spy).not.toHaveBeenCalled();
   });
@@ -576,12 +658,12 @@ describe("AdminSettings.getUpdateStatus with automatic checks off", () => {
 
     now = T0 + HOUR;
     const upgraded = {
-      CLOUDFLARE_OS_DEPLOYMENT: { ...INSTALL, releaseId: "r11-bbbbbbb", versionTag: "tag-r11" },
-      CF_VERSION_METADATA: { ...VERSION, tag: "tag-r11" },
+      CLOUDFLARE_OS_DEPLOYMENT: { ...INSTALL, releaseId: "r11-bbbbbbb", versionTag: "tag-r11:0123abcd" },
+      CF_VERSION_METADATA: { ...VERSION, tag: "tag-r11:0123abcd" },
     };
     expect(await inDo(upgraded, admin => admin.getUpdateStatus())).toStrictEqual({
       currentReleaseId: "r11-bbbbbbb", updateAvailable: false, notify: false,
-      ...REPORTED, checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl,
+      ...REPORTED, checksEnabled: false, ...UNMODIFIED, updateUrl: INSTALL.updateUrl,
     });
     expect(requests).toHaveLength(1);
   });
@@ -603,7 +685,7 @@ describe("AdminSettings.checkForUpdates", () => {
     expect(await inDo(DEPLOYED, admin => admin.checkForUpdates())).toStrictEqual({
       currentReleaseId: INSTALL.releaseId, latestReleaseId: "r12-ccccccc", updateAvailable: true,
       availableSince: new Date(NEWER.availableSince), notify: false, ...REPORTED,
-      checksEnabled: false, modified: false, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
+      checksEnabled: false, ...UNMODIFIED, updateUrl: INSTALL.updateUrl, checkedAt: new Date(T0),
     });
     expect(requests).toHaveLength(1);
     // What it stored is what getUpdateStatus serves.
@@ -703,5 +785,215 @@ describe("AdminSettings.checkForUpdates", () => {
       expect(requests).toHaveLength(2);
       expect(failures(warned)).toHaveLength(1);
     });
+  });
+});
+
+describe("AdminSettings router version", () => {
+  it("does not count a router that never reported", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus()))
+        .toMatchObject({ ...UNMODIFIED, notify: true });
+  });
+
+  it.each([
+    ["the recorded tag", INSTALL.versionTag, UNMODIFIED, true],
+    ["another release's tag", "tag-r09:0123abcd",
+      { ...UNMODIFIED, unfinishedWorkers: ["router"] }, true],
+    ["another tag", "edited",
+      { modified: true, modifiedWorkers: ["router"], unfinishedWorkers: [] }, false],
+    ["no tag", "", { modified: true, modifiedWorkers: ["router"], unfinishedWorkers: [] }, false],
+  ])("reports a router that reported %s", async (_label, tag, workers, notify) => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.recordRouterTag(tag));
+    const status = await inDo(DEPLOYED, admin => admin.getUpdateStatus());
+    expect(status).toMatchObject({ ...workers, notify });
+    expect(await inDo(DEPLOYED, admin => admin.checkForUpdates())).toMatchObject(workers);
+  });
+
+  it("reports the latest tag the router reported", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const inDo = adminSettingsStorage();
+    await inDo({}, admin => admin.recordRouterTag("tag-r09:0123abcd"));
+    await inDo({}, admin => admin.recordRouterTag(INSTALL.versionTag));
+    expect(await inDo(DEPLOYED, admin => admin.getUpdateStatus())).toMatchObject(UNMODIFIED);
+  });
+});
+
+// A gatekeeper vendor binding whose versionTag() records each call and answers with `answer`.
+function vendor(answer: () => Promise<string | undefined>) {
+  return { versionTag: vi.fn(answer) };
+}
+
+// The entries the logger wrote for gatekeepers that did not report their version tags.
+function versionTagFailures(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown>[] {
+  return spy.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+      .filter(entry => entry.event === "gatekeeper.version-tag.read.failed");
+}
+
+describe("AdminSettings gatekeeper versions", () => {
+  it("asks every gatekeeper, giving up on one after 2 seconds", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // Not vi.waitFor(), which advances fake timers while it waits.
+    const asked = Promise.withResolvers<void>();
+    const gatekeepers = {
+      GATEKEEPER_CURRENT: vendor(async () => INSTALL.versionTag),
+      GATEKEEPER_GOOGLE2: vendor(async () => "tag-r09:0123abcd"),
+      GATEKEEPER_EDITED: vendor(async () => "edited"),
+      GATEKEEPER_UNTAGGED: vendor(async () => undefined),
+      GATEKEEPER_THROWING: vendor(async () => { throw new Error("unavailable"); }),
+      GATEKEEPER_HANGING: vendor(() => {
+        asked.resolve();
+        return new Promise(() => {});
+      }),
+      GATEKEEPER_OLD: {},
+    };
+    const inDo = adminSettingsStorage();
+    await inDo({ ...DEPLOYED, ...gatekeepers }, async admin => {
+      let settled = false;
+      const pending = admin.getUpdateStatus().finally(() => { settled = true; });
+      await asked.promise;
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({
+        modified: true, modifiedWorkers: ["edited", "untagged"], unfinishedWorkers: ["google2"],
+        notify: false,
+      });
+    });
+    expect(versionTagFailures(warned).map(entry => entry.gatekeeperId).toSorted())
+        .toEqual(["hanging", "old", "throwing"]);
+  });
+
+  it("serves a round in which every gatekeeper answered for 60 seconds", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    const current = vendor(async () => INSTALL.versionTag);
+    const untagged = vendor(async () => undefined);
+    const inDo = adminSettingsStorage();
+    await inDo({ ...DEPLOYED, GATEKEEPER_CURRENT: current, GATEKEEPER_UNTAGGED: untagged },
+        async admin => {
+      expect(await admin.getUpdateStatus()).toMatchObject({ modifiedWorkers: ["untagged"] });
+      now = T0 + 60_000 - 1;
+      await admin.getUpdateStatus();
+      await admin.checkForUpdates();
+      expect(current.versionTag).toHaveBeenCalledOnce();
+      expect(untagged.versionTag).toHaveBeenCalledOnce();
+      now = T0 + 60_000;
+      await admin.getUpdateStatus();
+      expect(current.versionTag).toHaveBeenCalledTimes(2);
+      expect(untagged.versionTag).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("asks again only the gatekeepers that did not answer", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let failing = true;
+    const current = vendor(async () => INSTALL.versionTag);
+    const flaky = vendor(async () => {
+      if (failing) throw new Error("unavailable");
+      return "tag-r09:0123abcd";
+    });
+    const old = { versionTag: vi.fn(() => { throw new Error("No such method."); }) };
+    const inDo = adminSettingsStorage();
+    await inDo({ ...DEPLOYED, GATEKEEPER_CURRENT: current, GATEKEEPER_FLAKY: flaky,
+      GATEKEEPER_OLD: old }, async admin => {
+      expect(await admin.getUpdateStatus()).toMatchObject(UNMODIFIED);
+      failing = false;
+      expect(await admin.getUpdateStatus())
+          .toMatchObject({ ...UNMODIFIED, unfinishedWorkers: ["flaky"] });
+      await admin.checkForUpdates();
+      expect(current.versionTag).toHaveBeenCalledOnce();
+      expect(flaky.versionTag).toHaveBeenCalledTimes(2);
+      expect(old.versionTag).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it("shares one round between concurrent callers", async () => {
+    stubClock();
+    stubFetch(() => release(NEWER));
+    let answer!: (tag: string) => void;
+    const slow = vendor(() => new Promise<string>(resolve => { answer = resolve; }));
+    const inDo = adminSettingsStorage();
+    await inDo({ ...DEPLOYED, GATEKEEPER_SLOW: slow }, async admin => {
+      const calls = [admin.getUpdateStatus(), admin.getUpdateStatus(), admin.checkForUpdates()];
+      await vi.waitFor(() => expect(slow.versionTag).toHaveBeenCalled());
+      answer("tag-r09:0123abcd");
+      for (const status of await Promise.all(calls)) {
+        expect(status).toMatchObject({ unfinishedWorkers: ["slow"] });
+      }
+      expect(slow.versionTag).toHaveBeenCalledOnce();
+    });
+  });
+});
+
+describe("the backend's fetch handler", () => {
+  // The deployment's AdminSettings, which the handler reaches through ctx.exports.
+  const storedRouterTag = () => runInDurableObject(env.TEST_ADMIN_SETTINGS.getByName(""),
+      (_admin, state) => makeAdminSettingsStorage(state.storage).routerVersionTag.get());
+  // Runs the handler for a deployment the deploy flow installed, or one with `vars` instead, and
+  // waits for the work it left running.
+  const request = async (headers: Record<string, string>,
+      vars: Partial<Cloudflare.Env> = { CLOUDFLARE_OS_DEPLOYMENT: INSTALL }) => {
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(
+        new Request("https://workshop.example/not-a-route", { headers }), { ...env, ...vars }, ctx);
+    await waitOnExecutionContext(ctx);
+    return response;
+  };
+
+  it("reports the router's version tag only for a deployment the deploy flow installed",
+      async () => {
+    await runInDurableObject(env.TEST_ADMIN_SETTINGS.getByName(""),
+        admin => admin.recordRouterTag("stored before"));
+    const tag = `tag-${crypto.randomUUID()}:0123abcd`;
+    expect((await request({ [ROUTER_VERSION_HEADER]: tag }, {})).status).toBe(404);
+    expect((await request({ [ROUTER_VERSION_HEADER]: tag },
+        { CLOUDFLARE_OS_DEPLOYMENT: JSON.stringify(INSTALL) })).status).toBe(404);
+    expect(await storedRouterTag()).toBe("stored before");
+
+    await request({ [ROUTER_VERSION_HEADER]: tag });
+    expect(await storedRouterTag()).toBe(tag);
+  });
+
+  it("records each router version tag it is sent, and nothing for a request without one",
+      async () => {
+    // Unique to this run: the isolate remembers the last tag it reported.
+    const tag = `tag-${crypto.randomUUID()}:0123abcd`;
+    expect((await request({ [ROUTER_VERSION_HEADER]: tag })).status).toBe(404);
+    await vi.waitFor(async () => expect(await storedRouterTag()).toBe(tag));
+
+    expect((await request({})).status).toBe(404);
+    expect((await request({ [ROUTER_VERSION_HEADER]: "" })).status).toBe(404);
+    await vi.waitFor(async () => expect(await storedRouterTag()).toBe(""));
+    await request({});
+    expect(await storedRouterTag()).toBe("");
+  });
+
+  it("reports a tag again after a minute, replacing an older one another isolate stored later",
+      async () => {
+    stubClock();
+    const tag = `tag-${crypto.randomUUID()}:0123abcd`;
+    await request({ [ROUTER_VERSION_HEADER]: tag });
+    await vi.waitFor(async () => expect(await storedRouterTag()).toBe(tag));
+    // The late report of another isolate, which a request through the old router reached.
+    await runInDurableObject(env.TEST_ADMIN_SETTINGS.getByName(""),
+        admin => admin.recordRouterTag("tag-r09:0123abcd"));
+
+    now = T0 + 60_000 - 1;
+    await request({ [ROUTER_VERSION_HEADER]: tag });
+    expect(await storedRouterTag()).toBe("tag-r09:0123abcd");
+    now = T0 + 60_000;
+    await request({ [ROUTER_VERSION_HEADER]: tag });
+    await vi.waitFor(async () => expect(await storedRouterTag()).toBe(tag));
   });
 });

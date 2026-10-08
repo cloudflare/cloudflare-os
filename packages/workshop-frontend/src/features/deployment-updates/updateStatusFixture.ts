@@ -16,6 +16,8 @@ export const testUpdateStatus = (
   minimumAgeHours: 24,
   noticeSnoozeHours: 24,
   modified: false,
+  modifiedWorkers: [],
+  unfinishedWorkers: [],
   updateUrl: 'https://deploy.example.com/#flow=upgrade&account=acct&installation=0123abcd&name=os',
   checkedAt: new Date('2026-10-03T12:30:00Z'),
   ...overrides,

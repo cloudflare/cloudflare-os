@@ -18,9 +18,14 @@ import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
-import { type DeployServiceInstall, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
+import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
 
 const logger = createWorkshopLogger("workshop.admin.settings");
+
+// How long a gatekeeper has to report its version tag (Workers RPC has no timeout of its own), and
+// how long a gatekeeper's answer is served before it is asked again.
+const VERSION_TAG_TIMEOUT_MS = 2_000;
+const VERSION_TAGS_TTL_MS = 60_000;
 
 // The entries of a record keyed by model ID (a model's mode, or its settings) other than
 // `modelId`'s. Callers rebuild the record with Object.fromEntries, which defines own properties:
@@ -331,9 +336,67 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     await this.updateAdminConfig({ updateNoticeSnoozeHours: updateHours("notice snooze", hours) });
   }
 
-  #updateStatus(install: DeployServiceInstall): DeploymentUpdateStatus {
+  /** Record the version tag the router reported ("" for none); see ROUTER_VERSION_HEADER. */
+  async recordRouterTag(tag: string): Promise<void> {
+    if (this.storage.routerVersionTag.get() !== tag) this.storage.routerVersionTag.put(tag);
+  }
+
+  async #updateStatus(install: DeployServiceInstall): Promise<DeploymentUpdateStatus> {
+    let gatekeepers = await this.#gatekeeperVersionTags();
+    let versions = new Map<string, VersionAnswer>([
+      ["backend", this.env.CF_VERSION_METADATA?.tag],
+      ["router", this.storage.routerVersionTag.get() ?? NO_ANSWER],
+      ...gatekeepers,
+    ]);
     return deploymentUpdateStatus(install, this.#config(), this.storage.updateCheck.get(),
-        this.env.CF_VERSION_METADATA?.tag, Date.now());
+        versions, Date.now());
+  }
+
+  // What each bound gatekeeper answered when asked for its version tag, by install slug.
+  // Concurrent callers share each question. An answer is served for VERSION_TAGS_TTL_MS; a
+  // gatekeeper that did not answer is asked again by the next call, and only it.
+  #gatekeeperVersionTags(): Promise<[string, VersionAnswer][]> {
+    let now = Date.now();
+    return Promise.all([...this.vendors].map(
+        async ([id, vendor]): Promise<[string, VersionAnswer]> => {
+      let cached = this.#versionTags.get(id);
+      if (!cached || cached.expires <= now) {
+        let entry = { expires: now + VERSION_TAGS_TTL_MS, answer: this.#askVersionTag(id, vendor) };
+        this.#versionTags.set(id, entry);
+        void entry.answer.then(answer => {
+          if (answer === NO_ANSWER && this.#versionTags.get(id) === entry) {
+            this.#versionTags.delete(id);
+          }
+        });
+        cached = entry;
+      }
+      return [id, await cached.answer];
+    }));
+  }
+
+  #versionTags = new Map<string, { expires: number, answer: Promise<VersionAnswer> }>();
+
+  // Never throws. A gatekeeper that throws, takes too long, or has no versionTag() (which an RPC
+  // stub cannot tell from one that throws) did not answer.
+  async #askVersionTag(id: string, vendor: Service<GatekeeperVendor>): Promise<VersionAnswer> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("No version tag in time.")),
+          VERSION_TAG_TIMEOUT_MS);
+    });
+    try {
+      // Always true of an RPC stub, whose every property is callable: this only narrows the
+      // type, which also allows for the method's absence.
+      if (typeof vendor.versionTag !== "function") throw new Error("No versionTag().");
+      return await Promise.race([vendor.versionTag(), timeout]);
+    } catch (err) {
+      logger.warn("failed to read a gatekeeper's version tag", {
+        event: "gatekeeper.version-tag.read.failed", gatekeeperId: id, error: err,
+      });
+      return NO_ANSWER;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // Concurrent callers share one check. Resolves whether it succeeded.

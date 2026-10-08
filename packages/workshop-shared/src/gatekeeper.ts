@@ -554,6 +554,36 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * RPC stubs cannot report optional-method presence.
    */
   createAccount?(): Promise<Fetcher<GatekeeperUser>>;
+
+  /**
+   * The version tag of the running version of this gatekeeper's Worker, from its
+   * `CF_VERSION_METADATA` binding, or undefined when it has none. Implement it as
+   * `workerVersionTag(this.env)`. The Workshop compares it with the tag the service that installed
+   * the deployment recorded, to tell its admins whether the deployment was modified. It is
+   * deliberately not part of VendorDescription, which every signed-in user receives: the tag
+   * names the release and the installation, so it is for the deployment's admins only. Since RPC
+   * stubs cannot report optional-method presence, the Workshop calls it on every vendor and reads
+   * a vendor without it (a call that throws) as one whose version is unknown.
+   */
+  versionTag?(): Promise<string | undefined>;
+}
+
+/**
+ * The version tag of the running version of a Worker, read from the `CF_VERSION_METADATA`
+ * version-metadata binding in its `env`, or undefined when it has no such binding or the tag is
+ * empty. Never throws. Takes `env` as a plain object because no public Worker config declares the
+ * binding: the service that installs a deployment adds it.
+ */
+export function workerVersionTag(env: object): string | undefined {
+  try {
+    if (!("CF_VERSION_METADATA" in env)) return undefined;
+    const metadata = env.CF_VERSION_METADATA;
+    if (typeof metadata !== "object" || metadata === null || !("tag" in metadata)) return undefined;
+    const tag = metadata.tag;
+    return typeof tag === "string" && tag !== "" ? tag : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface GatekeeperConnectCallback extends WorkerEntrypoint {

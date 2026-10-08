@@ -17,8 +17,14 @@ const ISO_UTC = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
 export type DeployServiceInstall = {
   /** The running release. */
   releaseId: string;
-  /** The version tag the backend was uploaded with; "" when the uploader set none. */
+  /** The version tag every Worker of the deployment was uploaded with; "" when none was set. */
   versionTag: string;
+  /**
+   * The part every version tag of this installation ends with, whatever the release, so a Worker
+   * with a tag that ends with it but is not `versionTag` runs another release of this installation.
+   * Absent when the uploader did not record one: then no Worker reads as running another release.
+   */
+  versionTagSuffix?: string;
   /** The opaque link that opens the deploy flow for this installation. */
   updateUrl: string;
   /** Where to ask for the newest release. */
@@ -37,12 +43,58 @@ function isHttpUrl(value: unknown): value is string {
 export function deployServiceInstall(env: Cloudflare.Env): DeployServiceInstall | null {
   let value = env.CLOUDFLARE_OS_DEPLOYMENT;
   if (typeof value !== "object" || value === null) return null;
-  let { releaseId, versionTag, updateUrl, updateCheckUrl } = value as Record<string, unknown>;
+  let { releaseId, versionTag, versionTagSuffix, updateUrl, updateCheckUrl } =
+      value as Record<string, unknown>;
   if (typeof releaseId !== "string" || releaseId === "" || typeof versionTag !== "string" ||
+      (versionTagSuffix !== undefined &&
+          (typeof versionTagSuffix !== "string" || versionTagSuffix === "")) ||
       !isHttpUrl(updateUrl) || !isHttpUrl(updateCheckUrl)) {
     return null;
   }
-  return { releaseId, versionTag, updateUrl, updateCheckUrl };
+  return {
+    releaseId, versionTag, ...(versionTagSuffix !== undefined && { versionTagSuffix }), updateUrl,
+    updateCheckUrl,
+  };
+}
+
+/**
+ * The header the router sets to its own version tag ("" when it has none) on every request it
+ * forwards to the backend, replacing any value the client sent. The router's copy of this name is
+ * in packages/router/src/index.ts. It is a label shown to admins, never authority: any request
+ * reaching the backend could carry it.
+ */
+export const ROUTER_VERSION_HEADER = "Cloudflare-OS-Router-Version";
+
+/**
+ * The router version tag `headers` carry ("" for a router with none), or undefined when they carry
+ * none: the request did not come through the router.
+ */
+export function routerVersionTag(headers: Headers): string | undefined {
+  return headers.get(ROUTER_VERSION_HEADER) ?? undefined;
+}
+
+/** Stands for a Worker that did not answer when asked for its version tag. */
+export const NO_ANSWER: unique symbol = Symbol("no answer");
+
+/**
+ * What a Worker answered when asked for its version tag: the tag, "" or undefined when it has
+ * none, or NO_ANSWER.
+ */
+export type VersionAnswer = string | undefined | typeof NO_ANSWER;
+
+/**
+ * How a Worker's version compares with `install`'s: "current" when its tag is the recorded one;
+ * "unfinished" when it is another release of this installation, an update that stopped partway;
+ * "modified" when it has no tag or one the deploy flow did not write; "unknown" when it did not
+ * answer. Tags are only compared, never parsed.
+ */
+export function workerVersionState(answer: VersionAnswer, install: DeployServiceInstall)
+    : "current" | "unfinished" | "modified" | "unknown" {
+  if (answer === NO_ANSWER) return "unknown";
+  if (!answer) return "modified";
+  if (answer === install.versionTag) return "current";
+  let suffix = install.versionTagSuffix;
+  return suffix !== undefined && answer.endsWith(suffix) ? "unfinished" : "modified";
 }
 
 /**
@@ -97,16 +149,20 @@ export type UpdateSettings =
 
 /**
  * What admins are told about `install` under `settings`, from the stored check, if it was made for
- * the running release, and the running backend's version tag, which differs from the recorded one
- * once the backend was changed outside the deploy flow.
+ * the running release, and what each Worker of the deployment ("backend", "router", or a
+ * gatekeeper's install slug) answered when asked for its version tag (see workerVersionState()).
  */
 export function deploymentUpdateStatus(install: DeployServiceInstall, settings: UpdateSettings,
-                                       check: UpdateCheck | null, runningTag: string | undefined,
-                                       now: number)
+                                       check: UpdateCheck | null,
+                                       versions: ReadonlyMap<string, VersionAnswer>, now: number)
     : DeploymentUpdateStatus {
   let current = check?.from === install.releaseId ? check : undefined;
   let result = current?.result;
-  let modified = (runningTag ?? "") !== install.versionTag;
+  let workersIn = (state: ReturnType<typeof workerVersionState>) => [...versions]
+      .filter(([, answer]) => workerVersionState(answer, install) === state)
+      .map(([name]) => name).toSorted();
+  let modifiedWorkers = workersIn("modified");
+  let modified = modifiedWorkers.length > 0;
   let updateAvailable = result?.upgradeAvailable ?? false;
   let since = result?.availableSince;
   return {
@@ -120,6 +176,8 @@ export function deploymentUpdateStatus(install: DeployServiceInstall, settings: 
     minimumAgeHours: settings.updateMinimumAgeHours,
     noticeSnoozeHours: settings.updateNoticeSnoozeHours,
     modified,
+    modifiedWorkers,
+    unfinishedWorkers: workersIn("unfinished"),
     updateUrl: install.updateUrl,
     ...(current?.checkedAt !== undefined && { checkedAt: new Date(current.checkedAt) }),
   };

@@ -1132,11 +1132,24 @@ export type DeploymentUpdateStatus = {
    */
   noticeSnoozeHours: number;
   /**
-   * Whether this deployment's running code differs from what the deploy flow installed: the
-   * backend's own version tag is not the one the deploy flow recorded. The deploy flow refuses to
-   * upgrade a modified deployment.
+   * Whether this deployment's running code differs from what the deploy flow installed: true
+   * exactly when `modifiedWorkers` is non-empty. The deploy flow refuses to upgrade a modified
+   * deployment.
    */
   modified: boolean;
+  /**
+   * The Workers whose running version is neither this installation's current one nor another
+   * release of it: they have no version tag, or one the deploy flow did not write for this
+   * installation. Each is "backend", "router", or a gatekeeper's install slug. A Worker that did
+   * not report its version is in neither this list nor `unfinishedWorkers`.
+   */
+  modifiedWorkers: string[];
+  /**
+   * The Workers still running another release of this installation: an update that did not
+   * finish, which the deploy flow can finish once no Worker is modified. Named as in
+   * `modifiedWorkers`. Unlike those, they do not affect `notify`.
+   */
+  unfinishedWorkers: string[];
   /** The opaque link that opens the deploy flow for this installation. */
   updateUrl: string;
   /** When the last successful check for `currentReleaseId` was made. */

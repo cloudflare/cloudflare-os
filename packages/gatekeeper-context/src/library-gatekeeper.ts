@@ -12,6 +12,7 @@ import type {
   Gatekeeper, GatekeeperUserVerifier, ResourceDescription, ActionKind,
   SlashCommandDescriptor, SlashCommandProvider, SlashCommandResult,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import { LibraryReadSession } from "./library-read.js";
 import { ContextApiImpl, loadEnabledContextCollections } from "./context-api.js";
 import { ContextObserverTracker } from "./context-observers.js";
@@ -382,6 +383,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env, Gatekeepe
       autoProvisionsAccount: true,
       providesAuth: false,
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   /**
