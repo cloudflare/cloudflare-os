@@ -962,14 +962,16 @@ export class WorkspaceGitCache {
   // reaches no proven one, and throws for such a chain with no claimed commit.
   #walkPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): GitOid[] {
     let claimed = new Set<GitOid>();
-    let visited = new Set<GitOid>();
+    // Per commit and claim: chains meeting below different claims each need their own proven.
+    let visited = new Set<string>();
     let stack: { oid: GitOid, claim?: GitOid }[] =
         heads.map(oid => ({ oid: validateGitOid(oid) }));
     let provenElsewhere: GitOid | undefined;  // the nearest commit another connection proved
     while (stack.length > 0) {
       let { oid, claim } = stack.pop()!;
-      if (visited.has(oid)) continue;
-      visited.add(oid);
+      let key = `${oid}:${claim ?? ""}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
       let meta = this.storage.gitObjectMetadata.get(oid);
       if (meta?.onRemote.includes(gatekeeperId)) {
         // Prefer the decoded local type over the recorded one: an onRemote row's type is
@@ -998,7 +1000,13 @@ export class WorkspaceGitCache {
         claimed.add(claim);
         continue;
       }
-      if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
+      if (provenElsewhere !== undefined) {
+        throw new Error(
+            `Cannot push: commit ${provenElsewhere} in the pushed history came through a ` +
+            `different connection, not this one. If both connections are to the same ` +
+            `repository, look the commit up through this one (e.g. its commit or branch APIs), ` +
+            `then push again.`);
+      }
       if (local === undefined) {
         throw new Error(
             `Cannot push: commit ${oid} in the pushed history is not available in the ` +
@@ -1441,13 +1449,6 @@ function submoduleMessage(path: string, target: GitOid): string {
 
 function tooLargeMessage(path: string): string {
   return `${path} is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)`;
-}
-
-// Why a push is refused when its history is proven only on another connection's remote.
-function provenElsewhereMessage(oid: GitOid): string {
-  return `Cannot push: commit ${oid} in the pushed history came through a different connection, ` +
-      `not this one. If both connections are to the same repository, look the commit up ` +
-      `through this one (e.g. its commit or branch APIs), then push again.`;
 }
 
 // Decodes a blob's payload as strict UTF-8 text, throwing the path-flavored

@@ -709,6 +709,24 @@ describe("push ancestry verification", () => {
     expect(t.pulls).toStrictEqual([]);
   });
 
+  it("proves the claim on each side of a merge whose parents share history", async () => {
+    let t = makeCache();
+    // A merge fetched through G1, whose parents G2 listed before they were merged.
+    let root = await t.cache.putFromGatekeeper(G1, "commit", commitPayload(TREE_1, [], "root"));
+    let parents = await Promise.all(["feature", "main"].map(message =>
+        t.cache.putFromGatekeeper(G1, "commit", commitPayload(TREE_1, [root], message))));
+    for (let parent of parents) t.cache.advertiseCommit(G2, parent);
+    let merge = await t.cache.putFromGatekeeper(
+        G1, "commit", commitPayload(TREE_1, parents, "merge"));
+    t.sources.set(G2, async oids => {
+      for (let oid of oids) {
+        await t.cache.putFromGatekeeper(G2, "commit", t.cache.readLocalObject(oid)!.payload);
+      }
+    });
+
+    await expect(t.cache.verifyPushAncestry(G2, [merge])).resolves.toBeUndefined();
+  });
+
   it("rejects a non-commit oid", async () => {
     let t = makeCache();
     let blob = await storeLocal(t.storage, {
