@@ -666,15 +666,27 @@ describe("push rejection cascade", () => {
     const gk = await repoGatekeeper();
     const cache = scenarioCache();
     const push = await queuePush(gk, cache, "feature", HEAD1);
+    const first = await queuePullRequest(gk, { title: "First", head: "feature", base: "main" });
 
     github.heldBranchReads.add("feature");
     const discard = gk.rejectAction(push.approvalId);
     await vi.waitFor(() => expect(github.heldReads).toBe(1));
-    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+    const second = await queuePullRequest(gk, { title: "Second", head: "feature", base: "main" });
     github.heldReadsReleased = true;
 
     expect(await discard).toEqual({ restart: true });
-    await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/was discarded/);
+    for (const { approvalId } of [first, second]) {
+      await expect(gk.applyAction(approvalId, cache)).rejects.toThrow(/was discarded/);
+    }
+  });
+
+  it("discards a push nothing depends on without reaching GitHub", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const push = await queuePush(gk, scenarioCache(), "feature", HEAD1);
+
+    github.failingBranchReads.add("feature");
+    expect(await gk.rejectAction(push.approvalId)).toBeUndefined();
   });
 
   it("leaves a pull request whose branches still exist", async () => {

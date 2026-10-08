@@ -2403,20 +2403,26 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   /**
    * Discards a push along with every queued `createPullRequest` whose head or base is the push's
    * branch, if that branch no longer exists without it -- on the remote or as the outcome of the
-   * remaining queued pushes -- and everything queued against the doomed pull request. The branch
-   * is read before anything is marked, so a failed read leaves the push pending and a retried
-   * discard still cascades; everything after the read runs without yielding, so a pull request
-   * queued during it is cascaded too. Returns whether anything was cascaded.
+   * remaining queued pushes -- and everything queued against the doomed pull request. A push no
+   * create depends on is discarded without reading GitHub, so a dead connection cannot block it.
+   * Otherwise the branch is read before anything is marked, so a failed read leaves the push
+   * pending and a retried discard still cascades; everything after the read runs without
+   * yielding, so a pull request queued during it is cascaded too. Returns whether anything was
+   * cascaded.
    */
   async #rejectPush(push: PushAction): Promise<boolean> {
-    const realHead = await this.#withApi(api =>
-      api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, push.branch));
+    const dependsOnBranch = (action: GitHubAction): action is CreatePullRequestAction =>
+      action.type === "createPullRequest" &&
+      (action.options.head === push.branch || action.options.base === push.branch);
+    // `undefined`: not read, since nothing depended on the branch (and without an await, nothing
+    // can be queued before the mark); `null`: the branch does not exist on GitHub.
+    const realHead = this.#listPendingActions().some(dependsOnBranch)
+      ? await this.#withApi(api => api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, push.branch))
+      : undefined;
     // Marked before simulating, which takes the push out of the queued pushes it overlays.
     this.#markActionRejected(push);
-    if (this.#simulateBranchHead(push.branch, realHead) !== null) return false;
-    const creates = this.#listPendingActions().filter((action): action is CreatePullRequestAction =>
-      action.type === "createPullRequest" &&
-      (action.options.head === push.branch || action.options.base === push.branch));
+    if (realHead === undefined || this.#simulateBranchHead(push.branch, realHead) !== null) return false;
+    const creates = this.#listPendingActions().filter(dependsOnBranch);
     for (const create of creates) {
       this.#rejectActionsForResource("pull", create.provisionalId);  // the create included
       this.ctx.storage.kv.delete(`provisional:${create.provisionalId}`);
