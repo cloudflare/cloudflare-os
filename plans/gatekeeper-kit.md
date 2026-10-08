@@ -2263,7 +2263,10 @@ A tree-to-tree diff over an injected `TreeDiffSource`, so a gatekeeper can simul
 commits its provider has not received yet from the workspace's git cache. Output types are
 vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally identical copies
 (that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
-file. The reader of unified patches (`parsePatch`) is still per gatekeeper; see §11.
+file, and `MAX_DIFF_OUTPUT_PER_FILE`/`MAX_DIFF_OUTPUT_TOTAL` cap the hunk text emitted, so a
+result stays under Durable Object storage's 2 MB value limit; a file past any cap reports
+`diffOmitted` and no hunks. The reader of unified patches (`parsePatch`) is still per gatekeeper;
+see §11.
 
 ### 4.22 `./git-objects`
 

@@ -414,6 +414,53 @@ describe("diffGitTrees", () => {
     ]);
   });
 
+  it("omits a file whose emitted diff exceeds the per-file output cap", async () => {
+    // A rewrite past the edit-distance cap takes the wholesale path: every line removed and added.
+    const lines = (prefix: string) =>
+      text(Array.from({ length: 3000 }, (_, i) => `${prefix}${i}`).join("\n") + "\n");
+    const { source } = fakeSource(
+      {
+        [oid(30)]: [{ mode: "100644", name: "lock.json", oid: oid(1) }],
+        [oid(31)]: [{ mode: "100644", name: "lock.json", oid: oid(2) }],
+      },
+      { [oid(1)]: lines("old"), [oid(2)]: lines("new") },
+    );
+    const [file] = await diffGitTrees(source, oid(30), oid(31));
+    expect(file).toEqual({
+      path: "lock.json", status: "modified", additions: 0, deletions: 0, diffOmitted: true, hunks: [],
+    });
+  });
+
+  it("still emits a large added file under the per-file output cap in full", async () => {
+    const added = Array.from({ length: 2000 }, (_, i) => `line${i}`);
+    const { source } = fakeSource(
+      { [oid(30)]: [], [oid(31)]: [{ mode: "100644", name: "gen.txt", oid: oid(1) }] },
+      { [oid(1)]: text(added.join("\n") + "\n") },
+    );
+    const [file] = await diffGitTrees(source, oid(30), oid(31));
+    expect(file.diffOmitted).toBe(false);
+    expect(file.additions).toBe(2000);
+    expect(file.hunks[0].lines.map(line => line.text)).toEqual(added);
+  });
+
+  it("omits the remaining files once the total output budget is spent", async () => {
+    const count = 12;
+    const content = text(Array.from({ length: 1000 }, () => "x".repeat(100)).join("\n") + "\n");
+    const names = Array.from({ length: count }, (_, i) => `f${String(i).padStart(2, "0")}.txt`);
+    const { source } = fakeSource(
+      { [oid(30)]: [], [oid(31)]: names.map(name => ({ mode: "100644", name, oid: oid(1) })) },
+      { [oid(1)]: content },
+    );
+    // Each file fits the per-file cap, but together they overrun the total.
+    const files = await diffGitTrees(source, oid(30), oid(31));
+    const emitted = files.filter(file => !file.diffOmitted);
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted.length).toBeLessThan(count);
+    expect(files.map(file => file.diffOmitted)).toEqual(
+      names.map((_, i) => i >= emitted.length));
+    for (const file of emitted) expect(file.additions).toBe(1000);
+  });
+
   it("throws TreeUnavailableError when a needed tree cannot be loaded", async () => {
     const { source } = fakeSource({ [oid(30)]: [{ mode: "40000", name: "sub", oid: oid(99) }] }, {});
     await expect(diffGitTrees(source, oid(30), null)).rejects.toThrow(TreeUnavailableError);

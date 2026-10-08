@@ -84,6 +84,17 @@ export const MAX_DIFF_BLOB_BYTES = 1024 * 1024;
 /** Total bytes of blob content one tree diff may load; further files are reported as omitted. */
 export const MAX_DIFF_TOTAL_BYTES = 20 * 1024 * 1024;
 /**
+ * Caps on emitted hunks, measured cheaply as line text length plus `DIFF_LINE_OVERHEAD` per
+ * line: per file, and across one tree diff (past either, files are reported with diffOmitted).
+ * Gatekeepers cache the whole simulated comparison as one Durable Object storage value, which
+ * is capped at 2 MB; the total stays well under that, leaving room for the rest of the record
+ * and for non-Latin-1 text, which V8's serializer stores at two bytes per character.
+ */
+export const MAX_DIFF_OUTPUT_PER_FILE = 256 * 1024;
+export const MAX_DIFF_OUTPUT_TOTAL = 768 * 1024;
+/** Approximate serialized size of one diff line's fields beyond its text. */
+const DIFF_LINE_OVERHEAD = 48;
+/**
  * Myers edit-distance cap (jsdiff's `maxEditLength`). A file whose minimal diff would exceed
  * this many edits is emitted as one whole remove-then-add block instead -- still a correct
  * unified diff, just not a minimal one -- keeping worst-case time and memory bounded.
@@ -225,10 +236,11 @@ function isBinary(bytes: Uint8Array): boolean {
 
 /**
  * Diff two trees into the same per-file shape a provider's compare / changed-files responses
- * normalize to. Gitlinks (submodule pointers), binary files, files over `MAX_DIFF_BLOB_BYTES`, and
- * files whose content is unavailable are reported with `diffOmitted: true` and no hunks; renames
- * are not detected (they appear as a remove plus an add, which the provider's own rename detection
- * will supersede once the work reaches the remote).
+ * normalize to. Gitlinks (submodule pointers), binary files, files over `MAX_DIFF_BLOB_BYTES` or
+ * whose hunks would exceed the `MAX_DIFF_OUTPUT_*` caps, and files whose content is unavailable
+ * are reported with `diffOmitted: true` and no hunks; renames are not detected (they appear as a
+ * remove plus an add, which the provider's own rename detection will supersede once the work
+ * reaches the remote).
  */
 export async function diffGitTrees(
   source: TreeDiffSource,
@@ -240,6 +252,7 @@ export async function diffGitTrees(
 
   const files: TreeDiffFile[] = [];
   let budget = MAX_DIFF_TOTAL_BYTES;
+  let outputBudget = MAX_DIFF_OUTPUT_TOTAL;
   for (const entry of entries) {
     const omitted: TreeDiffFile = {
       path: entry.path,
@@ -275,6 +288,12 @@ export async function diffGitTrees(
     const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
     const { hunks, additions, deletions } =
       diffTextLines(decoder.decode(oldContent), decoder.decode(newContent));
+    const outputSize = diffOutputSize(hunks);
+    if (outputSize > Math.min(MAX_DIFF_OUTPUT_PER_FILE, outputBudget)) {
+      files.push(omitted);
+      continue;
+    }
+    outputBudget -= outputSize;
     files.push({
       path: entry.path,
       status: entry.status,
@@ -285,6 +304,15 @@ export async function diffGitTrees(
     });
   }
   return files;
+}
+
+function diffOutputSize(hunks: GitDiffHunk[]): number {
+  let size = 0;
+  for (const { header, lines } of hunks) {
+    size += header.length;
+    for (const { text } of lines) size += text.length + DIFF_LINE_OVERHEAD;
+  }
+  return size;
 }
 
 function splitLines(text: string): string[] {
