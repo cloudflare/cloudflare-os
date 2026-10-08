@@ -56,7 +56,7 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   let pages = await Promise.all(ids.filter(id => order.includes(id))
     .map(id => host.api.getSlide(host.presentationId, id)));
   return {
-    revisionId, order, complete: true,
+    revisionId, order,
     slides: new Map(pages.map(page => [page.objectId!, page] as [string, RestSlide])),
   };
 }

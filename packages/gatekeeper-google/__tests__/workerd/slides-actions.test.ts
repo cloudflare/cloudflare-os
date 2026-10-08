@@ -50,6 +50,18 @@ function table(objectId: string, rows: string[][]): RestPageElement {
   };
 }
 
+/** A deck as the summary's field mask returns it: shapes' text, and other elements' IDs alone. */
+function summaryOf(deck: RestPresentation): RestPresentation {
+  return {
+    ...deck,
+    slides: deck.slides!.map(slide => ({
+      ...slide,
+      pageElements: slide.pageElements?.map(({ objectId, shape }) =>
+        ({ objectId, ...(shape ? { shape: { placeholder: shape.placeholder, text: shape.text } } : {}) })),
+    })),
+  };
+}
+
 class Invalid extends Error {}
 
 /**
@@ -77,7 +89,10 @@ class SlidesProvider {
         return this.#batch(await request.json());
       }
       if (url.pathname === "/v1/presentations/deck-1") {
-        return Response.json({ ...this.deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) });
+        // Only the summary's mask stops at shapes, leaving tables and groups as their IDs.
+        let deck = url.searchParams.get("fields")?.includes("pageElements(objectId,shape(")
+          ? summaryOf(this.deck) : this.deck;
+        return Response.json({ ...deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) });
       }
       let pageId = url.pathname.match(/^\/v1\/presentations\/deck-1\/pages\/([^/]+)$/)?.[1];
       let page = this.deck.slides!.find(s => s.objectId === pageId);
@@ -559,6 +574,24 @@ describe("Google Slides changes", () => {
 
     expect(provider.text("s1", "t1")).toBe("Q4 review\n");
     expect(provider.deck.slides!.map(s => s.objectId)).toEqual(["s1", "s2"]);
+  });
+
+  it("shows a batch in the outline only if all of it applies, tables included", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    await slides.queued("editText", [
+      { slideId: "s2", elementId: "t2", find: "Revenue", replace: "Sales" },
+      { slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, find: "EMEA", replace: "APAC" },
+    ]);
+    expect((await slides.outline()).slides[1].title).toBe("Sales");
+
+    provider.edit(d => {
+      d.slides![1].pageElements![2] = table("tb2", [["Region", "Sales"], ["LATAM", "4"]]);
+    });
+
+    let outline = await slides.outline();
+    expect(outline.slides[1].title).toBe("Revenue");
+    expect(outline.queuedChangeConflict).toContain("does not contain the text to find");
   });
 
   it("does not replay a change whose activation died applying it", async () => {

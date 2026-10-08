@@ -56,12 +56,11 @@ export type SlidesAction = TaggedAction<SlidesActions>;
 
 /**
  * What a read fetched, with queued changes applied: the slide order, and the slides it fetched.
- * `complete` is false for a summary read, whose slides carry shape text but no tables or groups.
+ * Every slide a queued edit addresses is a full page, so an edit to a slide it holds is checked.
  */
 export type Deck = {
   order: readonly string[];
   slides: ReadonlyMap<string, RestSlide>;
-  complete: boolean;
 };
 
 /** Where one edit landed: the provider range it replaces with `inserted`, and the text after it. */
@@ -104,10 +103,7 @@ function editTarget(edit: Omit<TextEditRecord, "slide">): string {
   return `element "${edit.elementId}"`;
 }
 
-// The text an edit addresses, or null when a summary read does not hold it.
-function textSlot(
-  slide: RestSlide, edit: Omit<TextEditRecord, "slide">, complete: boolean,
-): TextSlot | null {
+function textSlot(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): TextSlot {
   let { elementId, cell } = edit;
   if (elementId === undefined) {
     let notes = slide.slideProperties?.notesPage;
@@ -125,16 +121,10 @@ function textSlot(
     };
   }
   let element = findElement(slide.pageElements, elementId);
-  if (!element) {
-    if (!complete) return null;
-    throw new ChangeConflict(`the slide has no element "${elementId}"`);
-  }
+  if (!element) throw new ChangeConflict(`the slide has no element "${elementId}"`);
   if (cell) {
     let table = element.table;
-    if (!table) {
-      if (!complete) return null;
-      throw new ChangeConflict(`element "${elementId}" is not a table`);
-    }
+    if (!table) throw new ChangeConflict(`element "${elementId}" is not a table`);
     let found = table.tableRows?.flatMap(row => row.tableCells ?? []).find(candidate =>
       (candidate.location?.rowIndex ?? 0) === cell.row &&
       (candidate.location?.columnIndex ?? 0) === cell.column);
@@ -150,22 +140,13 @@ function textSlot(
   }
   if (element.table) throw new ChangeConflict(`element "${elementId}" is a table; give a cell`);
   let shape = element.shape;
-  if (!shape) {
-    if (!complete) return null;
-    throw new ChangeConflict(`element "${elementId}" has no editable text`);
-  }
+  if (!shape) throw new ChangeConflict(`element "${elementId}" has no editable text`);
   return { location: { objectId: elementId }, body: shape.text, write: text => { shape.text = text; } };
 }
 
-/**
- * Applies one edit to `slide` in place. Returns where it landed, or null when a summary read does
- * not hold its target. Throws `ChangeConflict` when it cannot apply.
- */
-export function editSlide(
-  slide: RestSlide, edit: Omit<TextEditRecord, "slide">, complete: boolean,
-): EditPlacement | null {
-  let slot = textSlot(slide, edit, complete);
-  if (!slot) return null;
+/** Applies one edit to `slide` in place, returning where it landed. Throws `ChangeConflict`. */
+export function editSlide(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): EditPlacement {
+  let slot = textSlot(slide, edit);
   let segments = segmentsOf(slot.body);
   let previous = projectedText(segments);
   let found = changeRange(previous, edit);
@@ -178,7 +159,7 @@ export function editSlide(
 
 /** The current text an edit addresses. Throws `ChangeConflict` when it is not there. */
 export function textOfTarget(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): string {
-  return projectedText(segmentsOf(textSlot(slide, edit, true)?.body));
+  return projectedText(segmentsOf(textSlot(slide, edit).body));
 }
 
 // Prefixes a conflict with the edit it is about.
@@ -216,10 +197,10 @@ export function editDeck(
       if (!held) return null;
       edited.set(edit.slideId, slide = structuredClone(held));
     }
-    return editSlide(slide, edit, deck.complete);
+    return editSlide(slide, edit);
   }));
   return {
-    deck: edited.size === 0 ? deck : { ...deck, slides: new Map([...deck.slides, ...edited]) },
+    deck: edited.size === 0 ? deck : { order: deck.order, slides: new Map([...deck.slides, ...edited]) },
     placements,
   };
 }
@@ -266,7 +247,7 @@ function reordered(deck: Deck, order: string[], slides = deck.slides): Deck {
     let position = order.indexOf(id);
     return position === deck.order.indexOf(id) ? [id, slide] : [id, numbered(slide, position + 1)];
   });
-  return { order, slides: new Map(renumbered), complete: deck.complete };
+  return { order, slides: new Map(renumbered) };
 }
 
 function numbered(slide: RestSlide, number: number): RestSlide {

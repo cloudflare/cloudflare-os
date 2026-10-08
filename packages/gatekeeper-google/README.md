@@ -211,9 +211,11 @@ causing tab listing, content reads, and edits to fail.
 A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
 the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
 on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
-one slide at a time, capped at 2 MiB each. A read also fetches the other slides of any queued text
-edit batch touching a slide it shows, since the batch applies all or none, so while large batches
-await approval, reads cost more requests against Google's per-user read quota.
+one slide at a time, capped at 2 MiB each. While text edits await approval, reads also fetch the
+slides those edits address, so each can be checked as approving it would: slide content reads the
+other slides of any batch touching a slide it shows, since a batch applies all or none, and the
+summaries read every slide with a queued edit, since they hold no tables or grouped shapes. Large
+batches awaiting approval therefore cost reads more requests against Google's per-user quota.
 
 ## Google Slides edits
 

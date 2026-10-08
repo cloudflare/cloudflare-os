@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RestSlide, RestText } from "../src/slides-api";
+import type { RestText } from "../src/slides-api";
 import {
   applyChange, editSlide, slidesToFetch, type Deck, type SlidesAction,
 } from "../src/slides-simulation";
@@ -8,7 +8,7 @@ import { shape, slide, text } from "./slides-fixture";
 
 function edit(body: RestText, find: string | undefined, replace: string) {
   let page = slide("s1", [shape("box", body)]);
-  return editSlide(page, { slideId: "s1", elementId: "box", find, replace }, true)!;
+  return editSlide(page, { slideId: "s1", elementId: "box", find, replace });
 }
 
 describe("Slides text edits", () => {
@@ -41,25 +41,6 @@ describe("Slides text edits", () => {
 describe("Slides change replay", () => {
   const copyOf = (slideId: string, newSlideId: string, objectIds: Record<string, string>): SlidesAction =>
     ({ kind: "duplicateSlide", payload: { slideId, newSlideId, objectIds, slide: { number: 1 } } });
-  const TABLE_EDIT: SlidesAction = {
-    kind: "editText",
-    payload: {
-      edits: [{
-        slideId: "s1", elementId: "tb", cell: { row: 0, column: 0 }, replace: "x", before: "a",
-        slide: { number: 1 },
-      }],
-    },
-  };
-  // A summary read's field mask leaves a table as its ID alone.
-  const summarized: RestSlide = slide("s1", [{ objectId: "tb" }]);
-
-  it("passes over a target a summary read does not hold, but not one a page read lacks", () => {
-    let deck = (complete: boolean): Deck =>
-      ({ order: ["s1"], slides: new Map([["s1", summarized]]), complete });
-
-    expect(applyChange(deck(false), TABLE_EDIT).slides.get("s1")).toEqual(summarized);
-    expect(() => applyChange(deck(true), TABLE_EDIT)).toThrow('element "tb" is not a table');
-  });
 
   it("fetches the slide a queued copy of a queued copy starts from", () => {
     let changes = [copyOf("s1", "c1", {}), copyOf("s2", "c2", {}), copyOf("c1", "c3", {})]
@@ -82,7 +63,7 @@ describe("Slides change replay", () => {
   it("leaves out of a queued copy an element added to its source since, which it cannot name", () => {
     let source = slide("s1", [shape("title", text(["Q3"])), shape("added", text(["New"]))]);
     let unchanged = structuredClone(source);
-    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]), complete: true };
+    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]) };
 
     let copied = applyChange(deck, copyOf("s1", "c1", { title: "c1title" }));
 
@@ -92,16 +73,14 @@ describe("Slides change replay", () => {
   });
 
   it("reports a queued copy whose slide already exists, rather than showing it twice", () => {
-    let deck: Deck = { order: ["s1", "c1"], slides: new Map(), complete: false };
+    let deck: Deck = { order: ["s1", "c1"], slides: new Map() };
 
     expect(() => applyChange(deck, copyOf("s1", "c1", {}))).toThrow('the copy\'s ID "c1" already exists');
   });
 
   it("renumbers the slides a queued copy, move or delete shifts", () => {
     let numbered = (n: number) => slide(`s${n}`, [shape(`n${n}`, text(["Page ", { slideNumber: `${n}` }]))]);
-    let deck: Deck = {
-      order: ["s1", "s2", "s3"], slides: new Map([1, 2, 3].map(n => [`s${n}`, numbered(n)])), complete: true,
-    };
+    let deck: Deck = { order: ["s1", "s2", "s3"], slides: new Map([1, 2, 3].map(n => [`s${n}`, numbered(n)])) };
     let pages = ({ order, slides }: Deck) => order.map(id => [id, slides.get(id)!.pageElements![0].shape!
       .text!.textElements!.find(e => e.autoText)!.autoText!.content]);
 

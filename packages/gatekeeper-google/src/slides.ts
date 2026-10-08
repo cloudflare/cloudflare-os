@@ -296,18 +296,21 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     return this.#changes.snapshot(async changes => {
       let outline = await this.#api.getOutline(this.#presentationId);
       let order = slideIds(outline);
-      let fetched = await Promise.all([...slidesToFetch(ids, changes)]
-        .filter(id => order.includes(id))
-        .map(id => this.#api.getSlide(this.#presentationId, id)));
-      let slides = new Map(fetched.map(page => [page.objectId!, page] as [string, RestSlide]));
       return {
         title: outline.title ?? "Untitled presentation",
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...replayed({ order, slides, complete: true }, changes),
+        ...replayed({ order, slides: await this.#pages(slidesToFetch(ids, changes), order) }, changes),
       };
     });
+  }
+
+  /** Full pages of the slides among `ids` that `order` still has. */
+  async #pages(ids: Iterable<string>, order: readonly string[]): Promise<Map<string, RestSlide>> {
+    let pages = await Promise.all([...ids].filter(id => order.includes(id))
+      .map(id => this.#api.getSlide(this.#presentationId, id)));
+    return new Map(pages.map(page => [page.objectId!, page]));
   }
 
   /**
@@ -340,8 +343,15 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       () => this.#changes.snapshot(async changes => {
         let rest = await this.#api.getPresentation(this.#presentationId);
         let order = slideIds(rest);
-        let slides = new Map((rest.slides ?? []).map(slide => [slide.objectId!, slide]));
-        let { deck, conflict } = replayed({ order, slides, complete: false }, changes);
+        // A summary holds no tables or grouped shapes, so slides queued edits address are read in
+        // full, and every edit is checked as it would be when approved.
+        let edited = changes.flatMap(({ action }) =>
+          action.kind === "editText" ? action.payload.edits.map(edit => edit.slideId) : []);
+        let slides = new Map([
+          ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
+          ...await this.#pages(slidesToFetch(edited, changes), order),
+        ]);
+        let { deck, conflict } = replayed({ order, slides }, changes);
         return {
           ...presentationInfo({ ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
