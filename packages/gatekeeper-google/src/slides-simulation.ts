@@ -324,14 +324,18 @@ export function replayChanges(
 }
 
 /**
- * The slides a read must fetch to show `ids` with queued changes: the slides themselves, and the
- * slide each queued duplicate among them copies, transitively.
+ * The slides a read must fetch to show `ids` with queued changes: the slides themselves, the
+ * slide each queued duplicate among them copies, and every slide of a text edit batch touching
+ * one, transitively. A batch applies all or none, so a conflict on any of its slides hides it all.
  */
 export function slidesToFetch(ids: readonly string[], changes: readonly QueuedChange[]): Set<string> {
   let needed = new Set(ids);
   for (let { action } of changes.toReversed()) {
     if (action.kind === "duplicateSlide" && needed.has(action.payload.newSlideId)) {
       needed.add(action.payload.slideId);
+    } else if (action.kind === "editText") {
+      let targets = action.payload.edits.map(edit => edit.slideId);
+      if (targets.some(id => needed.has(id))) for (let id of targets) needed.add(id);
     }
   }
   return needed;

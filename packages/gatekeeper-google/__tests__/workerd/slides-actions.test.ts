@@ -240,6 +240,7 @@ function gatekeeper() {
     apply: (actionId: number, entered?: () => void) => hooks().applySlides(facet, actionId, entered),
     reject: (actionId: number) => hooks().rejectSlides(facet, actionId),
     autoApprovable: () => hooks().slidesAutoApprovable(facet),
+    orphan: (actionId: number) => hooks().orphanSlidesClaim(facet, actionId),
   };
 }
 
@@ -558,6 +559,21 @@ describe("Google Slides changes", () => {
 
     expect(provider.text("s1", "t1")).toBe("Q4 review\n");
     expect(provider.deck.slides!.map(s => s.objectId)).toEqual(["s1", "s2"]);
+  });
+
+  it("does not replay a change whose activation died applying it", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("editText", [
+      { slideId: "s2", elementId: "b2", find: "Revenue", replace: "Revenue (USD)" },
+    ]);
+    // Google committed it, but the activation died before the journal heard back.
+    provider.edit(d => {
+      d.slides![1].pageElements![1].shape!.text = text(["Revenue (USD): $10M"], ["Margin: 20%"]);
+    });
+    await slides.orphan(actionId!);
+
+    expect(shapeText((await slides.slides("s2"))[0], "b2")).toBe("Revenue (USD): $10M\nMargin: 20%");
   });
 
   it("refuses to queue a change the account cannot make, but still reads", async () => {

@@ -4,6 +4,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
+import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
@@ -247,6 +248,11 @@ export class TestHooks extends DurableObject<Env> {
   async slidesAutoApprovable(facetName: string): Promise<ActionKind[]> {
     return this.#slides(facetName).getAutoApprovableActions();
   }
+
+  /** Leaves a Slides change claimed, as an activation that died while applying it would. */
+  async orphanSlidesClaim(facetName: string, actionId: number): Promise<void> {
+    await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
+  }
 }
 
 type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
@@ -263,4 +269,14 @@ type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
 ): number | undefined {
   let value = (this as unknown as TestDurableObjectState).ctx.storage.kv.get(key);
   return value === undefined ? undefined : JSON.stringify(value).length;
+};
+
+type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction(id: number): void };
+
+(GoogleSlidesGatekeeperImpl.prototype as TestGoogleSlidesGatekeeper).claimTestAction = function(
+  id: number,
+): void {
+  // A second journal over the same storage claims it, so the live one never knew of the apply.
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "slides" }).markClaimed(id);
 };

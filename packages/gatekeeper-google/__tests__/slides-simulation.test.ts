@@ -68,6 +68,17 @@ describe("Slides change replay", () => {
     expect(slidesToFetch(["c3"], changes)).toEqual(new Set(["c3", "c1", "s1"]));
   });
 
+  it("fetches every slide of a text edit batch touching a requested slide, since it applies whole", () => {
+    let batch = (...slideIds: string[]): SlidesAction => ({
+      kind: "editText",
+      payload: { edits: slideIds.map(slideId => ({ slideId, replace: "x", slide: { number: 1 } })) },
+    });
+    let changes = [copyOf("s1", "c1", {}), batch("c1", "s2"), batch("s4", "s5")]
+      .map((action, i) => ({ id: i + 1, action }));
+
+    expect(slidesToFetch(["s2"], changes)).toEqual(new Set(["s2", "c1", "s1"]));
+  });
+
   it("leaves out of a queued copy an element added to its source since, which it cannot name", () => {
     let source = slide("s1", [shape("title", text(["Q3"])), shape("added", text(["New"]))]);
     let unchanged = structuredClone(source);

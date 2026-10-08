@@ -60,7 +60,8 @@ export type SlidesChangeQueue = {
   /**
    * Runs `read` with the changes awaiting a decision, oldest first, while none is being applied
    * or rejected. A change Google commits mid-read would otherwise show twice: once in what Google
-   * returns, and again replayed on top.
+   * returns, and again replayed on top. Nor is a claimed change, which cannot be mid-apply here: an
+   * activation died applying it, so whether Google has it is unknown.
    */
   snapshot<T>(read: (pending: readonly QueuedChange[]) => Promise<T>): Promise<T>;
   /**
@@ -145,7 +146,7 @@ export class GoogleSlidesGatekeeperImpl
       this.#api, this.ctx.props.presentationId, queue,
       unguardedNativeRead(description => queue.authorizeObservation(description)),
       {
-        snapshot: read => this.#reads.read(() => read(this.#journal.listPending())),
+        snapshot: read => this.#reads.read(() => read(this.#journal.listUndecided())),
         queue: (kind, prepare) => this.#prepareExclusively(async () => {
           let { payload, result } = await prepare();
           // Storage serializes a string holding any non-Latin-1 character at two bytes a unit.
