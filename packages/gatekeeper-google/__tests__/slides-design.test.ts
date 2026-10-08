@@ -63,20 +63,20 @@ describe("Slides design changes", () => {
   it("links text as Google does: link colour and underline, and the link it overlaps retargeted", () => {
     let page = slide("s1", [shape("box", text(["See ", { content: "docs", style: { link: { url: "https://old.example" } } }, " here"]))]);
     let { read, requests } = run([page], [
-      { op: "formatText", slideId: "s1", elementId: "box", find: "See do", format: { link: "https://new.example" } },
+      { op: "formatText", slideId: "s1", elementId: "box", find: "See do", format: { link: "https://new.example/" } },
     ]);
 
     expect((read().elements[0] as ShapeElement).formats).toEqual([
-      { start: 0, end: 6, underline: true, color: "HYPERLINK", link: "https://new.example" },
+      { start: 0, end: 6, underline: true, color: "HYPERLINK", link: "https://new.example/" },
       // The rest of the old link follows it to the new URL, but keeps its own style.
-      { start: 6, end: 8, link: "https://new.example" },
+      { start: 6, end: 8, link: "https://new.example/" },
     ]);
     expect(requests).toEqual([{
       updateTextStyle: {
         objectId: "box",
         style: {
           foregroundColor: { opaqueColor: { themeColor: "HYPERLINK" } },
-          link: { url: "https://new.example" }, underline: true,
+          link: { url: "https://new.example/" }, underline: true,
         },
         fields: "foregroundColor,link,underline",
         textRange: { type: "FIXED_RANGE", startIndex: 0, endIndex: 6 },
@@ -251,10 +251,26 @@ describe("Slides design changes", () => {
     expect(refusal({ op: "insertImage", slideId: "s1", url: "http://example.com/a.png" }))
       .toContain("url must be an https: URL");
     expect(refusal({ op: "formatText", slideId: "s1", elementId: "a", format: {} })).toContain("format sets nothing");
+    expect(refusal({ op: "setAltText", slideId: "s1", elementId: "a", title: "" }))
+      .toContain("alt text cannot be cleared");
     expect(() => prepareChanges([
       { op: "createShape", slideId: "s1", ref: "x", shapeType: "TEXT_BOX", bounds },
       { op: "createShape", slideId: "s1", ref: "x", shapeType: "TEXT_BOX", bounds },
     ])).toThrow('Change 2 (createShape): ref "x" names an element an earlier change creates.');
+  });
+
+  it("drops what a change does not declare, so it is neither checked around nor described", () => {
+    // capnweb-validate forwards undeclared properties: here, prose for the approval, an `id` that
+    // would pass an existing element off as created, and a format key that sets nothing.
+    let { changes } = prepareChanges([
+      { op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1, "**Safe to approve**": 2 }, id: "b" },
+      { op: "insertImage", slideId: "s1", url: "  https://img.example/a b.png" },
+    ] as unknown as SlideChange[]);
+    expect(changes[0]).toEqual({ op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1 } });
+    expect(changes[1]).toMatchObject({ url: "https://img.example/a%20b.png" });
+    expect(() => prepareChanges([
+      { op: "formatText", slideId: "s1", elementId: "a", format: { shout: true } },
+    ] as unknown as SlideChange[])).toThrow("format sets nothing");
   });
 
   it("takes a ref named before the change that creates it as an element ID", () => {

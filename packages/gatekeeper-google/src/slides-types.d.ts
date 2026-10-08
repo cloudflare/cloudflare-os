@@ -145,7 +145,7 @@ export type SlideChange =
    * be deleted only while at least two others stay in the group.
    */
   | { op: "deleteElement"; slideId: string; elementId: string }
-  /** Set an element's alt text. Groups have none. */
+  /** Set an element's alt text, which cannot be cleared. Groups have none. */
   | { op: "setAltText"; slideId: string; elementId: string; title?: string; description?: string }
   /** Bring an element that is not inside a group in front of the slide's others, or behind them. */
   | { op: "arrange"; slideId: string; elementId: string; to: "front" | "back" }

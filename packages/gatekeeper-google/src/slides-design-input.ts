@@ -21,7 +21,7 @@ const MAX_REF_LENGTH = 64;
 const MAX_FONT_SIZE = 400;
 
 /** Every shape type Google Slides can create: its `Shape.Type` values but `CUSTOM`. */
-export const SHAPE_TYPES = new Set([
+const SHAPE_TYPES = new Set([
   "TEXT_BOX", "RECTANGLE", "ROUND_RECTANGLE", "ELLIPSE", "ARC", "BENT_ARROW", "BENT_UP_ARROW",
   "BEVEL", "BLOCK_ARC", "BRACE_PAIR", "BRACKET_PAIR", "CAN", "CHEVRON", "CHORD", "CLOUD",
   "CORNER", "CUBE", "CURVED_DOWN_ARROW", "CURVED_LEFT_ARROW", "CURVED_RIGHT_ARROW",
@@ -211,6 +211,10 @@ function checkChange(change: SlideChange): void {
       return;
     case "setAltText":
       if (change.title === undefined && change.description === undefined) refuse("it sets nothing");
+      // Google keeps alt text a request leaves unset, and may read an empty string as unset.
+      if (change.title === "" || change.description === "") {
+        refuse("alt text cannot be cleared; give the text it should have");
+      }
       return;
     case "insertImage":
       checkBounds(change.bounds);
@@ -256,6 +260,65 @@ function checkChange(change: SlideChange): void {
   }
 }
 
+const TEXT_TARGET = ["elementId", "cell", "find", "range"];
+const TABLE_LINES = ["elementId", "at", "count"];
+
+// What each change declares. capnweb-validate passes undeclared properties through unchecked, so
+// they are dropped before anything reads them: the approval describes only what is written.
+const FIELDS: Record<SlideChange["op"], readonly string[]> = {
+  editText: ["elementId", "cell", "find", "replace"],
+  formatText: [...TEXT_TARGET, "format"],
+  formatParagraphs: [...TEXT_TARGET, "alignment", "lineSpacing", "spaceAbove", "spaceBelow", "bullets"],
+  createShape: ["ref", "shapeType", "bounds", "text", "format", "fill", "outline"],
+  updateShape: ["elementId", "fill", "outline", "contentAlignment"],
+  setBounds: ["elementId", "bounds", "rotation"],
+  deleteElement: ["elementId"],
+  setAltText: ["elementId", "title", "description"],
+  arrange: ["elementId", "to"],
+  insertImage: ["ref", "url", "bounds"],
+  replaceImage: ["elementId", "url"],
+  createTable: ["ref", "rows", "columns", "bounds", "cells"],
+  insertTableRows: TABLE_LINES,
+  insertTableColumns: TABLE_LINES,
+  deleteTableRows: TABLE_LINES,
+  deleteTableColumns: TABLE_LINES,
+  formatTableCells: ["elementId", "range", "fill", "contentAlignment"],
+};
+
+const NESTED_FIELDS: Record<string, readonly string[]> = {
+  cell: ["row", "column"],
+  bounds: ["x", "y", "width", "height"],
+  outline: ["color", "weight"],
+  format: [
+    "bold", "italic", "underline", "strikethrough", "smallCaps", "fontFamily", "fontSize", "color",
+    "highlight", "link", "baseline",
+  ],
+};
+
+function picked(value: object, keys: readonly string[]): Record<string, unknown> {
+  let fields = value as Record<string, unknown>;
+  return Object.fromEntries(keys.flatMap(key => fields[key] === undefined ? [] : [[key, fields[key]]]));
+}
+
+function declared(change: SlideChange): SlideChange {
+  let fields = picked(change, ["op", "slideId", ...FIELDS[change.op]]);
+  for (let [key, value] of Object.entries(fields)) {
+    let nested = key !== "range" ? NESTED_FIELDS[key]
+      : change.op === "formatTableCells" ? ["row", "column", "rowSpan", "columnSpan"] : ["start", "end"];
+    if (nested && typeof value === "object" && value !== null) fields[key] = picked(value, nested);
+  }
+  return fields as SlideChange;
+}
+
+// The URL as the parser read it, so Google gets exactly what was checked.
+function normalizedUrls(change: SlideChange): SlideChange {
+  if ("url" in change) return { ...change, url: new URL(change.url).href };
+  if ("format" in change && change.format?.link !== undefined) {
+    return { ...change, format: { ...change.format, link: new URL(change.format.link).href } };
+  }
+  return change;
+}
+
 // Prefixes a refusal with the change it is about.
 function inChange<T>(label: string, body: () => T): T {
   try {
@@ -278,9 +341,10 @@ export function prepareChanges(
     throw new Error(`Make between 1 and ${MAX_CHANGES} changes at a time.`);
   }
   let refs = new Map<string, string>();
-  let prepared = changes.map((change, i) => inChange(`Change ${i + 1} (${change.op})`, () => {
+  let prepared = changes.map((given, i) => inChange(`Change ${i + 1} (${given.op})`, () => {
+    let change = declared(given);
     checkChange(change);
-    let { ref, ...rest } = change as SlideChange & { ref?: string };
+    let { ref, ...rest } = normalizedUrls(change) as SlideChange & { ref?: string };
     let id = "elementId" in rest && rest.elementId !== undefined ? refs.get(rest.elementId) : undefined;
     let resolved = id ? { ...rest, elementId: id } : rest;
     if (!CREATES.has(change.op)) return resolved as DesignChange;

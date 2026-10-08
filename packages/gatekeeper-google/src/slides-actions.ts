@@ -259,8 +259,8 @@ function describeChange(
       return `give ${element(change.elementId, "shape")} ${names.join(", ")}`;
     }
     case "setBounds": {
-      let names = Object.entries(change.bounds ?? {}).filter(([, value]) => value !== undefined)
-        .map(([key, value]) => `${key} ${value}`);
+      let names = (["x", "y", "width", "height"] as const)
+        .flatMap(key => change.bounds?.[key] === undefined ? [] : [`${key} ${change.bounds[key]}`]);
       if (change.rotation !== undefined) names.push(`rotation ${change.rotation}°`);
       return `move or resize ${element(change.elementId)} to ${names.join(", ")}`;
     }
@@ -296,7 +296,8 @@ function describeChange(
     case "deleteTableRows":
     case "deleteTableColumns": {
       let noun = change.op === "deleteTableRows" ? "row" : "column";
-      return `delete ${lineCount(noun, change.at, change.count ?? 1)} of ${element(change.elementId, "table")}`;
+      let lines = lineCount(noun, change.at, change.count ?? 1);
+      return `delete ${lines} of ${element(change.elementId, "table")}`;
     }
     case "formatTableCells": {
       let { range } = change;
@@ -327,27 +328,41 @@ function describeDesign(
   let lines = changes.map((change, i) => {
     let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
     let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
-    if ("id" in change) created.set(change.id, `the ${CREATED_NOUNS[change.op]} change ${i + 1} adds`);
+    let noun = CREATED_NOUNS[change.op];
+    if (noun && "id" in change) created.set(change.id, `the ${noun} change ${i + 1} adds`);
     return `On ${slideName(slides[change.slideId])}, ${line}`;
   });
   return { lines, fields };
 }
 
-/** Whether a read taken after a lost response shows a design batch landed. */
+// The text `address` names, or undefined if it is not there.
+function textIfThere(slide: RestSlide, address: TextAddress): string | undefined {
+  try {
+    return textOfTarget(slide, address);
+  } catch (error) {
+    if (error instanceof ChangeConflict) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Whether a read taken after a lost response shows a design batch landed: each element the batch
+ * created or deleted is present or absent as planned, and each text it edited reads as planned.
+ */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[], planned: Deck, after: Deck,
 ): boolean {
   let checks = changes.flatMap((change, i) => {
     let step = steps[i]!;
     let slide = after.slides.get(change.slideId) ?? {};
+    let plannedSlide = planned.slides.get(change.slideId) ?? {};
     let ids = new Set(elementIdsOf(slide.pageElements));
-    return [
-      ...(step.created ? [ids.has(step.created)] : []),
-      ...(step.deleted ? [!ids.has(step.deleted)] : []),
-      ...(change.op === "editText"
-        ? [textOfTarget(slide, change) === textOfTarget(planned.slides.get(change.slideId)!, change)]
-        : []),
-    ];
+    let plannedIds = new Set(elementIdsOf(plannedSlide.pageElements));
+    let presence = [step.created, step.deleted]
+      .flatMap(id => id === undefined ? [] : [ids.has(id) === plannedIds.has(id)]);
+    // An edit to an element a later change deletes leaves no text to compare.
+    let text = change.op === "editText" ? textIfThere(plannedSlide, change) : undefined;
+    return text === undefined ? presence : [...presence, textIfThere(slide, change) === text];
   });
   return checks.length > 0 && checks.every(Boolean);
 }

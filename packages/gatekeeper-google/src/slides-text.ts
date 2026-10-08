@@ -99,8 +99,8 @@ export function projectedText(segments: readonly TextSegment[]): string {
   return segments.map(segment => segment.text).join("");
 }
 
-/** Splits at a projected offset, which must not fall inside an AutoText. */
-export function cut(
+// Splits at a projected offset, which must not fall inside an AutoText.
+function cut(
   segments: readonly TextSegment[], offset: number,
 ): [TextSegment[], TextSegment[]] {
   let projected = 0;

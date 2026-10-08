@@ -703,6 +703,23 @@ describe("Google Slides design changes", () => {
     expect(provider.text("s2", (value as Record<string, string>).badge)).toBe("New\n");
   });
 
+  it("finds a lost batch landed when it deleted an element it created, and its edits", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      BADGE,
+      { op: "editText", slideId: "s2", elementId: "badge", replace: "Old" },
+      { op: "deleteElement", slideId: "s2", elementId: "badge" },
+      { op: "editText", slideId: "s2", elementId: "t2", replace: "Sales" },
+    ]);
+    provider.nextFailure = "lost";
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(provider.batches).toHaveLength(2);
+    expect(provider.text("s2", "t2")).toBe("Sales\n");
+  });
+
   it("refuses a ref that is also an element's ID, queuing nothing", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();

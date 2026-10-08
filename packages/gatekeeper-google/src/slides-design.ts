@@ -375,7 +375,7 @@ function setBounds(
 
 function deleteElement(slide: RestSlide, id: string): DesignStep {
   let { element, siblings, group } = elementOn(slide, id);
-  // Google then deletes the group too, or ungroups the one left, which it does not document.
+  // Google then deletes the group too, and does not say what becomes of the element left in it.
   if (group && siblings.length <= 2) {
     throw new ChangeConflict(
       `deleting it would leave group "${group.objectId}" with one element; delete the group instead`);
@@ -390,11 +390,9 @@ function setAltText(
   let { elementId, title, description } = change;
   let { element } = elementOn(slide, elementId);
   if (element.elementGroup) throw new ChangeConflict("a group has no alt text");
-  // Google omits an empty one, as it omits every empty field.
-  for (let [key, value] of [["title", title], ["description", description]] as const) {
-    if (value) element[key] = value;
-    else if (value !== undefined) delete element[key];
-  }
+  // Empty alt text is refused before this, since Google may keep the old text for it.
+  if (title !== undefined) element.title = title;
+  if (description !== undefined) element.description = description;
   return {
     requests: [{
       updatePageElementAltText: {

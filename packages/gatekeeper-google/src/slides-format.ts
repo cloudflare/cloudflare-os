@@ -152,7 +152,7 @@ export function cellPropertiesOf(
 }
 
 /** The theme colours a `SlideColor` may name. */
-export const THEME_COLORS = new Set([
+const THEME_COLORS = new Set([
   "DARK1", "LIGHT1", "DARK2", "LIGHT2", "ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5",
   "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK", "TEXT1", "BACKGROUND1", "TEXT2", "BACKGROUND2",
 ]);

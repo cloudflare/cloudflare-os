@@ -120,7 +120,7 @@ export function editSlide(slide: RestSlide, edit: Omit<TextEditRecord, "slide">)
   };
 }
 
-/** The current text an edit addresses. Throws `ChangeConflict` when it is not there. */
-export function textOfTarget(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): string {
-  return projectedText(richTextOf(textSlot(slide, edit).body).segments);
+/** The current text `address` names. Throws `ChangeConflict` when it is not there. */
+export function textOfTarget(slide: RestSlide, address: TextAddress): string {
+  return projectedText(richTextOf(textSlot(slide, address).body).segments);
 }
