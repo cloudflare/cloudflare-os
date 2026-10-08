@@ -15,8 +15,12 @@ import { readBytesCapped, readTextCapped, ResponseTooLargeError } from "@gadgets
 export type GitLabOAuthGrant = {
   accessToken: string;
   refreshToken: string;
-  /** Absolute expiry in epoch ms, from the response's `expires_in` (never a hard-coded 7200: admins can change it). */
-  expiresAt: number;
+  /**
+   * Absolute expiry in epoch ms, from the response's `expires_in` (never a hard-coded 7200: admins can
+   * change it). Undefined when the response has none: GitLab before 15.0 issues non-expiring tokens,
+   * and `expires_in` is only RECOMMENDED (RFC 6749 §5.1). The credentials kit never refreshes those.
+   */
+  expiresAt?: number;
 };
 
 /** The current user, `GET /user`. `email` is the primary address; `confirmed_at` proves it. */
@@ -608,13 +612,13 @@ async function postForm(
 
 function grantFromResponse(parsed: unknown, now: number): GitLabOAuthGrant {
   const result = parsed as RawTokenResponse;
-  if (!result.access_token || !result.refresh_token || typeof result.expires_in !== "number") {
+  if (!result.access_token || !result.refresh_token) {
     throw new GitLabApiError(400, errorMessageFromBody(parsed, "GitLab OAuth token response was incomplete"), { details: parsed });
   }
   return {
     accessToken: result.access_token,
     refreshToken: result.refresh_token,
-    expiresAt: now + result.expires_in * 1000,
+    ...(typeof result.expires_in === "number" ? { expiresAt: now + result.expires_in * 1000 } : {}),
   };
 }
 

@@ -601,6 +601,14 @@ describe("OAuth", () => {
     expect(error.message).not.toMatch(/Sign in/);
   });
 
+  it("accepts a token response without expires_in as non-expiring (GitLab before 15.0)", async () => {
+    fakeFetch([json({ access_token: "x", refresh_token: "y", token_type: "bearer" })]);
+    const grant = await exchangeAuthCode(INSTANCE, {
+      code: "c", clientId: "a", clientSecret: "s", redirectUri: "r", codeVerifier: "v",
+    }, 0);
+    expect(grant).toEqual({ accessToken: "x", refreshToken: "y" });
+  });
+
   it("rejects an incomplete token response", async () => {
     fakeFetch([json({ access_token: "x", token_type: "bearer" })]);
     const error = await exchangeAuthCode(INSTANCE, {
