@@ -691,6 +691,24 @@ describe("push ancestry verification", () => {
     expect(t.pulls).toStrictEqual([]);
   });
 
+  it("fetches nothing when a chain reaches proof below a commit the destination claims",
+      async () => {
+    let t = makeCache();
+    // As when `mid` was pushed through another connection and then listed through G2, whose
+    // remote has proven `base`. G2 is unreachable, so a fetch would fail the push.
+    let base = await t.cache.putFromGatekeeper(G2, "commit", commitPayload(TREE_1, [], "base"));
+    let mid = await storeLocal(t.storage, {
+      type: "commit", payload: commitPayload(TREE_1, [base], "mid"),
+    });
+    t.cache.advertiseCommit(G2, mid);
+    let head = await storeLocal(t.storage, {
+      type: "commit", payload: commitPayload(TREE_1, [mid], "head"),
+    });
+
+    await expect(t.cache.verifyPushAncestry(G2, [head])).resolves.toBeUndefined();
+    expect(t.pulls).toStrictEqual([]);
+  });
+
   it("rejects a non-commit oid", async () => {
     let t = makeCache();
     let blob = await storeLocal(t.storage, {

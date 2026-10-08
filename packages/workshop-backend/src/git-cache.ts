@@ -938,41 +938,36 @@ export class WorkspaceGitCache {
    * an accidental push to an unrelated remote fail closed at queue time. Call before
    * `markPushClosure()`.
    *
-   * Where the chains stop short of proof only at commits the gatekeeper claims (`pullableFrom`),
-   * as when the base came through another connection to the same repository, those commits are
-   * pulled through the gatekeeper, so that its remote's bytes prove them, and the walk runs
-   * again. Nothing else is pulled.
+   * A chain that reaches no proven commit but passes through one the gatekeeper claims
+   * (`pullableFrom`), as when the base came through another connection to the same repository,
+   * is completed by pulling the nearest such commit through the gatekeeper, so that its remote's
+   * bytes prove it. Nothing else is pulled, and a history already proven pulls nothing.
    */
   async verifyPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): Promise<void> {
-    let claimed: GitOid[] = [];
+    let claimed = this.#walkPushAncestry(gatekeeperId, heads);
+    if (claimed.length === 0) return;
     try {
-      this.#walkPushAncestry(gatekeeperId, heads);
-      return;
+      await this.puller.pull(gatekeeperId, claimed, this.#exactObjectHints("commit"));
     } catch (err) {
-      try {
-        this.#walkPushAncestry(gatekeeperId, heads, claimed);
-      } catch {
-        throw err;  // proving the claimed commits would not be enough
-      }
+      throw new Error(`Cannot push: could not fetch ${claimed.join(", ")} through this ` +
+          `connection: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
-    await this.puller.pull(gatekeeperId, claimed, this.#exactObjectHints("commit"))
-        .catch((err: unknown) => {
-          throw new Error(
-              `Cannot push: could not fetch ${claimed.join(", ")} through this connection to ` +
-              `confirm that its repository has the pushed history: ` +
-              `${err instanceof Error ? err.message : String(err)}`);
-        });
-    this.#walkPushAncestry(gatekeeperId, heads);
+    if (this.#walkPushAncestry(gatekeeperId, heads).length > 0) {
+      throw new Error(`Cannot push: fetching ${claimed.join(", ")} through this connection did ` +
+          `not prove the pushed history.`);
+    }
   }
 
-  // The walk behind verifyPushAncestry(). Given `claimed`, a commit the gatekeeper claims but
-  // hasn't proven also ends its chain, and is collected there.
-  #walkPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[], claimed?: GitOid[]): void {
+  // The walk behind verifyPushAncestry(). Returns the nearest claimed commit on each chain that
+  // reaches no proven one, and throws for such a chain with no claimed commit.
+  #walkPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): GitOid[] {
+    let claimed = new Set<GitOid>();
     let visited = new Set<GitOid>();
-    let stack = heads.map(validateGitOid);
+    let stack: { oid: GitOid, claim?: GitOid }[] =
+        heads.map(oid => ({ oid: validateGitOid(oid) }));
     let provenElsewhere: GitOid | undefined;  // the nearest commit another connection proved
     while (stack.length > 0) {
-      let oid = stack.pop()!;
+      let { oid, claim } = stack.pop()!;
       if (visited.has(oid)) continue;
       visited.add(oid);
       let meta = this.storage.gitObjectMetadata.get(oid);
@@ -987,14 +982,24 @@ export class WorkspaceGitCache {
         }
         continue;  // proven on the destination
       }
-      if (claimed !== undefined && meta?.pullableFrom.includes(gatekeeperId)) {
-        claimed.push(oid);
-        continue;
-      }
+      if (meta?.pullableFrom.includes(gatekeeperId)) claim ??= oid;
       if (meta?.onRemote.length) provenElsewhere ??= oid;
       let local = this.readLocalObject(oid);
+      if (local !== undefined && local.type !== "commit") {
+        throw new Error(`Cannot push ${oid}: it is a ${local.type}, not a commit.`);
+      }
+      let parents = local === undefined ? [] : parseGitCommitRefs(local.payload, oid).parents;
+      if (parents.length > 0) {
+        stack.push(...parents.map(parent => ({ oid: parent, claim })));
+        continue;
+      }
+      // The chain ends here, at an absent commit or a root, without reaching a proven one.
+      if (claim !== undefined) {
+        claimed.add(claim);
+        continue;
+      }
+      if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
       if (local === undefined) {
-        if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
         throw new Error(
             `Cannot push: commit ${oid} in the pushed history is not available in the ` +
             `workspace's git cache, so the history cannot be verified against the destination. ` +
@@ -1004,21 +1009,14 @@ export class WorkspaceGitCache {
             `Pushing a pre-existing branch whose intermediate history was never pulled is not ` +
             `supported yet.`);
       }
-      if (local.type !== "commit") {
-        throw new Error(`Cannot push ${oid}: it is a ${local.type}, not a commit.`);
-      }
-      let refs = parseGitCommitRefs(local.payload, oid);
-      if (refs.parents.length === 0) {
-        if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
-        throw new Error(
-            `Cannot push: the pushed history reaches root commit ${oid}, which is not known ` +
-            `to the destination. Pushing a history unrelated to the destination is not ` +
-            `supported (this protects against accidentally pushing to the wrong repository). ` +
-            `If the repositories are genuinely related, first pull a shared ancestor commit ` +
-            `from the destination.`);
-      }
-      stack.push(...refs.parents);
+      throw new Error(
+          `Cannot push: the pushed history reaches root commit ${oid}, which is not known ` +
+          `to the destination. Pushing a history unrelated to the destination is not ` +
+          `supported (this protects against accidentally pushing to the wrong repository). ` +
+          `If the repositories are genuinely related, first pull a shared ancestor commit ` +
+          `from the destination.`);
     }
+    return [...claimed];
   }
 
   /**
