@@ -211,7 +211,9 @@ causing tab listing, content reads, and edits to fail.
 A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
 the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
 on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
-one slide at a time, capped at 2 MiB each.
+one slide at a time, capped at 2 MiB each. A read also fetches the other slides of any queued text
+edit batch touching a slide it shows, since the batch applies all or none, so while large batches
+await approval, reads cost more requests against Google's per-user read quota.
 
 ## Google Slides edits
 
@@ -236,8 +238,8 @@ resent as first sent, at the same revision. If that is refused, a read decides w
 and if it cannot tell, the change is marked as having an unknown outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
-account can read a presentation but every change to it fails. A queued text edit is stored in one
-Durable Object value, so one call's edits are capped at 100 KiB.
+account can read a presentation but every change to it fails. A queued change is stored in one
+Durable Object value, so each is capped at 100 KiB.
 
 ## Google Drive read-only bindings
 

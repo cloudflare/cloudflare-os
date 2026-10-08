@@ -324,9 +324,11 @@ export function replayChanges(
 }
 
 /**
- * The slides a read must fetch to show `ids` with queued changes: the slides themselves, the
- * slide each queued duplicate among them copies, and every slide of a text edit batch touching
- * one, transitively. A batch applies all or none, so a conflict on any of its slides hides it all.
+ * The slides a read must fetch to show `ids` with queued changes: the slides themselves, the slide
+ * each queued duplicate of one copies (back to its original), and every slide of a text edit batch
+ * touching one, since a batch applies all or none. A conflict on a slide reached only through an
+ * earlier change, or on one no change links to `ids`, is not found, so the read shows the changes
+ * after it, as approving them in order would apply them.
  */
 export function slidesToFetch(ids: readonly string[], changes: readonly QueuedChange[]): Set<string> {
   let needed = new Set(ids);
