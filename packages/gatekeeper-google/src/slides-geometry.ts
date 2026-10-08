@@ -100,24 +100,45 @@ export function localBox(element: RestPageElement): Box | undefined {
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
-/** Where `box`, transformed by `m`, sits on the slide; undefined if `m` collapses it. */
-export function placementOf(m: Matrix, box: Box): Placement | undefined {
+/**
+ * Where `box`, transformed by `m`, sits on the slide, unrounded; undefined if `m` collapses it.
+ * `shear` is how far `m` is from a rotated, scaled box: 0 for any element the editor makes.
+ */
+export function placementOf(m: Matrix, box: Box): (Placement & { shear: number }) | undefined {
   let sx = Math.hypot(m.a, m.b);
   if (sx === 0) return undefined;
   let sy = (m.a * m.d - m.b * m.c) / sx;
   let [cx, cy] = apply(m, box.x + box.width / 2, box.y + box.height / 2);
-  let width = Math.abs(box.width * sx);
-  let height = Math.abs(box.height * sy);
-  // Slides' y axis points down, so a positive angle turns clockwise.
-  let rotation = round((Math.atan2(m.b, m.a) * 180 / Math.PI + 360) % 360) % 360;
+  let width = Math.abs(box.width * sx) / EMU_PER_POINT;
+  let height = Math.abs(box.height * sy) / EMU_PER_POINT;
+  return {
+    bounds: { x: cx / EMU_PER_POINT - width / 2, y: cy / EMU_PER_POINT - height / 2, width, height },
+    // Slides' y axis points down, so a positive angle turns clockwise.
+    rotation: (Math.atan2(m.b, m.a) * 180 / Math.PI + 360) % 360,
+    flipped: sy < 0,
+    shear: sy === 0 ? 0 : Math.abs((m.a * m.c + m.b * m.d) / (sx * sy)),
+  };
+}
+
+/** A placement as agents read it, to two decimal places. */
+export function roundedPlacement({ bounds, rotation, flipped }: Placement): Placement {
   return {
     bounds: {
-      x: points(cx - width / 2), y: points(cy - height / 2),
-      width: points(width), height: points(height),
+      x: round(bounds.x), y: round(bounds.y), width: round(bounds.width), height: round(bounds.height),
     },
-    rotation,
-    flipped: sy < 0,
+    rotation: round(rotation) % 360,
+    flipped,
   };
+}
+
+/** The matrix undoing `m`, which must not collapse. */
+export function inverse(m: Matrix): Matrix {
+  let det = m.a * m.d - m.b * m.c;
+  let a = m.d / det;
+  let b = -m.b / det;
+  let c = -m.c / det;
+  let d = m.a / det;
+  return { a, b, c, d, tx: -(a * m.tx + c * m.ty), ty: -(b * m.tx + d * m.ty) };
 }
 
 /**

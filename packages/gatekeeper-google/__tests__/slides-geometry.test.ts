@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { matrixFor, placementOf, type Box, type Matrix } from "../src/slides-geometry";
+import {
+  IDENTITY, inverse, matrixFor, multiply, placementOf, roundedPlacement, type Box, type Placement,
+} from "../src/slides-geometry";
 
-const IDENTITY: Matrix = { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 };
+function placed(m: Parameters<typeof placementOf>[0], box: Box): Placement | undefined {
+  let exact = placementOf(m, box);
+  return exact && roundedPlacement(exact);
+}
 
 describe("Slides geometry", () => {
   it("builds the matrix that reads back as the placement asked for", () => {
@@ -17,7 +22,7 @@ describe("Slides geometry", () => {
     ];
     for (let box of boxes) {
       for (let placement of placements) {
-        expect(placementOf(matrixFor(box, placement, IDENTITY), box)).toEqual(placement);
+        expect(placed(matrixFor(box, placement, IDENTITY), box)).toEqual(placement);
       }
     }
   });
@@ -28,6 +33,19 @@ describe("Slides geometry", () => {
     let placement = { bounds: { x: 0, y: 0, width: 100, height: 0 }, rotation: 0, flipped: false };
     let m = matrixFor(line, placement, current);
     expect(m).toMatchObject({ a: 0.5, d: 3 });
-    expect(placementOf(m, line)).toEqual(placement);
+    expect(placed(m, line)).toEqual(placement);
+  });
+
+  it("measures shear, which no rotation and scale can express", () => {
+    let box: Box = { x: 0, y: 0, width: 100, height: 100 };
+    expect(placementOf({ ...IDENTITY, a: 2, d: 0.5 }, box)?.shear).toBe(0);
+    expect(placementOf({ ...IDENTITY, c: 0.5 }, box)?.shear).toBeCloseTo(0.5);
+  });
+
+  it("inverts a matrix", () => {
+    let m = { a: 0.8, b: 0.6, c: -1.2, d: 1.6, tx: 1000, ty: -500 };
+    let near = (value: number) => expect.closeTo(value, 9);
+    expect(multiply(m, inverse(m))).toEqual(
+      { a: near(1), b: near(0), c: near(0), d: near(1), tx: near(0), ty: near(0) });
   });
 });

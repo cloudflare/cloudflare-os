@@ -19,9 +19,10 @@ import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import { slideIds } from "./slides-model";
 import {
-  editDeck, elementIdsOf, movedOrder, requireNewSlide, textOfTarget, type Deck, type SlideLabel,
-  type SlidesActions, type TextEditRecord,
+  editDeck, movedOrder, requireNewSlide, type Deck, type SlideLabel, type SlidesActions,
+  type TextEditRecord,
 } from "./slides-simulation";
+import { elementIdsOf, textOfTarget } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 
 /** What an approved change is written with. */

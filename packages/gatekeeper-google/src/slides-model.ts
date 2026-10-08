@@ -10,7 +10,7 @@
 
 import type { RestPageElement, RestPresentation, RestSlide, RestText } from "./slides-api";
 import {
-  emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, type Matrix,
+  emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, roundedPlacement, type Matrix,
 } from "./slides-geometry";
 import { cellPropertiesOf, formattingOf, shapePropertiesOf } from "./slides-format";
 import type {
@@ -65,7 +65,8 @@ function elementOf(element: RestPageElement, parent: Matrix = IDENTITY): SlideEl
   }
   let matrix = element.transform && multiply(parent, matrixOf(element.transform));
   let box = localBox(element);
-  let placement = matrix && box && placementOf(matrix, box);
+  let exact = matrix && box && placementOf(matrix, box);
+  let placement = exact && roundedPlacement(exact);
   let base = {
     id: element.objectId,
     ...(placement ? { bounds: placement.bounds } : {}),

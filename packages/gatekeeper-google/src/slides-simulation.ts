@@ -14,11 +14,9 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
-import type { RestPageElement, RestSlide, RestText } from "./slides-api";
-import {
-  ChangeConflict, changeRange, narrowChange, projectedText, providerRange, replaceRequests,
-  restTextOf, richTextOf, spliceText, type IndexRange, type TextLocation,
-} from "./slides-text";
+import type { RestPageElement, RestSlide } from "./slides-api";
+import { editSlide, editTarget, type EditPlacement } from "./slides-target";
+import { ChangeConflict } from "./slides-text";
 
 /** A slide as it was when a change was queued, so the approver can recognize it. */
 export type SlideLabel = { number: number; title?: string };
@@ -63,109 +61,9 @@ export type Deck = {
   slides: ReadonlyMap<string, RestSlide>;
 };
 
-/**
- * Where one edit landed: the provider range it replaces with `inserted`, the requests that do it,
- * and the text before and after it.
- */
-export type EditPlacement = {
-  range: IndexRange; inserted: string; requests: unknown[]; previous: string; text: string;
-};
-
-type TextSlot = { location: TextLocation; body: RestText | undefined; write(body: RestText): void };
-
 /** Element IDs a duplicate gets: the gatekeeper's, so a queued edit can name them. */
 export function mintObjectId(): string {
   return `gk${crypto.randomUUID().replaceAll("-", "")}`;
-}
-
-function findElement(
-  elements: RestPageElement[] | undefined, id: string,
-): RestPageElement | undefined {
-  for (let element of elements ?? []) {
-    if (element.objectId === id) return element;
-    let child = findElement(element.elementGroup?.children, id);
-    if (child) return child;
-  }
-  return undefined;
-}
-
-/** Every element ID on a slide, groups' children included. */
-export function elementIdsOf(elements: RestPageElement[] | undefined): string[] {
-  return (elements ?? []).flatMap(element => [
-    ...(element.objectId ? [element.objectId] : []),
-    ...elementIdsOf(element.elementGroup?.children),
-  ]);
-}
-
-// Names an edit's target, for prefixing a conflict.
-function editTarget(edit: Omit<TextEditRecord, "slide">): string {
-  if (edit.elementId === undefined) return `the speaker notes of slide "${edit.slideId}"`;
-  if (edit.cell) {
-    return `row ${edit.cell.row}, column ${edit.cell.column} of table "${edit.elementId}"`;
-  }
-  return `element "${edit.elementId}"`;
-}
-
-function textSlot(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): TextSlot {
-  let { elementId, cell } = edit;
-  if (elementId === undefined) {
-    let notes = slide.slideProperties?.notesPage;
-    let id = notes?.notesProperties?.speakerNotesObjectId;
-    if (!notes || !id) throw new ChangeConflict("the slide has no speaker notes");
-    // Absent until someone first writes notes; inserting text at its ID creates it.
-    let shape = notes.pageElements?.find(element => element.objectId === id)?.shape;
-    return {
-      location: { objectId: id },
-      body: shape?.text,
-      write: text => {
-        if (shape) shape.text = text;
-        else (notes.pageElements ??= []).push({ objectId: id, shape: { shapeType: "TEXT_BOX", text } });
-      },
-    };
-  }
-  let element = findElement(slide.pageElements, elementId);
-  if (!element) throw new ChangeConflict(`the slide has no element "${elementId}"`);
-  if (cell) {
-    let table = element.table;
-    if (!table) throw new ChangeConflict(`element "${elementId}" is not a table`);
-    let found = table.tableRows?.flatMap(row => row.tableCells ?? []).find(candidate =>
-      (candidate.location?.rowIndex ?? 0) === cell.row &&
-      (candidate.location?.columnIndex ?? 0) === cell.column);
-    if (!found) {
-      throw new ChangeConflict(
-        `table "${elementId}" has no cell starting at row ${cell.row}, column ${cell.column}`);
-    }
-    return {
-      location: { objectId: elementId, cellLocation: { rowIndex: cell.row, columnIndex: cell.column } },
-      body: found.text,
-      write: text => { found.text = text; },
-    };
-  }
-  if (element.table) throw new ChangeConflict(`element "${elementId}" is a table; give a cell`);
-  let shape = element.shape;
-  if (!shape) throw new ChangeConflict(`element "${elementId}" has no editable text`);
-  return { location: { objectId: elementId }, body: shape.text, write: text => { shape.text = text; } };
-}
-
-/** Applies one edit to `slide` in place, returning where it landed. Throws `ChangeConflict`. */
-export function editSlide(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): EditPlacement {
-  let slot = textSlot(slide, edit);
-  let rich = richTextOf(slot.body);
-  let previous = projectedText(rich.segments);
-  let found = changeRange(previous, edit);
-  let { start, end, text } = narrowChange(rich.segments, found.start, found.end, edit.replace);
-  let range = providerRange(rich.segments, start, end);
-  let edited = spliceText(rich, start, end, text);
-  slot.write(restTextOf(edited));
-  return {
-    range, inserted: text, requests: replaceRequests(slot.location, rich, edited, start, end, text),
-    previous, text: projectedText(edited.segments),
-  };
-}
-
-/** The current text an edit addresses. Throws `ChangeConflict` when it is not there. */
-export function textOfTarget(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): string {
-  return projectedText(richTextOf(textSlot(slide, edit).body).segments);
 }
 
 // Prefixes a conflict with the edit it is about.

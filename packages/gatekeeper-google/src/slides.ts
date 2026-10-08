@@ -16,10 +16,11 @@ import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
 import {
-  conflictReason, editDeck, elementIdsOf, mintObjectId, movedOrder, replayChanges, slidesToFetch,
+  conflictReason, editDeck, mintObjectId, movedOrder, replayChanges, slidesToFetch,
   type Deck, type QueuedChange, type SlideLabel, type SlidesAction, type SlidesActions,
   type TextEditRecord,
 } from "./slides-simulation";
+import { elementIdsOf } from "./slides-target";
 import { ChangeConflict, STRIPPED_CHARACTERS } from "./slides-text";
 import type { GooglePresentationSession, SlideTextEdit } from "./slides-types";
 import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";

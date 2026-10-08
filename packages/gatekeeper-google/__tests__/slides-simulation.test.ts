@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { RestText } from "../src/slides-api";
 import { slideOf } from "../src/slides-model";
 import {
-  applyChange, editSlide, slidesToFetch, type Deck, type SlidesAction,
+  applyChange, slidesToFetch, type Deck, type SlidesAction,
 } from "../src/slides-simulation";
+import { editSlide } from "../src/slides-target";
 import { ChangeConflict } from "../src/slides-text";
 import { shape, slide, text } from "./slides-fixture";
 
