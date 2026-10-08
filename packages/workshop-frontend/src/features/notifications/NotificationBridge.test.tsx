@@ -45,6 +45,9 @@ describe("NotificationBridge", () => {
     <NotificationBridge
       authenticatedApi={authenticatedApi as unknown as RpcStub<AuthenticatedApi>} />,
   ));
+  // What capnweb does once the server drops its last reference to a subscriber.
+  const release = (index: number) => act(async () =>
+    (subscribers[index] as unknown as Disposable)[Symbol.dispose]());
 
   beforeEach(() => {
     addToast.mockClear();
@@ -80,6 +83,37 @@ describe("NotificationBridge", () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
     expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it("subscribes again when the server drops a live subscription, not after unsubscribing",
+      async () => {
+    await render();
+    // A User DO reset releases the subscriber while the session lives on.
+    await release(0);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(2);
+    await act(() => subscribers[1].notify(notification));
+    expect(addToast).toHaveBeenCalledTimes(1);
+
+    // Unsubscribing releases it too, whether hidden or unmounted.
+    await act(async () => setVisibility("hidden"));
+    await release(1);
+    await act(async () => setVisibility("visible"));
+    await act(async () => root.unmount());
+    await release(2);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(3);
+    root = createRoot(container);
+  });
+
+  it("does not retry a subscription that failed", async () => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    authenticatedApi.subscribeToNotifications.mockImplementationOnce(subscriber => {
+      subscribers.push(subscriber);
+      return Object.assign(Promise.reject(new Error("unavailable")), { [Symbol.dispose]: dispose });
+    });
+    await render();
+    // A failed call releases its arguments as well.
+    await release(0);
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
   });
 
   it("opens a notified task in the app", async () => {

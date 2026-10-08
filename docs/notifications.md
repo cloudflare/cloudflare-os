@@ -98,14 +98,15 @@ subscription id, and same-origin deep-link path cross the central boundary durin
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
 visible browser tab is offered the notification first, and push is sent to every registered device
-only if no tab acknowledges it within three seconds. When the service answers `device_gone` or
+only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
+User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
 started announce completion; callback turns, such as a schedule, and spawned agents notify only
 when they need the user's permission. A turn that an approval or accepted connection resumes
 belongs to whoever decided: it runs on their model and account, so its notifications go to them.
-The deep link opens the chat with `showChat`, so a phone showing the workspace's app switches to
-the chat.
+The deep link opens the chat with `showChat`, which leaves full-screen preview and switches a phone
+showing the workspace's app to the chat.
 
 ## Deployment contract
 

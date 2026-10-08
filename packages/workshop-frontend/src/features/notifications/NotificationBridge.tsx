@@ -20,7 +20,10 @@ type NativeNotificationWindow = Window & {
 };
 
 class NotificationSubscriberImpl extends RpcTarget implements NotificationSubscriber {
-  constructor(private readonly present: (notification: UserNotification) => void) {
+  constructor(
+    private readonly present: (notification: UserNotification) => void,
+    private readonly onReleased: () => void,
+  ) {
     super();
   }
 
@@ -29,6 +32,11 @@ class NotificationSubscriberImpl extends RpcTarget implements NotificationSubscr
       throw new Error("notification client is not visible");
     }
     this.present(notification);
+  }
+
+  // capnweb calls this once the server drops its last reference to the subscriber.
+  [Symbol.dispose]() {
+    this.onReleased();
   }
 }
 
@@ -97,6 +105,7 @@ export const NotificationBridge = ({
       subscription = undefined;
       if (document.visibilityState !== "visible") return;
 
+      let live = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
         let { id, kind, workspaceId, chatId, chatTitle } = notification;
         let completed = kind === "taskCompleted";
@@ -113,10 +122,14 @@ export const NotificationBridge = ({
             }),
           }],
         });
+      }, () => {
+        // Released while still ours, after it took: the User DO reset and forgot it. (A failed
+        // subscribe releases it too, so `live` keeps that from retrying in a loop.)
+        if (live && subscription === nextSubscription) updateSubscription();
       }) as unknown as RpcStub<NotificationSubscriber>;
       let nextSubscription = authenticatedApi.subscribeToNotifications(subscriber);
       subscription = nextSubscription;
-      nextSubscription.catch(error => {
+      nextSubscription.then(() => { live = true; }, error => {
         if (subscription !== nextSubscription) return;
         logRpcFailure("Notification subscription failed:", error);
       });
@@ -127,6 +140,7 @@ export const NotificationBridge = ({
     return () => {
       document.removeEventListener("visibilitychange", updateSubscription);
       subscription?.[Symbol.dispose]();
+      subscription = undefined;
     };
   }, [authenticatedApi, router]);
 
