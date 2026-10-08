@@ -207,6 +207,14 @@ class FakeGitHub {
   readonly merges: (string | undefined)[] = [];
   /** Branches whose next read fails with a 502. */
   readonly failingBranchReads = new Set<string>();
+  /**
+   * Branches whose next read is held until `heldReadsReleased`, counted in `heldReads`. Polled
+   * rather than awaited: a promise settled from the test would carry the test's I/O context into
+   * the gatekeeper's Durable Object.
+   */
+  readonly heldBranchReads = new Set<string>();
+  heldReads = 0;
+  heldReadsReleased = false;
   /** Merge the next merge request but lose its reply (a 502). */
   loseNextMergeReply = false;
   #nextPullNumber = 7;
@@ -255,6 +263,10 @@ class FakeGitHub {
 
     if (path.startsWith(`${API_BASE}/git/ref/heads/`)) {
       const name = decodeURIComponent(path.slice(`${API_BASE}/git/ref/heads/`.length));
+      if (this.heldBranchReads.delete(name)) {
+        this.heldReads++;
+        while (!this.heldReadsReleased) await scheduler.wait(1);
+      }
       const head = this.branches.get(name);
       if (this.failingBranchReads.delete(name)) {
         return Response.json({ message: "Bad Gateway" }, { status: 502 });
@@ -646,6 +658,22 @@ describe("push rejection cascade", () => {
     github.failingBranchReads.add("feature");
     await expect(gk.rejectAction(push.approvalId)).rejects.toThrow();
     expect(await gk.rejectAction(push.approvalId)).toEqual({ restart: true });
+    await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/was discarded/);
+  });
+
+  it("cascades a pull request queued while the discard reads its branch", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    const push = await queuePush(gk, cache, "feature", HEAD1);
+
+    github.heldBranchReads.add("feature");
+    const discard = gk.rejectAction(push.approvalId);
+    await vi.waitFor(() => expect(github.heldReads).toBe(1));
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+    github.heldReadsReleased = true;
+
+    expect(await discard).toEqual({ restart: true });
     await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/was discarded/);
   });
 

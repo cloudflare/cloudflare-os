@@ -2405,22 +2405,23 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * branch, if that branch no longer exists without it -- on the remote or as the outcome of the
    * remaining queued pushes -- and everything queued against the doomed pull request. The branch
    * is read before anything is marked, so a failed read leaves the push pending and a retried
-   * discard still cascades. Returns whether anything was cascaded.
+   * discard still cascades; everything after the read runs without yielding, so a pull request
+   * queued during it is cascaded too. Returns whether anything was cascaded.
    */
   async #rejectPush(push: PushAction): Promise<boolean> {
-    const creates = this.#listPendingActions().filter((action): action is CreatePullRequestAction =>
-      action.type === "createPullRequest" &&
-      (action.options.head === push.branch || action.options.base === push.branch));
-    const realHead = creates.length === 0 ? null : await this.#withApi(api =>
+    const realHead = await this.#withApi(api =>
       api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, push.branch));
     // Marked before simulating, which takes the push out of the queued pushes it overlays.
     this.#markActionRejected(push);
-    if (creates.length === 0 || this.#simulateBranchHead(push.branch, realHead) !== null) return false;
+    if (this.#simulateBranchHead(push.branch, realHead) !== null) return false;
+    const creates = this.#listPendingActions().filter((action): action is CreatePullRequestAction =>
+      action.type === "createPullRequest" &&
+      (action.options.head === push.branch || action.options.base === push.branch));
     for (const create of creates) {
       this.#rejectActionsForResource("pull", create.provisionalId);  // the create included
       this.ctx.storage.kv.delete(`provisional:${create.provisionalId}`);
     }
-    return true;
+    return creates.length > 0;
   }
 
   #rejectReplyDependencyChain(rootCommentIds: string[]): void {
