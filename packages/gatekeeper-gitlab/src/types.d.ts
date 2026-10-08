@@ -593,7 +593,7 @@ export type GitLabDiffFile = {
   additions: number;
   deletions: number;
   /** True when the patch is not included (e.g. binary files, very large files or diffs). `hunks`
-   *  is then empty, and `additions`/`deletions` count nothing (they are counted from the patch). */
+   *  is then empty; `additions`/`deletions` may still be counted, or may be 0 when nothing was. */
   diffOmitted?: boolean;
   hunks: GitLabDiffHunk[];
 }
